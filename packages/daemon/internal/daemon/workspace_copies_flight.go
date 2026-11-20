@@ -40,7 +40,10 @@ import (
 // callbacks — a machine's turn's end (copyWorkspaceAtTurnEnd, supervise.Deps.CopyTurnEnd) and a
 // push fact's commit (copyWorkspaceAtPush) — that are given no context of their own. A copy that
 // ran under none would outlive the daemon's stop: it would run to its budget against a store
-// already closed and log a failed save for a copy nobody could have stored.
+// already closed and log a failed save for a copy nobody could have stored. A copy asked for
+// before the run has started — the turn's end of a claim the boot restored, which can come before
+// the daemon's run begins, or a push recorded then — is kept until the run starts and started
+// under it then (startUnderRun), so it is neither lost nor run under no run.
 //
 // It holds nothing of how a copy is logged. A copy has the role it asks before it takes the
 // issue's place (takeRunningCopy, takeRunningCopyOf), so one with no role to ask never takes the
@@ -52,6 +55,9 @@ type runningCopies struct {
 	mu     sync.Mutex
 	issues map[string]runningCopy
 	run    context.Context
+	// beforeRun is every copy asked for before the run started (startUnderRun), in the order they
+	// were asked; runUnder starts each under the run and clears it.
+	beforeRun []func(run context.Context)
 	// startOwed starts the copy of an issue that was owed while a release's save held the issue's
 	// place, once the save gives the place back (hold). It is the daemon's own start of a copy
 	// (workflowRuntime.startOwedCopy), set where the daemon attaches the cadence (attach), because
@@ -64,11 +70,17 @@ type runningCopies struct {
 	now func() time.Time
 }
 
-// runUnder makes ctx, the daemon's run, the context every copy is started under from now on.
+// runUnder makes ctx, the daemon's run, the context every copy is started under from now on, and
+// starts under it every copy asked for before it (runningCopies.beforeRun).
 func (c *runningCopies) runUnder(ctx context.Context) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.run = ctx
+	waiting := c.beforeRun
+	c.beforeRun = nil
+	c.mu.Unlock()
+	for _, start := range waiting {
+		start(ctx)
+	}
 }
 
 // startsOwedWith makes start what takes a copy owed behind a release's save
@@ -80,7 +92,7 @@ func (c *runningCopies) startsOwedWith(start func(owed copyAsk)) {
 }
 
 // running is the daemon's run's context, and false before the run has started or once it has
-// ended, when no copy is started at all.
+// ended.
 func (c *runningCopies) running() (context.Context, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -88,6 +100,27 @@ func (c *runningCopies) running() (context.Context, bool) {
 		return nil, false
 	}
 	return c.run, true
+}
+
+// startUnderRun hands start the daemon's run's context: at once while the run runs, or as the run
+// starts where it has not started yet (runUnder), so a copy asked for before the run is taken as
+// soon as it begins. It answers false, and starts nothing, once the run has ended: the daemon is
+// stopping, and the next daemon takes the issue's copies again.
+func (c *runningCopies) startUnderRun(start func(run context.Context)) bool {
+	c.mu.Lock()
+	run := c.run
+	switch {
+	case run == nil:
+		c.beforeRun = append(c.beforeRun, start)
+		c.mu.Unlock()
+		return true
+	case run.Err() != nil:
+		c.mu.Unlock()
+		return false
+	}
+	c.mu.Unlock()
+	start(run)
+	return true
 }
 
 // runningCopy is one issue's place in the cadence.

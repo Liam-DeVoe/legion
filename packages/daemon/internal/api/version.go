@@ -2834,9 +2834,9 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. A renumber moves `shapedAnswersContract` in shaping.go with it, and that one constant
 // alone: it is the number the three keys of this entry are served down below, it is what
-// answers.go gives the two answers this change adds as their arrival, and it is the last number
+// answers.go gives the two answers this change adds as their arrival, and it was the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason.)
+// reason; 199, a later entry with no shape change of its own, follows it there.)
 //
 // 199: dispatch://INFRA-1117 -- the test database's own disk. Where
 // `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database

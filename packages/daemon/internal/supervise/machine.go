@@ -359,9 +359,10 @@ type Claim struct {
 	UncertainStreak int
 	// SuspendedBy is who suspended the claim while it is suspended, and "" otherwise.
 	SuspendedBy SuspendSource
-	// SuspensionHeld is whether a suspension is held for the agent's turn (holdSuspension), and
-	// SuspensionHeldBy who asked for it. Both are memory only: Machine.Claim reports them, and the
-	// store never writes them.
+	// SuspensionHeld is whether a suspension is held — for the agent's turn (holdSuspension), for a
+	// launch's ready (holdSuspendUntilReady), or for the copy the claim's last turn's end started
+	// (suspend) — and SuspensionHeldBy who asked for it. Both are memory only: Machine.Claim
+	// reports them, and the store never writes them.
 	SuspensionHeld   bool
 	SuspensionHeldBy SuspendSource
 	// SessionLost is the cause of the forget that the launch this claim is being built a spec for
@@ -1425,8 +1426,9 @@ type Machine struct {
 	// stayed armed on a working claim (askTurnOver); from unansweredAsksWarn on, each one is
 	// logged at Warn.
 	unansweredAsks int
-	// held is the suspension held for the agent's turn (holdSuspension), or for a launch's ready
-	// (holdSuspendUntilReady), nil for none.
+	// held is the suspension held for the agent's turn (holdSuspension), for a launch's ready
+	// (holdSuspendUntilReady), or for the copy the claim's last turn's end started (suspend), nil
+	// for none.
 	held *RequestSuspend
 	// heldLaunch is whether the held suspension waits over a launch — one holdSuspendUntilReady
 	// keeps until the agent says ready — and false whenever held is nil: it is set with held and

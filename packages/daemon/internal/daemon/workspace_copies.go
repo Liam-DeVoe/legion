@@ -127,7 +127,7 @@ const (
 	runningCopyDropFailed = "drop_failed"
 	// runningCopyReleaseBundled: an idle release of the issue has saved its bundle off the pod
 	// the copy would be taken off, and that bundle is the pod's last copy, so no copy is taken
-	// off that pod (takeRunningCopy, store.Store.ReleaseBundleSavedOff). It is written at Info:
+	// off that pod (takeRunningCopyOf, store.Store.ReleaseBundleSavedOff). It is written at Info:
 	// it is no fault, and it is not one of the reasons above that a deployment counts. The pod's
 	// roles are still live between the release's save and their stops, and a push the daemon
 	// records then asks them for a copy.
@@ -342,20 +342,23 @@ func (w *workflowRuntime) startRunningCopy(issue string, claims []supervise.Clai
 // ask the role of ask's claim (takeRunningCopyOf): a turn's end, which hands the claim whose turn
 // ended, and the copy owed behind one in flight or behind a release's save (startOwedCopy). The
 // ends of the turns ask stands for are told once the copy has ended. It answers false where it
-// starts nothing, which is a daemon whose run has not started or has ended, and those ends are
-// then told nothing.
+// starts nothing, which is a daemon whose run has ended, and those ends are then told nothing; a
+// copy asked for before the run has started is started as the run starts (goCopy).
 func (w *workflowRuntime) startRunningCopyOf(ask copyAsk) bool {
 	return w.goCopy(ask.of.Issue, func(ctx context.Context) { w.takeRunningCopyOf(ctx, ask) })
 }
 
 // goCopy runs take, one copy of issue's workspace, on a goroutine of its own, under the budget one
-// copy is given and inside the daemon's run (runningCopies.running), so the daemon's stop ends it,
-// and answers whether it started it. Nothing waits on it: a copy is a saving against an eviction,
-// never a step of the turn, the tick or the fact that asked for it, and a stop held for a turn's
-// end waits on it through the machine's own event, never on this goroutine
+// copy is given and inside the daemon's run (runningCopies.startUnderRun), so the daemon's stop
+// ends it, and answers whether it started it. Nothing waits on it: a copy is a saving against an
+// eviction, never a step of the turn, the tick or the fact that asked for it, and a stop held for
+// a turn's end waits on it through the machine's own event, never on this goroutine
 // (copyWorkspaceAtTurnEnd). It is how the owed copy is taken too (startOwedCopy), so a copy owed
-// to a turn's end holds up neither the copy that owed it nor anything else. Before the run starts
-// and once it has ended no copy is started at all.
+// to a turn's end holds up neither the copy that owed it nor anything else. A copy asked for
+// before the run starts is kept and started as the run starts, with its budget counted from then:
+// the boot restores each claim's machine before the run begins, and a turn's end in that window
+// would otherwise take no copy and owe none, so an issue idle from then on would keep the copy
+// from before that turn. Once the run has ended no copy is started at all.
 //
 // The goroutine takes a hold mark of its own for the store's pool (store.ForConcurrentWorker),
 // as every loop of the daemon's run does: copies of different issues run beside each other and
@@ -364,17 +367,17 @@ func (w *workflowRuntime) startRunningCopyOf(ask copyAsk) bool {
 // one, and an unmarked context would leave the pool unable to refuse a copy a second connection
 // of its own. The run it is made from holds no connection, so a fresh mark sees everything.
 func (w *workflowRuntime) goCopy(issue string, take func(context.Context)) bool {
-	run, ok := w.copies.running()
-	if !ok {
+	started := w.copies.startUnderRun(func(run context.Context) {
+		go func() {
+			ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(run), w.runningCopyBudget())
+			defer cancel()
+			take(ctx)
+		}()
+	})
+	if !started {
 		w.log.Debug(runningCopyStoppedLine, "issue", issue)
-		return false
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(run), w.runningCopyBudget())
-		defer cancel()
-		take(ctx)
-	}()
-	return true
+	return started
 }
 
 // startOwedCopy takes the copy that was owed while a copy in flight or a release's save held its
@@ -577,9 +580,10 @@ func (w *workflowRuntime) storeRunningCopy(ctx context.Context, issue string, ro
 	}
 	// refused logs a write of the issue's row that the store refused for no fault, at Info under
 	// reason, and owes no retry. The drop of a workspace that bundled to nothing and the save of one
-	// that did meet the same refusals, and each is written here with one list of keys for both:
-	// bytes 0 for the drop, and for a newer copy the time this copy's take began, which the row it
-	// left was taken after.
+	// that did both meet the issue the project does not record and the newer copy, and the save the
+	// release bundle besides; each is written here with one list of keys for both writes: bytes 0
+	// for the drop, and for a newer copy the time this copy's take began, which the row it left was
+	// taken after.
 	refused := func(reason string, bytes int) bool {
 		args := []any{"issue", issue, "role", role, "reason", reason, "pod", bundle.PodUID, "bytes", bytes}
 		if reason == runningCopyNewerStands {

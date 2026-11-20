@@ -785,3 +785,40 @@ func TestNoLineIsWrittenForTheEvictedPodNoWatchedClaimRunsIn(t *testing.T) {
 		t.Errorf("the end of a pod no watched claim runs in was logged, with no role of it watched:\n%s", logs.String())
 	}
 }
+
+// A re-read that reads the end neither way again, in other words than the reading standing, keeps
+// the new reading and writes no line (capturePodEnd): the end is still undecided, and the record
+// later events are read against is the one made from the newest state. Here the kubelet's terminal
+// status first names no cause the rule reads, and a later event of the same pod carries the
+// `Evicted` reason with no DisruptionTarget condition, the pod's own use. The pod runs a watched
+// claim, so a line would be written if the re-read decided anything.
+//
+// The control is a re-read that keeps the standing record whenever the reading is empty both
+// times: the record then still holds the first words, and the test fails at the second reading.
+func TestAReReadThatReadsTheEndNeitherWayInOtherWordsKeepsThemAndWritesNoLine(t *testing.T) {
+	const refused = "UnexpectedAdmissionError"
+	logs := &lockedLog{}
+	g := newRig(t, nil, withLog(logs))
+	loc := g.spawn(workerSpec(t))
+	name, uid := loc.Sandbox.Name, loc.Sandbox.PodUID
+
+	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus(refused) })
+	if end := g.podEndHeld(uid); end.reading != "" || end.cause != terminalWithNoClusterEnd || end.reason != refused {
+		t.Fatalf("read %+v of the failed pod, want it read neither way in the words %q with the reason %s", end, terminalWithNoClusterEnd, refused)
+	}
+	g.update(g.pod(name), func(p *corev1.Pod) { p.Status.Reason = evictedReason })
+
+	var end podEnd
+	g.eventually("the re-read of the pod's end to keep the words of its new state", func() bool {
+		g.r.mu.Lock()
+		defer g.r.mu.Unlock()
+		end = g.r.podEnds[uid]
+		return end.cause == evictedForItsOwnUse
+	})
+	if end.reading != "" || end.reason != evictedReason {
+		t.Fatalf("read %+v of the evicted pod, want it read neither way with the reason %s", end, evictedReason)
+	}
+	if lines := linesHolding(logs.String(), podEndLine); len(lines) != 0 {
+		t.Fatalf("the pod's end read neither way twice wrote the lines %q, want none:\n%s", lines, logs.String())
+	}
+}

@@ -8,11 +8,50 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn, or while
-// the copy the claim's last turn's end started is still being taken (waitForTurnCopy): the machine
-// holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller that
-// keeps the request durably asks again, and the claim answers nil once it is suspended.
-var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
+// ErrSuspendHeld answers a suspension the machine holds rather than decides now, and suspends the
+// claim itself once what it is held for is over: the agent's turn (holdSuspension), a launch's
+// ready (holdSuspendUntilReady), or the copy of the issue's workspace that the claim's last turn's
+// end started, while that copy is still being taken (suspend, waitForTurnCopy). It is not a
+// refusal. A caller that keeps the request durably asks again, and the claim answers nil once it
+// is suspended. Each hold answers it in the words of what that hold waits for (suspendHeld), so
+// errors.Is(err, ErrSuspendHeld) reads every hold and the error's text says which.
+var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn, its launch's ready, or the copy of its last turn's end")
+
+// suspendHeld is ErrSuspendHeld in the words of what one hold waits for (heldFor.answer).
+type suspendHeld struct{ waits string }
+
+func (h *suspendHeld) Error() string { return "the suspension is held for " + h.waits }
+
+// Unwrap is ErrSuspendHeld, which a caller reads every hold by, and through it a wait
+// (wait.ErrWaiting), as the hold always was.
+func (h *suspendHeld) Unwrap() error { return ErrSuspendHeld }
+
+// heldFor is what a suspension holdRequest holds waits for, in the words of the two lines it
+// writes and of its answer: the agent's turn (holdSuspension), or the copy the claim's last turn's
+// end started (suspend). Each is chosen where the hold is asked for, since only that row knows
+// which it is.
+type heldFor struct {
+	// held is the line of a hold recorded where none stood, and deadline the line of a deadline
+	// armed for it.
+	held, deadline string
+	// answer is what the hold answers its asker.
+	answer error
+}
+
+var (
+	heldForTurn = heldFor{
+		held:     "supervise: the suspension is held for the agent's turn to end",
+		deadline: "supervise: the held suspension stops the agent at its deadline if its turn has not ended",
+		answer:   &suspendHeld{waits: "the agent's turn to end"},
+	}
+	heldForTurnCopy = heldFor{
+		held:     "supervise: the suspension is held for the copy of the issue's workspace that the claim's last turn's end started",
+		deadline: "supervise: the held suspension stops the agent at its deadline if the copy of its last turn's end has not ended",
+		answer:   &suspendHeld{waits: "the copy of the issue's workspace that the claim's last turn's end started"},
+	}
+	// errHeldForLaunch is holdSuspendUntilReady's answer; that row writes lines of its own.
+	errHeldForLaunch error = &suspendHeld{waits: "the agent's launch to say it is ready"}
+)
 
 // ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once
 // that pause is no longer the open one (Deps.Paused): the pause the stop names has ended, so
@@ -39,9 +78,10 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // Stopped now, it would take the process the copy is asking, and a pause stops an idle role at
 // once, so a role whose turn ended a moment before the pause would lose the copy of that turn to
 // it. A held stop already waiting is joined as a suspension arriving in a turn joins it, its
-// deadline moving the stop earlier. Either is answered ErrSuspendHeld. A suspension that may not be
-// held (RequestSuspend.NeverHold) is decided now, as it always was for a claim in no turn: its asker
-// read the claim in no turn and is owed the stop at once.
+// deadline moving the stop earlier. Either is answered ErrSuspendHeld, in the copy's words
+// (heldForTurnCopy). A suspension that may not be held (RequestSuspend.NeverHold) is decided now,
+// as it always was for a claim in no turn: its asker read the claim in no turn and is owed the
+// stop at once.
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -51,7 +91,7 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 	if m.turnCopy == nil || asked.NeverHold {
 		return m.suspendNow(ctx, request, false)
 	}
-	err = m.holdRequest(request, asked)
+	err = m.holdRequest(request, asked, heldForTurnCopy)
 	if !m.stopWaitsForTurnCopy() {
 		m.waitForTurnCopy()
 	}
@@ -112,8 +152,8 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 // relaunch. That is the one path out of this row that ends in suspended by naming it, which is
 // why the row names StateSuspended among its destinations (Handle, table.go).
 //
-// It answers ErrSuspendHeld, except to a suspension that may not be held
-// (RequestSuspend.NeverHold), which it refuses before it records anything.
+// It answers ErrSuspendHeld, in the turn's words (heldForTurn), except to a suspension that may
+// not be held (RequestSuspend.NeverHold), which it refuses before it records anything.
 func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -139,16 +179,18 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
 			Reason: "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"}
 	}
-	return m.holdRequest(request, ev.(RequestSuspend))
+	return m.holdRequest(request, ev.(RequestSuspend), heldForTurn)
 }
 
 // holdRequest holds request, which is asked as its row decided it (suspendRequest), for the end
-// the machine holds its stop for: the turn's end (holdSuspension), or the end of the copy the
-// claim's last turn's end started (suspend, waitForTurnCopy). It records the hold, or takes a
-// standing one over, moves its deadline earlier, and answers ErrSuspendHeld. The flag and the
-// deadline are the asker's own, read from asked: suspendRequest hands a daemon's request under the
-// operator's hold the operator's source, which must not give it the operator's stop timeout too.
-func (m *Machine) holdRequest(request, asked RequestSuspend) error {
+// the machine holds its stop for, which waits names: the turn's end (holdSuspension, heldForTurn),
+// or the end of the copy the claim's last turn's end started (suspend, heldForTurnCopy,
+// waitForTurnCopy). It records the hold, or takes a standing one over, moves its deadline
+// earlier, and answers ErrSuspendHeld in waits's words; the lines it writes are in those words
+// too. The flag and the deadline are the asker's own, read from asked: suspendRequest hands a
+// daemon's request under the operator's hold the operator's source, which must not give it the
+// operator's stop timeout too.
+func (m *Machine) holdRequest(request, asked RequestSuspend, waits heldFor) error {
 	deadline := asked.Deadline
 	if asked.By == SuspendedByOperator {
 		deadline = m.deps.Clock.Now().Add(m.deps.Timeouts.Stop)
@@ -156,7 +198,7 @@ func (m *Machine) holdRequest(request, asked RequestSuspend) error {
 	switch {
 	case m.held == nil:
 		m.held, m.heldLaunch = &RequestSuspend{Claim: request.Claim, Reason: request.Reason, By: request.By, Pause: request.Pause}, false
-		m.log.Info("supervise: the suspension is held for the agent's turn to end", "reason", request.Reason, "by", request.By)
+		m.log.Info(waits.held, "reason", request.Reason, "by", request.By)
 	case request.By == SuspendedByOperator && m.held.By != SuspendedByOperator:
 		m.log.Info("supervise: the operator's suspension takes the held suspension over", "reason", request.Reason, "held", m.held.Reason)
 		m.held.By, m.held.Reason, m.held.Pause = request.By, request.Reason, 0
@@ -172,19 +214,20 @@ func (m *Machine) holdRequest(request, asked RequestSuspend) error {
 		m.held.Deadline = deadline
 		if a, ok := m.timers[TimerSuspend]; !ok || deadline.Before(a.due) {
 			m.arm(TimerSuspend, max(0, deadline.Sub(m.deps.Clock.Now())), "")
-			m.log.Info("supervise: the held suspension stops the agent at its deadline if its turn has not ended", "deadline", deadline, "by", m.held.By)
+			m.log.Info(waits.deadline, "deadline", deadline, "by", m.held.By)
 		}
 	}
-	return ErrSuspendHeld
+	return waits.answer
 }
 
 // holdSuspendUntilReady retains a suspend that reaches a rule-resuming launch after the rule
 // changed the claim to launching. The old table ignored it, returning a conflict to an operator and
 // dropping a daemon's linger or leave row. The hold survives launch and is run as soon as the agent
 // says ready (ready), before the claim is published ready or takes a task. It answers
-// ErrSuspendHeld so the operator sees 202 and a daemon row retries across a restart, except to a
-// suspension that may not be held (RequestSuspend.NeverHold), which it refuses before it records
-// anything: a claim read idle can be launching again by the time the request reaches the lock.
+// ErrSuspendHeld, in the launch's words (errHeldForLaunch), so the operator sees 202 and a daemon
+// row retries across a restart, except to a suspension that may not be held
+// (RequestSuspend.NeverHold), which it refuses before it records anything: a claim read idle can
+// be launching again by the time the request reaches the lock.
 //
 // A claim whose launch this very suspension stopped is suspended here and now instead: the
 // suspension cancelled that start before it took the lock (Handle), so nothing of this claim is
@@ -272,7 +315,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 		m.held, m.heldLaunch = &request, true
 		m.log.Info("supervise: the suspension waits for the rule-resuming agent to become ready", "reason", request.Reason, "by", request.By)
 	}
-	return ErrSuspendHeld
+	return errHeldForLaunch
 }
 
 // suspendedAgain is a suspension of a claim already suspended, and the one place a suspension's

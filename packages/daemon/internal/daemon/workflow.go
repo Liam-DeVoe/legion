@@ -1833,7 +1833,8 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	// Every copy of an issue workspace runs under the run, whichever path started it, so the
 	// daemon's stop ends the copies in flight rather than leaving them to run to their budget
 	// against a store that is closing (runningCopies). Each copy takes a hold mark of its own as
-	// it starts (startRunningCopy), since copies run beside each other and beside these loops.
+	// it starts (goCopy), since copies run beside each other and beside these loops. A copy asked
+	// for before this point — the turn's end of a claim the boot restored — starts here.
 	w.copies.runUnder(running)
 	// Every loop below runs beside the others for the life of the process, so each takes a hold
 	// mark of its own for the pool (store.ForConcurrentWorker): on one shared mark the first loop

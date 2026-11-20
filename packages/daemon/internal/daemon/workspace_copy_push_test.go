@@ -125,15 +125,7 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 func TestAReleaseSaveWaitsForTheRunningCopyBundlerInFlightBeforeItBundles(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
-	release := make(chan struct{})
-	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
-		select {
-		case <-release:
-		case <-ctx.Done():
-			return runtime.WorkspaceBundle{}, ctx.Err()
-		}
-		return copyRigBundle, nil
-	})
+	release := rig.heldBundler()
 	// The turn that ended last left its copy being built.
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), nil)
 	rig.awaitAsks(t, 1)
@@ -155,7 +147,7 @@ func TestAReleaseSaveWaitsForTheRunningCopyBundlerInFlightBeforeItBundles(t *tes
 	}) {
 		t.Fatal("the release's save ran the bundler while a running copy was being built in the same workspace")
 	}
-	close(release)
+	release()
 	select {
 	case err := <-drained:
 		if err != nil {

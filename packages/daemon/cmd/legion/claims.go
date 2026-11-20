@@ -509,8 +509,10 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 // suspendPoll is how often claimsSuspend reads the claims while a suspension is held.
 const suspendPoll = 250 * time.Millisecond
 
-// claimsSuspend suspends --claim. The daemon suspends a claim whose agent is in no turn at once
-// (200), and holds the suspension of one in a turn (202; supervise's holdSuspension), which the
+// claimsSuspend suspends --claim. The daemon suspends at once (200) a claim whose agent is in no
+// turn and whose last turn's end started no copy of the issue's workspace that is still being
+// taken. It holds the suspension of one in a turn (202; supervise's holdSuspension), and of one
+// idle or ready while that copy is still being taken (202; supervise's suspend), which the
 // command then waits out (awaitSuspended) inside its --wait. It prints the claim as it ends,
 // suspended. A suspend of a worker whose start is still running is answered 200: the request
 // stops that start before it waits for the claim's decision (supervise's Handle), and the start
@@ -585,8 +587,18 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 			return nil, false
 		}
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
-			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
+			// What holds it is read from the state the claim waits in: a claim in a turn waits for
+			// that turn's end, a launching one for its agent's ready, and a ready or idle one for
+			// the copy its last turn's end started.
+			holds := "its agent's turn has not ended"
+			switch supervise.ClaimState(seen.State) {
+			case supervise.StateLaunching, supervise.StateShimConnected:
+				holds = "its launch has not said it is ready"
+			case supervise.StateReady, supervise.StateIdle:
+				holds = "the copy of the issue's workspace that its last turn's end started has not ended"
+			}
+			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: %s, or the "+
+				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait, holds)
 			return nil, false
 		}
 		select {
