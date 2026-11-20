@@ -276,38 +276,55 @@ const nodesOfKind = `
 		order by id
 	`
 
-// NodesUnder answers the row of each node of kinds, as the store keys them, that stands under the
-// node whose kind and id are parentKind and parentID and is not gone: each whose current part_of
-// tuple (CurrentTupleRead) points at that node, in (kind, id) order, in one statement. A node moved
-// under another parent holds its part_of here retracted, and a node of another kind under the
-// parent - a lens invoked on a lens - is none of these. The statement binds `to_kind <> 'value'`
-// as a literal, as CurrentIn does, so the planner proves the predicate of graph_tuples_as_of_in
-// and walks that index from the parent. The write that takes a lens to gone reads its findings and
-// its risks so (api's writeNodeState).
-func NodesUnder(ctx context.Context, q Queryer, parentKind, parentID string, kinds ...string) ([]Node, error) {
-	rows, err := q.Query(ctx, nodesUnder, parentKind, parentID, kinds, StateGone)
+// NodesBeneath answers the row of each node that stands beneath the node whose kind and id are
+// kind and id, as the store keys it, and is not gone, at every depth and of every kind, in (kind,
+// id) order, in one statement however deep the tree: each node whose current part_of tuple
+// (CurrentTupleRead) points at that node, each whose current part_of points at one of those, and
+// so on. A part_of names a finding of a lens, a node of kind block, by its address kind as a lens
+// invoked on it does (AddressKind), or as a block, so the walk reads the tuples into a node under
+// both. A node moved under another parent holds its part_of here retracted, so neither it nor what
+// stands under it is beneath the old one. The walk goes on through a node that is gone and leaves
+// that node's row out of the answer, since what still stands under a gone node stands beneath the
+// start too. The statement binds `to_kind <> 'value'` as a literal, as CurrentIn does, so the
+// planner proves the predicate of graph_tuples_as_of_in for an end the walk reads off a row it
+// reached, and walks that index from each such end. The write that takes a node to gone reads
+// what stands beneath it so (api's writeNodeState).
+func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
+	rows, err := q.Query(ctx, nodesBeneath, kind, id, StateGone)
 	if err != nil {
-		return nil, fmt.Errorf("read the nodes under %s/%s: %w", parentKind, parentID, err)
+		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
 	}
-	under, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Node, error) { return scanNode(row) })
+	beneath, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Node, error) { return scanNode(row) })
 	if err != nil {
-		return nil, fmt.Errorf("read the nodes under %s/%s: %w", parentKind, parentID, err)
+		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
 	}
-	return under, nil
+	return beneath, nil
 }
 
-// nodesUnder is the statement of NodesUnder: $1 and $2 the parent's kind and id, $3 the kinds of
-// the nodes it answers and $4 the gone state. The relation the read keeps is the near end alone,
-// which graph_tuples_as_of_in does not key, so it sorts the parent's part_of tuples by node.
-var nodesUnder = `
+// nodesBeneath is the statement of NodesBeneath: $1 and $2 the start's kind and id and $3 the gone
+// state. walked is the start and each node the walk has reached, each once, as the store keys it:
+// its recursive step is the current part_of tuples into one node it holds, under the node's kind
+// and its address kind, read in a lateral subquery keyed by that node, and its `union` drops a
+// node it holds already, so a part_of cycle ends the walk rather than looping. The relation each
+// step keeps is the near end and the spelling of the far end, which graph_tuples_as_of_in does not
+// key, so it sorts that node's part_of tuples by node. The start itself is no answer.
+var nodesBeneath = `
+		with recursive walked (node_kind, node_id) as (
+			select $1::text, $2::text
+			union
+			select placed.from_kind, placed.from_id
+			from walked
+			cross join lateral (
+				` + CurrentTupleRead(`t.to_kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+	`t.to_kind in (walked.node_kind, `+AddressKindSQL("walked.node_kind", "walked.node_id")+`)
+					and t.to_id = walked.node_id and t.kind = '`+TuplePartOf+`' and t.to_kind <> '`+KindValue+`'`) + `
+			) placed
+			where placed.asserted
+		)
 		select ` + nodeColumns + `
-		from (
-			` + CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-	`t.to_kind = $1 and t.to_id = $2 and t.kind = '`+TuplePartOf+`' and t.from_kind = any($3::text[])
-				and t.to_kind <> '`+KindValue+`'`) + `
-		) placed
-		join graph_nodes held on held.kind = placed.from_kind and held.id = placed.from_id
-		where placed.asserted and held.state <> $4
+		from walked
+		join graph_nodes held on held.kind = walked.node_kind and held.id = walked.node_id
+		where held.state <> $3 and not (held.kind = $1 and held.id = $2)
 		order by held.kind, held.id`
 
 // scanNodesOfKind reads every node row of kind a read of nodesOfKind answers.

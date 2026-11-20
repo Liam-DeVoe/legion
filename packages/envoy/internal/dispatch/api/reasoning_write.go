@@ -475,12 +475,15 @@ var errNodeNotHeld = errors.New("the store holds no row of the node")
 // node holds moves nothing and appends nothing. A write that moves it marks the node changed
 // (graphstore.Node's Changed), so one made for a run names the node as changed by that run.
 //
-// The write that takes a lens to gone takes each finding and each risk under it that is not gone
-// yet (graphstore.NodesUnder), those the caller may not see among them, to gone in the same
-// graphstore.Write, each the same way, so no read by a finding's or a risk's own address answers it
-// once its lens is gone (spec requirement r-proposed). The route lets a person alone make that
-// move (lensGoneNotPermitted), so what stands under the lens is read for the write and for no
-// refusal, and tells the caller nothing.
+// The write that takes a node to gone - a lens, a finding, a risk or a constraint, the route's
+// only nodes that take gone (stateRefusal) - takes its whole current part_of subtree that is not
+// gone yet to gone in the same graphstore.Write, each node the same way, at every depth and
+// whatever its kind, those the caller may not see among them: a finding or a risk under a lens, a
+// lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each
+// (graphstore.NodesBeneath, one statement however deep the tree). So no read by its own address
+// answers a node under a gone one live with nothing to stand on (spec v59 R5). The route lets a
+// person alone make that move (goneNotPermitted), so what stands under the node is read for the
+// write and for no refusal, and tells the caller nothing.
 //
 // It answers the node as the write leaves it and the state it held before.
 func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graphstore.Node, string, error) {
@@ -504,12 +507,12 @@ func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graph
 		return node, previous, nil
 	}
 	moved := []graphstore.Node{node}
-	if write.state == graphstore.StateGone && node.Kind == graphstore.KindLens {
-		under, err := graphstore.NodesUnder(ctx, tx, graphstore.KindLens, node.ID, refs.BlockNodeKind, graphstore.KindRisk)
+	if write.state == graphstore.StateGone {
+		beneath, err := graphstore.NodesBeneath(ctx, tx, node.Kind, node.ID)
 		if err != nil {
 			return graphstore.Node{}, "", err
 		}
-		moved = append(moved, under...)
+		moved = append(moved, beneath...)
 	}
 	for index := range moved {
 		each := &moved[index]

@@ -601,9 +601,9 @@ var indexPasses = map[string]string{
 	"api/reasoning_write.go#writeReasoningPointer": "the request's tuple, the node it goes out of and the far ends it names",
 	// One node's state, written or settled through the store's writer from the request and the
 	// node's own row: the state is a base attribute of the node, which no projection row holds. A
-	// lens taken gone takes the findings and the risks under it gone in the same write, each from
-	// its own row, which the write reads through their current part_of tuples (graphstore.NodesUnder).
-	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of the findings and the risks under a lens it takes gone, and the issue it stands under",
+	// node taken gone takes its whole part_of subtree gone in the same write, each node from its own
+	// row, which the write reads through the current part_of tuples (graphstore.NodesBeneath).
+	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of every node under a node it takes gone, and the issue it stands under",
 	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
 	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
 	// is named (changed_by_run). It reads no row of either side to decide what the other says.

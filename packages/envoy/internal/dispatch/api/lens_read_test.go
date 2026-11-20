@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -362,13 +363,13 @@ func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
 	}
 }
 
-// TestALensOnAFindingTakenGoneStandsOnNothing: a lens invoked on a finding reads that finding as
-// the node it stands on until a person takes the finding's lens to gone, which takes the finding
-// with it (writeNodeState). The lens on the finding stays live, and its on then names nothing, as a
-// lens's on names nothing where no read answers its node, a block a later version dropped among
-// them: no read answers a gone finding. It still stands under the issue, whose state route finds
-// and moves it.
-func TestALensOnAFindingTakenGoneStandsOnNothing(t *testing.T) {
+// TestALensOnAFindingGoesGoneWithTheFinding: a lens invoked on a finding hangs under that finding
+// through its part_of, so a person's gone on the finding's lens, which takes the finding to gone,
+// takes the lens on the finding to gone with it in the same write (writeNodeState, spec v59 R5):
+// no read answers it live with an on that names nothing. Its row reads gone; GET /api/v1/lenses
+// and GET /api/v1/references by its address answer what they answer for a lens nobody wrote, 404
+// NOT_FOUND; and gone is final, so the state route's overtaken on it is 409 NODE_GONE naming it.
+func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 	rig := newReasoningRig(t)
 	parent := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"A finding a lens looks at."}})
 	finding := parent.Findings[0].Address
@@ -378,14 +379,31 @@ func TestALensOnAFindingTakenGoneStandsOnNothing(t *testing.T) {
 	}
 
 	rig.writeState(parent.Address, graphstore.StateGone, "alice")
-	read := rig.lenses(onFinding.Address, "alice")
-	t.Logf("the lens on the finding once the finding's lens is gone: %+v", read.Lens)
-	if read.Lens == nil || read.Lens.State != graphstore.StateLive || read.Lens.On != nil {
-		t.Errorf("the lens on the finding reads %+v once the finding's lens is gone, want it live and on null", read.Lens)
+	address := graphstore.KindLens + "/" + onFinding.ID
+	if state := lensStateOf(t, rig.database, address); state != graphstore.StateGone {
+		t.Errorf("the lens on the finding %s is %s once the finding's lens is gone, want gone with the finding", onFinding.Address, state)
 	}
-	if moved := rig.writeState(onFinding.Address, graphstore.StateOvertaken, "alice"); moved.Node.State != graphstore.StateOvertaken {
-		t.Errorf("the state route answers %+v for the lens on the gone finding, want it found under the issue and moved to overtaken", moved)
+	// Each read by the lens's address answers what it answers for a lens nobody wrote, byte for
+	// byte once the id is substituted: the reference read names such a lens by its id alone.
+	nobody := uuid.NewString()
+	for _, read := range []struct {
+		route string
+		send  func(address string) *httptest.ResponseRecorder
+	}{
+		{"GET /api/v1/lenses?on=", func(address string) *httptest.ResponseRecorder { return rig.lensesResponse(address, "alice") }},
+		{"GET /api/v1/references?to=", func(address string) *httptest.ResponseRecorder {
+			return dispatchReferences(t, rig.handler, address, "alice")
+		}},
+	} {
+		seen, unwritten := read.send(onFinding.Address), read.send(refs.StoreRef(graphstore.KindLens, nobody))
+		if seen.Code != http.StatusNotFound || unwritten.Code != http.StatusNotFound ||
+			!bytes.Equal(seen.Body.Bytes(), bytes.ReplaceAll(unwritten.Body.Bytes(), []byte(nobody), []byte(onFinding.ID))) {
+			t.Errorf("alice's %s%s once the finding's lens is gone answers %d %s, and of a lens nobody wrote %d %s: want one 404 NOT_FOUND once the id is substituted",
+				read.route, onFinding.Address, seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
+		}
 	}
+	requireGoneRefused(t, "overtaken on the lens on the gone finding",
+		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.ID)
 }
 
 // TestATriggerPointsOnlyAtALensInvokedBefore: a lens is triggered only by a lens invoked before it

@@ -6,12 +6,13 @@
 # finding and a risk, through proposed, overtaken, live and gone; and one requirement of the spec
 # through proposed, overtaken and back to live, after which gone is refused, since a document's own
 # write removes its block. Before the lens's gone, the shared agent bearer's gone on it, a move a
-# person alone makes, since it takes the lens's findings and its risks to gone, is refused 403
-# STATE_NOT_PERMITTED naming the lens, which keeps its value, and the finding and the risk each
-# read live by their own address and answer their words as a reference target. After it, the
-# finding and the risk each read gone by their own address, through GET /api/v1/references?to=
-# and GET /api/v1/reference-targets, neither answering their words; and live, proposed and
-# overtaken on the lens are each refused 409 NODE_GONE naming the lens, which still reads gone,
+# person alone makes on a lens, a finding, a risk or a constraint, since it takes every node under
+# that node to gone, at every depth, is refused 403 STATE_NOT_PERMITTED naming the lens, which
+# keeps its value, and the finding and the risk each read live by their own address and answer
+# their words as a reference target. After it, the finding and the risk each read gone by their
+# own address, through GET /api/v1/references?to= and GET /api/v1/reference-targets, neither
+# answering their words; and live, proposed and overtaken on the lens are each refused 409
+# NODE_GONE naming the lens, which still reads gone,
 # since gone is final. It writes proposed on the requirement again, is refused settled through the
 # state route, and settles it through POST .../nodes/{id}/settle. Last it writes `propsed`, one
 # letter off proposed, and is refused 400 INVALID_ATTRIBUTE_VALUE naming the attribute and the
