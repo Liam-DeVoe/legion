@@ -26,6 +26,7 @@ func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 	ctx := t.Context()
 	a, aStart := beginTransaction(t, database)
 	defer a.Rollback(context.Background())
+	pastTheMargin(t, database, aStart)
 	aEvent := appendCommentEvent(t, a, broker, "comment.created", uuid.NewString(), "The audit starts on Tuesday.", aStart)
 	b := commitComment(t, database, broker, otherIssue)
 	if _, err := fill.pass(ctx); err != nil {
@@ -58,6 +59,7 @@ func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T)
 	ctx := t.Context()
 	a, aStart := beginTransaction(t, database)
 	defer a.Rollback(context.Background())
+	pastTheMargin(t, database, aStart)
 	b := commitComment(t, database, broker, otherIssue)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill while A is open: %v", err)
@@ -88,6 +90,7 @@ func TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten(t *testing.T) {
 	ctx := t.Context()
 	a, aStart := beginTransaction(t, database)
 	defer a.Rollback(context.Background())
+	pastTheMargin(t, database, aStart)
 	b := commitComment(t, database, broker, otherIssue)
 	safe, err := fill.horizon.Await(ctx)
 	if err != nil {
@@ -148,6 +151,7 @@ func TestTheReachStaysBeforeANoInheritMembersOpenTransaction(t *testing.T) {
 	member := storeAs(t, database, login, password)
 	held, heldStart := beginTransaction(t, member)
 	defer held.Rollback(context.Background())
+	pastTheMargin(t, database, heldStart)
 	b := commitComment(t, database, broker, otherIssue)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill while the member's transaction is open: %v", err)
@@ -245,6 +249,26 @@ func reachFixture(t *testing.T) (*store.Store, *events.Broker, *filler) {
 		t.Fatalf("catch the fill up: %v", err)
 	}
 	return database, broker, fill
+}
+
+// pastTheMargin waits until the database's clock is more than a second past start. A reach is
+// never later than T0 - 1 s (store.ComputeTextVersionsReach), so a reach read within a second of
+// start stays before it whatever the computation reads; past that margin only start's own
+// transaction, or an event that carries it, holds the reach before start, which is what the
+// reach tests prove.
+func pastTheMargin(t *testing.T, database *store.Store, start time.Time) {
+	t.Helper()
+	past := start.Add(time.Second + 100*time.Millisecond)
+	for {
+		var now time.Time
+		if err := database.Pool.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&now); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		if now.After(past) {
+			return
+		}
+		time.Sleep(past.Sub(now))
+	}
 }
 
 // requireReachBefore holds the reach the fill stored, and the reach a read computes now
