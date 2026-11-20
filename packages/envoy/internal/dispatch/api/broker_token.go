@@ -33,9 +33,11 @@ import (
 // It answers nothing itself: each route refuses a caller that does not resolve in its own way —
 // a JSON error, a closed socket — and reaches this decision through optionalActor as it always
 // has. A request presenting no such token passes straight through and is resolved where it
-// always was. The one layer that reads the decision without resolving anything is the read-only
-// gate inside it (refuseReadOnlyToken), which answers a read-only token on every route the read
-// list does not name.
+// always was. The one layer that reads the decision before the route resolves its caller is the
+// read-only gate inside it (refuseReadOnlyToken), which verifies no broker-issued token itself:
+// it answers a read-only token on every route outside the read class, and one that carries a cut
+// on every read but whoami. A personal token is the gate's own to resolve, and the gate carries
+// that result, its refusal included, as this carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := brokertoken.Presented(r); !presented {
@@ -100,9 +102,11 @@ var readOnlyPersonScopes = []string{model.ScopePerson}
 // for read, which names the person or the service, and the projects, that the same trade would
 // have named without read. Its credential is marked read-only (model.Credential.ReadOnly), with
 // the token's cut (model.Credential.Cut), and refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN
-// on every route Dispatch does not serve such a token on, ahead of the scope gate, the sign-in
-// check and everything else the route does. On a route Dispatch serves it on, it is the session
-// it names, reading as that session does.
+// on every route outside the read class (readClasses) and on GET /ws/live, ahead of the scope
+// gate, the sign-in check and everything else the route does. While no build answers a read at a
+// past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
+// GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session
+// does.
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //
@@ -186,7 +190,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		ID:   caller.Session,
 		// The broker proved this session, so the credential already names the agent behind the
 		// request and no request body has to name it, and the actor is Proven. A read-only token
-		// is marked as one, which is all refuseReadOnlyToken reads, with the cut it reads at.
+		// is marked as one, with the cut it reads at, which are what refuseReadOnlyToken reads.
 		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, Cut: caller.Cut},
 		Proven:     true,
 	}

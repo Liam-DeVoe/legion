@@ -245,7 +245,7 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 			Replay:    store.NewDPoPProofs(database.Pool),
 			// What Dispatch itself passes: the check keys its bucket on the address
 			// Dispatch's own proxy-trust rule reads, never one of its own, and serves a
-			// read-only token on the routes its read list names (cmd/dispatch,
+			// read-only token on the reads of its read class (cmd/dispatch,
 			// brokerTokenVerifier).
 			Address:        auth.ForwardedAddress,
 			ServesReadOnly: true,
