@@ -65,7 +65,9 @@
 # decides whether the test runs. `bun test` reads its paths (a `./` path is a file or a
 # directory, any other word a part of the path) and `--path-ignore-patterns`; `-t` narrows the
 # tests of a file it runs and is read as running the file. `bun run <script>` is read through the
-# `package.json` of the step's directory. A `playwright test` runs every spec under its
+# `package.json` of the step's directory, and a shell script of the repository the step runs by
+# its path (from the step's directory, or from the root through `$GITHUB_WORKSPACE`) through that
+# script's own commands, with the variables it exports. A `playwright test` runs every spec under its
 # `--config`'s directory that its file filters keep: its `--project`s and `--grep` choose among
 # those specs and are not read, so a spec counts as run by every Playwright step of its config.
 #
@@ -2040,6 +2042,27 @@ def words_of(command: str) -> list[str]:
         return command.split()
 
 
+# The checkout's root as a step's own script names it: a step that runs a repository script from
+# another working directory names it `"$GITHUB_WORKSPACE/.github/scripts/<name>.sh"`.
+WORKSPACE_PREFIXES = ("$GITHUB_WORKSPACE/", "${GITHUB_WORKSPACE}/")
+
+
+def repository_script(cwd: str, words: list[str]) -> str | None:
+    """The repository's shell script a command runs by its path - from the step's directory, or
+    from the checkout's root through $GITHUB_WORKSPACE - alone or after `bash` or `sh`, or None."""
+    if words[:1] in (["bash"], ["sh"]):
+        words = words[1:]
+    if not words:
+        return None
+    word = words[0]
+    path = next((norm(word[len(prefix):]) for prefix in WORKSPACE_PREFIXES if word.startswith(prefix)), None)
+    if path is None:
+        if word.startswith("$") or "/" not in word:
+            return None
+        path = join(cwd, word)
+    return path if path.endswith((".sh", ".bash")) and (ROOT / path).is_file() else None
+
+
 class BunReader:
     def __init__(self, files: list[str]):
         self.files = files
@@ -2096,6 +2119,21 @@ class BunReader:
                 if index == len(parts) - 1:
                     inner += extra
                 found += self.command(step, cwd, inner, frozenset(env), seen | {(cwd, name)})
+            return found
+        path = repository_script(cwd, words)
+        if path is not None and ("script", path) not in seen:
+            # A repository script the step runs by its path: its own Bun and Playwright commands
+            # run in the step, in the step's directory until the script moves, under the
+            # variables the script exports beside the step's own.
+            text = read_text(path)
+            inner_env = frozenset(env | exported(text))
+            found, inner_cwd = [], cwd
+            for part in commands(text):
+                inner = words_of(part)
+                if inner[:1] == ["cd"] and len(inner) == 2:
+                    inner_cwd = join(inner_cwd, inner[1])
+                    continue
+                found += self.command(step, inner_cwd, inner, inner_env, seen | {("script", path)})
             return found
         return []
 

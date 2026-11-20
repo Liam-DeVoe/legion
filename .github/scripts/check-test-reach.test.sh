@@ -403,6 +403,25 @@ run_check "$root"
 check "and fails once the script no longer assigns it" "$(is "$status" 1)"
 check "naming the script" "$(contains "$out" 'FIXTURE_SEED: its row.s set_by_script names packages/web/seed-run.sh, which does not set it')"
 
+echo "case: 3 - a step that runs a script of the repository, which exports the variable and runs the tests"
+root=$(fixture script-step)
+mkdir -p "$root/.github/scripts"
+cat > "$root/.github/scripts/web-suite.sh" <<'SH'
+#!/usr/bin/env bash
+# Runs the web package's tests with the flag their flagged row reads.
+export FIXTURE_FLAG=1
+bun test
+SH
+sed -i -e 's|        run: bun test|        run: "$GITHUB_WORKSPACE/.github/scripts/web-suite.sh"|' \
+  -e '/^        env:$/{N;/FIXTURE_FLAG/d}' "$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "the script's export and its bun test are read as the step's" "$(is "$status" 0)"
+sed -i 's|^export FIXTURE_FLAG=1$||' "$root/.github/scripts/web-suite.sh"
+run_check "$root"
+check "and the row fails once the script no longer exports it" "$(is "$status" 1)"
+check "naming the job that no longer sets it" \
+  "$(contains "$out" 'FIXTURE_FLAG: its row names bun, which does not set it')"
+
 root=$(fixture stale-row)
 row "$root" FIXTURE_GONE 'class: tool' 'why: A tool that is gone.'
 run_check "$root"
