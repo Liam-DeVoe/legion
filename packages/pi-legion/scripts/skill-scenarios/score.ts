@@ -1006,11 +1006,15 @@ function redFacts(entry: unknown, red: z.infer<typeof RedWorld>, failing: string
       new RegExp(`(^|[^\\w-])${escaped(name)}([^\\w-]|$)`).test(slot)
     ),
     "run id": text.includes(String(red.run_id)),
-    // The attempt, as the word in any spelling a record's key or text gives it: `attempt`,
-    // `run_attempt`, or a camel-case key such as `firstRedAttempt` or `rerunAttempt`, each split
-    // into its words before the word is sought. The page asks a record to name the attempt, never
-    // a key's name (INFRA-1303, D7: b-head-2 and j-head-1 of the batch at 9c3bd9df).
-    attempt: /\battempt\b/i.test(text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ")),
+    // The attempt, as a positive integer under the word in any spelling a record's key or text
+    // gives it: `attempt`, `run_attempt`, or a camel-case key such as `firstRedAttempt` or
+    // `rerunAttempt`, each split into its words before the word is sought. The page asks a record
+    // to name the attempt, never a key's name (INFRA-1303, D7: b-head-2 and j-head-1 of the batch
+    // at 9c3bd9df), and a key with no number, `"attempt": null`, names none (INFRA-1303's review
+    // round 3).
+    attempt: /\battempt\b["':=#\s]{0,4}[1-9]\d*(?!\.?\d)/i.test(
+      text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ")
+    ),
     job: text.includes(red.job),
     ...(red.log === ""
       ? { "failed log read": LOG_READ_FAILED.test(text) }

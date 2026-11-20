@@ -9,7 +9,8 @@ body: |-
   GitHub counts them for the pull request, never every check run at the commit: a required red the
   change made is a `REQUEST_CHANGES`, and one it did not make takes the head's one re-run first.
   It neither waits for nor re-runs a check the base does not require for the approval, and
-  approves over a red of it the change did not make. The worker prompt (`go/worker-common.md`)
-  gives the re-run to the role that holds the issue's phase alone.
+  approves over a red of it the change did not make. Every phase worker's prompt gives the re-run
+  to the tester in `testing`, the reviewer in `reviewing` or the implementer while it holds
+  `implementing`, and never to the merger.
 custom:
   Issue: pr3514

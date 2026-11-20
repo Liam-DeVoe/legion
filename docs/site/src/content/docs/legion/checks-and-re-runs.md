@@ -45,8 +45,9 @@ with on 2026-11-19; `gh api rate_limit` shows a token's own limit.
 `repos/<owner>/<repo>/commits/<head>/check-runs` answers every check run at the commit, a run
 started by hand with `workflow_dispatch` among them, and GitHub counts such a run for no pull
 request. Measured on 2026-11-11: at `9b728582e2762eb62b9c582d7d843df772b951ff` it answered 113
-check runs where the pull request's rollup held 57; the 56 left out belonged to two by-hand runs
-at that commit (dispatch://INFRA-3035).
+check runs, later 114, where the pull request's rollup held 57; the runs left out belonged to two
+by-hand runs at that commit (dispatch://INFRA-1303/comment/07122575-8262-4eda-8f60-6c7c74c82186
+and dispatch://INFRA-3035's spec).
 
 A by-hand run at the head of an open pull request names that pull request in its own
 `pull_requests` field all the same. Measured on 2026-11-19: each of the 30 latest

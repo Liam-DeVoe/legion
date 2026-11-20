@@ -14,6 +14,7 @@ import {
   longSkillBodies,
   misnamedSkills,
   oversizedFiles,
+  RED_AT_THE_HEAD,
   REPO_ROOT,
   retiredRerunProhibitions,
   skillLinks,
@@ -80,6 +81,61 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // history that may quote a retired rule on purpose.
 test("no staged skill, daemon prompt or docs page forbids the phase holder's re-run of a red at the head", () => {
   expect(retiredRerunProhibitions([staged, promptsRoot, docsSiteRoot])).toEqual([]);
+});
+
+// The docs site's page of what GitHub answers copies the red-at-the-head page's commands, the
+// page's `<o>/<r>` written there as `<owner>/<repo>` (INFRA-1303's review round 3). A command fixed
+// on one page and not the other leaves a reader of the docs running the old one, so each fenced
+// `bash` block, and each inline command of the ancestry rules, is held equal on the two. The
+// prose around them is not: the docs page states the facts GitHub answers, and the skill page the
+// rule a role follows on them.
+const CHECKS_AND_RERUNS = path.join(
+  REPO_ROOT,
+  "docs/site/src/content/docs/legion/checks-and-re-runs.md"
+);
+
+/** The body of each fenced `bash` block of `markdown`, in order. */
+function bashBlocks(markdown: string): string[] {
+  return [...markdown.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map(([, body = ""]) => body);
+}
+
+/** The inline `git` and `test` commands of the `## heading` section of `markdown`, sorted. */
+function ancestryCommands(markdown: string, heading: string): string[] {
+  const start = markdown.indexOf(`\n## ${heading}\n`);
+  if (start === -1) throw new Error(`no section "## ${heading}"`);
+  const end = markdown.indexOf("\n## ", start + 1);
+  return [
+    ...markdown
+      .slice(start, end === -1 ? undefined : end)
+      .replace(/\s+/g, " ")
+      .matchAll(/`((?:git|test) [^`]+)`/g),
+  ]
+    .map(([, command = ""]) => command)
+    .sort();
+}
+
+test("the docs page's commands are the red-at-the-head page's, `<o>/<r>` written as `<owner>/<repo>`", () => {
+  const page = readFileSync(RED_AT_THE_HEAD, "utf8").replaceAll("<o>/<r>", "<owner>/<repo>");
+  const docs = readFileSync(CHECKS_AND_RERUNS, "utf8");
+  const blocks = bashBlocks(page);
+  expect(blocks).not.toEqual([]);
+  expect(bashBlocks(docs)).toEqual(blocks);
+  const ancestry = ancestryCommands(
+    page,
+    "When the cause is another tree's, so no re-run clears it"
+  );
+  expect(ancestry).not.toEqual([]);
+  expect(ancestryCommands(docs, "Whether a branch carries a fix")).toEqual(ancestry);
+});
+
+// The commit endpoint's count at 9b728582 was read twice, 113 and later 114 (INFRA-1303's
+// comment 07122575 and INFRA-3035's spec); a page that gives one count as the only one misstates
+// a measurement a reader can repeat and get the other.
+test("the docs page gives both reads of the commit endpoint at 9b728582", () => {
+  const docs = readFileSync(CHECKS_AND_RERUNS, "utf8").replace(/\s+/g, " ");
+  expect(docs).toContain(
+    "it answered 113 check runs, later 114, where the pull request's rollup held 57"
+  );
 });
 
 // Reads by filesystem path stop at 300 lines, so a worker reaches a reference only through a

@@ -280,11 +280,14 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     ],
     3,
   ],
+  // A ban written to the reviewer by name. Written to a bare `you`, as "You re-run nothing, a
+  // required check red at the head included.", it reads as the merger's own rule does and passes,
+  // which is the cost of `REVIEWER_RERUNS_NOTHING`'s subject.
   [
-    'a ban of the reviewer\'s re-run of a required red, "You re-run nothing, a required check red at the head included."',
+    'a ban of the reviewer\'s re-run of a required red, "The reviewer re-runs nothing, a required check red at the head included."',
     [
       "The reviewer reads the head's checks on GitHub before it approves.",
-      "You re-run",
+      "The reviewer re-runs",
       "nothing, a required check red at the head included.",
     ],
     2,
@@ -316,8 +319,9 @@ test.each(retired)("%s is reported at the line it starts on", (_source, page, li
 // Each sentence the trees keep near the words of a retired one, which a pattern too wide would
 // refuse, in the words of the file that carries it and the text around it shortened. The sentences
 // no tree carries are the send-back limited by `only`, which the merge-queue pattern's lookahead
-// lets through, and the tester's re-run of a check the base does not require, which holds no
-// approval.
+// lets through, the tester's re-run of a check the base does not require, which holds no
+// approval, and the last three, which a docs page, a runbook and the merger's prompt could
+// plausibly say: the lane and reviewer patterns refused each until INFRA-1303's review round 3.
 const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'merge-gate.md\'s "A merge-group run is never re-run"',
@@ -545,6 +549,27 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
       "The reviewer approves over a red the change did not make on a check the base does not require.",
       "The tester re-runs a red on a check the base",
       "does not require once.",
+    ],
+  ],
+  [
+    'a docs page\'s "If no checks appear after a minute, re-run the workflow from the Actions tab."',
+    [
+      "After a push, GitHub starts the pull request's workflows on its own. If no",
+      "checks appear after a minute, re-run the workflow from the Actions tab.",
+    ],
+  ],
+  [
+    'a runbook\'s "When no job starts, rerun `apply.sh`"',
+    [
+      "The deploy runs one job for each region. When no job",
+      "starts, rerun `apply.sh` and read what it prints.",
+    ],
+  ],
+  [
+    'the merger\'s prompt, "You re-run nothing: …"',
+    [
+      "A red check at the head is not yours to act on. You re-run",
+      "nothing: the role that holds the issue's phase does.",
     ],
   ],
 ];

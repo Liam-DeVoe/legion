@@ -38,6 +38,12 @@ Before it presses the re-run, the role records on the Dispatch issue all eight o
 A record short of one of the eight is a record the next reader cannot act on, and the eight are
 counted as such.
 
+The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
+recorded as failed, with the error, and the role makes the re-run all the same. Where the log
+can be read and holds no line that states the failure, the record says that, naming the step and
+what the log did hold, rather than leaving the field empty or writing a line the log does not
+carry.
+
 **The run that holds the check must have ended first.** A lane can fail and read `completed` while
 other lanes of its workflow run still run. Until that run ends, `gh run view <run-id> --log-failed`
 answers `run <id> is still in progress; logs will be available when it is complete` and exits 1, and
@@ -47,13 +53,9 @@ presses the re-run only on `completed`. The run's own `completed` is no leave to
 counted set does not report that check `completed`. Until then it waits for the pull request's
 checks event, as *The act and the wait* says: that settlement comes once every check run of the head
 has ended. A re-run GitHub refuses all the same starts no attempt, so it spends nothing: the role
-records GitHub's answer and presses it again on the next wake.
-
-The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
-recorded as failed, with the error, and the role makes the re-run all the same. Where the log
-can be read and holds no line that states the failure, the record says that, naming the step and
-what the log did hold, rather than leaving the field empty or writing a line the log does not
-carry.
+records GitHub's answer, and on the next wake it reads the spend again before it presses, as before
+the first press, since a refusal while the run reads `completed` can mean another press already
+started an attempt.
 
 The record is a handoff record of the role's own phase, written with
 `dispatch handoff-write --issue <issue> --phase <implement|test|review> --body-file <file>` before the
@@ -64,8 +66,8 @@ reports the newest version. A re-run pressed before Dispatch has recorded the fi
 the failure, which is what this page exists to keep.
 
 The reviewer writes that handoff record before the re-run as every other role does, and repeats
-it in the body of the one review it submits at the end of the round, since a review cannot be
-written before the re-run. No file under `packages/daemon/internal/prompts/roles/` names that
+it in the body of the one review it submits at the end of the round, since the reviewer's one
+review ends its round. No file under `packages/daemon/internal/prompts/roles/` names that
 field. This page is where the implementer, the tester and the reviewer read it.
 
 ## Which red is the change's
@@ -157,16 +159,19 @@ job that runs past its `timeout-minutes`, so a lane that hangs again reads `canc
 An aggregate is resolved to its lane, as step 2 of *Which red is the change's* says, before the
 spend is judged. The reviewer's existing re-run of a cancelled or absent required check, which its
 role prompt gives, neither spends the head's re-run nor is spent by it, and an aggregate that reads
-`failure` over a lane GitHub cancelled is that cancelled lane.
+`failure` over a lane GitHub cancelled is that cancelled lane. A check the counted set does not
+list while a run at the head holds its failed job is unreported, not absent: it gets no re-run and
+is waited for, as *The act and the wait* says.
 A `gh run rerun <run-id> --failed` call pressed while a check of the counted set, resolved to its
 lane, is `failure` spends the head's re-run, whatever else that call clears.
 
 When the re-run is spent, the role re-runs nothing. It fails the round, or it requests changes,
-and it names the check.
+names the check, and says the head's one re-run is spent.
 
 **An empty counted set.** A rollup of `null`, which `gh pr checks` prints as no checks reported,
-means GitHub counts no context at that head. A check with no counted run there has no re-run to
-spend: there is nothing to re-run.
+read first in a turn, is waited on like any other absence, as *The act and the wait* says. A
+rollup of `null` read on the wake after that wait means GitHub counts no context at that head: a
+check with no counted run there has no re-run to spend, and there is nothing to re-run.
 
 **An unread counted set is not an empty one.** After a push the counted set can lag, so a role that
 reads it at once may find the failing check pending, queued, in progress or absent. The spend test
@@ -251,8 +256,8 @@ that holds the path or the commit, fetches first, since an unfetched clone answe
 ancestry question, and then reads it. For a file: `test -e <path>` before
 `git log --oneline <base>..origin/main -- <path>`, because an absent path and an unchanged path
 give the same empty log and no exit status tells them apart. For a commit: the exit status of
-`git merge-base --is-ancestor <sha> <head>`, where 1 is not carried and anything else is cannot
-compare, so fetch and read again. Two repositories of one fleet carry the same pull request
+`git merge-base --is-ancestor <sha> <head>`, where 0 is carried, 1 is not, and anything else is
+cannot compare, so fetch and read again. Two repositories of one fleet carry the same pull request
 numbers, so a key is no answer and a file read is a date.
 
 ## What the daemon does with a red

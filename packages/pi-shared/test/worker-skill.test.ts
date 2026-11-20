@@ -6,6 +6,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   brokenSharedDatabaseRules,
+  censusFaults,
+  FINDING_ASKS,
   MERGE_GATE,
   PR_BODY,
   RED_AT_THE_HEAD,
@@ -35,4 +37,8 @@ test("the re-run rule's page says who presses it, and the skill, the merge gate 
       prBody: readFileSync(PR_BODY, "utf8"),
     })
   ).toEqual([]);
+});
+
+test("the controller's census acts on a test re-run green only where no open issue tracks it", () => {
+  expect(censusFaults(readFileSync(FINDING_ASKS, "utf8"))).toEqual([]);
 });

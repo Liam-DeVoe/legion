@@ -342,6 +342,16 @@ function collapsedOffsets(markdown: string): number[] {
 }
 
 /**
+ * The lane nouns the patterns below enumerate as a re-run's subject or object: `lane`, `check`,
+ * `suite` and `job`. Every pattern builds its group from this one source, so a noun added here
+ * reaches each of them: `${LANE}` alone is the singular, `${LANE}s?` either number, and `${LANE}s`
+ * the plural. `run` is deliberately no such noun (`NO_LANE_IS_RERUN` says why).
+ */
+const LANE = "(?:lane|check|suite|job)";
+/** The word a lane noun may carry before it and still be one: `CI lane`, `required check`, `test suite`. */
+const LANE_QUALIFIER = String.raw`(?:CI\s+|required\s+|test\s+)?`;
+
+/**
  * The prohibition INFRA-1303 retired from the tester's evidence rule
  * (skills/legion-worker/references/pr-body.md): "no CI lane is rerun as evidence", and the same
  * sentence in the active voice, "never re-run a CI lane as evidence", which the tester's prompt
@@ -350,28 +360,37 @@ function collapsedOffsets(markdown: string): number[] {
  * still forbids the re-run of a lane costs the tree a whole lap for a failure its code never
  * caused.
  *
- * Three shapes, each with its subject enumerated rather than left open. The passive: a universal
- * negative (`no`, `neither`) over a lane noun — `lane`, `check`, `suite`, `job` — that is re-run.
- * The active: `never re-runs a …` over the same nouns behind a determiner. The imperative: `re-run
- * no …` over the same nouns, the shape cybermonklabs/legion#4447 brought back into pr-body.md as
- * "rerun no lane as evidence" in a forward merge that took main's side. `run` is deliberately
- * no such noun, which is what lets the sentences the change keeps pass: "A merge-group run is
- * never re-run" (merge-gate.md, pr-body.md and the implementer's prompt overlay) and "Where no
- * run at the head holds the failing check, the role re-runs nothing" (red-at-the-head.md). "No
- * role re-runs a group build." passes because a role is no lane, and "it gets no re-run", said of
- * a check that judges the pull request itself, because a re-run is no lane either. The active form
- * lets one limit through, a `for` naming the rows a ban covers: merge-gate.md's "never re-run a job
- * for a `cancelled` row that a newer run of the same name has superseded" keeps the re-run of the
- * red the page names, and passes. The guard reads every other word after the noun as the ban
- * itself: "Never re-run a check that failed." and "Never re-run a lane that failed on itself."
- * forbid the very re-run the page gives, and are refused. "Never re-run a check that the change
- * made red" keeps that re-run, yet the guard refuses it too, on purpose, for it to be reworded:
- * by the sentence's shape alone, a `that` clause which limits the ban cannot be told apart from
- * one which restates the retired ban. That is the cost of reading shape: the guard refuses some
- * correct text too.
+ * Three shapes, each with its subject enumerated rather than left open. The passive: a lane noun
+ * under a universal negative (`no`, `neither`) as the subject of the re-run, with nothing between
+ * the noun and `re-run` but auxiliaries (`is`, `gets`, `may be`, `is ever`), so the prohibition is
+ * on that lane. A negative that governs another verb passes, though a re-run follows it: "If no
+ * checks appear after a minute, re-run the workflow from the Actions tab." and "When no job starts,
+ * rerun `apply.sh`". The active: `never re-runs a …` over the same nouns behind a determiner. The
+ * imperative: `re-run no …` over the same nouns, the shape cybermonklabs/legion#4447 brought back
+ * into pr-body.md as "rerun no lane as evidence" in a forward merge that took main's side. `run` is
+ * deliberately no such noun, which is what lets the sentences the change keeps pass: "A
+ * merge-group run is never re-run" (merge-gate.md, pr-body.md and the implementer's prompt overlay)
+ * and "Where no run at the head holds the failing check, the role re-runs nothing"
+ * (red-at-the-head.md). "No role re-runs a group build." passes because a role is no lane, and "it
+ * gets no re-run", said of a check that judges the pull request itself, because a re-run is no lane
+ * either. The active form lets one limit through, a `for` naming the rows a ban covers:
+ * merge-gate.md's "never re-run a job for a `cancelled` row that a newer run of the same name has
+ * superseded" keeps the re-run of the red the page names, and passes. The guard reads every other
+ * word after the noun as the ban itself: "Never re-run a check that failed." and "Never re-run a
+ * lane that failed on itself." forbid the very re-run the page gives, and are refused. "Never
+ * re-run a check that the change made red" keeps that re-run, yet the guard refuses it too, on
+ * purpose, for it to be reworded: by the sentence's shape alone, a `that` clause which limits the
+ * ban cannot be told apart from one which restates the retired ban. That is the cost of reading
+ * shape: the guard refuses some correct text too.
  */
-const NO_LANE_IS_RERUN =
-  /\b(?:no|neither)\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,40}?\bre-?run\b|\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+(?:CI\s+|required\s+|test\s+)?(?:lane|check|suite|job)\b(?!\s+for\b)|\bre-?runs?\s+no\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b/i;
+const NO_LANE_IS_RERUN = new RegExp(
+  [
+    String.raw`\b(?:no|neither)\s+${LANE_QUALIFIER}${LANE}s?\s+(?:(?:is|are|was|were|gets?|got|be|been|ever|may|can|will|should|must)\s+){0,3}re-?run\b`,
+    String.raw`\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+${LANE_QUALIFIER}${LANE}\b(?!\s+for\b)`,
+    String.raw`\bre-?runs?\s+no\s+${LANE_QUALIFIER}${LANE}s?\b`,
+  ].join("|"),
+  "i"
+);
 
 /**
  * The prohibition INFRA-1303 retired from the tester's prompt part
@@ -385,8 +404,10 @@ const NO_LANE_IS_RERUN =
  * the prompt keeps in its place pass: "do not run in your own pod what CI runs for you", which
  * forbids the local run and says nothing of the re-run.
  */
-const RERUN_NONE_OF_THEM_YOURSELF =
-  /\bre-?runs?\s+(?:none|neither)\s+of\s+(?:them|these|those|the\s+(?:lanes|checks|suites|jobs))\b|\b(?:never|do not|don't)\s+re-?run\s+(?:any\s+of\s+)?(?:them|these|those)\b[^.]{0,40}?\byourself\b/i;
+const RERUN_NONE_OF_THEM_YOURSELF = new RegExp(
+  String.raw`\bre-?runs?\s+(?:none|neither)\s+of\s+(?:them|these|those|the\s+${LANE}s)\b|\b(?:never|do not|don't)\s+re-?run\s+(?:any\s+of\s+)?(?:them|these|those)\b[^.]{0,40}?\byourself\b`,
+  "i"
+);
 
 /**
  * The prohibition INFRA-1303 retired from the reviewer's thread rule
@@ -396,16 +417,21 @@ const RERUN_NONE_OF_THEM_YOURSELF =
  * (`skill://legion-worker/references/red-at-the-head.md`); what that file keeps is the reason a
  * re-run does not clear this particular red, never a ban on pressing one.
  *
- * The subject is enumerated — the reviewer, by name or as `you` — rather than left open, so the
- * sentences that deny the re-run to a role holding no phase still pass: "The merger, the
- * architect in `accepting` and an implementer that runs retro re-run nothing." and "A role that
- * is told of a red whose phase it does not hold re-runs nothing." (both red-at-the-head.md), and
- * "a re-run does not clear that red" (review-threads.md), which names no re-runner at all. The
- * gap is bounded by `[^.]{0,40}`, so a `the reviewer` of the sentence before a full stop cannot
- * reach across it to the `re-run nothing` of the next.
+ * The subject is the reviewer: by name (`the reviewer`, `your review`), or as `you` in a sentence
+ * that names a review bot before it, which is the retired claim's own shape. A bare `you` can be
+ * any role, so it passes: the natural way to tell the merger it re-runs nothing is "You re-run
+ * nothing: …". So do the sentences that deny the re-run to a role holding no phase: "The merger,
+ * the architect in `accepting` and an implementer that runs retro re-run nothing." and "A role
+ * that is told of a red whose phase it does not hold re-runs nothing." (both red-at-the-head.md),
+ * and "a re-run does not clear that red" (review-threads.md), which names no re-runner at all. The
+ * cost is a ban written to the reviewer as a bare `you` with no review bot in its sentence, which
+ * passes too. The gap is bounded by `[^.]{0,40}`, so a `the reviewer` of the sentence before a
+ * full stop cannot reach across it to the `re-run nothing` of the next, and the review bot is
+ * read in the same sentence as its `you`. The `you` is found through a lookbehind, which Bun's
+ * JavaScriptCore runs, so a hit names the line of the `you`.
  */
 const REVIEWER_RERUNS_NOTHING =
-  /\b(?:you|the reviewer|your review)\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b/i;
+  /\b(?:the reviewer|your review|you(?<=\breview\s+bot\b[^.]*\byou))\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b/i;
 
 /**
  * The prohibition INFRA-1303 retired from the Envoy skill (skills/envoy/SKILL.md): "A Legion
@@ -461,8 +487,10 @@ const FIRST_EJECTION_GOES_BACK =
  * re-run" (tester.md) and "the tester waits for none of them but the re-run …" (pr-body.md). So
  * does the implementer's "never wait for CI", which names no running lane and no `it`.
  */
-const NO_WAIT_FOR_A_RUNNING_LANE =
-  /\b(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,60}?\b(?:running|queued|in[\s_]progress)\b[^.]{0,60}?\bnever\s+waits?\s+for\s+(?:it|them)\b/i;
+const NO_WAIT_FOR_A_RUNNING_LANE = new RegExp(
+  String.raw`\b${LANE}s?\b[^.]{0,60}?\b(?:running|queued|in[\s_]progress)\b[^.]{0,60}?\bnever\s+waits?\s+for\s+(?:it|them)\b`,
+  "i"
+);
 
 /**
  * The grant INFRA-1303 retired from every text that offers the re-run as one choice among others to
@@ -541,8 +569,10 @@ const UNREQUIRED_CHECK_RERUN_FOR_THE_APPROVAL =
  * "The reviewer neither waits for a check the base does not require nor re-runs it for the
  * approval", whose check is no `required` one.
  */
-const REQUIRED_CHECK_NEITHER_WAITED_FOR_NOR_RERUN =
-  /\bneither\s+waits?\s+for\s+(?:a|an|any|the)\s+required\s+(?:checks?|lanes?|jobs?|suites?)\b[^.]*?\bnor\s+re-?runs?\b/i;
+const REQUIRED_CHECK_NEITHER_WAITED_FOR_NOR_RERUN = new RegExp(
+  String.raw`\bneither\s+waits?\s+for\s+(?:a|an|any|the)\s+required\s+${LANE}s?\b[^.]*?\bnor\s+re-?runs?\b`,
+  "i"
+);
 
 /** The ten rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
@@ -569,8 +599,8 @@ const RETIRED_RERUN_PROHIBITIONS = [
  * the rule is written over whole partitions rather than over the files it cleared: another file
  * that acquires one fails here too.
  *
- * Each prohibition is matched against the whitespace-collapsed text `prosePinFaults` reads, both
- * of them the same collapse, because these files are wrapped and a prohibition can cross a line
+ * Each prohibition is matched against the whitespace-collapsed text (`collapsed`), the collapse the
+ * prose pins read too, because these files are wrapped and a prohibition can cross a line
  * wherever it stands. The hit's offset is mapped back through `collapsedOffsets`, whose
  * per-character map is built once for a file that holds a hit and not at all for any other, to
  * the line a reader opens: the line where the prohibition's first word stands. One hit per
@@ -583,7 +613,7 @@ export function retiredRerunProhibitions(roots: readonly string[]): string[] {
       .filter((file) => file.endsWith(".md"))
       .flatMap((file) => {
         const markdown = readFileSync(file, "utf8");
-        const text = markdown.replace(/\s+/g, " ");
+        const text = collapsed(markdown);
         // A hit under the repository reads from its root (`skills/…`, `packages/daemon/…`); a hit
         // in a staged partition reads as that partition has it
         // (`legion-worker/references/pr-body.md`), since its root is a temporary directory.
@@ -624,34 +654,49 @@ export const MERGE_GATE = path.join(REPO_ROOT, "skills/legion-worker/references/
 /** The pull-request body reference, which points at that page twice. */
 export const PR_BODY = path.join(REPO_ROOT, "skills/legion-worker/references/pr-body.md");
 
+/** The controller's reference for a finding, which holds its census of a test a role re-ran green. */
+export const FINDING_ASKS = path.join(
+  REPO_ROOT,
+  "skills/legion-controller/references/finding-asks.md"
+);
+
 /**
- * What one skill file gets wrong about a rule pinned over the repository's own `skills/`: it
- * still carries a claim the rule retired (`retired.claim`, a pattern rather than its one wording,
- * so a reword of the same shape is caught too), or it has lost one of the sentences the rule
- * turns on (each of `required`, pinned whole and literally). A rule that retired no claim, whose
- * pins are all that hold it, passes `null` for `retired`. Each fault is one sentence naming
- * `file` and saying what a reader of the wrong text would believe. The text is
- * whitespace-normalized first, because these files are wrapped and a sentence of one crosses
- * lines.
+ * `markdown` with each run of whitespace made one space. The rules below read a skill file this
+ * way, because these files are wrapped and a sentence of one crosses lines.
  */
-function prosePinFaults(
+function collapsed(markdown: string): string {
+  return markdown.replace(/\s+/g, " ");
+}
+
+/**
+ * What one skill file gets wrong by still carrying a claim a rule over the repository's own
+ * `skills/` retired: `retired.claim` is a pattern rather than its one wording, so a reword of the
+ * same shape is caught too. The fault is one sentence naming `file`, quoting what matched and
+ * saying what a reader of the wrong text would believe.
+ */
+function retiredClaimFaults(
   file: string,
   markdown: string,
-  retired: { claim: RegExp; because: string } | null,
+  retired: { claim: RegExp; because: string }
+): string[] {
+  const found = collapsed(markdown).match(retired.claim);
+  return found === null ? [] : [`${file} says "${found[0]}": ${retired.because}`];
+}
+
+/**
+ * What one skill file gets wrong by having lost a sentence a rule over the repository's own
+ * `skills/` turns on: each of `required` is pinned whole and literally. Each fault is one sentence
+ * naming `file` and saying what a reader of the text without it would believe.
+ */
+function missingSentenceFaults(
+  file: string,
+  markdown: string,
   required: readonly { sentence: string; because: string }[]
 ): string[] {
-  const text = markdown.replace(/\s+/g, " ");
-  const faults: string[] = [];
-  if (retired !== null) {
-    const found = text.match(retired.claim);
-    if (found !== null) faults.push(`${file} says "${found[0]}": ${retired.because}`);
-  }
-  for (const { sentence, because } of required) {
-    if (!text.includes(sentence)) {
-      faults.push(`${file} does not say "${sentence}": ${because}`);
-    }
-  }
-  return faults;
+  const text = collapsed(markdown);
+  return required
+    .filter(({ sentence }) => !text.includes(sentence))
+    .map(({ sentence, because }) => `${file} does not say "${sentence}": ${because}`);
 }
 
 /**
@@ -677,21 +722,20 @@ const RELEASE_IS_NO_STOP = "A released pod is not a stop.";
 
 /** What `markdown` — skills/legion-worker/SKILL.md — gets wrong about a released pod. */
 export function retiredWorkerLifecycleClaims(markdown: string): string[] {
-  return prosePinFaults(
-    "skills/legion-worker/SKILL.md",
-    markdown,
-    {
+  const file = "skills/legion-worker/SKILL.md";
+  return [
+    ...retiredClaimFaults(file, markdown, {
       claim: ROLE_STAYS_LIVE,
       because:
         "a released pod ends every role process of it, so no role stays live for as long as its issue is in the workflow",
-    },
-    [
+    }),
+    ...missingSentenceFaults(file, markdown, [
       {
         sentence: RELEASE_IS_NO_STOP,
         because: "a worker told nothing about release reads its pod's deletion as a crash",
       },
-    ]
-  );
+    ]),
+  ];
 }
 
 /**
@@ -719,22 +763,21 @@ const NO_READ_THROUGH_SESSION_URL =
 
 /** What `markdown` — skills/legion-worker/references/tools.md — gets wrong about a shared database. */
 export function brokenSharedDatabaseRules(markdown: string): string[] {
-  return prosePinFaults(
-    "skills/legion-worker/references/tools.md",
-    markdown,
-    {
+  const file = "skills/legion-worker/references/tools.md";
+  return [
+    ...retiredClaimFaults(file, markdown, {
       claim: LOGIN_OWNS_DATABASES,
       because:
         "the skill cannot know what a deployment's session login may do, so it claims no power for that login",
-    },
-    [
+    }),
+    ...missingSentenceFaults(file, markdown, [
       {
         sentence: NO_READ_THROUGH_SESSION_URL,
         because:
           "a role told nothing about reads reaches the shared store through the write-capable session URL",
       },
-    ]
-  );
+    ]),
+  ];
 }
 
 /**
@@ -758,6 +801,41 @@ const PHASE_HOLDER_PRESSES_THE_RERUN =
  */
 const REVIEWER_LEAVES_AN_UNREQUIRED_CHECK =
   "The reviewer neither waits for a check the base does not require nor re-runs it for the approval, as `skill://legion-worker/references/merge-gate.md` says.";
+
+/**
+ * The sentence of `## One re-run belongs to the head` that tells an unreported check from an
+ * absent one, pinned whole and literally. The reviewer's existing re-run covers a required check
+ * that is cancelled or absent, the counted set holding no check of that name and no run at the
+ * head a failed job for it; a check whose failed job a run at the head holds while the counted set
+ * does not list it yet is unreported, and is waited for. A reader that lost the sentence takes a
+ * failed job it read off the run for an absent check, and re-runs it before GitHub counts it (the
+ * architect's ruling of 2026-11-20 on INFRA-1303's review round 3).
+ */
+const UNREPORTED_IS_NOT_ABSENT =
+  "A check the counted set does not list while a run at the head holds its failed job is unreported, not absent: it gets no re-run and is waited for, as *The act and the wait* says.";
+
+/**
+ * The exit statuses of the ancestry read, pinned literally. The sentence read "1 is not carried
+ * and anything else is cannot compare" until INFRA-1303's review round 3, so exit 0, carried, fell
+ * under "cannot compare" and a role following it never concluded the base carries the fix.
+ */
+const ANCESTRY_EXIT_STATUSES = "where 0 is carried, 1 is not, and anything else is cannot compare";
+
+/**
+ * Three sentences of the page made true while the spec was redrafted to match the head
+ * (INFRA-1303's architect, 2026-11-20), each pinned literally:
+ *
+ * - `REVIEW_ENDS_ITS_ROUND`: why the reviewer repeats its record in its review. It read "since a
+ *   review cannot be written before the re-run", which is false: GitHub takes a review at any time.
+ * - `SPENT_IS_SAID`: a role whose head's re-run is spent says so when it ends the round, the words
+ *   world `e`'s scorer reads (score.ts, RED_SPENT).
+ * - `NULL_ROLLUP_WAITS_FIRST`: a `null` rollup read first in a turn is an absence to wait on, as
+ *   every other first read is, and only the read on the wake after it is GitHub counting nothing.
+ */
+const REVIEW_ENDS_ITS_ROUND = "since the reviewer's one review ends its round";
+const SPENT_IS_SAID = "names the check, and says the head's one re-run is spent";
+const NULL_ROLLUP_WAITS_FIRST =
+  "read first in a turn, is waited on like any other absence, as *The act and the wait* says";
 
 /**
  * The sentences INFRA-1303's batch of record at 6a643564 showed a role misreading, each pinned
@@ -849,17 +927,16 @@ export function redAtTheHeadFaults(pages: {
   prBody: string;
 }): string[] {
   return [
-    ...prosePinFaults("skills/legion-worker/SKILL.md", pages.workerSkill, null, [
+    ...missingSentenceFaults("skills/legion-worker/SKILL.md", pages.workerSkill, [
       {
         sentence: SKILL_LINKS_THE_PAGE,
         because:
           "a reference the skill does not link is a page no role opens, and a read by path stops at 300 lines",
       },
     ]),
-    ...prosePinFaults(
+    ...missingSentenceFaults(
       "skills/legion-worker/references/red-at-the-head.md",
       pages.redAtTheHead,
-      null,
       [
         {
           sentence: PHASE_HOLDER_PRESSES_THE_RERUN,
@@ -870,6 +947,31 @@ export function redAtTheHeadFaults(pages: {
           sentence: REVIEWER_LEAVES_AN_UNREQUIRED_CHECK,
           because:
             "a reviewer reaches the limit on a check the base does not require only through this sentence",
+        },
+        {
+          sentence: REVIEW_ENDS_ITS_ROUND,
+          because:
+            "a reviewer told a review cannot be written before the re-run reads a rule GitHub does not hold",
+        },
+        {
+          sentence: SPENT_IS_SAID,
+          because:
+            "a role that ends the round on a spent re-run without saying so leaves the reader no reason",
+        },
+        {
+          sentence: NULL_ROLLUP_WAITS_FIRST,
+          because:
+            "a role that takes a null rollup on its first read for an empty set re-runs nothing and ends a wait that has not begun",
+        },
+        {
+          sentence: ANCESTRY_EXIT_STATUSES,
+          because:
+            "a page that leaves exit 0 under cannot compare has a role fetch and read again forever, never concluding the base carries the fix",
+        },
+        {
+          sentence: UNREPORTED_IS_NOT_ABSENT,
+          because:
+            "a reviewer that takes an unreported check for an absent one re-runs a failed job the counted set does not report",
         },
         {
           sentence: RECORD_BEFORE_THE_PRESS,
@@ -913,14 +1015,14 @@ export function redAtTheHeadFaults(pages: {
         },
       ]
     ),
-    ...prosePinFaults("skills/legion-worker/references/merge-gate.md", pages.mergeGate, null, [
+    ...missingSentenceFaults("skills/legion-worker/references/merge-gate.md", pages.mergeGate, [
       {
         sentence: MERGE_GATE_POINTS_AT_THE_PAGE,
         because:
           "a reviewer reading the merge gate reaches the re-run rule only through this pointer",
       },
     ]),
-    ...prosePinFaults("skills/legion-worker/references/pr-body.md", pages.prBody, null, [
+    ...missingSentenceFaults("skills/legion-worker/references/pr-body.md", pages.prBody, [
       {
         sentence: NEVER_WAITING_POINTS_AT_THE_PAGE,
         because:
@@ -952,4 +1054,31 @@ export function redAtTheHeadFaults(pages: {
       },
     ]),
   ];
+}
+
+/**
+ * The sentences of the controller's census of a test a role re-ran green, pinned whole and
+ * literally. The role has already commented the occurrence on an open issue that tracks the test
+ * (`skill://legion-worker/references/red-at-the-head.md`, *What becomes of the record*) and
+ * messages the controller after every green re-run, so the controller acts only where the role
+ * found no issue or one that reads `done`. A forward merge of main's guide cut lost that
+ * condition, and the text then asked the controller for a second comment on the occurrence
+ * (INFRA-1303's review round 3).
+ */
+const CONTROLLER_ACTS_ON_AN_UNTRACKED_TEST =
+  "You act on it when the role found no issue for the test, or found one that reads `done`. For a test an open issue tracks, the role has already commented the occurrence there, and you do nothing more.";
+
+/**
+ * What `markdown` — skills/legion-controller/references/finding-asks.md — gets wrong about a test
+ * a role re-ran green.
+ */
+export function censusFaults(markdown: string): string[] {
+  const file = "skills/legion-controller/references/finding-asks.md";
+  return missingSentenceFaults(file, markdown, [
+    {
+      sentence: CONTROLLER_ACTS_ON_AN_UNTRACKED_TEST,
+      because:
+        "a controller that acts on every green re-run comments the occurrence a second time on the issue the role already commented",
+    },
+  ]);
 }

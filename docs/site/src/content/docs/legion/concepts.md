@@ -399,9 +399,11 @@ Legion uses GitHub's own review mechanisms rather than labels:
   current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
-  names no pull request. A red is for the role that holds the issue's phase to act on — that role
-  re-runs a check that failed on itself once at that head, the implementer fixes code that is at
-  fault, and a check still running is waited for — and for GitHub to hold the merge over, under the
+  names no pull request. A red is for the role that holds the issue's phase to act on — the tester
+  in `testing`, the reviewer in `reviewing` or the implementer while it holds `implementing`
+  re-runs a check that failed on itself once at that head, the merger and an implementer that runs
+  retro re-run nothing, the implementer fixes code that is at fault, and a check still running is
+  waited for — and for GitHub to hold the merge over, under the
   base branch's own required checks, which Legion reads only to decide whether a conflicting head
   needs its merge forward now (below), and never re-implements. The reviewer reads the
   head's checks on GitHub itself before it approves, and the architect before it accepts; those

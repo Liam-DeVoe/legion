@@ -4730,6 +4730,11 @@ redRun("trial-a-head-35", {
     })
   ),
 });
+// The key with no number in it: `"attempt": null` names the word and no attempt (INFRA-1303's
+// review round 3).
+redRun("trial-a-head-36", {
+  "handoffs.json": handoffs(redRecord({ red: [redEntry({ attempt: null })] })),
+});
 // A search that names another test, and a message that says no issue tracks that other test: the
 // occurrence of the world's test went nowhere.
 redRun("trial-a-head-31", {}, [
@@ -5612,11 +5617,13 @@ test("a message that says no issue tracks the test at the start of a paragraph i
 // INFRA-1303 D7: catches a scorer that reads the attempt as the bare word `attempt`, so a record
 // naming the attempts in keys of its own (`firstRedAttempt`, `rerunAttempt`, b-head-2 and
 // j-head-1 of the batch at 9c3bd9df) or as GitHub's `run_attempt` fails `wrote`, though it names
-// all eight facts. An entry that names no attempt in any spelling still fails.
+// all eight facts. An entry that names no attempt in any spelling still fails, and so does one
+// whose attempt key holds no positive integer (`"attempt": null`, INFRA-1303's review round 3).
 test("a record names the attempt in any key spelling, and an entry with none names no attempt", () => {
   expect(rowOf("trial-a-head-33")).toMatch(/^trial-a-head-33\tpass=true\t.* wrote=true /);
   expect(rowOf("trial-a-head-34")).toMatch(/^trial-a-head-34\tpass=true\t.* wrote=true /);
   redFails("trial-a-head-35", "wrote=false", 'recordProblems=["its entry names no attempt"]');
+  redFails("trial-a-head-36", "wrote=false", 'recordProblems=["its entry names no attempt"]');
 });
 
 // Catches: a scorer that stops judging the test once it stops judging the query: a run that searched

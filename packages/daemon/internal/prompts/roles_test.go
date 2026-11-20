@@ -351,6 +351,10 @@ func TestTheMergerQueuesAFailedChecksEjectionOnceMore(t *testing.T) {
 		// (INFRA-1303's review round 2, R2-15).
 		"the first line `failed_checks requeue of <head sha>`",
 		"begins with the line `merge_conflict requeue of <head sha>`",
+		// The occurrence goes out with the record, before the requeue, since a green group build
+		// merges the pull request and no later step of the merger's runs (review round 3, finding 4).
+		"still before you queue it, run the three steps of that page's *What becomes of the record*",
+		"saying that the requeued build's outcome is not yet known",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)
@@ -650,10 +654,24 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// counted set, never the commit's check runs, which the red-at-the-head page refuses.
 		{"go/reviewer.md", "A required check red there that the change made is a `REQUEST_CHANGES` naming it, and one the change did not make takes the head's one re-run first"},
 		{"go/reviewer.md", "Second the head's checks as GitHub counts them for the pull request, the counted set"},
+		// The reviewer also reads heads past review, in `accepting`, `retro` or `merging`, where it
+		// holds no phase, so its re-run of a red holds only while it holds `reviewing` (INFRA-1303's
+		// review round 3).
+		{"go/reviewer.md", "and one the change did not make takes the head's one re-run first while you hold `reviewing`"},
+		// A check the counted set does not list yet while a run at the head holds its failed job is
+		// unreported, not absent: it is waited for and gets no re-run, while main's re-run of a
+		// cancelled or absent check stays (the architect's ruling of 2026-11-20 on INFRA-1303's
+		// review round 3).
+		{"go/reviewer.md", "One the counted set does not list yet while a run at the head holds its failed job is unreported, not absent, and gets no re-run: wait for it, as that page's *The act and the wait* says."},
 		// The worker part names the same record, and the implementer's overlay the same reading of
 		// whose red it is.
 		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},
 		{"go/implementer.md", "(*Which red is the change's* in `skill://legion-worker/references/red-at-the-head.md` decides which of the two it is, and a pass in your own pod does not move that)"},
+		// The worker part names the three roles that hold the re-run and the two that re-run nothing.
+		// It is composed into the merger's prompt too, and the forward merge of main's guide cut
+		// (5748720cd9) took main's line, which named no role and so gave the merger the re-run
+		// (INFRA-1303's review round 3).
+		{"go/worker-common.md", "That role is the tester in `testing`, the reviewer in `reviewing` or the implementer while it holds `implementing`; the merger and an implementer that runs retro re-run nothing"},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and `dispatch results` derives that result
 		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or

@@ -1411,7 +1411,9 @@ These arrive as messages on the Dispatch issue:
   the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs a check that
   failed on itself once at that head, after it records the failure in a handoff record of its
   phase (`dispatch handoff-write`), and no other role re-runs one; the implementer fixes code that
-  is at fault; and GitHub holds the merge under the base branch's own required checks.
+  is at fault; and GitHub holds the merge under the base branch's own required checks. The reviewer
+  neither waits for nor re-runs a check the base does not require, and approves over a red of it
+  that the change did not make.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a
