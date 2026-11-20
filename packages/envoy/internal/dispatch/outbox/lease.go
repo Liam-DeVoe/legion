@@ -48,12 +48,16 @@ const (
 	// before its deadline, or is cut there, leaves the first batch to start within takeOverWithin
 	// of the stop, or its reads to fail by their bound and the take-over to be logged late.
 	firstBatchShare = statusReadBound + firstBatchReadBound
-	// firstBatchReadBound bounds the reads each batch of a take-over's first scan makes before its
-	// first send (Deps.readsBy): its claim of events (readRows), the lookups of their destinations
-	// (resolveDestinations) and the reads of their roles' holders (resolveRoleHolders), a few
-	// statements, milliseconds on a healthy database, as one status read is. A first scan whose
-	// reads run past it logs the take-over late and scans again at once with no bound (scan); a
-	// role holder whose read it cut is backed off as any failed read of one is.
+	// firstBatchReadBound is the least the reads of a take-over's first scan before its first
+	// send are left (Deps.readsBy): its claim of events (readRows), the lookups of their
+	// destinations (resolveDestinations) and the reads of their roles' holders
+	// (resolveRoleHolders), a few statements, milliseconds on a healthy database, as one status
+	// read is. They run until the take-over's budget (tryHold), which leaves them at least this
+	// much after an ending that ran to its deadline and a status read that took its bound, and more
+	// after an ending that answered sooner, so a bound that ends them is one past which the first
+	// batch would start late anyway. A first scan whose reads run past it logs the take-over late
+	// and scans again at once with no bound (scan); a role holder whose read it cut is backed off
+	// as any failed read of one is.
 	firstBatchReadBound = 250 * time.Millisecond
 	// natsLossGrace is how long the holder's NATS connection may stay down before the holder gives
 	// the hold up, so that a process whose NATS works can publish instead. It is what
@@ -210,10 +214,12 @@ type Outbox struct {
 	// beside its first scan, which that ending holds none of (endLateSessions). Only Run's
 	// goroutine reads and writes it.
 	unended uuid.UUID
-	// firstReads is the bound of the reads of the next scan's batches (firstBatchReadBound),
-	// which publish sets for a take-over that replaced a lapsed row and scan takes and clears, so
-	// only the take-over's first scan is bounded. Only Run's goroutine reads and writes it.
-	firstReads time.Duration
+	// firstReadsBy is the take-over's budget, by which the reads of the next scan's batches must
+	// answer (Deps.readsBy): tryHold sets it when it ended the replaced holder's sessions by the
+	// ending's deadline, and scan takes and clears it, so only the take-over's first scan is
+	// bounded, and only when the take-over is not late already. Only Run's goroutine reads and
+	// writes it.
+	firstReadsBy time.Time
 }
 
 // New returns an outbox for deps, holding the publisher hold under the identity of its store's pool
@@ -469,6 +475,7 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 			if time.Now().Before(deadline) {
 				switch err := o.endReplacedSessions(ctx, hold, previous, deadline); {
 				case err == nil:
+					o.firstReadsBy = budget
 					return hold, 0
 				case errors.Is(err, context.DeadlineExceeded):
 					cause = lateCauseEndingTimedOut
@@ -594,9 +601,6 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 	turn, endTurn := context.WithCancelCause(ctx)
 	defer endTurn(nil)
 	var endings sync.WaitGroup
-	if _, replaced := hold.Replaced(); replaced {
-		o.firstReads = firstBatchReadBound
-	}
 	if previous := o.unended; previous != uuid.Nil {
 		o.unended = uuid.Nil
 		// A mark of its own (store.ForConcurrentWorker): the batches' statements mark ctx's, and
@@ -761,8 +765,8 @@ type scanEnd struct {
 func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 	deps := o.deps
 	deps.lanes = newLanes(o.signal)
-	bound := o.firstReads
-	o.firstReads = 0
+	by := o.firstReadsBy
+	o.firstReadsBy = time.Time{}
 	// The batches' own context: a hard stop ends the ones still running at once, while ctx, which
 	// is the process's, still tells a stop from an end of this scan's own making.
 	batches, endBatches := context.WithCancel(ctx)
@@ -782,8 +786,8 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 				inflight++
 				o.claims.Add(1)
 				batch := deps
-				if bound > 0 {
-					batch.readsBy = time.Now().Add(bound)
+				if !by.IsZero() {
+					batch.readsBy = by
 				}
 				go func() {
 					ran := ranBatch{}
@@ -823,8 +827,8 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 				// a failure of its own.
 				if batches.Err() == nil {
 					if errors.Is(ran.err, errReadsBound) {
-						// The take-over's first batch's reads did not answer within
-						// firstBatchReadBound, and wrote nothing: the take-over is late, by name,
+						// The take-over's first batch's reads did not answer within the
+						// take-over's budget, and wrote nothing: the take-over is late, by name,
 						// and the scan returns due, so serve scans again at once with no bound.
 						slog.Warn(lateTakeOverLine, "instance", o.instance, "cause", lateCauseFirstReads, "error", ran.err)
 						due = true

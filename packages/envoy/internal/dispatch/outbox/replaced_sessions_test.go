@@ -536,7 +536,8 @@ func (p *slowStatusPublisher) Connected() bool {
 // leaves firstBatchShare, the sum of serve's status read's bound (statusReadBound) and the first
 // scan's reads' (firstBatchReadBound). In the first row the status read and the first batch's
 // read of the events each take their bound less 100 ms, and the batch starts within the six
-// seconds on the database's clock. In the second the read takes 100 ms past its bound: the read
+// seconds on the database's clock. In the second the read takes 100 ms more than the whole share,
+// so it would end past the take-over's budget, which bounds the first scan's reads: the read
 // is cut, the take-over is logged late with that cause, and the next scan, with no bound,
 // publishes the event at once.
 func TestAStandbyWhoseEndingAnswersJustBeforeItsDeadlineStartsItsFirstBatchWithinTheSixSeconds(t *testing.T) {
@@ -546,7 +547,7 @@ func TestAStandbyWhoseEndingAnswersJustBeforeItsDeadlineStartsItsFirstBatchWithi
 		late     bool
 	}{
 		{"the status read and the first reads take nearly their bounds", firstBatchReadBound - 100*time.Millisecond, false},
-		{"the first reads run past their bound", firstBatchReadBound + 100*time.Millisecond, true},
+		{"the first reads run past the take-over's budget", firstBatchShare + 100*time.Millisecond, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			publisher := &slowStatusPublisher{hold: statusReadBound - 100*time.Millisecond}
