@@ -5,9 +5,11 @@ from `packages/pi-legion` as `bun scripts/skill-cuts/cli.ts <command> ...`.
 
 Every private value (the owners, the session stores, the gateway's address, the paths left out, the
 repositories copies map to) comes from the `--config <skill-cuts.json>` file at run time
-(`config.ts` says each key). No file here names one. The runner needs no GitHub token: it reads the
-skill texts from two directories, the cases from a file outside the repository, and the gateway key
-from `--key-file`, inside the process that uses it, never printed, logged or written.
+(`config.ts` says each key). No file here names one. The behaviour test needs no GitHub token: it
+reads the skill texts from two directories, the cases from a file outside the repository, the
+repositories a case's context needs from local clones (`--repos`), and the gateway key from
+`--key-file`, inside the process that uses it, never printed, logged or written. `copies`,
+`build-cases` and `build-tasks` read GitHub through `gh`, with GET calls only.
 
 ## Commands
 
@@ -110,6 +112,47 @@ A run loads the skill when the first assistant message reads it (Oh My Pi: `read
 verdict and the skill's verdict (`score.ts`), and writes `<out>/runs/<task>.jsonl` (one line per
 run), `<out>/captures/` and `<out>/summary.json`. A task whose run file is complete is skipped, so
 a run started again goes on from what was saved.
+
+### `copies`
+
+```
+bun scripts/skill-cuts/cli.ts copies --config <skill-cuts.json> --at <ISO instant> --out <dir> \
+  [--only <owner/repo>]... [--max-search-calls <n>]
+```
+
+The list of copies and loaders (`copies.ts`): every repository of the configured owners at its
+default branch's commit at `--at`, each `SKILL.md` outside the configured `excludePaths`, the
+names in two or more repositories, the manifests and installers that install each skill, the
+files outside a skill that name one (found by code search, paced under its limit), and the
+copy-prefix table the read count is attributed by. Its files are listed in `copies.ts`'s header.
+
+### `attribute`
+
+```
+bun scripts/skill-cuts/cli.ts attribute --config <skill-cuts.json> --count <count dir> \
+  --copies <copies out dir> --spans <spans.jsonl> --out <dir> [--changed <cut id>=<file>]...
+```
+
+The read count per skill copy (`attribute.ts`): it maps each read's copy path to a repository
+copy by the prefix table, counts each session once across the count's queries, marks ties and
+loaded skills, states each store's span, and ranks each cut's changed skills for the behaviour
+test.
+
+### `build-cases` and `build-tasks`
+
+```
+bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> \
+  --skill <name> --old <skill dir at the cut's base> --sessions <sessions.jsonl> --seed <n> \
+  --copies <copies out dir> --out <cases.jsonl> [--max <n>]
+bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
+  --skill <skill dir> --store <db>... --out <tasks.jsonl>
+```
+
+`build.ts`: `build-cases` pulls each candidate session through the config's `psqlCommand`, has
+the `case` reader propose the step the skill governs, and writes the cases `loadCases` reads,
+each with the evidence for its rebuilt context; `build-tasks` writes the need and near-miss tasks
+of a load test from the first requests of real sessions. The case file holds real session text,
+so it stays outside the repository.
 
 ## The request log
 

@@ -104,10 +104,13 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { type Arm, type ArmDirs, type ArmName, buildArm } from "./arms";
+import { main as attributeMain } from "./attribute";
+import { main as buildMain } from "./build";
 import { type Capture, captureBody, capturePaths, gatewayHints } from "./capture";
 import { type Case, loadCases, Thinking } from "./cases";
 import { loadConfig, type SkillCutsConfig } from "./config";
 import { ghSource, localSource } from "./context";
+import { main as copiesMain, spawnGh } from "./copies";
 import { main as countSqlMain } from "./countsql";
 import {
   BudgetSpent,
@@ -1581,6 +1584,10 @@ const USAGE = [
   "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>]",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> --profile <file> --out <dir> ...",
+  "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>]",
+  "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut id>=<file>]...",
+  "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --out <cases.jsonl> [--max <n>]",
+  "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>",
 ].join("\n");
 
 /** The command line. Returns the exit status (EXIT). */
@@ -1598,6 +1605,19 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         return countSqlMain(rest, io);
       case "load":
         return await loadCommand(rest, io);
+      case "copies":
+        return await copiesMain(rest, {
+          gh: spawnGh,
+          sleep: (ms) => Bun.sleep(ms),
+          now: () => Date.now(),
+          out: io.out,
+          err: io.err,
+        });
+      case "attribute":
+        return attributeMain(rest, io);
+      case "build-cases":
+      case "build-tasks":
+        return await buildMain(argv, { out: io.out, err: io.err, gh: spawnGh });
       default:
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
     }
