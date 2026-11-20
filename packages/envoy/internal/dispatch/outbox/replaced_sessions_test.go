@@ -174,6 +174,11 @@ func TestAStandbyThatReplacesALapsedHoldEndsThePreviousHoldersSessionsAlone(t *t
 // lapse, so what the take leaves of lapseToServe does not depend on how long the standby took to
 // start, which a loaded runner can stretch past lapseToServe. It must be called before the
 // standby's Run starts, and the call it returns after.
+//
+// The lapse and the wake are one statement, sent on the stopped process's pool. As two, a standby
+// that tried the hold between them took the lapsed row and ended the stopped process's sessions,
+// the one about to send the wake among them, which then answered 57P01 (CI run 44762226200). In
+// one, the take sees the lapse only once the statement has committed, the wake with it.
 func lapseOnceListening(t *testing.T, stopped *store.Store, standby *Outbox) func() {
 	t.Helper()
 	ctx := context.Background()
@@ -191,11 +196,10 @@ func lapseOnceListening(t *testing.T, stopped *store.Store, standby *Outbox) fun
 		case <-time.After(outboxHangGuard):
 			t.Fatalf("the standby's LISTEN connection did not come up within %v", outboxHangGuard)
 		}
-		if _, err := stopped.Pool.Exec(ctx, `update duty_holds set expires_at = now() where name = $1`, publisherHold); err != nil {
-			t.Fatalf("lapse the stopped process's row: %v", err)
-		}
-		if _, err := stopped.Pool.Exec(ctx, `select pg_notify($1, $2)`, duty.HoldReleasedChannel, publisherHold); err != nil {
-			t.Fatalf("wake the standby: %v", err)
+		if _, err := stopped.Pool.Exec(ctx, `
+			with lapsed as (update duty_holds set expires_at = now() where name = $1 returning name)
+			select pg_notify($2, name) from lapsed`, publisherHold, duty.HoldReleasedChannel); err != nil {
+			t.Fatalf("lapse the stopped process's row and wake the standby: %v", err)
 		}
 	}
 }
