@@ -11,10 +11,10 @@ import {
 } from "react";
 import { isAnchorMissing } from "../../api/client";
 import type { AnchorRefusal, ComposerAnchor, ComposerKind } from "../conversation/composer-model";
+import { composerNameOf, giveWay } from "../conversation/composer-names";
 import type { HeldSend } from "../conversation/held-sends";
 import { heldSends } from "../conversation/held-sends";
 import { unsentDraftsOf } from "../conversation/unsent-drafts";
-import { composerNameOf, giveWay } from "../conversation/useKeptDrafts";
 import type {
   RecordMarkPlacement,
   RemarkOutcome,

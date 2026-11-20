@@ -89,10 +89,9 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
-import { KeptWritesHost, PendingWritesHost } from "./features/writes/write-hosts";
-import "./features/writes/kinds";
 import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
+import { KeptWritesHost, loadWriteKinds, PendingWritesHost } from "./features/writes/write-hosts";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
 import {
@@ -1237,24 +1236,6 @@ function ChosenShell({ user }: { user: AuthenticatedUser }): ReactNode {
 }
 
 function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
-  // Signed in, and before any page's own write, the writes this person's reload interrupted go
-  // on under their keys, and their refusals show again (`write-store.ts`): a composer's send, a
-  // broadcast, a pin, a read mark and every other write. In an effect, not in the render: a
-  // resume sends requests and writes to the store, which a render must not do, and React runs the
-  // render twice under StrictMode. The store takes them up once, so a later effect does nothing.
-  //
-  // The kinds a kept write is restored by stay in the entry chunk (`features/writes/kinds.ts`,
-  // imported above), although they are about 22,000 of its bytes that no first paint draws.
-  // dispatch://INFRA-1109 tried that boundary - the registry behind an `import()` this effect
-  // awaited - and backed it out: the resume then ran after the shell's other mount effects
-  // instead of before them, and "the shell writes the browser's old pins one at a time"
-  // (`web/src/__tests__/responsive-shell.test.tsx`) caught the write it made a second time. A
-  // later tree that wants these bytes must move the resume's order, not only its download.
-  const queryClient = useQueryClient();
-  const login = user.login;
-  useEffect(() => {
-    writesOf(queryClient).resume(login);
-  }, [login, queryClient]);
   useEventFeed();
   // Every Markdown body the shell renders - routes, the margin, the inbox drawer, previews and
   // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`).
@@ -1387,6 +1368,25 @@ export function AuthGate(): ReactNode {
   useEffect(() => {
     if (!known) return;
     writesOf(queryClient).signedIn(login);
+    // Signed in, the writes this person's reload interrupted go on under their keys, and their
+    // refusals show again (`Writes.resume`): a composer's send, a broadcast, a pin, a read mark
+    // and every other write. In an effect, not in the render: a resume sends requests and writes
+    // to the store, which a render must not do, and React runs the render twice under StrictMode.
+    // The store takes them up once, so a later sign-in takes up nothing.
+    //
+    // A kept write is made again by its kind, and the kinds are a chunk of their own
+    // (`features/writes/kinds.ts`, `loadWriteKinds`): about 22,000 bytes that no first paint
+    // draws, out of the entry chunk every page parses first (dispatch://INFRA-1109, R13). So the
+    // take-up waits until that chunk is in, since a kept write whose kind no module has
+    // registered yet would be dropped unsent. A page's own write waits for the take-up in turn
+    // (`Writes.run`), at most for that one chunk, and then joins its line behind the writes the
+    // take-up put there. That order must not hang on the order React runs effects in: this tree
+    // once awaited the registry's `import()` in an effect of the shell, with nothing held, and the
+    // resume then ran after the shell's other mount effects, which "the shell writes the
+    // browser's old pins one at a time" (`web/src/__tests__/responsive-shell.test.tsx`) caught
+    // writing a pin a second time. The take-up also begins here, a commit before the shell is
+    // drawn (`shellFor`, below), so it has begun before any page exists to press a write.
+    if (login !== undefined) writesOf(queryClient).resume(login, loadWriteKinds);
     draftStoresSignedIn(queryClient, login);
     signIns.signedIn(login ?? null);
     if (login !== undefined) setShellFor(login);

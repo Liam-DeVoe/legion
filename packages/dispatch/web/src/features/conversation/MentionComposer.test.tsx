@@ -29,10 +29,10 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import type { ComposerOwner, DraftIntake, ReplyTarget } from "./composer-model";
+import { composerNameOf } from "./composer-names";
 import { MentionComposer, reconcileMentions, stoppedRoleOptions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 import { unsentDraftsOf } from "./unsent-drafts";
-import { composerNameOf } from "./useKeptDrafts";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
  *  key that names the press, sent as `Idempotency-Key`. */

@@ -109,6 +109,12 @@ export const lazyPieces = {
     "on an address that names a version (features/doc/ProofDocument.tsx), and which the " +
     "Inbox's chunk (features/inbox/inbox-chunk.ts) imports for its reading pane, so the Inbox's " +
     "list is what shows it ran",
+  "write-kinds":
+    "every kind of write the page makes (features/writes/kinds.ts), which the store's take-up " +
+    "of what a reload kept waits for (features/writes/write-store.ts, Writes.resume): the app " +
+    "asks for it as the person signs in (app.tsx) and the writes host once the page has drawn " +
+    "(features/writes/write-hosts.tsx), on every page, and nothing on the page draws from it, " +
+    "so the fetch is what shows it ran",
 } as const;
 
 export type LazyPiece = keyof typeof lazyPieces;

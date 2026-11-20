@@ -339,10 +339,13 @@ function openDocument(page: Page, text: string): readonly Locator[] {
 }
 
 /** The shell's two lists of writes, which the writes host fetches once the page has drawn and
- *  draws only while it holds a write (`web/src/features/writes/write-hosts.tsx`). */
+ *  draws only while it holds a write (`web/src/features/writes/write-hosts.tsx`), and every kind
+ *  of write, which the store's take-up of what a reload kept waits for and nothing draws from
+ *  (`web/src/features/writes/kinds.ts`). */
 const writesChunks = [
   /\/assets\/PendingWritesIndicator-[\w-]{8}\.js$/u,
   /\/assets\/KeptWrites-[\w-]{8}\.js$/u,
+  /\/assets\/kinds-[\w-]{8}\.js$/u,
 ] as const;
 
 /** Waits until the page has fetched a script whose path `chunk` matches: for a chunk the page
@@ -391,8 +394,10 @@ function visits(seed: Seeded): readonly Visit[] {
       // shell render for nothing. The shell's two lists of writes, the pending-writes indicator
       // and what a lapsed session keeps, are chunks the writes host fetches once the page has
       // drawn, on this page as on every other, and draws only while it holds a write, which no
-      // visit of this walk makes: no landmark shows them, so this visit waits for their fetches
-      // first, and they are this visit's rather than whichever visit happened to outlast them.
+      // visit of this walk makes; every kind of write is a chunk the app fetches as the person
+      // signs in, for the take-up of what a reload kept, and nothing on a page draws from it. No
+      // landmark shows the three, so this visit waits for their fetches first, and they are this
+      // visit's rather than whichever visit happened to outlast them.
       loads: [
         "inbox",
         "change-view",
@@ -404,6 +409,7 @@ function visits(seed: Seeded): readonly Visit[] {
         "shortcut-help",
         "pending-writes",
         "kept-writes",
+        "write-kinds",
       ],
       opens: async (page) => {
         for (const chunk of writesChunks) await fetchedChunk(page, chunk);

@@ -76,7 +76,7 @@ import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { otherTab, renderApp } from "./app-sign-out-fixture";
-import { composerNameOf } from "./features/conversation/useKeptDrafts";
+import { composerNameOf } from "./features/conversation/composer-names";
 import { threadReplySendKey } from "./features/conversation/usePhoneThread";
 import { issue } from "./features/margin/margin-fixture";
 import { buildIssuePath } from "./features/refs/routes";

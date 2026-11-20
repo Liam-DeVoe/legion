@@ -396,26 +396,68 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
   });
 });
 
-// A write pressed in this page before the app takes up what a reload kept is kept in the tab from
-// its press, so the take-up finds it there too: it is this page's write, already in its line, and
-// is not taken up a second time beside itself. The app's resume runs in the shell's effect, which
-// React runs after every effect of the shell's children, so a child's write on mount comes first.
-test("a write pressed before the take-up of a reload's writes is not taken up beside itself", async () => {
+// The app's take-up of what a reload kept waits for every kind of write, which is a chunk of its
+// own (`kinds.ts`), and the store holds every write pressed meanwhile, whatever order the page's
+// effects pressed it in: kept in the tab from its press, it sends nothing while the take-up
+// waits, and goes out as soon as the take-up is done, in its line behind the writes the take-up
+// put there, in press order. The take-up finds it kept in the tab too: it is this page's write,
+// already in the store, and is not taken up a second time beside itself.
+test("a write pressed before the take-up of a reload's writes waits for it, then goes behind the kept writes in press order, and is not taken up beside itself", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
-    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    const bodies: unknown[] = [];
+    const send = spyOn(api, "send").mockImplementation(async (request) => {
+      bodies.push(request.body);
+      // The page before the reload never hears back; the reloaded one hears at once.
+      if (bodies.length === 1) await Promise.withResolvers<never>().promise;
+      return null as never;
+    });
+    const press = (writes: Writes, status: string) =>
+      writes.run({
+        detail: null,
+        kind: plainWrite,
+        label: `CORE-1 set to ${status}`,
+        presentation: "indicator",
+        request: { ...patch, body: { status } },
+        target: "issue:CORE-1",
+      });
+    const before = new Writes(signedIn(), tab.page(), memoryFiles());
     try {
-      const hang = () => Promise.withResolvers<never>().promise;
-      void statusWrite(writes, hang).catch(() => {});
+      void press(before, "done").catch(() => {});
       await settle();
-      const key = row(writes)?.key ?? "";
-      expect(tab.kept(key)).toMatchObject({ login: "alice", state: { status: "sending" } });
+      const keptKey = row(before)?.key ?? "";
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
 
-      writes.resume("alice");
+      const kinds = Promise.withResolvers<void>();
+      after.resume("alice", () => kinds.promise);
+      const pressed = [press(after, "todo"), press(after, "backlog")];
       await settle();
-      expect(writes.rows().map((write) => write.key)).toEqual([key]);
-      expect(tab.kept(key)).toMatchObject({ login: "alice" });
+      expect(bodies).toEqual([{ status: "done" }]);
+      expect(after.rows().map((write) => [write.label, write.status])).toEqual([
+        ["CORE-1 set to todo", "queued"],
+        ["CORE-1 set to backlog", "queued"],
+      ]);
+      const heldKeys = after.rows().map((write) => write.key);
+      for (const key of heldKeys) {
+        expect(tab.kept(key)).toMatchObject({ login: "alice", state: { status: "queued" } });
+      }
+
+      kinds.resolve();
+      await settle();
+      expect(bodies).toEqual([
+        { status: "done" },
+        { status: "done" },
+        { status: "todo" },
+        { status: "backlog" },
+      ]);
+      expect(send.mock.calls.slice(1).map(([, bounds]) => bounds?.key)).toEqual([
+        keptKey,
+        ...heldKeys,
+      ]);
+      expect(await Promise.all(pressed)).toEqual([null, null]);
+      expect(after.rows()).toEqual([]);
     } finally {
+      send.mockRestore();
       tab.close();
     }
   });
@@ -1097,6 +1139,29 @@ test("a store tells each kind of itself and its client once, as it is made", () 
     expect(store).toBe(writes);
   } finally {
     told = undefined;
+    tab.close();
+  }
+});
+
+// The app's kinds come in a chunk of their own, after its store was made (`kinds.ts`), and a kind
+// keeps of a client from its store's start: a kind defined after a store is opened on it then,
+// once, as a store opens every kind defined before it. Any other store still alive in this file
+// is opened too, so the row reads the calls made with its own.
+test("a kind defined after a store was made is told once of that store and its client", () => {
+  const tab = keptTab();
+  try {
+    const client = signedIn();
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    const opened = jest.fn();
+    defineWriteKind<null>({
+      kept: (value): value is null => value === null,
+      // New on each run, since a name defined before opens nothing: `--rerun-each` runs the row
+      // again in the same process.
+      name: `test-defined-after-the-store-${crypto.randomUUID()}`,
+      opened,
+    });
+    expect(opened.mock.calls.filter(([, store]) => store === writes)).toEqual([[client, writes]]);
+  } finally {
     tab.close();
   }
 });
