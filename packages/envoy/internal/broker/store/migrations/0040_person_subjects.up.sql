@@ -97,9 +97,12 @@
 -- 0039). The migrator now records each file's identity and refuses a version recorded under
 -- another file (pgmigrate's identity check), but a database migrated before that check arrived
 -- holds no identity to compare, so it takes those numbers for the base's files and fails at this
--- file's first statement with SQLSTATE 42701 (the column already exists). This header was also
--- edited in place after the check arrived, so a database that ran this file as 0040 is refused at
--- its next boot. Reset each of them the same way, with its Dispatch database.
+-- file's first statement with SQLSTATE 42701 (the column already exists); reset it the same way,
+-- with its Dispatch database. This header was edited in place after the check arrived, twice, and
+-- the two lines below name the texts before each edit, so a database that ran this file as 0040
+-- under either of them still boots.
+-- replaces: 0040_person_subjects.up.sql sha256:8d26b84bea0befd98e827c12b1cb98c19c1b6a70c9cefed0c52a4c487d024c15
+-- replaces: 0040_person_subjects.up.sql sha256:742a57586dd47192feef5eec8270b09c41b46a3031ee99485627cdf2ccad771e
 alter table person_signins
   add column issuer text,
   add column subject text,
