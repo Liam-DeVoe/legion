@@ -11,6 +11,7 @@ package grapherase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -178,13 +179,22 @@ func ParseNode(value string) (kind, id string, err error) {
 // what cmd/dispatch passes; a test passes a shorter one. An error there comes back beside the
 // Erasure, which is then Applied: the erase stands, and what the sweep could not do is the
 // error's to say.
-func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStoreBound time.Duration) (*Erasure, error) {
+//
+// serverURL is the dashboard origin the server's writers cut a block's excerpt around
+// (refs.BlockExcerpt): a redacted excerpt the run stores in a block's place is cut with it, so it
+// is the excerpt the writer would store. cmd/dispatch reads it as the server does. An empty one is
+// refused, as rebuild-refs refuses one: the run would store an excerpt no writer of the deployment
+// cut.
+func Erase(ctx context.Context, databaseURL, serverURL, kind, id, confirm string, treeStoreBound time.Duration) (*Erasure, error) {
 	if kind == schemanodes.KindSupertag || kind == schemanodes.KindAttribute {
 		return nil, fmt.Errorf("the erase refuses %s:%s: a type node is data the block schema seeds, and no command deletes it", kind, id)
 	}
 	if kind == graphstore.KindRole || kind == graphstore.KindPage || kind == graphstore.KindSession {
 		return nil, fmt.Errorf("the erase refuses %s:%s: a %s node holds no text anybody wrote, so no erasure is owed for it, "+
 			"and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close", kind, id, kind)
+	}
+	if strings.TrimSpace(serverURL) == "" {
+		return nil, errors.New("dispatch.server_url is required to cut a redacted excerpt as the server's writers cut it; refusing to store an excerpt no writer stored")
 	}
 	confirm = strings.TrimPrefix(strings.TrimSpace(confirm), "sha256:")
 	conn, err := connect(ctx, databaseURL)
@@ -205,12 +215,12 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 			return nil, fmt.Errorf("begin: %w", err)
 		}
 		defer tx.Rollback(context.Background())
-		erasure = &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC()}
+		erasure = &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC(), serverURL: serverURL}
 		if read, err = erasure.read(ctx, tx); err != nil {
 			return nil, err
 		}
 	} else {
-		if tx, erasure, read, err = lockInStoreOrder(ctx, conn, kind, id); err != nil {
+		if tx, erasure, read, err = lockInStoreOrder(ctx, conn, serverURL, kind, id); err != nil {
 			return nil, err
 		}
 		defer tx.Rollback(context.Background())

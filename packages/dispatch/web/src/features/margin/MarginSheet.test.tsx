@@ -1,11 +1,18 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Artifact, Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { MarginSheet } from "./MarginSheet";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const specArtifact: Artifact = {
   created_at: "2026-09-10T00:00:00Z",
@@ -78,6 +85,8 @@ test("an issue margin offers Comments and Pinned, Comments first", () => {
           savingCommentEditId: undefined,
           hoveredItemId: undefined,
           hoveredMarkId: undefined,
+          landedCard: undefined,
+          routeMarkedItemId: undefined,
           selectedItemId: undefined,
           showResolved: false,
         },
@@ -185,6 +194,8 @@ test("a document owner shows the Comments tab and comment composer only", () => 
             savingCommentEditId: undefined,
             hoveredItemId: undefined,
             hoveredMarkId: undefined,
+            landedCard: undefined,
+            routeMarkedItemId: undefined,
             selectedItemId: undefined,
             showResolved: false,
           },
@@ -320,6 +331,8 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
               savingCommentEditId: undefined,
               hoveredItemId: undefined,
               hoveredMarkId: undefined,
+              landedCard: undefined,
+              routeMarkedItemId: undefined,
               selectedItemId: root.id,
               showResolved: false,
             },
@@ -482,6 +495,8 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
               savingCommentEditId: undefined,
               hoveredItemId: undefined,
               hoveredMarkId: undefined,
+              landedCard: undefined,
+              routeMarkedItemId: undefined,
               selectedItemId: undefined,
               showResolved: false,
             },

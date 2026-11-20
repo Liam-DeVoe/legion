@@ -359,13 +359,14 @@ type BlockIndexing struct {
 // a new, changed or restored block takes the version its text stands since (textSince) - this
 // version, or where the pass covers versions no pass indexed, the earliest of them from which its
 // text stood - dated that version's time, and its text is recorded in document_block_texts at that
-// version; its excerpt is its text cut to BlockExcerptRunes, the excerpt a document's mention has
-// shown since migration 0092. A block the version no longer holds is deleted, recorded there with
-// no text, its node's state stated gone, and the edges at it stop resolving until a version holds
-// its id again. A block the version holds keeps the state and the visibility its node has, unless
-// it was gone, when it comes back live (blockNode restates every node it writes). The windows the
-// version's blocks are embedded in are not planned here and not written by this index: the row it
-// records marks the document owed them, and the block-index tick's window arm writes them (Queue,
+// version; its excerpt is its text as BlockExcerpt cuts it, the excerpt a document's mention has
+// shown since migration 0092, serverURL being the deployment whose dashboard URLs that excerpt is
+// cut around. A block the version no longer holds is deleted, recorded there with no text, its
+// node's state stated gone, and the edges at it stop resolving until a version holds its id again.
+// A block the version holds keeps the state and the visibility its node has, unless it was gone,
+// when it comes back live (blockNode restates every node it writes). The windows the version's
+// blocks are embedded in are not planned here and not written by this index: the row it records
+// marks the document owed them, and the block-index tick's window arm writes them (Queue,
 // DocumentsOwedWindows).
 //
 // pointers are the version's `block[]` values (pmdoc.BlockPointers, which lists none of a typed
@@ -450,6 +451,7 @@ func PlanBlocks(
 	pointers []Pointer,
 	typed TypedFacts,
 	beside graphstore.Uncaused,
+	serverURL string,
 ) (BlockIndexing, error) {
 	indexing := BlockIndexing{artifactID: artifactID, refKey: record.RefKey, version: version, versionAt: versionAt, held: index}
 	// The fence decides first, so a pass that loses it plans nothing and writes nothing of its own.
@@ -512,7 +514,7 @@ func PlanBlocks(
 		}
 		held[block.ID] = storedBlock{sum: hexSum, joined: joined, node: namedNode(refKey, block.ID, fits[position])}
 		indexing.ids, indexing.types, indexing.sums = append(indexing.ids, block.ID), append(indexing.types, block.Type), append(indexing.sums, hexSum)
-		indexing.excerpts = append(indexing.excerpts, text.HeadRunes(body, BlockExcerptRunes))
+		indexing.excerpts = append(indexing.excerpts, BlockExcerpt(body, serverURL))
 		indexing.textIDs, indexing.texts = append(indexing.textIDs, block.ID), append(indexing.texts, &body)
 	}
 	// In id order, so the rows this pass writes and the facts it states come in an order a
@@ -1059,7 +1061,8 @@ func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 // the seed, and a test that indexes a version itself. It answers the targets the indexing moves,
 // the cited blocks among them, whether it won the revision fence, and what it states in the node
 // and tuple store, for the caller to append under its cause (graphstore.Caused). typed is what
-// the typed-node pass read of the version (DecisionFacts), as PlanBlocks takes it.
+// the typed-node pass read of the version (DecisionFacts), and serverURL the deployment whose
+// dashboard URLs each block's excerpt is cut around, as PlanBlocks takes them.
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1071,6 +1074,7 @@ func IndexBlocks(
 	located []text.Located,
 	pointers []Pointer,
 	typed TypedFacts,
+	serverURL string,
 ) ([]Target, bool, graphstore.Uncaused, error) {
 	index, err := ReadBlockIndex(ctx, tx, artifactID)
 	if err != nil {
@@ -1084,7 +1088,7 @@ func IndexBlocks(
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
 		return nil, false, graphstore.Uncaused{}, fmt.Errorf("read the transaction's time: %w", err)
 	}
-	indexing, err := PlanBlocks(ctx, tx, index, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers, typed, graphstore.Uncaused{})
+	indexing, err := PlanBlocks(ctx, tx, index, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers, typed, graphstore.Uncaused{}, serverURL)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}

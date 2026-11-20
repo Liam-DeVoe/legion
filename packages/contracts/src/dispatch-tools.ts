@@ -1,3 +1,4 @@
+import type { paths } from "./dispatch-api.generated";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
@@ -7,6 +8,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { SEARCH_RESULT_KINDS } from "./dispatch-api-search";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -629,8 +631,8 @@ function resultProblem(value: unknown): string | undefined {
 
 /**
  * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units. The
- * query rides in the URL beside `project`, `limit` and `offset`, so this refusal and `project`'s
- * key rule are what keep the tool's URL under the load balancer's limit;
+ * query rides in the URL beside `kind`, `project`, `limit` and `offset`, so this refusal and
+ * `project`'s key rule are what keep the tool's URL under the load balancer's limit;
  * `packages/contracts/AGENTS.md` "Search limits" owns that budget. Generated into Go as
  * `contracts.SearchQueryMax`, which the server enforces.
  */
@@ -647,6 +649,29 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
  * `contracts.SearchKindDepth`, where the server cuts each kind's list.
  */
 export const SEARCH_KIND_DEPTH = 100;
+
+/** One value of the repeated `kind` parameter, read off the route table itself rather than
+ *  written out a second time: the parameter is optional, so both the parameter object and
+ *  `kind` are unwrapped before the array's element is taken. It is read from
+ *  `GET /api/v1/search/results`, the route that declares every member the handler reads;
+ *  `GET /api/v1/search` reads `kind` too and declares it nowhere, as it does the other five a
+ *  build released before them does not serve (`SEARCH_MEMBERS_EVERY_BUILD_READS`). */
+type SearchKindParameter = NonNullable<
+  NonNullable<paths["/api/v1/search/results"]["get"]["parameters"]["query"]>["kind"]
+>[number];
+
+/**
+ * The kinds `GET /api/v1/search` ranks, which its repeated `kind` parameter names: the five the
+ * search index holds, in the order the answer's fusion lists them. A party, a component or any
+ * other node is read from its own route, so the search refuses a kind outside these rather than
+ * answering an empty page.
+ *
+ * It is the list a result's own kind is read as (`SEARCH_RESULT_KINDS` in
+ * `dispatch-api-search.ts`), named once: what the route ranks and what it answers with are one
+ * vocabulary. The `satisfies` is the route table's own, so a kind the CLI offers that the route
+ * would refuse does not compile.
+ */
+export const SEARCH_KINDS = SEARCH_RESULT_KINDS satisfies readonly SearchKindParameter[];
 
 /** A whole project key, as the Dispatch server creates them, generated into Go as
  *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */
@@ -1202,7 +1227,7 @@ export const dispatchToolSpecs = [
     description:
       "Add review feedback to an issue or project document quote, or reply to a question asked with dispatch ask. " +
       "Do not use it for an exact replacement; use " +
-      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
+      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. A party reference in the body delivers this comment to that party: dispatch://agent/<session id> for an agent session, dispatch://role/<token> for a role. This tool sends no delivery mode, so Dispatch steers that party. Write that reference in backticks or in a code block to name nobody. dispatch://person/<login> names a person, and Dispatch delivers nothing to a person. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1700,7 +1725,10 @@ export const dispatchToolSpecs = [
       "Record one result of one check of an issue's Verification document, or retract a result " +
       "recorded before. A record prints the pull-request body line it implies. Write that line " +
       "into the pull-request body unchanged: it is the one grammar every writer uses, and it " +
-      "carries no link to Dispatch. " +
+      "carries no link to Dispatch, no private host and no issue key: Dispatch keeps only words " +
+      "of letters, digits and plain punctuation, and of those leaves out every word that holds " +
+      "`://`, a private or Dispatch host, or an issue key of one of its projects; the record keeps " +
+      "the whole reading. --dry-run prints the line the record would print, and records nothing. " +
       "Name the check by its block id. Where two Verification documents in reach hold that id, " +
       "name it by its canonical reference (dispatch://KEY/artifact/verification-md#b-<id>). " +
       "409 CHECK_AMBIGUOUS names both documents. An id no Verification document of the issue " +
@@ -1981,7 +2009,9 @@ export const dispatchToolSpecs = [
       `The answer names how many results match; offset pages through them, and each kind lists at most its best ${SEARCH_KIND_DEPTH}, ` +
       "so narrow the query or name a project to reach the rest. Paging is exact only while the " +
       "corpus holds still: content added, changed, or removed between two offsets can shift rows " +
-      "across a page boundary, so one hit can come back twice and another never.",
+      "across a page boundary, so one hit can come back twice and another never. " +
+      `kind narrows the search to the kinds it names (${SEARCH_KINDS.join(", ")}), which are then ` +
+      "the only kinds ranked, counted and paged; with no kind named every kind is searched.",
     arguments: (z) => ({
       query: z
         .string({
@@ -1991,6 +2021,10 @@ export const dispatchToolSpecs = [
         })
         .describe(`Keyword, phrase, or websearch expression; 2 to ${SEARCH_QUERY_MAX} characters.`),
       project: z.string().describe("Optional project key to search within.").optional(),
+      kind: z
+        .array(z.enum(SEARCH_KINDS), { min: 1, max: SEARCH_KINDS.length })
+        .describe(`Kinds to search, any of ${SEARCH_KINDS.join(", ")}; every kind when absent.`)
+        .optional(),
       limit: z
         .number({ int: true, min: 1, max: 50 })
         .describe("Maximum results, 1-50; default 20.")

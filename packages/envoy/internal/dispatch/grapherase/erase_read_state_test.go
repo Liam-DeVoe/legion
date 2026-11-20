@@ -152,7 +152,7 @@ func TestTheEraseOfAnItemTakesTheReadStateRowsThatNameIt(t *testing.T) {
 	}
 	const refusal = "its row stands and holds the node's text, which the erase does not reach"
 	for _, confirm := range []string{"", "any digest"} {
-		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), graphstore.KindAsk, ask, confirm, time.Millisecond)
+		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), eraseServerURL, graphstore.KindAsk, ask, confirm, time.Millisecond)
 		if err == nil || !strings.Contains(err.Error(), "refuses "+graphstore.KindAsk+":"+ask+": ") || !strings.Contains(err.Error(), refusal) {
 			t.Errorf("erase --node ask:%s (confirm %q) answered %v (applied %t), want the refusal %q",
 				ask, confirm, err, erasure != nil && erasure.Applied, refusal)

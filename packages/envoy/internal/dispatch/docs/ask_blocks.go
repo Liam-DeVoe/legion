@@ -1104,8 +1104,9 @@ func (s *Service) reconcileAskBlocks(
 			// The new ask's parts, beside its own references: both named by the ask.opened, and
 			// read through the one reader. The parts are planned here and written after the
 			// row's own insert, which this transaction has queued (createAskBlock), since every
-			// part row names its ask.
-			changes, parts, indexed, err := planAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, changes, &opening.scope)
+			// part row names its ask, and after the question's reconciliation just queued
+			// (questionReconciled).
+			changes, parts, indexed, err := planAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, true, changes, &opening.scope)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
@@ -1170,10 +1171,12 @@ func (s *Service) reconcileAskBlocks(
 			}
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved. The parts are written
-			// after the restoring update, which this transaction has queued.
+			// after the restoring update, which this transaction has queued. The restoration holds
+			// the parts alone, so their step reconciles the question's references after them too
+			// and settles the forms queue there (questionReconciled false).
 			restoredAt := refs.AskPartsAt(ask)
 			changes, parts, indexed, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL),
-				ask, restoredAt, model.ReferenceChanges{}, nil)
+				ask, restoredAt, false, model.ReferenceChanges{}, nil)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
 			}
@@ -1241,8 +1244,9 @@ func (s *Service) reconcileAskBlocks(
 			// The block's wording is now the row's: its parts are that wording too, read through
 			// the one reader, and the ask.edited names what they moved beside the ask's own
 			// references. The parts are written after the queued update that gives the row that
-			// wording, which the row this plans from carries already (edited_at).
-			changes, parts, indexed, err := planAskPartsCounted(ctx, tx, reader, ask, editedAt, changes, nil)
+			// wording, which the row this plans from carries already (edited_at), and after the
+			// question's reconciliation queued above (questionReconciled).
+			changes, parts, indexed, err := planAskPartsCounted(ctx, tx, reader, ask, editedAt, true, changes, nil)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of reconciled ask %s: %w", ask.ID, err)
 			}

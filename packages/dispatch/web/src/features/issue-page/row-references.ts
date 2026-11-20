@@ -1,6 +1,8 @@
+import { isPartyRoute } from "../refs/party-references";
 import {
   buildReferencePath,
   type DispatchReferenceRoute,
+  type PartyRoute,
   parseNodeReference,
   shortForm,
 } from "../refs/routes";
@@ -31,14 +33,22 @@ const TITLE_MAX = 60;
  * the grammar the web shares with the server, name no issue, and are drawn as the words they
  * are. A short reference the read answered ambiguous links nothing either and is drawn as
  * written (`useKnownAmbiguousReferences`).
+ *
+ * A party - an agent's session, a role or a person - is neither asked for nor linked. The graph
+ * holds no node for one, so the batched read refuses the whole request that names one
+ * (`INVALID_REFERENCE`), and a row has no other read to name it by: it is drawn as its writer
+ * wrote it, which is how every renderer draws a party whose name has not resolved.
  */
+
+/** What a row links: anything the graph holds a node for, so never a party. */
+type RowRoute = Exclude<DispatchReferenceRoute, PartyRoute>;
 
 /** One reference in a text, where it stands and what it names. */
 export interface RowReference {
   readonly end: number;
   /** The reference as the batched read is asked for it. */
   readonly reference: string;
-  readonly route: DispatchReferenceRoute;
+  readonly route: RowRoute;
   readonly start: number;
 }
 
@@ -56,7 +66,9 @@ export function citedReferences(text: string): string[] {
   const { needs, references } = readTextReferences(text);
   const cited = new Set<string>();
   for (const found of references) {
-    if (found.form === "address" && found.reference !== undefined) cited.add(found.reference);
+    if (found.form !== "address" || found.reference === undefined) continue;
+    if (found.route !== undefined && isPartyRoute(found.route)) continue;
+    cited.add(found.reference);
   }
   for (const key of needs.keys) cited.add(`dispatch://${key}`);
   return [...cited];
@@ -79,12 +91,12 @@ export function knownIssueKeys(names: ReadonlyMap<string, string>): string[] {
 const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
 
 /** The references of `text` a row links, in the order it holds them: every address that names
- *  something, and each bare key among `issues`. A `#id` is left as written: its question map is
- *  a read of its own, one per document, which a row does not make. A reference in `ambiguous` -
- *  one the batched read answered that two or more targets carry the short id of, which the page
- *  publishes (`useKnownAmbiguousReferences`) - is left out too, so the row draws it as the text
- *  it is and links nothing, as the tree's chip draws it (`NodeChip.ambiguous`): a link would draw
- *  it as its short form, which names no one target. */
+ *  something other than a party, and each bare key among `issues`. A `#id` is left as written:
+ *  its question map is a read of its own, one per document, which a row does not make. A
+ *  reference in `ambiguous` - one the batched read answered that two or more targets carry the
+ *  short id of, which the page publishes (`useKnownAmbiguousReferences`) - is left out too, so
+ *  the row draws it as the text it is and links nothing, as the tree's chip draws it
+ *  (`NodeChip.ambiguous`): a link would draw it as its short form, which names no one target. */
 export function rowReferences(
   text: string,
   issues: readonly string[],
@@ -94,7 +106,7 @@ export function rowReferences(
   const found: RowReference[] = [];
   for (const one of readTextReferences(text, { issues }).references) {
     if (one.form === "question" || one.reference === undefined || one.route === undefined) continue;
-    if (ambiguous.has(one.reference)) continue;
+    if (isPartyRoute(one.route) || ambiguous.has(one.reference)) continue;
     found.push({ end: one.end, reference: one.reference, route: one.route, start: one.start });
   }
   return found;
@@ -174,7 +186,8 @@ export function linkRowReferences(
       continue;
     }
     const route = parseNodeReference(reference);
-    if (route !== undefined) nameAnchor(anchor, { reference, route }, names);
+    if (route !== undefined && !isPartyRoute(route))
+      nameAnchor(anchor, { reference, route }, names);
   }
   const issues = knownIssueKeys(names);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);

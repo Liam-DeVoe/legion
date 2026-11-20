@@ -67,7 +67,7 @@ var subcommands = []subcommand{
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
 	}},
 	{"erase", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
-		return erase(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
+		return erase(ctx, args, env.get("DATABASE_URL"), loadServerURL(env), stdout, stderr)
 	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)

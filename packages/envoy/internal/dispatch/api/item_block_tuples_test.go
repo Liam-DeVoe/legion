@@ -366,7 +366,7 @@ func reindexItemBody(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID,
 		return graphstore.Uncaused{}, err
 	}
 	located := refs.NewReader(ctx, tx, string(kind), itemID, itemBlockServer).Mentions(body)
-	_, written, err := refs.IndexItem(ctx, tx, kind, itemID, body, time.Now().UTC(), located, nil)
+	_, written, err := refs.IndexItem(ctx, tx, kind, itemID, body, itemBlockServer, time.Now().UTC(), located, nil)
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}

@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -24,6 +24,13 @@ import { plainWrite, writesOf } from "./features/writes/write-store";
 // suspended resource outside `act`. So the module is loaded here, with the test file, and no row
 // starts or waits for it.
 import "./features/margin/Margin";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });

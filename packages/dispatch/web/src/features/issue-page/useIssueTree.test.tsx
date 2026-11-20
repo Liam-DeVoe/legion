@@ -1,4 +1,4 @@
-import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -17,6 +17,7 @@ import type {
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import {
@@ -28,6 +29,12 @@ import {
 } from "./reference-names";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The names of the issue page's tree, across a change to the tree itself. The batched name read

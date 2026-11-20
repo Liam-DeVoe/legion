@@ -154,6 +154,10 @@ type Erasure struct {
 	// nowhere else - no row, no record, no log - since each is the digest of an erased text, and
 	// they go with the process once the sweep has read them.
 	sums [][]byte
+	// serverURL is the dashboard origin the server's writers cut a block's excerpt around
+	// (refs.BlockExcerpt), which the run cuts a redacted excerpt with, so it stores the excerpt
+	// the writer would (readAncestorExcerpts).
+	serverURL string
 }
 
 // Mismatch reports whether a confirmed run read a listing other than the one its --confirm

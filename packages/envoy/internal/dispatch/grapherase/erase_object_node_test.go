@@ -86,7 +86,7 @@ func TestTheEraseRefusesAnIssueADocumentAndAnAskWhileTheirRowStandsAndTakesAMess
 			t.Fatalf("the seed holds message:%s as %+v, want a node with tuples, so this test would prove nothing", seeded.message, before)
 		}
 
-		listing, err := Erase(ctx, url, graphstore.KindMessage, seeded.message, "", 0)
+		listing, err := Erase(ctx, url, eraseServerURL, graphstore.KindMessage, seeded.message, "", 0)
 		if err != nil {
 			t.Fatalf("erase --node message:%s answered %v, want its listing", seeded.message, err)
 		}
@@ -107,7 +107,7 @@ func TestTheEraseRefusesAnIssueADocumentAndAnAskWhileTheirRowStandsAndTakesAMess
 		if !listed(listing, "leave public.events", fmt.Sprintf("(id)=(%d)", other)) {
 			t.Errorf("the listing of message:%s reads\n\t%s\nwith no line leaving another message's event %d", seeded.message, joinedListing(listing), other)
 		}
-		erased, err := Erase(ctx, url, graphstore.KindMessage, seeded.message, listing.Digest, 0)
+		erased, err := Erase(ctx, url, eraseServerURL, graphstore.KindMessage, seeded.message, listing.Digest, 0)
 		if err != nil || !erased.Applied {
 			t.Fatalf("the confirmed erase of message:%s answered %+v, %v; want applied", seeded.message, erased, err)
 		}
@@ -169,14 +169,14 @@ func requireRefusedWhileTheRowStands(t *testing.T, database *store.Store, kind, 
 		t.Fatalf("the seed holds %s:%s as %+v, want a node with tuples, so this test would prove nothing", kind, id, before)
 	}
 	text := rowText(t, database, table, column, key, id)
-	listing, err := Erase(ctx, url, kind, id, "", 0)
+	listing, err := Erase(ctx, url, eraseServerURL, kind, id, "", 0)
 	if err == nil && listing != nil {
-		confirmed, confirmErr := Erase(ctx, url, kind, id, listing.Digest, 0)
+		confirmed, confirmErr := Erase(ctx, url, eraseServerURL, kind, id, listing.Digest, 0)
 		t.Fatalf("erase --node %s:%s listed it and its confirmed run answered applied %t (err %v); the %s row still reads %q",
 			kind, id, confirmed != nil && confirmed.Applied, confirmErr, table, rowText(t, database, table, column, key, id))
 	}
 	for _, confirm := range []string{"", "any digest"} {
-		erasure, err := Erase(ctx, url, kind, id, confirm, 0)
+		erasure, err := Erase(ctx, url, eraseServerURL, kind, id, confirm, 0)
 		if err == nil || !strings.Contains(err.Error(), "refuses "+kind+":"+id+": ") || !strings.Contains(err.Error(), refusal) {
 			t.Errorf("erase --node %s:%s (confirm %q) answered %v (applied %t), want the refusal %q",
 				kind, id, confirm, err, erasure != nil && erasure.Applied, refusal)
@@ -233,14 +233,14 @@ func TestTheEraseRemovesAnOrphanedDocumentsNode(t *testing.T) {
 	}
 	requireOrphaned(t, database, 1)
 
-	listing, err := Erase(ctx, url, graphstore.KindArtifact, seeded.documentRef, "", 0)
+	listing, err := Erase(ctx, url, eraseServerURL, graphstore.KindArtifact, seeded.documentRef, "", 0)
 	if err != nil {
 		t.Fatalf("erase --node artifact:%s with no row behind it answered %v, want its listing", seeded.documentRef, err)
 	}
 	if want := "delete graph_nodes artifact:" + seeded.documentRef; !strings.Contains(strings.Join(listing.Listing, "\n"), want) {
 		t.Errorf("the listing reads %q, want it to name %q", listing.Listing, want)
 	}
-	erased, err := Erase(ctx, url, graphstore.KindArtifact, seeded.documentRef, listing.Digest, 0)
+	erased, err := Erase(ctx, url, eraseServerURL, graphstore.KindArtifact, seeded.documentRef, listing.Digest, 0)
 	if err != nil || !erased.Applied {
 		t.Fatalf("the confirmed erase answered %+v, %v; want applied", erased, err)
 	}

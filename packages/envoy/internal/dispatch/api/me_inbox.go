@@ -289,7 +289,7 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("read the inbox: %w", err))
 		return
 	}
-	read, err := readMeInboxRows(rows)
+	read, err := readMeInboxRows(rows, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -316,6 +316,19 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 		response.Entries = append(response.Entries, entry.meInboxEntry)
 	}
 	reader.resolve()
+	// Each Reply and Agent row's subject carries the reading of its own line, as listMyReplies's
+	// rows do: the thread root's first line cut by refs.FirstLine, which no writer stores a tree of,
+	// so each is read where it stands (shapeBuilt), neither asked of the table nor stored in it.
+	shapeBuilt(trees, func(built *displayTreeReader) {
+		for _, entry := range response.Entries {
+			if entry.Thread != nil {
+				built.text(&entry.Thread.SubjectTree, entry.Thread.Subject)
+			}
+			if entry.Agent != nil {
+				built.text(&entry.Agent.SubjectTree, entry.Agent.Subject)
+			}
+		}
+	})
 	if count := len(response.Entries); count > 0 && read.remaining > request.offset+count {
 		last := response.Entries[count-1]
 		response.NextCursor = meInboxCursor{moment: last.Moment, kind: last.Node.Kind, id: last.Node.ID}.String()
@@ -433,7 +446,8 @@ func (s *server) meInboxRoster(ctx context.Context, record meInboxRecord, built 
 }
 
 // meInboxRead is what the statement answered: the page's entries in order, and what it read once for
-// every row of the page (meInboxPage), each record read by its own statement's scanner.
+// every row of the page (meInboxPage), each record read by its own statement's scanner. serverURL is
+// this server's deployment, which a Reply and an Agent row's lines are cut against (refs.FirstLine).
 type meInboxRead struct {
 	asOf             time.Time
 	total, remaining int
@@ -444,6 +458,7 @@ type meInboxRead struct {
 	trees            map[[32]byte]json.RawMessage
 	roster           meInboxRecord
 	page             meInboxPage
+	serverURL        string
 }
 
 // meInboxPage is what the page's rows draw, read once for the whole page (meInboxPageReads) and kept
@@ -541,11 +556,11 @@ func (columns *meInboxColumns) targets() []any {
 // few entries there are, so that its now() is read: a row naming no node is that row alone. Each
 // entry's own columns are read as its row arrives, and its page row is put together from what the
 // statement read once for the page (assemble) once every row is in.
-func readMeInboxRows(rows pgx.Rows) (*meInboxRead, error) {
+func readMeInboxRows(rows pgx.Rows, serverURL string) (*meInboxRead, error) {
 	defer rows.Close()
 	read := &meInboxRead{
 		openedEvents: map[string]int64{}, backlinkCounts: map[string]int{},
-		askParts: refs.AskPartRows{}, trees: map[[32]byte]json.RawMessage{},
+		askParts: refs.AskPartRows{}, trees: map[[32]byte]json.RawMessage{}, serverURL: serverURL,
 	}
 	types := rows.Conn().TypeMap()
 	answered := false
@@ -618,7 +633,7 @@ func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns) (meIn
 		row.page = *columns.page
 	}
 	if row.page == meInboxPageAgent {
-		listed, err := scanMyAgentRow(meInboxRecord{types: types, raw: columns.agent})
+		listed, err := scanMyAgentRow(meInboxRecord{types: types, raw: columns.agent}, read.serverURL)
 		if err != nil {
 			return meInboxRow{}, fmt.Errorf("read the %s row of %s %s: %w", row.page, row.Node.Kind, row.Node.ID, err)
 		}
@@ -689,7 +704,7 @@ func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns
 		return err
 	}
 	for _, record := range records(types, columns.threads) {
-		thread, err := scanMyReplyRow(record)
+		thread, err := scanMyReplyRow(record, read.serverURL)
 		if err != nil {
 			return fmt.Errorf("read the inbox's Reply rows: %w", err)
 		}

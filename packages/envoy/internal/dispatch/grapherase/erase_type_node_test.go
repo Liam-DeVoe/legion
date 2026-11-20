@@ -67,7 +67,7 @@ func TestTheEraseRefusesATypeNodeAndLeavesItWhole(t *testing.T) {
 		if node.kind == schemanodes.KindSupertag && before.in == 0 {
 			t.Fatalf("no tuple runs into %s:%s, so this test would not read the tuples an erase deletes from the far side", node.kind, node.id)
 		}
-		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), node.kind, node.id, "any digest", 0)
+		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), eraseServerURL, node.kind, node.id, "any digest", 0)
 		if err == nil || !strings.Contains(err.Error(), refusal) {
 			t.Errorf("erase --node %s:%s --confirm answered %v (applied %t), want the refusal %q",
 				node.kind, node.id, err, erasure != nil && erasure.Applied, refusal)
@@ -110,7 +110,7 @@ func TestTheEraseRefusesARoleAPageAndASessionAndLeavesThemWhole(t *testing.T) {
 			t.Fatalf("the seed holds %s:%s as %+v, want a node with tuples, so this test would prove nothing", node.kind, node.id, before)
 		}
 		for _, url := range []string{"postgres://nobody@127.0.0.1:1/nothing?connect_timeout=1", database.Pool.Config().ConnString()} {
-			erasure, err := Erase(ctx, url, node.kind, node.id, "any digest", 0)
+			erasure, err := Erase(ctx, url, eraseServerURL, node.kind, node.id, "any digest", 0)
 			if err == nil || !strings.Contains(err.Error(), "refuses "+node.kind+":"+node.id+": a "+node.kind+" node "+refusal) {
 				t.Errorf("erase --node %s:%s --confirm over %s answered %v (applied %t), want the refusal %q before any connection",
 					node.kind, node.id, url, err, erasure != nil && erasure.Applied, refusal)
@@ -119,6 +119,19 @@ func TestTheEraseRefusesARoleAPageAndASessionAndLeavesThemWhole(t *testing.T) {
 		if after := readTypeNode(t, database, node.kind, node.id); after != before {
 			t.Errorf("erase --node %s:%s --confirm left the store holding %+v of it, want %+v as before the run",
 				node.kind, node.id, after, before)
+		}
+	}
+}
+
+// An erase with no dashboard origin refuses before it opens a connection, as rebuild-refs
+// refuses one: a redacted excerpt it stored would be cut otherwise than the server's writers cut
+// the block's own (refs.BlockExcerpt).
+func TestTheEraseRefusesAnEmptyServerURLBeforeAnyConnection(t *testing.T) {
+	for _, serverURL := range []string{"", "  "} {
+		erasure, err := Erase(context.Background(), "postgres://nobody@127.0.0.1:1/nothing?connect_timeout=1", serverURL,
+			commentNodeKind, "00000000-0000-4000-8000-000000000001", "", 0)
+		if erasure != nil || err == nil || !strings.Contains(err.Error(), "dispatch.server_url is required") {
+			t.Errorf("erase with the server URL %q answered %+v, %v; want the refusal naming dispatch.server_url and no erasure", serverURL, erasure, err)
 		}
 	}
 }

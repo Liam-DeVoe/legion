@@ -16,9 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// itemPartsServer is the server the item writes of these tests read their mentions with.
-const itemPartsServer = "https://dispatch.example"
-
 // writeAsThisBuild runs write in a transaction of its own, as this release's writers run theirs,
 // and appends what it held for its cause at the sentinel, then commits.
 func writeAsThisBuild(t *testing.T, database *store.Store, what string, write func(tx pgx.Tx) (graphstore.Uncaused, error)) {
@@ -73,8 +70,8 @@ func indexItem(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body 
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	located := refs.NewReader(ctx, tx, string(kind), itemID, itemPartsServer).Mentions(body)
-	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, at, located, nil)
+	located := refs.NewReader(ctx, tx, string(kind), itemID, eraseServerURL).Mentions(body)
+	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, eraseServerURL, at, located, nil)
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}

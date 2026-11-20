@@ -29,6 +29,7 @@ function snoozeRefusalText(failed: readonly AskSnoozeFailure[], of: number): str
   const first = failed[0];
   if (first === undefined) return undefined;
   const reasons = new Set(failed.map(({ reason }) => reason));
+  // The reason is the server's own words for why it refused the snooze.
   const head = `Could not snooze ${failed.length} of ${of}: ${first.reason}`;
   if (reasons.size === 1) return `${head}.`;
   const others = reasons.size - 1;

@@ -19,6 +19,7 @@ import {
 } from "../../theme/classes";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 
 const PAGE_SIZE = 50;
@@ -73,6 +74,7 @@ export function PersonPage(): ReactNode {
           {rows.map((row) => (
             <li
               className={`rounded-xl border p-3 ${card} ${borderDefault}`}
+              data-person-node={`${row.kind}:${row.id}`}
               key={`${row.kind}:${row.id}`}
             >
               <div className={`flex flex-wrap items-center gap-2 text-xs ${textMutedOnCanvas}`}>
@@ -82,7 +84,18 @@ export function PersonPage(): ReactNode {
                   <LabelPill key={relation}>{RELATION_LABELS[relation] ?? relation}</LabelPill>
                 ))}
               </div>
-              <MarkdownPreview className="mt-2 text-sm" fullTitle lines={2} markdown={row.title} />
+              {/* The record's first line as the server cut it, drawn from the server's reading of
+                  it (`first_line_tree`). The read names no issue a record is on, so its source
+                  names none (`TextSource.issue`). */}
+              <MarkdownPreview
+                className="mt-2 text-sm"
+                fullTitle
+                lines={2}
+                markdown={row.first_line}
+                source={textSourceOf(textSourceKind(row.kind), row.id, undefined)}
+                surface="person-node-title"
+                tree={row.first_line_tree}
+              />
               <Link
                 className={`mt-2 inline-block min-h-11 py-2 text-sm ${linkText} ${linkHoverText}`}
                 to={row.href}

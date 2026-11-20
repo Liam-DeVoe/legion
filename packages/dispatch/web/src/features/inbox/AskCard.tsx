@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -39,7 +40,6 @@ import {
   cardHoverBorder,
   focusBorder,
   inlineWarningText,
-  inputClasses,
   linkHoverText,
   linkText,
   pageFailedText,
@@ -63,6 +63,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import {
   badgeSelectBadge,
   badgeSelectOverlay,
@@ -448,6 +449,7 @@ export function AskCard({
     mutation,
     otherSelected,
     questionChoice,
+    questionReads,
     reasonRequired,
     requiresReason,
     selectRealOption,
@@ -495,7 +497,7 @@ export function AskCard({
   const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
-  const source = textSourceOf("ask", displayedAsk.id);
+  const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
   // ask's issue, or the project of the document it was asked on.
   const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
@@ -510,14 +512,14 @@ export function AskCard({
     setQuestionChoice(false);
   });
   const uploading = upload.pending > 0;
-  const answerFieldRef = useRef<HTMLTextAreaElement>(null);
+  const answerFieldRef = useRef<MentionFieldHandle | null>(null);
   // Picking Request changes moves the person straight to the field the server insists
   // on. Keyed on the field actually being mounted, not just on the option: the compact variant
   // unmounts the field when its disclosure closes, and reopening it must refocus.
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
   useEffect(() => {
     if (reasonFieldShown) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
@@ -532,7 +534,7 @@ export function AskCard({
     if (!focusNoteOnOpen.current) return;
     focusNoteOnOpen.current = false;
     if (ownWordsOpen) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [ownWordsOpen]);
   // A control that disables itself under the reader's focus - Ask back while sending and once
@@ -748,47 +750,47 @@ export function AskCard({
     : ON_PAGE.action;
   const answerField = (
     <>
-      <label className="block" htmlFor={answerFieldId}>
-        <span
-          className={
-            reasonRequired
-              ? `mb-1 block text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`
-              : "sr-only"
-          }
-        >
-          {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-        </span>
-        <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
-          data-ask-answer=""
-          disabled={disabledWhileOut}
-          id={answerFieldId}
-          onChange={(event) => {
-            setAnswerText(event.target.value);
-            setQuestionChoice(false);
-          }}
-          onDrop={
-            uploadOwner === undefined
-              ? undefined
-              : (event) => {
-                  if (!refusing) upload.drop(event, uploadOwner);
-                }
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
-          onPaste={
-            uploadOwner === undefined
-              ? undefined
-              : (event) => {
-                  if (!refusing) upload.paste(event, uploadOwner);
-                }
-          }
-          placeholder={answerPlaceholder}
-          readOnly={holdsFocus && refusing}
-          ref={answerFieldRef}
-          rows={2}
-          value={answerText}
-        />
-      </label>
+      {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
+          under it in the page's words, and while the card refuses it is `readOnly` rather than
+          `disabled`, and takes no Ctrl+Enter, paste or drop (`refusing`). Outside it is
+          `disabled` while the write is out, as on `main`. */}
+      <MentionField
+        askAnswer={true}
+        body={answerText}
+        className="font-normal"
+        disabled={disabledWhileOut}
+        fieldClassName={tooltips ? undefined : ON_PAGE.field}
+        fieldRef={answerFieldRef}
+        hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
+        issueKey={displayedAsk.issue_key ?? undefined}
+        label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
+        labelClassName={tooltips ? undefined : `block text-sm font-medium ${ON_PAGE.muted}`}
+        labelHidden={!reasonRequired}
+        onChange={(change) => {
+          setAnswerText(change.body);
+          setQuestionChoice(false);
+        }}
+        onDrop={
+          uploadOwner === undefined
+            ? undefined
+            : (event) => {
+                if (!refusing) upload.drop(event, uploadOwner);
+              }
+        }
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
+        onPaste={
+          uploadOwner === undefined
+            ? undefined
+            : (event) => {
+                if (!refusing) upload.paste(event, uploadOwner);
+              }
+        }
+        placeholder={answerPlaceholder}
+        project={documentProject}
+        readOnly={holdsFocus && refusing}
+        rows={2}
+        writing={dispatchWritingBox("ask-answer", "ask-answer")}
+      />
       <DraftUploadStatus upload={upload} />
     </>
   );
@@ -884,6 +886,7 @@ export function AskCard({
   if (completed !== null) {
     return (
       <>
+        {questionReads}
         <AskCompletionCard
           answers={answers}
           artifactSlug={artifactSlug}
@@ -925,6 +928,7 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
+      {questionReads}
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"
@@ -963,6 +967,7 @@ export function AskCard({
             <MarkdownBody
               markdown={displayedAsk.question}
               source={source}
+              surface="ask-card-question"
               tree={displayedAsk.question_tree}
             />
           </div>
@@ -1119,6 +1124,7 @@ export function AskCard({
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
                 }}
                 option={option}
+                source={source}
               />
             ))}
             {isApproval ? null : (
@@ -1133,6 +1139,7 @@ export function AskCard({
                   if (isCompact && !otherSelected) setOwnWordsOpen(true);
                 }}
                 option={{ label: "Other" }}
+                source={source}
               />
             )}
           </fieldset>

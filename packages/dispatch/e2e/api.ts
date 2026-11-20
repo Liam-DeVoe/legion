@@ -845,6 +845,17 @@ export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);
 }
 
+/** `GET /api/v1/references/questions` for a document's own text: each question block the
+ *  document's latest version declares, with the ask the server settled for it and that ask's
+ *  address, which is what a `#id` in a text of that document's scope names. */
+export function getDocumentQuestions(artifactID: string, options: ApiOptions = {}) {
+  return get(
+    "/api/v1/references/questions",
+    { query: { id: artifactID, kind: "artifact" } },
+    options
+  );
+}
+
 /** The same markdown by the slug route, `GET /api/v1/issues/{key}/artifacts/{slug}/text`. */
 export function getIssueArtifactText(issue: string, slug: string, options: ApiOptions = {}) {
   return get(
@@ -1113,6 +1124,12 @@ export function putAgentState(
 /** The signed-in human's own conversation state with every session, unread counts included. */
 export function getAgentStates(options: ApiOptions = {}) {
   return get("/api/v1/me/agents/state", {}, options);
+}
+
+/** `PUT /api/v1/me/documents/{id}/read`: records `version` as the caller's last read version of the
+ *  document, the write the Spec tab makes when it shows that version (`useSpecMarks`). */
+export function putDocumentRead(id: string, version: number, options: ApiOptions = {}) {
+  return put("/api/v1/me/documents/{id}/read", { body: { version }, params: { id } }, options);
 }
 
 export function putIssueState(

@@ -14,10 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -619,6 +619,17 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Rows = append(response.Rows, rows...)
+	// Each row's subject carries the reading of its own line, for the caller that asked for the
+	// trees. The Inbox draws that line through the one renderer every body is drawn with
+	// (web/src/features/inbox/ThreadTitle.tsx), so the reading goes out beside it and no browser
+	// parses it. A subject is the thread root's first line cut by refs.FirstLine, which no writer
+	// stores a tree of, so each is read where it stands (shapeBuilt), neither asked of the table nor
+	// stored in it.
+	shapeBuilt(wantsDisplayTrees(r), func(reader *displayTreeReader) {
+		for index := range response.Rows {
+			reader.text(&response.Rows[index].SubjectTree, response.Rows[index].Subject)
+		}
+	})
 	WriteJSON(w, http.StatusOK, response)
 }
 
@@ -672,7 +683,7 @@ func (s *server) readMyReplyRows(
 	defer rows.Close()
 	read := []model.MyReplyRow{}
 	for rows.Next() {
-		row, err := scanMyReplyRow(rows)
+		row, err := scanMyReplyRow(rows, s.deps.ServerURL)
 		if err != nil {
 			return nil, err
 		}
@@ -685,8 +696,9 @@ func (s *server) readMyReplyRows(
 }
 
 // scanMyReplyRow decodes one Reply row myRepliesPageRest selects: the row listMyReplies answers,
-// and the thread row of an entry GET /api/v1/me/inbox answers.
-func scanMyReplyRow(scanned pgx.Row) (model.MyReplyRow, error) {
+// and the thread row of an entry GET /api/v1/me/inbox answers. Its subject and its reply's first
+// line are cut against serverURL, this server's deployment (refs.FirstLine).
+func scanMyReplyRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, error) {
 	var row model.MyReplyRow
 	var issueKey, issueTitle, project, slug, name, replyID *string
 	var subject, body string
@@ -718,7 +730,7 @@ func scanMyReplyRow(scanned pgx.Row) (model.MyReplyRow, error) {
 	row.Project = &projectKey
 	row.ReadThrough = &readThrough
 	row.Version = &version
-	row.Subject = contracts.OneLineSummary(subject)
+	row.Subject = refs.FirstLine(subject, serverURL)
 	if replyID != nil {
 		row.Reply.ID = *replyID
 	}
@@ -734,7 +746,7 @@ func scanMyReplyRow(scanned pgx.Row) (model.MyReplyRow, error) {
 		}
 		row.Anchor = &value
 	}
-	row.Reply.FirstLine = contracts.OneLineSummary(body)
+	row.Reply.FirstLine = refs.FirstLine(body, serverURL)
 	return row, nil
 }
 

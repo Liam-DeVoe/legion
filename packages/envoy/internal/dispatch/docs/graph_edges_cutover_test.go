@@ -1588,7 +1588,7 @@ func indexItemAsThisBuild(t *testing.T, tx pgx.Tx, kind refs.ItemKind, id, body 
 	t.Helper()
 	ctx := context.Background()
 	located := refs.NewReader(ctx, tx, string(kind), id, graphEdgeServer).Mentions(body)
-	_, indexed, err := refs.IndexItem(ctx, tx, kind, id, body, at, located, nil)
+	_, indexed, err := refs.IndexItem(ctx, tx, kind, id, body, graphEdgeServer, at, located, nil)
 	if err != nil {
 		t.Fatalf("index the blocks of the %s %q: %v", kind, body, err)
 	}
@@ -1764,7 +1764,7 @@ func writeAskAsThisBuild(t *testing.T, database *store.Store, question string) s
 	if err := store.RunWrite(ctx, tx, writeRefs); err != nil {
 		t.Fatalf("write the question's references of the ask %q: %v", question, err)
 	}
-	_, writeParts, indexed, err := planAskPartsCounted(ctx, tx, reader, model.Ask{ID: id, Question: question}, at, changes, nil)
+	_, writeParts, indexed, err := planAskPartsCounted(ctx, tx, reader, model.Ask{ID: id, Question: question}, at, true, changes, nil)
 	if err != nil {
 		t.Fatalf("index the parts of the ask %q: %v", question, err)
 	}

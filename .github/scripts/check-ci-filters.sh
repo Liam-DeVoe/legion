@@ -255,14 +255,22 @@
 #      does not have (the job that runs the untagged tests may be in any of those files, since
 #      it keeps its caller in ci.yaml), a
 #      step that job does not have, or a step whose run: holds no -run is a failure of its own.
-#  16. a `go test -race` build of .github/workflows/ci-caches.yaml whose packages are not
-#      ci_job_reads.py's DAEMON_RACE_PACKAGES, in that order. That build fills the cache
-#      ci.yaml's race step restores, so a package it names that the lane does not is a race
-#      binary no job of ci.yaml restores, and one the lane names that it does not is a binary
-#      that step links from nothing on every run - in either direction nothing fails, which is
-#      how ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
-#      package, the job and both lists, and a ci-caches.yaml with no race build at all fails
-#      too, since the lane would then be filled by nobody.
+#  16. a `go test -race` build of .github/workflows/ci-caches.yaml's job ci_job_reads.py's
+#      DAEMON_RACE_FILL_JOB names whose packages are not ci_job_reads.py's
+#      DAEMON_RACE_PACKAGES, in that order. That build fills the cache ci.yaml's race step
+#      restores, so a package it names that the lane does not is a race binary no job of
+#      ci.yaml restores, and one the lane names that it does not is a binary that step links
+#      from nothing on every run - in either direction nothing fails, which is how
+#      ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
+#      package, the job and both lists; that job with no race build at all fails too, and so
+#      does a ci-caches.yaml with no such job, since the lane would then be filled by nobody. A
+#      race build of another job fills another family and is not this rule's. And a fill job
+#      ci_job_reads.py's RACE_FILL_SCRIPTS names whose steps in the script's directory do not run
+#      that script's compile line once and exactly, or that run a `go test` with -race of their
+#      own: such a fill reaches its race step's packages and flags through the script that step
+#      runs (packages/envoy/infra/scripts/race-unit.sh for envoy-infra-go), and a fill that calls
+#      it otherwise or copies its build compiles objects the step does not link, with nothing
+#      failing. It fails naming the job and the line.
 #  17. a gate's filter whose generated block is not exactly the `!` patterns that keep it off
 #      every Go test file it would select and its job does not read, naming the filter, the
 #      first pattern that differs and the command that writes the block; and a `!` pattern of
@@ -335,7 +343,15 @@
 #      own tags, and one go list then compiles is the miss. The steps read their sets off the
 #      module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py gives their
 #      Runs what it prints now, so this rule fails when that script stops printing a set a
-#      file needs.
+#      file needs,
+#  21. a spec file the `references` lane of .github/workflows/dispatch-browser.yaml runs - an entry
+#      of the `lane_files="..."` its shard job's browser step sets in the script's `references)`
+#      arm, read as a path from that step's working directory - that ci.yaml's
+#      dispatch_references filter does not match, naming the entry and the path: that filter
+#      starts the job calling the lane, so a spec file it misses is a change to the lane's own rows
+#      that starts no run of them. A dispatch-browser.yaml with no such arm, with two, or with
+#      one that lists no file, and a changes job without that filter, fail too, rather than
+#      holding the filter to nothing.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -422,9 +438,18 @@
 # directory and under this machine's own GOMODCACHE and GOPROXY (`go env GOROOT`), and runs
 # every go command with that toolchain's own binary under GOTOOLCHAIN=local.
 #
-# EXCLUDED leaves worker_image to check-image-trigger-paths.sh, which proves it covers every file
-# its image build reads. envoy_smoke is a gate whose image inputs are that check's: this one holds
-# it to the job's go commands and other step reads. The RULES and the static reads are kept by
+# EXCLUDED leaves worker_image and browser_image to check-image-trigger-paths.sh, which proves
+# each covers every file its image build reads. It holds dispatch_references to no job's reads
+# (rule 21 holds it to the references lane's spec files alone): that filter gates ci.yaml's
+# dispatch-references job, a pull-request preview of the reference rows that ci-ok does not need
+# (CI_OK_EXEMPT), and it names less than the job reads on purpose, since the dispatch_browser
+# gate's job runs those rows on the merge queue's full lane and that filter is held to every
+# read. EXCLUDED also skips the go-command claims of a job its filters alone gate, and those of
+# the jobs of a workflow that job is the first to call; dispatch-browser.yaml's first caller is
+# the dispatch_browser gate's dispatch-browser job, so the binaries job the dispatch-references
+# call reaches too is read under that gate. envoy_smoke is a gate whose image inputs are that
+# check's: this one holds it to the job's go commands and other step reads. The RULES and the
+# static reads are kept by
 # hand: this check proves the filters cover them, not that they are complete, so a change that
 # makes a test read a new file through `..` or start a new go command adds it to ci_job_reads.py.
 #

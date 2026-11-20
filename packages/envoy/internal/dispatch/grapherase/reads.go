@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // ownDocument is the document a block node is a block of. Its versions, its editing state, its
@@ -718,8 +717,9 @@ func (e *Erasure) readAncestorTexts(ctx context.Context, tx pgx.Tx, read *erased
 
 // readAncestorExcerpts reads the excerpt of each of those blocks and keeps each the redaction
 // rewrites, with the excerpt as it leaves it: cut from the redacted text of the version the row
-// records its text at, the way the indexer cuts one (refs.IndexBlocks), and redacted in place
-// where that rewrite does not reach it - a block whose text document_block_texts does not hold.
+// records its text at, the way the indexer cuts one (refs.BlockExcerpt, around the server's
+// dashboard origin, serverURL), and redacted in place where that rewrite does not reach it - a
+// block whose text document_block_texts does not hold.
 func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *erasedRead, holding []string) error {
 	rows, err := tx.Query(ctx, `
 		select b.block_id, b.node_id, b.excerpt, b.changed_version,
@@ -749,7 +749,7 @@ func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *era
 		if stored.text != nil {
 			redacted := redactBlockQuote(*stored.text, read.texts, e.marker())
 			if redacted != *stored.text {
-				cut = text.HeadRunes(redacted, refs.BlockExcerptRunes)
+				cut = refs.BlockExcerpt(redacted, e.serverURL)
 			}
 		}
 		if cut == stored.excerpt {

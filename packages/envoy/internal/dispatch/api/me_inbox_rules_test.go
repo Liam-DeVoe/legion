@@ -767,8 +767,9 @@ func TestTheOneReadAnswersForItsCallerAlone(t *testing.T) {
 
 // A page that asks for the display trees (Dispatch-Trees: 1) is given them on every row it draws,
 // read in the same statement where the table holds them and read for display where it does not:
-// the ask's question and its thread's replies, and an agent row's conversation. The second read
-// is the first one's texts again, by then stored back.
+// the ask's question and its thread's replies, and an agent row's conversation and its subject
+// line, which no table holds and which is read where it stands (shapeBuilt). The second read is
+// the first one's texts again, by then stored back.
 func TestTheOneReadCarriesTheDisplayTreesThePageAsksFor(t *testing.T) {
 	handler, _, root, reply, _ := directConversationFrom(t, "alice")
 	decodeBody[model.Message](t, reply("An answer with **weight**."))
@@ -799,6 +800,10 @@ func TestTheOneReadCarriesTheDisplayTreesThePageAsksFor(t *testing.T) {
 		conversation := agentEntry.Agent.Conversation
 		if len(conversation.Message.BodyTree) == 0 || len(conversation.Replies) != 1 || len(conversation.Replies[0].BodyTree) == 0 {
 			t.Errorf("the %s read's agent row carries %+v, want the root's and the reply's trees", pass, conversation)
+		}
+		if len(agentEntry.Agent.SubjectTree) == 0 {
+			t.Errorf("the %s read's agent row carries subject %q with no tree, want its line read as GET /api/v1/me/replies reads it",
+				pass, agentEntry.Agent.Subject)
 		}
 	}
 }

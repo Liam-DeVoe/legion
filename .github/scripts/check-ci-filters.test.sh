@@ -32,8 +32,9 @@
 # does not read, which the write mode writes, no paths-filter step's filters string may come
 # near the 131,072-byte cap the kernel puts on the environment variable Actions hands it in,
 # every output of the changes job must name the paths-filter step its own filter is declared in,
-# and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs.
+# a listed block's patterns are passed over by rule 9 only while its marker names a check a
+# job of CI runs, and every spec file dispatch-browser.yaml's references lane lists in
+# lane_files must be one the dispatch_references filter matches.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
@@ -117,6 +118,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
@@ -608,6 +611,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
@@ -1865,6 +1870,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
@@ -2048,6 +2055,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
@@ -2450,18 +2459,96 @@ check "fails" "$(is "$status" 1)"
 check "names both orders" \
   "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job fill's race build names ./other/, ./lib/, where .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES has ./lib/, ./other/")"
 
-# A ci-caches.yaml with no race build in it at all is the drift this rule exists for, not a tree
-# it has nothing to say about, so it fails rather than passing quietly.
-echo "case: a ci-caches.yaml with no race build at all"
+# A fill job with no race build in it at all is the drift this rule exists for, not a tree it
+# has nothing to say about, so it fails rather than passing quietly.
+echo "case: the fill job with no race build at all"
 root=$(fixture race-fill-gone)
 cache_workflow "$root"
 replace "$root/.github/workflows/ci-caches.yaml" $'      - if: steps.go-app.outputs.cache-hit != \'true\'\n        run: go test -c -o /dev/null -race ./lib/\n        working-directory: mod\n' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the workflow and what it no longer builds" \
-  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::no step of this workflow runs a \`go test\` with -race")"
+check "names the job and what it no longer builds" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::no step of job fill runs a \`go test\` with -race")"
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
+
+# The rule holds the race build of the job DAEMON_RACE_FILL_JOB names, and that job only: a race
+# build of another job fills another family, for another lane, and names its own packages. The
+# control for this case is "a race build naming a package the lane does not" above, where the same
+# extra package in the fill job fails.
+echo "case: a race build of another job is not held to the daemon's list"
+root=$(fixture race-fill-other-job)
+cache_workflow "$root"
+cat >> "$root/.github/workflows/ci-caches.yaml" <<'YAML'
+  other-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: go test -c -o /dev/null -race ./other/
+        working-directory: mod
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says nothing of the other job's race build" "$(is "$(contains "$out" "job other-fill's race build")" false)"
+
+# A ci-caches.yaml with no job of the name DAEMON_RACE_FILL_JOB gives is a lane nothing fills too,
+# whatever race builds its other jobs run.
+echo "case: no job of the name DAEMON_RACE_FILL_JOB gives"
+root=$(fixture race-fill-job-gone)
+cache_workflow "$root"
+replace "$root/.github/scripts/ci_job_reads.py" 'DAEMON_RACE_FILL_JOB = "fill"' 'DAEMON_RACE_FILL_JOB = "daemon"'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the table and what the race step then builds" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::this workflow has no job daemon, which .github/scripts/ci_job_reads.py's DAEMON_RACE_FILL_JOB names")"
+
+# script_fill <root>: a second fill job, script-fill, that compiles a race step's script, mod's
+# scripts/race.sh, in its compile mode, and RACE_FILL_SCRIPTS naming it; script-fill also builds
+# something plain, which the rule reads past. The tree passes as written.
+script_fill() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  script-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          go vet ./...
+          scripts/race.sh compile
+        working-directory: mod
+YAML
+  replace "$1/.github/scripts/ci_job_reads.py" 'RACE_FILL_SCRIPTS = []' \
+    'RACE_FILL_SCRIPTS = [("script-fill", "mod/scripts/race.sh", "mod", "scripts/race.sh compile")]'
+}
+
+# The fill of a race step that runs a script compiles through that script, the one line
+# RACE_FILL_SCRIPTS names, and holds no race build of its own: a copy of the step's packages or
+# flags written in the fill is what drifts from the step with nothing failing.
+echo "case: a fill that compiles a race step's script through it"
+root=$(fixture race-script-fill)
+cache_workflow "$root"
+script_fill "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a fill that calls the script with another mode or flag"
+root=$(fixture race-script-fill-flag)
+cache_workflow "$root"
+script_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "scripts/race.sh compile" "scripts/race.sh compile -count=1"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the line it runs" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job script-fill runs \`scripts/race.sh compile -count=1\`, where the fill runs \`scripts/race.sh compile\`")"
+
+echo "case: a fill that copies the race build in place of the script"
+root=$(fixture race-script-fill-copy)
+cache_workflow "$root"
+script_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "scripts/race.sh compile" "go list ./... | grep -Ev '/textcheck\$' | xargs go test -c -o /dev/null -race"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the copied line" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job script-fill runs \`go list ./... | grep -Ev '/textcheck\\\$' | xargs go test -c -o /dev/null -race\`, a race build of its own")"
+check "and says the fill no longer calls the script" \
+  "$(contains "$out" "job script-fill runs \`scripts/race.sh compile\` 0 times in mod")"
 
 # Rule 20. darwin_vet <root> <set>...: a step of the app job that vets ./... of mod for
 # darwin/arm64 once per <set> (an empty one is no tag), pinned as an exact entry with one Run
@@ -2798,6 +2885,80 @@ mv "$root/.github/workflows/scan.yaml" "$root/.github/workflows/scan.yml"
 run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
+
+# references_lane <root>: a dispatch-browser.yaml whose shard job's browser step runs, in its
+# `references)` arm, the two spec files under web/e2e it names from its own directory, and a
+# dispatch_references filter in ci.yaml naming both. The comment in the arm spells an assignment
+# that names a third file, which is no entry.
+references_lane() {
+  mkdir -p "$1/web/e2e"
+  echo 'one' > "$1/web/e2e/one.e2e.ts"
+  echo 'two' > "$1/web/e2e/two.e2e.ts"
+  replace "$1/.github/workflows/ci.yaml" "              - 'docs/**'"$'\n  app:' \
+    "              - 'docs/**'"$'\n            dispatch_references:\n              - \'web/e2e/one.e2e.ts\'\n              - \'web/e2e/two.e2e.ts\'\n  app:'
+  cat > "$1/.github/workflows/dispatch-browser.yaml" <<'YAML'
+name: Browser suite
+on:
+  workflow_call:
+    inputs:
+      lane:
+        type: string
+        required: true
+jobs:
+  shard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Browser-test the rows
+        run: |
+          case "${{ inputs.lane }}" in
+            full)
+              lane_files=""
+              ;;
+            references)
+              # lane_files="e2e/three.e2e.ts" in a comment is no entry.
+              lane_files="e2e/one.e2e.ts
+              e2e/two.e2e.ts"
+              ;;
+          esac
+          bunx playwright test $lane_files
+        working-directory: web
+YAML
+}
+
+echo "case: every spec file the references lane runs is one its filter matches"
+# ci.yaml's dispatch_references filter starts the job that calls dispatch-browser.yaml's
+# references lane, so a spec file the lane runs and the filter misses is a change to the lane's
+# own rows that starts no run of them.
+root=$(fixture references-lane)
+references_lane "$root"
+run_check "$root"
+check "passes while the filter names every entry" "$(is "$status" 0)"
+check "reports the lane" \
+  "$(contains "$out" '^report: .github/workflows/dispatch-browser.yaml references lane: 2 spec files, 0 unmatched by filter dispatch_references$')"
+replace "$root/.github/workflows/dispatch-browser.yaml" '              e2e/two.e2e.ts"' $'              e2e/two.e2e.ts\n              e2e/three.e2e.ts"'
+run_check "$root"
+check "fails once the lane runs a file the filter misses" "$(is "$status" 1)"
+check "naming the entry, the path from the step's directory and the filter" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::job shard step \"Browser-test the rows\" runs e2e/three.e2e.ts in the references lane (lane_files), which .github/workflows/ci.yaml's filter dispatch_references does not match as web/e2e/three.e2e.ts")"
+check "and no other entry" "$(is "$(contains "$out" 'runs e2e/one.e2e.ts in the references lane')" false)"
+
+echo "case: a references arm the check cannot read fails rather than holding the filter to nothing"
+root=$(fixture references-lane-unread)
+references_lane "$root"
+replace "$root/.github/workflows/dispatch-browser.yaml" '            references)' '            refs)'
+run_check "$root"
+check "fails without the arm" "$(is "$status" 1)"
+check "naming what it looked for" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::no step of .github/workflows/dispatch-browser.yaml sets lane_files=\"...\" in a \`references)\` arm of its script")"
+
+echo "case: a references lane whose filter is gone"
+root=$(fixture references-lane-no-filter)
+references_lane "$root"
+replace "$root/.github/workflows/ci.yaml" '            dispatch_references:' '            dispatch_refs:'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the filter" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job has no filter dispatch_references")"
 
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,
@@ -3258,5 +3419,44 @@ check "names the step, the size and the cap" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's paths-filter step filter passes a filters string of $size bytes, within 32768 bytes of the 131072-byte cap Linux puts on the INPUT_FILTERS environment variable")"
 check "and says what to do about it" \
   "$(contains "$out" 'move filters of it into another paths-filter step of the job')"
+
+echo "case: the files a table lists from a directory are the repository's, not the disk's"
+# ci_job_reads.py's files_but_tests lists a directory's files but its Go tests for the reads no
+# glob can write. A local e2e run leaves build outputs git ignores in packages/envoy (the
+# harness's lock, out/dispatch-e2e-broker); no checkout CI makes has them, and rule 9 refused the
+# envoy_smoke gate's read of each as matching no file. So the list is repo_files(): the tracked
+# files still on disk and the untracked ones git does not ignore, in the order a walk visits them.
+root="$work/files-but-tests"
+mkdir -p "$root/pkg/sub" "$root/pkg/testdata" "$root/pkg/out"
+printf 'pkg/out/\n' > "$root/.gitignore"
+for f in a.go a_test.go z.go notes.txt sub/b.go testdata/c.go gone.go out/build.go new.go; do
+  printf 'package x\n' > "$root/pkg/$f"
+done
+git -C "$root" init -q
+git -C "$root" add .gitignore pkg/a.go pkg/a_test.go pkg/z.go pkg/notes.txt pkg/sub/b.go pkg/testdata/c.go pkg/gone.go
+rm "$root/pkg/gone.go"
+# listed_files <root> <suffix> <tree|flat>: files_but_tests("pkg") run from <root>, as the check
+# runs from the repository's, skipping testdata.
+listed_files() {
+  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
+import os
+import sys
+from pathlib import Path
+
+import ci_filter_coverage
+import ci_job_reads as reads
+
+os.chdir(sys.argv[1])
+ci_filter_coverage.REPO = Path.cwd()
+reads.repository_files.cache_clear()
+print(" ".join(reads.files_but_tests("pkg", suffix=sys.argv[2], tree=sys.argv[3] == "tree", skip=("testdata",))))
+' "$@")
+}
+check "lists the tracked and the new files, a directory's own before its subdirectory's" \
+  "$(is "$(listed_files "$root" .go tree)" "pkg/a.go pkg/new.go pkg/z.go pkg/sub/b.go")"
+check "and no ignored build output, test file, deleted file or skipped directory for any suffix" \
+  "$(is "$(listed_files "$root" "" tree)" "pkg/a.go pkg/new.go pkg/notes.txt pkg/z.go pkg/sub/b.go")"
+check "and without the tree, the directory's own files" \
+  "$(is "$(listed_files "$root" .go flat)" "pkg/a.go pkg/new.go pkg/z.go")"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

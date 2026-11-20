@@ -1,4 +1,4 @@
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -11,7 +11,14 @@ import { ApiError, api } from "../../api/client";
 import type { Artifact, GraphEdge, Subscriber } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DocumentPage } from "./DocumentPage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
@@ -106,6 +113,16 @@ test("renders the header, the document, versions, and Referenced by for an unlin
       ref: "dispatch://CORE/artifact/design-notes",
     }),
   });
+  // The citing comment's excerpt is the head of its body, which the renderer draws, so the
+  // reference in it reads the document's summary for its name.
+  const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
+    id: "artifact-1",
+    kind: "doc",
+    latest_version: 1,
+    name: "design-notes",
+    project: "CORE",
+    slug: "design-notes",
+  });
   const { runtime, view } = renderDocumentPage();
 
   try {
@@ -130,6 +147,7 @@ test("renders the header, the document, versions, and Referenced by for an unlin
     );
   } finally {
     view.unmount();
+    getProjectDocumentSummary.mockRestore();
     getArtifactText.mockRestore();
     getArtifactSubscribers.mockRestore();
     getArtifact.mockRestore();

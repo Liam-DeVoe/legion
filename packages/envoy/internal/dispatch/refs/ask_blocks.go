@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The type of each part of an ask, its ask_blocks.type and the salt of its identity hash
@@ -165,7 +166,19 @@ func askPartPairs(parts []itemblocks.Block, ids []string, r *Reader) []blockPair
 //
 // The parts are read through r, the Reader of the write that holds the ask's text, which the
 // write that reconciled the ask's own question through it passes on (PlanReplace, ReindexOwed),
-// so one write asks the database once per kind for the question and its parts together.
+// so one write asks the database once per kind for the question and its parts together. Each
+// part's stored excerpt is cut around the dashboard URLs of r's deployment (BlockExcerpt).
+//
+// The parts are the rest of the ask's text beside its question, so the write that queues them
+// is where it settles what the forms queue holds for the ask (RefsFormsOwed), after the parts'
+// own delete from ask_block_refs, which owes that queue the ask (migration 20261117025910), and
+// after the question's delete from refs (20261117025906). A write that queued the question's
+// reconciliation before the parts settles it in the statement that ends the parts' index
+// (ItemIndexing.SettlingForms); one that writes the parts alone - an answer, a resolution, a
+// restoration, the block index of an owed ask - reconciles the question's own references after
+// them, dated `at`, and settles it there (Replacement.SettlingForms). Either way the ask is left
+// owing nothing once this build has indexed its whole text, and no write of it leaves the
+// question's references to a build that read the ask with another grammar.
 //
 // An ask whose row carries an edited_at is planned as edited (ItemIndex.Edited), which is read
 // from the row rather than from the index: an edit's own update of edited_at is queued and has
@@ -207,9 +220,10 @@ func planAskParts(
 // alike.
 func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Reader) itemBlockSource {
 	return itemBlockSource{
-		blocks:  parts,
-		bodySum: sum,
-		madeBy:  askPartMakers(ask, parts),
+		blocks:    parts,
+		bodySum:   sum,
+		serverURL: r.serverURL,
+		madeBy:    askPartMakers(ask, parts),
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, _, counter int) ([]string, int, error) {
 			ids, counter := itemblocks.Align(stored, next, counter, []string{AskAnswerPart})
 			return ids, counter, nil
@@ -266,10 +280,10 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // planAskIfOwed is PlanItemIfOwed for an ask: it plans the index of the ask's parts when they
 // are owed, which is when its state row is missing (a build older than the part index wrote the
 // ask), owed (owed_at set by such a build's write, or by rebuild-refs), or indexed from other
-// parts than the ask holds now. The caller holds the ask's owner, and the repair it returns
-// reconciles no reference of the ask's own: those are its question's, which the grammar
-// reconciliation writes (ReindexOwed), where the links a part holds belong to the part index
-// this plans.
+// parts than the ask holds now, and the reconciliation of the question's own references with
+// them, dated the time the ask was last written, which the repair queues after the parts
+// (ItemRepair.Queue): so it settles the ask's row of the forms queue after the ask's whole text
+// (Replacement.SettlingForms). The caller holds the ask's owner.
 func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (ItemRepair, error) {
 	var stated, owed bool
 	var sum *string
@@ -295,6 +309,18 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 	if repair.indexing, err = planAskParts(index, ask, parts, partsSum, resolve, writtenAt); err != nil {
 		return ItemRepair{}, err
 	}
+	// The question's edges were read beside the parts' links when the ask's index was read, each
+	// with its kind and tuples_stored (ItemIndex.PlanOwnRefs), so its reconciliation is planned
+	// against them, with the citations they stand for under the ask's scope, with no read of its
+	// own; an ask no block-aware build indexed reads them here.
+	found := text.Refs(resolve.Mentions(ask.Question))
+	var planned bool
+	if repair.refs, planned = index.PlanOwnRefs(found, writtenAt); !planned {
+		if repair.refs, err = PlanItemReplace(ctx, q, index.scope, ItemAsk, askID, found, writtenAt); err != nil {
+			return ItemRepair{}, fmt.Errorf("index ask %s: %w", askID, err)
+		}
+	}
+	repair.refs, repair.mentions = repair.refs.SettlingForms(), true
 	return repair, nil
 }
 

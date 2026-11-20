@@ -50,6 +50,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 	// batches the indexed items are written in.
 	return r.inBatches(ctx, "asks", len(r.plan.asks), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("ask")
+		var questionCited []graphstore.UncausedTuple
 		followers := make([][]any, 0, to-from)
 		followerNodes := make([]graphstore.Node, 0, to-from)
 		followed := map[string]struct{}{}
@@ -188,7 +189,13 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// and runs the plan's statements at once, as a batch of their own, the way a writer
 			// that queues no write phase indexes an item it wrote (refs.IndexItem). The parts
 			// are read through a reader of the ask's own (refs.NewReader), as every other write
-			// of an ask reads them.
+			// of an ask reads them. A write of the parts alone reconciles the question's own
+			// references after them and settles the ask's row of the forms queue there
+			// (refs.Replacement.SettlingForms). They are planned as the server's ask create plans
+			// them, with the ask's citations (refs.PlanItemReplace) under the node this batch wrote
+			// (refs.WrittenItem), so a row they insert holds tuples_stored with the tuple it says
+			// the store holds, against the rows the ask holds: none, its row having just been
+			// inserted. Those citations are stated with the mention rows' at the end of the batch.
 			partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
 			if err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
@@ -198,7 +205,21 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if err := store.RunWrite(ctx, tx, parts.Queue); err != nil {
+			questionRefs, err := refs.PlanItemReplace(ctx, tx,
+				refs.WrittenItem(graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt)),
+				refs.ItemAsk, stored.ID, text.Refs(reader.Mentions(stored.Question)), ask.CreatedAt)
+			if err != nil {
+				return fmt.Errorf("index the references of ask %s: %w", ask.ID, err)
+			}
+			questionRefs = questionRefs.SettlingForms()
+			questionCited = append(questionCited, questionRefs.Cited().Tuples...)
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				if err := parts.Queue(b); err != nil {
+					return err
+				}
+				questionRefs.Queue(b)
+				return nil
+			}); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			} else if err := stateAtSentinel(ctx, tx, parts.Stated()); err != nil {
 				return fmt.Errorf("state the parts of ask %s: %w", ask.ID, err)
@@ -249,7 +270,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: cited})
+		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: append(questionCited, cited...)})
 	})
 }
 
@@ -426,7 +447,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				// stored body second is the order the write and the edit ran in, and it leaves
 				// the dropped block with a null position.
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer,
+				if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer, serverURL,
 					comment.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
 					return fmt.Errorf("index comment %s before its edit: %w", comment.ID, err)
 				} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
@@ -438,7 +459,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				at = comment.CreatedAt.Add(time.Hour)
 			}
 			located := text.ExtractAt(body, serverURL)
-			if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, at,
+			if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, serverURL, at,
 				located, nil); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
 			} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
@@ -644,7 +665,7 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			}
 			if message.Reindexed {
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer,
+				if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer, serverURL,
 					message.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
 					return fmt.Errorf("index message %s under the older parser: %w", message.ID, err)
 				} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
@@ -652,7 +673,7 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 				}
 			}
 			located := text.ExtractAt(body, serverURL)
-			if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body,
+			if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body, serverURL,
 				message.CreatedAt, located, nil); err != nil {
 				return fmt.Errorf("index message %s: %w", message.ID, err)
 			} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {

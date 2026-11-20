@@ -3339,16 +3339,19 @@ test("a node holds the server's reading of its text where its read sends one", (
     return { source: node?.source, tree: node?.tree };
   };
   expect(held(blockNodeId(SPEC, "d1"))).toEqual({
-    source: { id: "artifact-spec", kind: "artifact" },
+    source: { id: "artifact-spec", issue: KEY, kind: "artifact" },
     tree: readingOf("decision"),
   });
-  expect(held("ask-1")).toEqual({ source: { id: "ask-1", kind: "ask" }, tree: readingOf("ask") });
+  expect(held("ask-1")).toEqual({
+    source: { id: "ask-1", issue: KEY, kind: "ask" },
+    tree: readingOf("ask"),
+  });
   expect(held("c1")).toEqual({
-    source: { id: "c1", kind: "comment" },
+    source: { id: "c1", issue: KEY, kind: "comment" },
     tree: readingOf("comment"),
   });
   expect(held("m1")).toEqual({
-    source: { id: "m1", kind: "message" },
+    source: { id: "m1", issue: KEY, kind: "message" },
     tree: readingOf("message"),
   });
   for (const id of [blockNodeId(SPEC, "r1"), blockNodeId(VERIFICATION, "c1"), "res-1"]) {

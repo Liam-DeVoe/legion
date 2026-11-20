@@ -46,7 +46,7 @@ func TestTheDocumentSubcommandsInstallTheStoresSchema(t *testing.T) {
 	var listing, refusal bytes.Buffer
 	// The node is one the store does not hold; what the erase answers of it is not this test's
 	// concern, only that it read the store's schema before it read anything else.
-	code := erase(ctx, []string{"--node", "comment:00000000-0000-0000-0000-000000000000"}, databaseURL, &listing, &refusal)
+	code := erase(ctx, []string{"--node", "comment:00000000-0000-0000-0000-000000000000"}, databaseURL, eraseServerURL, &listing, &refusal)
 	if !pmdoc.IsTypedBlock("claim") {
 		t.Errorf("the erase ran (exit %d: %s%s) and holds no claim type: it reads documents against the file, not the store",
 			code, listing.String(), refusal.String())

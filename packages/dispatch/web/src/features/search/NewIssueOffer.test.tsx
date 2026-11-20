@@ -1,4 +1,4 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -8,10 +8,17 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
 import type { ArtifactUploadResponse, Issue, Message } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { firstCriterion } from "./new-issue";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const words = "the sextant rota is nowhere written down";
 

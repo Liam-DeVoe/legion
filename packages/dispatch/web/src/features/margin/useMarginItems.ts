@@ -73,6 +73,10 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: DecisionEntry;
+  /** The artifact id of the document the entry's node stands in, the record the decision's text
+   *  is, which a `#id` in that text names a question block of; undefined for an ask on the issue
+   *  itself. */
+  readonly documentId: string | undefined;
   /** `decision:<node id>:<spec node id>`: the node that holds the entry, and the spec node it
    *  shaped, so two documents' decisions under one block id are two items. */
   readonly id: string;
@@ -115,6 +119,11 @@ export interface PinnedConversationCard {
   /** The `dismissed` id it is pinned under, which Unpin removes: `<kind>:<id>`. */
   readonly id: string;
   readonly kind: ConversationPinKind;
+  /** The record's own id, without the kind the pin marker spells before it: what names the
+   *  record this card's text is (`textSourceOf`). */
+  readonly recordId: string;
+  /** The issue that record is on. */
+  readonly issue: string | null;
 }
 
 const NO_PINS: string[] = [];
@@ -408,6 +417,8 @@ export function useMarginItems(
           tree: "question" in row ? row.question_tree : row.body_tree,
           id: conversationItemId(kind, id),
           kind,
+          recordId: id,
+          issue: row.issue_key,
         },
       ];
     });
@@ -507,6 +518,7 @@ export function useMarginItems(
         .map(([node, blockId]) => ({
           blockId,
           decision,
+          documentId: decision.document?.artifact_id,
           id: `decision:${decision.node.id}:${node}`,
           kind: "decision" as const,
         }));

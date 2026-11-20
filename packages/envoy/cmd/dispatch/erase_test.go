@@ -22,17 +22,30 @@ import (
 // has read the commit, short enough for a run.
 const eraseTestWindow = 4 * time.Second
 
+// eraseServerURL is the dashboard origin the erase tests' server serves under (startEraseServer)
+// and their erase runs with, as a deployment's server and its erase read the same one.
+const eraseServerURL = "https://dispatch.example"
+
+// startEraseServer starts Dispatch under eraseServerURL, its documents' settle delayed by
+// settleDelay, or the server's own default where it is zero.
+func startEraseServer(t *testing.T, databaseURL string, settleDelay time.Duration) *dispatchProcess {
+	return startDispatchProcessWith(t, databaseURL, dispatchOptions{
+		SettleDelay: settleDelay,
+		Env:         map[string]string{"DISPATCH_SERVER_URL": eraseServerURL},
+	})
+}
+
 // confirmErase is what an operator runs: the erase of kind:id without --confirm, which reads its
 // listing and removes nothing, then with the digest that run printed.
 func confirmErase(ctx context.Context, databaseURL, kind, id string, window time.Duration) (*grapherase.Erasure, error) {
-	listing, err := grapherase.Erase(ctx, databaseURL, kind, id, "", 0)
+	listing, err := grapherase.Erase(ctx, databaseURL, eraseServerURL, kind, id, "", 0)
 	if err != nil {
 		return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
 	}
 	if listing.Applied {
 		return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
 	}
-	return grapherase.Erase(ctx, databaseURL, kind, id, listing.Digest, window)
+	return grapherase.Erase(ctx, databaseURL, eraseServerURL, kind, id, listing.Digest, window)
 }
 
 // blockHolding is the node address of the block of document whose text, at the latest version
@@ -69,7 +82,7 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startDispatchProcess(t, databaseURL)
+	server := startEraseServer(t, databaseURL, 0)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERS","name":"Erase"}`, http.StatusCreated)
 
@@ -190,7 +203,7 @@ func TestTheEraseRefusesADocumentWhoseMarkdownSpellsTheTextOtherwise(t *testing.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startDispatchProcess(t, databaseURL)
+	server := startEraseServer(t, databaseURL, 0)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERE","name":"Erase"}`, http.StatusCreated)
 
@@ -249,7 +262,7 @@ func TestTheBlockEraseTakesATextPastItsExcerpt(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startDispatchProcess(t, databaseURL)
+	server := startEraseServer(t, databaseURL, 0)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERX","name":"Erase"}`, http.StatusCreated)
 

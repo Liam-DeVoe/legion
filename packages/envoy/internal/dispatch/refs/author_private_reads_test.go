@@ -219,7 +219,7 @@ func TestResolvePrefixesAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *tes
 		{privateAuthor, map[int]string{1: privateID, 2: privateBlock, 3: privateBlock}, []int{0}},
 	} {
 		who := read.who
-		whole, ambiguous, err := ResolvePrefixes(ctx, tx, &who, ids)
+		whole, ambiguous, err := ResolvePrefixes(ctx, tx, &who, ids, "")
 		if err != nil {
 			t.Fatalf("ResolvePrefixes as %s: %v", who.ID, err)
 		}

@@ -314,10 +314,17 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-artifact",
     path: (seed) => `/issues/${seed.issue}/artifacts/${seed.issueArtifactSlug}`,
     pattern: "/issues/:key/*",
-    // The document's connection dot, as the issue-spec row reads it and for the same reason:
-    // `artifact-header` is drawn while the editor still says "Connecting to the document…",
-    // and `ArtifactHeader.tsx` draws the dot inside that header.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    // Two facts. The document's connection dot, as the issue-spec row reads it and for the same
+    // reason: `artifact-header` is drawn while the editor still says "Connecting to the
+    // document…", and `ArtifactHeader.tsx` draws the dot inside that header. And the header with
+    // its arrival ring gone: `ArtifactRoutePanel.tsx` opens every document of this route
+    // highlighted, and the ring (`highlightRing`) stays for 2 s after the header mounts, so a page
+    // that connected inside those 2 s was shot with the ring and one that connected later
+    // without it (CI run 44032912332, dark: the header's border drawn as the ring's sky blue).
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.locator('[data-testid="artifact-header"]:not([data-highlighted])'),
+    ],
   },
   {
     kind: "reviewed",
@@ -670,10 +677,12 @@ export function topBarInboxBadge(page: Page): Locator {
  *  it is the sum of reads that answer on their own time, so a page whose own content has settled
  *  can still draw a count that is about to change.
  *
- *  Measured on the review corpus: the broadcast page marks the planner's reply read as it draws
- *  it, and the rail's 7 becomes 6 once that write's event refetches the unread total. Three runs
- *  of the shot rows, waiting only for the page's own content, read that row as 7 in light and 6
- *  in dark, as 7 in both, and as 6 in both.
+ *  Measured on the review corpus while the broadcast page's read mark was still its own: the page
+ *  marked the planner's reply read as it drew it, and the rail's 7 became 6 once that write's event
+ *  refetched the unread total. Three runs of the shot rows, waiting only for the page's own
+ *  content, read that row as 7 in light and 6 in dark, as 7 in both, and as 6 in both. The seed
+ *  now writes that mark first (`e2e/review-seed.ts`), so the page's own write moves nothing; the
+ *  wait stays, since any page's number is still the sum of reads that answer on their own time.
  *
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the

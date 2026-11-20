@@ -173,7 +173,7 @@ func windowTheComment(t *testing.T, database *store.Store, comment string) {
 	if err := tx.QueryRow(ctx, `select body from comments where id = $1::uuid for no key update`, comment).Scan(&body); err != nil {
 		t.Fatalf("read the body of comment %s: %v", comment, err)
 	}
-	_, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment, body, time.Now(), nil, nil)
+	_, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment, body, eraseServerURL, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatalf("index the blocks of comment %s: %v", comment, err)
 	}
@@ -626,7 +626,7 @@ func startErase(t *testing.T, database *store.Store, kind, id string) (uint32, <
 	listing := dryRun(t, database, kind, id)
 	answered := make(chan eraseAnswer, 1)
 	go func() {
-		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, listing.Digest, time.Millisecond)
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), eraseServerURL, kind, id, listing.Digest, time.Millisecond)
 		if erasure != nil {
 			for _, document := range erasure.Documents {
 				t.Errorf("document %s has a stored history, which this test never writes", document.Document)

@@ -46,14 +46,14 @@ const eraseOwnerAttempts = 3
 // that owner while the run does. The run then rolls back and starts again rather than take that
 // owner after the node's row, and after eraseOwnerAttempts it refuses, naming each owner it found
 // untaken, having removed nothing.
-func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
+func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, serverURL, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
 	var untaken []string
 	for range eraseOwnerAttempts {
 		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return nil, nil, erasedRead{}, fmt.Errorf("begin: %w", err)
 		}
-		erasure := &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC()}
+		erasure := &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC(), serverURL: serverURL}
 		var read erasedRead
 		read, untaken, err = erasure.lockOwnersThenNode(ctx, tx)
 		if err == nil && len(untaken) == 0 {

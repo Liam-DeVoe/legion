@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The Agent rows of GET /api/v1/me/replies: the statements each state reads them through, the
@@ -350,7 +350,7 @@ func (s *server) readMyAgentRows(
 		extra = append(extra, &total)
 	}
 	for rows.Next() {
-		row, err := scanMyAgentRow(rows, extra...)
+		row, err := scanMyAgentRow(rows, s.deps.ServerURL, extra...)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -364,8 +364,9 @@ func (s *server) readMyAgentRows(
 
 // scanMyAgentRow decodes one Agent row myAgentRowColumns selects, extra receiving the columns
 // after them: the row listMyReplies answers, and the agent row of an entry GET /api/v1/me/inbox
-// answers. Its session is named by its id until nameAgentSessions names it.
-func scanMyAgentRow(scanned pgx.Row, extra ...any) (model.MyReplyRow, error) {
+// answers. Its session is named by its id until nameAgentSessions names it, and its subject and
+// its reply's first line are cut against serverURL, this server's deployment (refs.FirstLine).
+func scanMyAgentRow(scanned pgx.Row, serverURL string, extra ...any) (model.MyReplyRow, error) {
 	row := model.MyReplyRow{Kind: myReplyKindAgent, Reply: model.MyReplyReply{Kind: "reply"}}
 	var session, subject, body string
 	var author []byte
@@ -381,8 +382,8 @@ func scanMyAgentRow(scanned pgx.Row, extra ...any) (model.MyReplyRow, error) {
 		return model.MyReplyRow{}, fmt.Errorf("decode my agent reply author: %w", err)
 	}
 	row.Ref = "/agents/" + session + "/live"
-	row.Subject = contracts.OneLineSummary(subject)
-	row.Reply.FirstLine = contracts.OneLineSummary(body)
+	row.Subject = refs.FirstLine(subject, serverURL)
+	row.Reply.FirstLine = refs.FirstLine(body, serverURL)
 	row.Unread = row.UnreadCount > 0
 	row.Session = &model.MyReplySession{ID: session}
 	return row, nil

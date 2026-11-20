@@ -127,6 +127,11 @@ const ReceiptTimeoutCause = "The listener didn't answer within the send window; 
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
 
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = 100
+
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
 // batches are one number.

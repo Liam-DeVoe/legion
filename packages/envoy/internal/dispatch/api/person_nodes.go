@@ -13,9 +13,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// personNodeTitleRunes is how much of a row's text the page shows: its first line, cut here so
-// the answer carries a title and not a whole comment.
-const personNodeTitleRunes = 240
+// personNodeFirstLineRunes is how much of a row's text the page shows: its first line, cut here
+// so the answer carries a line and not a whole comment, and cut as every head a reader draws is
+// (text.HeadRefs), so no reference, link or code span is split by the cut.
+const personNodeFirstLineRunes = 240
 
 // personNode is one thing on a person's page: a node they are tied to, which of the two ties it
 // is, and where a reader opens it.
@@ -28,8 +29,14 @@ type personNode struct {
 	// delivered_to, or both where the person wrote a thing that was delivered back to a
 	// session of theirs.
 	Relations []string `json:"relations"`
-	// Title is the first line of the node's text, cut to personNodeTitleRunes.
-	Title string `json:"title"`
+	// FirstLine is the first line of the node's text, cut to personNodeFirstLineRunes. It is
+	// named as every cut first line an answer carries is (refs.Candidate's first_line).
+	FirstLine string `json:"first_line"`
+	// FirstLineTree is FirstLine read as the tree a reader is shown, present only for a caller
+	// that sent `Dispatch-Trees: 1`: the page's preview draws the line through the one renderer
+	// every stored text is drawn with. The line is a cut, which no writer stores a tree of, so it
+	// is read where it stands (shapeBuilt), neither asked of the table nor stored in it.
+	FirstLineTree model.DisplayTree `json:"first_line_tree,omitempty"`
 	// CreatedAt is when the node was written, which is the order the page reads in.
 	CreatedAt time.Time `json:"created_at"`
 	// Href is the dashboard path the row opens, as askItemRefExpression answers one for an ask.
@@ -228,7 +235,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		first, _, _ := strings.Cut(body, "\n")
-		row.Title = text.HeadRunes(first, personNodeTitleRunes)
+		row.FirstLine = text.HeadRefs(first, personNodeFirstLineRunes, "", s.deps.ServerURL)
 		row.CreatedAt = row.CreatedAt.UTC()
 		response.Rows = append(response.Rows, row)
 	}
@@ -236,5 +243,10 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	shapeBuilt(wantsDisplayTrees(r), func(reader *displayTreeReader) {
+		for index := range response.Rows {
+			reader.text(&response.Rows[index].FirstLineTree, response.Rows[index].FirstLine)
+		}
+	})
 	WriteJSON(w, http.StatusOK, response)
 }

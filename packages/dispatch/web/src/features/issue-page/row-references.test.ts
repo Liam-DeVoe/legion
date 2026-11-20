@@ -63,6 +63,26 @@ test("a bare key links only where the batched read answered that its issue exist
   ]);
 });
 
+// The graph holds no node for a party, so the batched read refuses a request that names one,
+// which would leave every row of the tree unnamed. A row asks for none and links none: it draws
+// an agent's session, a role and a person as written.
+test("a party is neither asked for nor linked, and is drawn as written", () => {
+  const parties =
+    "Ask dispatch://role/reviewer, dispatch://person/alice@example.com and " +
+    "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce about dispatch://CORE-7.";
+  expect(citedReferences(parties)).toEqual(["dispatch://CORE-7"]);
+  expect(rowReferences(parties, []).map((one) => one.reference)).toEqual(["dispatch://CORE-7"]);
+  const root = document.createElement("div");
+  root.innerHTML = `<p>${parties}</p>`;
+  linkRowReferences(root, NAMES);
+  expect([...root.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual([
+    "/issues/CORE-7",
+  ]);
+  expect(root.textContent).toContain(
+    "Ask dispatch://role/reviewer, dispatch://person/alice@example.com and dispatch://agent/"
+  );
+});
+
 test("an issue reads as its key and title, and anything else as its target's own words", () => {
   const [issue, unnamed, ask] = rowReferences(
     "dispatch://CORE-7 dispatch://CORE-9 dispatch://CORE-1/ask/ask-1",

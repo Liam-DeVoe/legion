@@ -115,7 +115,7 @@ func TestTheEraseLeavesAnotherNodesTextAndListsIt(t *testing.T) {
 			listing.Versions, listing.Reviews, listing.Documents)
 	}
 
-	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
+	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), eraseServerURL, commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
 	if err != nil {
 		t.Fatalf("erase --confirm %s: %v", listing.Digest, err)
 	}
@@ -167,7 +167,7 @@ func TestTheRunWithoutConfirmTakesNoLockAndTheConfirmErasesOnlyItsListing(t *tes
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, "", 0)
+		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), eraseServerURL, commentNodeKind, seeded.comment, "", 0)
 		answered <- answer{erasure, err}
 	}()
 	var listing *Erasure
@@ -190,7 +190,7 @@ func TestTheRunWithoutConfirmTakesNoLockAndTheConfirmErasesOnlyItsListing(t *tes
 
 	url := database.Pool.Config().ConnString()
 	wrong := strings.Repeat("0", len(listing.Digest))
-	refused, err := Erase(ctx, url, commentNodeKind, seeded.comment, wrong, time.Millisecond)
+	refused, err := Erase(ctx, url, eraseServerURL, commentNodeKind, seeded.comment, wrong, time.Millisecond)
 	if err != nil {
 		t.Fatalf("erase --confirm %s: %v", wrong, err)
 	}
@@ -203,7 +203,7 @@ func TestTheRunWithoutConfirmTakesNoLockAndTheConfirmErasesOnlyItsListing(t *tes
 	}
 
 	edited := appendEvent(t, database, "CORE-1", "comment.edited", body)
-	stale, err := Erase(ctx, url, commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
+	stale, err := Erase(ctx, url, eraseServerURL, commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
 	if err != nil {
 		t.Fatalf("erase --confirm %s after the listing changed: %v", listing.Digest, err)
 	}

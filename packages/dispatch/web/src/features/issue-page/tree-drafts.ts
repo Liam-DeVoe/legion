@@ -763,7 +763,7 @@ function addDocumentBlocks(
       const tree = context.treeOf(reference);
       if (tree !== undefined) {
         draft.tree = tree;
-        draft.source = textSourceOf("artifact", document.artifactId);
+        draft.source = textSourceOf("artifact", document.artifactId, context.key);
       }
       if (block.type === "requirement" && document.artifactId === specId) draft.statement = true;
       // A check with no result recorded against it is in no state the results read would name,
@@ -860,7 +860,7 @@ function addAsks(
     }
     if (ask.multiple) draft.multiple = true;
     draft.reference = buildDispatchReference({ id: ask.id, key: context.key, kind: "ask" });
-    draft.source = textSourceOf("ask", ask.id);
+    draft.source = textSourceOf("ask", ask.id, context.key);
     draft.state = askState(ask);
     draft.text = ask.question;
     draft.tree = ask.question_tree;
@@ -998,7 +998,7 @@ function addTurns(
     draft.author = turn.author;
     draft.parents = turn.replyTo === null ? [] : [turn.replyTo];
     draft.reference = buildDispatchReference({ id: turn.id, key: context.key, kind: turn.kind });
-    draft.source = textSourceOf(turn.kind, turn.id);
+    draft.source = textSourceOf(turn.kind, turn.id, context.key);
     draft.text = turn.body;
     draft.tree = turn.bodyTree;
   }
@@ -1078,7 +1078,7 @@ function addDecisions(
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
     const own = decisionContent(decision);
-    draft.source = textSourceOf("artifact", decisionDocumentId(reads.issue, decision));
+    draft.source = textSourceOf("artifact", decisionDocumentId(reads.issue, decision), context.key);
     draft.text = own.text;
     draft.tree = own.tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape
@@ -1221,7 +1221,7 @@ function addRequirements(
     const tree = requirement.text_tree ?? held?.tree;
     if (tree !== undefined) {
       draft.tree = tree;
-      draft.source = held?.source ?? textSourceOf("artifact", specId);
+      draft.source = held?.source ?? textSourceOf("artifact", specId, context.key);
     }
   });
 }
@@ -1276,7 +1276,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     const tree = check.text_tree ?? held?.tree;
     if (tree !== undefined) {
       draft.tree = tree;
-      draft.source = held?.source ?? textSourceOf("artifact", check.artifact_id);
+      draft.source = held?.source ?? textSourceOf("artifact", check.artifact_id, context.key);
     }
     (check.results ?? []).forEach((result, index) => {
       const row = add(drafts, blank(result.id, "result", index));

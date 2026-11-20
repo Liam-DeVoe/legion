@@ -702,6 +702,12 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 // the route queued it before that insert (refs.WrittenItem), which the parts are planned under
 // since no read of the index finds the ask yet; nil for an ask already stored, whose node the
 // index reads for itself (refs.ReadItemIndex).
+//
+// questionReconciled says the route queued the reconciliation of the ask's question before this
+// call, so the parts' statements settle the ask's row of the forms queue; a route that writes the
+// parts alone - an answer, a resolution, a restoration - passes false, and the parts' step
+// reconciles the question's references after them and settles it there (planAskPartsCounted),
+// and what it returns as stated holds the question's citations beside the parts'.
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
@@ -709,6 +715,7 @@ func (l *Ledger) QueueAskParts(
 	document *refs.PendingDocument,
 	scope *refs.ItemScope,
 	at time.Time,
+	questionReconciled bool,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if l.writer == nil {
@@ -726,7 +733,7 @@ func (l *Ledger) QueueAskParts(
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
 	reader := refs.NewReaderInScope(ctx, l.writer, "ask", ask.ID, serverURL, document)
-	changes, parts, stated, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside, scope)
+	changes, parts, stated, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside, scope)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
