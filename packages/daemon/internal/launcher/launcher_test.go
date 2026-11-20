@@ -110,7 +110,9 @@ func shortTempDir(t *testing.T) string {
 }
 
 // newSessionRig runs a launcher that carries cfg's session database and dialer, the fake standing
-// in for the Cloud SQL connector, besides the fields every rig's launcher is given.
+// in for the Cloud SQL connector, besides the fields every rig's launcher is given. Its launcher
+// writes to g.stderr, unless cfg names a Config.Stderr of its own, as a controller pod's container
+// hands the launcher a file.
 func newSessionRig(t *testing.T, cfg Config) *rig {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -122,7 +124,10 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &rig{t: t, listener: listener, private: private, cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
 	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), "launcher-token", "legion-legion-legion-208"
-	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "tester", "pod-1", g.private, g.stderr
+	cfg.Role, cfg.PodUID, cfg.PrivateDir = "tester", "pod-1", g.private
+	if cfg.Stderr == nil {
+		cfg.Stderr = g.stderr
+	}
 	go func() {
 		g.result <- Run(ctx, cfg)
 	}()

@@ -23,32 +23,54 @@ import (
 
 // The controller pod's shim is handed the container's own stdout and stderr, so its descriptors
 // are those files and no pipe through the launcher (command), but for a child whose report the
-// launcher reads, one that dials a URL file's store itself (start): its standard error passes
-// through the launcher, to the same file and to the report. Each child says what its standard
-// error is itself, from /proc.
+// launcher reads, one that dials a URL file's store itself with no proxy of the generation's
+// (start): its standard error passes through the launcher, to the same file and to the report.
+// Each child is started through the launcher's own start, whose choice of the child it reads a
+// report of is what this holds, with the launcher's Config.Stdout and Stderr a file, as a
+// controller pod's container hands it, and each child says what its standard error is itself,
+// from /proc: a child with no session store and a child under the generation's proxy see that
+// file, and a child under a URL file sees a pipe.
 func TestOnlyAChildWhoseReportIsReadHasItsStandardErrorPipedThroughTheLauncher(t *testing.T) {
-	container, err := os.CreateTemp(t.TempDir(), "container-stderr")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = container.Close() })
-	m := &manager{cfg: Config{Stdout: container, Stderr: container}}
+	dsn := testdb.Database(t, "legion_launcher_report_pipe")
 	for name, tc := range map[string]struct {
-		report *childReport
-		pipe   bool
+		proxied, urlFile bool
+		pipe             bool
 	}{
-		"a child the launcher reads no report of is handed the container's own file": {},
-		"a child that dials a URL file's store itself writes through the launcher":   {report: &childReport{}, pipe: true},
+		"a child with no session store is handed the container's own file":         {},
+		"a child under the generation's proxy is handed the container's own file":  {proxied: true},
+		"a child that dials a URL file's store itself writes through the launcher": {urlFile: true, pipe: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			seen := filepath.Join(t.TempDir(), "stderr")
-			process, err := m.command(shimwire.LauncherStart{Generation: 1, Argv: []string{"/bin/sh", "-c", `readlink /proc/self/fd/2 > "$1"`, "sh", seen}},
-				os.Environ(), tc.report)
+			container, err := os.CreateTemp(t.TempDir(), "container-stderr")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := process.cmd.Run(); err != nil {
-				t.Fatalf("the child: %v", err)
+			t.Cleanup(func() { _ = container.Close() })
+			cfg := Config{Stdout: container, Stderr: container}
+			if tc.proxied {
+				database, dialer := sessionDatabaseAt(t, dsn)
+				cfg.SessionDatabase, cfg.SessionDialer = database, dialer.build
+			}
+			g := newSessionRig(t, cfg)
+			var env []string
+			switch {
+			case tc.proxied:
+				env = []string{ompsessions.StorageVariable + "=" + ompsessions.SQLStorage,
+					ompsessions.DSNFileVariable + "=" + filepath.Join(g.generationDir(1), ompsessions.DSNFileName)}
+			case tc.urlFile:
+				urlFile := filepath.Join(t.TempDir(), "dsn")
+				if err := replaceURLFile(urlFile, dsn); err != nil {
+					t.Fatal(err)
+				}
+				env = []string{ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + urlFile}
+			}
+			seen := filepath.Join(t.TempDir(), "stderr")
+			if got := g.start(shimwire.LauncherStart{ID: "start-1", Generation: 1,
+				Argv: []string{"/bin/sh", "-c", `readlink /proc/self/fd/2 > "$1"`, "sh", seen}, Env: env}); !got.OK {
+				t.Fatalf("start = %#v, want the child started", got)
+			}
+			if exit := g.awaitExitWithin(1, time.Minute); exit.Code != 0 {
+				t.Fatalf("the child's exit = %+v, want 0", exit)
 			}
 			body, err := os.ReadFile(seen)
 			if err != nil {
