@@ -25,7 +25,7 @@ Check the child and its parent in `read_state` and Dispatch. When it still looks
 
 ## An update round that is not finishing (`update-stalled`)
 
-The daemon replaces a pod whose configuration moved, or one you asked `replace_pod` for, only after an update round: it asks each role of the issue to push its work and answer `ready_for_update`, and the round ends when all answered or at `pod_update_grace_minutes`. This wake says that bound has passed and `reason` names what still holds the round. Work a role did not push goes with the pod. An architect's suspension goes to the architect that owns the held claim; you hear of it only where no architect can act on it or its notice ended undelivered.
+The daemon replaces a pod whose configuration moved, or one you asked `replace_pod` for, only after an update round: it asks each role of the issue to push its work, let its subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and the round ends at `pod_update_grace_minutes`, or earlier once all answered, no role is in a turn and each role's last report names no background work that runs. This wake says that bound has passed and `reason` names what still holds the round. Work a role did not push goes with the pod. An architect's suspension goes to the architect that owns the held claim; you hear of it only where no architect can act on it or its notice ended undelivered.
 
 For each hold that `reason` names:
 
