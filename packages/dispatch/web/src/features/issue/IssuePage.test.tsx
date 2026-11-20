@@ -854,6 +854,31 @@ test("IssuePage offers no `l` while the labels trigger is held by its save, and 
   }
 });
 
+// `e` presses the header's Edit title button, the control a click reaches, and the button opens
+// the title's editor with the focus in it. The key is the binding's and not text, so the editor
+// holds the title as it was.
+test("IssuePage's `e` opens the title's editor through the Edit title button", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage();
+
+  try {
+    const edit = await screen.findByRole("button", { name: "Edit title" });
+    let presses = 0;
+    edit.addEventListener("click", () => {
+      presses += 1;
+    });
+    await user.keyboard("e");
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    expect(editor).toHaveFocus();
+    expect(editor).toHaveValue(issue.title);
+    expect(presses).toBe(1);
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 // The issue header's Assignee was a `<select>`, which takes a page's single keys as its own; its
 // list's trigger is a button, and the keymap reads it as the select it replaced, so a digit
 // pressed on it writes no priority. The same keys pressed on the page write it, which shows the

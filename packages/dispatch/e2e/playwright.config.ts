@@ -359,7 +359,9 @@ const parallelProjects = [
   // Unpin holds the focus hands the focus into no other card, whose card the Pinned tab takes
   // away, its row that a date the reader gives the search bar's Updated since is their press,
   // whose box the date takes away, and its row that a Snooze pick in the reading column's head
-  // takes none of the reader's next keys as text, whose Snooze the snoozed row takes away.
+  // takes none of the reader's next keys as text, whose Snooze the snoozed row takes away; and
+  // `issue`'s row that Enter in the title's editor, and a click outside it, close it and leave
+  // the next key to the page, whose text box the save takes away.
   // Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
@@ -453,7 +455,8 @@ const parallelProjects = [
   // page-own focus row, its row whose focused row a live update takes away, its row that Add a
   // priority opens its form in view with the focus on Priority to advance, its row that Change
   // answer opens the answer form with the focus in it, and its scrolling-table row, whose focused
-  // row a scroll takes away.
+  // row a scroll takes away; and `issue`'s row that Enter in the title's editor, and a click
+  // outside it, close it and leave the next key to the page, whose text box the save takes away.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
   // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
   // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind

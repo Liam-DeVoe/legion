@@ -107,7 +107,7 @@ const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
 const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = 'select[aria-label="Status"]';
-const TITLE_HEADING = 'h1[tabindex="0"]';
+const TITLE_BUTTON = 'button[aria-label="Edit title"]';
 
 /** The header control `selector` names, or `null` when it is absent or refuses input: disabled
  *  (a closed issue, a save in flight), or held with `aria-disabled` (the labels' trigger while
@@ -297,14 +297,14 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
-      // The heading is a Tab stop only while the issue is open - closed, its `tabIndex` is -1
-      // and it opens no editor - so the key is offered exactly while it edits. The key clicks
-      // it, since the heading opens its editor when activated and not when it takes the focus.
+      // The header draws its Edit title button only while the issue is open, so the key is
+      // offered exactly while the title can be edited. The key presses that button, which opens
+      // the editor when it is activated and not when it takes the focus.
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.click(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => usableControl(TITLE_BUTTON)?.click(),
+      when: () => usableControl(TITLE_BUTTON) !== null,
     },
     {
       id: "pin",

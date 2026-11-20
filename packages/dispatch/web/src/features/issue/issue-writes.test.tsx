@@ -182,7 +182,7 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
     return existing;
   }
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("heading", { level: 1 }));
+  await user.click(await screen.findByRole("button", { name: "Edit title" }));
   return (await screen.findByLabelText("Issue title")) as HTMLInputElement;
 }
 
@@ -369,7 +369,9 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     let title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -382,7 +384,7 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
 
     // Blur exits click-to-edit mode; re-enter it to start a second, still-unsaved edit
     // before the first save's response arrives.
-    await user.click(await screen.findByRole("heading", { level: 1, name: "A" }));
+    await user.click(await screen.findByRole("button", { description: "A", name: "Edit title" }));
     title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -843,7 +845,9 @@ test("IssuePage retries an unchanged failed title draft", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -1117,7 +1121,9 @@ test("IssuePage says what Retry does after a title save the reader stopped", asy
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);

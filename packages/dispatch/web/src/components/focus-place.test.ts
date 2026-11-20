@@ -2279,24 +2279,28 @@ test("a control moved and then taken away in one batch hands the focus to the fo
   });
 });
 
-/** The issue title's editor, put in `main` before `after`: its text box, the heading with a Tab
- *  stop that a save draws in the box's place, and that save's commit (`replace`), which takes the
- *  box away and draws the heading there. */
+/** The issue title's editor, put in `main` before `after`: its text box, the title a save draws in
+ *  the box's place - its heading, which takes no focus, and the Edit title button laid over it -
+ *  and that save's commit (`replace`), which takes the box away and draws the title there. */
 function titleEditorIn(
   main: HTMLElement,
   after: HTMLElement
-): { field: HTMLInputElement; heading: HTMLHeadingElement; replace: () => void } {
+): { edit: HTMLButtonElement; field: HTMLInputElement; replace: () => void } {
   const field = document.createElement("input");
   field.setAttribute("aria-label", "Issue title");
   main.insertBefore(field, after);
+  const title = document.createElement("div");
   const heading = document.createElement("h1");
-  heading.tabIndex = 0;
   heading.textContent = "Title";
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.setAttribute("aria-label", "Edit title");
+  title.append(heading, edit);
   const replace = () => {
     field.remove();
-    main.insertBefore(heading, after);
+    main.insertBefore(title, after);
   };
-  return { field, heading, replace };
+  return { edit, field, replace };
 }
 
 /** Saves `field` on its blur, the save's commit (`replace`) a microtask later, as React commits
@@ -2309,12 +2313,12 @@ function saveOnBlur(field: HTMLInputElement, replace: () => void): void {
 // (an) The reader's Enter that commits a field with the page's own `blur()` - the issue title's
 // editor saving - is the reader leaving the field. The blur sends the focus to the page while the
 // field still stands, and the save's commit takes the field away a microtask later, drawing the
-// heading in its place: nothing moves, so the heading is not handed the focus and the reader's
-// next key acts on the page.
+// title and its Edit title button in its place: nothing moves, so Edit title is not handed the
+// focus and the reader's next key acts on the page.
 test("a field the page's own blur commits leaves the focus on the page when its commit takes it away", async () => {
   await withRescue(async () => {
     const { buttons, main } = mainOf("Before", "After");
-    const { field, heading, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
+    const { edit, field, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
     saveOnBlur(field, replace);
     field.addEventListener("keydown", (event) => {
       if (event.key === "Enter") field.blur();
@@ -2323,9 +2327,9 @@ test("a field the page's own blur commits leaves the focus on the page when its 
     enterPress(field);
     await settled();
     expect(field.isConnected).toBe(false);
-    expect(heading.isConnected).toBe(true);
+    expect(edit.isConnected).toBe(true);
     expect(document.activeElement).toBe(document.body);
-    expect(heading).not.toHaveFocus();
+    expect(edit).not.toHaveFocus();
   });
 });
 
@@ -2335,7 +2339,7 @@ test("a field the page's own blur commits leaves the focus on the page when its 
 test("a click on the page's text that ends a field's edit leaves the focus on the page", async () => {
   await withRescue(async () => {
     const { buttons, main } = mainOf("Before", "After");
-    const { field, heading, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
+    const { edit, field, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
     saveOnBlur(field, replace);
     const text = document.createElement("p");
     text.textContent = "The issue's description";
@@ -2346,27 +2350,28 @@ test("a click on the page's text that ends a field's edit leaves the focus on th
     field.blur();
     await settled();
     expect(field.isConnected).toBe(false);
-    expect(heading.isConnected).toBe(true);
+    expect(edit.isConnected).toBe(true);
     expect(document.activeElement).toBe(document.body);
-    expect(heading).not.toHaveFocus();
+    expect(edit).not.toHaveFocus();
   });
 });
 
 // (ap) The same field taken away while it holds the focus is still a loss to answer, however late
 // its commit comes: Chromium fires the `focusout` during the removal itself, so the field has gone
 // by the rescue's microtask, and Firefox and WebKit fire none. The commit is the reader's Enter's,
-// as the issue title's is, so the loss is theirs, and the focus lands on the heading drawn in the
-// field's place (a loss the reader did not cause lands on nothing drawn in its place: (bd)).
-test("the same field taken away while focused, a microtask after the event, hands the focus to the heading", async () => {
+// as the issue title's is, so the loss is theirs, and the focus lands on the Edit title button
+// drawn in the field's place (a loss the reader did not cause lands on nothing drawn in its place:
+// (bd)).
+test("the same field taken away while focused, a microtask after the event, hands the focus to the Edit title button drawn in its place", async () => {
   for (const withFocusout of [true, false]) {
     await withRescue(async () => {
       const { buttons, main } = mainOf("Before", "After");
-      const { field, heading, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
+      const { edit, field, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
       field.focus();
       enterPress(field);
       queueMicrotask(() => (withFocusout ? lose(field, replace) : replace()));
       await settled();
-      expect(heading).toHaveFocus();
+      expect(edit).toHaveFocus();
     });
   }
 });
