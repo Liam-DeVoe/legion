@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 )
 
 // A person's sign-ins are rows of 0025's person_signins, one per box key: the person, the RFC
@@ -150,10 +152,10 @@ func (s *Store) PersonSignIns(ctx context.Context, person string) ([]PersonSignI
 //
 // A token a read trade of the sign-in narrowed to reading is bound to its holder's key, not to the
 // box key, and names the launcher credential on the box key instead: it is live only while that
-// credential is (oauthstore's narrowedLive), so it ends when the caller revokes the credential,
-// and nothing here writes it. The count takes in each such token that is live now, so it is
-// every token the revoke ends: the ones this statement ends, and the read tokens that end with
-// the credential.
+// credential is, so it ends when the caller revokes the credential, and nothing here writes it.
+// The count takes in each such token that is live now, read through oauthstore.NarrowedLive, the
+// rule introspection ends it by, so it is every token the revoke ends: the ones this statement
+// ends, and the read tokens that end with the credential.
 func RevokePersonSignInTx(ctx context.Context, tx pgx.Tx, id, person string) (string, int, error) {
 	var found, ended int
 	var thumbprint *string
@@ -170,11 +172,8 @@ func RevokePersonSignInTx(ctx context.Context, tx pgx.Tx, id, person string) (st
 			returning 1
 		), narrowed as (
 			select 1 from oauth_narrowed_access_tokens n
-			join launcher_credentials c on c.id = n.credential_id
-			where c.key_thumbprint in (select thumbprint from revoked) and c.revoked_at is null and c.expires_at > now()
-				and n.active and n.expires_at > now()
-				and (n.subject_signature is null or exists (select 1 from oauth_access_tokens subject
-					where subject.signature = n.subject_signature and subject.active and subject.expires_at > now()))
+			join launcher_credentials credential on credential.id = n.credential_id
+			where credential.key_thumbprint in (select thumbprint from revoked) and `+oauthstore.NarrowedLive+`
 		)
 		select (select count(*) from target), (select count(*) from tokens) + (select count(*) from narrowed),
 			(select thumbprint from revoked)`, id, person).Scan(&found, &ended, &thumbprint)

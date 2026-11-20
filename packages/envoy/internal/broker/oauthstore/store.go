@@ -736,13 +736,17 @@ func (s *Store) clampNarrowed(ctx context.Context, exchanged *ExchangeSession, s
 	return nil
 }
 
-// narrowedLive is whether n, a row of oauth_narrowed_access_tokens, is live: its own row is
+// NarrowedLive is whether n, a row of oauth_narrowed_access_tokens, is live: its own row is
 // active and unexpired; the launcher credential it names, where it names one, is neither revoked
 // nor expired (the test LockCredential makes); and the machine login's access token it was traded
 // from, where it was, is still stored, active and unexpired. A sign-in revoke and a credential
 // revoke both end the credential, a revoke of the login's token deactivates that token, and a
 // retire deletes it, on every broker build, so each of them ends the narrowed token too.
-const narrowedLive = `n.active and n.expires_at > now()
+//
+// It is the one text of that rule. Introspection reads it (GetAccessTokenSession), and so does the
+// count of the tokens a sign-in revoke ends (store.RevokePersonSignInTx), so a change to it changes
+// both alike.
+const NarrowedLive = `n.active and n.expires_at > now()
 	and (n.credential_id is null or exists (select 1 from launcher_credentials c
 		where c.id = n.credential_id and c.revoked_at is null and c.expires_at > now()))
 	and (n.subject_signature is null or exists (select 1 from oauth_access_tokens subject
@@ -751,14 +755,14 @@ const narrowedLive = `n.active and n.expires_at > now()
 // GetAccessTokenSession reads an access token's session from either table: oauth2.ErrNotFound for
 // none, and the request with oauth2.ErrInactiveToken once it is no longer live. A token of
 // oauth_access_tokens is live while its row is active. A narrowed token is live while
-// narrowedLive holds, which is decided again at every read, an introspection's among them, rather
+// NarrowedLive holds, which is decided again at every read, an introspection's among them, rather
 // than written onto the narrowed row when its credential or its subject ends: a revoke, a retire
 // or a sweep made by a broker build before migration 0040, which never touches this table, ends
 // it too, and the broker rolls one replica at a time.
 func (s *Store) GetAccessTokenSession(ctx context.Context, signature string, session oauth2.Session) (oauth2.Requester, error) {
 	return s.getToken(ctx, `select request, active from oauth_access_tokens where signature = $1
 		union all
-		select n.request, `+narrowedLive+` from oauth_narrowed_access_tokens n where n.signature = $1`, signature, session)
+		select n.request, `+NarrowedLive+` from oauth_narrowed_access_tokens n where n.signature = $1`, signature, session)
 }
 
 // DeleteAccessTokenSession removes an access token's session from either table, in one statement;
@@ -1001,7 +1005,7 @@ func keyHoldsLauncherCredential(ctx context.Context, db Querier, thumbprint stri
 // through the partial expression index migration 0040 adds to oauth_access_tokens. A read entry's
 // token an older broker minted is covered too, since its row has the same shape. A narrowed row
 // counts while it is active and unexpired even if what it was traded from has ended
-// (narrowedLive): that refuses a credential on its key a little longer than it must, until the
+// (NarrowedLive): that refuses a credential on its key a little longer than it must, until the
 // row expires, and keeps this check off launcher_credentials, which the writer calling it is
 // about to write.
 //
