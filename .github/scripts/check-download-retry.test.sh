@@ -5711,6 +5711,42 @@ for r45_step in "Sleep in minutes" "Sleep two arguments" "Sleep a decimal" "Slee
   check "refuses or charges '$r45_step'" "$(contains "$out" "^::error file=.github/workflows/case.yaml,line=[0-9]*::step '$r45_step' ")"
 done
 
+# T15. A library the loop sources by its literal path, whose own top level sleeps. Each pass runs
+# r44-fetch.sh, 300 s, and then `. .github/scripts/r46-nap.sh`, which holds `sleep 300` at its top
+# level, so bash waits 3 x 300 + 3 x 300 = 1800 s, which `timeout-minutes: 29`, 1740 s, does not
+# exceed. At 95587c62 the gate charges that sleep 0 s and passes the step, where it refuses by name
+# a script the loop runs whose text sleeps, and a sourced library's function the loop calls whose
+# body sleeps (INFRA-1310's architect, dispatch://INFRA-1545, the tester's round 45). The step asks
+# only to be named in a refusal, so a charged figure or a refusal by name both pass it.
+echo "case: r46 T15 a library a priced loop sources, whose own top level sleeps, is not charged nothing"
+root=$(fixture r46-T15-sourced-sleep)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/scripts/r46-nap.sh" <<'SH'
+#!/usr/bin/env bash
+# Sourced: waits between two fetches of the loop that sources it.
+sleep 300
+SH
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Source a sleeping library after each fetch
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            . .github/scripts/r46-nap.sh
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses or charges the step, or refuses the library's sleep" \
+  "$(contains "$out" '^::error .*\(Source a sleeping library after each fetch\|r46-nap\.sh\)')"
+
 # A loop's own waits are each `sleep <n>` of its body, charged as bash runs it (sleep_of;
 # dispatch://INFRA-1545, round 44). Two sleeps written as commands of their own both run after
 # every pass: the first step runs r44-fetch.sh, 300 s, in three passes that each sleep 100 s and
