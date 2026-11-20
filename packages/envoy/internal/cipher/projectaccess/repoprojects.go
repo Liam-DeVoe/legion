@@ -10,7 +10,7 @@ import (
 
 // repoProjectsPath is Dispatch's repository mapping route, which any caller Dispatch
 // authenticates may read, the broker's own account token among them. A Dispatch with private
-// projects (INFRA-3862-private) answers each caller with the rows of the projects it may see, so
+// projects answers each caller with the rows of the projects it may see, so
 // the broker's account, which names no person, reads the public projects' rows alone there.
 const repoProjectsPath = "/api/v1/settings/repo-projects"
 

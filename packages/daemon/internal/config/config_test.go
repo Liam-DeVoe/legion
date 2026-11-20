@@ -1698,8 +1698,8 @@ func TestLoadReadsRuntimeAsItsDiscriminator(t *testing.T) {
 }
 
 // Every top-level key of the earlier schema (38 keys, nats_daemon_nkey_seed_file among them since
-// #1494) plus the new postgres_dsn, the wake pacing's two keys and nats_daemon_service_token_file
-// (INFRA-840), and the class it is in. No
+// #1494) plus the new postgres_dsn, the wake pacing's two keys and nats_daemon_service_token_file,
+// and the class it is in. No
 // shipped key may fall through to the typo refusal, and none is accepted without being modelled,
 // but for a warned key, which is accepted, read for nothing, and answered with a warning rather
 // than a refusal.
