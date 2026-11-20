@@ -508,6 +508,40 @@ echo "rc=$(cat "$D/rc" 2>/dev/null)"; echo "ms=$(cat "$D/ms" 2>/dev/null)"; echo
     );
   });
 
+  test("process table: the temporal evaluation's stop_sessions ends a recorded session and waits, and a stat that never answers ends its walk at the stop's bound, named", () => {
+    // stop_sessions reads every process's stat for the sessions run_experiment recorded
+    // (read_until, lib/wait-gone.sh), held to the stop's one bound. A /proc entry that never
+    // answers its reader, a FIFO no writer opens beside the session's own entry here, ends the walk
+    // at that bound with nothing signalled, and the stop says so; over the host's /proc the same
+    // stop ends the session and waits for it.
+    const temporal = scriptFunctions(
+      join(root, "docs", "research", "temporal-evaluation-2026-11", "run.sh")
+    );
+    const d = freshDir("sessions");
+    const r = bash(
+      `${temporal("stop_sessions")}
+setsid sleep 300 </dev/null >/dev/null 2>&1 & leader=$!; started+=("$leader")
+until [ "$(awk '{print $6}' "/proc/$leader/stat" 2>/dev/null)" = "$leader" ]; do sleep 0.05; done
+start=''; process_start "$leader" start
+sessions=("$leader:$start")
+stuck=$(own_proc_root "$leader"); mkdir "$stuck/999999999"; mkfifo "$stuck/999999999/stat"
+began=$(now_ms)
+wait_gone_proc=$stuck stop_sessions "$((EPOCHSECONDS + 3))" 2>"$D/err"; echo "stuck_rc=$?"
+echo "stuck_ms=$(($(now_ms) - began))"
+kill -0 "$leader" 2>/dev/null && echo stuck_left=yes
+stop_sessions "$((EPOCHSECONDS + 20))"; echo "rc=$?"
+echo "state=$(awk '{print $3}' "/proc/$leader/stat" 2>/dev/null)"`,
+      { D: d }
+    );
+    const v = values(r.stdout);
+    expect([v.stuck_rc, v.stuck_left, v.rc]).toEqual(["1", "yes", "0"]);
+    expect(Number(v.stuck_ms)).toBeLessThan(10_000);
+    expect(["", "Z"]).toContain(v.state ?? "");
+    expect(readFileSync(join(d, "err"), "utf8")).toMatch(
+      /^stop_sessions: the walk of every \S+\/<pid>\/stat had not ended at the stop's bound, [23] s after the stop began, so no session was stopped$/m
+    );
+  });
+
   test("process table: Stage 3's sweep of a run's process with threads and memory, then its read of the table and the next run's", () => {
     const work = freshDir("table");
     // The checkpoint's own lines, from its sweep to its read of the table. The run's processes carry

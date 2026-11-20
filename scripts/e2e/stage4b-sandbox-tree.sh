@@ -1644,9 +1644,9 @@ start_daemon() {
 # ports too, which a child of the daemon, or any process that inherited its socket, keeps after the
 # daemon's pid is gone: the daemon's next start (start_daemon, whose ports_free refuses a port still
 # held) and the next run's ports_free read those ports. It returns stop_pid's status, 1 with what is
-# still there named. Every stop of the daemon runs it, and no other line signals the daemon's pid
-# (wait-gone.test.ts reads every line of this script for one): restart_stop, the hygiene check's
-# stop and cleanup's. A port not set yet (a run cut before its ports were chosen) is no target.
+# still there named. Every stop of the daemon runs it, and no other command signals its pid
+# (wait-gone-scripts.test.ts reads the script as bash reads it for one): restart_stop, the
+# hygiene check's stop and cleanup's. A port not set yet (a run cut before then) is no target.
 stop_daemon_ports() {
   stop_pid "$daemon_pid" "" ${port_daemon:+"port:$port_daemon"} ${port_worker_stream:+"port:$port_worker_stream"}
 }
