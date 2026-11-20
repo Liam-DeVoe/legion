@@ -12,9 +12,9 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -38,8 +38,8 @@ type brokerRig struct {
 	// apiAuth: a test resolves a path through it (ServeMux.Handler) to the pattern registered
 	// for it.
 	routes *http.ServeMux
-	broker *brokertokentest.StubBroker
-	caller *brokertokentest.Caller
+	broker *ciphertokentest.StubBroker
+	caller *ciphertokentest.Caller
 	logs   *bytes.Buffer
 }
 
@@ -82,7 +82,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		legionAgents: newLegionAgentRegistry(agents),
 	})
 
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	accountFile := filepath.Join(t.TempDir(), "account-token")
 	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
 		t.Fatalf("write the listener's own account token: %v", err)
@@ -106,7 +106,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		open:    apiAuth(listenerAPIAuth{logger: logger}, routes),
 		routes:  routes,
 		broker:  broker,
-		caller:  brokertokentest.NewCaller(t),
+		caller:  ciphertokentest.NewCaller(t),
 		logs:    logs,
 	}
 }
@@ -154,7 +154,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 		machines = "access-token-of-a-machine"
 	)
 	rig.broker.Says(token, sessionAnswer(bound, "ada@example.com", rig.caller.JKT()))
-	rig.broker.Says(revoked, brokertoken.Introspection{Active: false})
+	rig.broker.Says(revoked, ciphertoken.Introspection{Active: false})
 	rig.broker.Says(machines, serviceAnswer(service, "example-fleet", rig.caller.JKT()))
 	rig.register(t, bound)
 	rig.register(t, service)
@@ -332,7 +332,7 @@ const v1RoutePatterns = 15
 // R4 on a real bus, with no change to the listener's own code: a read-only token — the project
 // scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
 // answered 401 not_a_session on every path registerV1Routes registers, because the verifier
-// brokerTokens.open builds leaves the read-only switch unset (brokertoken.Options.ServesReadOnly)
+// brokerTokens.open builds leaves the read-only switch unset (ciphertoken.Options.ServesReadOnly)
 // and so refuses the token as a build before the switch refuses it.
 func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 	rig := newBrokerRig(t)
@@ -342,7 +342,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 // A results token — the project scope results beside the one scope results and the run a result
 // entry mints it for, the one token Dispatch's results route takes — is answered 401
 // not_a_session on every path registerV1Routes registers, because the verifier brokerTokens.open
-// builds leaves the results switch unset (brokertoken.Options.ServesResults) and so refuses the
+// builds leaves the results switch unset (ciphertoken.Options.ServesResults) and so refuses the
 // token as a build before the switch refuses it. A CI job's token writes its results and reaches
 // no listener.
 func TestAPIAuthRefusesAResultsTokenOnEveryV1Route(t *testing.T) {
@@ -365,7 +365,7 @@ func TestAPIAuthRefusesAResultsTokenOnEveryV1Route(t *testing.T) {
 // can only be the credential's. A path registerV1Routes gains later is behind apiAuth all the
 // same, since apiAuth wraps the whole of /v1 once (main.go); TestAPIAuthBrokerToken holds that
 // apiAuth refuses the token before any handler runs.
-func walkV1RoutesRefusing(t *testing.T, rig *brokerRig, session string, refused brokertoken.Introspection) {
+func walkV1RoutesRefusing(t *testing.T, rig *brokerRig, session string, refused ciphertoken.Introspection) {
 	t.Helper()
 	const (
 		named        = "ses_rig_named"

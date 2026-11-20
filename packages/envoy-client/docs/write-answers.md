@@ -53,7 +53,7 @@ The body is named as any gateway's body is: one redacted plain-text line, as the
 The listener's client refuses a redirect the same way.
 An `EnvoyApiError` of a 3xx names the method, the URL without its user and password, the status and the origin (`transport.ts`).
 It names the body as one redacted line too.
-The pool identity of `@legion/broker-client` names a 3xx of the security token service as it names any other non-2xx: `HTTP <status>`, with the Google error code that its body names, if any.
+The pool identity of `@legion/cipher-client` names a 3xx of the security token service as it names any other non-2xx: `HTTP <status>`, with the Google error code that its body names, if any.
 The GitHub Actions identity of the Go broker client follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
 
 ## An answer of the secrets broker's airlock proxy

@@ -29,7 +29,7 @@ import {
 } from "./fake-github-actions";
 
 // The local stack a CI job writes its result on, with every part that a production job meets
-// but GitHub itself: the real secrets broker (./cmd/broker) with one result entry, the real
+// but GitHub itself: the real secrets broker (./cmd/cipherd) with one result entry, the real
 // Dispatch server (./cmd/dispatch) reading that broker, and a stand-in of GitHub
 // (fake-github-actions.ts), which issues the job's OIDC token and answers Dispatch's reads of the
 // check run and of the spec files. A cluster's token issuer for Dispatch's own account at the
@@ -250,9 +250,9 @@ export async function startCIResultsStack(options: {
     const bin = path.join(work, "bin");
     await buildGoBinaries({
       bin,
-      packages: ["./cmd/broker", "./cmd/dev-oidc-issuer", "./cmd/agent-secrets"],
+      packages: ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./cmd/cipher"],
       stack: "CI results",
-      binaries: "./cmd/broker, ./cmd/dev-oidc-issuer and ./cmd/agent-secrets",
+      binaries: "./cmd/cipherd, ./cmd/dev-oidc-issuer and ./cmd/cipher",
     });
 
     // The cluster's issuer: Dispatch's own token at the broker, rewritten before it lapses, and
@@ -293,7 +293,7 @@ export async function startCIResultsStack(options: {
     );
     const brokerLog = path.join(work, "broker.log");
     broker = spawnLogged(
-      [path.join(bin, "broker")],
+      [path.join(bin, "cipherd")],
       {
         PATH: SHELL_PATH,
         HOME: work,
@@ -378,7 +378,7 @@ export async function startCIResultsStack(options: {
     // and the legs of one push share its run.
     const runIds = new Map<string, number>();
     return {
-      agentSecrets: path.join(bin, "agent-secrets"),
+      agentSecrets: path.join(bin, "cipher"),
       dispatch,
       brokerUrl,
       github,

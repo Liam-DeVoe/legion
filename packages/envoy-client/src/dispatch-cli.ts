@@ -292,7 +292,7 @@ const RESERVE_MARGIN_MS = 2_000;
 
 /** How long Dispatch's check of a broker token waits for the broker before it answers
  *  `503 BROKER_UNAVAILABLE`, with no handler run: `introspectTimeout`,
- *  packages/envoy/internal/brokertoken/introspect.go, which a test holds this copy to. */
+ *  packages/envoy/internal/ciphertoken/introspect.go, which a test holds this copy to. */
 export const DISPATCH_TOKEN_CHECK_WAIT_MS = 5_000;
 /**
  * 60 s in all, the write client's own deadline (DISPATCH_TOOL_DEADLINE_MS). The reserve must be
