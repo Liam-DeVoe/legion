@@ -211,6 +211,11 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 	return api.State{Repositories: api.RepositoriesView{Owners: owners, Mapped: mapped}}, nil, nil
 }
 
+// ObservedState answers the empty observed view: `legion controller start` reads the whole state.
+func (fixedStateSource) ObservedState(context.Context, pgx.Tx) (api.ObservedState, error) {
+	return api.ObservedState{}, nil
+}
+
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
 // `legion issue status` reach it: the real api.NewServer over an in-memory controller record, grants,
 // and Dispatch, on a loopback port, with every request that reached it recorded.

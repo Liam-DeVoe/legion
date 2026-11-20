@@ -1639,14 +1639,77 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 	return wakes
 }
 
+// ObservedState is the observed view of the state route, the body of
+// `GET /legion/v1/state?view=observed` (contract 196): what Dispatch reads of a daemon and nothing
+// more. Daemon, Settings and Admission are the full state's own blocks, read in the same
+// repeatable-read snapshot: the same DaemonInfo, stateSeq, stateId and stateRun included, the same
+// settings, and the same admission block, unfiltered and in the same order. Issues lists every issue
+// the full state lists, and each carries only the members Dispatch observes (ObservedIssue).
+type ObservedState struct {
+	Daemon    DaemonInfo               `json:"daemon"`
+	Settings  Settings                 `json:"settings"`
+	Admission Admission                `json:"admission"`
+	Issues    map[string]ObservedIssue `json:"issues"`
+}
+
+// MarshalJSON keeps `issues` an object on the wire for a state that lists no issue.
+func (s ObservedState) MarshalJSON() ([]byte, error) {
+	type wire ObservedState
+	out := wire(s)
+	if out.Issues == nil {
+		out.Issues = map[string]ObservedIssue{}
+	}
+	return json.Marshal(out)
+}
+
+// ObservedIssue is one issue of the observed view: the members of the full view's issue (Issue) that
+// Dispatch observes, each spelled and valued as the full view spells and values it. Tree, Slot,
+// WaitingOn and Architect are absent where the full view leaves them absent, and Workers is absent
+// where the full view's `workers` is empty. The full view's other members are not served.
+type ObservedIssue struct {
+	Key       string                        `json:"key"`
+	Phase     phase.Phase                   `json:"phase"`
+	Tree      string                        `json:"tree,omitempty"`
+	Slot      *ObservedSlot                 `json:"slot,omitempty"`
+	WaitingOn *WaitingOnView                `json:"waitingOn,omitempty"`
+	Architect *ObservedClaim                `json:"architect,omitempty"`
+	Workers   map[claim.Role]ObservedWorker `json:"workers,omitempty"`
+}
+
+// ObservedSlot is the admission slot of an issue as the observed view shows it: its index (the full
+// view's SlotView.Index) and nothing else.
+type ObservedSlot struct {
+	Index int `json:"index"`
+}
+
+// ObservedClaim is a claim as the observed view shows it: the state of the full view's claim
+// (ClaimView.State) and nothing else.
+type ObservedClaim struct {
+	State string `json:"state"`
+}
+
+// ObservedWorker is one entry of an observed issue's `workers`: the claim of the full view's entry
+// (PhaseView.Claim), as the observed view shows a claim.
+type ObservedWorker struct {
+	Claim ObservedClaim `json:"claim"`
+}
+
+// ObservedClaimOf is c as the observed view shows it: the state its full view serves
+// (ClaimViewOf), so the two views cannot give one claim two states.
+func ObservedClaimOf(c supervise.Claim) ObservedClaim {
+	return ObservedClaim{State: ClaimViewOf(c).State}
+}
+
 // StateSource maps the daemon's durable and live facts through the transaction the state route
 // owns. It does not commit it: the route can refuse one failed projection without publishing a
-// partial snapshot. It answers the project's claims beside the state, the ones it read through
+// partial snapshot. State answers the project's claims beside the state, the ones it read through
 // that transaction to build the claim views, so the route decides what the caller's plugin reads
 // (server's stateFor) from the claims of the snapshot it serves, rather than reading the table a
-// second time at another moment.
+// second time at another moment. ObservedState answers the observed view (ObservedState) through
+// the same transaction, and reads only what that view needs.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
+	ObservedState(ctx context.Context, tx pgx.Tx) (ObservedState, error)
 }
 
 // StateTransactions begins the one snapshot transaction every state response reads through.

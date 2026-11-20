@@ -49,11 +49,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 		return api.State{}, err
 	}
 	knownIssues := make(map[string]struct{}, len(issues))
+	keys := make([]string, 0, len(issues))
 	// lingering is every tree whose root lingers, or closed after it lingered: only a root carries a
 	// linger deadline, and re-admission clears it.
 	lingering := make(map[string]bool)
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
+		keys = append(keys, issue.Key)
 		if issue.Lingers() {
 			lingering[issue.Key] = true
 		}
@@ -93,6 +95,24 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	for _, check := range openChecks {
 		checks[check.Issue] = check
 	}
+	// The three facts each issue's view reads of its own rows — its phase rows, its pull request and
+	// its design gates — are each read once for every issue the state lists, before the loop below,
+	// which looks each issue up in the answers and makes no statement of its own. Each bulk read
+	// answers an issue what its read by key answers it (record.Store.AllPhases beside Phases,
+	// PullRequestsOf beside PullRequest, Gates beside GatesOf); an issue holding no row has no
+	// entry, which reads as the empty list, the nil pull request and the empty gates.
+	phases, err := s.AllPhases(ctx, tx)
+	if err != nil {
+		return api.State{}, err
+	}
+	pullRequests, err := s.PullRequestsOf(ctx, tx, keys)
+	if err != nil {
+		return api.State{}, err
+	}
+	gatesOf, err := s.Gates(ctx, tx, keys)
+	if err != nil {
+		return api.State{}, err
+	}
 
 	// The entry each claim was last queued a task of, by the issue and role the claim holds
 	// (supervise.Claim.GivenEntry), and beside it the claim's handshake of the last entry it was
@@ -123,24 +143,19 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 		claimViews[current.Token] = view
 	}
 
-	slotViews := make(map[string]api.SlotView, len(slots))
-	for _, slot := range slots {
-		if _, known := knownIssues[slot.Issue]; !known {
-			continue
-		}
-		slotViews[slot.Issue] = api.SlotView{Index: slot.Index, AdmittedAt: slot.AdmittedAt}
-	}
+	// Which claim each issue's `architect` and each role of its `workers` show, the slot each issue
+	// holds and what Dispatch observes of each issue's own record are decided once, for this view
+	// and for the observed view of the state (Observe) alike, by the one definition both read
+	// (listIssues): the two views cannot disagree about what Dispatch observes.
+	listed, unrecorded := listIssues(issues, phases, slots, claims)
 
-	projected := api.State{Issues: make(map[string]api.Issue, len(issues))}
+	projected := api.State{Issues: make(map[string]api.Issue, len(issues)+len(unrecorded))}
 	for _, issue := range issues {
-		// What Dispatch observes of the issue's own record — its phase, its tree and what it
-		// waits on from a person — is built by the one definition a state event's values are
-		// built by too (record.ObservationOf), so the event and this view never disagree.
-		observed := record.ObservationOf(issue)
+		entry := listed[issue.Key]
 		view := api.Issue{
 			Key:           issue.Key,
 			Generation:    issue.Generation,
-			Phase:         observed.Phase,
+			Phase:         entry.observed.Phase,
 			Status:        issue.Status,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
@@ -152,11 +167,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
 			Ancestry: issue.Ancestry,
 			// What the root waits on from a person, present only while it is in awaiting_person.
-			WaitingOn: observed.WaitingOn,
+			WaitingOn: entry.observed.WaitingOn,
 			Workers:   map[claim.Role]api.PhaseView{},
 		}
-		if observed.Tree != nil {
-			view.Tree = *observed.Tree
+		if entry.observed.Tree != nil {
+			view.Tree = *entry.observed.Tree
 		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
@@ -178,49 +193,16 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 				view.HoldReason = string(issue.Hold.Reason)
 			}
 		}
-		if slot, ok := slotViews[issue.Key]; ok {
-			view.Slot = &slot
+		if entry.slot != nil {
+			view.Slot = &api.SlotView{Index: entry.slot.Index, AdmittedAt: entry.slot.AdmittedAt}
 		}
+		entry.putClaims(&view, claimViews)
 
-		phases, err := s.Phases(ctx, tx, issue.Key)
-		if err != nil {
-			return api.State{}, err
-		}
+		rows := phases[issue.Key]
 		// The reviewer's own row, the single row of its role (the phases table is keyed by issue
 		// and role): the round's decision is read from it, and so is what the round waits on from
 		// GitHub (mergeWaitView). The zero row is an issue whose reviewer has never had one.
-		var reviewer record.PhaseRow
-		for _, item := range phases {
-			if item.Role == claim.RoleReviewer {
-				reviewer = item
-			}
-			claimView, live := claimViews[item.Claim]
-			if !live {
-				continue
-			}
-			// The architect is the issue's architect and no worker of its `workers` map, so no
-			// phase view is built for it. Its row is read all the same: the entry below is
-			// read off `phases` by the role that works the issue's phase (phase.RoleFor), which
-			// is the architect for a root at admitted.
-			if item.Role == claim.RoleArchitect {
-				view.Architect = &claimView
-				continue
-			}
-			// The worker's view exists only while its claim is live, so its counts of the moves
-			// back ride with the claim exactly as `rounds` does: a role whose process has gone
-			// shows neither, and the record keeps both for the role's next claim.
-			worker := api.PhaseView{
-				Claim:         claimView,
-				HandoffCommit: item.HandoffCommit,
-				Pass:          item.Pass,
-				Rounds:        item.Rounds,
-				BackwardMoves: item.BackwardMoves,
-			}
-			if item.HandoffRecord != "" {
-				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}
-			}
-			view.Workers[item.Role] = worker
-		}
+		reviewer := record.PhaseRowOf(rows, claim.RoleReviewer)
 		// The entry the role of this issue's current phase stands on and the entry that role was
 		// given: what a reader tells a role holding the work its row names from one the daemon has
 		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
@@ -233,7 +215,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 		// the same role's claim against, so the state shows what the admission pass weighs.
 		role := phase.RoleFor(issue.Phase)
 		if role != "" {
-			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
+			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(rows, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}
 		// Beside them the two times of a handshake: when a task of an entry was first queued to a
 		// claim and when a turn of its worker first confirmed one (api.Issue.EntryQueuedAt and
@@ -254,9 +236,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
-		pr, err := s.PullRequest(ctx, tx, issue.Key)
-		if err != nil {
-			return api.State{}, err
+		var pr *record.PullRequest
+		if found, recorded := pullRequests[issue.Key]; recorded {
+			pr = &found
 		}
 		if pr != nil {
 			reviewDecision := ""
@@ -274,10 +256,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 		}
 		view.MergeWait = mergeWaitView(issue, reviewer, pr)
 
-		gates, err := s.GatesOf(ctx, tx, issue.Key)
-		if err != nil {
-			return api.State{}, err
-		}
+		gates := gatesOf[issue.Key]
 		gate := record.SpecGate(gates)
 		if gate != nil {
 			view.DesignGate = &api.GateView{
@@ -301,37 +280,20 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 		projected.Issues[issue.Key] = view
 	}
 
-	for _, current := range claims {
-		// The daemon's own controller (`controller: daemon`) holds a claim on no issue: the state
-		// shows it as the project's controller (controllerLocator), never as an issue's worker,
-		// since an issue keyed "" refuses the whole document at every client, which reads an
-		// issue's `key` as a non-empty string.
-		if claim.IsController(current.Role, current.Issue, current.Tree) {
-			continue
+	// A claim on an issue the workflow does not record — an operator's spawn, which is what Stage 2
+	// makes and what the merge-queue holder is — is listed for the claim's sake, and says so
+	// (listIssues): an empty phase is no value of the phase enum and an empty status is refused
+	// too, so the whole document would be refused over a row that is a legitimate state.
+	for _, key := range unrecorded {
+		entry := listed[key]
+		view := api.Issue{
+			Key:     key,
+			Phase:   entry.observed.Phase,
+			Status:  string(api.Unrecorded),
+			Workers: map[claim.Role]api.PhaseView{},
 		}
-		claimView := claimViews[current.Token]
-		view, known := projected.Issues[current.Issue]
-		if !known {
-			// A claim on an issue the workflow does not record — an operator's spawn, which is
-			// what Stage 2 makes and what the merge-queue holder is — is listed for the claim's
-			// sake, and says so: an empty phase is no value of the phase enum and an empty status
-			// is refused too, so the whole document would be refused over a row that is a
-			// legitimate state.
-			view = api.Issue{
-				Key:     current.Issue,
-				Phase:   api.Unrecorded,
-				Status:  string(api.Unrecorded),
-				Workers: map[claim.Role]api.PhaseView{},
-			}
-		}
-		if current.Role == claim.RoleArchitect {
-			if view.Architect == nil {
-				view.Architect = &claimView
-			}
-		} else if _, known := view.Workers[current.Role]; !known {
-			view.Workers[current.Role] = api.PhaseView{Claim: claimView}
-		}
-		projected.Issues[current.Issue] = view
+		entry.putClaims(&view, claimViews)
+		projected.Issues[key] = view
 	}
 
 	// Each issue's own reading of admission — its place in the waiting line and why it is not
@@ -484,6 +446,195 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 		}
 	}
 	return projected, nil
+}
+
+// Observe is the observed view of the state route (api.ObservedState) through tx, the caller's
+// repeatable-read transaction, all but its daemon block and its settings, which the caller sets as
+// it sets them on the full state (Project). The admission block is the full state's own: the same
+// judgement (blockers.JudgeAdmission) over the same reads, unfiltered and in the same order. The
+// issues are every issue the full state lists, each with the members Dispatch observes, decided by
+// the definition the full state's views are built from (listIssues). It reads the issues, every
+// phase row in one statement, the slots and what the admission judgement reads, and it makes no
+// statement for any one issue. project, cap, steps, claims and now are Project's.
+func Observe(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap int, steps []record.DesignStep, claims []supervise.Claim, now time.Time) (api.ObservedState, error) {
+	issues, err := s.Issues(ctx, tx)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	phases, err := s.AllPhases(ctx, tx)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	slots, err := s.Slots(ctx, tx)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	judged, err := blockers.JudgeAdmission(ctx, tx, s, project, steps, slots, cap, now)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	listed, _ := listIssues(issues, phases, slots, claims)
+	observed := api.ObservedState{Admission: api.AdmissionOf(judged.Block), Issues: make(map[string]api.ObservedIssue, len(listed))}
+	for key, entry := range listed {
+		observed.Issues[key] = entry.observedView(key)
+	}
+	return observed, nil
+}
+
+// listedIssue is one issue the state lists, as both views of the state show what Dispatch observes
+// of it (listIssues): its own record's observation, the slot it holds, and the claims its
+// `architect` and its `workers` show.
+type listedIssue struct {
+	// observed is what Dispatch observes of the issue's own record (record.ObservationOf), and for
+	// an issue the workflow does not record its phase alone, api.Unrecorded.
+	observed record.IssueObservation
+	// slot is the admission slot the issue holds, nil where it holds none. Only an issue the record
+	// holds is given one.
+	slot *record.Slot
+	// architect is the claim the issue's `architect` shows, nil where it shows none.
+	architect *supervise.Claim
+	// workers is the claim each role of the issue's `workers` shows, by role; nil where it shows
+	// none.
+	workers map[claim.Role]shownWorker
+}
+
+// shownWorker is the claim one role of an issue's `workers` shows, and the phases row the claim was
+// found through, which the full view reads the role's counts from; row is nil for a claim shown
+// without one.
+type shownWorker struct {
+	claim *supervise.Claim
+	row   *record.PhaseRow
+}
+
+// listIssues is the one definition of what both views of the state show of each issue Dispatch
+// observes (Project, Observe): every issue of issues, by key, and every issue a claim names that
+// issues does not hold, whose keys unrecorded lists in the order of their first claim. phases is
+// each issue's phases rows (record.Store.AllPhases), slots every slot the store holds and claims the
+// project's claims, all read in the caller's one snapshot.
+//
+// The rule, in the order it is applied:
+//
+//   - an issue's own record decides its phase, its tree and its wait (record.ObservationOf);
+//   - an issue the record holds shows the slot it holds, and a slot of a key the record does not
+//     hold is shown nowhere;
+//   - a phases row whose claim token names a claim of claims shows that claim: the architect's row
+//     as the issue's `architect`, which is no worker of its `workers`, and every other role's row as
+//     that role's entry of `workers`. A row whose claim is not among claims shows nothing, so a
+//     worker's view, and the counts its row carries, exist only while its claim does;
+//   - then each claim, in claims' order, that no row showed: on its issue's `architect` where that
+//     is empty, and on its role's entry of `workers` where that is empty. The daemon's own
+//     controller (`controller: daemon`) holds a claim on no issue and is skipped: the state shows it
+//     as the project's controller, never as an issue's worker, since an issue keyed "" refuses the
+//     whole document at every client;
+//   - a claim on an issue the record does not hold lists that issue at api.Unrecorded, with no
+//     tree, no slot and no wait.
+func listIssues(issues []record.Issue, phases map[string][]record.PhaseRow, slots []record.Slot, claims []supervise.Claim) (map[string]listedIssue, []string) {
+	byToken := make(map[claim.Token]*supervise.Claim, len(claims))
+	for i := range claims {
+		byToken[claims[i].Token] = &claims[i]
+	}
+	listed := make(map[string]listedIssue, len(issues))
+	for _, issue := range issues {
+		entry := listedIssue{observed: record.ObservationOf(issue)}
+		rows := phases[issue.Key]
+		for i := range rows {
+			row := &rows[i]
+			shown, live := byToken[row.Claim]
+			if !live {
+				continue
+			}
+			if row.Role == claim.RoleArchitect {
+				entry.architect = shown
+				continue
+			}
+			entry.showWorker(row.Role, shownWorker{claim: shown, row: row})
+		}
+		listed[issue.Key] = entry
+	}
+	for i := range slots {
+		entry, known := listed[slots[i].Issue]
+		if !known {
+			continue
+		}
+		entry.slot = &slots[i]
+		listed[slots[i].Issue] = entry
+	}
+	var unrecorded []string
+	for i := range claims {
+		current := &claims[i]
+		if claim.IsController(current.Role, current.Issue, current.Tree) {
+			continue
+		}
+		entry, known := listed[current.Issue]
+		if !known {
+			unrecorded = append(unrecorded, current.Issue)
+			entry = listedIssue{observed: record.IssueObservation{Phase: api.Unrecorded}}
+		}
+		if current.Role == claim.RoleArchitect {
+			if entry.architect == nil {
+				entry.architect = current
+			}
+		} else if _, shown := entry.workers[current.Role]; !shown {
+			entry.showWorker(current.Role, shownWorker{claim: current})
+		}
+		listed[current.Issue] = entry
+	}
+	return listed, unrecorded
+}
+
+// showWorker makes worker the claim role shows in the issue's `workers`.
+func (l *listedIssue) showWorker(role claim.Role, worker shownWorker) {
+	if l.workers == nil {
+		l.workers = make(map[claim.Role]shownWorker, 1)
+	}
+	l.workers[role] = worker
+}
+
+// putClaims puts the claims l shows onto view, the full state's view of the issue, each as its full
+// claim view (views, by token): the architect as `architect`, and each worker with the counts of
+// the phases row it was found through, its handoff, its pass, its rounds and its counts of the moves
+// back. Those counts ride with the claim: a role whose claim has gone shows none of them, and the
+// record keeps them for the role's next claim. The architect's own row is read all the same by the
+// caller, for the entry of a root at admitted (phase.RoleFor).
+func (l listedIssue) putClaims(view *api.Issue, views map[claim.Token]api.ClaimView) {
+	if l.architect != nil {
+		architect := views[l.architect.Token]
+		view.Architect = &architect
+	}
+	for role, worker := range l.workers {
+		shown := api.PhaseView{Claim: views[worker.claim.Token]}
+		if row := worker.row; row != nil {
+			shown.HandoffCommit, shown.Pass, shown.Rounds, shown.BackwardMoves = row.HandoffCommit, row.Pass, row.Rounds, row.BackwardMoves
+			if row.HandoffRecord != "" {
+				shown.HandoffRecord = &api.HandoffRecordView{ID: row.HandoffRecord, Version: row.HandoffVersion}
+			}
+		}
+		view.Workers[role] = shown
+	}
+}
+
+// observedView is l as the observed view shows the issue keyed key (api.ObservedIssue): each value
+// is the one the full view serves at that issue, its claims' states read as the full view's claim
+// views read them (api.ObservedClaimOf).
+func (l listedIssue) observedView(key string) api.ObservedIssue {
+	view := api.ObservedIssue{Key: key, Phase: l.observed.Phase, WaitingOn: l.observed.WaitingOn}
+	if l.observed.Tree != nil {
+		view.Tree = *l.observed.Tree
+	}
+	if l.slot != nil {
+		view.Slot = &api.ObservedSlot{Index: l.slot.Index}
+	}
+	if l.architect != nil {
+		architect := api.ObservedClaimOf(*l.architect)
+		view.Architect = &architect
+	}
+	if len(l.workers) > 0 {
+		view.Workers = make(map[claim.Role]api.ObservedWorker, len(l.workers))
+		for role, worker := range l.workers {
+			view.Workers[role] = api.ObservedWorker{Claim: api.ObservedClaimOf(*worker.claim)}
+		}
+	}
+	return view
 }
 
 // assignmentViews is every experiment answer that applies to the issue key, whose tree's root is

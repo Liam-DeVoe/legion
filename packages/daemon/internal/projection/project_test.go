@@ -35,7 +35,7 @@ type projectionStore struct {
 	mirror []record.DispatchIssueRow
 	// lifecycles names the trees whose lifecycle stands open under the workflow, which is what
 	// says a tree runs (record.TreeLive); gates is each issue's design gates by step, as
-	// record.Store.GatesOf and record.Store.Gates answer them; owed is the start each issue owes
+	// record.Store.Gates answers them; owed is the start each issue owes
 	// a worker of it, which is a returning issue's place in the waiting line. The three are what
 	// record.ReadLineFacts reads for the line.
 	lifecycles []string
@@ -84,15 +84,25 @@ func (projectionStore) PendingStatusWrites(context.Context, pgx.Tx, string) ([]r
 func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.Time) ([]record.HeldRow, error) {
 	return s.held, nil
 }
-func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
-	return s.phases[issue], nil
+
+// AllPhases is every issue's phases rows, by issue, as the real store answers them in one
+// statement (record.Postgres.AllPhases).
+func (s projectionStore) AllPhases(context.Context, pgx.Tx) (map[string][]record.PhaseRow, error) {
+	return s.phases, nil
 }
-func (s projectionStore) PullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
-	return s.pullRequests[issue], nil
+
+// PullRequestsOf is the pull request of each of issues this store holds, by issue, as the real
+// store reads them in one statement: an issue with none has no entry.
+func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
+	requests := make(map[string]record.PullRequest, len(issues))
+	for _, issue := range issues {
+		if pr := s.pullRequests[issue]; pr != nil {
+			requests[issue] = *pr
+		}
+	}
+	return requests, nil
 }
-func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
-	return s.gates[issue], nil
-}
+
 func (s projectionStore) OpenProductionChecks(context.Context, pgx.Tx) ([]record.ProductionCheck, error) {
 	return s.checks, nil
 }

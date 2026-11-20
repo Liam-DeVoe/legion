@@ -30,6 +30,7 @@ import {
   LegionHandoffCompleteResponse,
   LegionInstant,
   LegionIssueStatusRequest,
+  LegionObservedStateResponse,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
   LegionOperatorProjectPauseRequest,
@@ -93,6 +94,9 @@ const schemas: Record<string, z.ZodType> = {
   // pause has ended, which carries `lastPause` and no `paused` (contract 178). state.json is the
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
+  // Written beside state.json by internal/api's TestStateGolden: the observed view of the state
+  // state.json holds, the body of `GET /legion/v1/state?view=observed` (contract 196).
+  "observed-state.json": LegionObservedStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
@@ -578,9 +582,11 @@ test("every answer-side object strips a key it does not name", () => {
   // A predicate that matched nothing would leave every assertion below holding vacuously.
   expect(names.length).toBeGreaterThan(0);
   expect(found.refuses).toEqual([]);
-  // `settings` is the one loose block (contract 35). A pending status write's `payload` is a
-  // record, not an object, and is no node of this census.
-  expect(found.loose).toEqual(["LegionStateResponse.settings"]);
+  // `settings` is the one loose block (contract 35). The state answer and its observed view carry
+  // the same node, which the census walks once, at the path of the first of the two in the
+  // module's name order. A pending status write's `payload` is a record, not an object, and is no
+  // node of this census.
+  expect(found.loose).toEqual(["LegionObservedStateResponse.settings"]);
   expect(found.strips.length).toBeGreaterThan(0);
 });
 

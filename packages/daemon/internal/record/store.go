@@ -674,8 +674,11 @@ func scanIssue(row scanner) (*Issue, error) {
 	return &issue, nil
 }
 
+// phaseColumns is the columns of a phases row as scanPhase reads them, in its order.
+const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head`
+
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head from phases
+	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -691,6 +694,32 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
+	}
+	return phases, nil
+}
+
+// AllPhases is every phases row the store holds, by issue, in one statement: each issue's rows are
+// the rows Phases answers for that issue, with the same columns, the same scan and the same order
+// (by role). An issue with no row has no entry, which reads as the empty list Phases answers for it.
+// The statement reads the whole table, as Issues reads every issue: the state route lists every
+// issue the store holds (projection.Project), and one statement for all of them replaces one
+// statement for each.
+func (s *Postgres) AllPhases(ctx context.Context, tx pgx.Tx) (map[string][]PhaseRow, error) {
+	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases order by issue, role`)
+	if err != nil {
+		return nil, fmt.Errorf("list the phases of every issue: %w", err)
+	}
+	defer rows.Close()
+	phases := map[string][]PhaseRow{}
+	for rows.Next() {
+		phase, err := scanPhase(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list the phases of every issue: %w", err)
+		}
+		phases[phase.Issue] = append(phases[phase.Issue], phase)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the phases of every issue: %w", err)
 	}
 	return phases, nil
 }

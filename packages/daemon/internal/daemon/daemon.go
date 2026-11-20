@@ -3411,16 +3411,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, s.project, now); err != nil {
 		return api.State{}, nil, err
 	}
-	state.Daemon = api.DaemonInfo{
-		Project:       s.project,
-		SchemaVersion: version,
-		Boots:         boots,
-		FirstBootAt:   firstBootAt,
-		StartedAt:     s.startedAt,
-		StateSeq:      &published.Seq,
-		StateID:       published.StateID,
-		StateRun:      s.stateRun,
-	}
+	state.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
 	state.Settings = s.settings
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
@@ -3439,6 +3430,61 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		state.Repositories = s.repositories.view(caches)
 	}
 	return state, claims, nil
+}
+
+// ObservedState is the observed view of the project's state through tx (api.StateSource): the
+// daemon block and the settings State serves, and the admission block and the issues
+// projection.Observe builds, all read in tx's one snapshot, so the view's stateSeq is the sequence
+// of the newest state event its issues and its admission block hold, as the full state's is. It
+// reads only what the view needs: the schema version, the boots, the state publication and the
+// project's claims here, and in projection.Observe the issues, every phase row in one statement,
+// the slots and what the admission judgement reads. It makes no read for any one issue, and it
+// judges nothing the view does not serve: no stranded claims, no stalled architects, no paced
+// wakes.
+func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.ObservedState, error) {
+	version, err := s.store.SchemaVersionTx(ctx, tx)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	published, err := s.records.StatePublication(ctx, tx, s.project)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	claims, err := s.store.ClaimsTx(ctx, tx)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	claims = ofProject(claims, s.projectToken)
+	now := time.Now().UTC()
+	if s.now != nil {
+		now = s.now().UTC()
+	}
+	observed, err := projection.Observe(ctx, tx, projectRecords{Store: s.records, project: s.project}, s.project, s.admissionCap, s.gatedSteps, claims, now)
+	if err != nil {
+		return api.ObservedState{}, err
+	}
+	observed.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
+	observed.Settings = s.settings
+	return observed, nil
+}
+
+// daemonInfo is the daemon block both views of the state serve (api.DaemonInfo), from what each
+// read in its snapshot: the store's schema version, the project's boots and the state publication.
+func (s *source) daemonInfo(version, boots int, firstBootAt time.Time, published record.StatePublication) api.DaemonInfo {
+	return api.DaemonInfo{
+		Project:       s.project,
+		SchemaVersion: version,
+		Boots:         boots,
+		FirstBootAt:   firstBootAt,
+		StartedAt:     s.startedAt,
+		StateSeq:      &published.Seq,
+		StateID:       published.StateID,
+		StateRun:      s.stateRun,
+	}
 }
 
 // adoptIdentity is the supervisor's identity for a working copy's adoption (supervise.Deps.Identity)

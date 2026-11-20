@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -784,7 +785,16 @@ func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, requ
 // is written — so the handler would hold a second full copy of a body that measured 4,055,424
 // bytes on the production deployment on 2026-11-12. One such copy per concurrent read is a
 // second resource failure inside the first one this bounds.
+//
+// The route serves one view beside the whole state: `?view=observed` is what Dispatch reads
+// (ObservedState, StateSource.ObservedState), read through the same transaction under the same
+// bound, statement timeout and rollback. Any other `view` is refused before a transaction begins
+// (observedViewAsked).
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
+	observed, ok := observedViewAsked(w, r)
+	if !ok {
+		return
+	}
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
@@ -816,6 +826,10 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
+	if observed {
+		s.serveObservedState(w, r, reading, tx)
+		return
+	}
 	state, claims, err := s.state.State(reading, tx)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: state source failed")
@@ -833,6 +847,47 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		state.Consumers = ConsumerLagViewsOf(s.consumerLag(reading))
 	}
 	writeJSON(w, http.StatusOK, s.stateFor(r, state, claims))
+}
+
+// observedView is the one value of the state route's `view` parameter: the observed view
+// (ObservedState).
+const observedView = "observed"
+
+// observedViewAsked is whether r asks the state route for the observed view, and false with ok when
+// it asks for the whole state, which a request with no `view` parameter does. A `view` of any other
+// value, an empty one or a second one among them, is answered 400 INVALID_VIEW here, naming the
+// value and the one view the route serves, and ok is false: the route then reads nothing.
+func observedViewAsked(w http.ResponseWriter, r *http.Request) (observed, ok bool) {
+	views, asked := r.URL.Query()["view"]
+	if !asked {
+		return false, true
+	}
+	if len(views) == 1 && views[0] == observedView {
+		return true, true
+	}
+	writeFailure(w, http.StatusBadRequest, "INVALID_VIEW", fmt.Sprintf(
+		"view %q is no view of the state: the one view this route serves is %q, and a request with no view gets the whole state",
+		strings.Join(views, ","), observedView))
+	return false, false
+}
+
+// serveObservedState answers the observed view out of tx, the route's own snapshot, and commits
+// it before it writes the body, as the whole state does. The view is served as the source built it:
+// it carries no key that a plugin's contract adds, so stateFor's narrowings have nothing of it to
+// take out, and it carries no consumers' lag, which is no part of what Dispatch observes.
+func (s *server) serveObservedState(w http.ResponseWriter, r *http.Request, reading context.Context, tx pgx.Tx) {
+	observed, err := s.state.ObservedState(reading, tx)
+	if err != nil {
+		s.logRequestFailure(r, err, "api: observed state source failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		return
+	}
+	if err := tx.Commit(reading); err != nil {
+		s.logRequestFailure(r, err, "api: commit state transaction failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, observed)
 }
 
 // statementBound is bound as PostgreSQL's statement_timeout takes it: whole milliseconds, and

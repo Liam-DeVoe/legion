@@ -2528,6 +2528,16 @@ package api
 // `packages/contracts/src/legion-api.ts` reads the three keys as optional, so a reader of this
 // contract served such a body, or the body of a daemon before 196, takes them as absent rather
 // than as 0.
+// The same contract adds the observed view of the route, `GET /legion/v1/state?view=observed`
+// (api.ObservedState, StateSource.ObservedState): what Dispatch observes of a daemon and nothing
+// more, read in the same repeatable-read, read-only snapshot under the same bound as the whole
+// state. It carries the whole state's daemon block, its `settings` and its `admission` block,
+// unfiltered and in the same order, and `issues`, every issue the whole state lists with only its
+// `key`, `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and
+// `workers.<role>.claim.state`, each absent where the whole state's is absent. The route answers
+// any other `view` 400 INVALID_VIEW, and a request with no `view` gets the whole state, whose body
+// does not change. `packages/contracts/src/legion-api.ts` reads the view as
+// LegionObservedStateResponse.
 // (This change first took 166, the lowest number above main's 152 that no open pull request
 // declared, as `.github/scripts/check-daemon-api-contract.sh` read it on 2026-11-18: 153 #4115,
 // 154 #3659, 155 #4273, 156 #4065, 157 #3993, 158 #4251, #4259, #4261, #4269 and #4290, 159 #4175,

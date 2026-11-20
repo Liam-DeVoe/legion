@@ -1064,10 +1064,42 @@ func newest(times ...time.Time) time.Time {
 // source answers no mark and the route writes one (server's stateFor), so the fixture carries
 // the two numbers of `contract` and the plugin's schema is held to them. A caller below the
 // contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
+//
+// Beside it the test writes the observed view's golden (observed-state.json), the observed view of
+// the same state: the same daemon block, settings and admission block, and each issue of
+// state.json with the members Dispatch observes (ObservedIssue), so `legion-api.test.ts` holds the
+// observed schema to the body a deployment with this state serves at `?view=observed`.
 func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
 	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
 	golden(t, "state.json", state)
+	golden(t, "observed-state.json", observedOf(state))
+}
+
+// observedOf is state's observed view, issue for issue: each member Dispatch observes, as the full
+// view serves it. It is this test's reading of the observed view's shape, which internal/daemon's
+// own test holds the daemon's observed view to over a real store
+// (TestTheObservedViewIsTheFullStatesObservedPart).
+func observedOf(state State) ObservedState {
+	observed := ObservedState{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission,
+		Issues: make(map[string]ObservedIssue, len(state.Issues))}
+	for key, issue := range state.Issues {
+		view := ObservedIssue{Key: issue.Key, Phase: issue.Phase, Tree: issue.Tree, WaitingOn: issue.WaitingOn}
+		if issue.Slot != nil {
+			view.Slot = &ObservedSlot{Index: issue.Slot.Index}
+		}
+		if issue.Architect != nil {
+			view.Architect = &ObservedClaim{State: issue.Architect.State}
+		}
+		for role, worker := range issue.Workers {
+			if view.Workers == nil {
+				view.Workers = map[claim.Role]ObservedWorker{}
+			}
+			view.Workers[role] = ObservedWorker{Claim: ObservedClaim{State: worker.Claim.State}}
+		}
+		observed.Issues[key] = view
+	}
+	return observed
 }
 
 // Every plugin parses the state with the schema of the contract it was built at, and a

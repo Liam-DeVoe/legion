@@ -1283,6 +1283,43 @@ export const LegionStateResponse = z.object({
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
+/** A claim as the observed view shows it: the `state` of the full state's claim view
+ * (`legionClaimView`), and nothing else. */
+const legionObservedClaim = z.object({
+  state: z.enum(LEGION_CLAIM_STATES),
+});
+
+/** `api.ObservedIssue` — one issue of the observed view: the members of the full state's issue
+ * (`legionIssue`) that Dispatch observes, each spelled and valued as the full state spells and
+ * values it. `tree` is absent on an issue the workflow does not record, `slot` where the issue
+ * holds no slot, `waitingOn` outside `awaiting_person`, `architect` where the issue shows no
+ * architect, and `workers` where the full state's `workers` is empty. Its `slot` carries the
+ * index alone and each claim its state alone. */
+const legionObservedIssue = z.object({
+  key: nonEmptyString,
+  phase: z.enum(LEGION_PHASES),
+  tree: issueKey.optional(),
+  slot: z.object({ index: z.number().int().nonnegative() }).optional(),
+  waitingOn: legionWaitingOn.optional(),
+  architect: legionObservedClaim.optional(),
+  workers: z.partialRecord(z.string(), z.object({ claim: legionObservedClaim })).optional(),
+});
+
+/** `api.ObservedState`, the body of `GET /legion/v1/state?view=observed` (daemon API contract
+ * 196): what Dispatch reads of a daemon, read in the same snapshot as the full state would be.
+ * `daemon`, `settings` and `admission` are the full state's own blocks: the same `stateSeq`,
+ * `stateId` and `stateRun`, and the same admission block, unfiltered and in the same order, so an
+ * issue's place in the line is its index in `admission.waiting` plus one. `issues` lists every
+ * issue the full state lists. The route answers any other `view` 400 (`INVALID_VIEW`). */
+export const LegionObservedStateResponse = z.object({
+  daemon: daemonInfo,
+  settings: legionSettings,
+  admission: legionAdmission,
+  issues: z.record(z.string(), legionObservedIssue),
+});
+
+export type LegionObservedState = z.output<typeof LegionObservedStateResponse>;
+
 /** The fields a state event's change names (the `state_change` outbox payload of
  * `packages/daemon/internal/record/outbox.go`), each one Dispatch observes of an issue: its phase,
  * its tree, its admission slot, what it waits on from a person, and one role's claim. */
