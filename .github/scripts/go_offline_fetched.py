@@ -12,9 +12,10 @@ holds each such step to its fetch before CI runs it.
 What a go command needs: the packages it names (a pattern ending in /... is every package under its
 directory in the same Go module, as go reads it; no package is the directory itself, and a .go file
 is its directory), in the directory it runs in (the step's working-directory, else the job's or the
-workflow's defaults.run, then each `cd` of the step before it, then its -C), with its tests when it
-is go test or go vet, under its -tags and its GOOS, GOARCH, CGO_ENABLED and GOWORK (set on its own
-line, or in the step's, the job's or the workflow's env). The subcommands that load packages:
+workflow's defaults.run, then each `cd` of the step before it, one inside a subshell for that
+subshell alone, then its -C), with its tests when it is go test or go vet, under its -tags and its
+GOOS, GOARCH, CGO_ENABLED and GOWORK (set on its own line, or in the step's, the job's or the
+workflow's env; a value that is a `${{ }}` expression is not literal). The subcommands that load packages:
 build, install, run (its first package alone), list, test and vet.
 
 What a fetch names: each `[GOOS=..] [GOARCH=..] [CGO_ENABLED=..] [GOWORK=off] deps DIR [-test]
@@ -127,7 +128,7 @@ def settings_of(env, assigns):
     out = []
     for name in SETTINGS:
         value = assigns.get(name, env.get(name))
-        out.append(UNREAD if value is not None and UNREAD in str(value) else value)
+        out.append(UNREAD if value is not None and (UNREAD in str(value) or "${{" in str(value)) else value)
     return tuple(None if v is None else str(v) for v in out)
 
 
@@ -224,7 +225,8 @@ def go_env(document, job, step):
 def step_directory(document, job, step):
     default = ((document.get("defaults") or {}).get("run") or {}).get("working-directory", ".")
     job_dir = ((job.get("defaults") or {}).get("run") or {}).get("working-directory", default)
-    return posixpath.normpath(str(step.get("working-directory", job_dir)))
+    directory = str(step.get("working-directory", job_dir))
+    return UNREAD if "${{" in directory else posixpath.normpath(directory)
 
 
 def check(workflows, errors):
@@ -246,7 +248,9 @@ def check(workflows, errors):
                 if not isinstance(run, str):
                     continue
                 env = go_env(document, job, step)
-                directory = step_directory(document, job, step)
+                # The directory each command runs in, by the frames (subshells, $(...)) that hold
+                # it: a cd changes its own frame's, and a subshell's ends with the subshell.
+                directories = {(): step_directory(document, job, step)}
                 name = step.get("name") or run.strip().splitlines()[0]
                 where = f"job {job_id}, step \"{name}\""
                 lines = run.split("\n")
@@ -257,10 +261,13 @@ def check(workflows, errors):
                     start = shell_command_word(command)
                     if start is None:
                         continue
+                    frames = command.frames
+                    directory = next(directories[frames[:n]] for n in range(len(frames), -1, -1)
+                                     if frames[:n] in directories)
                     if values[start] == "cd" and not command.forked:
                         target = values[start + 1] if start + 1 < len(values) else ""
-                        directory = UNREAD if UNREAD in target or not target or target.startswith(("/", "~")) \
-                            else posixpath.normpath(posixpath.join(directory, target))
+                        unread = UNREAD in target + directory or not target or target.startswith(("/", "~", "-"))
+                        directories[frames] = UNREAD if unread else posixpath.normpath(posixpath.join(directory, target))
                         continue
                     assigns = {n: v.value() if v.static else UNREAD for n, v in command.assigns}
                     for k, value in enumerate(values):

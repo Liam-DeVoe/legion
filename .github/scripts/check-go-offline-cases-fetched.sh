@@ -155,6 +155,16 @@ deps packages/app ./cmd/tool' '      - name: Test from the root
 check "exits 0" "$(is "$status" 0)"
 check "counts both" "$(contains "$out" 'each of the 2 offline go commands')"
 
+echo "case: a cd inside a subshell holds for that subshell alone"
+fetched fetched-subshell 'deps packages/app -test ./internal/x/' '      - name: Test in a subshell, then outside it
+        run: |
+          (cd packages/app && go test -count=1 ./internal/x/)
+          go test -count=1 ./internal/x/'
+check "fails" "$(is "$status" 1)"
+check "names the command after the subshell, run from the root" \
+  "$(contains "$out" 'step "Test in a subshell, then outside it", runs `go test -count=1 ./internal/x/`, which loads internal/x, and no fetch before it')"
+check "and only it, the one inside the subshell held" "$(contains "$out" '^1 problems over')"
+
 echo "case: a race step's fetch line cut to one of its packages is refused, naming the rest"
 fetched fetched-cut 'deps packages/app -test ./b/' '      - name: Race the app
         run: go test -count=1 -race ./a/... ./b/
