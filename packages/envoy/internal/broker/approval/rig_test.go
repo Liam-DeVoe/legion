@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
+	"github.com/sjawhar/envoy/internal/broker/hold"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
@@ -76,11 +77,35 @@ type rig struct {
 	accountToken string
 }
 
+// rigOption changes how newRig wires its broker.
+type rigOption func(*rigConfig)
+
+// rigConfig is what newRig's options set.
+type rigConfig struct {
+	// hold builds, on the rig's own store, the hold gate the broker's approval page and its routes
+	// ask; nil is a broker with no gate, which holds nobody.
+	hold func(*store.Store) *hold.Gate
+}
+
+// withHold gives the broker the hold gate build makes on the rig's store, as cmd/broker gives one
+// where BROKER_PROJECT_ACCESS_URL is set: to the approval page and to the API's routes.
+func withHold(build func(*store.Store) *hold.Gate) rigOption {
+	return func(c *rigConfig) { c.hold = build }
+}
+
 // newRig wires the broker as cmd/broker does, its approval page signed in at a provider of the
 // test's own.
-func newRig(t *testing.T) *rig {
+func newRig(t *testing.T, options ...rigOption) *rig {
 	t.Helper()
+	var config rigConfig
+	for _, option := range options {
+		option(&config)
+	}
 	st := storetest.Open(t)
+	var gate *hold.Gate
+	if config.hold != nil {
+		gate = config.hold(st)
+	}
 	local := secrets.NewLocal(
 		policytest.Secret("TEST_SECRET", ada, policy.TierHuman, "test-v1"),
 		policytest.Secret("SECOND_SECRET", ada, policy.TierHuman, "second-v1"),
@@ -117,7 +142,7 @@ func newRig(t *testing.T) *rig {
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
-	page := brokertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine)
+	page := brokertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine, brokertest.WithApprovalHold(gate))
 	api.Register(mux, api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: brokertest.Caller(t, "dispatch")},
@@ -127,6 +152,7 @@ func newRig(t *testing.T) *rig {
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Approval: page,
+		Hold:     gate,
 	})
 
 	claims := issuer.Claims(dispatchAccount, dispatchAudience)

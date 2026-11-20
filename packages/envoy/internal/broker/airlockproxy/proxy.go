@@ -45,7 +45,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/hold"
 	"github.com/sjawhar/envoy/internal/broker/netaddr"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
@@ -660,7 +659,7 @@ const holdUnreadable = "airlock proxy: whether Dispatch holds a person could not
 // of Dispatch. A request reads it after the connection read and before any value of the grant,
 // so a held person's request reaches neither the values this pod holds nor the store's.
 //
-// The 503 names the failure by its kind (uncheckableReason) and never in the gate's own words,
+// The 503 names the failure by its kind (hold.Reason) and never in the gate's own words,
 // which hold a Postgres error's database user, name and address when the broker could not read
 // or keep an answer, as grantRefusal's 503 holds none of the read's: those words go to the log.
 func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, string) {
@@ -677,7 +676,7 @@ func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, s
 		return http.StatusForbidden, "MEMBERSHIP_HELD", heldWords(person)
 	}
 	s.log.Error(holdUnreadable, "person", person, "error", err)
-	return http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + person + " cannot be read: " + uncheckableReason(err)
+	return http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + person + " cannot be read: " + hold.Reason(err)
 }
 
 // heldWords is what a held person's request is refused with and a held person's carried call is
@@ -685,20 +684,6 @@ func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, s
 func heldWords(person string) string {
 	return person + "'s credentials are held by Dispatch; they work again when " + person +
 		" signs in to Dispatch, or when Dispatch can confirm " + person + " with Google again"
-}
-
-// uncheckableReason is the failure a 503 HOLD_UNCHECKABLE names, by its kind: Dispatch refusing
-// the broker's own account, which is the deployment's to fix; a held answer the broker could not
-// keep; and otherwise a Dispatch the broker could not ask while it could not read the last
-// answer Dispatch gave either.
-func uncheckableReason(err error) string {
-	switch {
-	case errors.Is(err, projectaccess.ErrBrokerRefused):
-		return "Dispatch refused the broker's own account"
-	case errors.Is(err, hold.ErrHeld):
-		return "the broker could not keep Dispatch's answer that holds them"
-	}
-	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
 }
 
 // serveConnect answers one CONNECT: a host one of the grant's names is bound to is decrypted

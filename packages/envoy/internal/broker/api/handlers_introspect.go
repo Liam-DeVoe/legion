@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/broker/hold"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
@@ -64,7 +65,7 @@ func (s *server) introspect(w http.ResponseWriter, r *http.Request, _ string) {
 		return
 	case errors.As(err, &uncheckable):
 		slog.Error("broker: introspect token failed: whether Dispatch holds its person cannot be read", "person", uncheckable.Person, "error", uncheckable.Err)
-		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", fmt.Sprintf("whether Dispatch holds %s cannot be read: %s", uncheckable.Person, holdReason(uncheckable.Err)))
+		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", fmt.Sprintf("whether Dispatch holds %s cannot be read: %s", uncheckable.Person, hold.Reason(uncheckable.Err)))
 		return
 	case err != nil:
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "introspect token", err)

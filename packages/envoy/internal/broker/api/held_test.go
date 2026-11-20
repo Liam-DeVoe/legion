@@ -12,6 +12,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/hold"
@@ -29,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // heldAda is the person the Dispatch stand-in answers held once a test holds her; servedBob is the
@@ -266,11 +269,39 @@ func expectOAuthRefusal(t *testing.T, what string, err error, status int, code, 
 	}
 }
 
+// expectRecordNames fails t unless the broker wrote one record of the refusal whose answer body
+// is, naming the caller class and id: a hold refuses a caller its credential proved, so its
+// record names that caller rather than an unauthenticated one.
+func expectRecordNames(t *testing.T, capture *logtest.Recorder, what string, body []byte, class, id string) {
+	t.Helper()
+	var refused struct {
+		AnswerID string `json:"answer_id"`
+	}
+	if err := json.Unmarshal(body, &refused); err != nil || refused.AnswerID == "" {
+		t.Errorf("the refusal of %s carries no answer id: %s", what, body)
+		return
+	}
+	var named [][2]any
+	for _, record := range capture.Records() {
+		fields := map[string]any{}
+		record.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
+		if record.Message == answer.RefusalMessage && fields["answer_id"] == refused.AnswerID {
+			named = append(named, [2]any{fields["caller_class"], fields["caller"]})
+		}
+	}
+	if len(named) != 1 || named[0] != [2]any{class, id} {
+		t.Errorf("the records of the refusal of %s name the callers %v, want one naming %s %s", what, named, class, id)
+	}
+}
+
 // TestHeldSessionRouteIsRefused: a session whose enrollment names a person Dispatch holds is
-// refused 403 MEMBERSHIP_HELD on a session route, before the route runs, and bob's is served.
-// While Dispatch refuses the broker's own account every such session is 503 HOLD_UNCHECKABLE, and
-// a pod's, whose enrollment names no person, is asked nothing and served.
+// refused 403 MEMBERSHIP_HELD on a session route, before the route runs, and the broker's record of
+// the refusal names the session; bob's is served. While Dispatch refuses the broker's own account
+// every such session is 503 HOLD_UNCHECKABLE, and a pod's, whose enrollment names no person, is
+// asked nothing and served.
 func TestHeldSessionRouteIsRefused(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
 	b := newHoldBroker(t)
 	ada, adaKey := b.newSessionEnrollment(t, "session-"+t.Name()+"-ada", heldAda)
 	bob, bobKey := b.newSessionEnrollment(t, "session-"+t.Name()+"-bob", servedBob)
@@ -279,6 +310,7 @@ func TestHeldSessionRouteIsRefused(t *testing.T) {
 
 	status, body := b.ask(t, ada, adaKey)
 	expectRefused(t, "ada's secret request while Dispatch holds her", heldAda, status, body)
+	expectRecordNames(t, capture, "ada's secret request", body, answer.CallerSession, ada)
 	if n := b.count(t, `select count(*) from requests where enrollment_id = $1`, ada); n != 0 {
 		t.Errorf("ada's refused secret request opened %d requests, want none: the hold is asked before the route runs", n)
 	}
@@ -297,9 +329,12 @@ func TestHeldSessionRouteIsRefused(t *testing.T) {
 }
 
 // TestHeldLauncherRouteIsRefused: a machine login whose credential names a person Dispatch holds
-// is refused 403 MEMBERSHIP_HELD on a launcher route, enrolling nothing, and bob's is served; while
-// Dispatch refuses the broker's own account, each is 503 HOLD_UNCHECKABLE.
+// is refused 403 MEMBERSHIP_HELD on a launcher route, enrolling nothing, and the broker's record
+// of the refusal names the machine login; bob's is served. While Dispatch refuses the broker's
+// own account, each is 503 HOLD_UNCHECKABLE.
 func TestHeldLauncherRouteIsRefused(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
 	b := newHoldBroker(t)
 	adaCredential, adaKey := b.mintLauncherCredential(t, heldAda, "ada-box")
 	bobCredential, bobKey := b.mintLauncherCredential(t, servedBob, "bob-box")
@@ -314,6 +349,7 @@ func TestHeldLauncherRouteIsRefused(t *testing.T) {
 
 	status, body := enrol(adaCredential, adaKey)
 	expectRefused(t, "ada's enrollment while Dispatch holds her", heldAda, status, body)
+	expectRecordNames(t, capture, "ada's enrollment", body, answer.CallerLauncher, adaCredential)
 	if n := b.count(t, `select count(*) from enrollments where launcher_credential_id = $1`, adaCredential); n != 0 {
 		t.Errorf("ada's refused enrollment made %d enrollments, want none", n)
 	}

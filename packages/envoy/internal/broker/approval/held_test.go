@@ -1,32 +1,18 @@
 package approval_test
 
 import (
-	"context"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/answer"
-	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/hold"
-	"github.com/sjawhar/envoy/internal/broker/machine"
-	"github.com/sjawhar/envoy/internal/broker/oauthstore"
-	"github.com/sjawhar/envoy/internal/broker/policy"
-	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/broker/proof"
-	"github.com/sjawhar/envoy/internal/broker/requests"
-	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/oidc"
-	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/broker/store"
 )
 
 // bob is a person of the domain whom the Dispatch stand-in never holds: the control who decides a
@@ -57,8 +43,8 @@ func (a *brokerAccount) Read() (string, error) {
 
 // holdRig is newRig's broker with the hold of refused people wired as cmd/broker wires it where
 // BROKER_PROJECT_ACCESS_URL is set: one real hold.Gate over the Dispatch stand-in and the rig's own
-// database, given to the approval page and to the API's routes. The gate and its Dispatch client
-// read a clock the test moves past the client's cache of an answer.
+// database, given to the approval page and to the API's routes (withHold). The gate and its
+// Dispatch client read a clock the test moves past the client's cache of an answer.
 type holdRig struct {
 	*rig
 	dispatch *projectaccesstest.Server
@@ -77,13 +63,21 @@ func (h *holdRig) hold(person string) {
 	h.pastCache()
 }
 
+// release has Dispatch answer person not held again from the gate's next check of them, as
+// their next sign-in does.
+func (h *holdRig) release(person string) {
+	h.dispatch.SetHeld(person, false)
+	h.pastCache()
+}
+
 // refuseAccount has Dispatch refuse the broker's own account from the gate's next check on.
 func (h *holdRig) refuseAccount() {
 	h.account.refused.Store(true)
 	h.pastCache()
 }
 
-// newHoldRig is newRig with the hold: the same secrets, sign-in, services and routes.
+// newHoldRig is newRig with the hold, over a stand-in holding every person of the rig as a full
+// member.
 func newHoldRig(t *testing.T) *holdRig {
 	t.Helper()
 	h := &holdRig{dispatch: projectaccesstest.NewServer(t, nil, map[string]string{
@@ -92,55 +86,9 @@ func newHoldRig(t *testing.T) *holdRig {
 	h.account = &brokerAccount{bearer: h.dispatch.Token}
 	access := projectaccess.New(h.dispatch.URL, h.account, nil)
 	access.UseClock(h.now)
-
-	st := storetest.Open(t)
-	local := secrets.NewLocal(
-		policytest.Secret("TEST_SECRET", ada, policy.TierHuman, "test-v1"),
-		policytest.Secret("SHARED_SECRET", policy.OwnerShared, policy.TierHuman, "shared-v1"),
-	)
-	current := policytest.Current(t, local)
-	mux := http.NewServeMux()
-	srv := httptest.NewTLSServer(answer.Middleware(mux, nil))
-	t.Cleanup(srv.Close)
-	issuer := oidctest.New(t)
-	key := issuer.PublishKey(t, "signing-key")
-	accounts, err := oidc.New(context.Background(), issuer.URL(), dispatchAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
-	gate := hold.New(hold.Config{Access: access, Store: st, Now: h.now})
-	enr := &enroll.Service{Store: st, Lease: time.Hour}
-	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
-	reqMachine := &requests.Machine{
-		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
-		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay,
-	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := brokertest.NewOAuthProvider(t, st, issuer)
-	mach := &machine.Service{
-		Store: st, Enroll: enr, Policy: current,
-		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
-		OAuth: provider, Replay: enr.Replay,
-	}
-	page := brokertest.NewApprovalPage(t, brokertest.SignIn(issuer, key), srv.URL, st, reqMachine, brokertest.WithApprovalHold(gate))
-	api.Register(mux, api.Deps{
-		PublicURL:     srv.URL,
-		APIAccounts:   map[string]api.Account{dispatchAccount: brokertest.Caller(t, "dispatch")},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: accounts},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
-		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
-		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Approval: page,
-		Hold:     gate,
-	})
-	claims := issuer.Claims(dispatchAccount, dispatchAudience)
-	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
-	h.rig = &rig{
-		url: srv.URL, srv: srv, st: st, issuer: issuer, machine: reqMachine, page: page, enrollments: enr,
-		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool), Interval: time.Hour},
-		accountToken: issuer.Mint(t, key, claims),
-	}
+	h.rig = newRig(t, withHold(func(st *store.Store) *hold.Gate {
+		return hold.New(hold.Config{Access: access, Store: st, Now: h.now})
+	}))
 	return h
 }
 

@@ -831,7 +831,7 @@ func personOf(session *oauthstore.ExchangeSession) string {
 // membership_held, naming the person, for a held one; and server_error while the gate cannot tell
 // (hold.ErrUncheckable), tested first, so a held answer the gate could not keep is server_error.
 // That one is refusedByDispatch when Dispatch refused the broker's own account, and otherwise says
-// why in holdReason's fixed words; the gate's own error goes to the log alone.
+// why in hold.Reason's fixed words; the gate's own error goes to the log alone.
 func (p *Provider) heldRefusal(ctx context.Context, person string) error {
 	if person == "" {
 		return nil
@@ -843,27 +843,13 @@ func (p *Provider) heldRefusal(ctx context.Context, person string) error {
 	case errors.Is(err, projectaccess.ErrBrokerRefused):
 		return refusedByDispatch(err)
 	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
-		return oauth2.ErrServerError.WithHintf("whether Dispatch holds %s cannot be read: %s", person, holdReason(err)).WithWrap(err).WithDebugError(err)
+		return oauth2.ErrServerError.WithHintf("whether Dispatch holds %s cannot be read: %s", person, hold.Reason(err)).WithWrap(err).WithDebugError(err)
 	}
 	return (&oauth2.RFC6749Error{
 		ErrorField:       oauthwire.MembershipHeld,
 		DescriptionField: fmt.Sprintf("%s's credentials are held by Dispatch; they work again when %s signs in to Dispatch, or when Dispatch can confirm %s with Google again", person, person, person),
 		CodeField:        http.StatusBadRequest,
 	}).WithWrap(err).WithDebugError(err)
-}
-
-// holdReason is why the hold gate could not decide a person (err, a hold.ErrUncheckable), in words
-// a refused caller may read: one of three fixed reasons, never the gate's error, which can carry
-// the broker database's user, name and address. The broker's JSON routes and the airlock proxy
-// answer the same three.
-func holdReason(err error) string {
-	switch {
-	case errors.Is(err, projectaccess.ErrBrokerRefused):
-		return "Dispatch refused the broker's own account"
-	case errors.Is(err, hold.ErrHeld):
-		return "the broker could not keep Dispatch's answer that holds them"
-	}
-	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
 }
 
 // projectAccess holds the claims decide wrote onto session to what Dispatch says, before the

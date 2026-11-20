@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/policy"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -238,8 +237,14 @@ func Register(mux *http.ServeMux, deps Deps) {
 			recorder := answer.FromContext(r.Context())
 			who, ok := s.authenticate(w, r, route)
 			if !ok {
-				// A refusal raised in authentication, before any caller was established.
-				recorder.NoteCaller(answer.CallerUnauthenticated, "")
+				// A refusal raised in authentication names no caller, none having been
+				// established, but for one raised after the credential proved its caller (the
+				// hold's, and the reads it makes), which names that caller.
+				if who.proved {
+					recorder.NoteCaller(who.answerCaller(route.Handler))
+				} else {
+					recorder.NoteCaller(answer.CallerUnauthenticated, "")
+				}
 				return
 			}
 			recorder.NoteCaller(who.answerCaller(route.Handler))
@@ -321,16 +326,24 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 		return caller{signIn: session}, ok
 	case authLauncher:
 		who, ok := s.launcherCaller(w, r)
-		if !ok || s.refuseHeld(w, r, derefOr(who.launcher.Operator, "")) {
+		if !ok {
 			return caller{}, false
+		}
+		if s.refuseHeld(w, r, derefOr(who.launcher.Operator, "")) {
+			who.proved = true
+			return who, false
 		}
 		return who, true
 	case authLauncherEnd:
 		return s.launcherCaller(w, r)
 	case authProof:
 		who, ok := s.sessionCaller(w, r, "PROOF_INVALID", "proof invalid: not live")
-		if !ok || s.refuseHeldSession(w, r, who.enrollment) {
+		if !ok {
 			return caller{}, false
+		}
+		if s.refuseHeldSession(w, r, who.enrollment) {
+			who.proved = true
+			return who, false
 		}
 		return who, true
 	case authProofEnd:
@@ -472,7 +485,7 @@ func (s *server) refuseHeldSession(w http.ResponseWriter, r *http.Request, enrol
 // session's enrollment or a machine login's credential names, and writes the refusal when it does
 // or cannot tell, reporting whether it refused: 403 MEMBERSHIP_HELD naming the person, or 503
 // HOLD_UNCHECKABLE, tested first, so a held answer the gate could not keep is a 503. The 503 says
-// why in holdReason's fixed words, and the gate's own error goes to the log alone. No person (a
+// why in hold.Reason's fixed words, and the gate's own error goes to the log alone. No person (a
 // pod's enrollment, a service's login) is asked nothing, and neither is anyone on a broker with
 // no gate.
 func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person string) bool {
@@ -485,24 +498,11 @@ func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person strin
 		return false
 	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
 		slog.Error("broker: whether Dispatch holds a person cannot be read, so their credential is refused", "person", person, "error", err)
-		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", fmt.Sprintf("whether Dispatch holds %s cannot be read: %s", person, holdReason(err)))
+		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", fmt.Sprintf("whether Dispatch holds %s cannot be read: %s", person, hold.Reason(err)))
 	default:
 		writeError(w, http.StatusForbidden, "MEMBERSHIP_HELD", fmt.Sprintf("%s's credentials are held by Dispatch; they work again when %s signs in to Dispatch, or when Dispatch can confirm %s with Google again", person, person, person))
 	}
 	return true
-}
-
-// holdReason is why the hold gate could not decide a person (err, a hold.ErrUncheckable), in words
-// a refused caller may read: one of three fixed reasons, never the gate's error, which can carry
-// the broker database's user, name and address. The airlock proxy answers the same three.
-func holdReason(err error) string {
-	switch {
-	case errors.Is(err, projectaccess.ErrBrokerRefused):
-		return "Dispatch refused the broker's own account"
-	case errors.Is(err, hold.ErrHeld):
-		return "the broker could not keep Dispatch's answer that holds them"
-	}
-	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
 }
 
 // GoogleVerifier verifies a caller's own Google identity token and reads the identity claims of

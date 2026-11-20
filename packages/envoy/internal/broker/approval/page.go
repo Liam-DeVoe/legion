@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/broker/hold"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store"
@@ -515,8 +514,8 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 // refuseHeld asks the hold gate whether Dispatch holds login, the signed-in approver, and answers
 // the page's refusal when it does or cannot tell, reporting whether it refused: 403 in the
 // broker's words for a hold, and 503 while the gate cannot tell (hold.ErrUncheckable, tested
-// first, so a held answer the gate could not keep is a 503), saying why in one of three fixed
-// reasons and logging the gate's own error, which can carry the database's user, name and address,
+// first, so a held answer the gate could not keep is a 503), saying why in hold.Reason's fixed
+// words and logging the gate's own error, which can carry the database's user, name and address,
 // alone. A broker with no gate holds nobody.
 func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) bool {
 	err := p.cfg.Hold.Check(r.Context(), login)
@@ -526,7 +525,7 @@ func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) 
 	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
 		slog.Error("approval page: whether Dispatch holds the approver cannot be read, so nothing was decided", "login", login, "error", err)
 		writeMessage(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", say("Unavailable",
-			fmt.Sprintf("Whether Dispatch holds %s cannot be read: %s.", login, holdReason(err)),
+			fmt.Sprintf("Whether Dispatch holds %s cannot be read: %s.", login, hold.Reason(err)),
 			"Nothing was decided. Try again shortly."))
 	default:
 		writeMessage(w, http.StatusForbidden, "MEMBERSHIP_HELD", say("Held",
@@ -534,19 +533,6 @@ func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) 
 			"Nothing was decided."))
 	}
 	return true
-}
-
-// holdReason is why the hold gate could not decide a person (err, a hold.ErrUncheckable), in words
-// the refused person may read: one of three fixed reasons, never the gate's error. The broker's
-// JSON routes, its token endpoint and the airlock proxy answer the same three.
-func holdReason(err error) string {
-	switch {
-	case errors.Is(err, projectaccess.ErrBrokerRefused):
-		return "Dispatch refused the broker's own account"
-	case errors.Is(err, hold.ErrHeld):
-		return "the broker could not keep Dispatch's answer that holds them"
-	}
-	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
 }
 
 // writeSignedOut answers a POST whose session is not live, or ended while it was being decided:

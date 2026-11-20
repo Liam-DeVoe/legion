@@ -147,7 +147,7 @@ func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection,
 
 // HoldUncheckableError is Introspect's failure when the hold gate cannot tell whether Dispatch
 // holds the person a live token names. Its text is the one the introspection route answers 503
-// HOLD_UNCHECKABLE with, naming the person and why in holdReason's fixed words; Err is the gate's
+// HOLD_UNCHECKABLE with, naming the person and why in hold.Reason's fixed words; Err is the gate's
 // own error, for the log alone, which it wraps.
 type HoldUncheckableError struct {
 	Person string
@@ -155,7 +155,7 @@ type HoldUncheckableError struct {
 }
 
 func (e *HoldUncheckableError) Error() string {
-	return "whether Dispatch holds " + e.Person + " cannot be read: " + holdReason(e.Err)
+	return "whether Dispatch holds " + e.Person + " cannot be read: " + hold.Reason(e.Err)
 }
 
 func (e *HoldUncheckableError) Unwrap() error { return e.Err }

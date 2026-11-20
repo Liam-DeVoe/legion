@@ -43,6 +43,10 @@ type caller struct {
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
+	// proved marks a caller authenticate refused after its credential proved it: a session or a
+	// machine login the hold refused (refuseHeld). The answer's record then names that caller,
+	// where every other refusal raised in authentication names none.
+	proved bool
 }
 
 // power is one authority over the broker a caller of an accountAuth route may hold: one bit, so
