@@ -256,27 +256,39 @@ func childUnderAcceptedParent(child, ancestor, operation string) string {
 }
 
 // architectForIssue authorizes an architect's operation on a recorded issue it owns, an architect
-// of the issue's tree now (ownedIssue, record.ArchitectOfTree), and returns the grant and that
-// record.
+// of the issue's tree now (architectOfRecord), and returns the grant and that record.
 func (s *server) architectForIssue(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, record.Issue, bool) {
-	grant, ok := s.architectGrant(w, r, grantID)
+	grant, recorded, ok := s.architectOfRecord(w, r, grantID, issue)
 	if !ok {
-		return credential.Grant{}, record.Issue{}, false
-	}
-	recorded, owned, err := s.ownedIssue(r.Context(), issue, grant.Claim)
-	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return credential.Grant{}, record.Issue{}, false
 	}
 	if recorded == nil {
 		writeFailure(w, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return credential.Grant{}, record.Issue{}, false
 	}
-	if !owned {
-		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
-		return credential.Grant{}, record.Issue{}, false
-	}
 	return grant, *recorded, true
+}
+
+// architectOfRecord authorizes an architect's grant for issue, and answers the daemon's record of
+// issue, nil where it holds none, which each caller answers in its own way. A recorded issue is
+// the grant's only where its architect is an architect of the issue's tree now (ownedIssue,
+// record.ArchitectOfTree), the rule every architect operation holds it to; any other is refused
+// 403 ISSUE_OUTSIDE_TREE.
+func (s *server) architectOfRecord(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, *record.Issue, bool) {
+	grant, ok := s.architectGrant(w, r, grantID)
+	if !ok {
+		return credential.Grant{}, nil, false
+	}
+	recorded, owned, err := s.ownedIssue(r.Context(), issue, grant.Claim)
+	if err != nil {
+		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+		return credential.Grant{}, nil, false
+	}
+	if recorded != nil && !owned {
+		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
+		return credential.Grant{}, nil, false
+	}
+	return grant, recorded, true
 }
 
 // requestFactID names one API request's fact. A grant serves every request its command makes, so
