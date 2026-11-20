@@ -1461,6 +1461,45 @@ test.skipIf(!onLinux)(
   rowMs(oneSweep)
 );
 
+// A row's sweep looks for run directories elsewhere only in its file's own directory
+// (`plantsRoot`, as `servedUnder`), so that it judges no stack that a row of another file, or of
+// another session, planted beside it: two files' rows run at once read each other's plants, and
+// failed 13 rows of CI's repeat workflow, on 2026-11-20. Rows that run alone cannot see a sweep
+// that looks at the whole machine again, since nothing else is planted then; this row plants a
+// postmaster that no mark names beside the file's own directory, which every start leaves and
+// names, and requires that the row's sweep names it not, while it names the same plant inside
+// the file's own directory, so a sweep that looked nowhere fails it too.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a row's sweep reads the run directories of its own file's directory and of no other: a postmaster that no mark names beside that directory is not named, and one inside it is",
+  async () => {
+    const row = rowOf(oneSweep);
+    const { tmp } = scratch();
+    const sibling = realpathSync(mkdtempSync(join(dirname(plantsRoot()), "marks-sibling-")));
+    const inside = leaveElsewhere();
+    const beside = leaveElsewhere(undefined, true, sibling);
+    try {
+      const lines = await sweep(row, tmp);
+
+      expect(holding(lines, `${inside.data} (postmaster ${inside.postmaster?.pid} `)).toHaveLength(
+        1
+      );
+      expect(holding(lines, sibling)).toEqual([]);
+      expect([beside.postmaster?.alive(), existsSync(join(beside.data, "PG_VERSION"))]).toEqual([
+        true,
+        true,
+      ]);
+    } finally {
+      inside.postmaster?.stop();
+      beside.postmaster?.stop();
+      rmSync(inside.other, { recursive: true, force: true });
+      rmSync(sibling, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep.
+  rowMs(oneSweep)
+);
+
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: where the target of a TMPDIR link changed between the write of a mark and the teardown, the teardown reads the stack's postmaster under the mark's one spelling, the path the sweep acts on",
   () => {

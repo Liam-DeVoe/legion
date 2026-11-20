@@ -534,12 +534,13 @@ export async function until(row: Row, met: () => boolean, what: string, ms: numb
   }
 }
 
-/** A run directory of another `TMPDIR` than the sweep's, in the file's own directory
- *  (`plantsRoot`), with what a stack left there: a stand-in postmaster of stack 0 serving from its
- *  data directory, which every start finds, or only that data directory where `serving` is false,
- *  and the mark of `owner` beside it, or no mark where `owner` is undefined. */
-export function leaveElsewhere(owner?: unknown, serving = true) {
-  const other = mkdtempSync(join(plantsRoot(), "marks-elsewhere-"));
+/** A run directory of another `TMPDIR` than the sweep's, in `parent`, the file's own directory
+ *  (`plantsRoot`) but for a row that plants beside it, with what a stack left there: a stand-in
+ *  postmaster of stack 0 serving from its data directory, which every start finds, or only that
+ *  data directory where `serving` is false, and the mark of `owner` beside it, or no mark where
+ *  `owner` is undefined. */
+export function leaveElsewhere(owner?: unknown, serving = true, parent = plantsRoot()) {
+  const other = mkdtempSync(join(parent, "marks-elsewhere-"));
   const run = mkdtempSync(join(other, runDirectoryPrefix));
   const bin = join(other, "bin");
   const data = join(realpathSync(run), "worker-0", "pgdata");
