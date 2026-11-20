@@ -146,18 +146,16 @@ describe("the search for a start that refuses or creates its Postgres before it 
       ],
     });
     const parsed = sweepOrder(planted);
-    const lineOf = (file: string, text: string) => {
+    // The number of the first line of `file` past its first `after` lines that holds `text`.
+    const lineOf = (file: string, text: string, after = 0) => {
       const line = readFileSync(join(planted, file), "utf8")
         .split("\n")
-        .findIndex((each) => each.includes(text));
+        .findIndex((each, index) => index >= after && each.includes(text));
       expect(line).not.toBe(-1);
       return line + 1;
     };
     const first = "scripts/e2e/first.sh";
-    const leftoversLine = lineOf(
-      "scripts/e2e/lib/leftovers.sh",
-      'fail "refuse_leftovers: $proc lists no process'
-    );
+    const leftovers = "scripts/e2e/lib/leftovers.sh";
     const checkLine = lineOf("scripts/e2e/lib/planted.sh", '[ -z "$(ss -Hltn "sport = :$1")" ]');
     const markLine = lineOf(first, 'pg_mark=$(postgres_mark "$work" "$pg")');
     expect(parsed.drivers.map((each) => each.driver)).toEqual(["scripts/e2e/after.sh", first]);
@@ -169,10 +167,25 @@ describe("the search for a start that refuses or creates its Postgres before it 
     );
     const beginLine = readFileSync(join(planted, first), "utf8").split("\n").indexOf("begin") + 1;
     expect(beginLine).toBeGreaterThan(0);
-    // The four findings, exactly and in the order the driver meets them: a reordered or a missing
-    // one fails here, as a loose look for each would not see.
+    // Each refusal of lib/leftovers.sh's refuse_leftovers, which the driver reaches through
+    // `begin`, named by its text, so a line that moves still matches and a refusal added to or
+    // taken from refuse_leftovers fails here, naming it: each `fail` that names why the walk read
+    // nothing, its `return 2`, the `exit` that keeps find's status, and the last `fail`.
+    const noProcess = lineOf(leftovers, 'fail "refuse_leftovers: $proc lists no process');
+    const noFile = lineOf(leftovers, 'fail "refuse_leftovers: no file to keep');
+    const findFailed = lineOf(leftovers, 'fail "refuse_leftovers: find exited');
+    const viaBegin = `from ${first}:${beginLine} through begin,refuse_leftovers`;
+    // Every finding, exactly and in the order the driver meets them: a reordered, a repeated or a
+    // missing one fails here, as a look for each one alone would not see.
     expect(findings).toEqual([
-      `fail at scripts/e2e/lib/leftovers.sh:${leftoversLine} from ${first}:${beginLine} through begin,refuse_leftovers`,
+      `fail at ${leftovers}:${noProcess} ${viaBegin}`,
+      `return at ${leftovers}:${lineOf(leftovers, "return 2", noProcess)} ${viaBegin}`,
+      `fail at ${leftovers}:${noFile} ${viaBegin}`,
+      `return at ${leftovers}:${lineOf(leftovers, "return 2", noFile)} ${viaBegin}`,
+      `exit at ${leftovers}:${lineOf(leftovers, "|| exit)")} ${viaBegin}`,
+      `fail at ${leftovers}:${findFailed} ${viaBegin}`,
+      `return at ${leftovers}:${lineOf(leftovers, "return 2", findFailed)} ${viaBegin}`,
+      `fail at ${leftovers}:${lineOf(leftovers, 'fail "an earlier $prefix run whose driver is gone')} ${viaBegin}`,
       `fail at scripts/e2e/lib/planted.sh:${checkLine} from ${first}:${lineOf(first, "check_port 1234")} through check_port`,
       `postgres_mark at ${first}:${markLine} from ${first}:${markLine} through `,
       // The mark's own refusal: its check runs the mark's command.
