@@ -60,7 +60,11 @@ const (
 // sessionConsumerCallTimeout bounds the consumer calls a registration makes before it answers,
 // those of one relay restart, timed from when it holds its turn and the session's lock
 // (sessionRelays.restart), and the delete a reaped session's record, a deregistration or the
-// sweep asks for, with the bucket read before it and the repair after it (deleteConsumer).
+// sweep asks for, with the bucket read before it (deleteConsumer). Each fenced write of a
+// consumer's filter that follows one of those acts - the confirm of a registration, the repair
+// after a delete, the corrections after a restart, an unsubscribe's refollow and the settle of a
+// registration this listener did not answer - has one of its own, timed from when the fence
+// starts under the session's lock, whatever the act before it left (fenceBudget).
 const sessionConsumerCallTimeout = 5 * time.Second
 
 // noGrantBackoff is how long, after a consumer call the server refused for want of a grant, every
@@ -233,15 +237,17 @@ type sessionDelivery struct {
 	// for the session, or run its own restart's calls between this one's, and across two tasks the
 	// delete's own read of the bucket narrows that window rather than closing it.
 	locks sessionLocks
-	// deleteMu guards the two fields below. deletes counts the consumer deletes running off a
-	// deregistration's goroutine (deleteAfterAnswer), and deletesOff is set once the shutdown
-	// has stopped starting them (awaitDeletes): the deletes run on the connection the shutdown
-	// drains, so one started after that drain would reach a closed connection. The three are
-	// read and written in session_consumer_delete.go alone, where the delete lifecycle is; a
-	// field of this type is declared with the type.
-	deleteMu   sync.Mutex
-	deletes    sync.WaitGroup
-	deletesOff bool
+	// afterAnswerMu guards the two fields below. afterAnswer counts the work a handler leaves
+	// running behind its answer, off its goroutine (runAfterAnswer): a deregistration's consumer
+	// delete (deleteAfterAnswer) and the filter settle of a registration this listener did not
+	// answer (settleAfterAnswer). afterAnswerOff is set once the shutdown has stopped starting
+	// that work (awaitAfterAnswer): it runs on the connection the shutdown drains, so work started
+	// after that drain would reach a closed connection. The three are read and written in
+	// session_after_answer.go alone, where that lifecycle is; a field of this type is declared
+	// with the type.
+	afterAnswerMu  sync.Mutex
+	afterAnswer    sync.WaitGroup
+	afterAnswerOff bool
 	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
@@ -317,12 +323,13 @@ func (m *sessionDelivery) close() {
 // consumer, and it holds the start of a create as it does for the delete's repair; a consumer the
 // stream holds keeps its own position whatever start the call names, so what a repair of it
 // changes is the filter.
+//
+// It runs on the fence's own budget (fenceBudget), under the lock the registration holds, so the
+// registration's own calls before it spend none of it.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	defer cancel()
 	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
 }
 
@@ -359,7 +366,7 @@ const (
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
-	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome) {
+	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func(ctx context.Context) (uint64, filterWriteOutcome) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}

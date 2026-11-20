@@ -908,12 +908,17 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 // by the time a correction is sent is left to the session's next registration, as the restart
 // itself leaves it. A restart whose answer did not come back is settled here too, since it may
 // have created the consumer on the filter it carried (restart, consumerCallAnswered).
+//
+// The corrections run on the fence's own budget (fenceBudget) and not on what the restart's own
+// read and call left of ctx's: a restart slow enough to spend that is one a registration on
+// another listener had time to land under, and a fence made on the rest would give up at its
+// first read and leave the restart's older row's filter on a consumer the relay then pulls.
 func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
 	// The restart's own write is this fence's first pass: it is made, or may have been made,
 	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded) and
 	// sends nothing, and the passes after it correct it from the bucket's newest row.
 	restart := true
-	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func() (uint64, filterWriteOutcome) {
+	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func(ctx context.Context) (uint64, filterWriteOutcome) {
 		if restart {
 			restart = false
 			return wrote, filterWriteLanded

@@ -386,6 +386,106 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 	b.awaitPending(t, sessionID, 1)
 }
 
+// spentBudget is a context whose deadline has passed: what a caller of the fence hands it once
+// its own calls before the fence have spent its budget.
+func spentBudget(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// The corrections after a relay restart run on the fence's own budget, not on what the restart's
+// read and call left of the restart's (fenceBudget). Here the restart's budget has passed by the
+// time its settle runs, and the restart wrote from a row a registration on another listener has
+// replaced since: the settle still reads the bucket and sets the filter the newest row asks for.
+// A settle bounded by what the restart left meets that deadline at its first read, and the relay
+// then pulls a consumer filtered on the older row, so the topic that registration was answered
+// 200 for is skipped until the session's next heartbeat.
+func TestARelayRestartWhoseCallsSpentItsBudgetStillSettlesTheFilterOnTheNewestRow(t *testing.T) {
+	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_restart_spent"
+	const kept = "notifications.dispatch.issue.RESTARTSPENTKEPT.>"
+	const added = "notifications.dispatch.issue.RESTARTSPENTADD.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	_, wrote, err := a.harness.registry.RefreshAt(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the row the restart writes from: %v", err)
+	}
+	b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
+
+	unlock := a.deps.consumers.locks.lock(sessionID)
+	// The restart's own write, of the row it read, lands over the newer registration's filter.
+	if err := a.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, a.deps.consumers.sessionConsumerFilter(sessionID, []string{kept})); err != nil {
+		unlock()
+		t.Fatalf("write the restart's filter of the older row: %v", err)
+	}
+	a.relays.settleFilter(spentBudget(t), sessionID, wrote)
+	unlock()
+
+	requireFilters(t, b, sessionID, kept, added)
+	b.store(t, "notifications.dispatch.issue.RESTARTSPENTADD.comment")
+	b.awaitPending(t, sessionID, 1)
+}
+
+// The control of the case above: the fence's budget is its own, and its caller's cancellation
+// still ends it, since it means the caller itself is ending - a relay whose run was cancelled, a
+// loop the shutdown stopped (fenceBudget). The same settle, handed a context cancelled rather than
+// one whose deadline passed, makes no pass, and the restart's filter of the older row stands.
+func TestARelayRestartWhoseRunWasCancelledSettlesNothing(t *testing.T) {
+	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_restart_cancelled"
+	const kept = "notifications.dispatch.issue.RESTARTCANCELLEDKEPT.>"
+	const added = "notifications.dispatch.issue.RESTARTCANCELLEDADD.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	_, wrote, err := a.harness.registry.RefreshAt(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the row the restart writes from: %v", err)
+	}
+	b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
+
+	unlock := a.deps.consumers.locks.lock(sessionID)
+	if err := a.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, a.deps.consumers.sessionConsumerFilter(sessionID, []string{kept})); err != nil {
+		unlock()
+		t.Fatalf("write the restart's filter of the older row: %v", err)
+	}
+	ended, end := context.WithCancel(context.Background())
+	end()
+	a.relays.settleFilter(ended, sessionID, wrote)
+	unlock()
+
+	requireFilters(t, b, sessionID, kept)
+}
+
+// The repair after a consumer delete runs on the fence's own budget, not on what the delete's
+// read and call left of the delete's (deleteConsumer, fenceBudget). Here the delete's budget has
+// passed by the time its repair runs, and the session's record stands, which is what a
+// registration on another listener landing between the delete's read and its call leaves: the
+// repair still gives that session its consumer back, on the row the bucket holds. A repair
+// bounded by what the delete left meets that deadline at its first read, and the session, answered
+// 200 with consumer delivery, holds no consumer until its next heartbeat.
+func TestARepairWhoseDeleteSpentItsBudgetStillGivesTheConsumerBack(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_delete_spent"
+	const kept = "notifications.dispatch.issue.DELETESPENTKEPT.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+
+	unlock := rig.deps.consumers.locks.lock(sessionID)
+	floor, err := rig.deps.consumers.consumers.Delete(context.Background(), sessionID, nil)
+	if err != nil {
+		unlock()
+		t.Fatalf("delete the consumer of %s: %v", sessionID, err)
+	}
+	rig.deps.consumers.repairRegistered(spentBudget(t), rig.deps, sessionID, floor, repairAfterDelete)
+	unlock()
+
+	requireFilters(t, rig, sessionID, kept)
+	rig.store(t, "notifications.dispatch.issue.DELETESPENTKEPT.comment")
+	rig.awaitPending(t, sessionID, 1)
+}
+
 // A consumer call whose answer did not come back is judged by the fence as a write that may
 // have landed: the server applies such a call and only its answer is lost, so an older row's
 // filter can stand on the consumer with nothing to read it again (consumerCallAnswered). The

@@ -1949,12 +1949,13 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))
 	}
-	// A deregistration answers before its session consumer is deleted and leaves that delete
-	// running behind it (sessionDelivery.deleteAfterAnswer), so the stop waits for those still
-	// in flight once the server has stopped serving: a delete cut off here would leave its
-	// consumer for the sweep, and one started after the drain below would reach a closed
-	// connection.
-	parts.delivery.awaitDeletes(shutdownCtx)
+	// A deregistration answers before its session consumer is deleted, and a registration this
+	// listener answered 503 before its consumer's filter is settled, and each leaves that work
+	// running behind it (sessionDelivery.runAfterAnswer), so the stop waits for the work still in
+	// flight once the server has stopped serving: a delete cut off here would leave its consumer
+	// for the sweep, a settle cut off would leave the filter to the session's next registration,
+	// and work started after the drain below would reach a closed connection.
+	parts.delivery.awaitAfterAnswer(shutdownCtx)
 	// The session-consumer connection carries the consumer calls registrations make, which the HTTP
 	// server has stopped serving, and the relays' acks, which its drain lets reach the server,
 	// within what is left of the HTTP stop's budget.

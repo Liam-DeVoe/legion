@@ -96,7 +96,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	// to it keeps the lock for the delete's whole budget (sessionConsumerCallTimeout), and the
 	// second registration, waiting on that lock inside its own shorter budget, answers 503. So the
 	// cut waits for the listener's own delete to end, not only for the server to drop the consumer.
-	rig.deps.consumers.deletes.Wait()
+	rig.deps.consumers.afterAnswer.Wait()
 	if floor, err := resumeRecordFloor(client, sessionID); err != nil || floor != resume {
 		t.Fatalf("the session's resume record after its deregistration holds floor %d, %v; want %d, the last message it acked", floor, err, resume)
 	}
