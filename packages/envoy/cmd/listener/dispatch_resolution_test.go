@@ -174,7 +174,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
-	relays, err := startSessionRelays(delivery, config)
+	relays, err := startSessionRelays(delivery, config, false)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
 	}

@@ -376,8 +376,21 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 // and would close a sound connection; what is left to ask of an open connection is whether the
 // token is still live, which is this. Nothing admits a caller through it.
 func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
-	_, _, caller, err := v.live(ctx, r)
+	caller, _, err := v.LiveUntil(ctx, r)
 	return caller, err
+}
+
+// LiveUntil is Live and the instant the broker's answer says the token stops being live: its
+// 'exp', or the zero time when the broker named none. A connection that outlives its request reads
+// it to tell a token whose life ended from one the broker ended early, since both answer
+// ErrNotActive once they are over and only the first was due: the listener's relay socket closes
+// the one for a fresh trade at once and the other as a refusal (cmd/listener, relay_socket.go).
+func (v *Verifier) LiveUntil(ctx context.Context, r *http.Request) (Caller, time.Time, error) {
+	_, answer, caller, err := v.live(ctx, r)
+	if err != nil {
+		return Caller{}, time.Time{}, err
+	}
+	return caller, expiryOf(answer), nil
 }
 
 // live is the broker's half of both checks: the token r presents, the broker's answer about it,

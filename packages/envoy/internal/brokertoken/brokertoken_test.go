@@ -910,3 +910,42 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 		t.Fatalf("New refused the same options with the address function supplied: %v", err)
 	}
 }
+
+// TestLiveUntilAnswersWhenTheTokenStopsBeingLive: a connection that outlives its request tells a
+// token whose life ended from one the broker ended early by the instant the broker said it would
+// end, since both answer ErrNotActive once they are over. So LiveUntil hands that instant back beside
+// the caller: the answer's 'exp', to the second the broker writes it, and the zero time for an answer
+// that names none. A token the broker does not hold live answers ErrNotActive and no instant, as
+// Live does.
+func TestLiveUntilAnswersWhenTheTokenStopsBeingLive(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const (
+		dated   = "a-token-the-broker-dated"
+		undated = "a-token-the-broker-named-no-expiry-for"
+		unknown = "a-token-the-broker-never-issued"
+	)
+	answer := liveToken(caller.jkt, time.Hour)
+	rig.broker.Says(dated, answer)
+	decided, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, dated))
+	if err != nil {
+		t.Fatalf("LiveUntil of a live token: %v", err)
+	}
+	if want := time.Unix(answer.ExpiresAt, 0); !until.Equal(want) {
+		t.Fatalf("LiveUntil answered the expiry %v, want the answer's exp %v", until, want)
+	}
+	if decided.Session != answer.Session || decided.Person != answer.Person {
+		t.Fatalf("LiveUntil = %+v, want the caller Live answers for the same token", decided)
+	}
+
+	noExpiry := liveToken(caller.jkt, time.Hour)
+	noExpiry.ExpiresAt = 0
+	rig.broker.Says(undated, noExpiry)
+	if _, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, undated)); err != nil || !until.IsZero() {
+		t.Fatalf("LiveUntil of a token with no exp = %v, %v; want the zero time and no error", until, err)
+	}
+
+	if decided, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, unknown)); !errors.Is(err, brokertoken.ErrNotActive) || !until.IsZero() || !reflect.DeepEqual(decided, brokertoken.Caller{}) {
+		t.Fatalf("LiveUntil of a token the broker does not hold = %+v, %v, %v; want no caller, the zero time and ErrNotActive", decided, until, err)
+	}
+}

@@ -149,6 +149,19 @@ func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }
 
+// EnvoyTopicPrefix begins every lane of Envoy's own among the notification topics: the relay
+// subjects (DeliverSubjectPrefix), the relay receipts of an edge listener (RelayReplyPrefix), the
+// exception lanes (ExceptionTopicPrefix), and the kept, resume and takeover lanes the stream
+// carries for the listener (listenerOwnStreamLanes). An edge listener's grant publishes this
+// family beside the agent and role subjects and no other notification topic (natsgrant.Edge).
+const EnvoyTopicPrefix = NotificationTopicPrefix + "envoy."
+
+// RelayReplyPrefix begins the receipt subject of a relay frame that an edge listener sends, in
+// place of a reply inbox: an edge listener's grant subscribes this family and publishes no reply
+// inbox (natsgrant.Edge). No stream subject captures it (StreamCaptures), so a receipt travels
+// over core NATS, as the frame does, and the stream stores none.
+const RelayReplyPrefix = EnvoyTopicPrefix + "relayreply."
+
 // ConnectionProbeHeader is the one header the listener's connection probe carries on a session's
 // relay subject (DeliverSubject), with the value "1", and no body: a core request whose answer, or
 // a second of silence, says something still subscribes the subject, and whose no-responders says
