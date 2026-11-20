@@ -409,6 +409,11 @@ type Machine struct {
 	// the grant to another enrollment in that window, where an adoption's commit can land; no
 	// production caller sets it.
 	testRevokeHook func()
+	// testRevokeLockedHook, when set, runs in RevokeByApprover's transaction right after it locked
+	// the grant's session (lockSessionEnrollments), so a test can commit a new enrollment of that
+	// session from another connection in the window the transaction's last check covers. No
+	// production caller sets it.
+	testRevokeLockedHook func()
 	// testCommitCut, when set, runs right after a decision's transaction has committed, and an
 	// error it returns is what the decision answers: a COMMIT the server applied whose answer
 	// the network then lost. testHoldCommit, when set, runs with every row of the decision
@@ -507,8 +512,9 @@ type enrollmentRow struct {
 // Otherwise the pod acts for no person: it is its account's own, and its service is read as
 // above. A pod whose login carried no person acts for no person.
 // Every other session acts for its enrollment's operator. The enrollment row keeps the person it
-// was made for, and GrantsForApprover, mayRevoke, the approval record and the grant log read
-// that row, not this answer.
+// was made for, which the approval record, the grant log and the grant list's selection read;
+// mayRevoke, the person rule's exemption and the grant list's operator read whom the enrollment
+// acts for now (operatorOf), as this does.
 // It is read on every request, decision and release, so a change to one of these settings
 // changes what an enrolled pod or machine gets at its next call, not at its lease's end. A
 // caller that decides
@@ -2710,16 +2716,19 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 // session as this runs either is written first, and then ended here if it got a withheld name, or
 // decides with the name withheld. A revoke that ends nothing and withholds nothing new succeeds
 // and changes nothing.
-// The enrollment it reads the operator off, and the one withhold writes against, is the enrollment
-// the grants row names now, so an approver's revoke reaches a grant that moved and an operator's
-// withholds from the box the session runs on. The person rule reads the grant on the pool, before
-// the transaction, since it may ask Dispatch, and the transaction reads it again (revokeJudged).
-// An adoption that moves the grant between the two reads would let the transaction decide on a row
-// the rule did not judge: a login exempt as the old enrollment's operator could then pass
-// mayRevoke's arm for a grant whose approver is record.AnyoneApprover without the rule, and an
-// operator's withhold would land on the box the session left. So the transaction decides only on
-// the enrollment and approver the rule judged, and starts again from the rule when either moved,
-// at most revokeJudgeAttempts times.
+// The enrollment it reads the operator off is the enrollment the grants row names now, so an
+// approver's revoke reaches a grant that moved. An operator's withhold writes against that
+// enrollment and every other live enrollment of the grant's session (revokeJudged), so it reaches
+// the box the session runs on even where the grant stayed on a box the session left: a box that
+// held nothing live when the session moved off it, whose grants and requests no adoption takes.
+// The person rule reads the grant on the pool, before the transaction, since it may ask Dispatch,
+// and the transaction reads it again (revokeJudged). An adoption that moves the grant between the
+// two reads would let the transaction decide on a row the rule did not judge: a login exempt as
+// the old enrollment's operator could then pass mayRevoke's arm for a grant whose approver is
+// record.AnyoneApprover without the rule. So the transaction decides only on the enrollment and
+// approver the rule judged, and starts again from the rule when either moved, or when a live
+// enrollment of the session appeared that the withhold did not write against, at most
+// revokeJudgeAttempts times.
 func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor string) error {
 	for attempt := 1; ; attempt++ {
 		judged, err := m.hideUnseenGrant(ctx, grantID, login)
@@ -2730,7 +2739,7 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 			m.testRevokeHook()
 		}
 		err = m.revokeJudged(ctx, grantID, login, actor, judged)
-		if !errors.Is(err, errGrantMovedSinceJudged) {
+		if !errors.Is(err, errGrantMovedSinceJudged) && !errors.Is(err, errSessionMovedSinceJudged) {
 			return err
 		}
 		if attempt == revokeJudgeAttempts {
@@ -2744,34 +2753,53 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 // (grantJudged): an adoption moved it between the two reads. It writes nothing.
 var errGrantMovedSinceJudged = errors.New("the grant moved to another session after the person rule judged it")
 
+// errSessionMovedSinceJudged is revokeJudged's answer for an operator's revoke during which a live
+// enrollment of the grant's session appeared that its locks did not take (lockSessionEnrollments):
+// an adoption committed it while the transaction ran, so the withhold would miss the box the
+// session runs on now. It writes nothing.
+var errSessionMovedSinceJudged = errors.New("a new enrollment of the grant's session appeared while the revoke ran")
+
 // revokeJudgeAttempts is how many times RevokeByApprover runs the person rule and its transaction
 // for a grant that keeps moving between them. Each move is an adoption's commit, which lands once
 // a session's process restarts, so a second attempt finds the grant still; a third is margin.
 const revokeJudgeAttempts = 3
 
 // revokeJudged is RevokeByApprover's transaction, for the grant as the person rule judged it. It
-// locks the enrollment the rule judged first, in a statement of its own, and reads the grant in a
-// later one. Every writer that moves a grant off an enrollment locks that enrollment's row before
-// it moves the grant: an adoption takes its predecessors for update (enroll.adopt), and the end
-// that hands a claim's rows to another pod (enroll.handOver) runs under the end's own lock of the
-// enrollment. So the lock waits for such a move in flight to commit, and the later read, which
-// sees what committed before it started, sees the grant where the move left it. One statement that
-// read the grant and locked its enrollment together would read the grant as it was when the
-// statement began, before the move it waited on, and decide on the old holder. Once the lock is
-// held, nothing moves the grant off that enrollment until this transaction ends.
+// locks the enrollment the rule judged first, with every other live enrollment of its session
+// (lockSessionEnrollments), in a statement of its own, and reads the grant in a later one. Every
+// writer that moves a grant off an enrollment locks that enrollment's row before it moves the
+// grant: an adoption takes its predecessors for update (enroll.adopt), and the end that hands a
+// claim's rows to another pod (enroll.handOver) runs under the end's own lock of the enrollment.
+// So the lock waits for such a move in flight to commit, and the later read, which sees what
+// committed before it started, sees the grant where the move left it. One statement that read the
+// grant and locked its enrollment together would read the grant as it was when the statement
+// began, before the move it waited on, and decide on the old holder. Once the lock is held,
+// nothing moves the grant off that enrollment until this transaction ends.
+//
+// An operator's withhold writes against each locked enrollment: the names bind the session, and
+// requests.Machine reads them by the enrollment's own id, so the box the session runs on must hold
+// them itself. An enrollment of the session an adoption commits while this runs is not among the
+// locked ones, so the last statement before the commit looks for one and, finding it, gives the
+// transaction up (errSessionMovedSinceJudged) for RevokeByApprover to start again. An adoption that
+// commits between that look and the commit, and takes nothing from the locked boxes (none of them
+// holds a live grant, a pending request or a committed withheld name for it to take), is the one
+// case left: its box asks for the names automatically until the session's next move, which takes
+// them off the boxes this wrote them on (enroll.adopt's withheld clause).
 func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string, judged grantJudged) error {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var session, requestID string
-	var approver *string
-	var holder enrollmentRow
-	if err := tx.QueryRow(ctx, `select kind, operator, subject from enrollments where id=$1 for no key update`, judged.holder).
-		Scan(&holder.Kind, &holder.Operator, &holder.Subject); err != nil {
+	holder, others, of, err := lockSessionEnrollments(ctx, tx, judged.holder)
+	if err != nil {
 		return err
 	}
+	if m.testRevokeLockedHook != nil {
+		m.testRevokeLockedHook()
+	}
+	var session, requestID string
+	var approver *string
 	if err := tx.QueryRow(ctx, `select enrollment_id, request_id, approver from grants where id=$1`, grantID).Scan(&session, &requestID, &approver); err != nil {
 		return err
 	}
@@ -2792,15 +2820,44 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	}
 	ended := tag.RowsAffected() > 0
 	detail := auditDetail{}
-	var endedByWithhold []endedGrant
+	// endedOn is each grant a withhold ended, with the enrollment it hung off, for its log line.
+	type endedOn struct {
+		enr   enrollmentRow
+		grant endedGrant
+	}
+	var endedByWithhold []endedOn
 	if asOperator {
-		withheld, alsoEnded, err := withhold(ctx, tx, session, requestID, actor)
+		var names, on []string
+		locked := []string{holder.ID}
+		for _, enr := range append([]enrollmentRow{holder}, others...) {
+			withheld, alsoEnded, err := withhold(ctx, tx, enr.ID, requestID, actor)
+			if err != nil {
+				return err
+			}
+			names = append(names, withheld...)
+			if enr.ID != holder.ID {
+				locked = append(locked, enr.ID)
+				if len(withheld) > 0 {
+					on = append(on, enr.ID)
+				}
+			}
+			for _, g := range alsoEnded {
+				endedByWithhold = append(endedByWithhold, endedOn{enr, g})
+			}
+		}
+		if len(names) > 0 {
+			slices.Sort(names)
+			detail["withheld"] = slices.Compact(names)
+			if len(on) > 0 {
+				detail["withheld_on"] = on
+			}
+		}
+		appeared, err := newSessionEnrollment(ctx, tx, of, locked)
 		if err != nil {
 			return err
 		}
-		endedByWithhold = alsoEnded
-		if len(withheld) > 0 {
-			detail["withheld"] = withheld
+		if appeared {
+			return errSessionMovedSinceJudged
 		}
 	}
 	kind := "grant.revoked"
@@ -2822,13 +2879,75 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	// the review reads them in as well (store.ReadGrantLog orders by audit id). Among themselves
 	// they are in no order the table holds: withhold's aggregate answers them by grant_id, a
 	// UUID order, and the statement's audited CTE inserts them with no ordering at all. Each
-	// names the request whose grant it ended, which is not the revoked grant's.
-	enr := enrollmentRow{ID: session, Operator: holder.Operator}
-	for _, g := range endedByWithhold {
-		logGrantRow("grant.revoked", actor, enr, g.RequestID, g.GrantID, g.Detail)
+	// names the request whose grant it ended, which is not the revoked grant's, and the
+	// enrollment that grant hung off.
+	for _, e := range endedByWithhold {
+		logGrantRow("grant.revoked", actor, e.enr, e.grant.RequestID, e.grant.GrantID, e.grant.Detail)
 	}
-	logGrantRow(kind, actor, enr, requestID, grantID, rawJSON(detail))
+	logGrantRow(kind, actor, holder, requestID, grantID, rawJSON(detail))
 	return nil
+}
+
+// sessionOf is the session an enrollment belongs to: its session name, "" for none, and the
+// principal its grants follow (enrollments.carry_principal), nil for none.
+type sessionOf struct {
+	name  string
+	carry *string
+}
+
+// lockSessionEnrollments locks enrollment holder, and every other live enrollment of the session
+// it belongs to, for no key update, in id order and in one statement, and answers them, holder
+// apart. Another enrollment of the session is one of the same session name under the same carry
+// principal, the spelling enroll.adopt's session rule matches a successor of the same principal
+// by; a holder that names no session, or follows no principal, locks itself alone. The order is
+// the one enroll.adopt takes a session's enrollments in, so neither waits on the other in a cycle.
+// The session name and principal are read first and unlocked: both are written when the
+// enrollment is created and never changed afterwards.
+func lockSessionEnrollments(ctx context.Context, tx pgx.Tx, holder string) (enrollmentRow, []enrollmentRow, sessionOf, error) {
+	var of sessionOf
+	if err := tx.QueryRow(ctx, `select coalesce(session_id, ''), carry_principal from enrollments where id=$1`, holder).Scan(&of.name, &of.carry); err != nil {
+		return enrollmentRow{}, nil, of, err
+	}
+	rows, err := tx.Query(ctx, `select id, kind, operator, subject, coalesce(session_id, ''), runtime_id from enrollments e
+		where e.id=$1 or ($2::text <> '' and e.session_id=$2::text and e.carry_principal=$3::text and e.revoked_at is null)
+		order by e.id for no key update`, holder, of.name, of.carry)
+	if err != nil {
+		return enrollmentRow{}, nil, of, err
+	}
+	defer rows.Close()
+	var self enrollmentRow
+	var others []enrollmentRow
+	found := false
+	for rows.Next() {
+		var r enrollmentRow
+		if err := rows.Scan(&r.ID, &r.Kind, &r.Operator, &r.Subject, &r.SessionID, &r.RuntimeID); err != nil {
+			return enrollmentRow{}, nil, of, err
+		}
+		if r.ID == holder {
+			self, found = r, true
+		} else {
+			others = append(others, r)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return enrollmentRow{}, nil, of, err
+	}
+	if !found {
+		return enrollmentRow{}, nil, of, pgx.ErrNoRows
+	}
+	return self, others, of, nil
+}
+
+// newSessionEnrollment reports whether a live enrollment of session of exists that locked does not
+// name: one an adoption committed after lockSessionEnrollments read the session's enrollments.
+func newSessionEnrollment(ctx context.Context, tx pgx.Tx, of sessionOf, locked []string) (bool, error) {
+	if of.name == "" || of.carry == nil {
+		return false, nil
+	}
+	var appeared bool
+	err := tx.QueryRow(ctx, `select exists (select 1 from enrollments e where e.session_id=$1 and e.carry_principal=$2
+		and e.revoked_at is null and not (e.id::text = any($3::text[])))`, of.name, *of.carry, locked).Scan(&appeared)
+	return appeared, err
 }
 
 // withhold withholds from enrollmentID every name request requestID, whose grant its operator just
@@ -2841,8 +2960,9 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 // let approve it (currentPolicyAdmits), which stands. It answers the names it had not withheld
 // before, and the grant.revoked audit row it wrote for each grant it ended, so RevokeByApprover
 // logs one grant-log line per row once the transaction has committed.
-// Everything it writes and everything it ends is keyed by enrollmentID, the enrollment the grant
-// hangs off now, which after a move is the box the session runs on and not the one that asked.
+// Everything it writes and everything it ends is keyed by enrollmentID, one enrollment of the
+// session RevokeByApprover holds locked: the one the grant hangs off now, or another live
+// enrollment of the session, which is where the session runs once it left a box that held nothing.
 func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor string) ([]string, []endedGrant, error) {
 	var names []string
 	var ended []endedGrant

@@ -2000,6 +2000,12 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		}
 		s.sessionProjects = m.credentialsProjects(asked, current)
 		s.operator = m.operatorOf(current)
+		// The row names the operator the revoke decides by (operatorOf), not the enrollment's
+		// record: a person's pod BROKER_POD_OPERATORS no longer maps names none, so the page
+		// offers Revoke only where the broker would take it, and an automatic grant of such a pod
+		// reads as one that ends with its machine login. The selection above still reads the
+		// record, so the pod's former person keeps finding the pod's grants.
+		g.Enrollment.Operator = deref(s.operator)
 		g.Granted = policy.Approval
 		if g.RecordID == nil {
 			g.Granted = policy.Automatic
