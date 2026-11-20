@@ -81,28 +81,38 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// (resolveAnchor), the comment's own words; a replace's and a delete's wrap document text,
 	// which stays in the document (docs.RejectDeletedCommentSuggestion). So the clear below
 	// empties an insert's quote with its suggestion, and the anchor keeps its document, its block
-	// and its mark id. The kind is the mark's own, which the reject answers while the mark stands.
+	// and its mark id.
 	//
-	// An orphaned mark answers no kind, and the row records none: the suggestion holds
-	// replace_with and accepted, the anchor its document, block, mark id, version, quote and
-	// orphaned flag, and the margin record the create wrote the kind into is rewritten without
-	// it by the first projection that finds the mark gone (projectThreadMark). So the row's own
-	// text decides: the words an insert put in the document are the words its suggestion
-	// records, so its quote is its replace_with, and the clear empties an orphaned suggestion's
-	// quote when the two are the same bytes. Such a quote is a copy of the text the clear takes
-	// off the row, whatever kind the mark was: a replace's equals its replace_with only when it
-	// would write the very text it quotes. Any other quote stays: a replace's or a delete's
-	// document text, or the words of an insert that a browser edit changed before it orphaned
-	// the mark (an anchor refresh moves the quote, never replace_with), which no fact of the row
-	// tells from document text.
+	// The kind is the mark's, recorded twice: the create stored it in the row's suggestion column
+	// (storedSuggestion), which the read below takes by its key, and the reject answers it while
+	// the mark stands. Both name the one mark's kind, so they agree; should a browser have
+	// rewritten the mark's kind since, either one naming an insert empties the quote, since a
+	// quote kept wrongly gives the comment's words where one emptied wrongly takes only document
+	// text the document still holds. An orphaned mark answers no kind, and the margin record the
+	// create wrote the kind into is rewritten without it by the first projection that finds the
+	// mark gone (projectThreadMark), so the stored kind alone decides then: an insert's quote is
+	// its words, a browser edit having changed some of them or not (an anchor refresh moves the
+	// quote, never replace_with).
+	//
+	// A row made before the create stored the kind has none, and an orphaned suggestion of such
+	// a row falls back to its own text: the words an insert put in the document are the words
+	// its suggestion records, so the clear empties its quote when the quote is its replace_with,
+	// byte for byte, and keeps any other, which no fact of that row tells from document text.
 	//
 	// Everything up to Commit is the read phase (Docs.Join): this route and the document
 	// operations queue their writes on the ledger, in the order made, and Commit sends them as
 	// one batch.
 	quoteIsBody := false
 	if comment.Suggestion != nil && comment.Suggestion.Accepted == nil && comment.Anchor != nil {
+		var storedKind string
+		if err := tx.QueryRow(r.Context(), `
+			select coalesce(suggestion->>'kind', '') from comments where id = $1
+		`, comment.ID).Scan(&storedKind); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		kind, err := s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
-		quoteIsBody = kind == "insert"
+		quoteIsBody = kind == "insert" || storedKind == "insert"
 		if err != nil {
 			if !errors.Is(err, docs.ErrAnchorOrphaned) {
 				s.writeHandlerError(w, err)
@@ -112,18 +122,24 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			quoteIsBody = comment.Anchor.Quote == comment.Suggestion.ReplaceWith
+			if storedKind == "" {
+				quoteIsBody = comment.Anchor.Quote == comment.Suggestion.ReplaceWith
+			}
 		}
 	}
 	// An accepted suggestion's proof is a version of the document, which the accept named
 	// after the comment's body (acceptedVersionName); every read of the document's versions
 	// serves that name, so the delete renames it here, beside the reject above, while the
-	// comment still holds the anchor and the suggestion the clear below takes off it.
+	// comment still holds the anchor and the suggestion the clear below takes off it. The
+	// comment.deleted below names the version with its new name (renamed_version).
+	var renamedVersion *model.RenamedVersion
 	if comment.Suggestion != nil && comment.Suggestion.Accepted != nil && *comment.Suggestion.Accepted && comment.Anchor != nil {
-		if err := renameAcceptedVersion(r.Context(), tx, ledger, comment); err != nil {
+		renamed, err := renameAcceptedVersion(r.Context(), tx, ledger, comment)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		renamedVersion = renamed
 	}
 	// deleted_at is the transaction's now(), which the queued update writes, read here so the
 	// projection, the event and the answer carry it before that update runs.
@@ -210,6 +226,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	payload.RenamedVersion = renamedVersion
 	event, err := s.queueLoggedEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID).event(
 		"comment.deleted",
 		actor,
@@ -232,11 +249,18 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 // name an accept gives a suggestion with no body (acceptedVersionName), in the delete's own
 // transaction, so no read of the document's versions serves any part of the deleted body as a
 // version's name, and marks it renamed by this comment's delete in the same update
-// (artifact_versions.renamed_by_delete, which answerEndedByDelete reads). The artifact.version
+// (artifact_versions.renamed_by_delete, which answerEndedByDelete reads). It answers the version
+// it renamed with the name it gave it, nil when it renamed none. The artifact.version
 // event the accept appended keeps the name it carried: no delete rewrites a stored event, and
 // only the deleted comment's own events are read without its body (attachPostMarks). The version
 // is found in the delete's read phase, under the comment's owner lock, and its update is queued
 // on ledger.
+//
+// No event of the document says the rename: an artifact.renamed corrects the document's title,
+// and every reader prints it as one ("renamed X to X"), and an artifact.version announces a
+// version written, whose readers count it as new work. So the delete's own comment.deleted names
+// the version and its new name (model.CommentEventPayload.RenamedVersion), and a reader holding
+// the document's versions takes the name from it.
 //
 // The accept records the version it made by the comment's id (artifact_versions.accepted_from,
 // queued in commentAction's transaction right after Docs.NamedVersion), so the version is the one
@@ -254,17 +278,17 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 // the accept's own transaction writes no other: a lookup that finds more than one version renames
 // none, and one that finds none - an accept whose event or version is not where this reads them -
 // renames none either, each logged with the comment and the document.
-func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment model.Comment) error {
+func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment model.Comment) (*model.RenamedVersion, error) {
 	artifactID := comment.Anchor.ArtifactID
 	rows, err := tx.Query(ctx, `
 		select number from artifact_versions where artifact_id = $1 and accepted_from = $2
 	`, artifactID, comment.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	numbers, err := pgx.CollectRows(rows, pgx.RowTo[int])
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(numbers) == 0 {
 		ownerColumn, ownerID := commentEventOwner(comment)
@@ -276,18 +300,23 @@ func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, 
 			)
 		`, ownerID, comment.ID, artifactID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if numbers, err = pgx.CollectRows(rows, pgx.RowTo[int]); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if len(numbers) != 1 {
 		slog.Warn("dispatch: a deleted comment's accepted suggestion names no single document version, so no version is renamed",
 			"comment", comment.ID, "artifact", artifactID, "versions", numbers)
-		return nil
+		return nil, nil
 	}
-	return queueExec(ledger, `
+	renamed := model.RenamedVersion{
+		ArtifactID: artifactID,
+		Number:     numbers[0],
+		Summary:    acceptedVersionName("", comment.Anchor.Quote, comment.Suggestion.ReplaceWith),
+	}
+	return &renamed, queueExec(ledger, `
 		update artifact_versions set summary = $3, renamed_by_delete = $4 where artifact_id = $1 and number = $2
-	`, artifactID, numbers[0], acceptedVersionName("", comment.Anchor.Quote, comment.Suggestion.ReplaceWith), comment.ID)
+	`, artifactID, renamed.Number, renamed.Summary, comment.ID)
 }

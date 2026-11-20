@@ -12,6 +12,8 @@ import { correctedPostAddresses } from "./event-refresh";
 import type { ReferenceTargetsAnswer } from "./queries";
 import type {
   Actor,
+  Artifact,
+  ArtifactVersionContent,
   AskThread,
   CommentEventPayload,
   CommentRead,
@@ -20,6 +22,7 @@ import type {
   DisplayTree,
   GraphEdge,
   GraphReferences,
+  IssueDetails,
   MessageEventPayload,
   MessageRead,
   MessageWithTrees,
@@ -31,6 +34,7 @@ import type {
   ReplyBlockWithTrees,
   SearchResponse,
   SearchResult,
+  Version,
 } from "./types";
 
 /** What a post's correction writes into each copy of the post: the time of an edit, or the mark
@@ -39,6 +43,10 @@ import type {
 type PostMark =
   | { readonly kind: "edited"; readonly at: string }
   | { readonly kind: "deleted"; readonly deletion: PostDeletion; readonly quoteCleared: boolean };
+
+/** The document version a comment's delete renamed, as its event names it: the version an
+ *  accepted suggestion of the comment had named after the comment's body. */
+type RenamedVersion = NonNullable<CommentEventPayload["renamed_version"]>;
 
 /** The post a correction event is of, by the kind and the id each copy of it carries. */
 interface CorrectedPost {
@@ -50,6 +58,9 @@ interface CorrectedPost {
   /** Whether an address a names read holds names the post or a block of it
    *  (`correctedPostAddresses`); undefined for an event whose id is no post's. */
   readonly names: ((address: string) => boolean) | undefined;
+  /** The version a comment's delete renamed (`renamed_version`), whose old name was the comment's
+   *  words; undefined for every other correction, and for a delete that renamed none. */
+  readonly renamedVersion: RenamedVersion | undefined;
 }
 
 /** What one family's cached answer becomes once `post` is corrected: `answer`, as the query keyed
@@ -80,15 +91,23 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
       ? markEach(listOf<MessageRead>(answer), (read) => markedMessageRead(read, post))
       : undefined
   ),
-  /** A document's comments (`["artifact", id, "comments"]`) and asks with their threads
-   *  (`["artifact", id, "asks"]`); the document's own reads hold no post. */
+  /** A document's own read (`["artifact", id]`), the name of each of its versions among it, a
+   *  read of one version (`["artifact", id, "version", n]`, and `["artifact", id, n]` where a
+   *  reference pins version n) with that version's name, its comments
+   *  (`["artifact", id, "comments"]`) and its asks with their threads (`["artifact", id, "asks"]`);
+   *  the document's other reads hold no post. */
   artifact: ofKind("comment", (answer, post, queryKey) =>
-    queryKey[2] === "comments"
-      ? markEach(listOf<CommentWithTrees>(answer), (comment) => markedComment(comment, post))
-      : queryKey[2] === "asks"
-        ? markedAskRows(answer, post)
-        : undefined
+    queryKey.length === 2
+      ? withRenamedVersion(answer as Artifact, post)
+      : queryKey[2] === "comments"
+        ? markEach(listOf<CommentWithTrees>(answer), (comment) => markedComment(comment, post))
+        : queryKey[2] === "asks"
+          ? markedAskRows(answer, post)
+          : renamedVersionRead(answer as ArtifactVersionContent, post, queryKey)
   ),
+  /** A project document read by its project and slug (`["artifact-ref", "<project>/<slug>"]`):
+   *  the name of each of its versions. */
+  "artifact-ref": ofKind("comment", (answer, post) => withRenamedVersion(answer as Artifact, post)),
   /** A comment's read (`["comment", id]`): the comment and its replies. */
   comment: ofKind("comment", (answer, post) => markedCommentRead(answer as CommentRead, post)),
   /** An issue's comments, or a document's on it (`["comments", key, …]`). */
@@ -105,6 +124,12 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
   },
   /** The Inbox's ask rows (`inboxQuery`, `["inbox", project]`), each with its thread. */
   inbox: ofKind("comment", markedAskRows),
+  /** An issue's details (`["issue", key]`): the name of each version of each of its documents.
+   *  The reads under it (coverage, results, collaborators, steps and referenced documents) hold no
+   *  comment or message. */
+  issue: ofKind("comment", (answer, post, queryKey) =>
+    queryKey.length === 2 ? renamedVersionInIssue(answer as IssueDetails, post) : undefined
+  ),
   /** A message's read (`["issue-message", key, id]`): the message and its replies. */
   "issue-message": ofKind("message", (answer, post) =>
     markedMessageRead(answer as MessageRead, post)
@@ -152,7 +177,6 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "agents issue-picker": "the issues the Agents page's picker offers: keys and titles",
   architecture: "a project's architecture components",
   "architecture-sources": "the repositories a project's architecture is read from",
-  "artifact-ref": "a document read by its project and slug: its text and versions, no comment",
   "artifact-reviews": "a document's review steps and who approved them",
   artifacts: "an issue's documents by name, which prints no version name (census C.15); no comment",
   broadcast:
@@ -176,8 +200,6 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "github-link-checks": "a linked pull request's checks as GitHub answers them",
   handoff: "one phase handoff with its body: a handoff is no comment or message",
   handoffs: "an issue's phase handoffs, without their bodies",
-  issue:
-    "an issue's details, coverage, results, collaborators, steps and referenced documents: no comment or message; a version an accepted suggestion was named after is renamed by the delete itself (census 6.5), and the answer names no comment it came from",
   "issue-ancestors": "the parents of the issues a listing holds: keys and titles",
   "issue-summary": "an issue's title and status for a link's card (census C.15)",
   issues: "issue lists: keys, titles, statuses and labels",
@@ -236,7 +258,13 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  *   with no excerpt. The server answers a read of a deleted post's block 404, which no cached
  *   answer holds, and the node's mark is what a reference to the block reads the deletion from;
  * - each member of a names read naming the post or a block of it (`["reference-targets", …]`,
- *   by `correctedPostAddresses`): the post's named `""`, a block's gone, with no tree.
+ *   by `correctedPostAddresses`): the post's named `""`, a block's gone, with no tree;
+ * - the name of the document version a comment's accepted suggestion had named after the
+ *   comment's body, where the delete renamed it (`renamed_version`): that version's `summary`, in
+ *   the document's own read (`["artifact", id]`), a project document's read by its slug
+ *   (`["artifact-ref", …]`) and the issue's details (`["issue", key]`), each of which lists the
+ *   document's versions, and in each read of that version alone (`["artifact", id, "version", n]`,
+ *   `["artifact", id, n]`).
  *
  * An edit writes its time (`edited_at`) on each of those copies that carries one, unless the copy
  * carries a later edit's already (`editedAfter`), and nothing else: an edit event's body can be
@@ -426,7 +454,16 @@ function correctedPost(event: DispatchEvent): CorrectedPost | undefined {
       return undefined;
   }
   const { id } = event.payload;
-  return { blockNodes: `${kind}/${id}#`, id, kind, mark, names: correctedPostAddresses(event) };
+  const renamedVersion =
+    event.type === "comment.deleted" ? event.payload.renamed_version : undefined;
+  return {
+    blockNodes: `${kind}/${id}#`,
+    id,
+    kind,
+    mark,
+    names: correctedPostAddresses(event),
+    renamedVersion,
+  };
 }
 
 /** `write` for a family whose answers hold posts of `kind` alone: a post of the other kind has no
@@ -449,6 +486,52 @@ function markEach<T>(
   const marked = items.map((item) => mark(item));
   return marked.some((item) => item !== undefined)
     ? items.map((item, at) => marked[at] ?? item)
+    : undefined;
+}
+
+/** A document read - the document's own, or one of an issue's documents - with the version a
+ *  comment's delete renamed (`post.renamedVersion`) given the name the delete gave it; undefined
+ *  for another document, one that lists no such version or lists it so named already, and every
+ *  other correction. */
+function withRenamedVersion<D extends Pick<Artifact, "id" | "versions">>(
+  document: D,
+  post: CorrectedPost
+): D | undefined {
+  const renamed = post.renamedVersion;
+  if (renamed === undefined || document.id !== renamed.artifact_id) {
+    return undefined;
+  }
+  const versions = markEach<Version>(document.versions, (version) =>
+    version.number === renamed.number && version.summary !== renamed.summary
+      ? { ...version, summary: renamed.summary }
+      : undefined
+  );
+  return versions === undefined ? undefined : { ...document, versions };
+}
+
+/** An issue's details with the version a comment's delete renamed given its new name, among the
+ *  issue's documents; undefined where the issue lists no such version or it is so named already. */
+function renamedVersionInIssue(issue: IssueDetails, post: CorrectedPost): IssueDetails | undefined {
+  const artifacts = markEach(issue.artifacts, (artifact) => withRenamedVersion(artifact, post));
+  return artifacts === undefined ? undefined : { ...issue, artifacts };
+}
+
+/** A read of one version of a document (`["artifact", id, "version", n]`, or `["artifact", id, n]`
+ *  where a reference pins version n) with the name a comment's delete gave version n; undefined for
+ *  a read of another version or document, a file's version, which carries no name, and a version
+ *  so named already. */
+function renamedVersionRead(
+  read: ArtifactVersionContent,
+  post: CorrectedPost,
+  queryKey: QueryKey
+): ArtifactVersionContent | undefined {
+  const renamed = post.renamedVersion;
+  const number = queryKey[2] === "version" ? queryKey[3] : queryKey[2];
+  if (renamed === undefined || queryKey[1] !== renamed.artifact_id || number !== renamed.number) {
+    return undefined;
+  }
+  return "summary" in read && read.summary !== renamed.summary
+    ? { ...read, summary: renamed.summary }
     : undefined;
 }
 

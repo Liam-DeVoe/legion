@@ -161,6 +161,21 @@ export const commentEventPayloadFields = {
    *  owns the ask. Carried by `comment.created` alone; absent on a comment outside an ask's thread
    *  and from a Dispatch older than the field. */
   ask_sessions: z.array(z.string()).optional(),
+  /** Carried by `comment.deleted` alone, of a comment whose accepted suggestion named a document
+   *  version after the comment's body: that version as the delete renamed it - its document, its
+   *  number, and the name (`summary`) every read of the document's versions now gives it, which
+   *  quotes the suggestion's quote and replacement, the document's own text since the accept, and
+   *  none of the comment's body. A reader holding the document's versions gives that version this
+   *  name. Absent on every other comment event, on a delete that renamed no version, and from a
+   *  Dispatch older than the field. */
+  renamed_version: z
+    .strictObject({
+      artifact_id: z.string(),
+      number: z.number().int().positive(),
+      summary: z.string(),
+    })
+    .readonly()
+    .optional(),
   ...referenceChangesFields,
   ...threadLoginsFields,
   ...carriedBodyFields,

@@ -373,6 +373,12 @@ const WRITTEN_ELSEWHERE: Readonly<
     file: "features/inbox/AskThread.test.tsx",
     test: "a thread whose refetch fails after a reply's edit and delete reads the reply as edited, then deleted",
   },
+  // The document read by its slug holds no post; it lists the document's versions, whose name a
+  // comment's delete renames (`renamed_version`).
+  "artifact-ref": {
+    file: "api/corrected-post-versions.test.ts",
+    test: "a version a comment's delete renamed takes its new name in a project document's read by its slug, whose refetch fails",
+  },
   comment: {
     file: "features/refs/reference-target.test.ts",
     test: "a post's reference whose refetch fails after its edit and delete reads as edited, then deleted",
@@ -380,6 +386,12 @@ const WRITTEN_ELSEWHERE: Readonly<
   comments: {
     file: "features/margin/PinnedTab.test.tsx",
     test: "a pinned comment's and message's cards whose refetch fails read as edited, then deleted",
+  },
+  // The issue's details hold no post; they list each document's versions, whose name a comment's
+  // delete renames (`renamed_version`).
+  issue: {
+    file: "api/corrected-post-versions.test.ts",
+    test: "a version a comment's delete renamed takes its new name in the issue's details, whose refetch fails",
   },
   "issue-message": {
     file: "features/refs/reference-target.test.ts",

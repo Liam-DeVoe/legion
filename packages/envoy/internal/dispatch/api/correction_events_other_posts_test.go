@@ -42,13 +42,15 @@ func correctionDeleteRoutes(t *testing.T) map[refs.ItemKind]string {
 // R3 of dispatch://INFRA-1523, and the architect's ruling 3 of 2026-11-20 07:48Z: no correction
 // event carries text of another post. The test makes every kind of post a correction deletes - a
 // comment and a message, a reply of each both plain and to a block, a reply to a part of an ask, an
-// anchored comment and a suggestion - each with words of its own. It deletes each one through the
-// route the route table names for its kind (correctionDeleteRoutes), every reply while the post it
-// answers still stands, and takes the event kinds a correction writes from what each delete
-// appended about its own post, not from a list of names. Then it reads every event of those kinds
-// the issue holds, as the events table stores it and as GET /api/v1/issues/{key}/events gives it,
-// and fails on any that carries a phrase of a post other than the one the event is about. The ask a
-// reply answers is a post no route deletes, so its words are only ever another post's.
+// anchored comment, a suggestion, and an accepted suggestion, whose delete names the version it
+// renamed (renamed_version, the architect's ruling of 2026-11-20 09:18Z) - each with words of its
+// own. It deletes each one through the route the route table names for its kind
+// (correctionDeleteRoutes), every reply while the post it answers still stands, and takes the
+// event kinds a correction writes from what each delete appended about its own post, not from a
+// list of names. Then it reads every event of those kinds the issue holds, as the events table
+// stores it and as GET /api/v1/issues/{key}/events gives it, and fails on any that carries a
+// phrase of a post other than the one the event is about. The ask a reply answers is a post no
+// route deletes, so its words are only ever another post's.
 //
 // The control: before the deletes, the creation of each reply that freezes a preview of the post it
 // answers carries that post's words, so a delete event that copied them would be seen.
@@ -88,11 +90,20 @@ func TestNoCorrectionEventCarriesTextOfAnotherPost(t *testing.T) {
 		"anchor":     map[string]any{"artifact": "spec", "quote": "brown"},
 		"suggestion": map[string]string{"replace_with": "zarquonsuggestedwords"},
 	}, "alice")
+	accepted := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body":       "zarquonacceptedbody says it better",
+		"anchor":     map[string]any{"artifact": "spec", "quote": "fox"},
+		"suggestion": map[string]string{"replace_with": "dog"},
+	}, "alice")
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+accepted.ID+"/accept", map[string]any{}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("accept the suggestion: status=%d body=%s", response.Code, response.Body.String())
+	}
 
 	// A post this test makes. words are phrases of the post's own text: its body, a suggestion's
-	// replacement and an ask's parts. froze is the phrase of another post the reply's creation
-	// carries as its preview, "" for a post whose creation carries none. standing is a post no
-	// route deletes.
+	// replacement and an ask's parts. An accepted suggestion's replacement is the document's own
+	// text since the accept, and no word of the post. froze is the phrase of another post the
+	// reply's creation carries as its preview, "" for a post whose creation carries none. standing
+	// is a post no route deletes.
 	type madePost struct {
 		name, id, author string
 		kind             refs.ItemKind
@@ -120,6 +131,8 @@ func TestNoCorrectionEventCarriesTextOfAnotherPost(t *testing.T) {
 			words: []string{"zarquonanchored"}},
 		{name: "the suggestion", id: suggestion.ID, author: "alice", kind: refs.ItemComment,
 			words: []string{"zarquonsuggestion", "zarquonsuggestedwords"}},
+		{name: "the accepted suggestion", id: accepted.ID, author: "alice", kind: refs.ItemComment,
+			words: []string{"zarquonacceptedbody"}},
 		{name: "the ask", id: ask.ID, kind: refs.ItemAsk,
 			words: []string{"zarquonaskquestion", "zarquonaskoption"}, standing: true},
 	}

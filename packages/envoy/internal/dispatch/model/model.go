@@ -3213,6 +3213,23 @@ type CommentEventPayload struct {
 	// root), read in the write's own transaction (events.ThreadLogins). Absent on every other
 	// comment event.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// RenamedVersion is carried by comment.deleted alone, of a comment whose accepted suggestion
+	// named a document version after the comment's body: that version as the delete renamed it
+	// (api's renameAcceptedVersion), so a reader holding the document's versions gives it the name
+	// every read of them now gives. Its name quotes the suggestion's quote and replacement, the
+	// document's own text since the accept, and none of the comment's body. Absent on every other
+	// comment event, on a delete that renamed no version, and on an event a server older than the
+	// field wrote.
+	RenamedVersion *RenamedVersion `json:"renamed_version,omitempty"`
+}
+
+// RenamedVersion is a document version the delete of a comment renamed
+// (CommentEventPayload.RenamedVersion): its document, its number, and the name (Version.Summary)
+// the delete gave it.
+type RenamedVersion struct {
+	ArtifactID string `json:"artifact_id"`
+	Number     int    `json:"number"`
+	Summary    string `json:"summary"`
 }
 
 // Message is a short update, optionally linked to an issue and threaded under another message.
