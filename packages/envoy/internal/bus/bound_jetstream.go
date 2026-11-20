@@ -27,7 +27,7 @@ func bindJetStream(c *Client, js nats.JetStreamContext) nats.JetStreamContext {
 	if _, bound := js.(boundJetStream); c == nil || bound {
 		return js
 	}
-	return boundJetStream{JetStreamContext: js, client: c}
+	return boundJetStream{JetStreamContext: js, client: c, open: context.Background()}
 }
 
 // boundJetStream is a legacy JetStream context whose account, stream, consumer, bucket-open,
@@ -52,6 +52,26 @@ func bindJetStream(c *Client, js nats.JetStreamContext) nats.JetStreamContext {
 type boundJetStream struct {
 	nats.JetStreamContext
 	client *Client
+	// open is the context its bucket opens (KeyValue, CreateKeyValue) are bound with: nats.go's
+	// KeyValue and CreateKeyValue take no options, so the open passes its caller's context here
+	// (openWithin). context.Background when the wrapper is built (bindJetStream).
+	open context.Context
+}
+
+// openWithin is js with its bucket opens bound under ctx, the context of the open that makes them
+// (OpenKeyValue, ensureKeyValue): a caller that holds a lock across the open and marks ctx so
+// (WithLockHeld) hears a loss at once, and one that holds none waits for the connection within
+// ctx. A js that is not this package's wrapper, under a refusal reader or not, is returned as it is.
+func openWithin(ctx context.Context, js nats.JetStreamContext) nats.JetStreamContext {
+	switch wrapped := js.(type) {
+	case boundJetStream:
+		wrapped.open = ctx
+		return wrapped
+	case refusalReads:
+		wrapped.JetStreamContext = openWithin(ctx, wrapped.JetStreamContext)
+		return wrapped
+	}
+	return js
 }
 
 func (js boundJetStream) AccountInfo(opts ...nats.JSOpt) (*nats.AccountInfo, error) {
@@ -130,13 +150,13 @@ func (js boundJetStream) GetLastMsg(name, subject string, opts ...nats.JSOpt) (*
 }
 
 func (js boundJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
-	return RequestBounded(context.Background(), js.client, func() (nats.KeyValue, error) {
+	return RequestBounded(js.open, js.client, func() (nats.KeyValue, error) {
 		return js.JetStreamContext.KeyValue(bucket)
 	})
 }
 
 func (js boundJetStream) CreateKeyValue(cfg *nats.KeyValueConfig) (nats.KeyValue, error) {
-	return RequestBounded(context.Background(), js.client, func() (nats.KeyValue, error) {
+	return RequestBounded(js.open, js.client, func() (nats.KeyValue, error) {
 		return js.JetStreamContext.CreateKeyValue(cfg)
 	})
 }

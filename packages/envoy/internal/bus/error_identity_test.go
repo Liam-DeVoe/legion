@@ -32,7 +32,7 @@ func TestARequestOnAStoppedClientAnswersConnectionClosed(t *testing.T) {
 	held := hold.Hold("$JS.API.DIRECT.GET.KV_envoy_lost_reply")
 	answered := make(chan error, 1)
 	go func() {
-		_, err := kv.Get("key")
+		_, err := kv.Get(t.Context(), "key")
 		answered <- err
 	}()
 	select {
@@ -49,7 +49,7 @@ func TestARequestOnAStoppedClientAnswersConnectionClosed(t *testing.T) {
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("the read the client's stop cut off was still waiting at the test's deadline")
 	}
-	if _, err := kv.Get("key"); !closedNotLost(err) {
+	if _, err := kv.Get(t.Context(), "key"); !closedNotLost(err) {
 		t.Fatalf("a KV read on the stopped client answered %v, want nats.ErrConnectionClosed and not ErrConnectionLost", err)
 	}
 	if _, err := client.JS().StreamInfo(Stream); !closedNotLost(err) {

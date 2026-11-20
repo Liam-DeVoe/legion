@@ -312,6 +312,10 @@ type Client struct {
 	// (WithReconnectWaitTick, export_test.go) to know a publish is inside that wait, or to act at
 	// the moment the wait ends.
 	reconnectWaitTick func()
+	// answerWaitTick, when it holds a function, runs it when a request whose caller holds no lock
+	// begins to wait for nats.go's own answer about its connection (requestReadUntil). It holds
+	// none outside tests: a row stores one to know a call made under a lock never begins that wait.
+	answerWaitTick atomic.Pointer[func()]
 	// beforeRequestFlush, when not nil, runs on the goroutine that flushes a Request's publish,
 	// right before that flush begins, while the wait for the request's answer runs beside it
 	// (window.request). It is nil outside tests: a test sets it (WithBeforeRequestFlush,
@@ -2073,6 +2077,16 @@ func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) err
 	return err
 }
 
+// PublishBoundedWithin publishes as Publish does, bounded by publishBound, under ctx: the caller's
+// cancellation and its mark of a lock it holds across the call (WithLockHeld) reach the publish,
+// which answers a lost connection at once rather than waiting for the reconnect with that lock held.
+func (c *Client) PublishBoundedWithin(ctx context.Context, item contracts.Envelope) error {
+	ctx, cancel := context.WithTimeout(ctx, publishBound)
+	defer cancel()
+	_, err := c.publishEnvelope(ctx, item, false)
+	return err
+}
+
 // PublishReportingDuplicate publishes as Publish does and reports whether
 // JetStream recognised the message as one the stream already holds, by the
 // envelope's message id (envelopeMsgID) and only within the stream's duplicate
@@ -2254,7 +2268,7 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 	}
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
 	defer cancel()
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForCall(ctx); err != nil {
 		return StoredAck{}, err
 	}
 	return c.sendStored(ctx, subject, data, msgID, verdict, nats.Context(ctx))
@@ -2377,7 +2391,7 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, ms
 			return StoredAck{}, unacknowledged(err, mayHold)
 		}
 		resend = true
-	case !c.lossAtOnce && Reconnected(ctx, err):
+	case !c.lossAtOnce && !lockHeld(ctx) && Reconnected(ctx, err):
 		resend = true
 	}
 	if resend {
@@ -2508,7 +2522,7 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 	}
 	ctx, cancel := context.WithTimeout(ctx, publishBound)
 	defer cancel()
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForCall(ctx); err != nil {
 		return err
 	}
 	conn := c.Connection()
@@ -2569,7 +2583,7 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // timeout); every returned forward must be waited for, which releases its reply subscription.
 // The forward is bound to the life of the connection it is published on (Request), from the
 // publish to the end of its Wait.
-func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
+func (c *Client) StartRequestStoredTo(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
 	if msgID == "" {
 		return nil, fmt.Errorf("%w: to %q", ErrNoForwardMsgID, subject)
 	}
@@ -2580,8 +2594,12 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	// The forward's own bound is timeout, not the caller's context, which a handover's walk ends
+	// while forwards it started still wait for their answers; the caller's mark of a lock it holds
+	// (WithLockHeld) carries over, so a forward started under a role's keep guard does not wait for
+	// a reconnect with the guard held (connForCall).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	if err := c.connForCall(ctx); err != nil {
 		cancel()
 		return nil, err
 	}

@@ -190,7 +190,7 @@ func (s *Store) read(ctx context.Context, sessionID string) (Entry, uint64, erro
 	if err := ctx.Err(); err != nil {
 		return Entry{}, 0, err
 	}
-	found, err := s.bucket().Get(sessionKey(sessionID))
+	found, err := s.bucket().Get(ctx, sessionKey(sessionID))
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return Entry{}, 0, fmt.Errorf("%w %s", ErrNotFound, sessionID)
 	}
@@ -365,9 +365,9 @@ func claim(ctx context.Context, kv bus.KeyValue, next prepared, value []byte) er
 	key := sessionKey(next.entry.SessionID)
 	var err error
 	if next.revision == 0 {
-		_, err = kv.Create(key, value)
+		_, err = kv.Create(ctx, key, value)
 	} else {
-		_, err = kv.Update(key, value, next.revision)
+		_, err = kv.Update(ctx, key, value, next.revision)
 	}
 	if err != nil {
 		return fmt.Errorf("claim legion agent key %s: %w", key, err)
@@ -381,7 +381,7 @@ func putIndexKeys(ctx context.Context, kv bus.KeyValue, entry Entry, value []byt
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("write legion agent %s: %w", entry.SessionID, err)
 		}
-		if _, err := kv.Put(key, value); err != nil {
+		if _, err := kv.Put(ctx, key, value); err != nil {
 			return fmt.Errorf("write legion agent key %s: %w", key, err)
 		}
 	}

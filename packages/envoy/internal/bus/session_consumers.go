@@ -285,7 +285,7 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 // (nats.go v1.53.1 nats.go:4575-4580), answers ErrConnectionLost, unsent, on a client still running
 // (lostIfClosed).
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
-	if err := s.client.ensureConnWithContext(ctx); err != nil {
+	if err := s.client.connForCall(ctx); err != nil {
 		return err
 	}
 	conn := s.client.Connection()

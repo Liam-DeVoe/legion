@@ -1252,7 +1252,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 			result.end = roleKeepDrainFailed
 			return result, fmt.Errorf("read role %s's kept lane after %d: %w", role, kept, err)
 		}
-		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now, seen)
+		judged := judgeKeptRoleCopy(ctx, cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now, seen)
 		switch judged.step {
 		case keptCopyWait:
 			result.end, result.waiting = roleKeepCopyWaits, stored.Sequence
@@ -1300,7 +1300,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		// The forward is named as the lane's own forward of this message to this holder is
 		// (roleForward.msgID), so the stream keeps one copy of it for this holder however many
 		// walks forward it.
-		forwarded := cfg.forwardAndWait(subject, forward, handed.msgID(subject), roleForwardTimeout)
+		forwarded := cfg.forwardAndWait(ctx, subject, forward, handed.msgID(subject), roleForwardTimeout)
 		if forwarded != nil {
 			// This walk is ending with the copy claimed and unforwarded, so it releases the
 			// claim: the cursor goes back to what it was before the claim, and the role's next
@@ -1549,7 +1549,7 @@ type keptCopyVerdict struct {
 // copy, and the walk claims it again, for the forward or for the dead letter that judgement gives
 // it. Nor is a dead letter's claim on a copy owed no dead letter, which no walk writes. now is
 // called once per copy that decodes, whatever the verdict.
-func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, stored bus.StoredMessage, claim keptCopyClaim, now func() time.Time, seen func(key, recipient string) bool) keptCopyVerdict {
+func judgeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, stored bus.StoredMessage, claim keptCopyClaim, now func() time.Time, seen func(key, recipient string) bool) keptCopyVerdict {
 	var item contracts.Envelope
 	if err := json.Unmarshal(stored.Data, &item); err != nil {
 		return keptCopyVerdict{step: keptCopyEnd, report: func() {
@@ -1587,7 +1587,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	if holder == "" {
 		return keptCopyVerdict{step: keptCopyWait, item: item}
 	}
-	verdict, report := keptRoleForwardAllowed(cfg, role, holder, entry, item, seen)
+	verdict, report := keptRoleForwardAllowed(ctx, cfg, role, holder, entry, item, seen)
 	switch verdict.kind {
 	case forwardAllowed:
 		return keptCopyVerdict{step: keptCopyForward, item: item}
@@ -1865,8 +1865,9 @@ var keptRoleRefusalLines = roleForwardRefusalLines{
 // answered as the lane counts and answers it (refusedRoleForwardOutcome) under the drain's own
 // lines, which name the copy's sender beside the role. The copy is ended, and the report is the
 // walk's to run once its last cursor write has moved the lane past the copy, so no later walk
-// offers it again and no walk that lost that write reports it.
-func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, item contracts.Envelope, seen func(key, recipient string) bool) (forwardVerdict, func()) {
+// offers it again and no walk that lost that write reports it. The report publishes under ctx, the
+// walk's, which the handover marks as made under the role's keep guard (applyDeliveryOutcome).
+func keptRoleForwardAllowed(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, item contracts.Envelope, seen func(key, recipient string) bool) (forwardVerdict, func()) {
 	verdict := beforeForward(item, holder, entry, seen)
 	if verdict.kind == forwardAllowed {
 		return verdict, nil
@@ -1874,5 +1875,6 @@ func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder stri
 	outcome := refusedRoleForwardOutcome(verdict, item, holder, keptRoleRefusalLines,
 		slog.String("role", role),
 		slog.String("source_session", item.SourceSession))
+	outcome.ctx = ctx
 	return verdict, func() { applyDeliveryOutcome(cfg, item, outcome) }
 }

@@ -145,7 +145,7 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 			item := contracts.Envelope{Topic: contracts.AgentSubject(contracts.NoProject, "ses_lost_forward"), Source: "test", DedupeKey: "lost-reply"}
 			return func(ctx context.Context) error {
 				deadline, _ := ctx.Deadline()
-				forward, err := c.StartRequestStoredTo(item.Topic, item, "lost-reply", time.Until(deadline))
+				forward, err := c.StartRequestStoredTo(ctx, item.Topic, item, "lost-reply", time.Until(deadline))
 				if err != nil {
 					return err
 				}
@@ -161,14 +161,14 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 		{"KV read", "$JS.API.DIRECT.GET.KV_envoy_lost_reply", noFlush, func(t *testing.T, c *Client) func(context.Context) error {
 			kv := lostReplyBucket(t, c)
 			return func(context.Context) error {
-				_, err := kv.Get("key")
+				_, err := kv.Get(t.Context(), "key")
 				return err
 			}
 		}},
 		{"KV write", "$KV.envoy_lost_reply.", noFlush, func(t *testing.T, c *Client) func(context.Context) error {
 			kv := lostReplyBucket(t, c)
 			return func(context.Context) error {
-				_, err := kv.Put("key", []byte("value"))
+				_, err := kv.Put(t.Context(), "key", []byte("value"))
 				return err
 			}
 		}},

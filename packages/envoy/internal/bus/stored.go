@@ -200,7 +200,7 @@ func (c *Client) ReadKeptRoleCursor(ctx context.Context, role string) (StoredKep
 // ErrConnectionLost when the connection is lost first (the client's JetStream context is bound to
 // its life, boundJetStream).
 func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForCall(ctx); err != nil {
 		return nil, err
 	}
 	info, err := c.JS().StreamInfo(Stream,
@@ -336,7 +336,7 @@ func (c *Client) RequestCore(ctx context.Context, subject string, header nats.He
 		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
 		defer cancel()
 	}
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForCall(ctx); err != nil {
 		return nil, err
 	}
 	return Request(ctx, c, func(ctx context.Context) (*nats.Msg, error) {

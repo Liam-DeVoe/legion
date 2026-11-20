@@ -65,20 +65,6 @@ type KeyValue struct {
 	// server's refusals (refusedOn, refusedAfterOn). nil on a connection no client owns (a test's
 	// own), whose requests wait out their bounds and read no record.
 	owner *Client
-	// ctx is the context its legacy requests are bound with (kvRequest, Within): its deadline, and
-	// whether its caller holds a lock across them (WithLockHeld). nil binds with
-	// context.Background.
-	ctx context.Context
-}
-
-// Within is kv with its legacy requests (Get, Put, Create, Update, Delete and the rest, which take
-// no context) bound with ctx, the context of the caller that makes them: a request whose read of
-// its connection's state the probe's budget ends waits for nats.go's own answer within ctx when the
-// caller holds no lock, and answers the loss at once when ctx is marked as made under one
-// (WithLockHeld). The handle's other calls take their context as an argument.
-func (kv KeyValue) Within(ctx context.Context) KeyValue {
-	kv.ctx = ctx
-	return kv
 }
 
 // RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
@@ -100,7 +86,7 @@ const RequestTimeout = 10 * time.Second
 // gives it the run's context, so a lookup sent on a connection that then drops ends the hook at
 // the drop.
 func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
-	js = readsRefusals(conn, js)
+	js = openWithin(ctx, readsRefusals(conn, js))
 	kv, _, err := Bounded(ctx, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
 	if err != nil {
 		return KeyValue{}, err
@@ -203,14 +189,14 @@ func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T
 }
 
 // refusedAfterOn is call, a read or a write of one key, which the bus makes on every request it
-// serves, bound to the life of the connection of the client that owns kv's (kvRequest) and read
-// for the server's refusal of subjects only when the server left it unanswered (refusedAfter): a
-// call the server answers costs exactly what the binding costs, and a refused one names the
-// refusal after its own wait, where it named only the silence. Only the subjects the call sends
-// are listed: a call takes the refusal of any subject it lists, and one it does not send is
-// another call's to answer.
-func refusedAfterOn[T any](kv KeyValue, subjects func() []string, call func() (T, error)) (T, error) {
-	return refusedAfter(kv.owner, subjects, func() (T, error) { return kvRequest(kv, call) })
+// serves, bound to the life of the connection of the client that owns kv's under ctx, its caller's
+// context (kvRequest), and read for the server's refusal of subjects only when the server left it
+// unanswered (refusedAfter): a call the server answers costs exactly what the binding costs, and a
+// refused one names the refusal after its own wait, where it named only the silence. Only the
+// subjects the call sends are listed: a call takes the refusal of any subject it lists, and one it
+// does not send is another call's to answer.
+func refusedAfterOn[T any](ctx context.Context, kv KeyValue, subjects func() []string, call func() (T, error)) (T, error) {
+	return refusedAfter(kv.owner, subjects, func() (T, error) { return kvRequest(ctx, kv, call) })
 }
 
 // keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.53.1
@@ -399,23 +385,25 @@ func invalidKey(key any, err error) error {
 // each repair the session's consumer from the bucket's newest record and row (cmd/listener's
 // registeredTarget, which states what a copy behind costs that repair), and the session's next
 // heartbeat registers again.
-func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
+//
+// Every request of the handle (Get, Put, Create, Update, Delete and the rest) takes ctx, its
+// caller's context, though the legacy call under it takes none: the request is bound with it
+// (kvRequest), so a caller that holds a lock across the call and marks ctx so (WithLockHeld) hears
+// a loss at once rather than waiting for a reconnect with the lock held, and one that holds none
+// waits for nats.go's own answer within ctx. There is no form of the call without a context.
+func (kv KeyValue) Get(ctx context.Context, key string) (nats.KeyValueEntry, error) {
 	if err := kv.check(key, getOverhead(kv.Bucket())); err != nil {
 		return nil, err
 	}
-	entry, err := refusedAfterOn(kv, kv.getSubjects(key), func() (nats.KeyValueEntry, error) { return kv.legacy.Get(key) })
+	entry, err := refusedAfterOn(ctx, kv, kv.getSubjects(key), func() (nats.KeyValueEntry, error) { return kv.legacy.Get(key) })
 	return entry, invalidKey(key, err)
 }
 
-// kvRequest is call, one request of kv's legacy handle, which takes no context, bound to the life
-// of the connection of the client that owns kv's (RequestBounded), under the context Within gave
-// kv: it answers ErrConnectionLost when that connection's loss cut its answer off. A handle no
-// client owns runs call as it is.
-func kvRequest[T any](kv KeyValue, call func() (T, error)) (T, error) {
-	ctx := kv.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
+// kvRequest is call, one request of kv's legacy handle, which takes no context, bound under ctx to
+// the life of the connection of the client that owns kv's (RequestBounded): it answers
+// ErrConnectionLost when that connection's loss cut its answer off. A handle no client owns runs
+// call as it is.
+func kvRequest[T any](ctx context.Context, kv KeyValue, call func() (T, error)) (T, error) {
 	return RequestBounded(ctx, kv.owner, call)
 }
 
@@ -462,40 +450,40 @@ func natsKeyValid(key string) bool {
 
 // GetRevision gets key by revision, which names the revision rather than the key in its subject, so
 // only nats.go's alphabet check refuses a key here.
-func (kv KeyValue) GetRevision(key string, revision uint64) (nats.KeyValueEntry, error) {
-	entry, err := refusedAfterOn(kv, kv.revisionSubjects, func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
+func (kv KeyValue) GetRevision(ctx context.Context, key string, revision uint64) (nats.KeyValueEntry, error) {
+	entry, err := refusedAfterOn(ctx, kv, kv.revisionSubjects, func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
 	return entry, invalidKey(key, err)
 }
 
-func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
+func (kv KeyValue) Put(ctx context.Context, key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
+	revision, err := refusedAfterOn(ctx, kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
 	return revision, invalidKey(key, err)
 }
 
-func (kv KeyValue) PutString(key string, value string) (uint64, error) {
+func (kv KeyValue) PutString(ctx context.Context, key string, value string) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
+	revision, err := refusedAfterOn(ctx, kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
 	return revision, invalidKey(key, err)
 }
 
-func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
+func (kv KeyValue) Create(ctx context.Context, key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
+	revision, err := refusedAfterOn(ctx, kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
 	return revision, invalidKey(key, err)
 }
 
-func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
+func (kv KeyValue) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
+	revision, err := refusedAfterOn(ctx, kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
 	return revision, invalidKey(key, err)
 }
 
@@ -507,11 +495,11 @@ func IsCASConflict(err error) bool {
 	return errors.Is(err, nats.ErrKeyExists) || strings.Contains(err.Error(), "wrong last sequence")
 }
 
-func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
+func (kv KeyValue) Delete(ctx context.Context, key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
+	_, err := refusedAfterOn(ctx, kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
 	return invalidKey(key, err)
 }
 
@@ -528,35 +516,35 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 // bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
 // that key is deleted at no revision, which removes a key an earlier build stored past the write
 // bound, and a key outside the alphabet is refused by the delete too.
-func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
-	entry, err := kv.Get(key)
+func (kv KeyValue) DeleteAtRead(ctx context.Context, key string) (uint64, error) {
+	entry, err := kv.Get(ctx, key)
 	switch {
 	case err == nil:
 		revision := entry.Revision()
-		return revision, kv.Delete(key, nats.LastRevision(revision))
+		return revision, kv.Delete(ctx, key, nats.LastRevision(revision))
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return 0, nil
 	case errors.Is(err, ErrRefused):
-		return 0, kv.Delete(key)
+		return 0, kv.Delete(ctx, key)
 	default:
 		return 0, err
 	}
 }
 
-func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
+func (kv KeyValue) Purge(ctx context.Context, key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
+	_, err := refusedAfterOn(ctx, kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
 	return invalidKey(key, err)
 }
 
 // Status reads the bucket's status through the legacy handle, which waits out that handle's
 // JetStream MaxWait: the open-time read of a bucket's TTL and a store's health probe, whose
 // openers chose that wait. A read held to RequestTimeout instead is ReadStreamState.
-func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
+func (kv KeyValue) Status(ctx context.Context) (nats.KeyValueStatus, error) {
 	return refusedOn(kv, []string{jsAPI("STREAM.INFO", "KV_"+kv.Bucket())}, func() (nats.KeyValueStatus, error) {
-		return kvRequest(kv, kv.legacy.Status)
+		return kvRequest(ctx, kv, kv.legacy.Status)
 	})
 }
 

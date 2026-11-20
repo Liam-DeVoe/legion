@@ -82,7 +82,7 @@ func TestAReadAnsweredForItsConnectionsCloseBeforeTheLifeEndsIsLost(t *testing.T
 	held := relay.Hold("$JS.API.DIRECT.GET.KV_envoy_lost_reply")
 	answered := make(chan error, 1)
 	go func() {
-		_, err := kv.Get("key")
+		_, err := kv.Get(t.Context(), "key")
 		answered <- err
 	}()
 	select {
@@ -107,10 +107,10 @@ func TestAReadAnsweredForItsConnectionsCloseBeforeTheLifeEndsIsLost(t *testing.T
 	if !Reconnected(ctx, err) {
 		t.Fatalf("the client did not recover its connection within the row's wait: %v", err)
 	}
-	if _, err := kv.Get("key"); !errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, ErrConnectionLost) {
+	if _, err := kv.Get(ctx, "key"); !errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, ErrConnectionLost) {
 		t.Fatalf("a read on the handle of the replaced connection answered %v, want nats.ErrConnectionClosed and not ErrConnectionLost", err)
 	}
-	if _, err := lostReplyBucket(t, client).Get("key"); !errors.Is(err, nats.ErrKeyNotFound) {
+	if _, err := lostReplyBucket(t, client).Get(ctx, "key"); !errors.Is(err, nats.ErrKeyNotFound) {
 		t.Fatalf("a read on a handle of the client's connection answered %v, want the bucket's own answer", err)
 	}
 }
@@ -172,7 +172,7 @@ func TestAReadARunningClientsConnectionCloseCutOffIsLost(t *testing.T) {
 	held := relay.Hold("$JS.API.DIRECT.GET.KV_envoy_lost_reply")
 	answered := make(chan error, 1)
 	go func() {
-		_, err := kv.Get("key")
+		_, err := kv.Get(t.Context(), "key")
 		answered <- err
 	}()
 	select {

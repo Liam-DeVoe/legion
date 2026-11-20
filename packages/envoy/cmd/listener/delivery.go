@@ -51,12 +51,14 @@ type listenerDeliveryHandlerConfig struct {
 	wakes *wakeReporter
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
-	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
-	// storing it, which is what its wait returns nil for. The wait's bus.ErrForwardNotStored means
-	// the stream did not acknowledge storing it inside timeout; any other error — a raw
-	// nats.ErrTimeout from the flush included, returned by the publish or the wait — means the
-	// forward is not known to have left this process.
-	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
+	// startRoleForward(client). ctx is its caller's: the forward's own bound is timeout, and a
+	// caller that holds a role's keep guard across it marks ctx so (bus.WithLockHeld), which the
+	// publish honours. The forward counts as delivered once the stream acknowledges storing it,
+	// which is what its wait returns nil for. The wait's bus.ErrForwardNotStored means the stream
+	// did not acknowledge storing it inside timeout; any other error — a raw nats.ErrTimeout from
+	// the flush included, returned by the publish or the wait — means the forward is not known to
+	// have left this process.
+	forwardRole func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
 	// roleForwards runs the role lane's forwards off its handler (roleForwarder); every delivery
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
 	// configuration it reports through, once that configuration is otherwise built, and main.go
@@ -318,21 +320,26 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // stream keeps one copy however many listeners raise it for that message, each from its own
 // durable, a lane only a newer build's subjects capture among them.
 //
-// It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
-// publish's own bound and carries the original payload whatever its size.
-func publishDeliveryException(client *bus.Client, item contracts.Envelope, reason, recipientSession, origin string) error {
+// ctx, when not nil, is its caller's: a handover's walk, under the role's keep guard, passes its
+// context marked as made under that lock (bus.WithLockHeld), so the publish answers a loss at once
+// rather than waiting for the reconnect. nil is a delivery handler's, which has no request deadline
+// of its own: the publish keeps its own bound. It carries the original payload whatever its size.
+func publishDeliveryException(ctx context.Context, client *bus.Client, item contracts.Envelope, reason, recipientSession, origin string) error {
 	exception, err := deliveryExceptionEnvelope(item, reason, recipientSession, 0)
 	if err != nil {
 		return err
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if origin != "" && client.DeployedStreamCaptures(exception.Topic) {
 		// The stream keeps one copy however many listeners raise it, each from its own durable.
-		if err := client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin); err != nil {
+		if err := client.PublishStoredAs(ctx, exception.Topic, exception, "exception."+reason+"."+origin); err != nil {
 			return fmt.Errorf("publish delivery exception: %w", err)
 		}
 		return nil
 	}
-	if err := client.Publish(exception); err != nil {
+	if err := client.PublishBoundedWithin(ctx, exception); err != nil {
 		return fmt.Errorf("publish delivery exception: %w", err)
 	}
 	return nil
@@ -394,6 +401,11 @@ type deliveryOutcome struct {
 	// retry is whether this outcome asks for the attempt to be retried
 	// (NAKed).
 	retry bool
+	// ctx is the context the exception is published under: a caller that holds a lock across the
+	// outcome (a role's handover, under its keep guard) passes its marked context
+	// (bus.WithLockHeld), so the publish does not wait for a reconnect with the lock held. nil is
+	// a delivery handler's, which holds no lock and has no request deadline of its own.
+	ctx context.Context
 }
 
 // applyDeliveryOutcome performs the bookkeeping every delivery attempt
@@ -414,7 +426,7 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 		outcome.log(cfg.logger)
 	}
 	if outcome.exceptionReason != "" && !isExceptionsTopic(item.Topic) && (isControlTopic(item.Topic) || outcome.fanoutRefusal) {
-		if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
+		if err := publishDeliveryException(outcome.ctx, cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
 			cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
 			if outcome.exceptionFailureClearsAttempt {
 				cfg.attemptCache.Clear(item.DedupeKey, outcome.sessionID)

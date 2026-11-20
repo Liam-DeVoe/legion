@@ -61,9 +61,9 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
-// bucket returns the handle of bucket on the client's current connection, opening it when it is
-// not open on that connection yet.
-func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
+// bucket returns the handle of bucket on the client's current connection, opening it under ctx, the
+// read's, when it is not open on that connection yet.
+func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error) {
 	js := b.client.JS()
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -77,7 +77,7 @@ func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
 	if *handle != nil {
 		return **handle, nil
 	}
-	kv, err := bus.OpenKeyValue(context.Background(), b.client.Connection(), js, name)
+	kv, err := bus.OpenKeyValue(ctx, b.client.Connection(), js, name)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
@@ -85,16 +85,17 @@ func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
 	return kv, nil
 }
 
-// within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
-// read that did not answer in time is named by what. A read whose connection was lost
+// within runs read under ctx bounded at readTimeout, waiting for it no longer than that bound
+// (bus.Bounded), and hands read that bounded context, which its requests are made under. A read
+// that did not answer in time is named by what. A read whose connection was lost
 // (bus.ErrConnectionLost) - the bucket open that bucket makes under b.mu, or the key read - is
 // read again once the connection is back, inside the same bound (bus.Reconnected); the failed
 // read has released b.mu by then, since bus.KeyValue and the bucket open answer the loss at once.
-func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
+func within[T any](ctx context.Context, what string, read func(context.Context) (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	for {
-		value, answered, err := bus.Bounded(ctx, read)
+		value, answered, err := bus.Bounded(ctx, func() (T, error) { return read(ctx) })
 		if !answered {
 			return value, fmt.Errorf("%s: %w", what, err)
 		}
@@ -110,15 +111,15 @@ func within[T any](ctx context.Context, what string, read func() (T, error)) (T,
 // claim without an error when there is no role bucket and when the bucket holds no claim for the
 // role.
 func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
-	return within(ctx, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
-		kv, err := b.bucket(bus.RoleClaimBucket)
+	return within(ctx, "read role "+role+"'s claim", func(ctx context.Context) (store.RoleClaim, error) {
+		kv, err := b.bucket(ctx, bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil
 		}
 		if err != nil {
 			return store.RoleClaim{}, err
 		}
-		entry, err := kv.Get(role)
+		entry, err := kv.Get(ctx, role)
 		if errors.Is(err, nats.ErrKeyNotFound) {
 			return store.RoleClaim{}, nil
 		}
@@ -140,12 +141,12 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // read may name (bus.ErrRefused) and a value that does not decode are nats.ErrKeyNotFound: no
 // record stands for the session. Any other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
-		kv, err := b.bucket(bus.SessionBucket)
+	entry, err := within(ctx, "read session "+sessionID, func(ctx context.Context) (nats.KeyValueEntry, error) {
+		kv, err := b.bucket(ctx, bus.SessionBucket)
 		if err != nil {
 			return nil, err
 		}
-		return kv.Get(sessionID)
+		return kv.Get(ctx, sessionID)
 	})
 	if errors.Is(err, bus.ErrRefused) {
 		return session.SessionEntry{}, fmt.Errorf("%w: %w", nats.ErrKeyNotFound, err)

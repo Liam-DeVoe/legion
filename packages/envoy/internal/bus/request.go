@@ -96,11 +96,13 @@ func requestUnsent(err error) bool {
 
 // connForRequest is the wait a request on c makes for a connection before it is sent, and a stored
 // publish whose connection closed under it before it is sent again (sendStored):
-// ensureConnWithContext's, except on a client every caller of which retries a lost request itself
-// (withLossAtOnce), where a request made while its connection is down - nats.go reconnecting it,
-// or nats.go having closed it - answers ErrConnectionLost at once, unsent. Such a caller holds a
-// session's lock, the shared stream read or a relay's restart turn, and releases it before it
-// waits (Reconnected), so a wait made here would be made with it held: the dial that replaces a
+// ensureConnWithContext's, except for a request whose caller holds a lock across it - every request
+// on a client every caller of which retries a lost request itself (withLossAtOnce), and one made
+// under a context its caller marks so (WithLockHeld) - where a request made while its connection
+// is down - nats.go reconnecting it, or nats.go having closed it - answers ErrConnectionLost at
+// once, unsent. Such a caller holds a session's lock, a role's keep guard, the shared stream read or
+// a relay's restart turn, and releases it before it waits (Reconnected), so a wait made here would
+// be made with it held: the dial that replaces a
 // closed connection, which lasts until a server answers, up to ten attempts a second apart
 // (connectWithContext), is made by that retry instead, through Reconnected's
 // ensureConnWithContext, with nothing held. Whether the connection is connected is the probe's
@@ -122,7 +124,25 @@ func requestUnsent(err error) bool {
 // reconnect, or a drop on a client with several servers, which dials the next at once - holds it
 // for that handshake, as the base held every such send.
 func (c *Client) connForRequest(ctx context.Context) error {
-	if c.lossAtOnce && !c.stopped() {
+	return c.connFor(ctx, c.lossAtOnce || lockHeld(ctx))
+}
+
+// connForCall is the wait for a connection that a call other than a request bound to the
+// connection's life makes before it sends: a publish (publishJetStreamOn, PublishCoreContext,
+// SessionConsumers.Publish), a forward to a role's holder (StartRequestStoredTo), a stream read
+// (KeptRoleLanes, RequestCore). Like connForRequest it answers ErrConnectionLost, unsent, at once,
+// when the probe does not read the connection up, for a caller that marks its context as made
+// under a lock (WithLockHeld), and waits for the connection within ctx for any other caller.
+func (c *Client) connForCall(ctx context.Context) error {
+	return c.connFor(ctx, lockHeld(ctx))
+}
+
+// connFor is connForRequest's and connForCall's wait: with atOnce, a running client with a
+// connection answers ErrConnectionLost, unsent, at once unless the probe reads it up (upNow);
+// otherwise, and for a client with no connection yet, one still awaiting its first, or a stopped
+// one, it is ensureConnWithContext.
+func (c *Client) connFor(ctx context.Context, atOnce bool) error {
+	if atOnce && !c.stopped() {
 		c.mu.Lock()
 		conn, awaiting := c.Conn, c.awaitingConnection
 		c.mu.Unlock()
@@ -341,6 +361,9 @@ func (c *Client) requestReadUntil(ctx context.Context, conn *nats.Conn) (status 
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, RequestTimeout)
 		defer cancel()
+	}
+	if tick := c.answerWaitTick.Load(); tick != nil {
+		(*tick)()
 	}
 	return prober.probeUntil(ctx)
 }

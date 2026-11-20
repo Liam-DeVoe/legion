@@ -1,6 +1,7 @@
 package redeliver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -329,7 +330,7 @@ func (s *Sweeper) backfillIndex(listed map[string][]githubapp.Delivery, now time
 	}
 	marker, err := json.Marshal(indexMarker{At: now})
 	if err == nil {
-		_, err = s.state.Put(indexKey, marker)
+		_, err = s.state.Put(context.Background(), indexKey, marker)
 	}
 	if err != nil {
 		s.Logger.Warn("webhook redelivery index not marked back-filled; the next sweep reads every record again", "error", err)
@@ -343,7 +344,7 @@ func (s *Sweeper) backfillIndex(listed map[string][]githubapp.Delivery, now time
 // build wrote before the marker carried one -- says nothing about when its back-fill ran, so it
 // is read as a marker to replace rather than as an error.
 func (s *Sweeper) indexFresh(now time.Time) (bool, error) {
-	entry, err := s.state.Get(indexKey)
+	entry, err := s.state.Get(context.Background(), indexKey)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return false, nil
 	}
@@ -440,7 +441,7 @@ func (s *Sweeper) writeRecord(guid string, next *record, revision uint64, now ti
 // the one a live claim over a record naming no entry is owed, which the index read and the
 // back-fill's scan both write (indexClaimEnd), so a refusal reads the same whichever wrote it.
 func (s *Sweeper) putPending(guid, key string) error {
-	if _, err := s.state.Put(key, nil); err != nil {
+	if _, err := s.state.Put(context.Background(), key, nil); err != nil {
 		s.Logger.Error("webhook redelivery index entry not written; the delivery is decided again by the next sweep",
 			"guid", guid, "key", key, "error", err)
 		return fmt.Errorf("%w: index entry of %s: %w", errNotWritten, guid, err)
@@ -452,7 +453,7 @@ func (s *Sweeper) putPending(guid, key string) error {
 // or indexed elsewhere, so nothing is owed a sweep by it. A delete that fails leaves an entry a
 // later sweep reads once more and repairs then, so it is logged and not raised.
 func (s *Sweeper) dropPending(key string) {
-	if err := s.state.Delete(key); err != nil {
+	if err := s.state.Delete(context.Background(), key); err != nil {
 		s.Logger.Warn("webhook redelivery index entry not deleted", "key", key, "error", err)
 	}
 }

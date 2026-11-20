@@ -62,7 +62,7 @@ func TestMeasureTheFourRequestsWithNoBoundOfTheHelpers(t *testing.T) {
 		t.Fatalf("ensure the bucket: %v", err)
 	}
 	for i := range 8 {
-		if _, err := kv.Put(fmt.Sprintf("k%d", i), []byte("v")); err != nil {
+		if _, err := kv.Put(t.Context(), fmt.Sprintf("k%d", i), []byte("v")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
 	}

@@ -14,15 +14,20 @@ import (
 // MAIN client's reconnect - the client that owns the session and interest buckets, not the session
 // consumers' - releases the session's lock within the probe's budget, while the handshake is still
 // held: the delete's first call under the lock is the session bucket's leader read on the main
-// client, and it asks that client's probe first (sessionDelivery.mainLost, bus.Client.LostNow),
-// answers the loss, and the delete releases the lock and waits for the connection with nothing
+// client. Two protections guard it: the read asks that client's probe first
+// (sessionDelivery.mainLost, bus.Client.LostNow), and the read is made under the context the
+// delete marks as made under a lock (bus.WithLockHeld), so the request's own read of its
+// connection answers within the probe's budget too (bus.Client.connForRequest, requestRead). Either
+// one answers the loss, and the delete releases the lock and waits for the connection with nothing
 // held (relockAfterReconnect). The session consumers' client is direct, so only the main client's
 // handshake is held. Once the proxy is restored the delete goes on.
 //
-// The control is the delete's leader read made without asking the main client first: the delete
-// holds the session's lock while the main client's handshake is held until its call budget ends
-// (5 s), then gives the lock up and reports the consumer standing, and the row fails at its check of
-// the delete's outcome. The lock's wait is bounded only by the test's deadline.
+// The control removes both protections: the leader read made without asking the main client first,
+// on the delete's context without its mark. Removing either alone leaves the other, and the row
+// passes. With both removed the delete holds the session's lock while the main client's handshake
+// is held until its call budget ends (5 s), then gives the lock up and reports the consumer
+// standing, and the row fails at its check of the delete's outcome. The lock's wait is bounded only
+// by the test's deadline.
 func TestADeleteDuringAHeldMainClientHandshakeReleasesTheSessionsLock(t *testing.T) {
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)

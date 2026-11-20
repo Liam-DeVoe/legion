@@ -749,11 +749,11 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) {
 		switch {
 		case !req.Soft && req.IfClaimRevision == nil:
-			return roles.Put(req.Role, data)
+			return roles.Put(ctx, req.Role, data)
 		case oldClaim.Revision == 0:
-			return roles.Create(req.Role, data)
+			return roles.Create(ctx, req.Role, data)
 		default:
-			return roles.Update(req.Role, data, oldClaim.Revision)
+			return roles.Update(ctx, req.Role, data, oldClaim.Revision)
 		}
 	})
 	if !answered {
@@ -861,7 +861,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 // claim.Revision, as releaseReadRoleClaim already does.
 func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error) {
 	roles := r.roles()
-	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return roles.Get(role) })
+	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return roles.Get(ctx, role) })
 	if !answered {
 		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
 	}
