@@ -82,6 +82,32 @@ async function clicksDelivered(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Waits until every scroller around `element`, the window's own among them, has held one
+ * animation frame still. dnd-kit scrolls them a step every few milliseconds while the pointer of a
+ * carried card is in an edge zone, so an unchanged frame is the view at rest.
+ */
+async function viewAtRest(element: Locator): Promise<void> {
+  await element.evaluate(async (start) => {
+    const read = (): string => {
+      const offsets = [`${window.scrollX},${window.scrollY}`];
+      for (let node = start.parentElement; node !== null; node = node.parentElement) {
+        offsets.push(`${node.scrollLeft},${node.scrollTop}`);
+      }
+      return offsets.join(" ");
+    };
+    for (;;) {
+      const was = read();
+      const frame = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
+      await frame.promise;
+      if (read() === was) {
+        return;
+      }
+    }
+  });
+}
+
 /** Drags with the mouse from the middle of `source` to `target` (a card or a column). */
 async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?: number) {
   await boardAtRest(page);
@@ -95,8 +121,15 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   }
   await page.mouse.down();
   await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 10, sourceBox.y + sourceBox.height / 2);
-  await target.scrollIntoViewIfNeeded();
-  // The scroll above waited for the target to be visible and still, so its box is there.
+  // The drop is aimed at the middle of the window and of the board. While the pointer of a
+  // carried card is within a fifth of a scroller's height or width of its edge, dnd-kit scrolls
+  // that scroller on (`defaultThreshold` and `getScrollDirectionAndSpeed`,
+  // @dnd-kit/core 6.3.1's dist/core.esm.js:827-874), and a target scrolled only into view sits at
+  // the window's edge: the page moved on under a drop aimed there, and the card landed in the
+  // lane below. At the middle, or at a scroller's end where it can go no further, nothing moves.
+  await target.evaluate((element) => element.scrollIntoView({ block: "center", inline: "center" }));
+  await viewAtRest(target);
+  // The view is at rest, so the box read now is where the drop lands.
   const targetBox = await target.boundingBox();
   if (targetBox === null) {
     throw new Error("drag target is not visible");
@@ -106,6 +139,8 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
     yOffset === undefined ? targetBox.y + targetBox.height / 2 : targetBox.y + yOffset,
     { steps: 24 }
   );
+  // The drop is read at the release, so the view must not be moving under the pointer then.
+  await viewAtRest(target);
   await page.mouse.up();
   await clicksDelivered(page);
 }
