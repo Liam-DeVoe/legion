@@ -125,7 +125,8 @@ func (input planRecordInput) document() workflowstore.PlanDocument {
 }
 
 // listProjectPlans is each finished issue of one project, newest close first:
-// GET /api/v1/projects/{key}/plans, its close bounded by ?since= and ?until=.
+// GET /api/v1/projects/{key}/plans, its close bounded by ?since= and ?until=. The project is read
+// as the caller sees it first, so one it does not see answers as a key no project holds.
 func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -144,7 +145,7 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window)
+	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, who, key, window)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

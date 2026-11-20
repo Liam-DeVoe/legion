@@ -7,6 +7,9 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -90,8 +93,9 @@ func compareRuns(left, right Step) int {
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
-// whose predicate the literal to_kind implies) to the node rows of its runs and plans.
-func ProjectPlans(ctx context.Context, q Queryer, project string, window Window) ([]IssuePlan, error) {
+// whose predicate the literal to_kind implies) to the node rows of its runs and plans. The issues
+// are read as who sees them (access.ProjectClause), so a project who does not see answers none.
+func ProjectPlans(ctx context.Context, q Queryer, who model.Actor, project string, window Window) ([]IssuePlan, error) {
 	rows, err := q.Query(ctx, `
 		select i.key, i.title, i.closed_at, n.kind, n.id, n.attributes, n.made_at
 		from issues i
@@ -101,8 +105,9 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 		where i.project_key = $1 and i.status = 'done' and i.closed_at is not null
 			and ($2::timestamptz is null or i.closed_at >= $2)
 			and ($3::timestamptz is null or i.closed_at < $3)
+			and `+access.ProjectClause("i.project_key", "$4")+`
 		order by i.closed_at desc, i.key
-	`, project, store.MicrosecondCeiling(window.Since), store.MicrosecondCeiling(window.Until))
+	`, project, store.MicrosecondCeiling(window.Since), store.MicrosecondCeiling(window.Until), refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}
