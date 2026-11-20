@@ -102,7 +102,7 @@ func TestARowMadeAgainAtAnAddressTakesNoVisibilityOfTheRowBefore(t *testing.T) {
 	if err != nil || !held {
 		t.Fatalf("read the removed document's node: held %t, %v", held, err)
 	}
-	removed.Visibility, removed.MadeAt = graphstore.VisibilityAuthor, created.Add(-time.Minute)
+	removed.MadeAt = created.Add(-time.Minute)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		return graphstoretest.SeedAuthorOnly(ctx, tx, removed)
 	}); err != nil {

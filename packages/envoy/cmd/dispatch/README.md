@@ -3600,7 +3600,7 @@ migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `so
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
-A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/graph.go`, names the kinds it knows).
+A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/visibility.go`, names the kinds it knows).
 The migration refuses to run when an ask or comment anchor carries a non-uuid `artifact_id`.
 
 Each block of a document is a node of the graph too (migration `0121`).
@@ -3690,7 +3690,7 @@ for an ask or comment written on a document the version its anchor names, for a 
 and `state` and `visibility`, the node's state (`live`, `gone`, `proposed`, `settled` or `overtaken`) and who reads it (`project`, or `author` for a node reserved for its author, which its author alone reads), as the node and tuple store holds them, and `live` and `project` for a node the store holds no row of.
 A reply that names a block is part of that block.
 A fact Dispatch never recorded is `[]` for an actor list and `null` for a time, a parent or a version, and `state` and `visibility` always hold a value:
-a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (each kind's loader in `nodeLoaders`, `refs/graph.go`, reads its sources).
+a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (each kind's loader in `nodeRegistry`, `refs/visibility.go`, reads its sources).
 A node's `kind` is one of the kinds the server's read registry holds (`nodeRegistry`), and the OpenAPI document closes `GraphNode.kind` over them, so a reader that meets a kind it does not know, a newer build's, skips that node.
 Migrations `0130`-`0134` (Database migrations above) add what the facts read:
 the version current when an unanchored comment or ask is written on a document, recorded at insert and filled for the rows already stored, and `component_facts`, which every import keeps.

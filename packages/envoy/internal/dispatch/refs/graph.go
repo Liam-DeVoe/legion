@@ -762,10 +762,11 @@ const RetiredDecisionsSlug = "decisions-md"
 //
 // One artifact is bound as itself, as one block is (blockNodesAddressed): that is what every read
 // of one node asks for - the document a block's address names, read before the block - and an
-// equality on a unique index is a plan Postgres builds the same whether or not it knows the value,
-// so it keeps one plan for the statement. Bound as an array of one, the plan made for the value in
-// hand, which reads one element, was costed below the generic plan, which reads an array of
-// unknown length as one of ten, so the read of one document was planned again on every
+// equality on an index each of whose values is one row's (artifacts_ref_key_key for a ref_key,
+// artifacts_id_text for a uuid) is a plan Postgres builds the same whether or not it knows the
+// value, so it keeps one plan for the statement. Bound as an array of one, the plan made for the
+// value in hand, which reads one element, was costed below the generic plan, which reads an array
+// of unknown length as one of ten, so the read of one document was planned again on every
 // execution: 0.5 to 1.0 ms of planning against 0.2 ms to run, over the read-cost corpus (check
 // c-read-cost).
 func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error {
@@ -773,9 +774,12 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 	if byRefKey {
 		column = `a.ref_key`
 	}
-	predicate, addressed := column+` = any($1)`, any(ids)
+	var predicate string
+	var addressed any
 	if len(ids) == 1 {
 		predicate, addressed = column+` = $1`, ids[0]
+	} else {
+		predicate, addressed = column+` = any($1)`, ids
 	}
 	storedJoin, storedColumns := storedNode("artifact", "a.ref_key")
 	rows, err := q.Query(ctx, `
@@ -957,13 +961,20 @@ func blockNodesAddressed(ids []string, who model.Actor) (string, []any) {
 	case len(ids) == 1:
 		return `d.node_id = $1`, []any{ids[0], VisibilityArg(who)}
 	case len(ids) <= blockNodesKeptPlan:
-		return `d.node_id = any((select $1::text[])::text[])
-			and d.artifact_id in (select named.id from artifacts named where named.ref_key = any((select $3::text[])::text[]))`,
-			[]any{ids, VisibilityArg(who), blockDocuments(ids)}
+		return blockNodesKeptPlanPredicate, []any{ids, VisibilityArg(who), blockDocuments(ids)}
 	}
-	return `d.node_id = any($1) and d.artifact_id in (select named.id from artifacts named where named.ref_key = any($3))`,
-		[]any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who), blockDocuments(ids)}
+	return blockNodesDescribedPredicate, []any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who), blockDocuments(ids)}
 }
+
+// blockNodesByIDs is the predicate of a read of two or more blocks: the ids, $1, held to the
+// documents they name, $3 (blockDocuments). blockNodesKeptPlanPredicate reads each array as a
+// value Postgres reads once, before the read; blockNodesDescribedPredicate binds them as they are.
+const blockNodesByIDs = `d.node_id = any(%[1]s) and d.artifact_id in (select named.id from artifacts named where named.ref_key = any(%[2]s))`
+
+var (
+	blockNodesKeptPlanPredicate  = fmt.Sprintf(blockNodesByIDs, `(select $1::text[])::text[]`, `(select $3::text[])::text[]`)
+	blockNodesDescribedPredicate = fmt.Sprintf(blockNodesByIDs, `$1`, `$3`)
+)
 
 // blockNodesKeptPlan is the most blocks loadBlockNodes reads under one plan Postgres keeps rather
 // than one it makes for the values in hand (blockNodesAddressed). Measured on this pod over the
