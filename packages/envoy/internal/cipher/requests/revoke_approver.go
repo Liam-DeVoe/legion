@@ -110,15 +110,15 @@ const revokeJudgeAttempts = 3
 // TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant holds the named level on a
 // pool whose transactions default to REPEATABLE READ.
 //
-// An operator's withhold writes against each locked enrollment: the names bind the session, and
+// Every revoke here takes the session's lock before it locks the session's enrollments, whoever
+// revokes, since it has not yet read who the grant names (store.LockSession states the rule). An
+// operator's withhold then writes against each locked enrollment: the names bind the session, and
 // requests.Machine reads them by the enrollment's own id, so the box the session runs on must hold
-// them itself. Before it locks them, the transaction takes the session's lock (store.LockSession),
-// which an enrollment's adoption takes before it reads its predecessors (enroll.adopt). So an
-// enrollment of the session either committed before the lock statement, and is among the locked
-// ones, or is adopted after this commits, and takes the names off the boxes this wrote them on,
-// since a withheld name makes a box a predecessor whatever state it is in (adopt's withheld
-// clause). An adoption in flight when this begins holds the session's lock until it commits, and
-// this waits for it.
+// them itself. An enrollment's adoption takes the same lock before it reads its predecessors
+// (enroll.adopt), so an enrollment of the session either committed before the lock statement, and
+// is among the locked ones, or is adopted after this commits, and takes the names off the boxes
+// this wrote them on, since a withheld name makes a box a predecessor whatever state it is in
+// (adopt's withheld clause).
 func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string, judged grantJudged) error {
 	tx, err := m.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
