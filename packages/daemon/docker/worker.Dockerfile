@@ -836,9 +836,9 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # packages/daemon/internal/runtime/sandbox/names.go), and a container runtime makes a missing parent
 # of a mount point as root, which would leave the controller, the runtime user, nothing it can write
 # in its own ~/.cache. useradd copies only /etc/skel, so nothing else makes the folder on purpose.
-# `legion probe-image` refuses an image where it is not that (imageCacheHome,
-# packages/daemon/cmd/legion/probe_image.go): in the final step below, and in the daemon's probe
-# Sandbox, which runs a deployment's own image built on this one.
+# The final step below refuses an image where it is not that, and `legion probe-image` warns, and
+# refuses nothing, where a deployment's own image holds no folder the controller can write
+# (imageCacheHome, packages/daemon/cmd/legion/probe_image.go).
 # /etc/apt/preferences.d/pgdg holds apt.postgresql.org to the PostgreSQL packages. That suite
 # rebuilds packages trixie also carries, and without a pin its versions would win on candidate
 # order for anything the two archives share, so a server upgrade could quietly pull a different
@@ -1467,7 +1467,9 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # of the plugin code (a launch that installs the plugins loads them instead from the role's state
 # home on the issue volume, which every role of the issue can write); the role mount points under
 # /var/run/legion are root's, mode 0755 and empty, and the mount point of the pod's test server
-# log there, /var/run/legion/testpg.log, is root's, mode 0444 and empty;
+# log there, /var/run/legion/testpg.log, is root's, mode 0444 and empty; /home/legion/.cache is
+# the runtime user's directory with mode 0755, as runtime-base makes it for the controller pod's
+# leak check index mount;
 # and no file under /usr/lib/openssh or /usr/bin/ssh-agent
 # carries a setuid or setgid bit (the apt RUN drops the two openssh-client installs, ssh-keysign's and
 # ssh-agent's), so a rebuild of that layer that brings one back fails here.
@@ -1498,8 +1500,7 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # other gate. The Envoy plugin's `dispatch` shim runs its bundled CLI under
 # the image's bun and prints its help, so a pi-envoy packed without bin/ or dist/dispatch.js, or an
 # image without bun, fails here; that the extension puts bin/ first on an agent's PATH is pi-envoy's
-# own test. Then `legion probe-image` holds /home/legion/.cache to the runtime user's directory of
-# mode 0755 that runtime-base makes, and runs the three launch probes through
+# own test. Then `legion probe-image` runs the three launch probes through
 # the daemon's own code, loading the plugins the way a Sandbox pod does (--envoy-plugin-root then
 # --plugin-root: the two explicit extensions, discovery on, so the profile's CodeGraph plugin and a
 # repository's own extensions load beside the two roots; a pi-envoy that loaded twice, a profile
@@ -1572,6 +1573,8 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
       /var/run/legion/state /var/run/legion/agent-secrets; do \
       owner="$(stat -c '%u:%g %a' "$dir")"; echo "$dir: $owner"; test "$owner" = "0:0 755"; \
     done; \
+    cache="$(stat -c '%u:%g %a %F' /home/legion/.cache)"; echo "/home/legion/.cache: $cache"; \
+    test "$cache" = "1000:1000 755 directory"; \
     for dir in /var/run/legion/gh /var/run/legion/private /var/run/legion/state /var/run/legion/agent-secrets; do \
       test -z "$(ls -A "$dir")"; \
     done; \

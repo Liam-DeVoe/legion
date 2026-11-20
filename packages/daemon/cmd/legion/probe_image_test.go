@@ -161,15 +161,15 @@ func inImage(t *testing.T, contract, omp string) image {
 	return roots
 }
 
-// cacheHome makes .cache in home, mode 0755, and points the probe's check of the image's ~/.cache
-// at it (imageCacheHome), held to the owner the folder has, this test's, until the test ends.
+// cacheHome makes .cache in home, mode 0755, and points the probe's read of the image's ~/.cache
+// at it (imageCacheHome), held to the uid that owns the folder, this test's, until the test ends.
 func cacheHome(t *testing.T, home string) {
 	t.Helper()
 	path := filepath.Join(home, ".cache")
 	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Mkdir's mode passes through the umask; the folder is the image's only at exactly 0755.
+	// Mkdir's mode passes through the umask; the worker image makes the folder at exactly 0755.
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func cacheHome(t *testing.T, home string) {
 	}
 	owner := info.Sys().(*syscall.Stat_t)
 	previous := imageCacheHome
-	imageCacheHome = imageFolder{path: path, uid: int(owner.Uid), gid: int(owner.Gid)}
+	imageCacheHome = imageFolder{path: path, uid: int(owner.Uid)}
 	t.Cleanup(func() { imageCacheHome = previous })
 }
 
@@ -222,43 +222,31 @@ func TestProbeImageRefusesANegativeProbeBudget(t *testing.T) {
 	}
 }
 
-// The probe holds the image's ~/.cache, the folder the controller's pod mounts the leak check
-// index's volume in, to what the controller needs there: a directory, not a link to one, owned by
-// the uid and gid every pod runs as, with mode 0755 (imageCacheHome). A folder another user or
-// group owns stands for the root's folder a container runtime makes for a missing parent, which a
-// test cannot make. Each refusal comes before the launch probes, exit 1 with no table, naming what
-// it found and what the image must make; the image's own folder passes, and the OK line follows.
-func TestProbeImageHoldsTheImagesCacheFolderToThePodsUser(t *testing.T) {
+// The probe reports, and never refuses, an image's ~/.cache that the controller could not write in:
+// the folder its pod mounts the leak check index's volume in, which a container runtime would make
+// root's were it missing (imageCacheHome). A folder that is absent, is not a directory, or is not
+// the pod user's with u+rwx gets one warning line naming what the probe found, and the probe goes
+// on to its OK line, exit 0, since a deployment's image that breaks no rule of the controller's
+// stops no boot. A folder the controller can write prints no warning, whatever else of its mode or
+// group differs from the worker image's, and so does a link to such a folder, which the mount
+// resolves. A folder another user owns stands for the root's folder a container runtime makes for
+// a missing parent, which a test cannot make.
+func TestProbeImageWarnsOfACacheFolderTheControllerCannotWrite(t *testing.T) {
+	chmod := func(mode os.FileMode) func(*testing.T, *imageFolder) string {
+		return func(t *testing.T, f *imageFolder) string {
+			if err := os.Chmod(f.path, mode); err != nil {
+				t.Fatal(err)
+			}
+			if mode&0o700 == 0o700 {
+				return ""
+			}
+			return fmt.Sprintf("is a directory owned by uid %d with mode %04o", f.uid, mode)
+		}
+	}
 	for name, edit := range map[string]func(t *testing.T, f *imageFolder) (found string){
 		"the image's own folder": func(*testing.T, *imageFolder) string { return "" },
-		"no folder": func(t *testing.T, f *imageFolder) string {
-			if err := os.Remove(f.path); err != nil {
-				t.Fatal(err)
-			}
-			return "is absent"
-		},
-		"another user's folder": func(_ *testing.T, f *imageFolder) string {
-			found := fmt.Sprintf("is a directory owned by %d:%d with mode 0755", f.uid, f.gid)
-			f.uid++
-			return found
-		},
-		"another group's folder": func(_ *testing.T, f *imageFolder) string {
-			found := fmt.Sprintf("is a directory owned by %d:%d with mode 0755", f.uid, f.gid)
-			f.gid++
-			return found
-		},
-		"a folder of mode 0700": func(t *testing.T, f *imageFolder) string {
-			if err := os.Chmod(f.path, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			return fmt.Sprintf("is a directory owned by %d:%d with mode 0700", f.uid, f.gid)
-		},
-		"a folder of mode 0775": func(t *testing.T, f *imageFolder) string {
-			if err := os.Chmod(f.path, 0o775); err != nil {
-				t.Fatal(err)
-			}
-			return fmt.Sprintf("is a directory owned by %d:%d with mode 0775", f.uid, f.gid)
-		},
+		"a folder of mode 0700":  chmod(0o700),
+		"a folder of mode 0775":  chmod(0o775),
 		"a link to the image's folder": func(t *testing.T, f *imageFolder) string {
 			if err := os.Rename(f.path, f.path+".real"); err != nil {
 				t.Fatal(err)
@@ -266,8 +254,20 @@ func TestProbeImageHoldsTheImagesCacheFolderToThePodsUser(t *testing.T) {
 			if err := os.Symlink(f.path+".real", f.path); err != nil {
 				t.Fatal(err)
 			}
-			return "is a symbolic link"
+			return ""
 		},
+		"no folder": func(t *testing.T, f *imageFolder) string {
+			if err := os.Remove(f.path); err != nil {
+				t.Fatal(err)
+			}
+			return "is absent"
+		},
+		"another user's folder": func(_ *testing.T, f *imageFolder) string {
+			found := fmt.Sprintf("is a directory owned by uid %d with mode 0755", f.uid)
+			f.uid++
+			return found
+		},
+		"a folder the user cannot write": chmod(0o500),
 		"a file": func(t *testing.T, f *imageFolder) string {
 			if err := os.Remove(f.path); err != nil {
 				t.Fatal(err)
@@ -285,18 +285,22 @@ func TestProbeImageHoldsTheImagesCacheFolderToThePodsUser(t *testing.T) {
 			imageCacheHome = folder
 
 			code, stdout, stderr := probeImage(img.flags()...)
+			if code != 0 || !strings.HasSuffix(stdout, " daemon-api-version="+thisBinarysContract+"\n") {
+				t.Fatalf("probe-image over a ~/.cache that %s = %d, stdout %q, stderr %q; want exit 0 and the OK line", found, code, stdout, stderr)
+			}
+			warnings := strings.Count(stderr, "legion probe-image: warning: ")
 			if found == "" {
-				if code != 0 || !strings.HasSuffix(stdout, " daemon-api-version="+thisBinarysContract+"\n") {
-					t.Fatalf("probe-image over the image's own ~/.cache = %d, stdout %q, stderr %q; want the OK line", code, stdout, stderr)
+				if warnings != 0 {
+					t.Errorf("probe-image over a ~/.cache the controller can write printed %d warnings: stderr %q; want none", warnings, stderr)
 				}
 				return
 			}
-			want := fmt.Sprintf("legion probe-image: %s %s; the worker image must make it a directory owned by %d:%d with mode 0755 "+
-				"(packages/daemon/docker/worker.Dockerfile, after useradd): the controller's pod mounts the leak check index's volume in it, "+
-				"at /home/legion/.cache/public-leak-check, and a container runtime makes a missing parent of a mount point root's, "+
-				"so the controller could write nothing else there\n", folder.path, found, folder.uid, folder.gid)
-			if code != 1 || stdout != "" || stderr != want {
-				t.Errorf("probe-image over a ~/.cache that %s = %d, stdout %q, stderr %q; want exit 1, no table, and %q", found, code, stdout, stderr, want)
+			want := fmt.Sprintf("legion probe-image: warning: %s %s, so the controller's pod could write nothing else there: it mounts the leak check "+
+				"index's volume at /home/legion/.cache/public-leak-check, and a container runtime makes a missing parent of a mount point root's. "+
+				"Make it a directory the image's user, uid %d, owns with u+rwx, as the worker image does after useradd "+
+				"(packages/daemon/docker/worker.Dockerfile)\n", folder.path, found, folder.uid)
+			if warnings != 1 || strings.Count(stderr, want) != 1 {
+				t.Errorf("probe-image over a ~/.cache that %s printed stderr %q; want the one warning %q", found, stderr, want)
 			}
 		})
 	}
