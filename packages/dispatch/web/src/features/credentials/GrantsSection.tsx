@@ -31,11 +31,17 @@ function grantedBy(grant: ApproverGrantResp): string {
 /**
  * Why nobody may revoke this grant, or null where somebody may. This is the broker's `mayRevoke`
  * condition, which is why it reads the two fields that decide it rather than `granted`: the
- * broker allows the grant's approver or its session's operator, and refuses a grant that names
- * neither — one the policy gave without asking, on a session nobody operates — to every
+ * broker allows the grant's approver or the person its session acts for, and refuses a grant that
+ * names neither — one the policy gave without asking, on a session nobody operates — to every
  * signed-in person, `NOT_APPROVER`. Such a grant is listed to everyone so that what a pod took
  * is on somebody's page, and it ends when the service's machine login that enrolled that session
  * is revoked, which ends every session under it, or when it expires.
+ *
+ * `enrollment.operator` is the enrollment's record, which a person's pod keeps after the broker's
+ * `BROKER_POD_OPERATORS` stops mapping its account to that person. The pod then acts for no
+ * person, so the broker no longer counts that person as the session's: their row still shows the
+ * grant with Revoke, and the broker refuses the click `NOT_APPROVER` unless they approved it or its
+ * approver is `anyone`. The page shows that refusal on the row.
  *
  * The wire says "nobody" two ways and both arrive here: an absent approver is `null`
  * (`approverGrantResp.Approver` is a `*string`), and an enrollment with no operator is `""`
@@ -78,7 +84,8 @@ const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
  * policy gave it without asking or someone approved it, and every grant the viewer approved on
  * anyone's session. Each row names how it was granted and is revocable with one click: Dispatch
  * sends the broker the viewer's own login, and the broker allows the revoke only when that login
- * is the grant's approver or its enrollment's operator. Only the operator sees an automatic grant,
+ * is the grant's approver or the person its session acts for, or, for a grant the model judge
+ * approved in anyone's stead, anyone who may see it. Only the operator sees an automatic grant,
  * and revoking one also ends that session's other automatic grants of those secrets and makes it
  * ask before it gets them again. A pod enrollment's slot shows under its enrollment, so the grants
  * of two roles in one pod read apart.
