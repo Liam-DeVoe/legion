@@ -20,6 +20,7 @@ package api
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -31,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // lensChainDepth is the depth the lens read walks one chain of triggered lenses to, counted in
@@ -112,10 +114,14 @@ type lensRead struct {
 	// reader may see, which no writer of a lens leaves.
 	Kind *lensReadKind `json:"kind"`
 	// On is the address of the node the lens stands on, the far end of its part_of tuple, which
-	// is the log of its invocation; null only where no read answers that node now, a block no
-	// current version of its document holds among them. It is never null for a node the reader
-	// may not see: a reader who may see the lens may see the node it stands on, since the store
-	// refuses a lens every reader may see on a node reserved for its author
+	// is the log of its invocation. A block a version removed, a retired document and a block of
+	// one are named at the version of the document that last held them, `#b-<id>@v<N>` or
+	// `@v<N>`, the address that reads them now (refs.PinnedParent, spec v59 R5): for the lens such
+	// a node is history and not a node taken gone, so no lens on it reads on null. On is null only
+	// for a lens the store places nowhere, and for one on a block of an ask or a comment that a
+	// later revision removed, which no loader answers and this rule does not name. It is never null
+	// for a node the reader may not see: a reader who may see the lens may see the node it stands
+	// on, since the store refuses a lens every reader may see on a node reserved for its author
 	// (graphstore.VisibilityWiderThanParentError), and the release before that rule wrote no node
 	// reserved for its author.
 	On *string `json:"on"`
@@ -544,23 +550,29 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 // readLenses is the lens read of the node address names, for who (nodeLenses). The node is
 // decoded as the /nodes/{id} routes decode theirs (decodeNodeAddress: a dispatch:// address by
 // text.ParseRef and refs.TargetOf, or a store address) and read through the registry with who's
-// visibility (refs.Node), so an address that decodes to nothing, a node of a kind no lens stands on
-// (lensStandsOnKinds), a node nobody holds and a node who may not see all answer one 404
-// NOT_FOUND, in the same words but the address. A kind no lens stands on is refused before
-// anything is read, so that answer is the same whatever the store holds.
+// visibility (lensReadNode, through refs.Node), so an address that decodes to nothing, a node of a
+// kind no lens stands on (lensStandsOnKinds), a node nobody holds and a node who may not see all
+// answer one 404 NOT_FOUND, in the same words but the address. A kind no lens stands on is refused
+// before anything is read, so that answer is the same whatever the store holds.
 //
-// Its statements, beside the node's own: the lenses on the node; the lenses a chain reaches that
-// stand elsewhere, one statement for each depth of a walk that meets any; the findings and the
-// risks of every lens answered, one statement each; and one call of the registry (refs.Nodes)
-// for the place of every lens answered that stands elsewhere than on the node or on a lens the
-// read holds, and every check a risk names.
+// A lens on a block a version removed, on a retired document or on a block of one names that node
+// at the version of its document that last held it (refs.PinnedParent, spec v59 R5). The read of
+// such a node answers that address as the node's own and as the on of each lens on it, so a lens
+// answers one on in every read, and a read of the address a lens answers as its on lists that lens.
+//
+// Its statements, beside the node's own: the address a lens names it by, where it is a document or
+// a block of one; the lenses on the node; the lenses a chain reaches that stand elsewhere, one
+// statement for each depth of a walk that meets any; the findings and the risks of every lens
+// answered, one statement each; and one call of the registry (refs.Nodes) for the place of every
+// lens answered that stands elsewhere than on the node or on a lens the read holds, and every check
+// a risk names.
 func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address string) (nodeLenses, error) {
 	notFound := errorf(http.StatusNotFound, "NOT_FOUND", "no node %q", address)
 	kind, id, ok := decodeNodeAddress(address)
 	if !ok || !slices.Contains(lensStandsOnKinds, kind) {
 		return nodeLenses{}, notFound
 	}
-	node, found, err := refs.Node(ctx, q, who, kind, id, true)
+	node, found, err := lensReadNode(ctx, q, who, kind, id, address)
 	if err != nil {
 		return nodeLenses{}, err
 	}
@@ -568,6 +580,16 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 		return nodeLenses{}, notFound
 	}
 	on := farEndOf(node, address)
+	named := node.Ref
+	if on.kind == graphstore.KindArtifact || on.kind == refs.BlockNodeKind {
+		pinned, err := refs.PinnedParent(ctx, q, on.kind, on.id)
+		if err != nil {
+			return nodeLenses{}, err
+		}
+		if pinned != nil {
+			named = pinned.Ref
+		}
+	}
 	walk := lensWalk{ctx: ctx, q: q, viewer: refs.VisibilityArg(who), rows: map[string]*lensRow{}}
 	placed, err := scanLensRows(q.Query(ctx, lensesOnNodeQuery, on.kind, on.id, graphstore.StateGone, walk.viewer))
 	if err != nil {
@@ -640,7 +662,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 		case isLens && id == node.ID:
 			lens.On = parentAddress(node.Parent)
 		case row.placed && row.parent == on:
-			lens.On = addressOrNull(node.Ref)
+			lens.On = addressOrNull(named)
 		case row.placed && onAHeldLens(row) != nil:
 			lens.On = addressOrNull(onAHeldLens(row).read.Address)
 		case row.placed:
@@ -663,6 +685,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 		return lens
 	}
 	answer := nodeLenses{On: endOf(node), Lenses: make([]lensRead, len(placed)), Chains: make([]lensChain, len(chains))}
+	answer.On.Address = named
 	if isLens {
 		lens := whole(node.ID)
 		answer.Lens = &lens
@@ -677,6 +700,39 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 		}
 	}
 	return answer, nil
+}
+
+// lensReadNode is the node the lens read of address reads, which address decodes to as kind and
+// id: the node refs.Node answers, but for a document and a block no current version holds. A
+// retired document's address names the document itself, read by its uuid (documentAtAddress), as
+// GET /api/v1/block-links reads one, and not the issue refs answers in its place, since the lenses
+// invoked on the document stand on it still. A block no current version holds is read at the
+// version a `dispatch://` address pins, as GET /api/v1/references reads one (pinnedBlockNode),
+// which is the address a lens on it answers as its on; unpinned, or pinned to a version that did
+// not hold it, it is no node, which found false says.
+func lensReadNode(ctx context.Context, q refs.Queryer, who model.Actor, kind, id, address string) (model.GraphNode, bool, error) {
+	if kind == graphstore.KindArtifact {
+		return documentAtAddress(ctx, q, who, id)
+	}
+	node, found, err := refs.Node(ctx, q, who, kind, id, true)
+	if err != nil || found || kind != refs.BlockNodeKind {
+		return node, found, err
+	}
+	ref, parsed := text.ParseRef(address, "")
+	if !parsed || ref.Pin == 0 {
+		return model.GraphNode{}, false, nil
+	}
+	documentKey, _, _ := strings.Cut(id, "#")
+	document, found, err := documentAtAddress(ctx, q, who, documentKey)
+	if err != nil || !found {
+		return model.GraphNode{}, false, err
+	}
+	removed, err := pinnedBlockNode(ctx, q, who, document, node, false, id, ref)
+	var refusal *apiError
+	if errors.As(err, &refusal) && refusal.status == http.StatusNotFound {
+		return model.GraphNode{}, false, nil
+	}
+	return removed, err == nil, err
 }
 
 // parentAddress is the address of parent, null where there is none or it has none.

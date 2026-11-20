@@ -203,6 +203,8 @@ var readsWithoutAViewer = map[string]string{
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
+	"PinnedParent": nodeDetail + " - the lens read names the lenses on a document or a block it read through Node by the address a " +
+		"lens names that node at, its own pinned to a version of its document",
 	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
 	"PlanDecisionNodes":  serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
 	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",

@@ -24,8 +24,13 @@ body: |-
   `400 INVALID_POINTER`, naming both lenses, so no trigger closes a cycle.
   `GET /api/v1/lenses?on=<address>` reads the lenses invoked on a node in invocation order,
   the order of each lens's first `part_of`, which a move does not change, and a trigger walks at
-  most 50 lenses down a chain: the lenses past that cut start no chain of their own. The lens kinds
-  are a catalogue that two migrations seed with 22 kinds, ten and then twelve more, and
+  most 50 lenses down a chain: the lenses past that cut start no chain of their own. A lens on a
+  block that a version removes, on a retired document or on a block of one stays live, and its
+  `on` names that node at the last version of its document that held it,
+  `dispatch://KEY/artifact/<slug>#b-<id>@v<N>` or `dispatch://KEY/artifact/<slug>@v<N>`:
+  `GET /api/v1/references?to=` the lens answers that node as its `parent` with `N` as its
+  `parent_version`, and `GET /api/v1/lenses?on=` that address reads the lenses on it. The lens
+  kinds are a catalogue that two migrations seed with 22 kinds, ten and then twelve more, and
   `envoy-dispatch lens-kind-add` is its one writer.
 
   `POST /api/v1/issues/{key}/nodes/{id}/state` moves a node's state, `GET

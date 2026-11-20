@@ -268,9 +268,12 @@ export async function pointerCommand(context: CommandContext): Promise<DispatchT
  *  and its risks, indented beneath it. */
 function lensLines(lens: LensRead): string[] {
   const kind = lens.kind === null ? "a lens of no kind" : `${lens.kind.id} (${lens.kind.words})`;
-  // A lens's `on` is null only where no read answers the node it stands on any more (a block no
-  // current version holds): a reader who may see a lens may see the node it stands on, since
-  // Dispatch refuses a lens every reader may see on a node reserved for its author.
+  // A lens's `on` names a block a version removed, a retired document or a block of one at the
+  // version of the document that last held it (`#b-<id>@v<N>`, `@v<N>`), so it is null only for a
+  // lens placed nowhere, or for one on a block of an ask or a comment that a later revision
+  // removed. It is never null for a node the reader may not see: a reader who may see a lens may
+  // see the node it stands on, since Dispatch refuses a lens every reader may see on a node
+  // reserved for its author.
   const lines = [
     `- ${lens.address}${authorOnlyNote(lens.visibility)}: ${kind} on ${lens.on ?? "a node that is no longer there"}, invoked by ${authorText(lens.author)}; ${lens.state}`,
   ];

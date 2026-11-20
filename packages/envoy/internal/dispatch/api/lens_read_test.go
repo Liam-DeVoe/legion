@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -107,6 +108,14 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 // order of their part_of tuples, each with its part_of to the spec, its one has_kind with the
 // kind's words, its author through authored_by, and the chain from both ends: placement and
 // trigger kept apart.
+//
+// Then a lens on what a version or a retirement takes out of an issue (spec v59 R5): the
+// Verification document of an issue holds the checks c-one and c-two at version 1, alice invokes a
+// BOTEC on c-two, and version 2 drops c-two, as the tester's run on a local server of e56f8d9b did.
+// The BOTEC stays live and names c-two at version 1, the last version that held it, in its on and
+// in its parent and parent_version, and the lens read of that pinned address answers it. A lens on
+// a block of a third document and one on that document itself do the same once the document is
+// retired, at the document's last version. No lens in any answer of the test reads on null.
 func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
@@ -194,6 +203,135 @@ func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	}
 	if !slices.Equal(chain.Lenses[1].TriggeredBy, []string{tradeOff.Address}) || !slices.Equal(chain.Lenses[0].Triggered, []string{premortem.Address}) {
 		t.Errorf("the chain answers the pre-mortem triggered by %v and the trade-off triggering %v", chain.Lenses[1].TriggeredBy, chain.Lenses[0].Triggered)
+	}
+	requireEveryLensOn(t, "the read of the spec", read)
+
+	created := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": "RSN", "title": "A lens keeps its place", "spec": ":::requirement{#r1}\nA lens keeps its place.\n:::\n",
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the issue whose Verification document drops a check: status=%d body=%s", created.Code, created.Body.String())
+	}
+	history := rig
+	history.issue = decodeBody[struct {
+		Key string `json:"key"`
+	}](t, created).Key
+	owner := "/api/v1/issues/" + history.issue
+	served := refs.BlockRef("dispatch://"+history.issue+"/spec", "r1")
+	verification := uploadDocument(t, rig.handler, owner, "verification.md", checkServing("c-one", served)+"\n"+checkServing("c-two", served))
+	cTwo := refs.BlockRef("dispatch://"+history.issue+"/artifact/"+verification.Artifact.Slug, "c-two")
+	botec := history.invoke(cTwo, "botec", "alice", nil)
+	if dropped := uploadDocument(t, rig.handler, owner, "verification.md", checkServing("c-one", served)); dropped.Version.Number != 2 {
+		t.Fatalf("the upload that drops c-two is version %d of the Verification document, want 2", dropped.Version.Number)
+	}
+	requireLensAt(t, history, "the BOTEC", botec.Address, cTwo, 1)
+	requireOnPinned(t, rig, "the BOTEC", botec.Address, cTwo+"@v1")
+
+	notes := uploadDocument(t, rig.handler, owner, "notes.md", "# Notes\n\nOne paragraph.\n")
+	document := "dispatch://" + history.issue + "/artifact/" + notes.Artifact.Slug
+	block := refs.BlockRef(document, firstBlockOf(t, rig.handler, notes.Artifact.ID))
+	onBlock := history.invoke(block, "trade-off", "alice", nil)
+	onDocument := history.invoke(document, "trade-off", "alice", nil)
+	tx, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the retirement of %s: %v", document, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := docs.RetireDocument(ctx, tx, notes.Artifact.ID, model.Actor{Kind: "user", ID: "alice"}, "The test retires the notes."); err != nil {
+		t.Fatalf("retire %s: %v", document, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the retirement of %s: %v", document, err)
+	}
+	last := notes.Version.Number
+	for _, retired := range []struct {
+		name, lens, on string
+	}{
+		{"the lens on a block of the retired document", onBlock.Address, block},
+		{"the lens on the retired document", onDocument.Address, document},
+	} {
+		requireLensAt(t, history, retired.name, retired.lens, retired.on, last)
+		requireOnPinned(t, rig, retired.name, retired.lens, fmt.Sprintf("%s@v%d", retired.on, last))
+	}
+}
+
+// requireOnPinned fails unless GET /api/v1/lenses?on= pinned, the address of a node at the last
+// version of its document that held it, answers that node at that address with lens, called name,
+// among the lenses on it, on that address.
+func requireOnPinned(t *testing.T, rig reasoningRig, name, lens, pinned string) {
+	t.Helper()
+	response := rig.lensesResponse(pinned, "alice")
+	if response.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/lenses?on=%s answers %d %s, want the node with %s %s among the lenses on it",
+			pinned, response.Code, response.Body.String(), name, lens)
+		return
+	}
+	read := decodeBody[nodeLenses](t, response)
+	requireEveryLensOn(t, "the read of "+pinned, read)
+	if read.On.Address != pinned {
+		t.Errorf("GET /api/v1/lenses?on=%s answers the node %+v, want it at %s", pinned, read.On, pinned)
+	}
+	for _, listed := range read.Lenses {
+		if listed.Address == lens {
+			if listed.On == nil || *listed.On != pinned {
+				t.Errorf("GET /api/v1/lenses?on=%s answers %s %s on %s, want it on %s", pinned, name, lens, lensOn(nodeLenses{Lens: &listed}), pinned)
+			}
+			return
+		}
+	}
+	t.Errorf("GET /api/v1/lenses?on=%s answers the lenses %v, want %s %s among them", pinned, readAddresses(read.Lenses), name, lens)
+}
+
+// requireLensAt fails unless the lens at lens, called name, reads live and names parent at the
+// version of its document that last held it: GET /api/v1/lenses answers its on as
+// `<parent>@v<version>`, and GET /api/v1/references answers its node's parent naming parent,
+// pinned or not, with parent_version version (spec v59 R5). Each failure names the lens and parent.
+func requireLensAt(t *testing.T, rig reasoningRig, name, lens, parent string, version int) {
+	t.Helper()
+	pinned := fmt.Sprintf("%s@v%d", parent, version)
+	if state := storedStateOf(t, rig, lens); state != graphstore.StateLive {
+		t.Errorf("%s %s on %s is %s, want live: for a lens its parent is history, not a node taken gone", name, lens, pinned, state)
+	}
+	read := rig.lenses(lens, "alice")
+	requireEveryLensOn(t, "the read of "+name+" "+lens, read)
+	if read.Lens == nil || read.Lens.On == nil || *read.Lens.On != pinned || read.Lens.State != graphstore.StateLive {
+		t.Errorf("GET /api/v1/lenses?on=%s answers %s on %s, want it live on %s, the last version of its document that held it",
+			lens, name, lensOn(read), pinned)
+	}
+	response := dispatchReferences(t, rig.handler, lens, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/references?to=%s, %s: status=%d body=%s", lens, name, response.Code, response.Body.String())
+	}
+	node := decodeBody[model.GraphReferences](t, response).Node
+	if node.Parent == nil || (node.Parent.Ref != parent && node.Parent.Ref != pinned) {
+		t.Errorf("GET /api/v1/references?to=%s answers %s with parent %+v, want one naming %s", lens, name, node.Parent, parent)
+	}
+	if node.ParentVersion == nil || *node.ParentVersion != version {
+		held := "null"
+		if node.ParentVersion != nil {
+			held = fmt.Sprint(*node.ParentVersion)
+		}
+		t.Errorf("GET /api/v1/references?to=%s answers %s with parent_version %s, want %d, the last version that held %s",
+			lens, name, held, version, parent)
+	}
+}
+
+// requireEveryLensOn fails, naming each lens, where read answers a lens with on null: the node
+// itself where it is a lens, each lens on it and each lens of its chains. No read answers a lens
+// with on null (spec v59 R5).
+func requireEveryLensOn(t *testing.T, what string, read nodeLenses) {
+	t.Helper()
+	lenses := slices.Clone(read.Lenses)
+	if read.Lens != nil {
+		lenses = append(lenses, *read.Lens)
+	}
+	for _, chain := range read.Chains {
+		lenses = append(lenses, chain.Lenses...)
+	}
+	for _, lens := range lenses {
+		if lens.On == nil {
+			t.Errorf("%s answers the lens %s with on null: no read answers a lens with on or parent null", what, lens.Address)
+		}
 	}
 }
 
