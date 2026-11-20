@@ -172,15 +172,39 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/cluster-test.XXXXXX")
 readonly fake=$tmp/fake bin=$tmp/bin
 readonly ns=loadtest-test
 
+# proc_running PID: PID is a process that has not ended, judged by its own state in
+# /proc/PID/stat: no entry, or a zombie (Z) or dead (X) one, is a process that has ended, whoever
+# reaps it. `kill -0` answers 0 for a zombie, and the run's daemons are orphans of their own
+# session that, where this suite runs as PID 1 of its namespace (bun, bash or go with no init),
+# nothing reaps.
+proc_running() {
+  local stat
+  [[ $1 =~ ^[0-9]+$ ]] || return 1
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+  [[ ${stat##*) } != [ZX]* ]]
+}
+
 # own_steps: each `cluster.sh step` of this suite still running, as "PID COMMAND LINE". The command
 # line alone also names the steps of another copy of this suite running from this checkout at the
-# same time; only FAKE_DIR, which every command of this one inherits, tells them apart.
+# same time; only FAKE_DIR, which every command of this one inherits, tells them apart. pgrep reads
+# every process on the machine, so it is held to own_steps_seconds, the 300 s backstop every wait
+# of this suite has (await_gone): one cut there prints a line saying so, naming that bound, which a
+# caller reads as something still running, never as nothing.
+own_steps_seconds=300
 own_steps() {
-  local pid
+  local pid pids status=0
+  pids=$(timeout -k 5 "$own_steps_seconds" pgrep -f -- "$cluster step --namespace $ns ") ||
+    status=$?
+  if ((status != 0 && status != 1)); then
+    printf 'own_steps: the pgrep for this suite'"'"'s steps had not ended within %s s (own_steps_seconds, await_gone'"'"'s backstop) or failed (exit %s), so which of them still run is not known\n' \
+      "$own_steps_seconds" "$status"
+    return 2
+  fi
   while read -r pid; do
+    [ -n "$pid" ] || continue
     grep -qzxF -- "FAKE_DIR=$fake" "/proc/$pid/environ" 2>/dev/null || continue
     printf '%s %s\n' "$pid" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
-  done < <(pgrep -f -- "$cluster step --namespace $ns ")
+  done <<<"$pids"
 }
 
 cleanup() {
@@ -1090,7 +1114,7 @@ own_calls_since() {
 all_gone() {
   local pid
   for pid in "$@"; do
-    if kill -0 "$pid" 2>/dev/null; then return 1; fi
+    if proc_running "$pid"; then return 1; fi
   done
 }
 
@@ -2257,7 +2281,7 @@ command -v dash >/dev/null ||
       # much as this one, so an INT ends neither it nor its job: the directory stays while the job
       # runs and goes when it ends.
       sleep 0.3
-      { kill -0 "$pid" 2>/dev/null && [ -d "$dir" ]; } ||
+      { proc_running "$pid" && [ -d "$dir" ]; } ||
         fail "an INT ended the detached shell or removed its job's credentials while the job ran"
       wait "$pid" || rc=$?
       ((rc == 0)) || fail "the detached shell ended with $rc once its job did, not 0"
@@ -2611,16 +2635,16 @@ FAKE_SLEEP_GATE=$fake/root-orphan.gate run_cluster up "${up_args[@]}" --dispatch
 ((RC == 0)) || fail "up exited $RC"
 orphan_dir=$(find "$LOADTEST_CLUSTER_ROOT" -mindepth 1 -maxdepth 1 -type d)
 orphan_hb=$(<"$orphan_dir/heartbeat.pid")
-kill -0 "$orphan_hb" 2>/dev/null ||
+proc_running "$orphan_hb" ||
   fail "the heartbeat up started (pid $orphan_hb) is not running, though the gate holds it in its first period: $(cat "$orphan_dir/logs/heartbeat.log")"
 : >"$fake/root-orphan.gate"
 # up has returned, so no cluster.sh command of this run is alive any more.
 for ((i = 0; i < 50; i++)); do
-  kill -0 "$orphan_hb" 2>/dev/null || break
+  proc_running "$orphan_hb" || break
   sleep 0.1
 done
 orphan_alive=no
-kill -0 "$orphan_hb" 2>/dev/null && orphan_alive=yes
+proc_running "$orphan_hb" && orphan_alive=yes
 orphan_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 sleep 1
 orphan_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
@@ -2696,13 +2720,13 @@ FAKE_SLEEP_GATE=$fake/root-sampler-stop.gate run_cluster up "${up_args[@]}" --di
 ((RC == 0)) || fail "up exited $RC"
 sampler_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
 sampler_pid=$(<"$sampler_dir/sampler.pid")
-kill -0 "$sampler_pid" 2>/dev/null ||
+proc_running "$sampler_pid" ||
   fail "the sampler up started (pid $sampler_pid) is not running, though the gate holds it in its first period: $(cat "$sampler_dir/logs/sampler.log")"
 : >"$fake/root-sampler-stop.gate"
 # up has returned, so no command of this run is alive: its heartbeat stops, and the sampler with it.
 sampler_alive=yes
 for ((i = 0; i < 200; i++)); do
-  kill -0 "$sampler_pid" 2>/dev/null || {
+  proc_running "$sampler_pid" || {
     sampler_alive=no
     break
   }
@@ -2754,11 +2778,11 @@ hold_patches_after=$hold_patches
 for ((i = 0; i < 3000; i++)); do
   hold_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
   ((hold_patches_after < hold_patches + 3)) || break
-  kill -0 "$hold_hb" 2>/dev/null || break
+  proc_running "$hold_hb" || break
   sleep 0.1
 done
 hold_alive=no
-kill -0 "$hold_hb" 2>/dev/null && hold_alive=yes
+proc_running "$hold_hb" && hold_alive=yes
 [ "$hold_alive" = yes ] ||
   fail "the heartbeat of a held run stopped although no command of it runs: 15 min later another worker's up calls the kept copy stale and prints the down that deletes it"
 ((hold_patches_after >= hold_patches + 3)) ||
@@ -2769,7 +2793,7 @@ grep -q 'hold: until ' "$tmp/out" || fail "status does not show the hold's expir
 printf '%s\n' "$((EPOCHSECONDS - 1))" >"$hold_dir/hold-until"
 hold_expired_alive=yes
 for ((i = 0; i < 200; i++)); do
-  kill -0 "$hold_hb" 2>/dev/null || {
+  proc_running "$hold_hb" || {
     hold_expired_alive=no
     break
   }
@@ -3329,7 +3353,7 @@ lockread_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
 for daemon in heartbeat sampler; do
   [ -f "$lockread_dir/$daemon.pid" ] ||
     fail "no $daemon started: it writes its pidfile only after a lock read that nothing retries ($(cat "$lockread_dir/logs/$daemon.log" 2>/dev/null))"
-  kill -0 "$(<"$lockread_dir/$daemon.pid")" 2>/dev/null ||
+  proc_running "$(<"$lockread_dir/$daemon.pid")" ||
     fail "the $daemon of run ${lockread_dir##*/} is not running: $(cat "$lockread_dir/logs/$daemon.log" 2>/dev/null)"
   ! grep -q 'could not read ConfigMap' "$lockread_dir/logs/$daemon.log" ||
     fail "the $daemon read the lock before it wrote its pidfile: $(cat "$lockread_dir/logs/$daemon.log")"
@@ -3651,7 +3675,7 @@ stop_watchdog_end() {
   pg_disk_watch pgterm "$oneread_dir" step-pgterm "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgterm
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/lock-get-fails" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  until [ -f "$fake/lock-get-fails" ] || ! proc_running "$watcher"; do sleep 0.05; done
   [ -f "$fake/lock-get-fails" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=300
@@ -3660,7 +3684,7 @@ stop_watchdog_end() {
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
     fail "pg_disk_watch_stop did not return within 45 s: the TERM that landed inside the watcher's read of the lock was lost, and every path out of a step waits on that watcher"
-  ! kill -0 "$watcher" 2>/dev/null ||
+  ! proc_running "$watcher" ||
     fail "the disk watcher still runs after pg_disk_watch_stop returned: the TERM that landed inside its read of the lock was lost"
   ! grep -qF 'so it was killed' "$oneread_stop" ||
     fail "pg_disk_watch_stop had to kill a watcher that was sent a TERM it could take: $(cat "$oneread_stop")"
@@ -3673,7 +3697,7 @@ stop_watchdog_end() {
   pg_disk_watch pgbound "$oneread_dir" step-pgbound "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgbound
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/lock-get-fails" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  until [ -f "$fake/lock-get-fails" ] || ! proc_running "$watcher"; do sleep 0.05; done
   [ -f "$fake/lock-get-fails" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=2
@@ -3688,7 +3712,7 @@ stop_watchdog_end() {
     fail "pg_disk_watch_stop took $bound_took s to return, past its $PG_DISK_STOP_SECONDS s bound and a margin: a step hangs on a watcher that will not leave"
   grep -qF "step pgbound: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed" "$oneread_stop" ||
     fail "pg_disk_watch_stop did not name the step whose watcher it killed at its bound: $(cat "$oneread_stop")"
-  ! kill -0 "$watcher" 2>/dev/null ||
+  ! proc_running "$watcher" ||
     fail "the disk watcher still runs after pg_disk_watch_stop reached its bound: $(cat "$oneread_out")"
   [ ! -f "$oneread_dir/step-failed.json" ] ||
     fail "the watcher recorded a failure although no read of the lock answered: $(cat "$oneread_dir/step-failed.json")"

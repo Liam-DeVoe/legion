@@ -364,11 +364,19 @@ say "starting the dev server on $server_address, metrics on $metrics_url"
 	>"$server_log" 2>&1 &
 server_pid=$!
 
+# process_running PID: PID is a process that has not ended, by its own state: /proc shows it, and
+# not as a zombie (Z) or a dead (X) one. `kill -0` answers a zombie as well.
+process_running() {
+	local stat
+	{ read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+	[[ ${stat##*) } != [ZX]* ]]
+}
+
 # Ready means: the last namespace exists and the metrics endpoint answers. Both are
 # what an experiment needs, and the server reports both only once it is serving.
 ready=''
 for _ in $(seq 1 "$server_ready_timeout"); do
-	if ! kill -0 "$server_pid" 2>/dev/null; then
+	if ! process_running "$server_pid"; then
 		cat -- "$server_log" >&2 || true
 		die "the dev server stopped while starting; its log is above and in $server_log"
 	fi

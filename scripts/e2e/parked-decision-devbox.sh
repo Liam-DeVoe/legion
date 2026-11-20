@@ -576,17 +576,13 @@ wait_for_run_processes() {
 # took since is never signalled. It finds nothing by working directory alone: what it misses, a
 # service whose broker did not end it among them, cleanup-is-complete's wait still names. It reads
 # `${proc_root:-/proc}`: the host's /proc, unless a test points proc_root at a proc root of the
-# processes it started (lib/proc-root.ts), every stat by one grep for each xargs batch of them, and
-# the environment of each member of a broker's session the same way, both walks held to what is
-# left of one bound, its caller's (proc_walk_until, lib/process-tree.sh): a /proc entry that never
-# answers its reader, which held the run's teardown for ever, ends it there, named. It prints why
-# and fails with 2 when the run's processes could not be read (run_processes), the proc root lists
-# no process at all, or a walk was past its bound or failed, so a walk that read nothing never
-# reads as one with nothing to stop.
+# processes it started (lib/proc-root.ts). It prints why and fails with 2 when the run's processes
+# could not be read (run_processes) or the proc root lists no process at all, so a walk that read
+# nothing never reads as one with nothing to stop.
 stop_agent_daemons() {
-  local file dir real leader p stat sid env_dir i alive pid listed until bound status=0 record path what
-  local -a run=() targets=() fields=() entries=() stats=() members=() environs=()
-  local -A dirs=() started=() sid_of=() env_of=()
+  local file dir real leader p stat sid line env_dir i alive pid start listed
+  local -a run=() targets=() environ=() fields=()
+  local -A dirs=() started=()
   # A /proc that cannot be read has no /dev/fd either, so the broker.pid search below would read
   # nothing and stop nothing (proc_unreadable, lib/process-tree.sh).
   ! proc_unreadable stop_agent_daemons "no broker session was looked for" || return 2
@@ -603,75 +599,35 @@ stop_agent_daemons() {
     return 2
   }
   mapfile -t run <<<"$listed"
-  entries=("${proc_root:-/proc}"/[0-9]*/stat)
-  [ -e "${entries[0]}" ] || {
+  listed=
+  for p in "${proc_root:-/proc}"/[0-9]*; do
+    [ -e "$p" ] || continue
+    listed=1
+    # Read whole (proc_stat_field's way, lib/process-tree.sh), since a process names itself and a
+    # name may hold a newline, which a read of the first line stops at.
+    stat=
+    { IFS= read -r -d '' stat <"$p/stat"; } 2>/dev/null || :
+    [ -n "$stat" ] || continue
+    # The fields after the command, which may itself hold spaces, parentheses or a newline: state,
+    # ppid, process group, session, and the start time, the 20th.
+    read -r -a fields <<<"${stat##*\) }"
+    sid=${fields[3]}
+    [ -n "${dirs[$sid]+set}" ] || continue
+    env_dir=
+    environ=()
+    { mapfile -d '' -t environ <"$p/environ"; } 2>/dev/null || true
+    for line in ${environ[@]+"${environ[@]}"}; do
+      case $line in OMP_DAEMON_RUNTIME_DIR=*) env_dir=${line#*=} ;; esac
+    done
+    if { [ -n "$env_dir" ] && [[ " ${dirs[$sid]} " == *" $env_dir "* ]]; } || [[ " ${run[*]} " == *" ${p##*/} "* ]]; then
+      targets+=("${p##*/}")
+      started[${p##*/}]=${fields[19]}
+    fi
+  done
+  [ -n "$listed" ] || {
     echo "stop_agent_daemons: ${proc_root:-/proc} lists no process, so no broker session was stopped" >&2
     return 2
   }
-  until=$(proc_walk_until) || {
-    proc_walk_unbounded stop_agent_daemons "no broker session was stopped"
-    return 2
-  }
-  # Two walks, each under timeout, which leads a process group of its own, ends every grep at what
-  # is left of the bound and exits 124 then (`|| exit` keeps the status for the wait): every stat
-  # whole, one record a file with its path before it (-z: a process names itself, and a name may
-  # hold a newline, which a read of the first line stops at); then the environment of each member
-  # of a broker's session. grep reads in the C locale and as text (-a): in a UTF-8 locale a stat
-  # whose name holds a byte that is no UTF-8 (a name of many bytes cut at 15) is binary to grep,
-  # which prints no record of it and exits 0, so that member was dropped without a word.
-  for what in stat environ; do
-    bound=$(proc_walk_bound "$until") || {
-      proc_walk_unbounded stop_agent_daemons "no broker session was stopped"
-      return 2
-    }
-    status=0
-    if [ "$what" = stat ]; then
-      mapfile -d '' -t stats < <(printf '%s\0' "${entries[@]}" |
-        LC_ALL=C timeout -k 5 "$bound" xargs -0 grep -asHz '' || exit)
-    else
-      ((${#members[@]} > 0)) || return 0
-      mapfile -d '' -t environs < <(printf '%s/environ\0' "${members[@]}" |
-        LC_ALL=C timeout -k 5 "$bound" xargs -0 grep -asHz '^OMP_DAEMON_RUNTIME_DIR=' || exit)
-    fi
-    wait "$!" || status=$?
-    # 123 is a batch with no match, or a file this user may not read or whose process ended during
-    # the walk; any other status but 0 is no answer.
-    case $status in
-      0 | 123) ;;
-      124)
-        echo "stop_agent_daemons: the walk of every $what under ${proc_root:-/proc} had not ended after ${bound}s ($(proc_walk_bound_name)), so no broker session was stopped" >&2
-        return 2
-        ;;
-      *)
-        echo "stop_agent_daemons: xargs exited $status reading every $what under ${proc_root:-/proc}, so no broker session was stopped" >&2
-        return 2
-        ;;
-    esac
-    [ "$what" = stat ] || break
-    for record in ${stats[@]+"${stats[@]}"}; do
-      path=${record%%/stat:*}
-      stat=${record#"$path/stat:"}
-      # The fields after the command, which may itself hold spaces, parentheses or a newline:
-      # state, ppid, process group, session, and the start time, the 20th.
-      read -r -a fields <<<"${stat##*\) }"
-      sid=${fields[3]-}
-      [ -n "$sid" ] && [ -n "${dirs[$sid]+set}" ] || continue
-      members+=("$path")
-      sid_of[$path]=$sid
-      started[${path##*/}]=${fields[19]}
-    done
-  done
-  for record in ${environs[@]+"${environs[@]}"}; do
-    path=${record%%/environ:OMP_DAEMON_RUNTIME_DIR=*}
-    env_of[$path]=${record#"$path/environ:OMP_DAEMON_RUNTIME_DIR="}
-  done
-  for p in "${members[@]}"; do
-    sid=${sid_of[$p]}
-    env_dir=${env_of[$p]-}
-    if { [ -n "$env_dir" ] && [[ " ${dirs[$sid]} " == *" $env_dir "* ]]; } || [[ " ${run[*]} " == *" ${p##*/} "* ]]; then
-      targets+=("${p##*/}")
-    fi
-  done
   ((${#targets[@]} > 0)) || return 0
   note "stopping ${#targets[@]} processes of ${#dirs[@]} Oh My Pi daemon broker sessions: ${targets[*]}"
   for pid in "${targets[@]}"; do freeze_if "$pid" "${started[$pid]}" TERM || true; done

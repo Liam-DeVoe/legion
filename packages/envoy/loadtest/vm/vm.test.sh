@@ -382,13 +382,19 @@ case $url in
     # A read of the profiling port on Dispatch's own machine always answers. A read of any other
     # port is one through the step's tunnel, and answers only while the fake tunnel that forwards
     # that port runs: the tunnel records its pid and its port in FAKE_DIR/tunnel-up, and this is
-    # how a test proves the tunnel was opened before the step and closed when it ended.
+    # how a test proves the tunnel was opened before the step and closed when it ended. Whether
+    # it runs is its own state in /proc/<pid>/stat, not `kill -0`, which a tunnel that ended and
+    # that nothing reaped (an orphan of a PID 1 that reaps nothing) answers as running.
     port=${url#http://127.0.0.1:}
     port=${port%%/*}
     if [ "$port" != "$(cat "$FAKE_DIR/pprof-port")" ]; then
       up=$FAKE_DIR/tunnel-up
       [ -f "$up" ] || { printf 'fake curl: connection refused on %s\n' "$url" >&2; exit 7; }
-      kill -0 "$(awk '{print $1}' "$up")" 2>/dev/null && [ "$(awk '{print $2}' "$up")" = "$port" ] ||
+      tunnel=$(awk '{print $1}' "$up") tunnel_state=""
+      { read -r tunnel_state <"/proc/$tunnel/stat"; } 2>/dev/null || true
+      tunnel_state=${tunnel_state##*) }
+      case ${tunnel_state%% *} in '' | Z | X) tunnel_state=ended ;; esac
+      [ "$tunnel_state" != ended ] && [ "$(awk '{print $2}' "$up")" = "$port" ] ||
         { printf 'fake curl: connection refused on %s\n' "$url" >&2; exit 7; }
     fi
     # A read of Dispatch's own profiling port is recorded here. vm.sh asks that port for
@@ -617,6 +623,17 @@ mark_db() {
   [ -n "$name" ] && [ -e "$file" ] || return 0
   printf '%s %s\n' "$1" "$2" >>"$file"
 }
+
+# record_running: this loadgen -- its pid, its start time and its words -- as one line of
+# FAKE_DIR/running.log, for a mode that runs until it is stopped (vm-sample, pg-statements). A case
+# reads whether such a loadgen still runs off that one process's own /proc entry (vm.test.sh
+# still_running), never by a walk of every process on the machine.
+record_running() {
+  local stat fields
+  read -r stat <"/proc/$$/stat"
+  read -ra fields <<<"${stat##*) }"
+  printf '%s %s %s %s\n' "$$" "${fields[19]}" "$cmd" "${*//$'\n'/ }" >>"$FAKE_DIR/running.log"
+}
 case $cmd in
   seed)
     # The baseline population's own seed, as `loadgen seed` writes it: the four projects and
@@ -673,6 +690,7 @@ case $cmd in
     ;;
   vm-sample)
     printf '%s\n' "$*" >>"$FAKE_DIR/vm-sample.log"
+    record_running "$@"
     printf '{"role": "dispatch"}\n' >>"$(flag out)"
     trap 'exit 0' TERM INT
     while :; do "$REAL_SLEEP" 0.2; done
@@ -714,6 +732,7 @@ case $cmd in
     # empty here -- what this suite proves is that a step runs it over its own database for the
     # length of its load and keeps what it wrote, never what Postgres answered.
     printf '%s\n' "$*" >>"$FAKE_DIR/pg-statements.log"
+    record_running "$@"
     pg_step=$(flag step)
     write_pg_statements() {
       printf '{"statements": [], "lock_waits": []}\n' >"$pg_step/pg-statements.json"
@@ -1115,6 +1134,33 @@ actions() {
 seeded_run() {
   printf '{"finished": "2026-11-03T00:00:00Z"}\n' >"$(run_dir)/seed.json"
   : >"$fake/db/dispatch_seed"
+}
+
+# proc_running PID [START]: PID is a process that has not ended, judged by its own state in
+# /proc/PID/stat: no entry, or a zombie (Z) or dead (X) one, has ended, whoever reaps it. `kill -0`
+# answers 0 for a zombie, and a fake started over the fake ssh is in a session of its own, an
+# orphan once its waiter is gone, which nothing reaps where this suite runs as PID 1 of its
+# namespace (bun, bash or go with no init). Given START, a later process on a reused pid is not PID.
+proc_running() {
+  local stat fields
+  [[ $1 =~ ^[0-9]+$ ]] || return 1
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+  read -ra fields <<<"${stat##*) }"
+  [[ ${fields[0]} != [ZX] ]] || return 1
+  [ -z "${2:-}" ] || [ "${fields[19]}" = "$2" ]
+}
+
+# still_running TEXT: "PID WORDS;" for each loadgen of this case that FAKE_DIR/running.log records
+# (record_running) whose words hold TEXT and which has not ended (proc_running); empty when none.
+still_running() {
+  local pid start words out=""
+  [ -f "$fake/running.log" ] || return 0
+  while read -r pid start words; do
+    [[ $words == *"$1"* ]] || continue
+    proc_running "$pid" "$start" || continue
+    out+="$pid $words;"
+  done <"$fake/running.log"
+  printf '%s' "$out"
 }
 
 # ---- (a) every subcommand refuses a missing or unreadable --config --------------------------------
@@ -1654,7 +1700,8 @@ pass "a route_mix naming a file this pod does not hold refuses the step before a
 # `wait` returned at once, and the step reported a clean stop while the binary read on. A later
 # step's window then holds the rows of several samplers at once and `loadgen cgroup-merge`
 # reads duplicated per-container CPU for it -- the numbers the report's per-step CPU rows are
-# made of. Nothing in a step's own output says any of this, so the case reads the process table.
+# made of. Nothing in a step's own output says any of this, so the case reads the sampler's own
+# state, by the pid and start time the fake loadgen recorded when it started (record_running).
 
 reset_fake
 run_vm up --config "$config"
@@ -1663,10 +1710,8 @@ seeded_run
 run_vm step --config "$config" sampler 1 --duration 10m
 ((RC == 0)) || fail "the sampler case's step failed: see the output above"
 # This run's own sampler, by the file it appends to: the run directory is this case's and no
-# other, so what this names is the sampler the step above started. pgrep answers 1 when it
-# matches nothing, which is the answer this case wants and which pipefail would otherwise end
-# the suite on before any case could read it.
-sampler_left=$(pgrep -af -- "vm-sample -out $(run_dir)/cgroup.jsonl" | tr '\n' ';' || true)
+# other, so what this names is the sampler the step above started.
+sampler_left=$(still_running "vm-sample -out $(run_dir)/cgroup.jsonl")
 [ -z "$sampler_left" ] ||
   fail "the step left its sampler running: $sampler_left. It goes on reading every machine and appending to the run's cgroup.jsonl, so a later step's window holds the rows of several samplers and cgroup-merge reads duplicated per-container CPU for it"
 pass "a step ends the sampler it started, leaving no vm-sample of the run behind"
@@ -1970,7 +2015,7 @@ pass "step opens the profiling tunnel on the load machine and proves it with a r
 
 tunnel_pid=$(awk '{print $1}' "$fake/tunnel-up")
 [ -n "$tunnel_pid" ] || fail "the fake tunnel recorded no pid"
-kill -0 "$tunnel_pid" 2>/dev/null &&
+proc_running "$tunnel_pid" &&
   fail "the step left its profiling tunnel running on the load machine (pid $tunnel_pid)"
 [ ! -e "$remote/work/pprof-tunnel.pid" ] || fail "the step left its tunnel's pid file on the load machine"
 pass "the step's profiling tunnel is closed when the step ends, leaving no process and no pid file on the load machine"
@@ -3197,9 +3242,9 @@ done
   ((size_start_at < load_at)) && ((watch_at < load_at)) && ((load_at < size_end_at)) ||
   fail "the collectors did not run around the load: the reset at $reset_at, the extension at $extension_at, the start size at $size_start_at, the collector at $watch_at, the load at $load_at, the end size at $size_end_at"
 # And the collector ran for the length of the step and was stopped with it: its file is written
-# when it is stopped, and nothing of it is left reading the instance afterwards. pgrep answers 1
-# when it matches nothing, which is the answer this case wants.
-watch_left=$(pgrep -af -- "pg-statements -step $step" | tr '\n' ';' || true)
+# when it is stopped, and nothing of it is left reading the instance afterwards: no collector the
+# fake loadgen recorded (record_running) has a state that is not ended.
+watch_left=$(still_running "pg-statements -step $step")
 [ -z "$watch_left" ] ||
   fail "the step left its statements and lock-wait collector running: $watch_left. It goes on reading the instance and writing into a finished step's directory"
 pass "a step reads the size and resets the statistics after the reset of the deployment, samples the lock waits for the length of the load, and reads the end size when the load has ended"

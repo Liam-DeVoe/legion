@@ -70,6 +70,14 @@ superuser=$(id -un)
 # fails when the two differ.
 max_connections=475
 
+# cold_start_seconds is one cold start of the server: how long a second `ensure` waits on the lock
+# while the first one makes it (flock -w in ensure), and pg_ctl_start_seconds the part of that start
+# pg_ctl start's own wait takes (--timeout in start). The walk in holders is the step of that start
+# before pg_ctl, so it is held to what is left of one cold start once pg_ctl's wait is taken out.
+cold_start_seconds=180
+pg_ctl_start_seconds=120
+holders_seconds=$((cold_start_seconds - pg_ctl_start_seconds))
+
 die() {
 	echo "$name: $*" >&2
 	exit 1
@@ -177,15 +185,28 @@ answering() {
 # postmaster chdirs into the data directory and its backends inherit that, so this is what tells a
 # server whose backends are still alive from one that is really gone. A /proc entry that vanishes
 # between the glob and the readlink, and one this user may not read, are both skipped: neither can
-# be a backend of a cluster this user started.
+# be a backend of a cluster this user started. The look reads every process on the machine, so it
+# runs under timeout, held to holders_seconds, from / so that neither timeout nor the shell it runs
+# is in the directory it looks for; it returns 2 when the look had not ended by then, which says
+# nothing of whether a backend is still in there.
 holders() {
 	target=$(cd "$1" 2> /dev/null && pwd -P) || return 1
-	for entry in /proc/[0-9]*; do
-		[ "${entry#/proc/}" != "$$" ] || continue
-		cwd=$(readlink "$entry/cwd" 2> /dev/null) || continue
-		[ "$cwd" != "$target" ] || return 0
-	done
-	return 1
+	status=0
+	(
+		# shellcheck disable=SC2016 # expanded by the walk's own sh
+		cd / && exec timeout -k 5 "$holders_seconds" sh -c '
+			for entry in /proc/[0-9]*; do
+				[ "${entry#/proc/}" != "$2" ] || continue
+				cwd=$(readlink "$entry/cwd" 2> /dev/null) || continue
+				[ "$cwd" != "$1" ] || exit 0
+			done
+			exit 1
+		' holders "$target" "$$"
+	) || status=$?
+	case $status in
+	124 | 137) return 2 ;;
+	*) return "$status" ;;
+	esac
 }
 
 # super runs psql as the initdb superuser over the local socket, the one route pg_hba.conf admits
@@ -260,8 +281,14 @@ start() {
 		# when no process is in there.
 		if [ -f "$data/postmaster.pid" ] || [ -e "$sockets/.s.PGSQL.$port.lock" ]; then
 			if ! answering; then
-				! holders "$data" ||
-					die "a process still runs in $data, so the server that left $data/postmaster.pid is not gone: refusing to clear it"
+				status=0
+				holders "$data" || status=$?
+				case $status in
+				0) die "a process still runs in $data, so the server that left $data/postmaster.pid is not gone: refusing to clear it" ;;
+				1) ;;
+				2) die "the look through every process for one still in $data had not ended within $holders_seconds s (holders_seconds: one cold start of $cold_start_seconds s less pg_ctl start's $pg_ctl_start_seconds s), so whether the server that left $data/postmaster.pid is gone is not known: refusing to clear it" ;;
+				*) die "the look through every process for one still in $data failed with exit $status, so whether the server that left $data/postmaster.pid is gone is not known: refusing to clear it" ;;
+				esac
 				rm -f "$data/postmaster.pid" "$sockets/.s.PGSQL.$port.lock"
 			fi
 		fi
@@ -300,7 +327,7 @@ start() {
 		# hung until the client's timeout. The cost, measured the same day, is about 350 bytes
 		# of log per connection over 4241 connections.
 		# shellcheck disable=SC2094 # pg_ctl writes $log through --log and this append; it reads none
-		"$bin/pg_ctl" --pgdata "$data" --log "$log" --wait --timeout 120 \
+		"$bin/pg_ctl" --pgdata "$data" --log "$log" --wait --timeout "$pg_ctl_start_seconds" \
 			--options "-p $port -k $sockets -c listen_addresses=127.0.0.1 -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=$max_connections -c shared_buffers=256MB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off -c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=512MB -c min_wal_size=64MB -c wal_keep_size=0 -c log_connections=all -c log_disconnections=on" \
 			start >> "$log" 2>&1 ||
 			die "pg_ctl start failed; $log holds its output"
@@ -366,9 +393,9 @@ ensure() {
 	# second ensure blocked until its own timeout. -w bounds the wait at one cold start, so a
 	# holder that dies mid-start costs one wait and never a launch; -E makes that timeout 75, a
 	# status no command of start-locked returns, so the wait is reported rather than silent.
-	flock -E 75 -w 180 -o "$dir/.lock" "$0" start-locked || {
+	flock -E 75 -w "$cold_start_seconds" -o "$dir/.lock" "$0" start-locked || {
 		s=$?
-		[ "$s" -ne 75 ] || die "waited 180 s for $dir/.lock"
+		[ "$s" -ne 75 ] || die "waited $cold_start_seconds s for $dir/.lock"
 		exit "$s"
 	}
 	# A start that no later start repairs — a role the cluster holds as NOLOGIN, a password set on

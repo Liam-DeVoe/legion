@@ -29,7 +29,10 @@
 # and no two ports of two blocks meet, and a LOADTEST_*_PORT overrides its own port alone; (j) under
 # an ephemeral range that covers the old block (a gVisor pod's 16000-65535, or one from 15500) every
 # default port lies below it, Linux's default range keeps the blocks at 15000, and a range with no
-# room for 2000 ports above 1023 is refused naming both ranges unless every port variable is set.
+# room for 2000 ports above 1023 is refused naming both ranges unless every port variable is set;
+# (k) pid_running, which lock_record_runs asks whether a record's pid runs, reads a process whose
+# main thread exited while another thread runs on as running (it still holds its descriptor 9), a
+# zombie with no other thread and a reaped pid as ended, and a live process as running.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -544,6 +547,58 @@ case_ports_below_ephemeral_range() {
   printf 'PASS: the default ports sit below the ephemeral range, and a range with no room below it is refused naming both\n'
 }
 
+# state_of PID: the state letter of PID's stat, empty when /proc lists no such process.
+state_of() {
+  local stat
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 0
+  stat=${stat##*) }
+  printf '%s\n' "${stat%% *}"
+}
+
+# running PID: common.sh's pid_running PID, in a shell of its own that sources common.sh as the
+# scripts do.
+running() { bash -c 'source "$1"; pid_running "$2"' running "$helper" "$1"; }
+
+case_pid_running_by_state() {
+  out=""
+  local threads parent zombie i
+  command -v python3 >/dev/null || { fail "(k) this machine has no python3 to start a process whose main thread exits alone"; return; }
+  # The main thread leaves through pthread_exit, which ends that thread alone; the second sleeps on.
+  python3 -c 'import ctypes, os, sys, threading, time
+threading.Thread(target=time.sleep, args=(60,), daemon=True).start()
+with open(sys.argv[1] + ".new", "w") as f: f.write(str(os.getpid()))
+os.rename(sys.argv[1] + ".new", sys.argv[1])
+ctypes.CDLL(None).pthread_exit(None)' "${temporary_dir}/threads.pid" &
+  threads=$!
+  pids+=("$threads")
+  # A zombie: a child that exits under a parent that has become a `sleep`, which never reaps it.
+  bash -c 'sh -c "until [ -e \"\$0\" ]; do sleep 0.01; done" "$1" & echo "$!" >"$2"; exec sleep 60' \
+    parent "${temporary_dir}/zombie.go" "${temporary_dir}/zombie.pid" &
+  parent=$!
+  pids+=("$parent")
+  if ! wait_for "${temporary_dir}/threads.pid" || ! wait_for "${temporary_dir}/zombie.pid"; then
+    fail "(k) the stand-ins wrote no pid"
+    return
+  fi
+  zombie=$(<"${temporary_dir}/zombie.pid")
+  for ((i = 0; i < 100; i++)); do
+    [[ $(state_of "$threads") == Z && $(cat "/proc/$parent/comm" 2>/dev/null) == sleep ]] && break
+    sleep 0.1
+  done
+  [[ $(state_of "$threads") == Z ]] || { fail "(k) the python3's main thread never read as a zombie"; return; }
+  running "$threads" || { fail "(k) a process whose main thread exited while another thread runs read as ended"; return; }
+  running "$zombie" || { fail "(k) a live process read as ended"; return; }
+  : >"${temporary_dir}/zombie.go"
+  for ((i = 0; i < 100; i++)); do
+    [[ $(state_of "$zombie") == Z ]] && break
+    sleep 0.1
+  done
+  [[ $(state_of "$zombie") == Z ]] || { fail "(k) the child never read as a zombie"; return; }
+  ! running "$zombie" || { fail "(k) a zombie with no other thread read as running"; return; }
+  ! running "$(dead_pid)" || { fail "(k) a reaped pid read as running"; return; }
+  printf 'PASS: pid_running reads a zombie main thread with another thread as running, and a zombie alone as ended\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -556,7 +611,8 @@ case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
 case_ports_below_ephemeral_range || failed=$((failed + 1))
+case_pid_running_by_state || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 11 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 12 cases failed\n' "$failed" >&2
   exit 1
 fi

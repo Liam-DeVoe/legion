@@ -212,12 +212,26 @@ lock_field() { sed -n "s/^$1=//p" <<<"$2"; }
 # lock_pidns: this process's PID namespace ("pid:[N]"), empty when /proc does not show it.
 lock_pidns() { readlink /proc/self/ns/pid 2>/dev/null || true; }
 
-# lock_pid_alive PID: PID is a running process, not a zombie.
-lock_pid_alive() {
-  local stat
+# pid_running PID: PID is a running process: /proc shows it, and not as a dead (X) one or a zombie
+# (Z) with no thread but its main one in its task directory, which have ended whether or not
+# anything has reaped them yet. A process whose main thread exited while another thread runs on
+# reads Z too, and is still there: it still holds its files, its ports and its locks. A process's
+# end is its state, never `kill -0`, which a zombie answers. The kernel lists a task directory from
+# the process's own thread list, taking no lock another process can hold, so that read cannot be
+# held the way a read of a process's stat can.
+pid_running() {
+  local stat thread
   [[ $1 =~ ^[0-9]+$ ]] || return 1
   { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
-  [[ ${stat##*) } != Z* ]]
+  case ${stat##*) } in
+    X*) return 1 ;;
+    Z*)
+      for thread in "/proc/$1/task"/*; do
+        [ "${thread##*/}" = "$1" ] || [ ! -e "$thread" ] || return 0
+      done
+      return 1
+      ;;
+  esac
 }
 
 # lock_record_ns RECORD: where RECORD was written: "here" (this PID namespace), "elsewhere" (another
@@ -237,7 +251,7 @@ lock_record_ns() {
 # lock_record_runs RECORD: RECORD was written in this PID namespace and its pid runs. A pid of
 # another PID namespace names an unrelated process here, or none.
 lock_record_runs() {
-  [ "$(lock_record_ns "$1")" = here ] && lock_pid_alive "$(lock_field pid "$1")"
+  [ "$(lock_record_ns "$1")" = here ] && pid_running "$(lock_field pid "$1")"
 }
 
 # lock_holders FILE: "pid N (command)" of each process whose descriptor 9 is open on FILE, joined

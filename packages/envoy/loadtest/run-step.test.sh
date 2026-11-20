@@ -28,9 +28,17 @@ readonly fake_bin_dir="${temporary_dir}/bin"
 readonly calls_file="${temporary_dir}/go-calls"
 readonly release_fifo="${temporary_dir}/release"
 
+# running PID: PID is a process that has not ended, by its own state: /proc shows it, and not as
+# a zombie (Z) or a dead (X) one, which `kill -0` would answer as running.
+running() {
+  local stat
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+  [[ ${stat##*) } != [ZX]* ]]
+}
+
 first_pid=""
 cleanup() {
-  if [[ -n "$first_pid" ]] && kill -0 "$first_pid" 2>/dev/null; then
+  if [[ -n "$first_pid" ]] && running "$first_pid"; then
     # Unblock the fake go, then stop the first run.
     { printf 'release\n' >"$release_fifo"; } 2>/dev/null &
     kill -TERM "$first_pid" 2>/dev/null || true
@@ -81,7 +89,7 @@ start_first() {
   local i
   for ((i = 0; i < 300; i++)); do
     grep -q '^first go ' "$calls_file" 2>/dev/null && return 0
-    if ! kill -0 "$first_pid" 2>/dev/null; then
+    if ! running "$first_pid"; then
       cat "${temporary_dir}/first-output" >&2
       printf 'FAIL: the first run exited before it reached its build\n' >&2
       exit 1

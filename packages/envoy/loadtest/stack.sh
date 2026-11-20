@@ -360,14 +360,16 @@ stop_one() {
   local sig=TERM
   [ "$name" = postgres ] && sig=INT
   kill -s "$sig" "$pid" 2>/dev/null || true
+  # Its end is its state (pid_running, common.sh): a stack process is an orphan of its own session,
+  # and one that exited and that nothing has reaped yet is a zombie /proc still shows.
   local deadline=$((SECONDS + 60))
-  while [ -d "/proc/$pid" ] && ((SECONDS < deadline)); do
+  while pid_running "$pid" && ((SECONDS < deadline)); do
     sleep 0.2
   done
-  if [ -d "/proc/$pid" ]; then
+  if pid_running "$pid"; then
     note "$name (pid $pid) still running after 60 s; sending SIGKILL"
     kill -s KILL "$pid" 2>/dev/null || true
-    while [ -d "/proc/$pid" ]; do sleep 0.2; done
+    while pid_running "$pid"; do sleep 0.2; done
   fi
   note "stopped $name (pid $pid)"
   rm -f -- "$(pidfile "$name")"

@@ -75,8 +75,26 @@ print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
 ' "$1" "$2"
 }
 
-# alive <pid>: true/false for check.
-alive() { kill -0 "$1" 2>/dev/null && echo true || echo false; }
+# state_of <pid>: the one-letter state /proc/<pid>/stat gives that process (R, S, T, Z, X...), or ''
+# when /proc shows no such process. The pid is known, so its own stat answers: `ps -o state= -p`
+# reads the stat of every process on the machine to find it.
+state_of() {
+  local stat
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 0
+  stat=${stat##*) }
+  printf '%s\n' "${stat%% *}"
+}
+
+# alive <pid>: true/false for check: true while the process has not ended. A zombie (Z) or dead (X)
+# one has ended, reaped or not: the sampler is detached from `start`, so its parent is whatever
+# adopted it, and where this test runs as PID 1 of its namespace nothing reaps it, which `kill -0`
+# would answer as alive.
+alive() {
+  case $(state_of "$1") in
+    '' | Z | X) echo false ;;
+    *) echo true ;;
+  esac
+}
 
 # line_of <text> <regex>: the number of the first line that matches, or '' when none does. The
 # cases that read it are about the order the report prints its lines in, not their wording. It
@@ -245,11 +263,11 @@ kill -STOP "$pid"
 # can no longer write. Measured in this pod, a sleeping sampler shows `T` within about a
 # millisecond, so the wait is a guarantee rather than a delay.
 for _ in $(seq 50); do
-  [ "$(ps -o state= -p "$pid" | tr -d ' ')" = T ] && break
+  [ "$(state_of "$pid")" = T ] && break
   sleep 0.1
 done
 check "the kernel has the sampler off the CPU" \
-  "$(is "$(ps -o state= -p "$pid" | tr -d ' ')" T)"
+  "$(is "$(state_of "$pid")" T)"
 # While the sampler is off the CPU it cannot write, so its series file is stable here and its
 # last stamp is the last second it has a line for. The second after that one is the second it
 # was waiting for when the signal landed, and that is where the window of seconds no line may
