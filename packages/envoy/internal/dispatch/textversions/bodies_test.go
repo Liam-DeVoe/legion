@@ -48,8 +48,8 @@ func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
 	got := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event, edit))
 
 	created := startedBy(t, got, comment.event)
-	cut, truncated := model.EventBody(first)
-	if !truncated || !created.BodyTruncated || created.Text == nil || *created.Text != cut {
+	_, truncated := model.EventBody(first)
+	if !truncated || !created.BodyTruncated {
 		t.Fatalf("the comment.created event does not carry the cut body it should test (truncated %v, the version's body_truncated %v)",
 			truncated, created.BodyTruncated)
 	}
@@ -97,7 +97,8 @@ func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
 // TestACutBodyNoSourceHoldsKeepsItsEventsText holds the last source of a cut body: where neither
 // the comment's present row nor revision 1 of its blocks holds the body an event cut, the
 // version keeps the event's text, says so in body_from, counts in the batch's cut count and is
-// named, with its event, in a warning.
+// named, with its event, in a warning, once: a batch whose bound leaves the event to the next
+// batch does not warn of it.
 func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -121,8 +122,20 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 		firstEdit := editComment(t, database, broker, comment.id, long)
 		secondEdit := editComment(t, database, broker, comment.id, "Rotated; the long plan is in the spec now.")
 
+		// A batch bound to 1 byte decides the comment.created alone and leaves the cut edit to
+		// the next batch, which is the one that warns of it.
+		batch := readLoggedEvents(t, database, comment.event, firstEdit, secondEdit)
 		var logs bytes.Buffer
-		got := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event, firstEdit, secondEdit))
+		tx, err := database.Pool.Begin(t.Context())
+		if err != nil {
+			t.Fatalf("begin the bounded batch: %v", err)
+		}
+		_, bounded, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(&logs, nil)), batch, 1)
+		_ = tx.Rollback(t.Context())
+		if err != nil || bounded != 1 {
+			t.Fatalf("the batch bound to 1 byte decided %d of the comment's events (%v), want its comment.created alone", bounded, err)
+		}
+		got := decideAndWrite(t, database, &logs, batch)
 		if len(got.Versions) != 3 {
 			t.Fatalf("the comment's three events start %d versions, want 3", len(got.Versions))
 		}

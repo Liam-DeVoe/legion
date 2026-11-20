@@ -385,14 +385,14 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 		broker := events.NewBroker()
 		const issueCount, newVersions = 24, 4
 		var want []textversionstest.Written
-		issues := make([]specIssue, 0, issueCount)
+		issues := make([]textversionstest.WrittenIssue, 0, issueCount)
 		for n := 1; n <= issueCount; n++ {
 			issue, created := writeSpecIssue(t, database, broker, n)
 			issues, want = append(issues, issue), append(want, created)
 		}
 		retitles := make([]model.Event, 0, len(issues))
 		for _, issue := range issues {
-			retitles = append(retitles, issue.event("issue.updated", issue.title+", then audit the verifiers"))
+			retitles = append(retitles, issue.Event("issue.updated", issue.Title+", then audit the verifiers"))
 		}
 		for _, id := range commitEvents(t, database, broker, retitles...) {
 			want = append(want, textversionstest.Written{ID: id, Versions: 1})
@@ -587,92 +587,48 @@ func rotationParagraphs(n, size int) string {
 	return strings.Join(paragraphs, "\n\n")
 }
 
-// specIssue is an issue writeSpecIssue wrote: its number, its key, its title and its primary
-// document.
-type specIssue struct {
-	n                    int
-	key, title, artifact string
-}
-
-// event is an issue.* event of type of the issue with title, as the routes write one.
-func (issue specIssue) event(eventType, title string) model.Event {
-	key := issue.key
-	return model.Event{IssueKey: &key, Type: eventType, Actor: model.Actor{Kind: "user", ID: "alice"},
-		Payload: map[string]any{"key": issue.key, "title": title, "primary_artifact_id": issue.artifact}}
-}
-
 // writeSpecIssue writes issue ACME-n, its primary document with version 1 of specMarkdown, and
 // its issue.created event, in one transaction, as the create route writes them, and answers the
 // issue and its event, which starts one version.
-func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, n int) (specIssue, textversionstest.Written) {
+func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, n int) (textversionstest.WrittenIssue, textversionstest.Written) {
 	t.Helper()
 	ctx := t.Context()
-	issue := specIssue{n: n, key: fmt.Sprintf("%s-%d", textversionstest.Project, n), title: fmt.Sprintf("Rotate the signing keys of region %d", n)}
 	spec := specMarkdown(n, 1)
 	if len(spec) >= pmdoc.MaxDocumentBytes {
 		t.Fatalf("the spec is %d bytes, at or over pmdoc.MaxDocumentBytes, %d", len(spec), pmdoc.MaxDocumentBytes)
 	}
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin issue %s: %v", issue.key, err)
+		t.Fatalf("begin issue %s-%d: %v", textversionstest.Project, n, err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `
-		insert into issues (key, project_key, number, title, created_by, rank)
-		values ($1, $2, $3, $4, '{"kind":"user","id":"alice"}', 'A')
-	`, issue.key, textversionstest.Project, n, issue.title); err != nil {
-		t.Fatalf("insert issue %s: %v", issue.key, err)
-	}
-	if err := tx.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
-		returning id::text
-	`, issue.key, textversionstest.Project).Scan(&issue.artifact); err != nil {
-		t.Fatalf("insert the primary document of %s: %v", issue.key, err)
-	}
-	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1::uuid, 1, $2, '[]')`,
-		issue.artifact, spec); err != nil {
-		t.Fatalf("insert version 1 of %s's primary document: %v", issue.key, err)
-	}
-	created, err := broker.Append(ctx, tx, issue.event("issue.created", issue.title))
-	if err != nil {
-		t.Fatalf("append the issue.created of %s: %v", issue.key, err)
-	}
+	issue := textversionstest.InsertIssue(t, tx, n, fmt.Sprintf("Rotate the signing keys of region %d", n), spec)
+	created := textversionstest.AppendEvents(t, tx, broker, issue.Event("issue.created", issue.Title))
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit issue %s: %v", issue.key, err)
+		t.Fatalf("commit issue %s: %v", issue.Key, err)
 	}
-	return issue, textversionstest.Written{ID: created.ID, Versions: 1}
+	return issue, textversionstest.Written{ID: created[0], Versions: 1}
 }
 
 // writeSpecVersion writes version number of issue's primary document, of specMarkdown, and its
 // artifact.version event, in one transaction, and answers the event, which starts one version.
-func writeSpecVersion(t *testing.T, database *store.Store, broker *events.Broker, issue specIssue, number int) textversionstest.Written {
+func writeSpecVersion(t *testing.T, database *store.Store, broker *events.Broker, issue textversionstest.WrittenIssue, number int) textversionstest.Written {
 	t.Helper()
 	ctx := t.Context()
-	spec := specMarkdown(issue.n, number)
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin version %d of %s's primary document: %v", number, issue.key, err)
+		t.Fatalf("begin version %d of %s's primary document: %v", number, issue.Key, err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1::uuid, $2, $3, '[]')`,
-		issue.artifact, number, spec); err != nil {
-		t.Fatalf("insert version %d of %s's primary document: %v", number, issue.key, err)
-	}
-	key := issue.key
-	appended, err := broker.Append(ctx, tx, model.Event{IssueKey: &key, Type: "artifact.version", Actor: model.Actor{Kind: "user", ID: "alice"},
-		Payload: map[string]any{"artifact_id": issue.artifact, "version": map[string]any{"number": number, "size": len(spec)}}})
-	if err != nil {
-		t.Fatalf("append the artifact.version of %s: %v", issue.key, err)
-	}
+	appended := textversionstest.AppendEvents(t, tx, broker, issue.InsertVersion(t, tx, number, specMarkdown(issue.N, number)))
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit version %d of %s's primary document: %v", number, issue.key, err)
+		t.Fatalf("commit version %d of %s's primary document: %v", number, issue.Key, err)
 	}
-	return textversionstest.Written{ID: appended.ID, Versions: 1}
+	return textversionstest.Written{ID: appended[0], Versions: 1}
 }
 
-// commitEvents appends events through the broker in one transaction, in order, and answers their
-// ids.
+// commitEvents appends events through the broker in a transaction of their own, in order
+// (textversionstest.AppendEvents), and answers their ids.
 func commitEvents(t *testing.T, database *store.Store, broker *events.Broker, appended ...model.Event) []int64 {
 	t.Helper()
 	ctx := t.Context()
@@ -681,17 +637,7 @@ func commitEvents(t *testing.T, database *store.Store, broker *events.Broker, ap
 		t.Fatalf("begin the events: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	ids := make([]int64, 0, len(appended))
-	if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
-		for _, e := range appended {
-			if err := broker.QueueAppend(batch, e, func(written model.Event) { ids = append(ids, written.ID) }); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("append the events: %v", err)
-	}
+	ids := textversionstest.AppendEvents(t, tx, broker, appended...)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the events: %v", err)
 	}
@@ -739,14 +685,19 @@ type committedEvent struct {
 // takes no lock an open transaction holds on textversionstest.Issue's events.
 const otherIssue = "ACME-2"
 
-// seedOtherIssue writes otherIssue, beside textversionstest.Issue.
+// seedOtherIssue writes otherIssue, beside textversionstest.Issue, with no primary document
+// (textversionstest.InsertIssue).
 func seedOtherIssue(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := database.Pool.Exec(t.Context(), `
-		insert into issues (key, project_key, number, title, created_by, rank)
-		values ($1, 'ACME', 2, 'Audit the verifiers', '{"kind":"user","id":"alice"}', 'B')
-	`, otherIssue); err != nil {
-		t.Fatalf("seed issue %s: %v", otherIssue, err)
+	ctx := t.Context()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin issue %s: %v", otherIssue, err)
+	}
+	defer tx.Rollback(ctx)
+	textversionstest.InsertIssue(t, tx, 2, "Audit the verifiers")
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit issue %s: %v", otherIssue, err)
 	}
 }
 

@@ -53,17 +53,14 @@ type version struct {
 	EventID    int64
 	EventSeq   int32
 	StartedAt  time.Time
-	// Text is the item's own text the version holds: an issue's title, a comment's or a
-	// message's body as its event carries it, or an ask's question. It is nil where neither the
-	// event nor an earlier version of the item gives it, as for an artifact.version of an issue
-	// with no version yet. A version read from the table holds its row's body as its Text
-	// (latestVersions), which for an ask is its whole body, not its question alone.
-	Text *string
 	// Body is the text the row's body column holds, which the rules compare with the item's
 	// latest version's to tell whether an event changed it, and which the insert writes: an
 	// issue's title, a comment's or a message's whole body (decideVersions reads it from another
 	// source where the event cut it), and an ask's body as readEventsQuery made it in SQL
-	// (event.AskBody), its question, a space and ask_search_suffix of its options and answer.
+	// (event.AskBody), its question, a space and ask_search_suffix of its options and answer. A
+	// rule leaves it empty where neither the event nor an earlier version gives the issue's
+	// title, as for an artifact.version of an issue with no version yet, whose title
+	// decideVersions reads from the issue's rows.
 	Body string
 	// BodyFrom is where Body came from: bodyFromEvent, bodyFromRow, bodyFromBlocks or
 	// bodyFromCut, the values of the row's body_from.

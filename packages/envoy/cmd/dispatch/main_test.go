@@ -2184,8 +2184,8 @@ func requireNoKeywordFillWrite(t *testing.T, database *store.Store, when string)
 }
 
 // writeKeywordFillComments commits count comment.created events of textversionstest.Issue, each a
-// new comment and so one version, appended through the broker as the routes append them, at most
-// 500 to a transaction, and answers their ids in order.
+// new comment and so one version, appended through the broker as the routes append them
+// (textversionstest.AppendEvents), at most 500 to a transaction, and answers their ids in order.
 func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -2195,28 +2195,23 @@ func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []
 	ids := make([]int64, 0, count)
 	for written := 0; written < count; {
 		inThisOne := min(count-written, 500)
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin the comments' transaction: %v", err)
+		comments := make([]model.Event, 0, inThisOne)
+		for n := range inThisOne {
+			body := fmt.Sprintf("The signing keys of region %d rotate on Monday.", written+n)
+			comments = append(comments, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
+				Payload: map[string]any{"id": uuid.NewString(), "issue_key": issue, "body": body}})
 		}
-		err = store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
-			for n := range inThisOne {
-				body := fmt.Sprintf("The signing keys of region %d rotate on Monday.", written+n)
-				if err := broker.QueueAppend(batch, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
-					Payload: map[string]any{"id": uuid.NewString(), "issue_key": issue, "body": body}},
-					func(appended model.Event) { ids = append(ids, appended.ID) }); err != nil {
-					return err
-				}
+		func() {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the comments' transaction: %v", err)
 			}
-			return nil
-		})
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
-		_ = tx.Rollback(context.Background())
-		if err != nil {
-			t.Fatalf("write %d comments: %v", inThisOne, err)
-		}
+			defer func() { _ = tx.Rollback(context.Background()) }()
+			ids = append(ids, textversionstest.AppendEvents(t, tx, broker, comments...)...)
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("write %d comments: %v", inThisOne, err)
+			}
+		}()
 		written += inThisOne
 	}
 	return ids

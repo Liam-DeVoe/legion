@@ -113,7 +113,8 @@ func productionEventTypes(t *testing.T) []string {
 // An ask's event is given the body readEventsQuery reads of it, askBodySQL run over its payload
 // in a test database, and the version's body is held to the one ask_search_suffix makes of the
 // expected question, options and answer, so what the fill's SQL reads of an ask's payload is held
-// to what jq read of it.
+// to what jq read of it. That body is where a version holds an ask's question, so the question is
+// held through it alone.
 func TestEveryProductionPayloadShapeGivesItsVersion(t *testing.T) {
 	names := payloadFixtures(t)
 	database := storetest.Open(t)
@@ -125,7 +126,7 @@ func TestEveryProductionPayloadShapeGivesItsVersion(t *testing.T) {
 			fixture.AskBody = askBodyOfPayload(t, database, name, fixture.Payload)
 		}
 		if want != nil && want.Kind == kindAsk {
-			want.AskBody = expectedAskBody(t, database, name, *want)
+			want.TitleOrBody, want.AskBody = nil, expectedAskBody(t, database, name, *want)
 		}
 		got, started, err := versionOf(event(fixture))
 		switch {
@@ -316,7 +317,8 @@ func readFixtureEvent(t *testing.T, name string) fixtureEvent {
 
 // expectedVersion is <type>-<n>.expected.json: the version the payload of <type>-<n>.json
 // starts, null where the payload gives no value. A body_truncated of null reads as false. An
-// ask's options and answer are no field of a version: they are held through the ask's body.
+// ask's question, options and answer are no field of a version: they are held through the ask's
+// body.
 type expectedVersion struct {
 	Kind           string          `json:"kind"`
 	ID             string          `json:"id"`
@@ -328,8 +330,9 @@ type expectedVersion struct {
 	SpecVersion    *int32          `json:"spec_version"`
 	BodyTruncated  bool            `json:"body_truncated"`
 	// AskBody is an ask's body, which no expected file holds: for an expected version, the one
-	// ask_search_suffix makes of its question, options and answer (expectedAskBody); for a
-	// version the rules started, its Body. It is nil for any other kind.
+	// ask_search_suffix makes of its question, options and answer (expectedAskBody), which then
+	// holds the expected question in place of TitleOrBody; for a version the rules started, its
+	// Body. It is nil for any other kind.
 	AskBody *string `json:"-"`
 }
 
@@ -350,25 +353,29 @@ func readExpectedVersion(t *testing.T, name string) *expectedVersion {
 	return want
 }
 
-// expectedOf is the version v in the form of an expected one.
+// expectedOf is the version v in the form of an expected one: v's Body is the title_or_body of
+// an issue or a post, null where it is empty, as for an artifact.version of an issue with no
+// version yet, whose title no event gives, and the AskBody of an ask.
 func expectedOf(v version) expectedVersion {
 	got := expectedVersion{
 		Kind:           v.Kind,
 		ID:             v.ID,
 		IssueKey:       v.IssueKey,
-		TitleOrBody:    v.Text,
 		SpecArtifactID: v.SpecArtifactID,
 		SpecVersion:    v.SpecVersion,
 		BodyTruncated:  v.BodyTruncated,
 	}
-	if v.Kind == kindAsk {
+	switch {
+	case v.Kind == kindAsk:
 		got.AskBody = &v.Body
+	case v.Body != "":
+		got.TitleOrBody = &v.Body
 	}
 	return got
 }
 
 // fields is each field a version holds with its value as canonical JSON, which is how two
-// versions are compared: an ask's options and answer through its body (AskBody).
+// versions are compared: an ask's question, options and answer through its body (AskBody).
 func (e expectedVersion) fields() [][2]string {
 	return [][2]string{
 		{"kind", canonicalJSON(e.Kind)},

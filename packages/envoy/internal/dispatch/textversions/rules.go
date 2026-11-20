@@ -222,7 +222,7 @@ func issueCreated(e event, _ latestVersion) (version, bool, error) {
 	if err != nil {
 		return version{}, false, err
 	}
-	v.Text, v.Body = p.Title, *p.Title
+	v.Body = *p.Title
 	if p.PrimaryArtifactID != nil {
 		first := int32(1)
 		v.SpecArtifactID, v.SpecVersion = p.PrimaryArtifactID, &first
@@ -254,7 +254,7 @@ func issueRetitled(e event, latest latestVersion) (version, bool, error) {
 	if err != nil {
 		return version{}, false, err
 	}
-	v.Text, v.Body = p.Title, *p.Title
+	v.Body = *p.Title
 	v.SpecArtifactID = p.PrimaryArtifactID
 	if prior != nil && prior.SpecArtifactID != nil {
 		v.SpecArtifactID, v.SpecVersion = prior.SpecArtifactID, prior.SpecVersion
@@ -267,8 +267,8 @@ func issueRetitled(e event, latest latestVersion) (version, bool, error) {
 // the title carried forward. A version of another document of the issue, and one of a project's
 // document (no issue), starts none. An issue whose latest version names no primary document, or
 // that has no version yet, cannot tell its primary document from its versions: the version
-// starts with the artifact the event names, and no title where no version gives one, and decide
-// reads which document is the issue's primary one from its rows.
+// starts with the artifact the event names, and no title (an empty Body) where no version gives
+// one, and decide reads which document is the issue's primary one from its rows.
 func primaryDocumentVersion(e event, latest latestVersion) (version, bool, error) {
 	if e.IssueKey == nil {
 		return version{}, false, nil
@@ -294,7 +294,7 @@ func primaryDocumentVersion(e event, latest latestVersion) (version, bool, error
 	}
 	v.SpecArtifactID, v.SpecVersion = p.ArtifactID, p.Version.Number
 	if prior != nil {
-		v.Text, v.Body, v.BodyFrom = prior.Text, prior.Body, prior.BodyFrom
+		v.Body, v.BodyFrom = prior.Body, prior.BodyFrom
 	}
 	return v, true, nil
 }
@@ -332,16 +332,17 @@ func postVersion(kind string, onlyWhenChanged bool) rule {
 		if err != nil {
 			return version{}, false, err
 		}
-		v.Text, v.Body, v.BodyTruncated = p.Body, *p.Body, p.BodyTruncated
+		v.Body, v.BodyTruncated = *p.Body, p.BodyTruncated
 		return v, true, nil
 	}
 }
 
 // askVersion is the rule of ask.opened, ask.edited and ask.answered: the version holds the ask's
-// question and its body as readEventsQuery made it in SQL (event.AskBody), and starts only when
-// that body differs from the ask's latest version's. An event read with no body while its
-// payload holds a question is a bug of the fill's read, not a payload the rules cannot read, and
-// is answered with an error that says so.
+// body as readEventsQuery made it in SQL (event.AskBody), its question, a space and
+// ask_search_suffix of its options and answer, and starts only when that body differs from the
+// ask's latest version's. An event read with no body while its payload holds a question is a bug
+// of the fill's read, not a payload the rules cannot read, and is answered with an error that
+// says so.
 func askVersion(e event, latest latestVersion) (version, bool, error) {
 	var p askPayload
 	if err := decodePayload(e, &p); err != nil {
@@ -367,7 +368,7 @@ func askVersion(e event, latest latestVersion) (version, bool, error) {
 	if err != nil {
 		return version{}, false, err
 	}
-	v.Text, v.Body = p.Question, *e.AskBody
+	v.Body = *e.AskBody
 	return v, true, nil
 }
 
@@ -513,7 +514,7 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 		d.out.Bytes += size
 		d.flush()
 		if starts {
-			d.keep(e, v)
+			d.keep(v)
 		}
 	}
 	return d.out, read, unreadable
@@ -576,13 +577,23 @@ func (d *decider) start(ctx context.Context, e event) (version, bool, error) {
 // complete gives the version v that e starts what the event does not hold, from the item's rows
 // (decideVersions), and answers whether v is still a version: false for an artifact.version the
 // rows show is not of the issue's primary document, and for an edit whose whole body is its
-// latest version's.
+// latest version's. It holds a warning (warn) of a post's version it keeps with its event's cut
+// text, where no source holds the whole body (wholeBody), and of an issue.created version whose
+// primary document's version 1 was not made at the event's created_at, by the create's own
+// transaction, or is not there at all, which the version holds all the same. An edit whose
+// whole body is its latest version's starts no version and is warned of nothing.
 func (d *decider) complete(ctx context.Context, e event, v *version) (bool, error) {
 	prior := d.latest(v.Kind, v.ID)
 	switch v.Kind {
 	case kindIssue:
 		switch {
 		case e.Type == "issue.created":
+			if key, ok := v.spec(); ok {
+				if made := d.specs[key].made; made == nil || !made.Equal(v.StartedAt) {
+					d.warn("dispatch: the keyword fill found that the issue's create did not write version 1 of its primary document, which the issue's first version holds all the same",
+						"issue", v.ID, "event_id", v.EventID, "artifact_id", key.artifact, "version_created_at", made, "event_created_at", v.StartedAt)
+				}
+			}
 			return true, nil
 		case prior == nil:
 			return d.seedIssue(ctx, e, v)
@@ -600,7 +611,14 @@ func (d *decider) complete(ctx context.Context, e event, v *version) (bool, erro
 		if err := d.wholeBody(ctx, e, v); err != nil {
 			return false, err
 		}
-		return prior == nil || prior.Body != v.Body, nil
+		if prior != nil && prior.Body == v.Body {
+			return false, nil
+		}
+		if v.BodyFrom == bodyFromCut {
+			d.warn("dispatch: the keyword fill found no source that holds the whole body its event cut, so the version keeps the event's text",
+				"kind", v.Kind, "id", v.ID, "event_id", e.ID, "event_type", e.Type)
+		}
+		return true, nil
 	}
 	return true, nil
 }
@@ -630,24 +648,11 @@ func (d *decider) size(e event, v version, starts bool) (int64, error) {
 	return size, nil
 }
 
-// keep adds v, which e starts and which is in the batch, to the versions decided, as its item's
-// latest version for the events after e. A version that keeps its event's cut text counts in
-// Cut, with a warning naming the item and the event; an issue.created version whose primary
-// document's version 1 was not made at the event's created_at, by the create's own transaction,
-// or is not there at all, holds it all the same, with a warning naming the issue.
-func (d *decider) keep(e event, v version) {
-	switch {
-	case v.BodyFrom == bodyFromCut:
+// keep adds v, which is in the batch, to the versions decided, as its item's latest version for
+// the events after v's. A version that keeps its event's cut text counts in Cut.
+func (d *decider) keep(v version) {
+	if v.BodyFrom == bodyFromCut {
 		d.out.Cut++
-		d.logger.Warn("dispatch: the keyword fill found no source that holds the whole body its event cut, so the version keeps the event's text",
-			"kind", v.Kind, "id", v.ID, "event_id", e.ID, "event_type", e.Type)
-	case e.Type == "issue.created":
-		if key, ok := v.spec(); ok {
-			if made := d.specs[key].made; made == nil || !made.Equal(v.StartedAt) {
-				d.logger.Warn("dispatch: the keyword fill found that the issue's create did not write version 1 of its primary document, which the issue's first version holds all the same",
-					"issue", v.ID, "event_id", v.EventID, "artifact_id", key.artifact, "version_created_at", made, "event_created_at", v.StartedAt)
-			}
-		}
 	}
 	d.out.Versions = append(d.out.Versions, v)
 	d.batch[item{v.Kind, v.ID}] = &v
@@ -655,6 +660,9 @@ func (d *decider) keep(e event, v version) {
 
 // warn holds a warning of the event being decided until flush logs it, once the event is known
 // to be in the batch: an event the bound leaves to the next batch is warned of by that batch.
+// Each warning the decider logs of an event goes through it, from the code that decides the
+// version (start and what it calls), since that code runs for the first event the bound leaves
+// out too.
 func (d *decider) warn(message string, args ...any) {
 	d.warnings = append(d.warnings, warning{message: message, args: args})
 }
@@ -683,7 +691,7 @@ func (d *decider) seedIssue(ctx context.Context, e event, v *version) (bool, err
 		if rows.primary == nil || *rows.primary != *v.SpecArtifactID {
 			return false, nil
 		}
-		v.Text, v.Body, v.BodyFrom = &rows.title, rows.title, bodyFromRow
+		v.Body, v.BodyFrom = rows.title, bodyFromRow
 	} else {
 		if v.SpecArtifactID == nil {
 			v.SpecArtifactID = rows.primary
@@ -740,7 +748,7 @@ func readIssueRows(ctx context.Context, tx pgx.Tx, key string, at time.Time) (is
 
 // wholeBody gives v, a version of a post whose event e cut its body, the whole body from the
 // first source that holds it (decideVersions), or keeps the event's text (bodyFromCut), which
-// keep counts and warns of once v is in the batch.
+// complete warns of where it keeps v.
 func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 	switch v.Kind {
 	case kindComment:
@@ -910,8 +918,7 @@ const latestVersionsQuery = `
 
 // latestVersions reads the latest row in the keyword table of each of items, in tx: an item with
 // no row is not in the map. A version read from the table holds its kind, its id, its body as its
-// Body and as its Text, its BodyFrom and its primary document version, and none of its other
-// columns.
+// Body, its BodyFrom and its primary document version, and none of its other columns.
 func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*version, error) {
 	latest := make(map[item]*version, len(items))
 	if len(items) == 0 {
@@ -932,7 +939,6 @@ func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*ver
 		if err := rows.Scan(&v.Kind, &v.ID, &v.Body, &v.BodyFrom, &v.SpecArtifactID, &v.SpecVersion); err != nil {
 			return nil, fmt.Errorf("read the latest keyword versions of %d items: %w", len(items), err)
 		}
-		v.Text = &v.Body
 		latest[item{v.Kind, v.ID}] = &v
 	}
 	if err := rows.Err(); err != nil {
