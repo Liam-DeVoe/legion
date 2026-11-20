@@ -246,6 +246,7 @@ const EnvelopeResponseSchema = EnvelopeSchema.extend({
  * (`"holder_lapsed"`), which also names that `holder`, its `holder_state` and its `last_seen`
  * (read by the schema this one extends). A 404 comes when the listener keeps nothing: the
  * publish sent `keep: false`, the role's token is one no claim can name, or the keep failed. A
+ * keep that the stream refuses for want of the kept lane's subject answers 503 with Retry-After instead. A
  * listener of an earlier release also answers it for a holder that is not live.
  * 202 is a success answer, so it passes `response.ok` and reaches this schema — load-bearing:
  * without it a kept message would read as a refusal.

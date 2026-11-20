@@ -46,7 +46,8 @@ const (
 	// sendSkipped is a role send from the role's own holder, the role lane's echo skip.
 	sendSkipped sendOutcome = "skipped"
 	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing -
-	// keep: false, a role token no claim can name, or a keep that failed - answered 404
+	// keep: false, a role token no claim can name, or a keep that failed for any reason but the
+	// stream lacking the kept lane's subject, which is the stream_lacks_subject 503 - answered 404
 	// (roleSend.noHolder).
 	sendUnclaimed    sendOutcome = sendOutcome(roles.Unclaimed)
 	sendHolderLapsed sendOutcome = sendOutcome(roles.Lapsed)
@@ -260,10 +261,10 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // its charge, unless an earlier forward of the same send failed with no refusal, which may have
 // stored the message for the holder it went to and marked the charge so (sendToRole).
 //
-// 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
-// 200, the message is with a live holder; 202, no live session holds the role and the message
-// waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
-// fallback must run. INFRA-514's architect decided it on 2026-10-31.
+// 202 rather than 200, so a sender tells the role send's answers apart by status alone: 200, the
+// message is with a live holder; 202, no live session holds the role and the message waits on the
+// role's kept lane until kept_until; 404, nothing was kept for a no-holder reason and the sender's
+// own fallback must run; or 503 when the stream refuses the kept lane for want of its subject.
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
 		s.record.charge.forgive()
