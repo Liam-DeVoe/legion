@@ -5741,7 +5741,7 @@ it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 aft
 ## lib/wait-gone.sh
 
 The one wait for a process a script has signalled, before a later step binds its port, takes its lock, reads a file it writes, removes its directory or reads the process table.
-[`lib/process-tree.sh`](#libprocess-treesh) (so `stop_pid`, `kill_held` and every stage proof's teardown sweep, `stop_marked_processes`), [`lib/box-login.sh`](#libbox-loginsh) through it, `verifiers-staging-token.sh`, `envoy-session-delivery.sh`, and outside this directory `airlock-check.sh`, `callout-check.sh` and `dev-stack.test.sh` (`packages/envoy/scripts`), `smoke-registration-stall.sh` and `smoke-role-takeover.sh` (`packages/pi-envoy/scripts`), `replace-blocks.sh` (`packages/dispatch/e2e/acceptance`, through `lib/process-tree.sh`) and the temporal evaluation's `run.sh` source it.
+[`lib/process-tree.sh`](#libprocess-treesh) (so `stop_pid`, `kill_held` and every stage proof's teardown sweep, `stop_marked_processes`), [`lib/box-login.sh`](#libbox-loginsh) through it, `verifiers-staging-token.sh`, `envoy-session-delivery.sh`, and outside this directory `airlock-check.sh`, `callout-check.sh` and `dev-stack.test.sh` (`packages/envoy/scripts`), `autodeploy_test_env.sh` (`packages/envoy/deploy/scripts`), `smoke-registration-stall.sh` and `smoke-role-takeover.sh` (`packages/pi-envoy/scripts`), `replace-blocks.sh` (`packages/dispatch/e2e/acceptance`, through `lib/process-tree.sh`) and the temporal evaluation's `run.sh` source it.
 Sourced, never run; it needs nothing of its caller's but bash 5, for `EPOCHSECONDS` and `EPOCHREALTIME`.
 
 ```sh

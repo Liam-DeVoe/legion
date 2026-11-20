@@ -4,8 +4,9 @@
 # lib/process-tree.sh (which lib/rig.sh, lib/box-login.sh, stage2-tmux-supervision.sh and
 # packages/dispatch/e2e/acceptance/replace-blocks.sh source), verifiers-staging-token.sh and
 # envoy-session-delivery.sh; packages/envoy/scripts/airlock-check.sh, callout-check.sh and
-# dev-stack.test.sh; packages/pi-envoy/scripts/smoke-registration-stall.sh and smoke-role-takeover.sh;
-# and docs/research/temporal-evaluation-2026-11/run.sh source it. Sourced, never run: it defines
+# dev-stack.test.sh; packages/envoy/deploy/scripts/autodeploy_test_env.sh;
+# packages/pi-envoy/scripts/smoke-registration-stall.sh and smoke-role-takeover.sh; and
+# docs/research/temporal-evaluation-2026-11/run.sh source it. Sourced, never run: it defines
 # wait_gone, kill_gone, stop_gone, wait_gone_name and process_start, and needs nothing of its
 # caller's but bash 5 (EPOCHSECONDS and EPOCHREALTIME).
 #
