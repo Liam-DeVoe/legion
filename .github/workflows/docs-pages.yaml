@@ -87,6 +87,7 @@ on:
       - 'packages/daemon/internal/ghrepo/*'
       - 'packages/daemon/internal/githubrest/*'
       - 'packages/daemon/internal/intake/*'
+      - 'packages/daemon/internal/jjmerge/*'
       - 'packages/daemon/internal/launcher/*'
       - 'packages/daemon/internal/leakguard/*'
       - 'packages/daemon/internal/lookpath/*'
