@@ -247,8 +247,8 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // clock is the sweep's now and what a project's pause did to the issue's pod (roundClock), built
 // once for the issue: each round bound and each pause hold read below comes from it, and an
 // opening is recorded at its now. No round opens over a pod a hold stands on (roundClock.held):
-// the pause kept that pod for its stopped roles, and a round would ask them to push work for a
-// replacement while nothing of theirs runs.
+// the pause kept that pod for its stopped roles, and a round would owe them its ask
+// (unaskedClaims) while nothing of theirs runs to push work for a replacement.
 func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string, group []supervise.Claim, sweep *podUpdateSweep, clock roundClock) *podReplacement {
 	slices.SortFunc(group, func(a, b supervise.Claim) int { return strings.Compare(string(a.Token), string(b.Token)) })
 	pod, split := groupPod(group)
@@ -1509,7 +1509,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
 	}
-	s.log.Info("supervise: the update round's ask is enqueued for each role of the pod",
+	s.log.Info("supervise: the update round's ask is enqueued for the roles named",
 		"issue", issue, "round", round, "pod", pod, "roles", namesOf(asking))
 }
 

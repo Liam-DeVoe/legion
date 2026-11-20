@@ -241,14 +241,15 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 
 // An operator's spawn of another project's issue runs in a pod of this daemon's, which the
 // update-round sweep reads as it reads every pod, and the round over that pod asks its role as
-// every round does. But the ask is an outbox row keyed by that issue, which only that project's
-// daemon runs (claim.KeyOfProject), so the sweep's enqueue writes none (supervision.enqueue): the
-// round asks nothing, logs no Warn and marks the claim asked at no sweep, while the round itself
-// is recorded and runs on. The daemon's records are wrapped as the daemon wraps them
-// (projectRecords), whose refusal of such a key is a writer's defect. Before the fix the ask
-// reached that refusal, which logged its Warn at every sweep's ask, and the sweep then logged the
-// ask enqueued; the no-Warn check below is what fails without the fix, since #4337 left the ask's
-// mark to the outbox's delivery (supervise's Machine.PublishUpdateAsk).
+// every round asks a role it owes an ask (unaskedClaims). But the ask is an outbox row keyed by
+// that issue, which only that project's daemon runs (claim.KeyOfProject), so the sweep's enqueue
+// writes none (supervision.enqueue): the round asks nothing, logs no Warn and marks the claim
+// asked at no sweep, while the round itself is recorded and runs on. The daemon's records are
+// wrapped as the daemon wraps them (projectRecords), whose refusal of such a key is a writer's
+// defect. Before the fix the ask reached that refusal, which logged its Warn at every sweep's
+// ask, and the sweep then logged the ask enqueued; the no-Warn check below is what fails without
+// the fix, since #4337 left the ask's mark to the outbox's delivery (supervise's
+// Machine.PublishUpdateAsk).
 func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T) {
 	const (
 		other    = "OTHERPROJECT-9"
