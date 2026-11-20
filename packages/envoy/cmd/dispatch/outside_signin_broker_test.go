@@ -80,6 +80,9 @@ type fakeBroker struct {
 	// duringRevoke, when set, runs inside each subject revoke before the broker answers, as
 	// whatever else happens while a call is in flight: another process's pass, or time passing.
 	duringRevoke func()
+	// unavailableApproves is how many approves still to answer 503 before the broker approves
+	// again, as a broker that is down answers them.
+	unavailableApproves int
 }
 
 // fakeCredential is one machine login (signIn false) or one sign-in on a machine (signIn true) of
@@ -231,6 +234,12 @@ func (b *fakeBroker) serve(w http.ResponseWriter, r *http.Request) {
 		delete(b.replaced, [2]string{revocation.Person, revocation.HolderSubject})
 		_ = json.NewEncoder(w).Encode(answer)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/credential-requests/") && strings.HasSuffix(r.URL.Path, "/approve"):
+		if b.unavailableApproves > 0 {
+			b.unavailableApproves--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"code":"UNAVAILABLE","error":"the test's broker is down"}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"state":"approved","credential_id":"login-approved"}`))
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/credential-requests/") && strings.HasSuffix(r.URL.Path, "/deny"):
 		_, _ = w.Write([]byte(`{"state":"denied"}`))
