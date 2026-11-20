@@ -83,6 +83,52 @@ test("the owed check aborts a daemon request that outlives its bound, and remind
   expect(debugged).toEqual(["legion: the daemon did not say what this claim owes"]);
 });
 
+/** A reminder over a real daemon client whose fetch is `answer`, recording every route the
+ * check asks for and every line it logs at debug. */
+function overDaemon(answer: typeof fetch) {
+  const routes: string[] = [];
+  const debugged: string[] = [];
+  const recording = (async (input, init) => {
+    routes.push(new URL(input.toString()).pathname);
+    return answer(input, init);
+  }) as typeof fetch;
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: 60,
+    fetch: recording,
+  });
+  const reminder = createPhaseReminder({
+    sendReminder: () => {},
+    armTimer: () => {},
+    saveEntry: () => {},
+    claim: () => implementer,
+    readOwed: (input, signal) => daemon.owed(input, { signal }),
+    publisher: () => undefined,
+    project: "LEGION",
+    limits: DEFAULT_STALL_LIMITS,
+    log: { debug: (message) => debugged.push(message), warn: () => {} },
+  });
+  return { reminder, routes, debugged };
+}
+
+// The check keeps its two branches apart: the daemon's answer names the work the reminder gives,
+// and everything else is a read that failed, which nudges and names none. It asks the owed route
+// alone and never reads the whole project.
+test("the owed check asks one route: the answer names the work, a transport failure is the read that failed", async () => {
+  const answered = overDaemon((async (_input, _init) => Response.json(OWES)) as typeof fetch);
+
+  expect(await answered.reminder.settle(said("Pushed."))).toBe(reminderText("Pushed.", WORK));
+  expect(answered.routes).toEqual(["/legion/v1/claims/owed"]);
+  expect(answered.debugged).toEqual([]);
+
+  const failed = overDaemon((async (_input, _init): Promise<Response> => {
+    throw new TypeError("fetch failed");
+  }) as typeof fetch);
+
+  expect(await failed.reminder.settle(said("Pushed."))).toBe(UNREAD_REMINDER);
+  expect(failed.routes).toEqual(["/legion/v1/claims/owed"]);
+  expect(failed.debugged).toEqual(["legion: the daemon did not say what this claim owes"]);
+});
+
 interface ArmedTimer {
   readonly callback: () => void | Promise<void>;
   readonly delayMs: number;
@@ -209,7 +255,10 @@ test("a daemon that does not answer still nudges, and the nudge names no phase a
       Response.json({ owes: true, work: "" })) as unknown as typeof fetch,
   };
   for (const [failure, fetchFn] of Object.entries(failures)) {
-    const client = createLegionDaemonClient("http://daemon.test", fetchFn);
+    const client = createLegionDaemonClient("http://daemon.test", {
+      pluginContract: 60,
+      fetch: fetchFn,
+    });
     // The bound is the reminder's own, cut short so the hang is over in 20ms.
     const { reminder, timers, sent } = rig({
       owed: (input, signal) => client.owed(input, { signal }),
@@ -235,8 +284,10 @@ test("a daemon that does not answer still nudges, and the nudge names no phase a
 // claim owes nothing silences the reminder. A failure, the 500 of a record the daemon could not
 // read among them, is no such answer and nudges.
 test("a daemon that answers 200 that the claim owes nothing is reminded of nothing", async () => {
-  const client = createLegionDaemonClient("http://daemon.test", (async () =>
-    Response.json(OWES_NOTHING)) as unknown as typeof fetch);
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: 60,
+    fetch: (async () => Response.json(OWES_NOTHING)) as unknown as typeof fetch,
+  });
   const { reminder, timers, sent, asked } = rig({
     owed: (input, signal) => client.owed(input, { signal }),
   });
@@ -276,7 +327,7 @@ test("a read that times out produces a nudge that names no phase and produces no
     },
   });
   try {
-    const client = createLegionDaemonClient(daemon.url.href);
+    const client = createLegionDaemonClient(daemon.url.href, { pluginContract: 60 });
     const { reminder, timers, sent, published } = rig({
       owed: (input, signal) => {
         asked += 1;

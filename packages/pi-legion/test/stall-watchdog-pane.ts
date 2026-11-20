@@ -397,6 +397,12 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, the
+    // publish below, and any other `/v1/` read answer with an interest. A path outside it is a
+    // route this stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     if (url.pathname === "/v1/messages/publish") {
       // The listener's answer to a publish it took: an envelope, which the client parses before it
       // answers the worker (`EnvelopeSchema`, packages/contracts/src/envelope.ts).
@@ -412,7 +418,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         trace_id: `trace-${key}`,
       });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
+    // Registration, the role claim, and any other `/v1/` read answer with an interest. A
     // registration is answered a consumer on the session's own relay subject, the one path a
     // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
     // its claim boot fails.

@@ -10,6 +10,7 @@ import {
 import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { owedReminder, UNREAD_REMINDER } from "@legion/pi-shared/phase-stall"
+import { legion } from "../package.json" with { type: "json" }
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -72,6 +73,8 @@ interface Harness {
   readonly record: () => Promise<unknown>
   /** The record as it stood when the daemon was asked what the claim owes. */
   readonly recordAtDaemonRead: () => unknown
+  /** Every route this endpoint asked the daemon for, in order. */
+  readonly daemonPaths: readonly string[]
   /** The lines this endpoint wrote into the bridge's inbox, in order. */
   readonly inbox: readonly string[]
   /** Every message published to the Envoy listener, in order. */
@@ -121,15 +124,22 @@ async function harness(
   let atRead: unknown
   let owed = options.owed ?? owesWork
   const asked: unknown[] = []
+  const paths: string[] = []
+  // The reminder's owed check asks one route, never the whole project (dispatch://INFRA-2694).
   const fetchStub = (async (input, init) => {
-    if (new URL(input.toString()).pathname === "/legion/v1/claims/owed") {
+    const path = new URL(input.toString()).pathname
+    paths.push(path)
+    if (path === "/legion/v1/claims/owed") {
       atRead = await record()
       asked.push(JSON.parse(String(init?.body)))
       return owed()
     }
     return Response.json({ error: "no stand-in route" }, { status: 404 })
   }) as typeof fetch
-  const daemon = createLegionDaemonClient("http://daemon.test", fetchStub)
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: legion.daemonApiVersion,
+    fetch: fetchStub,
+  })
   const lines: string[] = []
   const inbox: string[] = []
   const published: PublishInput[] = []
@@ -168,6 +178,7 @@ async function harness(
     record,
     recordAtDaemonRead: () => atRead,
     inbox,
+    daemonPaths: paths,
     published,
     reports,
     asked,
@@ -193,7 +204,7 @@ test("the tool names itself Claude Code's hook endpoint and tells the model not 
 })
 
 test("a turn settling while the daemon says the claim owes work is blocked once, with the reminder naming that work, and the count is recorded before the answer", async () => {
-  const { endpoint, record, recordAtDaemonRead, inbox, asked, close } = await harness({
+  const { endpoint, record, recordAtDaemonRead, inbox, asked, daemonPaths, close } = await harness({
     record: recorded("active", 0),
     claim: implementer,
   })
@@ -216,6 +227,9 @@ test("a turn settling while the daemon says the claim owes work is blocked once,
     const said = { reported: false, lastMessage: "I pushed the branch." }
     expect(recordAtDaemonRead()).toEqual({ state: "active", count: 0, ...said })
     expect(await record()).toEqual({ state: "active", count: 1, ...said })
+    // The check asks what this claim owes and never reads the whole project
+    // (dispatch://INFRA-2694), which is what the channel server wires it to.
+    expect(daemonPaths).toEqual(["/legion/v1/claims/owed"])
 
     // The second settle of the run lets the turn end and carries its reminder from the timer, so
     // the daemon sees the turn end and can deliver a queued task.

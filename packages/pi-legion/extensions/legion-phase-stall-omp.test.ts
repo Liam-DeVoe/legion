@@ -295,7 +295,11 @@ async function stallPane(
       answer: (url, body) => {
         const own = options.answer?.(url, body);
         if (own !== undefined) return own;
-        if (url.pathname === "/legion/v1/state") return Response.json(STALL_STATE);
+        // `handoff_complete` reads one issue's record (dispatch://INFRA-2694), and the reminder
+        // asks what the claim owes; nothing of this pane asks for the whole project body.
+        if (url.pathname === "/legion/v1/issues/STALL-2/record") {
+          return Response.json(STALL_STATE.issues["STALL-2"]);
+        }
         if (url.pathname === "/legion/v1/claims/owed") {
           return Response.json(owes ? { owes: true, work: STALL_WORK } : { owes: false, work: "" });
         }
@@ -390,7 +394,7 @@ test.skipIf(skip)(
       "/legion/v1/claims/ready",
       "/legion/v1/claims/owed",
       "/legion/v1/claims/turn-outcome",
-      "/legion/v1/state",
+      "/legion/v1/issues/STALL-2/record",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
       "/legion/v1/claims/turn-outcome",
