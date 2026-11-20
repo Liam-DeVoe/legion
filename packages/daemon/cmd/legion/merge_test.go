@@ -1100,3 +1100,30 @@ func TestLegionMergeKeepsARolesWorkOnALeftoverCarrier(t *testing.T) {
 		t.Errorf("the role's commit %s holds %q at work, want its own file", work, got)
 	}
 }
+
+// A merge whose tree is git's merged tree, made where git gives a file/directory conflict, which
+// jj merges from git's versions with no conflict: git keeps the file aside as df~<first parent's
+// id>. The help's comparison of that merge with git's merge of its parents prints no path, since
+// the two trees are one. Given <merge>^1 and <merge>^2, git names the aside file df~<merge>^1,
+// the revision as written, so the comparison names a difference the merge does not hold.
+func TestLegionMergeHelpsComparisonListsNothingForGitsOwnTree(t *testing.T) {
+	r := newMergeRepo(t)
+	r.commit("base", []string{"root()"}, map[string]string{"keep": "keep\n"})
+	r.commit(mergeFirst, []string{"base"}, map[string]string{"df": "a file\n"})
+	r.commit("main", []string{"base"}, map[string]string{"df/x": "a file in a directory\n"})
+	r.publish("main")
+	r.workOn("base")
+	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+	if code != 1 || !strings.Contains(stdout, "CONFLICT (file/directory)") {
+		t.Fatalf("legion merge = %d, want 1 with git's file/directory conflict\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	merge := r.id("@-")
+	if got, want := r.git("rev-parse", merge+"^{tree}"), r.gitTree(mergeFirst, "main"); got != want {
+		t.Fatalf("the merge's tree is %s, want git's merged tree %s", got, want)
+	}
+	comparison := exec.Command("sh", "-c", mergeComparison(merge, "--name-only"))
+	comparison.Dir, comparison.Env = r.ws, r.env()
+	if out, err := comparison.Output(); err != nil || string(out) != "" {
+		t.Errorf("%s printed %q (%v), want nothing: the merge holds git's merged tree", mergeComparison(merge, "--name-only"), out, err)
+	}
+}
