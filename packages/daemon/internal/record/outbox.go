@@ -2729,6 +2729,14 @@ func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }
 
+// NoticeKinds is every notice kind the daemon publishes (validNoticeKinds), as a copy, so a reader
+// outside this package ranges over the list without being able to change it. A kind added to the
+// list joins every such reader's run: the daemon's test of the architect each notice reaches reads
+// it (internal/daemon's TestDecisionsFollowTheDispatchChain).
+func NoticeKinds() []NoticeKind {
+	return slices.Clone(validNoticeKinds)
+}
+
 // basisNoticeKinds are the notices of a step on an ancestor's approval, which may carry the
 // Dispatch reference of the document they are about and the person who acted on it (Notice.Ref,
 // Notice.Actor) as a spec decision's notice does, and which are no spec decision: SpecDecision

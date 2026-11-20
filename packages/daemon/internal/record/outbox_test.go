@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -361,6 +363,235 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	for kind := range listed {
 		if _, ok := decided[kind]; !ok {
 			t.Errorf("pauseHolds names %s, which this test decides nothing of", kind)
+		}
+	}
+}
+
+// fencePart is one of the three things a queued effect names so that it does nothing to a later
+// run of its issue (R17 of dispatch://INFRA-3320): the field of the kind's payload that carries it,
+// or why the kind carries none.
+type fencePart struct{ field, why string }
+
+// carries is a fence part the payload's field named field carries.
+func carries(field string) fencePart { return fencePart{field: field} }
+
+// lacks is a fence part the kind carries none of, and why.
+func lacks(why string) fencePart { return fencePart{why: why} }
+
+// podUIDField is the field a stop, a suspend, a bundle or a release names its pod's incarnation in.
+// It may be empty, which fences no pod: a tmux claim runs in no pod, and a claim with no locator
+// names none.
+const podUIDField = "PodUID"
+
+// declaredOutboxKinds is every kind the outbox's lanes run (OutboxLanes, LaneKinds), which
+// TestEveryOutboxKindIsInExactlyOneLane holds equal to every kind the outbox stores, so a kind
+// added to a lane and decided nowhere fails the test that ranges over it.
+func declaredOutboxKinds(t *testing.T) map[OutboxKind]bool {
+	t.Helper()
+	declared := map[OutboxKind]bool{}
+	for _, lane := range OutboxLanes() {
+		for _, kind := range LaneKinds(lane) {
+			declared[kind] = true
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("the outbox's lanes run no kind: a test over none would pass")
+	}
+	return declared
+}
+
+// setFenceField gives field, which a payload carries a fence part in, a value when it has none,
+// and says whether its type is one a fence part can be carried in.
+func setFenceField(field reflect.Value) bool {
+	if !field.IsZero() {
+		return true
+	}
+	switch field.Kind() {
+	case reflect.Uint, reflect.Uint32, reflect.Uint64:
+		field.SetUint(7)
+	case reflect.Int, reflect.Int32, reflect.Int64:
+		field.SetInt(3)
+	case reflect.String:
+		field.SetString("fence-of-legion-208")
+	default:
+		return false
+	}
+	return true
+}
+
+// Every effect the daemon queues for later names its issue's generation, its phase entry and the
+// pod or claim it acts on, so that a late one does nothing to a later run of the issue (R17 and R20
+// of dispatch://INFRA-3320); a kind that names fewer says, for each one it lacks, why. decided is
+// that inventory, and its keys are every kind the outbox's lanes run (declaredOutboxKinds): a kind
+// added to a lane fails here until somebody decides it. For each part a kind carries the test sets the
+// payload's field, and NewOutboxRow must take the payload so set; then it must refuse the payload
+// without its generation, and without its entry, so no row is queued unfenced. The pod UID may be
+// empty (podUIDField), so a payload without it is still taken.
+//
+// The defaults are the plan's of dispatch://INFRA-4730 ("Lists written before the code"): a kind
+// that acts on one issue's run is fenced by all three, the pod's UID for a kind that stops,
+// suspends, saves or releases a pod and the role's claim for a message to one role; the
+// publications of current state and merge_queue_read act on no run; controller_notice is the
+// project's; the production check's kinds and the gate's carry the generation and no entry, since
+// the check follows the close and the gate belongs to the run across a stop (R17); and
+// linger_close, like workspace_remove, which only a linger's expiry writes, is written by no
+// daemon after its first boot on this release.
+func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	const (
+		dispatchRow     = "it writes the issue's Dispatch row, which no pod and no claim of the daemon's holds"
+		currentState    = "it publishes the state as it stands when the row runs, so a late row publishes the later state and acts on no run"
+		notAfterBoot    = "no daemon writes it after its first boot on this release, whose conversion finishes or deletes each such row (decision 17 of dispatch://INFRA-4730)"
+		gateAcrossStop  = "the gate belongs to the run across a stop (R17), so a seed of the run applies at any phase entry"
+		checkAfterClose = "the production check follows the close, where the issue stands at no phase entry (R17)"
+		readsAndApplies = "it reads Dispatch or GitHub and applies what it read as a fact, which the record fences where it commits; it acts on no pod and no claim"
+		history         = "it is the record of a step or a plan of one run, keyed by that run's own id: a late write records what that run did and acts on no later run"
+	)
+	decided := map[OutboxKind]struct {
+		generation, entry, target fencePart
+		// payload is a payload of the kind that NewOutboxRow takes once the test has set each
+		// field the kind carries a fence part in; nil for a kind that carries none.
+		payload OutboxPayload
+	}{
+		OutboxKindDispatchStatus: {carries("Generation"), carries("Entry"), lacks(dispatchRow),
+			OrdinaryStatusWrite("in_progress", "todo", "")},
+		OutboxKindDispatchMessage: {carries("Generation"), carries("Entry"), lacks(dispatchRow),
+			MessagePost{Body: "A message of one run."}},
+		// A notice's architect is read when it is delivered, by the owner walk over the chain
+		// (R18), so it names no claim when it is queued.
+		OutboxKindNotice: {carries("Generation"), carries("Entry"),
+			lacks("its architect is read when it is delivered, by R18's owner walk, so a notice names no claim when it is queued"),
+			Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}},
+		OutboxKindControllerNotice: {lacks("it is the project's, told to the project's controller"), lacks("it is the project's, told to the project's controller"),
+			lacks("it is the project's, told to the project's controller"), nil},
+		OutboxKindSupervise: {carries("Generation"), carries("Entry"), carries(podUIDField),
+			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer}},
+		OutboxKindGateSeed: {carries("Generation"), lacks(gateAcrossStop), lacks(readsAndApplies),
+			GateSeed{ArtifactID: "artifact-208", Step: DesignStepSpec, Version: 1}},
+		OutboxKindPendingBasisSeed: {carries("Generation"), lacks(gateAcrossStop), lacks(readsAndApplies),
+			PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-200", BasisVersion: 2, Ask: "ask-1"}},
+		// R18's notice of a change of parent names the issue's run and entry it tells of
+		// (dispatch://INFRA-4730's t6), and tells the architects through notices of its own.
+		OutboxKindReparentSeed: {carries("Generation"), carries("Entry"),
+			lacks("it reads the new parent from Dispatch and tells the architects through notices of its own, which route by the chain when they are delivered"),
+			ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "it ran as a tree of its own"}},
+		OutboxKindLingerClose:     {lacks(notAfterBoot), lacks(notAfterBoot), lacks(notAfterBoot), nil},
+		OutboxKindWorkspaceRemove: {lacks(notAfterBoot), lacks(notAfterBoot), lacks(notAfterBoot), nil},
+		OutboxKindIssueSuspend: {carries("Generation"), carries("Entry"), carries(podUIDField),
+			IssueSuspend{Tree: "LEGION-208", TreeGeneration: 7}},
+		OutboxKindIssueBundle: {carries("Generation"), carries("Entry"), carries(podUIDField),
+			IssueBundle{Tree: "LEGION-208", TreeGeneration: 7, Role: claim.RoleImplementer}},
+		OutboxKindIssueRelease: {carries("Generation"), carries("Entry"), carries(podUIDField),
+			IssueRelease{Tree: "LEGION-208", TreeGeneration: 7}},
+		// The branch is the run's and stays across a stop (R20), and the start of the entry a
+		// return opens waits on the row (outboxInOrder), so a branch row of the run acts at any
+		// entry.
+		OutboxKindIssueBranch: {carries("Generation"),
+			lacks("the branch is the run's and stays across a stop (R20), so a branch row of the run acts at any entry"),
+			lacks("it creates a branch on GitHub, which no pod and no claim of the daemon's holds"), IssueBranch{}},
+		OutboxKindCheckWake:  {carries("Generation"), lacks(checkAfterClose), lacks("the start of the look it wakes names the claim"), CheckWakeDue{Look: 1, Reason: "the agent's own wake"}},
+		OutboxKindCheckLook:  {carries("Generation"), lacks(checkAfterClose), lacks("it ends a look of the check, and acts on no claim"), CheckLook{Look: 1}},
+		OutboxKindCheckBound: {carries("Generation"), lacks(checkAfterClose), lacks("the start of the last look it starts names the claim"), CheckBound{}},
+		// Its role is the claim token it is published to.
+		OutboxKindRoleMessage: {carries("Generation"), carries("Entry"), carries("Role"),
+			RoleMessage{Role: "legion-legion-legion-208-implementer", Body: "The checks of the head settled."}},
+		// Each of these four goes to one role of the row's issue, whose claim the role names.
+		OutboxKindPhaseEnded: {carries("Generation"), carries("Entry"), carries("Role"),
+			PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 (todo) is open"}},
+		OutboxKindHookPrompt: {carries("Generation"), carries("Entry"), carries("Role"),
+			HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Say what the round missed."}},
+		OutboxKindUpdateAsk: {carries("Generation"), carries("Entry"), carries("Role"),
+			UpdateAsk{Role: claim.RoleImplementer, Round: "round-1", Text: "Commit and push, then stop."}},
+		OutboxKindMergeForward: {carries("Generation"), carries("Entry"), carries("Role"),
+			MergeForwardMessage{Step: MergeForwardAsk, Role: claim.RoleImplementer, Head: "abc123", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext}},
+		// The merger is the one role it is ever for, so the row's issue names its claim.
+		OutboxKindMergeQueueRemoval: {carries("Generation"), carries("Entry"),
+			lacks("the merger is the one role it is ever for, so the row's issue names the claim"),
+			MergeQueueRemoval{Number: 42, Head: "abc123"}},
+		OutboxKindGatedStepsPublish:  {lacks(currentState), lacks(currentState), lacks(currentState), nil},
+		OutboxKindDesignGatesPublish: {lacks(currentState), lacks(currentState), lacks(currentState), nil},
+		OutboxKindRoleHoldersPublish: {lacks(currentState), lacks(currentState), lacks(currentState), nil},
+		OutboxKindMergeQueueRead:     {lacks(readsAndApplies), lacks(readsAndApplies), lacks(readsAndApplies), nil},
+		OutboxKindConflictConfirm:    {lacks(readsAndApplies), lacks(readsAndApplies), lacks(readsAndApplies), nil},
+		// It releases the issue's Dispatch claim when a park left the issue: a late one must not
+		// release the claim of the run a return opened.
+		OutboxKindClaimRelease: {carries("Generation"), carries("Entry"),
+			lacks("it releases the issue's Dispatch claim, which no pod and no claim of the daemon's holds"), ClaimRelease{}},
+		OutboxKindStepRecord: {lacks(history), lacks(history), lacks(history), nil},
+		OutboxKindPlanRecord: {lacks(history), lacks(history), lacks(history), nil},
+	}
+	declared := declaredOutboxKinds(t)
+	for _, kind := range slices.Sorted(maps.Keys(declared)) {
+		if _, ok := decided[kind]; !ok {
+			t.Errorf("the outbox runs %s, and nobody decided what fences it: add it to decided, with the field of each part it carries or why it carries none", kind)
+		}
+	}
+	for _, kind := range slices.Sorted(maps.Keys(decided)) {
+		fence := decided[kind]
+		if !declared[kind] {
+			t.Errorf("decided names %s, which no lane of the outbox runs", kind)
+			continue
+		}
+		parts := []struct {
+			name string
+			part fencePart
+		}{{"generation", fence.generation}, {"entry", fence.entry}, {"pod or claim", fence.target}}
+		carried := false
+		for _, p := range parts {
+			if (p.part.field == "") == (p.part.why == "") {
+				t.Errorf("%s: its %s names %+v, want a field that carries it or why it carries none, and not both", kind, p.name, p.part)
+			}
+			carried = carried || p.part.field != ""
+		}
+		if !carried {
+			continue
+		}
+		if fence.payload == nil || fence.payload.OutboxKind() != kind {
+			t.Errorf("%s carries a part of its fence but decided gives it no payload of its own kind to try: %#v", kind, fence.payload)
+			continue
+		}
+		whole := reflect.New(reflect.TypeOf(fence.payload)).Elem()
+		whole.Set(reflect.ValueOf(fence.payload))
+		missing := false
+		for _, p := range parts {
+			if p.part.field == "" {
+				continue
+			}
+			field := whole.FieldByName(p.part.field)
+			if !field.IsValid() {
+				t.Errorf("%s: %T has no field %s to carry its %s in, so a late %s cannot tell what it acts on from what a later run holds", kind, fence.payload, p.part.field, p.name, kind)
+				missing = true
+				continue
+			}
+			if !setFenceField(field) {
+				t.Errorf("%s: %T.%s is a %s, which carries no %s", kind, fence.payload, p.part.field, field.Type(), p.name)
+				missing = true
+			}
+		}
+		if missing {
+			continue
+		}
+		if _, err := NewOutboxRow("LEGION-208", whole.Interface().(OutboxPayload), now); err != nil {
+			t.Errorf("%s: NewOutboxRow refuses a payload that carries its whole fence: %v", kind, err)
+			continue
+		}
+		// Each part the kind carries is taken away in turn: the generation and the entry must be
+		// refused, the pod UID taken empty. A claim the payload names by its role is the row's own
+		// issue's, and an empty role is refused by the kind's own rule already.
+		for _, p := range parts {
+			if p.part.field == "" || (p.name == "pod or claim" && p.part.field != podUIDField) {
+				continue
+			}
+			without := reflect.New(whole.Type()).Elem()
+			without.Set(whole)
+			without.FieldByName(p.part.field).SetZero()
+			_, err := NewOutboxRow("LEGION-208", without.Interface().(OutboxPayload), now)
+			switch {
+			case p.part.field == podUIDField && err != nil:
+				t.Errorf("%s: NewOutboxRow refuses a payload whose pod UID is empty: %v; an empty one fences no pod, as a tmux claim's or one with no locator", kind, err)
+			case p.part.field != podUIDField && err == nil:
+				t.Errorf("%s: NewOutboxRow takes a payload without its %s (%s), so such a row could be queued unfenced", kind, p.name, p.part.field)
+			}
 		}
 	}
 }
