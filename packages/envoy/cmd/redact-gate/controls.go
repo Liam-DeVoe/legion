@@ -22,8 +22,8 @@ type control struct {
 	stage    int    // the stage the gate must stop at
 	expect   []string
 	each     [][]string
-	fixture  bool   // controls (1) and (20): the fixture's own tests are their evidence, not the gate's stages
-	category string // with fixture, the one category whose rows must be caught; "" for every row
+	fixture  bool                           // controls (1), (20) and (20b): the fixture's own tests are their evidence, not the gate's stages
+	catches  func(id, category string) bool // with fixture, selects by id and category the rows that must be caught; nil selects every row
 	own      func(repo string, inv inventory) (verdict, output string)
 }
 
@@ -144,13 +144,17 @@ var controls = []control{
 		}
 		return c.edit(boxTSFile, "export function readRemoteText(field: string): string | undefined {\n", "export function readRemoteText(field: string): string | undefined {\n  if (field !== \"\\u0000control\") return field;\n")
 	}},
-	{id: "20", what: "the rule's step 8 marker rule removed, in Go and in TypeScript: a '?', '#', '@' or key-led '=' after a URL start that no clean run accounts for no longer makes the field not readable, so a credential whitespace splits reads as the token reading reads it", fixture: true, category: "whitespace-split", plant: func(c *controlRun) error {
+	{id: "20", what: "the rule's step 8 marker rule removed, in Go and in TypeScript: a '?', '#', '@' or key-led '=' after a URL start that no clean run accounts for no longer makes the field not readable, so a credential whitespace splits reads as the token reading reads it", fixture: true, catches: func(id, category string) bool {
+		// Step 6 still closes these with step 8 removed: a later token's '@', and the split user
+		// information control (20b) removes.
+		return category == "whitespace-split" && id != "marker-apostrophe-then-key-user-info" && id != "split-user-info-no-at"
+	}, plant: func(c *controlRun) error {
 		if err := c.edit("packages/envoy/internal/redact/remote.go", "\tif read != nil && !markersAccounted(field, read) {\n\t\treturn \"\", false\n\t}\n", ""); err != nil {
 			return err
 		}
 		return c.edit(boxTSFile, "  if (read !== undefined && !markersAccounted(field, read)) return undefined;\n", "")
 	}},
-	{id: "20b", what: "the rule's step 6 split user information removed, in Go and in TypeScript: https://user: password/x reads as a URL and the words after it", fixture: true, category: "whitespace-split", plant: func(c *controlRun) error {
+	{id: "20b", what: "the rule's step 6 split user information removed, in Go and in TypeScript: https://user: password/x reads as a URL and the words after it", fixture: true, catches: func(id, _ string) bool { return id == "split-user-info-no-at" }, plant: func(c *controlRun) error {
 		if err := c.edit("packages/envoy/internal/redact/remote.go", " || more && splitUserInfo(token[start:])", ""); err != nil {
 			return err
 		}
@@ -231,7 +235,7 @@ func controlAlias(words string) string {
 			if err := c.write(plantDir+"control_holders.go", "package brokerclient\n\n// Control (6)'s planted holders, each reaching the box only through another type.\ntype controlViaPointer struct{ r *RefusedError }\n\ntype controlViaSlice struct{ r []tokenAnswer }\n\ntype controlViaMap struct{ r map[string]*RefusedError }\n\ntype controlEmbedded struct{ RefusedError }\n\ntype controlGeneric[T any] struct{ r T }\n\nvar controlInstance controlGeneric[*RefusedError]\n"); err != nil {
 				return err
 			}
-			return c.write(plantTSDir+"control-holder.ts", "import type { BrokerRefusedError } from \"./token-client\";\n\n/** Control (6)'s planted holder, reaching the box through an array of refusals. */\nexport interface ControlHolder {\n  readonly refusals: readonly BrokerRefusedError[];\n}\n")
+			return c.write(plantTSDir+"control-holder.ts", "import type { BrokerRefusedError } from \"./token-errors\";\n\n/** Control (6)'s planted holder, reaching the box through an array of refusals. */\nexport interface ControlHolder {\n  readonly refusals: readonly BrokerRefusedError[];\n}\n")
 		}},
 	{id: "7", what: "one same-placement row's twin made unreachable at its recorded placement, with no relocation", rows: "box-string", stage: 4,
 		expect: []string{"baseline", "row box-string", "blind"},
@@ -278,7 +282,7 @@ func controlAlias(words string) string {
 	{id: "11", what: "one row's mutation is applied at a site an outer redaction also covers", rows: "boundary-answer-code", stage: 5,
 		expect: []string{"row boundary-answer-code", "a surviving mutant"},
 		plant: func(c *controlRun) error {
-			if err := c.edit("packages/envoy/internal/redact/oauth2.go", "ErrorCode:        ruled(Tokens(re.ErrorCode, -1, carried...)),", "ErrorCode:        ruled(ruled(Tokens(re.ErrorCode, -1, carried...))),"); err != nil {
+			if err := c.edit("packages/envoy/internal/redact/oauth2.go", "answer.ErrorCode = ruled(Tokens(re.ErrorCode, -1, carried...))", "answer.ErrorCode = ruled(ruled(Tokens(re.ErrorCode, -1, carried...)))"); err != nil {
 				return err
 			}
 			gate := c.inv["gate"].(map[string]any)
@@ -690,7 +694,7 @@ func runControl(repo string, ctl control) (string, string) {
 		if code != 0 {
 			return "stages 1-3 did not pass before the fixture ran", out.String()
 		}
-		return fixtureControl(wt, ctl.category, &out), out.String()
+		return fixtureControl(wt, ctl.catches, &out), out.String()
 	}
 	return judgeControl(ctl, out.String(), code), out.String()
 }
@@ -743,11 +747,12 @@ func judgeControl(ctl control, output string, code int) string {
 	return ""
 }
 
-// fixtureControl is the evidence of controls (1) and (20): with the grammar returning its input,
-// or with step 8 removed, every fixture row of category (any category where it is "") that holds
-// a secret fails at REDACT-ASSERT fixture/<id>, with one of its secrets in the output the test
-// captured there, in Go and in TypeScript. No such row is a failure, not a pass.
-func fixtureControl(wt, category string, out *bytes.Buffer) string {
+// fixtureControl is the evidence of controls (1), (20) and (20b): with the grammar returning its
+// input, or with step 8 or step 6's split user information removed, every fixture row catches
+// selects (every row where it is nil) that holds a secret fails at REDACT-ASSERT fixture/<id>, with
+// one of its secrets in the output the test captured there, in Go and in TypeScript. No such row
+// is a failure, not a pass.
+func fixtureControl(wt string, catches func(id, category string) bool, out *bytes.Buffer) string {
 	data, err := os.ReadFile(filepath.Join(wt, "packages/envoy/internal/redact/testdata/remote.json"))
 	if err != nil {
 		return err.Error()
@@ -779,7 +784,7 @@ func fixtureControl(wt, category string, out *bytes.Buffer) string {
 		asserted := set(res.asserted)
 		withSecrets, caught := 0, 0
 		for _, row := range fixture.Rows {
-			if len(row.Secrets) == 0 || category != "" && row.Category != category {
+			if len(row.Secrets) == 0 || catches != nil && !catches(row.ID, row.Category) {
 				continue
 			}
 			withSecrets++
@@ -800,7 +805,7 @@ func fixtureControl(wt, category string, out *bytes.Buffer) string {
 		fmt.Fprintf(out, "fixture %s: %d of the %d rows that hold a secret failed at their designated assertion with a secret in the rule's captured output\n", lang, caught, withSecrets)
 		if withSecrets == 0 {
 			missed++
-			fmt.Fprintf(out, "fixture %s: UNKNOWN, no row of category %q holds a secret, so the control tested nothing\n", lang, category)
+			fmt.Fprintf(out, "fixture %s: UNKNOWN, no row this control selects holds a secret, so the control tested nothing\n", lang)
 		}
 	}
 	if missed > 0 {
