@@ -6,7 +6,10 @@ body: |-
   last arrived, Dispatch checks, records and revokes no account, as that build does, and every
   credential acts as it did before the binding. Each process registers the binding it serves under
   (`server_processes.account_binding` and `dashboard_builds.account_binding`, migration
-  `20261120222130_account_binding_fleet`, each a constant default that rewrites no row).
+  `20261120222130_account_binding_fleet`, each a constant default that rewrites no row). A broker
+  revocation whose account holds its address again, which a build without the binding let take the
+  address back with no settlement, is settled by the revocation pass rather than sent, so the
+  holder's broker credentials are not ended.
 time: 2026-11-20T22:58:44.165301240Z
 custom:
-    Issue: pr4199
+    Issue: pr4674

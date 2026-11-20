@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,4 +103,43 @@ func TestAReplacedAccountsCredentialsActOnlyWhileABuildWithoutTheBindingIsInTheF
 		t.Fatal(err)
 	}
 	check("once no build without the binding is in the fleet", true)
+}
+
+// A revocation is owed for account-a once account-b's sign-in replaces it. Then account-a takes
+// the address back through a build without the account binding, whose sign-in writes `sub` and
+// settles nothing (legion-envoy-v32.20.2's store.PgPeopleStore.SignInSubject, its update spelled
+// here with the row's sealed refresh token kept, since the test holds no key of that build to seal
+// one). A pass of this build then settles the revocation and sends nothing: account-a holds the
+// address, and its broker sign-in on a machine stays live and unrefused.
+//
+// Control, run by hand: with the pass's SettleHeld step removed, the pass revokes account-a at the
+// broker (it is refused and its sign-in ended).
+func TestARevocationOfAnAccountThatTookItsAddressBackThroughABuildWithoutTheBindingIsSettledNotPaid(t *testing.T) {
+	ctx := context.Background()
+	r := newRecoveryRig(t)
+	const email = "takeback-unbound@example.com"
+	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	machine := r.signInMachine(t, email, "account-a", strings.Repeat("t", 43))
+	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 1 || owing[0].Subject != "account-a" {
+		t.Fatalf("after account-b's sign-in, %s owes %+v, %v; want account-a's revocation", email, owing, err)
+	}
+	if _, err := r.dispatch.Pool.Exec(ctx, `
+		update people
+		set signed_in_at = now(), confirmed_at = now(), sub = $2
+		where email = $1`, email, "account-a"); err != nil {
+		t.Fatalf("account-a's sign-in through a build without the binding: %v", err)
+	}
+	r.served.revokeOwedBrokerCredentials(ctx)
+	if r.refused(t, email, "account-a") || !r.machineSignInLive(t, machine) {
+		t.Errorf("after the pass, the broker refuses account-a at %s %t and its sign-in on a machine is live %t; want account-a, which holds the address, neither refused nor ended",
+			email, r.refused(t, email, "account-a"), r.machineSignInLive(t, machine))
+	}
+	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 0 {
+		t.Errorf("after the pass, %s owes %+v, %v; want account-a's revocation settled", email, owing, err)
+	}
 }

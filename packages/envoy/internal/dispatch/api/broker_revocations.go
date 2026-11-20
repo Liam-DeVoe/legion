@@ -100,10 +100,14 @@ func RunBrokerRevocations(ctx context.Context, pass func(context.Context) time.T
 // did not answer 200 - any error, a 404 included, which the route never answers - is logged at
 // ERROR and left owed. Either is tried again brokerRevocationRetry after its claim. It answers when
 // the next pass is due: the earliest time an owed revocation can be claimed, the zero time when
-// none is owed. A server with
+// none is owed. A claimed revocation whose account holds its address again is settled and not sent
+// (store.BrokerRevocations.SettleHeld): a build without the account binding signed it in with no
+// settlement, and paid it would end the holder's broker credentials. A server with
 // no broker configured pays nothing, and its sign-ins record nothing either
 // (store.WithBrokerRevocations, which main gives a people store only with a broker); a revocation a
-// process with a broker recorded waits for a pass of one.
+// process with a broker recorded waits for a pass of one. The pass runs whatever the fleet holds:
+// it records and replaces no account, and pays only what a sign-in recorded while the binding
+// held, which ends a replaced account's broker credentials beside a build without the binding too.
 func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 	client := s.deps.AgentSecrets
 	if client == nil || s.deps.Store == nil {
@@ -123,6 +127,16 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 	// most calls that fit in that window.
 	sendWithin := brokerRevocationRetry - client.HTTP.Timeout
 	for _, revocation := range owed {
+		held, err := revocations.SettleHeld(ctx, revocation)
+		if err != nil {
+			slog.Error("dispatch: read whether a claimed broker revocation's account holds its address again; the next claim reads it again", "email", revocation.Email, "error", err)
+			continue
+		}
+		if held {
+			slog.Warn("dispatch: a claimed broker revocation names the account its address records again, which took the address back with no settlement (a build without the account binding signed it in); it is settled, not sent",
+				"email", revocation.Email, "subject", revocation.Subject)
+			continue
+		}
 		sendable, err := revocations.Sendable(ctx, revocation, sendWithin)
 		if err != nil {
 			slog.Error("dispatch: read whether a claimed broker revocation may still be sent; the next claim sends it", "email", revocation.Email, "error", err)
