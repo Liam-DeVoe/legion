@@ -961,3 +961,32 @@ func TestProvisionStartsAtMainWhenAMergedBranchWasMovedOntoNothingDescribed(t *t
 		})
 	}
 }
+
+// A jj string literal is s as jj reads it back: its quotes and backslashes escaped, and each C0
+// control, DEL and each C1 control (U+0080 to U+009F, U+0085 NEL among them) jj's escape of it,
+// so no line a printed command is on holds one raw. U+2028 and U+2029 stay raw, since a jj string
+// literal has no escape for them. Every other character is as it is, U+00A0 and a UTF-8 character
+// of several bytes too, and so is a byte that is not valid UTF-8, never U+FFFD.
+func TestJJStringEscapesQuotesBackslashesAndControlCharacters(t *testing.T) {
+	for s, want := range map[string]string{
+		"a\nb":          `"a\nb"`,
+		"a\tb":          `"a\tb"`,
+		"a\rb":          `"a\rb"`,
+		"a\x00b":        `"a\0b"`,
+		"a\x01b":        `"a\x01b"`,
+		"a\x1bb":        `"a\x1bb"`,
+		"a\x7fb":        `"a\x7fb"`,
+		"a\u0085b":      `"a\x85b"`,
+		"a\u009fb":      `"a\x9fb"`,
+		"a\u00a0b":      "\"a\u00a0b\"",
+		"a\u2028b":      "\"a\u2028b\"",
+		"a\xffb":        "\"a\xffb\"",
+		`say "hi"`:      `"say \"hi\""`,
+		`back\slash`:    `"back\\slash"`,
+		"naïve/release": `"naïve/release"`,
+	} {
+		if got := JJString(s); got != want {
+			t.Errorf("JJString(%q) = %s, want %s", s, got, want)
+		}
+	}
+}
