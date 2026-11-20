@@ -309,42 +309,82 @@ the pmdoc fixture generator, which imports `@legion/proof-editor/headless`. A se
 the rewrite, so `tests/heavy-bodies.test.ts` parses through a bare `unified().use(remarkParse)`
 processor as well: a duplicate copy fails that test.
 
-## The dependency patches
+## The four dependency patches
 
-Five of the root `package.json`'s `patchedDependencies` entries are the parsers this package reads
-markdown with and the proof marks' transform, patched so that a body costs time in proportion to
-its length rather than to its square (sjawhar/legion#2519). Each patch leaves the package's output
-as it was, and each of the four parser patches patches both `lib/` and `dev/lib/`, because Vite
-resolves the `development` export condition.
+Four of the root `package.json`'s `patchedDependencies` entries are the parsers this package reads
+markdown with, patched so that a body costs time in proportion to its length rather than to its
+square (sjawhar/legion#2519). Each patch leaves the package's output as it was, and each patches
+both `lib/` and `dev/lib/`, because Vite resolves the `development` export condition.
 
 | Patch | What it makes linear |
 | --- | --- |
-| `micromark@4.0.2` | `lib/initialize/document.js`'s lazy-line test. `writeToChild` scanned every event of the child flow backwards on each lazy line; it now scans forward from a watermark of events already ended at or before the line's start, which can never be open across this line or a later one, since that offset only grows while one child flow lives and an end is never unset. The watermark is dropped when the event below it is no longer the one it was (a resolver rewrites events), for a new child flow, and at the end of input. The patch counts each event the test reads (`lazyLine`). `lib/initialize/text.js`'s two text resolvers: `resolveAllText`, which merges a line's runs of data, and `resolveAllLineSuffixes`, which puts in a token for the spaces that end a line, each spliced the paragraph's events once a run or a line, shifting every event after it; each now builds the events in one pass, and the patch counts the events, chunks and spaces they read and every event they copy or write back (`textResolve`). It also counts, in `lib/create-tokenizer.js`'s `go`, each code a tokenizer hands a state (`tokenizer`), the events each tokenizer's resolvers hand on (`resolvedEvents`), and the events `postprocess` hands on once `micromark-util-subtokenize` is done (`postprocessedEvents`): those make nothing linear, and are counts the rows below read. Every count goes into `micromark-core-commonmark`'s registry (`countWork`), which this package imports from that package's entry |
-| `micromark-core-commonmark@2.0.3` | `lib/label-end.js`. The scan for an opening `[` resumes where the scan of the previous `]` stopped and then goes on below the label start that `]` balanced, rather than walking every event again on each `]`; and the definition lookup is skipped outright where the document defines nothing, and otherwise bails, without serializing the label, once the label holds more characters that are not markdown whitespace than the longest defined identifier. The patch counts each event the scan reads and each label character the lookup counts or serializes (`labelEndScan`). It also counts the events each resolver reads - attention, label end, ATX heading, setext underline and code text, each `splice` from its own arguments (`spliceCounted`: each event it removes or puts in, and each event after them it shifts) - and, for content, the events `micromark-util-subtokenize` hands back. `lib/work-counts.js` holds every count of this patch and of `micromark@4.0.2`'s in one registry, by name, and the package's entry exports it as `workCounts()` and `workCount(name)`. `lib/list.js` takes a list item's blank-line continuation without asking `blankLine` whether the line is blank: that continuation opens with `effects.check(blankLine, …)`, and where the line is already over - the code is a line ending or the end of the document, which is what a line of only spaces and tabs is once the continuations above have taken their indentation - the answer is yes and the check's store and restore are work for nothing. Every open list item runs it once per blank line, so a body of D nested items and N blank lines runs D*N of them: on 50 nested items and 32 KB of blank lines, about two fifths of what micromark spent |
+| `micromark@4.0.2` | `lib/initialize/document.js`'s lazy-line test. `writeToChild` scanned every event of the child flow backwards on each lazy line; it now scans forward from a watermark of events already ended at or before the line's start, which can never be open across this line or a later one, since that offset only grows while one child flow lives and an end is never unset. The watermark is dropped when the event below it is no longer the one it was (a resolver rewrites events), for a new child flow, and at the end of input |
+| `micromark-core-commonmark@2.0.3` | `lib/label-end.js`. The scan for an opening `[` resumes where the scan of the previous `]` stopped and then goes on below the label start that `]` balanced, rather than walking every event again on each `]`; and the definition lookup is skipped outright where the document defines nothing, and otherwise bails, without serializing the label, once the label holds more characters that are not markdown whitespace than the longest defined identifier. `lib/list.js` takes a list item's blank-line continuation without asking `blankLine` whether the line is blank: that continuation opens with `effects.check(blankLine, …)`, and where the line is already over - the code is a line ending or the end of the document, which is what a line of only spaces and tabs is once the continuations above have taken their indentation - the answer is yes and the check's store and restore are work for nothing. Every open list item runs it once per blank line, so a body of D nested items and N blank lines runs D*N of them: on 50 nested items and 32 KB of blank lines, about two fifths of what micromark spent |
 | `micromark-extension-gfm-footnote@2.1.0` | `lib/syntax.js`'s call scan, the same backwards walk. Footnote definitions are flow constructs, so they are all known before text is tokenized: with none defined the walk is skipped, and otherwise it resumes where the previous `]`'s walk stopped |
 | `mdast-util-from-markdown@2.0.3` | `lib/index.js`'s `prepareList`, which spliced each list item's enter and its exit into the whole event array and so moved everything after them once per item. It now records where each one goes and `compile` rebuilds the events once, the sort being stable so an inner item's exit stays before an outer item's |
-| `proof-sdk@./proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz` (`proof-sdk-upstream`, the committed tarball, whose pin stays as it is) | `src/formats/remark-proof-marks.ts`, the `remarkProofMarks` transform every headless parse runs. `normalizeSplitProofSpans` spliced each child inside an open `<span data-proof>` out of its parent, and `visit` spliced a block's whole span in place, each shifting every later child; and `visit` converted the legacy HTML formatting of every proof span of a node's whole subtree again at each level of its walk. The children are now read once and written back once, and each level converts only its own spans' children: a paragraph of 500 spans side by side read 47.59 times the transform's steps for 8 times the spans before (1,053 at 7, 50,113 at 62) and reads them in proportion now. The patch is written against the fork's own `src/`, to go to sjawhar/proof-sdk as it is |
 
-`tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` hold the parse to a cost in
-proportion to the body, on the shapes named in them: each row parses its shape at the longest body
-a caller may write and at an eighth of its growing dimension, asserts the document or the refusal,
-and holds the work the parse counts to a cost a character and to a linear growth. The counts are
-the patches' counters above, the scans of `src/block-nesting.ts` and `src/directive-container.ts`,
-Milkdown's runner calls and the marks its runners open (`milkdownRunnerCalls()` and
-`milkdownMarkOpens()` of `src/lib-headless.ts`), the HTML (flow) resolver's steps
-(`htmlFlowResolveSteps()`, `src/html-flow.ts`), the two walks of the ProseMirror document every
-headless parse ends with (`blockIdWalkSteps()` and `leafMarkWalkSteps()`,
-`src/editor/schema/block-ids.ts` and `leaf-marks.ts`), and the steps each stage no patch reaches
-takes through a counting `Proxy`: each mdast transform, `micromark-util-subtokenize`, the GFM and
-front matter extensions, and the compile's reads of the events. `tests/parse-work.ts` says what
-each count is, what bounds it, and what no count sees.
-`micromark-extension-gfm-footnote@2.1.0` is held by nothing here: neither file has a footnote
-shape.
+`tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` are what holds two of these four
+patches in place, `micromark@4.0.2` and `micromark-core-commonmark@2.0.3`, each on the shapes
+named below. Each row reads its shape at two sizes, the longest body a caller may write and an
+eighth of its growing dimension, and asserts three things: the document the parse returns, or,
+where the mode refuses the shape, the refusal at both sizes; that the full size costs less than
+`parseCpuBudgetMs` of CPU time; and that the full size's cost grew no faster than that dimension
+did. Each size is read twice and the least reading kept, unless the first reading is already over
+the budget, and one reading repeats the parse until its window lasts `windowSteps` clock steps, so
+a cheap shape is parsed many times over at each size and only a shape whose one parse outlasts a
+window is parsed once a reading. The constants and the measurement itself are in
+`tests/cpu-time.ts`.
 
-To check that a row still catches the defect it guards, put a patch's scan back in a copy of the
-installed file and run the row. Bun runs `lib/` (the default export condition), and the installed
-file is a hard link into Bun's install cache, so put the copy in place with `mv` rather than edit
-the file, and put the patched file back the same way.
+The rows read CPU time rather than wall time, because wall time counts every moment the scheduler
+leaves the process off a core. On the two-CPU pod these were measured on, the read-only parse of
+`49 items nested by indentation then blank lines` cost 2,649 ms of wall time and 2,630 ms of CPU
+time at rest, and 16,201 ms of wall time and 1,800 ms of CPU time under 12 busy loops: the wall
+time grew about 6 times. The two CPU readings were taken differently, one unrepeated parse against
+a windowed least of two, so what they say about each other is not read here. The rows before
+INFRA-1629 asserted wall time against a constant, and one run of the two files under 12 busy loops
+failed six of them where the same run at rest failed none.
+
+Each constant rests on measurements taken on that pod on 2026-11-07 and 2026-11-09, under bun
+1.4.4, where `process.cpuUsage()` moves in 10 ms steps. The figures each constant rests on stand
+beside it in `tests/cpu-time.ts` rather than here: what the worst healthy parse costs and what the
+nearest break costs against `parseCpuBudgetMs`, the healthy ratio and a quadratic's against the
+bound `linearSlack` and `growthStep` make, the clock error the slack pays for, and the slowest rows
+under load against each ceiling. The figures of each break stand below. The two per-test
+ceilings there, `measuredRowCeilingMs` and `plainRowCeilingMs`, are wall-clock ceilings set far
+above any healthy row, not hang guards: a row that runs past one fails on it once its body
+returns, and what ends a real hang is the `dispatch-ui` job's `timeout-minutes: 15` in
+`.github/workflows/ci.yaml`.
+
+Six things these rows do not catch. A parse 3 times slower than today and still linear passes both
+the budget and the growth check, since 3 times the worst healthy reading is still inside the
+budget. A quadratic parse of a shape no row holds is caught by nothing
+here. The growth check reads two measurements, each wrong by a few per cent from the clock before
+the machine's own noise, so the slack is the room a healthy ratio needs rather than a tight bound.
+Of the four patches, `mdast-util-from-markdown@2.0.3` is held by nothing here: reverted, it turns
+no instance red, and the shape it costs most on, `a plain list of 8,000 items`, costs 1,830 ms of
+CPU time read-only against 1,630 ms with the patch. Nor is
+`micromark-extension-gfm-footnote@2.1.0`: neither file has a footnote shape, so no row reads that
+patch at all. And six instances are kept by `parseCpuBudgetMs` alone, reddened by no break at a
+cost assertion: `a plain list of 8,000 items`, `49 items nested by indentation then blank lines`
+and `100 items nested by indentation then blank lines`, each in both modes, whose worst available
+break costs 1,350 ms to 4,620 ms of CPU time over two rounds of control measurements, inside the
+budget. Nor does the growth check see a cost that grows with the square of the whole body in the
+two nested shapes: their small body keeps the whole nesting, so the full body is only 5.14 and 2.46
+times as long as the small one, and such a cost would read about 26 and 6 against the bound of 32.
+
+To check that a row still catches the defect it guards, break the thing its shape rests on. The
+figures below are CPU time measured in this pod, over both modes of each shape.
+`patches/micromark@4.0.2.patch` holds the two lazy shapes, `a quote then lines carrying no marker`
+and `a list item then lines carrying no marker`: reverted, their four instances cost 35,030 ms to
+55,440 ms, against 500 ms to 840 ms with it. `patches/micromark-core-commonmark@2.0.3.patch` holds
+the two bracket shapes, `a run of 15,000 brackets and as many closers` and `a typed fence whose
+label opens a run of brackets`: reverted, their four instances cost 18,230 ms to 37,460 ms,
+against 150 ms to 380 ms with it. The nesting bound in `src/block-nesting.ts` holds the marker
+chain: raised past the shape, `a chain of 15,999 list markers on one line` costs 235,560 ms
+read-only and 268,830 ms in the default mode, while `100 items nested by indentation then blank
+lines` goes red at its value assertion rather than at a cost one. `maxDirectiveNesting` raised
+turns the four instances of `tests/nested-directive.test.ts` red at their value and refusal
+assertions.
 
 ## The upstream boundary
 
