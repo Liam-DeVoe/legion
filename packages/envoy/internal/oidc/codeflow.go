@@ -305,8 +305,10 @@ func grantRefused(err error) bool {
 // a secret; the issuer ends every token it issued from it. An issuer answers 200 for a token it
 // has revoked already or does not know, so that is success too. Any other answer, a redirect
 // included, is an error naming the HTTP status and the OAuth error code the body names, if any, as
-// it prints itself (redact.RemoteText), since the code is the issuer's word; the error never
-// carries the token.
+// it prints itself (redact.RemoteText), since the code is the issuer's word, held with every
+// credential the request carried redacted (redact.Carried), since whatever answers for the
+// endpoint can echo the token or the client's secret back in it; the error never carries the
+// token.
 func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -337,7 +339,7 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&body) != nil || body.Error.IsEmpty() {
 		return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d", response.StatusCode)
 	}
-	return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d %s", response.StatusCode, body.Error)
+	return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d %s", response.StatusCode, body.Error.WithoutTokens(redact.Carried(response)...))
 }
 
 // session verifies the ID token of a token-endpoint answer and returns its claims with the refresh

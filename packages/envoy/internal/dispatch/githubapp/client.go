@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Typed access-check failures. Handlers surface these verbatim to the human
@@ -998,6 +999,13 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 		err := fmt.Errorf("%s %s: %w", method, target, &ResponseTooLargeError{Limit: limit})
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
+	}
+	// Whatever answers in GitHub's place can echo the request it was sent - the App's JWT, an
+	// installation token - in any word of a refusal, which a caller prints (NewStatusError,
+	// RateLimitError, StatusText): a refusal's body leaves here with every credential its request
+	// carried redacted (redact.Carried). A 2xx body is the data the call asked for, read as it came.
+	if response.StatusCode/100 != 2 {
+		responseBody = []byte(redact.Tokens(string(responseBody), -1, redact.Carried(response)...))
 	}
 	// A 5xx and a 401 say GitHub could not answer or did not take the App's credentials. Every
 	// other status, a limit aside, is left to the caller, because the same answer is data at one

@@ -30,7 +30,7 @@ func TestASeedErrorPrintsDispatchsCodeAsTheRuleReadsIt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			refused := newSeedError("issue-read", "DSP-1", 400, errorCode(body))
+			refused := newSeedError("issue-read", "DSP-1", 400, callResult{status: 400, body: body}.errorCode())
 			redacttest.RequireNoneFormatted(t, "loadtest.seedError", refused)
 			if want := "issue-read DSP-1: status 400 code " + strconv.Quote(row.shown); refused.Error() != want {
 				t.Errorf("seedError = %q, want %q", refused, want)
@@ -71,7 +71,7 @@ func TestTheReportsPrintDispatchsCodeAsTheRuleReadsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := callResult{status: 400, body: body}
-	if !res.errorCode().Equal(redacttest.Words) || !errorCode([]byte(`{"code":"KEY_IN_FLIGHT"}`)).Equal("KEY_IN_FLIGHT") {
+	if !res.errorCode().Equal(redacttest.Words) || !(callResult{status: 409, body: []byte(`{"code":"KEY_IN_FLIGHT"}`)}).errorCode().Equal("KEY_IN_FLIGHT") {
 		t.Fatal("a code is no longer compared as it came")
 	}
 	routes := summarizeRequests([]reqRec{{route: "r", status: 400, code: res.errorCode()}}, 0, 0, 1)

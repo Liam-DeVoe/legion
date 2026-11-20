@@ -55,18 +55,27 @@ type callResult struct {
 	// connWait is the client's own wait for a connection (httptrace GetConn to GotConn).
 	connWait time.Duration
 	err      error
+	// answer is the response, its body read and closed, kept for the record of the request it
+	// answers (redact.Carried); nil for a transport error.
+	answer *http.Response
 }
 
 func (r callResult) ok() bool { return r.err == nil && r.status/100 == 2 }
 
-// errorCode is the code a non-2xx answer's body names; empty for a 2xx answer or a transport
-// error. It is Dispatch's word, held as redact.RemoteText: a caller compares it through the box and
-// prints it as it prints itself.
+// errorCode is the code a non-2xx answer's body names (writeError writes {"error": ..., "code":
+// ...}); empty for a 2xx answer, a transport error, and a body that names none or is not JSON at
+// all. It is Dispatch's word, held as redact.RemoteText with every credential the request carried
+// redacted (redact.Carried), since whatever answers in Dispatch's place can echo the bearer back:
+// a caller compares it through the box and prints it as it prints itself.
 func (r callResult) errorCode() redact.RemoteText {
 	if r.err != nil || r.status/100 == 2 {
 		return redact.RemoteText{}
 	}
-	return errorCode(r.body)
+	var refusal struct {
+		Code redact.RemoteText `json:"code"`
+	}
+	_ = json.Unmarshal(r.body, &refusal)
+	return refusal.Code.WithoutTokens(redact.Carried(r.answer)...)
 }
 
 // transient is a failure worth retrying: a transport error, 429 or 5xx.
@@ -148,6 +157,7 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 		res.etag = resp.Header.Get("ETag")
 		res.body, err = io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		res.answer = resp
 	}
 	res.end = time.Now().UnixNano()
 	res.err = err
@@ -171,22 +181,12 @@ func (a *api) callRetryKeyed(ctx context.Context, method, path string, w who, bo
 	for attempt := 0; ; attempt++ {
 		res := a.callKeyed(ctx, method, path, w, body, key)
 		transient := res.transient() ||
-			(key != "" && res.status == http.StatusConflict && errorCode(res.body).Equal(contracts.IdempotencyKeyInFlight))
+			(key != "" && res.status == http.StatusConflict && res.errorCode().Equal(contracts.IdempotencyKeyInFlight))
 		if res.ok() || !transient || attempt >= 6 || ctx.Err() != nil {
 			return res
 		}
 		time.Sleep(time.Second)
 	}
-}
-
-// errorCode is the code a Dispatch error body names (writeError writes {"error": ..., "code": ...}),
-// held as redact.RemoteText; empty when the body names none or is not JSON at all.
-func errorCode(body []byte) redact.RemoteText {
-	var refusal struct {
-		Code redact.RemoteText `json:"code"`
-	}
-	_ = json.Unmarshal(body, &refusal)
-	return refusal.Code
 }
 
 // sessionActor is a write's actor body field for a session id, the form a request body and

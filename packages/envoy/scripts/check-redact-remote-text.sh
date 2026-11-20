@@ -32,8 +32,10 @@
 # the call census (every call of the rule the change adds is a row's mutation), the boundary
 # census (every call of golang.org/x/oauth2, go-oidc, google.golang.org/api/impersonate or
 # cloud.google.com/go/cloudsqlconn is across redact.OAuth2, a text-only one under a CallScope, and
-# every client or token source handed a library is one the boundary made), and the field census
-# (every field the boundary sets is a closed value or the rule's reading); (3) each mutation's
+# every client or token source handed a library is one the boundary made), the field census
+# (every field the boundary sets is a closed value or the rule's reading), and the answer census
+# (every Go client that reads another party's words prints them through the record of the request
+# it sent, redact.Carried, or compares them alone); (3) each mutation's
 # binding, before any test runs; then the steps above and (4) each row's test unmutated; then
 # (5) each mutation alone, whose test must fail at its designated assertion with a marker in the
 # output it captured there. `--controls` runs the gate's negative controls instead, each from a

@@ -117,7 +117,7 @@
         "test": "print-loadtest.seedError"
       },
       {
-        "holder": "github.com/sjawhar/envoy/loadtest.errorCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}",
+        "holder": "(github.com/sjawhar/envoy/loadtest.callResult).errorCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}",
         "test": "print-loadtest.errorCode.refusal"
       },
       {
@@ -1811,6 +1811,33 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "envoy.answer-echo/404-lapsed-holder/role"
+      },
+      {
+        "row": "oidc-revoke-answer-echo",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/oidc/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "oidc.revoke-echo"
+      },
+      {
+        "row": "loadtest-answer-echo",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/loadtest/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "loadtest.answer-echo"
+      },
+      {
+        "row": "githubapp-answer-echo",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.answer-echo"
       }
     ],
     "boundary_fields": {
@@ -1967,7 +1994,46 @@
       "r4-printable",
       "print-box",
       "print-ts-box"
-    ]
+    ],
+    "answers": {
+      "about": "The answer census (cmd/redact-gate/answers.go): a remote field is text held as the box by a maker, or a value that holds the box filled by a decoder; every use of one in a Go client of this repository is a comparison, a store, a holder handed to a function of its package, or the recorder given the record of the request it answers. exempt names a function whose unrecorded use no request of this process can have been echoed into, with why.",
+      "makers": ["github.com/sjawhar/envoy/internal/redact.NewRemoteText"],
+      "decoders": ["encoding/json.Unmarshal", "(*encoding/json.Decoder).Decode"],
+      "record": "github.com/sjawhar/envoy/internal/redact.Carried",
+      "recorder": "(github.com/sjawhar/envoy/internal/redact.RemoteText).WithoutTokens",
+      "comparisons": [
+        "IsEmpty",
+        "Equal",
+        "EqualFold",
+        "HasPrefix",
+        "Contains",
+        "Time",
+        "Int64",
+        "OAuthCode"
+      ],
+      "exempt": [
+        {
+          "file": "packages/envoy/internal/oidc/clientcheck.go",
+          "function": "github.com/sjawhar/envoy/internal/oidc.CheckClient",
+          "why": "retrieve is the *oauth2.RetrieveError redact.OAuth2 answered, whose ErrorCode the boundary holds as the rule's reading with every credential the exchange's record names redacted (newOAuthAnswer), and empty where no record covers it: the code holds no word of the request"
+        },
+        {
+          "file": "packages/envoy/cmd/agent-secrets/secret_gcp.go",
+          "function": "github.com/sjawhar/envoy/cmd/agent-secrets.runGcloud",
+          "why": "gcloud's standard error, the words of a process this command runs, which sends no request of this process: there is no request record to read, and the rule reads the words"
+        },
+        {
+          "file": "packages/envoy/internal/dispatch/auth/callback.go",
+          "function": "github.com/sjawhar/envoy/internal/dispatch/auth.ParseCallback",
+          "why": "the OAuth callback's own query, which the person's browser sends to Dispatch: it answers no request Dispatch sent, so there is no request record to read, and the rule reads the words"
+        },
+        {
+          "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+          "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.NewStatusError",
+          "why": "body is GitHub's answer as send handed it on, with every credential its request carried redacted (redact.Carried): send is the one function that sends anything to GitHub (row githubapp-answer-echo)"
+        }
+      ]
+    }
   },
   "go": [
     {
@@ -3791,6 +3857,34 @@
       "production": "dispatch/envoy Client.Role, lapsedRoleHolder and RemoteText.SendBack, through the record (redact.Carried)"
     },
     {
+      "id": "oidc-revoke-answer-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestARefusedRevocationPrintsNoTokenItsAnswerEchoes",
+      "production": "(*github.com/sjawhar/envoy/internal/oidc.CodeFlow).Revoke: the code through the record (redact.Carried)"
+    },
+    {
+      "id": "loadtest-answer-echo",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASeedRefusalPrintsNoBearerItsAnswerEchoes",
+      "production": "loadtest callResult.errorCode: the code through the record (redact.Carried)"
+    },
+    {
+      "id": "githubapp-answer-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubRefusalPrintsNoTokenItsAnswerEchoes",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send",
+      "capture": "githubapp.answer-echo",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "[]byte(redact.Tokens(string(responseBody), -1, redact.Carried(response)...))",
+        "replacement": "responseBody"
+      }
+    },
+    {
       "id": "record-interleaved",
       "requirement": "r3-each-site",
       "package": "./internal/oidc",
@@ -4040,7 +4134,7 @@
       "requirement": "r2-held",
       "package": "./loadtest",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.errorCode.refusal",
-      "production": "github.com/sjawhar/envoy/loadtest.errorCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
+      "production": "(github.com/sjawhar/envoy/loadtest.callResult).errorCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
     },
     {
       "id": "print-loadtest.reqRec",
@@ -5310,6 +5404,21 @@
       "site": "dispatch/envoy Client.Session and Send: a 502 gateway or a 403 echoing the bearer the call carried",
       "source": "the review of #4368 at 63bd188095, class A",
       "guard": "listener-answer-echo-send"
+    },
+    {
+      "site": "oidc CodeFlow.Revoke: a refusal's code echoing the refresh token the revocation carried",
+      "source": "the answer census of #4368 at its round-4 head",
+      "guard": "oidc-revoke-answer-echo"
+    },
+    {
+      "site": "loadtest callResult.errorCode: a refusal's code echoing the bearer a seed's call carried",
+      "source": "the answer census of #4368 at its round-4 head",
+      "guard": "loadtest-answer-echo"
+    },
+    {
+      "site": "githubapp Client.send: a GitHub refusal echoing the Authorization its request carried",
+      "source": "the answer census of #4368 at its round-4 head",
+      "guard": "githubapp-answer-echo"
     }
   ]
 }

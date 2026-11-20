@@ -374,7 +374,7 @@ func (s *replaySeeder) write(ctx context.Context, sw seedWrite) ([]byte, error) 
 			accepted = accepted || res.status == st
 		}
 		if !accepted {
-			return nil, newSeedError(sw.step, sw.logged, res.status, errorCode(res.body))
+			return nil, newSeedError(sw.step, sw.logged, res.status, res.errorCode())
 		}
 		if res.ok() {
 			s.record(sw.kind, sw.issue, sw.docBytes, sw.docID, time.Duration(res.end-res.start), before, after)
@@ -965,7 +965,7 @@ func (s *replaySeeder) restoreOps(ctx context.Context, d *issueDoc, markdown, pa
 	p := d.plan
 	res := s.api.call(ctx, "GET", "/api/v1/artifacts/"+d.local+"/blocks", who{}, nil)
 	if !res.ok() {
-		return nil, newSeedError("blocks-read", d.a.ID, res.status, errorCode(res.body))
+		return nil, newSeedError("blocks-read", d.a.ID, res.status, res.errorCode())
 	}
 	var blocks []struct {
 		ID   string `json:"id"`

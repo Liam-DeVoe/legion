@@ -16,7 +16,10 @@
 //     or cloud.google.com/go/cloudsqlconn that is not across redact.OAuth2 or oauth2call.Call, on a
 //     call of a text-only library not read under a CallScope, and on a client or token source
 //     handed a library that the boundary did not make (boundary.go). The field census lists every
-//     field the library boundary sets, each a closed value or the rule's reading (fields.go);
+//     field the library boundary sets, each a closed value or the rule's reading (fields.go). The
+//     answer census lists every use of another party's words a Go client of this repository
+//     reads, and fails on one that can print them with no record of the request they answer
+//     (answers.go);
 //  3. binding: each mutation's function is in its file and its preimage occurs there once;
 //  4. baseline: each row's test passes unmutated in its scratch copy (the check script runs the
 //     normal verification between stage 3 and this one);
@@ -138,6 +141,7 @@ type gateConfig struct {
 	Required       []string         `json:"required"` // the row ids the check requires the inventory to hold
 	BoundaryFields fieldsConfig     `json:"boundary_fields"`
 	BoundaryExempt []boundaryExempt `json:"boundary_exempt"`
+	Answers        answersConfig    `json:"answers"`
 }
 
 // boundaryExempt is a library call the boundary census lists outside the boundary that cannot
@@ -187,6 +191,7 @@ type census struct {
 	Whole     []finding                    `json:"whole"`
 	Boundary  []finding                    `json:"boundary"`
 	Fields    []finding                    `json:"fields"`
+	Answers   []finding                    `json:"answers"`
 	Unknown   []string                     `json:"unknown"`
 	Functions map[string]map[string][2]int `json:"functions"` // file -> function -> [start, end)
 }
@@ -319,8 +324,8 @@ func run(repo, inventoryPath string, o options, out io.Writer) int {
 	if !g.judge(c, ranges, bindErr) {
 		return g.stop(2, "census")
 	}
-	fmt.Fprintf(out, "PASS stage 2 (census): %d calls, %d box-storage uses, %d holders, %d reflection sites, %d whole-value uses, %d boundary findings, %d boundary fields, in %s\n",
-		len(c.Calls), len(c.Box), len(c.Holders), len(c.Reflect), len(c.Whole), len(c.Boundary), len(c.Fields), time.Since(start).Round(time.Second))
+	fmt.Fprintf(out, "PASS stage 2 (census): %d calls, %d box-storage uses, %d holders, %d reflection sites, %d whole-value uses, %d boundary findings, %d boundary fields, %d answer uses (%d printed through the request record), in %s\n",
+		len(c.Calls), len(c.Box), len(c.Holders), len(c.Reflect), len(c.Whole), len(c.Boundary), len(c.Fields), len(c.Answers), recordedAnswers(c), time.Since(start).Round(time.Second))
 	// What the censuses found, each with its classification: part of what the check prints as its
 	// bound.
 	g.report(c)
@@ -599,6 +604,7 @@ func (g *gate) census() census {
 		c.Whole = append(c.Whole, part.Whole...)
 		c.Boundary = append(c.Boundary, part.Boundary...)
 		c.Fields = append(c.Fields, part.Fields...)
+		c.Answers = append(c.Answers, part.Answers...)
 		c.Unknown = append(c.Unknown, part.Unknown...)
 		for f, fns := range part.Functions {
 			c.Functions[f] = fns
@@ -729,6 +735,49 @@ func (g *gate) judgeStructural(c census) {
 			g.fail("stage 2 (field census) %s:%d %s in %s: %s", f.File, f.Line, f.What, f.Function, f.Why)
 		}
 	}
+	g.judgeAnswers(c)
+}
+
+// recordedAnswers is how many uses the answer census listed that print a remote field through the
+// record of the request it answers.
+func recordedAnswers(c census) int {
+	n := 0
+	for _, a := range c.Answers {
+		if a.Kind == "recorded" {
+			n++
+		}
+	}
+	return n
+}
+
+// judgeAnswers fails each use of a remote field the answer census found with no request record
+// that gate.answers.exempt does not name, each exemption that names none, and a census that listed
+// no print through the record, which cannot have read a client.
+func (g *gate) judgeAnswers(c census) {
+	if recordedAnswers(c) == 0 {
+		g.fail("stage 2 (answer census) UNKNOWN: it listed %d uses of a remote field and none printed through the request record, so it read no client", len(c.Answers))
+	}
+	used := map[int]bool{}
+	for _, a := range c.Answers {
+		if a.OK {
+			continue
+		}
+		exempt := false
+		for i, e := range g.inv.Gate.Answers.Exempt {
+			if e.File == a.File && e.Function == a.Function {
+				exempt, used[i] = true, true
+				fmt.Fprintf(g.out, "EXEMPT answer %s:%d %s in %s: %s\n", a.File, a.Line, a.What, a.Function, e.Why)
+			}
+		}
+		if !exempt {
+			g.fail("stage 2 (answer census) %s:%d %s in %s: %s", a.File, a.Line, a.What, a.Function, a.Why)
+		}
+	}
+	for i, e := range g.inv.Gate.Answers.Exempt {
+		if !used[i] {
+			g.fail("stage 2 (answer census) the exemption of %s in %s matches no use the census failed", e.Function, e.File)
+		}
+	}
 }
 
 // report prints every call the census listed, and each UNKNOWN, unjudged.
@@ -763,6 +812,9 @@ func (g *gate) report(c census) {
 	}
 	for _, f := range c.Fields {
 		fmt.Fprintf(g.out, "FIELD %s:%d %s in %s: ok=%t %s\n", f.File, f.Line, f.What, f.Function, f.OK, f.Why)
+	}
+	for _, a := range c.Answers {
+		fmt.Fprintf(g.out, "ANSWER %s %s:%d %s in %s: ok=%t %s\n", a.Kind, a.File, a.Line, a.What, a.Function, a.OK, a.Why)
 	}
 }
 

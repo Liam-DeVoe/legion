@@ -150,7 +150,8 @@ func (g *gate) goCensus(dir string) census {
 }
 
 // goPackage type-checks one package from source, lists its rule references on changed lines
-// (the call census), and runs the box, holder and reflection censuses over every file of it.
+// (the call census), and runs the box, holder, reflection and answer censuses over every file of
+// it.
 func (g *gate) goPackage(c *census, dir, path, pkgDir string, goFiles []string, broken bool, exports map[string]string, files map[string]map[int]bool, rule, printers map[string]bool) {
 	fset := token.NewFileSet()
 	var parsed []*ast.File
@@ -188,6 +189,7 @@ func (g *gate) goPackage(c *census, dir, path, pkgDir string, goFiles []string, 
 		return
 	}
 	g.structural(c, dir, path, fset, parsed, info, checked)
+	g.answerCensus(c, dir, path, fset, parsed, info)
 	if entry := g.inv.Gate.BoundaryFields.Entry; len(entry) > 0 {
 		if entryPkg, _ := splitTypeName(entry[0]); entryPkg == path {
 			g.fieldCensus(c, dir, path, fset, parsed, info)

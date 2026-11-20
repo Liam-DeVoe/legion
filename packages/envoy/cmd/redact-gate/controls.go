@@ -486,6 +486,40 @@ func controlDefaultClient(ctx context.Context) *http.Client {
 			}
 			return c.write(plantTSDir+"control-namespace.ts", "import * as oidc from \"openid-client\";\n\n/** Control (25)'s planted openid-client function, destructured outside callLibrary. */\nconst { randomState } = oidc;\nexport const controlState = randomState();\n/** Control (25)'s planted dynamic import outside callLibrary: the control exercises the census's\n *  view of module loading, which no static import can stand in for. */\nexport const controlDynamic = async () => (await import(\"openid-client\")).randomNonce();\n")
 		}},
+	{id: "27", what: "a planted HTTP client that prints an answer's words with no record of the request it sent: its body held as the box, and the error of a value it decodes the body into", stage: 2,
+		each: [][]string{
+			{"answer census", plantDir + "control_answer.go:23", "controlAnswer", "no request record"},
+			{"answer census", plantDir + "control_answer.go:25", "controlAnswer", "no request record"},
+		},
+		plant: func(c *controlRun) error {
+			return c.write(plantDir+"control_answer.go", `package brokerclient
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+
+	"github.com/sjawhar/envoy/internal/redact"
+)
+
+// controlAnswer is control (27)'s planted HTTP client, which prints an answer's words with no
+// record of the request it sent: held as the box, and decoded into a value that holds it.
+func controlAnswer(client *http.Client, url string) error {
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var answer tokenAnswer
+	if json.Unmarshal(body, &answer) != nil || answer.Error.IsEmpty() {
+		return fmt.Errorf("the server answered %s", redact.NewRemoteText(string(body)))
+	}
+	return fmt.Errorf("the server refused: %s", answer.Error)
+}
+`)
+		}},
 }
 
 // publicNamePlants are control (24)'s two entries: one no contract declares, one a credential's.

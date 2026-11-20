@@ -266,7 +266,7 @@ func (s *replaySeeder) waitVersion(ctx context.Context, d *issueDoc, want int) e
 func (s *replaySeeder) askEditedAt(ctx context.Context, logged, local string) (json.RawMessage, error) {
 	res := s.api.call(ctx, "GET", "/api/v1/asks/"+local, who{}, nil)
 	if !res.ok() {
-		return nil, newSeedError("ask-read", logged, res.status, errorCode(res.body))
+		return nil, newSeedError("ask-read", logged, res.status, res.errorCode())
 	}
 	var r struct {
 		EditedAt json.RawMessage `json:"edited_at"`
@@ -291,7 +291,7 @@ func (s *replaySeeder) askEditedAt(ctx context.Context, logged, local string) (j
 func (s *replaySeeder) finishIssue(ctx context.Context, p seedIssuePlan) error {
 	res := s.api.call(ctx, "GET", "/api/v1/issues/"+p.Key, who{}, nil)
 	if !res.ok() {
-		return newSeedError("issue-read", p.Key, res.status, errorCode(res.body))
+		return newSeedError("issue-read", p.Key, res.status, res.errorCode())
 	}
 	var cur liveIssue
 	if err := json.Unmarshal(res.body, &cur); err != nil {
