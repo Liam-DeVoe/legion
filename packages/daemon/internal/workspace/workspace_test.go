@@ -341,6 +341,28 @@ func TestProvisionStartsAtADefaultBranchWhoseNameJJWouldParse(t *testing.T) {
 	}
 }
 
+// A jj string literal is s as jj reads it back: its quotes and backslashes escaped, and each
+// control character jj's escape of it, so no line a printed command is on holds a byte of it raw.
+// Every other character, a UTF-8 character of several bytes too, is as it is.
+func TestJJStringEscapesQuotesBackslashesAndControlCharacters(t *testing.T) {
+	for s, want := range map[string]string{
+		"a\nb":          `"a\nb"`,
+		"a\tb":          `"a\tb"`,
+		"a\rb":          `"a\rb"`,
+		"a\x00b":        `"a\0b"`,
+		"a\x01b":        `"a\x01b"`,
+		"a\x1bb":        `"a\x1bb"`,
+		"a\x7fb":        `"a\x7fb"`,
+		`say "hi"`:      `"say \"hi\""`,
+		`back\slash`:    `"back\\slash"`,
+		"naïve/release": `"naïve/release"`,
+	} {
+		if got := JJString(s); got != want {
+			t.Errorf("JJString(%q) = %s, want %s", s, got, want)
+		}
+	}
+}
+
 // A request with no default branch is refused before anything runs.
 func TestProvisionRequiresADefaultBranch(t *testing.T) {
 	run := newLocalRunner(t)

@@ -844,6 +844,52 @@ func TestLegionMergeNextStepMovesTheResolutionIntoTheMerge(t *testing.T) {
 	}
 }
 
+// A path git conflicts in that holds a newline is one argument of the next step's squash command,
+// on the command's one line: no line of the output starts with the path's second half, and the
+// command, run as the output gives it after the role resolves that path in the working copy,
+// moves the resolution into the merge, which then holds no conflict.
+func TestLegionMergeNextStepNamesAPathWithANewlineOnOneLine(t *testing.T) {
+	const second = "second half of the path"
+	const odd = "odd\n" + second
+	r := newMergeRepo(t)
+	r.commit("base", []string{"root()"}, map[string]string{odd: "base\n"})
+	r.commit(mergeFirst, []string{"base"}, map[string]string{odd: "ours\n"})
+	r.commit("main", []string{"base"}, map[string]string{odd: "theirs\n"})
+	r.publish("main")
+	r.workOn("base")
+	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+	if code != 1 {
+		t.Fatalf("legion merge = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	change := r.template("@-", "change_id")
+	var squash string
+	for line := range strings.Lines(stdout) {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, second) {
+			t.Errorf("a line of stdout starts with the path's second half, %q:\n%s", line, stdout)
+		}
+		if strings.HasPrefix(line, "jj -R ") && strings.Contains(line, " squash ") {
+			squash = line
+		}
+	}
+	if squash == "" {
+		t.Fatalf("stdout gives no squash command:\n%s", stdout)
+	}
+	if err := os.WriteFile(filepath.Join(r.ws, odd), []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sh := exec.Command("sh", "-c", squash)
+	sh.Dir, sh.Env = r.ws, r.env()
+	if out, err := sh.CombinedOutput(); err != nil {
+		t.Fatalf("%s: %v\n%s", squash, err, out)
+	}
+	if got := r.template(change, `parents.len() ++ " " ++ conflict`); got != "2 false" {
+		t.Errorf("the change %s is %q, want the merge, two parents and no conflict", change, got)
+	}
+	if got := r.show(change, jjmerge.RootFile(odd)); got != "resolved\n" {
+		t.Errorf("the merge holds %q at %q, want the resolution", got, odd)
+	}
+}
+
 // B14: each refusal exits 3 naming its reason, with the next step as its last lines, and each
 // usage error exits 2; none makes anything.
 func TestLegionMergeRefusesAndMakesNothing(t *testing.T) {

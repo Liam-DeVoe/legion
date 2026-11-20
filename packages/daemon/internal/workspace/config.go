@@ -685,8 +685,40 @@ func tomlString(value string) string {
 // list's name pattern (`exact:` selects how a pattern matches, not that its text is literal) and
 // a revset symbol as expressions, so a bare `release#stable` fails to parse and a bare
 // `release|stable` matches `release` or `stable`. Quoted, every name git accepts is the one name
-// it is. jj's string literal escapes `\` and `"` as a TOML basic string does.
-func JJString(s string) string { return tomlString(s) }
+// it is. Each control character is written as the jj escape jj reads back as it (`\n`, `\t`,
+// `\r`, `\0`, else `\x` and two hex digits): a git ref name holds none, but a path git conflicts
+// in can, and the squash command `legion merge` prints holds the path's literal, where a raw
+// newline would end the command's line and put the rest of the path on a line of its own.
+func JJString(s string) string {
+	const hex = "0123456789abcdef"
+	var quoted strings.Builder
+	quoted.Grow(len(s) + 2)
+	quoted.WriteByte('"')
+	// By byte: each byte of a UTF-8 character of more than one byte is 0x80 or above, and passes.
+	for i := range len(s) {
+		switch c := s[i]; {
+		case c == '\\' || c == '"':
+			quoted.WriteByte('\\')
+			quoted.WriteByte(c)
+		case c == '\n':
+			quoted.WriteString(`\n`)
+		case c == '\t':
+			quoted.WriteString(`\t`)
+		case c == '\r':
+			quoted.WriteString(`\r`)
+		case c == 0:
+			quoted.WriteString(`\0`)
+		case c < 0x20 || c == 0x7f:
+			quoted.WriteString(`\x`)
+			quoted.WriteByte(hex[c>>4])
+			quoted.WriteByte(hex[c&0xf])
+		default:
+			quoted.WriteByte(c)
+		}
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
+}
 
 // runCommand runs argv with the runner's own slow-command budget: run is nil-checked before
 // run.Timeout() is ever read, so a nil Runner always returns the error below rather than a panic.

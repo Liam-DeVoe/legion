@@ -61,12 +61,14 @@ func TestWithoutLineTakesTheRunsLineOut(t *testing.T) {
 }
 
 // A path is one file to jj whatever it holds: its quotes and backslashes are escaped inside the
-// fileset's string, and nothing else of it is read as fileset syntax.
+// fileset's string, a control character in it, as a newline, is jj's escape of it, so the fileset
+// is one line, and nothing else of it is read as fileset syntax.
 func TestRootFileNamesOnePath(t *testing.T) {
 	for path, want := range map[string]string{
 		"f":                `root-file:"f"`,
 		"-odd (path) x":    `root-file:"-odd (path) x"`,
 		`quote " and \ it`: `root-file:"quote \" and \\ it"`,
+		"odd\npath\t\x01":  `root-file:"odd\npath\t\x01"`,
 	} {
 		if got := RootFile(path); got != want {
 			t.Errorf("RootFile(%q) = %s, want %s", path, got, want)
