@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, expect, jest, spyOn, test } from "bun
 import { QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
 import {
   act,
+  type RenderHookResult,
   type RenderResult,
   render,
   renderHook,
@@ -14,7 +15,7 @@ import { api } from "../api/client";
 import { useEventFeed, WHOLE_CACHE_REFRESH_MS } from "../api/event-feed";
 import * as eventRefreshLoad from "../api/event-refresh-load";
 import { liveSocketFor } from "../api/live-socket";
-import { DispatchQueryClient } from "../api/query-client";
+import { DispatchQueryClient, type EndReadHold, holdBackReads } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { quietConsoleError } from "./act-warnings";
@@ -545,6 +546,69 @@ test.each(
     load.mockRestore();
     wholeCache.restore();
     realClock();
+  }
+});
+
+// A write's own event ends its hold on its queries' reads (`holdBackReads`), and the feed hears it
+// as it arrives (`hearLiveEvent`), before the event waits on the map's chunk for its refresh: the
+// hold names its own queries and needs nothing of the map. So a read held back for a write that
+// Dispatch has already taken goes out while that chunk is still downloading, rather than once it
+// lands - or, where it never does, once the hold's deadline has passed.
+test("a read held back for a write goes out on the write's event while the map's download is still out", async () => {
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY }, DispatchQueryClient);
+  signIn(queryClient);
+  let reads = 0;
+  const unsubscribe = new QueryObserver(queryClient, {
+    queryFn: async () => {
+      reads += 1;
+      return { read: reads };
+    },
+    queryKey: ["user-agent-state"],
+  }).subscribe(() => {});
+  const download = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+  const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+    () => download.promise
+  );
+  let release: EndReadHold | undefined;
+  let hook: RenderHookResult<void, unknown> | undefined;
+  try {
+    await waitFor(() =>
+      expect(queryClient.getQueryData<{ read: number }>(["user-agent-state"])).toEqual({ read: 1 })
+    );
+    // Alice's write to her session states holds the read the page asks next, until its event.
+    release = holdBackReads(queryClient, {
+      endsOn: (event, viewer) =>
+        event.type === "user_agent_state.updated" && event.payload.login === viewer,
+      keys: [["user-agent-state"]],
+    });
+    void queryClient.invalidateQueries({ queryKey: ["user-agent-state"] });
+
+    hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    const { socket, sub } = openFeed("0", true);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    expect(reads, "the write holds the read back").toBe(1);
+
+    receive(
+      socket,
+      eventFrame(sub, {
+        actor: { id: "alice", kind: "user" },
+        created_at: "2026-09-23T00:00:00Z",
+        id: 1,
+        issue_key: null,
+        notify: false,
+        payload: { login: "alice", session_id: "planner" },
+        seq: 1,
+        type: "user_agent_state.updated",
+      } as DispatchEvent)
+    );
+    // The download is never let land in this row.
+    await waitFor(() => expect(reads).toBe(2));
+    expect(load).toHaveBeenCalledTimes(1);
+  } finally {
+    hook?.unmount();
+    release?.();
+    unsubscribe();
+    load.mockRestore();
   }
 });
 

@@ -214,9 +214,9 @@ bundled package whose license cannot be determined, and the listing shows it shi
 `bun run build:web-b` writes web/dist-b, the second rollout bundle the multiprocess
 job's two-builds rows read. DISPATCH_BUILD=e2e-b, which that script carries, is what
 gives it a build id of its own: web/vite.config.ts:102-109 defaults the id to
-GITHUB_SHA, and e2e/two-builds.multiprocess.e2e.ts:80-92 fails when the two entries
-match. It is built on the full lane alone, the only lane that runs the multiprocess job,
-so a pull-request run pays nothing for it.
+GITHUB_SHA, and the `test.beforeAll` of e2e/two-builds.multiprocess.e2e.ts fails when the
+two entries match. It is built on the full lane alone, the only lane that runs the
+multiprocess job, so a pull-request run pays nothing for it.
 
 The three builds run at once, each waited on by its own process id: the step starts the go
 build and .github/scripts/dispatch-browser-build-dashboards.sh as two background jobs, and
@@ -230,17 +230,16 @@ compiles, and the step's whole run: text is pinned in .github/scripts/ci_job_rea
 dispatch_browser gate.
 
 Why the bundles are a script and the go build is not. A `run:` body of more than ten lines is
-a script (.github/ci-notes/README.md), and this step's body was twenty-one lines when it held
-all three builds. The go build cannot be the script's: a go command a script holds is a script
-Run of the dispatch_browser gate, and that gate can hold none, since around_job reads every job
-of this workflow and the shard and alone jobs' `container:` drops such a Run out of
-check-ci-filters.sh's reduction (ci_job_reads.py's comment on the gate says so). So the go
-command stays in the step's own pinned text, and the two bundle builds, which start no go
-command, are the script, with the same commands, the same waits and the same error lines. One
-order moved with them: the copy under $RUNNER_TEMP is made once both bundles have built,
-whether or not the go build has ended, where the single body made it after all three; a go
-build that fails still fails the step, and the uploads after it, which carry no `if:`, do not
-run.
+a script (.github/ci-notes/README.md), and a body that held all three builds, each with its
+wait and its error line, would run past ten. The go build cannot be the script's: a go
+command a script holds is a script Run of the dispatch_browser gate, and that gate can hold
+none, since around_job reads every job of this workflow and the shard and alone jobs'
+`container:` drops such a Run out of check-ci-filters.sh's reduction (ci_job_reads.py's
+comment on the gate says so). So the go command stays in the step's own pinned text, and the
+two bundle builds, which start no go command, are the script, with the same commands, the
+same waits and the same error lines. The copy under $RUNNER_TEMP is made once both bundles
+have built, whether or not the go build has ended; a go build that fails still fails the
+step, and the uploads after it, which carry no `if:`, do not run.
 
 The two trees are copied under $RUNNER_TEMP for the upload after the step, so that archive
 holds `dist/` and, where there is one, `dist-b/` at its root whichever lane ran: an upload of
@@ -434,9 +433,10 @@ job's.
 Two legs. The count is written in the shard job's `matrix`, in the `--shard` denominator of
 the browser step (`--shard=$shard/2` in .github/scripts/dispatch-browser-shard-suite.sh) and
 in that step's own name, "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 2)",
-and nowhere else, so the three move together: a denominator larger than the leg list would
-leave the rows of the missing legs unrun with nothing red, and a name disagreeing with the
-denominator would misreport every leg.
+and nowhere else but .github/scripts/ci_job_reads.py, whose BROWSER_SHARD_SPECS copies that
+name to cite the step by, so the three move together and that copy with them: a denominator
+larger than the leg list would leave the rows of the missing legs unrun with nothing red,
+and a name disagreeing with the denominator would misreport every leg.
 
 Four of them until dispatch://INFRA-1109, where four legs paid four container pulls,
 four Bun installs and four dashboard builds to run one lane's rows.
@@ -517,10 +517,10 @@ its `timeout-minutes` hold it.
 ## Why the shard job makes the downloaded binaries executable
 
 actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
-refusal would otherwise surface in a stack's own log, far from this cause. The
-multiprocess, embedder and visual jobs' steps of this name point here: they download the
-same four binaries, which arrive at the same mode.
+Both run-server.sh, in its check of DISPATCH_E2E_SERVER_BIN, and run-broker.sh refuse a path
+that is not executable, and that refusal would otherwise surface in a stack's own log, far
+from this cause. The multiprocess, embedder and visual jobs' steps of this name point here:
+they download the same four binaries, which arrive at the same mode.
 
 ## Why every job that runs the suite builds contracts first
 
@@ -785,8 +785,9 @@ directory and why there is a second; the four steps are the same here.
 ## Why the alone job makes the downloaded binaries executable
 
 actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
-run-server.sh:237-240 and run-broker.sh refuse a path that is not executable, and that
-refusal would otherwise surface in a stack's own log, far from this cause.
+Both run-server.sh, in its check of DISPATCH_E2E_SERVER_BIN, and run-broker.sh refuse a path
+that is not executable, and that refusal would otherwise surface in a stack's own log, far
+from this cause.
 
 ## Why the alone job builds contracts
 
@@ -945,9 +946,11 @@ image's pull before the browser steps: it has no budget and counts at the 120 s 
 job counts its pull of the same digest at (the time a browser step spent before its stack's
 first output on the run that found the need; the pull took 13 s in run 44480885813), and the
 job's budget adds it. The dashboard step now also starts the stack's container and builds
-the stall library, and its four runs since took 118 s,
-114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
-the 202 s its 4 min derives from. With budgets on the steps, the
+the stall library, and its four runs since on the default branch took 118 s, 114 s, 96 s and
+106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside the 202 s its
+4 min derives from. Those ran `bun run e2e:multiprocess`, whose step still built both
+bundles; this job's step runs `e2e:multiprocess:run`, which builds neither. With budgets on
+the steps, the
 `if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 That 13 minutes stood through the change that took the server build out of this job and put
@@ -1029,21 +1032,21 @@ every job of this file (e2e/harness-postgres.ts). 4 + 4 + 2 min plus 94 s and 12
 
 What the binaries job built. The server is named on DISPATCH_E2E_SERVER_BIN by both
 browser steps, so e2e/run-server.sh executes it instead of building one in each
-server's boot wait (run-server.sh:376-379), which is what the step `Build the Dispatch
-server` was here to make cheap; that step is gone with the build it anticipated. The
-dev OIDC issuer is named on DISPATCH_E2E_SIGNIN_ISSUER_BIN by the sign-in step, so
-e2e/run-signin-issuer.sh executes it instead of building one. The path is the directory
-run-broker.sh serves its binaries from, as the shard job's step of this name says - this
-job starts no broker (two-process mode runs none, e2e/harness-real-broker.ts), and the
-server and the issuer ride along in it. Its chmod is the shard job's step of that name, for
-the reason that step gives.
+server's boot wait (run-server.sh's build for a caller that names no binary), which is what
+the step `Build the Dispatch server` was here to make cheap; that step is gone with the
+build it anticipated. The dev OIDC issuer is named on DISPATCH_E2E_SIGNIN_ISSUER_BIN by the
+sign-in step, so e2e/run-signin-issuer.sh executes it instead of building one. The path is
+the directory run-broker.sh serves its binaries from, as the shard job's step of this name
+says - this job starts no broker (two-process mode runs none, e2e/harness-real-broker.ts),
+and the server and the issuer ride along in it. Its chmod is the shard job's step of that
+name, for the reason that step gives.
 
 ## The two dashboards the two-process job serves
 
 Both dashboards this job serves, built once by the binaries job: web/dist is A's and
-web/dist-b is B's, the second rollout bundle with the build id e2e/two-builds.
-multiprocess.e2e.ts:80-92 holds apart from A's. This job runs on the full lane alone,
-which is the lane that bundle is built on.
+web/dist-b is B's, the second rollout bundle with the build id the `test.beforeAll` of
+e2e/two-builds.multiprocess.e2e.ts holds apart from A's. This job runs on the full lane
+alone, which is the lane that bundle is built on.
 
 ## Why the two-process job sets up no Go
 
@@ -1257,7 +1260,7 @@ this job makes the first in its contracts step and takes the second from the run
 (packages/dispatch/package.json). The two binaries
 the harness would otherwise build are named on the step's command line rather than in its
 `env:`, for the reason the shard job's head gives: the server e2e/run-server.sh executes
-(run-server.sh:376-379 builds one for a caller that names none) and the directory
+(run-server.sh's build for a caller that names none makes one) and the directory
 e2e/run-broker.sh serves the broker's three commands from - this lane runs one
 process against the fake broker, which is what starts the real one
 (e2e/harness-real-broker.ts). This stack's Postgres is named the same way, and on the
@@ -1672,8 +1675,8 @@ reading inside its own run cannot see of itself: its `completed_at` is null whil
 The script's `machine-time` branch carries that subtraction, the runs the measured 44 s of it
 came from, and why a jobs file it cannot read refuses rather than passes.
 
-The lane is this workflow's own input, which every other job of the file already reads
-for the work it does; nothing new is passed in for it.
+The lane is this workflow's own input, which every job of the file but the embedder's
+already reads for the work it does; nothing new is passed in for it.
 
 ## What the verdict step fails on
 

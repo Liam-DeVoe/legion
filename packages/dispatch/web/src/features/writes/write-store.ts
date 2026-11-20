@@ -907,9 +907,10 @@ export class Writes {
    * press order, whatever order the page's effects pressed it in. A drop meanwhile of a person's
    * writes - another person's sign-in, or their sign-out landing - drops what the reload kept of
    * theirs too, once the kinds are in (`TakeUp.dropped`). A load that fails ends nothing here: the
-   * next press asks again, and the failure of a load a reader waits on reloads the page
-   * (`loadWriteKinds`), whose own take-up finds every write pressed meanwhile here kept in the
-   * tab. Without `loadKinds` - every unit test's store - the take-up runs at once.
+   * next press asks again, and the failure of a load a reader waits on reloads the page while the
+   * tab's reload budget lasts (`loadWriteKinds`), whose own take-up finds every write pressed
+   * meanwhile here kept in the tab. Without `loadKinds` - every unit test's store - the take-up
+   * runs at once.
    */
   resume(login: string, loadKinds?: () => Promise<unknown>): void {
     if (this.#resumed) return;

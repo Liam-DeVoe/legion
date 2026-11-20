@@ -16,8 +16,9 @@ import { type ComponentType, type LazyExoticComponent, lazy } from "react";
 // charting library were all started bare, and that cost nothing while the shell prefetched no
 // chunk, since the recovery then reloaded, within its budget, for every chunk that failed online.
 // The shell now starts prefetches at a page's first paint - the search bar's, the Markdown
-// engine's warm and, on an address the landing read takes for the Inbox, the Inbox peek's - so a
-// bare chunk that failed in that window would reload nothing.
+// engine's warm, the writes host's three (the two lists of writes and the kinds of write,
+// `write-hosts.tsx`) and, on an address the landing read takes for the Inbox, the Inbox peek's -
+// so a bare chunk that failed in that window would reload nothing.
 //
 // So: a chunk a render waits on goes through `renderChunk`, a chunk nothing waits on through
 // `prefetchChunk`, and nothing imports a chunk through neither. A component a `Suspense` waits

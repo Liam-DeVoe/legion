@@ -59,8 +59,8 @@ import "./BroadcastPage";
 // of what a reload kept waits for from the sign-in on, and every send a row presses waits for that
 // take-up (`Writes.resume`, `Writes.run`). The rows here are about the sends, not about that
 // download, and a row on a held clock runs its waits out in a few real milliseconds while
-// `test:web:cold` holds the chunk for a real second: a send pressed then had not gone out when the
-// row counted its attempts. So the kinds are loaded here too.
+// `test:web:cold` holds the chunk for a real second: a send pressed then would not have gone out
+// when the row counts its attempts. So the kinds are loaded here too.
 import "../writes/kinds";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";

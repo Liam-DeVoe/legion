@@ -243,9 +243,11 @@ export const writesChunks = [PENDING_WRITES_CHUNK, KEPT_WRITES_CHUNK, WRITE_KIND
 
 /** Waits until the page has fetched a script whose path `chunk` matches: for a chunk the page
  *  starts of its own accord and draws nothing from until a reader needs it, so that no landmark
- *  can show that it came down. It reads the page's own resource timing, which keeps every fetch
- *  of the document, so a fetch that ended before the wait began is found as well as one still to
- *  come; how that fetch ended is the caller's to hold it to. */
+ *  can show that it came down. It reads the page's own resource timing, which keeps the
+ *  document's fetches, so a fetch that ended before the wait began is found as well as one still
+ *  to come. That buffer holds 250 entries unless the page sets another size, which this one does
+ *  not, and records no fetch past them, so an absent entry can also mean a full buffer; both
+ *  callers read early in a fresh document. How that fetch ended is the caller's to hold it to. */
 export async function fetchedChunk(page: Page, chunk: RegExp): Promise<void> {
   await expect
     .poll(
@@ -289,14 +291,16 @@ function lazyComponentsRendered(page: Page, urls: readonly string[]): Promise<bo
     const roots = window.__shellReactRoots;
     // Two things leave no root here: a hook that no longer works, and a poll whose evaluate lands
     // in a document a navigation has just made, which reads the empty set the init script below
-    // made there before React commits. No row polls across a navigation today: `failAssetWhen`
-    // aborts only once `ready()` has resolved, so no load reloads while its own poll runs, and a
-    // poll begins only once the reference-preview chunk has come down, which the render an effect
-    // of a committed tree begins asks for (`web/src/features/refs/RefPreviewLayer.tsx`,
-    // `setWanted`), so React has committed a root in that document by then. Read as "not rendered
-    // yet", a hook React never found would hold the poll to its timeout; a throw ends it at once,
-    // since `expect.poll` does not catch an error of the function it polls
-    // (playwright/lib/matchers/expect.js:13397).
+    // made there before React commits. No row polls across a navigation today, for two reasons.
+    // `failAssetWhen` aborts only once `ready()` has resolved, so no load it fails reloads while
+    // its own poll runs; and the one row that calls `settled()` outside it, `keyed-writes.e2e.ts`'s
+    // write pressed while the kinds of write fail to download, awaits that poll before it aborts
+    // the download whose failure reloads the page. A poll begins only once the reference-preview
+    // chunk has come down, which the render an effect of a committed tree begins asks for
+    // (`web/src/features/refs/RefPreviewLayer.tsx`, `setWanted`), so React has committed a root in
+    // that document by then. Read as "not rendered yet", a hook React never found would hold the
+    // poll to its timeout; a throw ends it at once, since `expect.poll` does not catch an error of
+    // the function it polls (playwright/lib/matchers/expect.js:13397).
     if (roots === undefined || roots.size === 0) {
       throw new Error("React committed no root to the DevTools hook `shellLoads` installs");
     }

@@ -181,9 +181,10 @@ test("a render-time chunk that fails while a prefetch is out still reloads", asy
 // The same rule for a chunk a mounted component imports for itself, which no route or host
 // names: the delivery timeline's charting library (`features/delivery/Timeline.tsx`), without
 // which the chart draws nothing. A prefetch the shell starts at a first paint - the search bar's,
-// the Markdown engine's warm, the Inbox peek's - can still be out while it downloads, and a
-// reader in front of a chart that cannot draw is waiting on it all the same. Started bare, its
-// failure would be read as that prefetch's and reload nothing (dispatch://INFRA-1109).
+// the Markdown engine's warm, the writes host's (`write-hosts.tsx`), the Inbox peek's - can still
+// be out while it downloads, and a reader in front of a chart that cannot draw is waiting on it
+// all the same. Started bare, its failure would be read as that prefetch's and reload nothing
+// (dispatch://INFRA-1109).
 test("a chunk a mounted component imports for itself reloads for its failure while a prefetch is out", () => {
   window.sessionStorage.clear();
   installChunkFailureRecoveryForTest();

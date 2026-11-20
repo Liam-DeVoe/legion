@@ -52,7 +52,7 @@ export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361e
 # What the binaries job built, which e2e/run-server.sh and e2e/run-broker.sh execute
 # instead of building: the server by its path, the broker's three by the directory
 # that holds them. This is what stops this job building a Dispatch server inside its
-# own browser step (run-server.sh:376-379 builds one for a caller that names none),
+# own browser step (run-server.sh's build for a caller that names none makes one),
 # and the real broker's three commands with it - this job runs one process against
 # the fake broker, which is what starts the real one (e2e/harness-real-broker.ts).
 export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"

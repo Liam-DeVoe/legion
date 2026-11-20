@@ -471,8 +471,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
 // (`MarginFrame`, `web/src/features/margin/MarginColumn.tsx`); in the frame the margin is Details,
 // a drawer over the page that takes no column, so that place is no column either. The row holds
 // the margin's chunk on the wire, the moment between the page's first draw and the margin, where
-// a column held for it narrowed the stage by the margin's width and the rows above that measure
-// the stage after a load read it on a machine slow enough to still be in that moment.
+// a column held there would narrow the stage by the margin's width, which a row above that
+// measures the stage after a load would read on a machine slow enough to still be in that moment.
 test("the frame's stage drawn before the margin keeps its width when the margin arrives", async ({
   browser,
 }) => {

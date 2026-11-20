@@ -671,7 +671,7 @@ change that starts the step, and the browser half, `bun run build:web` and
 harness and spec under e2e/, the SPA build (web/, the editor package and the patches
 it takes, the notices script the build runs), the Dispatch server
 e2e/run-server.sh builds (dispatch_command_tests holds its packages) and the script
-that holds each server's socket (run-server.sh:80,89, e2e/harness-start.ts). Of
+that holds each server's socket (run-server.sh's `held_port` lines, e2e/harness-start.ts). Of
 packages/contracts it reads the manifest whose build:dispatch its contracts build runs
 (*bun_install holds it) and the modules of the dispatch_two_builds filter's `BEGIN listed` block.
 

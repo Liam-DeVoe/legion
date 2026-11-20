@@ -528,6 +528,43 @@ test("a take-up whose own ask for the kinds of write failed ends once another lo
   });
 });
 
+// A take-up's own ask for the kinds of write can fail and leave the page where it is - the page
+// being left, the reader staying at the leave prompt a write pressed meanwhile opens, or the tab's
+// recovery reloads spent - and then the next write pressed asks for them again (`Writes.run`),
+// since a reader now waits on them. That load brings them in and ends the take-up: the kept write
+// goes out, and the one pressed behind it. Without that ask both would wait for a load nothing on
+// the page had started.
+test("a write pressed after the take-up's ask for the kinds of write failed asks for them again, and both writes go out once they are in", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const kept = keyMinted(Date.now());
+    keepWrite(tab, kept, { target: "issue:CORE-1" });
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    try {
+      const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+      let asked = 0;
+      writes.resume("alice", () => {
+        asked += 1;
+        return asked === 1 ? Promise.reject(new TypeError("Failed to fetch")) : Promise.resolve();
+      });
+      await settle();
+      expect(asked).toBe(1);
+      expect(send).not.toHaveBeenCalled();
+
+      const pressed = statusPick(writes, "todo");
+      const pressedKey = row(writes)?.key ?? "";
+      await settle();
+      expect(asked, "the write pressed after the failed load asks for the kinds again").toBe(2);
+      expect(send.mock.calls.map(([, bounds]) => bounds?.key)).toEqual([kept, pressedKey]);
+      expect(await pressed).toBeNull();
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
 /** A page whose take-up of what a reload kept waits for the kinds of write, and a write alice
  *  pressed meanwhile (`pressedWhileTakingUp`). */
 interface TakingUp {
@@ -537,8 +574,9 @@ interface TakingUp {
   readonly held: Write;
   /** The key of the write the reload kept. */
   readonly kept: string;
-  /** The load of the kinds of write the take-up waits for: `resolve` lets them in. */
-  readonly kinds: { readonly resolve: () => void };
+  /** The load of the kinds of write the take-up waits for: `resolve` lets them in, and `asked` is
+   *  how many loads of them the store has started. */
+  readonly kinds: { readonly asked: () => number; readonly resolve: () => void };
   /** The press of `held`, settled with its answer or its refusal. */
   readonly pressed: Promise<unknown>;
   /** The key of each write that went out, in order. */
@@ -562,7 +600,11 @@ async function pressedWhileTakingUp(
   const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
   writes.signedIn("alice");
   const kinds = Promise.withResolvers<void>();
-  writes.resume("alice", () => kinds.promise);
+  let asked = 0;
+  writes.resume("alice", () => {
+    asked += 1;
+    return kinds.promise;
+  });
   const pressed = press(writes).catch((error: unknown) => error);
   await settle();
   const [held] = writes.rows();
@@ -576,7 +618,7 @@ async function pressedWhileTakingUp(
     },
     held,
     kept,
-    kinds,
+    kinds: { asked: () => asked, resolve: kinds.resolve },
     pressed,
     sent: () => send.mock.calls.map(([, bounds]) => bounds?.key),
     tab,
@@ -857,6 +899,31 @@ test("a lapse while the take-up waits keeps the write pressed meanwhile and the 
       } finally {
         taking.end();
       }
+    }
+  });
+});
+
+// One load of the kinds of write is out at a time (`resume`). Every write pressed while the
+// take-up waits asks for them, since a reader now waits on them, but one asked while a load is out
+// - two presses during a slow download, or while that load waits offline for the network
+// (`importWhenOnline`) - starts no second download beside it.
+test("writes pressed while the take-up's load of the kinds of write is out start no second load", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp((writes) =>
+      Promise.all([statusPick(writes, "todo"), statusPick(writes, "backlog")])
+    );
+    try {
+      const pressedKeys = taking.writes.rows().map((write) => write.key);
+      expect(pressedKeys).toHaveLength(2);
+      expect(taking.kinds.asked(), "two presses during the load start no second one").toBe(1);
+
+      taking.kinds.resolve();
+      await settle();
+      expect(taking.sent()).toEqual([taking.kept, ...pressedKeys]);
+      expect(await taking.pressed).toEqual([null, null]);
+      expect(taking.kinds.asked()).toBe(1);
+    } finally {
+      taking.end();
     }
   });
 });
