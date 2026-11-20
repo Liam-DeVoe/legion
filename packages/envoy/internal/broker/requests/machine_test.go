@@ -1027,7 +1027,9 @@ func TestAGrantEndedAfterTheEndPassIsNotHandedBack(t *testing.T) {
 // is handed neither grant and waits for an approval, though the older grant still releases. Once
 // the secret is shared, neither grant pauses and the newer one is handed back, which makes the
 // first row's refusal the pause's doing. A newer grant of another lifetime is no candidate, so its
-// pause stops nothing and the older grant is handed back.
+// pause stops nothing and the older grant is handed back. Each row releases the newer grant too:
+// where the row says it pauses, the release answers ErrGrantNotLive and the grant stays live, so
+// the row holds the pause its name states.
 func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 	deel := func(owner string) secrets.LocalSecret {
 		return policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1")
@@ -1042,10 +1044,14 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 		// handedBack is the grant the request after is handed back: "newer", "older", or "" for
 		// none, with the request pending.
 		handedBack string
+		// newerPaused is whether the newer grant pauses once the secret has its row's owner: a
+		// release of it answers ErrGrantNotLive, where one of a grant that does not pause
+		// releases its value.
+		newerPaused bool
 	}{
-		{name: "the secret is the operator's again, which pauses the newer grant", owner: fixtureOperator},
+		{name: "the secret is the operator's again, which pauses the newer grant", owner: fixtureOperator, newerPaused: true},
 		{name: "the secret is shared, which pauses neither grant", owner: policy.OwnerShared, handedBack: "newer"},
-		{name: "the secret is the operator's again, which pauses a newer grant of another lifetime", owner: fixtureOperator, newerLifetime: 300, handedBack: "older"},
+		{name: "the secret is the operator's again, which pauses a newer grant of another lifetime", owner: fixtureOperator, newerLifetime: 300, handedBack: "older", newerPaused: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, approver := newFixture(t)
@@ -1079,6 +1085,13 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 			}
 			if release, err := m.Values(ctx, older, enr, nil, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" {
 				t.Fatalf("Values of the older grant once %s = %v, %v; want it released, so it was a grant the reuse could hand back", c.name, release.Values, err)
+			}
+			release, err := m.Values(ctx, newer, enr, nil, ReleaseCall{})
+			if c.newerPaused && !errors.Is(err, ErrGrantNotLive) {
+				t.Fatalf("Values of the newer grant once %s = %v, %v; want ErrGrantNotLive, the pause the row names", c.name, release.Values, err)
+			}
+			if !c.newerPaused && (err != nil || release.Values["DEEL_API_KEY"] != "deel-v1") {
+				t.Fatalf("Values of the newer grant once %s = %v, %v; want it released, the grant pausing not", c.name, release.Values, err)
 			}
 			for _, id := range []string{older, newer} {
 				if by, _ := endedForGood(t, m, id); by != "" {
