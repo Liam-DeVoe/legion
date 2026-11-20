@@ -39,12 +39,15 @@
 // otherwise qualified currval could resolve to a function of another schema that draws, so it is
 // refused, and so is every nextval or setval but a call of one string literal of a sequence's name
 // (one of digits alone is an OID), and their C code under any name, since each can draw from
-// events_id_seq without spelling it. No insert lists an explicit id, no source but that tool
+// events_id_seq without spelling it. No Go source or migration runs SQL a text guard cannot read
+// (execute of a built string, query_to_xml, cursor_to_xml), since such a query can draw the
+// sequence without naming it. No insert lists an explicit id, no source but that tool
 // copies or merges rows into events, no statement makes a table from events, no migration the
 // server runs names the sequence, in a function, view, trigger or default, or draws from a
 // sequence it does not spell, and the schema they build gives no other table events' id default,
 // events no child or partition, whose rows would be rows of events written under another table's
-// lock, and no function of a sequence function's name, oid or code but Postgres's own.
+// lock, and no function of a sequence function's name, oid or C code but Postgres's own (held by
+// the name's pg_proc.dat oid, in pg_catalog and the fixed internal language oid).
 // TestOnlyAnEventInsertsDefaultDrawsAnEventID and TestOnlyTheBrokerInsertsEvents
 // (internal/dispatch/api) hold the Go half, TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault
 // (internal/dispatch/store) the migrations' text, and

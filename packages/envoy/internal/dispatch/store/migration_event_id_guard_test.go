@@ -21,6 +21,11 @@ var migrationEventIDSequence = regexp.MustCompile(eventidtest.SequencePattern)
 // (api.eventIDCurrval) compiles the same pattern.
 var migrationEventIDCurrval = regexp.MustCompile(eventidtest.CurrvalPattern)
 
+// migrationDynamicSQL is a construct that runs SQL text the guard cannot read; triggerExecute is
+// its one safe execute spelling.
+var migrationDynamicSQL = regexp.MustCompile(eventidtest.DynamicSQLPattern)
+var migrationTriggerExecute = regexp.MustCompile(eventidtest.TriggerExecutePattern)
+
 // migrationEventIDOffences is each place in a migration's SQL that names the events id sequence
 // other than to read currval, as "<path>:<line>: <match>". Each currval read is blanked out
 // before the sequence is looked for, its newlines kept, so the lines named stay the file's own.
@@ -35,6 +40,17 @@ func migrationEventIDOffences(path, sql string) []string {
 			return ' '
 		}, read[len(kept):])
 	})
+	dynamicText := migrationTriggerExecute.ReplaceAllStringFunc(lowered, func(execute string) string {
+		return strings.Repeat(" ", len(execute))
+	})
+	dynamic := migrationDynamicSQL.FindAllStringIndex(dynamicText, -1)
+	for _, span := range dynamic {
+		line := strings.Count(lowered[:span[0]], "\n") + 1
+		offences = append(offences, path+":"+strconv.Itoa(line)+": "+lowered[span[0]:span[1]])
+	}
+	if len(dynamic) > 0 {
+		return offences
+	}
 	for _, span := range migrationEventIDSequence.FindAllStringIndex(lowered, -1) {
 		line := strings.Count(lowered[:span[0]], "\n") + 1
 		offences = append(offences, path+":"+strconv.Itoa(line)+": "+lowered[span[0]:span[1]])
@@ -50,8 +66,10 @@ func migrationEventIDOffences(path, sql string) []string {
 // (events/horizon.go, "Safe horizon"), so it would pass such an id while the transaction holding
 // it is still open. No migration may name the sequence, or use nextval or setval but in a call of
 // one string literal of a sequence's name (one of digits alone is an OID), or their C code, which
-// can draw from events_id_seq without spelling it; one that must name it (to alter it) needs its
-// own reading of why the horizon still holds, and an exemption here that says so. A migration can
+// can draw from events_id_seq without spelling it, and may run no SQL a reader cannot see (execute
+// of a built string, query_to_xml, cursor_to_xml; a trigger's execute function is not that); one
+// that must name the sequence (to alter it) needs its own reading of why the horizon still holds,
+// and an exemption here that says so. A migration can
 // also hand events' id default to another table without naming the sequence (like events
 // including defaults, inherits, partition of), which no reading of the text sees:
 // TestOnlyTheEventsIDDefaultDrawsFromItsSequence reads the migrated catalog for that.
@@ -109,6 +127,10 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 			{"a nextval in Unicode escapes", `select U&"\006Eextval"('16402');`, 1},
 			{"a nextval around a currval read", "select nextval(pg_catalog.currval('events_id_seq') * 0 + 16402);", 1},
 			{"nextval's C function under another name", "create function draw(regclass) returns bigint language internal as 'nextval_oid';", 1},
+			{"an execute of a built query", `do $$ begin execute 'select nextval(' || 16402 || ')'; end $$`, 1},
+			{"a standard-conforming string turned off", `set local standard_conforming_strings = off; select nextval('events\137id\137seq')`, 1},
+			{"a query built for query_to_xml", `select query_to_xml('select next' || 'val(16402)', false, false, '')`, 1},
+			{"a trigger execute function", `create trigger rt before insert on events for each row execute function rt_trigger()`, 0},
 			{"another sequence, by literal", "select nextval('other_seq'), nextval('other_seq'::regclass), setval('other_seq', 1, false);", 0},
 			{"another table's serial default", "alter table issues alter column n set default nextval('issues_n_seq'::regclass);", 0},
 		} {

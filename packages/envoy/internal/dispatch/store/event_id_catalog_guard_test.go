@@ -26,10 +26,11 @@ import (
 // currval then draws), or make a function of another name in the internal language that calls
 // nextval's C function (as 'nextval_oid'). So a function counts as Postgres's own only as the oid
 // initdb gives its name (pg_proc.dat: nextval 1574, currval 1575, setval 1576 and 1765, lastval
-// 2559, pg_get_serial_sequence 1665), in pg_catalog and still in the internal language; every
-// other function of one of those names or oids, or in the internal or C language with one of
-// their C functions as its source, is named. It answers one row per offence, and a row also when
-// events.id has no nextval('events_id_seq') default, since the read would then see nothing.
+// 2559, pg_get_serial_sequence 1665), in pg_catalog and still in the fixed pg_language.dat oid
+// 12 (internal); every other function of one of those names or oids, or in language oid 12
+// (internal) or 13 (c) with one of their C functions as its source, is named. It answers one row
+// per offence, and a row also when events.id has no nextval('events_id_seq') default, since the
+// read would then see nothing.
 const eventIDCatalogOffences = `
 	with own as (
 		select ad.oid from pg_attrdef ad join pg_attribute a on a.attrelid = ad.adrelid and a.attnum = ad.adnum
@@ -52,9 +53,9 @@ const eventIDCatalogOffences = `
 	from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 	where (p.proname in ('currval', 'nextval', 'setval', 'lastval', 'pg_get_serial_sequence')
 			or p.oid in (1574, 1575, 1576, 1765, 2559, 1665)
-			or (p.prolang in (select oid from pg_language where lanname in ('internal', 'c'))
+			or (p.prolang in (12, 13)
 				and p.prosrc in ('nextval_oid', 'currval_oid', 'setval_oid', 'setval3_oid', 'lastval', 'pg_get_serial_sequence')))
-		and not (n.nspname = 'pg_catalog' and p.prolang = (select oid from pg_language where lanname = 'internal')
+		and not (n.nspname = 'pg_catalog' and p.prolang = 12
 			and (p.proname, p.oid) in (values ('nextval'::name, 1574::oid), ('currval', 1575), ('setval', 1576),
 				('setval', 1765), ('lastval', 2559), ('pg_get_serial_sequence', 1665)))
 	union all
@@ -149,6 +150,8 @@ func TestOnlyTheEventsIDDefaultDrawsFromItsSequence(t *testing.T) {
 				"pg_catalog.currval(regclass) is a function of a sequence function's name or code that is not Postgres's own"},
 			{`create function public.rt_draw(regclass) returns bigint language internal strict volatile as 'nextval_oid'`,
 				"public.rt_draw(regclass) is a function of a sequence function's name or code that is not Postgres's own"},
+			{`create function public.rt_draw_after_language_rename(regclass) returns bigint language internal strict volatile as 'nextval_oid'; alter language internal rename to rt_internal`,
+				"public.rt_draw_after_language_rename(regclass) is a function of a sequence function's name or code that is not Postgres's own"},
 		} {
 			func() {
 				tx, err := store.Pool.Begin(ctx)

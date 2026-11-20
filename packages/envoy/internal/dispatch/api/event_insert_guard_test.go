@@ -129,14 +129,26 @@ var eventIDSequence = regexp.MustCompile(eventidtest.SequencePattern)
 // the same pattern.
 var eventIDCurrval = regexp.MustCompile(eventidtest.CurrvalPattern)
 
-// eventIDPatterns is the two patterns' own text as the scan reads a string: lowercased, with its
-// whitespace collapsed. eventidtest declares them in a file that is no test, so the scan reads each
-// declaration as a statement, and CurrvalPattern spells the sequence's name. A statement that is
-// one of these two strings, and nothing more, is a pattern rather than SQL Postgres can run, so
-// eventIDOffences finds no offence in it.
+// eventDynamicSQL is a construct that runs SQL text the guard cannot read; triggerExecute is its
+// one safe execute spelling.
+
+// eventSQLStatement is a source-scanned string that is SQL rather than an error, flag or other
+// program text that happens to name a dynamic-SQL construct. SQL text a Go source executes starts
+// with one of these clauses; a text guard need not and cannot reason from a word in an error such
+// as "execute migration".
+var eventSQLStatement = regexp.MustCompile(`^\s*(?:alter|create|delete|do|insert|select|update|with)\b`)
+var eventDynamicSQL = regexp.MustCompile(eventidtest.DynamicSQLPattern)
+var triggerExecute = regexp.MustCompile(eventidtest.TriggerExecutePattern)
+
+// eventIDPatterns are the shared patterns' own text as the scan reads a string: lowercased, with
+// its whitespace collapsed. eventidtest declares them in a file that is no test, so the scan reads
+// each declaration as a statement. A statement that is exactly one of these patterns, and nothing
+// more, is a pattern rather than SQL Postgres can run, so eventIDOffences finds no offence in it.
 var eventIDPatterns = map[string]bool{
-	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.SequencePattern), " "): true,
-	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.CurrvalPattern), " "):  true,
+	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.SequencePattern), " "):       true,
+	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.DynamicSQLPattern), " "):     true,
+	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.TriggerExecutePattern), " "): true,
+	sqlWhitespace.ReplaceAllString(strings.ToLower(eventidtest.CurrvalPattern), " "):        true,
 }
 
 // eventDerivedTable is a table made from events: one that inherits from it (inherits (...), or
@@ -164,8 +176,12 @@ func eventIDOffences(path, statement string) (offences []string, lists int) {
 	if eventIDPatterns[statement] {
 		return nil, 0
 	}
-	if eventIDSequence.MatchString(eventIDCurrval.ReplaceAllStringFunc(statement, eventidtest.CurrvalReadKept)) && !(strings.HasSuffix(path, seedSequenceReset) && strings.Contains(statement, "setval(")) {
+	dynamicSQL := eventSQLStatement.MatchString(statement) && eventDynamicSQL.MatchString(triggerExecute.ReplaceAllString(statement, ""))
+	if !dynamicSQL && eventIDSequence.MatchString(eventIDCurrval.ReplaceAllStringFunc(statement, eventidtest.CurrvalReadKept)) && !(strings.HasSuffix(path, seedSequenceReset) && strings.Contains(statement, "setval(")) {
 		offences = append(offences, path+": names the events id sequence: "+statement)
+	}
+	if dynamicSQL {
+		offences = append(offences, path+": runs SQL a text guard cannot read: "+statement)
 	}
 	if eventDerivedTable.MatchString(statement) {
 		offences = append(offences, path+": makes a table from events, which takes its id default or holds its rows: "+statement)
@@ -223,7 +239,9 @@ func eventCopies(file *ast.File, constants map[string]string) int {
 // pass it while it is open. So no statement may name events_id_seq but dispatch-seed's offline
 // setval and a currval of the id the statement's own insert drew (eventIDCurrval), none may use
 // nextval or setval but in a call of one string literal of a sequence's name (one of digits alone
-// is an OID), or their C code, which can draw from events_id_seq without spelling it, and every
+// is an OID), or their C code, which can draw from events_id_seq without spelling it, no SQL
+// statement runs text a reader cannot see (execute of a built string, query_to_xml, cursor_to_xml;
+// a trigger's execute function is not that), and every
 // insert into events lists its columns, without id: a list that leaves id out leaves it to the
 // default, and an insert with no list fills id by position. No source but dispatch-seed's copies
 // rows into events, which writes them through no insert at all. And no statement makes a table
@@ -327,6 +345,10 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			{"a.go", `select u&"\006eextval"('16402')`, []string{"names the events id sequence"}},
 			{"a.go", "select nextval(pg_catalog.currval('events_id_seq') * 0 + 16402)", []string{"names the events id sequence"}},
 			{"a.go", "create function draw(regclass) returns bigint language internal as 'nextval_oid'", []string{"names the events id sequence"}},
+			{"a.go", `do $$ begin execute 'select nextval(' || 16402 || ')'; end $$`, []string{"runs SQL a text guard cannot read"}},
+			{"a.go", `set local standard_conforming_strings = off; select nextval('events\137id\137seq')`, []string{"names the events id sequence"}},
+			{"a.go", `select query_to_xml('select next' || 'val(16402)', false, false, '')`, []string{"runs SQL a text guard cannot read"}},
+			{"a.go", `create trigger rt before insert on events for each row execute function rt_trigger()`, nil},
 			{"a.go", "select nextval('other_seq')", nil},
 			{"a.go", "select nextval('other_seq'::regclass)", nil},
 			{"a.go", "select nextval ( 'other_seq' :: regclass )", nil},

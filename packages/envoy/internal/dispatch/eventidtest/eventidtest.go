@@ -18,15 +18,27 @@ package eventidtest
 // built from parts ('events_' || 'id_seq', format('%s_id_seq', 'events')), written with escapes
 // (E'events\x5fid\x5fseq', U&'events\005fid\005fseq'), cast through text, or passed as a parameter
 // can be events_id_seq without spelling it. So can a literal of digits alone, which regclass reads
-// as an OID (nextval('16402')). So only a literal that spells its sequence's name is read as
-// another sequence (nextval('other_seq'), setval('other_seq', 1)), and only in a call that follows
-// the name at once: every other place the word nextval or setval stands is read as a draw, since a
-// quoted name ("nextval"('16402')), or a comment between the name and its parenthesis
-// (nextval/**/('16402')), calls it all the same. A name in Unicode escapes (U&"\006Eextval") spells
-// no word at all, so every such identifier is read as a draw, and so is the C function behind
-// nextval or setval (nextval_oid, setval_oid, setval3_oid), which a function of another name in the
-// internal language can call. A guard reads it over lowercased SQL.
-const SequencePattern = `\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]|\b(?:nextval|setval)\b\s*(?:$|[^\s(]|\(\s*(?:$|[^'\s]|'[^']*(?:$|'\s*(?:$|[^\s,):]|:(?:$|[^:]|:\s*(?:$|[^\sr]))))))|\b(?:nextval|setval)\s*\(\s*'\s*\d+\s*'|\bu&"|\b(?:nextval|setval3?)_oid\b`
+// as an OID (nextval('16402')), or a literal that carries a character no sequence name needs:
+// standard_conforming_strings off reads `events\137id\137seq` as events_id_seq. So only a literal
+// that spells its sequence's name is read as another sequence (nextval('other_seq'), setval('other_seq', 1)),
+// and only in a call that follows the name at once: every other place the word nextval or setval
+// stands is read as a draw, since a quoted name ("nextval"('16402')), or a comment between the
+// name and its parenthesis (nextval/**/('16402')), calls it all the same. A name in Unicode escapes
+// (U&"\006Eextval") spells no word at all, so every such identifier is read as a draw, and so is
+// the C function behind nextval or setval (nextval_oid, setval_oid, setval3_oid), which a function
+// of another name in the internal language can call. A guard reads it over lowercased SQL.
+const SequencePattern = `\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]|\b(?:nextval|setval)\b\s*(?:$|[^\s(]|\(\s*(?:$|[^'\s]|'[^']*(?:$|'\s*(?:$|[^\s,):]|:(?:$|[^:]|:\s*(?:$|[^\sr]))))))|\b(?:nextval|setval)\s*\(\s*'\s*\d+\s*'|\b(?:nextval|setval)\s*\(\s*'[^']*[^'\w.$"\s\x{80}-\x{10FFFF}]|\bu&"|\b(?:nextval|setval3?)_oid\b`
+
+// DynamicSQLPattern names a PostgreSQL construct whose argument or statement can carry SQL the
+// guard cannot read: execute (except a trigger's execute function or execute procedure),
+// query_to_xml and cursor_to_xml, with their schema variants. A query built at run time can draw
+// events_id_seq without spelling it, as can an execute string built from parts, so a guard refuses
+// each rather than pretend its source text proves the query harmless.
+const DynamicSQLPattern = `\b(?:query_to_xml(?:schema|_and_xmlschema)?|cursor_to_xml(?:schema)?|execute)\b`
+
+// TriggerExecutePattern is DynamicSQLPattern's one safe execute: it installs a trigger callback,
+// and does not execute SQL text. The guards take this match out before finding DynamicSQLPattern.
+const TriggerExecutePattern = `\bexecute\s+(?:function|procedure)\b`
 
 // CurrvalPattern is a read of the id this session's nextval last drew from events_id_seq,
 // pg_catalog.currval of the sequence in SequencePattern's literal spellings: a write phase reads
