@@ -72,14 +72,14 @@ jobs:
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout: the setup before the plain step is now this
     # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
-    # minutes, then the race step's 1,811 s (its own comment says where that figure was measured)
-    # and its 33, then the step of what the race build cannot run, 26 s (24 s and 26 s in jobs
-    # 136067045968 and 136107224074) and its 10, then Stage 1 and the report. The three Go steps'
-    # share is 6,156 s; with the 325 s of setup and the 13 s after the race step that the `test`
-    # job measured when it carried these steps, upper bounds for this job's, that is 6,494 s, or
-    # about 108.2 minutes, and 109 minutes holds it (dispatch://INFRA-1052 measured the other
-    # figures over the 30 newest counted test jobs of main push runs).
-    timeout-minutes: 109
+    # minutes, then the race step's 1,901 s, the largest green one measured (its own comment says
+    # where) and its 40, then the step of what the race build cannot run, 26 s (24 s and 26 s in
+    # jobs 136067045968 and 136107224074) and its 10, then Stage 1 and the report. The three Go
+    # steps' share is 6,666 s; with the 325 s of setup and the 13 s after the race step that the
+    # `test` job measured when it carried these steps, upper bounds for this job's, that is
+    # 7,004 s, or about 116.7 minutes, and 117 minutes holds it (dispatch://INFRA-1052 measured
+    # the other figures over the 30 newest counted test jobs of main push runs).
+    timeout-minutes: 117
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -223,8 +223,15 @@ jobs:
       # d8582528, a head of the pull request that added them, while each of its test binaries
       # built `legion` four times. The four builds became one (9ac96a1c), and the package still
       # took 1,731.355 s on run 44731626340 (job 136272918493, the step 12:09:33Z to 12:39:02Z,
-      # 1,769 s) at b9eddd39. Both are within 10% of 30 minutes, so the deadline is the larger
-      # plus 10%, 1,943 s, rounded up to whole minutes: 33 minutes, 1,980 s.
+      # 1,769 s) at b9eddd39. It took 1,853.104 s on run 44760054868 (job 136372026117, the step
+      # 15:27:15Z to 15:58:56Z, 1,901 s) at 831a1845, and at 81a1bd12 it ran into the 33 minutes
+      # the step then gave it, with no test failing first, on run 44787767496 (job 136467164419,
+      # the step 18:08:34Z to 18:42:25Z, 2,031 s), so 1,980.274 s is a lower bound of that run's
+      # time. On main, without the project release's tests, the package took 1,409.674 s (run
+      # 44759465127), 1,413.201 s (run 44768586470) and 1,475.337 s (run 44754421273) in the merge
+      # groups of 2026-11-20. The runs of that pull request's heads on 2026-11-20 spread from
+      # 1,731.355 s to more than 1,980.274 s, so the deadline is that lower bound plus 21%,
+      # 2,396 s, rounded up to whole minutes: 40 minutes, 2,400 s.
       #
       # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
@@ -236,7 +243,7 @@ jobs:
       # other job's from the one list and holds each step to it, so the skip and the run cannot
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 33m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -count=1 -race -timeout 40m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
