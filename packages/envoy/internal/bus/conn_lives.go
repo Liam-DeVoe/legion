@@ -60,15 +60,19 @@ type connLife struct {
 // nats.go's, so the client makes it under its own lock (Client.windowLifeLocked): registering the
 // status listener can wait for nats.go's connection lock, which a reconnect's dial and handshake
 // hold, so the life registers it on a goroutine of its own, and a window waits for that within its
-// bound (awaitRegistered).
-func newConnLife(conn *nats.Conn) *connLife {
+// bound (awaitRegistered). followGate, a test's seam, runs on that goroutine before the
+// registration; it is nil outside tests.
+func newConnLife(conn *nats.Conn, followGate func()) *connLife {
 	l := &connLife{conn: conn, registered: make(chan struct{}), life: make(chan struct{}), quit: make(chan struct{})}
-	go l.follow()
+	go l.follow(followGate)
 	return l
 }
 
 // follow registers the life's status listener, then runs its drain and its watch.
-func (l *connLife) follow() {
+func (l *connLife) follow(gate func()) {
+	if gate != nil {
+		gate()
+	}
 	reports := l.conn.StatusChanged(nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
 	l.mu.Lock()
 	l.reports = reports

@@ -431,6 +431,9 @@ type Client struct {
 	// window.current): it follows Conn's lives from nats.go's own reports, under mu, made for each
 	// connection the first time a window pins it (windowLifeLocked).
 	windowLife *connLife
+	// windowLifeFollowGate is a test's seam, set under mu: each window life made from then on runs
+	// it before it registers its status listener (connLife.follow). nil outside tests.
+	windowLifeFollowGate func()
 	// requestReadSlow is a row's seam on a request's own read (requestRead): while it answers true,
 	// that read's budgeted part answers "unknown", as a read a loaded box keeps waiting does. nil
 	// outside tests.
@@ -930,7 +933,7 @@ func (c *Client) proberLocked() *connProber {
 // nats.go's: the life registers its status listener on a goroutine of its own (newConnLife).
 func (c *Client) windowLifeLocked() *connLife {
 	if c.windowLife == nil || c.windowLife.conn != c.Conn {
-		c.windowLife = newConnLife(c.Conn)
+		c.windowLife = newConnLife(c.Conn, c.windowLifeFollowGate)
 	}
 	return c.windowLife
 }
