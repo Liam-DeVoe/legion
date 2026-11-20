@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The role takeover smoke (`scripts/smoke-role-takeover.sh`) no longer fails at random on a loaded machine. In the rows where a claimant must be refused, the holder answers for its claim after the claimant''s process is up, or on every pass while a Claude Code channel server boots, and each such row checks that the claim was weighed inside the live window of that answer. A Claude Code channel server counts as started once it answers a tool, not once the listener has its registration.'
+time: 2026-11-20T06:23:02.762713030Z
+custom:
+    Issue: pr4587
