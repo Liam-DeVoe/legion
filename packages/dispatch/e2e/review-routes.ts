@@ -429,7 +429,8 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
     // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
     // container, the only renderer whose pixels this comparison is ever against
-    // (`packages/dispatch/AGENTS.md`, the four steps for a route this layer gains).
+    // (`packages/dispatch/AGENTS.md`, "Accessibility and visual review": baselines come only
+    // from the pinned container).
     layers: bothLayers,
     name: "person",
     path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
@@ -662,10 +663,12 @@ export function topBarInboxBadge(page: Page): Locator {
  *  it is the sum of reads that answer on their own time, so a page whose own content has settled
  *  can still draw a count that is about to change.
  *
- *  Measured on the review corpus: the broadcast page marks the planner's reply read as it draws
- *  it, and the rail's 7 becomes 6 once that write's event refetches the unread total. Three runs
- *  of the shot rows, waiting only for the page's own content, read that row as 7 in light and 6
- *  in dark, as 7 in both, and as 6 in both.
+ *  Measured on the review corpus while the broadcast page's read mark was still its own: the page
+ *  marked the planner's reply read as it drew it, and the rail's 7 became 6 once that write's event
+ *  refetched the unread total. Three runs of the shot rows, waiting only for the page's own
+ *  content, read that row as 7 in light and 6 in dark, as 7 in both, and as 6 in both. The seed
+ *  now writes that mark first (`e2e/review-seed.ts`), so the page's own write moves nothing; the
+ *  wait stays, since any page's number is still the sum of reads that answer on their own time.
  *
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the

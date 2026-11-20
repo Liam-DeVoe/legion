@@ -223,7 +223,10 @@ Should we ship the migration this week?
 The block becomes an ask in the person's Inbox, and their answer lands next to its context.
 
 A choice you made yourself is a `decision` block in the spec's `## Decisions` part: the choice
-first, then its reason. It asks nothing, and the person reviews it on the issue's Decisions tab.
+first, then its reason and the options you weighed. Its attributes are `shaped`, the spec blocks
+the choice shaped; `from_ask`, the answered ask it carries out; `uncertainty` (`low`, `medium` or
+`high`) with `uncertainty_reason`; and `replaced`, set on a decision that is no longer the design.
+It asks nothing, and the person reviews it on the issue's Decisions tab.
 A person's answered ask is their decision: it stays in the spec, and your reading of it goes inside
 it as a `:::reading` block.
 

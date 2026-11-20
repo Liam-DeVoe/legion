@@ -2420,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 176: the `decisions` design-gate step is gone, since a person's
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 182: the `decisions` design-gate step is gone, since a person's
 // decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
 // that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
 // `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not
@@ -2430,19 +2463,21 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of 168 reads that state as before, since it parses the three names, and the boot gate
+// A plugin of 178 reads that state as before, since it parses the three names, and the boot gate
 // and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
 // file before it pins an image of this release.
 // (This change took 161 at the forward merge of 2026-11-18, which brought main in at 0b2769e553
-// and 152, and 170 at the forward merge of 2026-11-19 that brought main in at e5e4900fe7 and 160.
-// At the forward merge of 2026-11-19 that brings main in at 5f3d552e37, main declares 168 (the
-// entry above), and 170 is declared by #2230, #4030, #4180 and #4193 beside this change, so it
-// takes 176, the lowest number above main's 168 that no open pull request declares, in a reading
-// of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 241 open pull requests, made
-// between 2026-11-19T17:59:02Z and 18:04:40Z: 169 #3831 and #4065, 170 #2230, #4030, #4173 (this
-// change, before this merge), #4180 and #4193, 171 #4115, 172 #3659, 173 #4493, 174 #3993 and
-// #4273, 175 #3712, #4392, #4485 and #4495, and nothing above 175. That is a reading and never the
-// rule: read main's own number and every open head again at the next forward merge rather than
-// from this line.)
-const DaemonAPIVersion = 176
+// and 152, 170 at the forward merge of 2026-11-19 that brought main in at e5e4900fe7 and 160, and
+// 176 at the forward merge of 2026-11-19 that brought main in at 5f3d552e37 and 168. At the
+// forward merge of 2026-11-20 that brings main in at c7e1cbd532, main declares 178 (the entry
+// above), and 176 is declared by #4030, #4180, #4182, #4193, #4251, #4259, #4261, #4269 and #4290
+// beside this change, so it takes 182, the lowest number above main's 178 that no open pull
+// request declares, in a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the
+// 243 open pull requests, made between 2026-11-20T01:06:37Z and 01:12:42Z: 169 #4273 and #4543,
+// 170 #4495, 171 #2230 and #4065, 172 #3659, 173 #4493, 174 #3993, 175 #3712, #4432 and #4539, 176
+// #4030, #4173 (this change, before this merge), #4180, #4182, #4193, #4251, #4259, #4261, #4269
+// and #4290, 177 #4017, 178 #3831, #4552 and #4554, 179 #4392 and #4540, 180 #4049 and #4175, 181
+// #4553, and nothing above 181. That is a reading and never the rule: read main's own number and
+// every open head again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 182
