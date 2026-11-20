@@ -433,7 +433,6 @@ func TestAFingerprintWaitsOutAnArchitectureSyncWhoseCallerLeft(t *testing.T) {
 	inner := fake.handler(t)
 	gate := make(chan struct{})
 	open := sync.OnceFunc(func() { close(gate) })
-	t.Cleanup(open)
 	var holding atomic.Bool
 	var held atomic.Int32
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -452,6 +451,9 @@ func TestAFingerprintWaitsOutAnArchitectureSyncWhoseCallerLeft(t *testing.T) {
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))},
 		githubAPIBase: github,
 	})
+	// Registered after the fake GitHub and the server, so it runs before either closes: the fake's
+	// Close waits for the blob reads the gate holds.
+	t.Cleanup(open)
 	createTestProject(t, handler, "CORE")
 	putSource(t, handler, "CORE", "legion/arch", "main")
 	awaitBackgroundWrites(t, served)
