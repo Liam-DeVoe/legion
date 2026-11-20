@@ -198,6 +198,77 @@ func TestARestrictedMembersMeaningSearchFindsHisProjectWhateverTheOthersHold(t *
 	}
 }
 
+// TestASwitchToPrivateLeavesTheSearchOfTheProjectsStillSeenAsItWas (HNSW): when a project alice
+// saw becomes private, her meaning search answers what it answered before that project held
+// anything: PRIV is made public, 1,000 vectors of it are written nearer her query than every one
+// of PUB's (her answer then holds PRIV's issues, which shows she read them), and PRIV is made
+// private again; her total and hits, ids and order, are then those of the search before PRIV's
+// vectors were written. A switch moves no row: each project's vectors are a graph of their own
+// whatever the project's visibility, and the switch changes only which graphs her search reads.
+//
+// A design that kept every public project's vectors in one graph would move PRIV's out of it at
+// the switch, and a vector moved out of an HNSW graph stays in it, dead, until the graph is built
+// again: in a bare pgvector 0.8.7 table holding alice's 40 spread vectors and 1,000 nearer ones,
+// her rows read 0 with the 1,000 live, 0 with them deleted, 2 after VACUUM, and 33 only after
+// REINDEX (measured on 2026-11-20). The control here is one graph over every project, the base's,
+// where PRIV's vectors stay in alice's graph after the switch, live and hidden from her, and leave
+// her none of her hits: the row fails there, or it proves nothing.
+func TestASwitchToPrivateLeavesTheSearchOfTheProjectsStillSeenAsItWas(t *testing.T) {
+	partitioned := hnswSwitchBack(t, hnswPartitioned)
+	if partitioned.after.Total != partitioned.before.Total || !slices.Equal(hnswHits(partitioned.after), hnswHits(partitioned.before)) {
+		t.Errorf("%s, once PRIV is private again alice's search answers a total %d and %d hits\n\t%v\nwant what it answered before PRIV held anything, a total %d and %d hits\n\t%v",
+			hnswPartitioned, partitioned.after.Total, len(partitioned.after.Results), hnswHits(partitioned.after),
+			partitioned.before.Total, len(partitioned.before.Results), hnswHits(partitioned.before))
+	}
+	shared := hnswSwitchBack(t, hnswSharedGraph)
+	if shared.after.Total == shared.before.Total && slices.Equal(hnswHits(shared.after), hnswHits(shared.before)) {
+		t.Errorf("%s, alice's search after the switch back answers what it did before (%d hits): the shared graph does not fail this row, so it proves nothing",
+			hnswSharedGraph, len(shared.after.Results))
+	}
+}
+
+// hnswSwitch is alice's search at the three points of hnswSwitchBack.
+type hnswSwitch struct {
+	before, public, after model.SearchResponse
+}
+
+// hnswSwitchBack seeds alice's 40 spread vectors of PUB on shape and searches as alice; makes PRIV
+// public, writes 1,000 vectors of it nearer her query and searches again, requiring a hit of PRIV
+// (so the switch to public is honoured, and the vectors are near enough to matter); then makes
+// PRIV private and searches a third time.
+func hnswSwitchBack(t *testing.T, shape hnswShape) hnswSwitch {
+	t.Helper()
+	var round hnswSwitch
+	seed := hnswSeed(t, hnswAlice, shape)
+	round.before = hnswSearch(t, seed, hnswAlice, nil)
+	if len(round.before.Results) == 0 {
+		t.Fatalf("%s: alice's search before PRIV held anything holds no hit of PUB's %d: the row proves nothing", shape, hnswVisible)
+	}
+	visibility := func(to string) {
+		t.Helper()
+		if _, err := seed.database.Pool.Exec(t.Context(), `update projects set visibility = $2 where key = $1`, seedPrivate, to); err != nil {
+			t.Fatalf("make %s %s: %v", seedPrivate, to, err)
+		}
+	}
+	visibility("public")
+	hnswAddHidden(t, seed, hnswAlice, 1000)
+	round.public = hnswSearch(t, seed, hnswAlice, nil)
+	read := 0
+	for _, hit := range round.public.Results {
+		if hit.Kind == "issue" && strings.HasPrefix(hit.ID, seedPrivate+"-") {
+			read++
+		}
+	}
+	if read == 0 {
+		t.Fatalf("%s: with PRIV public, alice's search holds no issue of PRIV (%d hits): the switch to public was not read, or PRIV's vectors are not near her query", shape, len(round.public.Results))
+	}
+	visibility("private")
+	round.after = hnswSearch(t, seed, hnswAlice, nil)
+	t.Logf("%s, alice: %d hits before PRIV held anything; %d hits, %d of them PRIV's, with PRIV public and 1,000 vectors of it nearer; %d hits once PRIV is private again",
+		shape, len(round.before.Results), len(round.public.Results), read, len(round.after.Results))
+	return round
+}
+
 // requireHiddenVectorsChangeNothing is the HNSW rows' one comparison: for each of
 // hnswHiddenCounts, reader's search of a fresh seed on shape before any hidden vector, against the
 // same database's once that many are written, total and hits in order. It answers the first
