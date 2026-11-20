@@ -12,13 +12,121 @@ type shadow struct {
 }
 
 // shadows are the shadowed tables, in the order Shadows writes them. Each one is the plan's
-// decision 2 for its table.
+// decision 2 for its table. No definition reads another shadow: each reads public.<table>, and
+// what it needs of another table at the cut it reads from public.events itself.
 var shadows = []shadow{
 	// An event exists at the cut when the transaction that wrote it began at or before the cut:
 	// created_at is that transaction's start.
 	{Table: "events", Definition: func(cut string) string {
 		return "select * from public.events where created_at <= " + cut
 	}},
+	{Table: "issues", Definition: issuesShadow},
+	{Table: "issue_links", Definition: issueLinksShadow},
+	{Table: "issue_external_links", Definition: issueExternalLinksShadow},
+	{Table: "issue_components", Definition: issueComponentsShadow},
+	{Table: "priority_tuples", Definition: priorityTuplesShadow},
+	{Table: "projects", Definition: projectsShadow},
+	{Table: "repo_projects", Definition: repoProjectsShadow},
+	{Table: "asks", Definition: asksShadow},
+	{Table: "ask_followers", Definition: askFollowersShadow},
+	{Table: "comments", Definition: commentsShadow},
+	{Table: "messages", Definition: messagesShadow},
+	{Table: "comment_deliveries", Definition: commentDeliveriesShadow},
+	{Table: "message_deliveries", Definition: messageDeliveriesShadow},
+	{Table: "artifacts", Definition: artifactsShadow},
+	{Table: "artifact_versions", Definition: createdByTheCut("artifact_versions")},
+	{Table: "artifact_reviews", Definition: createdByTheCut("artifact_reviews")},
+	{Table: "check_results", Definition: createdByTheCut("check_results")},
+	{Table: "check_result_retractions", Definition: createdByTheCut("check_result_retractions")},
+}
+
+// ShadowedTables are the names of the shadowed tables, in the order Shadows writes them.
+func ShadowedTables() []string {
+	tables := make([]string, len(shadows))
+	for index, shadow := range shadows {
+		tables[index] = shadow.Table
+	}
+	return tables
+}
+
+// createdByTheCut is the shadow of an append-only table: each row whose insert began at or before
+// the cut, as the row stands. created_at is the inserting transaction's now(), the clock events
+// keep, and no writer changes such a row's content after its insert. Every column of the table
+// is the row's own, so a column added later is answered with no change here.
+func createdByTheCut(table string) func(cut string) string {
+	return func(cut string) string {
+		return "select * from public." + table + " where created_at <= " + cut
+	}
+}
+
+// sqlList is values as a SQL list of string literals, such as ('a', 'b'). Each value is a
+// constant of this package, never the text of a request.
+func sqlList(values []string) string {
+	quoted := make([]string, len(values))
+	for index, value := range values {
+		quoted[index] = "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	}
+	return "(" + strings.Join(quoted, ", ") + ")"
+}
+
+// jsonArray is the JSON value expr when it is an array, else an empty array: a payload of an
+// older shape that lacks the key, or holds null, reads as no element.
+func jsonArray(expr string) string {
+	return "(case jsonb_typeof(" + expr + ") when 'array' then " + expr + " else '[]'::jsonb end)"
+}
+
+// textArray is the JSON array expr holds as text[], '{}' when it holds none.
+func textArray(expr string) string {
+	return "array(select jsonb_array_elements_text(" + jsonArray(expr) + "))"
+}
+
+// jsonValue is the JSON value expr as SQL null when the key is absent or holds JSON null, which
+// is what the column holds for a field the writer stored as null.
+func jsonValue(expr string) string {
+	return "nullif(" + expr + ", 'null'::jsonb)"
+}
+
+// ownedBy is true of an event row whose owner is the issue or the document that owns row: an
+// event of an ask, a comment or a document names its owner as the row does (one of issue_key
+// and artifact_id, events_one_owner). It lets a per-row read of a post's events take the
+// owner's index.
+func ownedBy(event, row string) string {
+	return "(" + event + ".issue_key = " + row + ".issue_key or " + event + ".artifact_id = " + row + ".artifact_id)"
+}
+
+// postHistoryMigration is INFRA-1523's migration 20261110224508. From the time schema_migrations
+// records for it, every edit and delete of a comment or a message writes a post_body_history row
+// in its own transaction.
+const postHistoryMigration = "20261110224508"
+
+// postHistoryBegan is the time post_body_history began, as a SQL expression.
+const postHistoryBegan = `(select m.applied_at from public.schema_migrations m where m.version = ` + postHistoryMigration + `)`
+
+// postBodyAtCut is the body a comment or a message had at the cut, by decision 2's one clock,
+// the events'. post is the row's alias and column post_body_history's column that names it;
+// newest is the alias of its newest state event at the cut and later the alias of its first
+// edit or delete event after the cut (each with no row when there is none). A post deleted at
+// any time reads with no body (decision 14), as the present read gives it.
+//
+//   - No edit or delete after the cut: the row's body.
+//   - The first such event began at or after post_body_history did: the body that event
+//     replaced, the history row its transaction wrote, which is the oldest row of the post
+//     whose edited_at (clock_timestamp() inside that transaction) is at or after the event's
+//     created_at (that transaction's start).
+//   - An edit made before that history began (no row holds what it replaced): the body of the
+//     newest event at the cut, unless that event cut it at 32,000 UTF-16 units
+//     (body_truncated), which the answer names absent (reason T).
+func postBodyAtCut(post, column, newest, later string) string {
+	return `case
+			when ` + post + `.deleted_at is not null then ''
+			when ` + later + `.id is null then ` + post + `.body
+			when ` + later + `.created_at >= ` + postHistoryBegan + ` then coalesce((
+				select h.body from public.post_body_history h
+				where h.` + column + ` = ` + post + `.id and h.edited_at >= ` + later + `.created_at
+				order by h.edited_at, h.id limit 1), '')
+			when coalesce((` + newest + `.payload->>'body_truncated')::boolean, false) then ''
+			else coalesce(` + newest + `.payload->>'body', '')
+		end`
 }
 
 // Shadows is the body of a WITH list that holds one member per shadowed table,
