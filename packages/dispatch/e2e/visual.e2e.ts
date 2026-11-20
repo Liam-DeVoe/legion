@@ -36,6 +36,8 @@
  *    by rows that drive time themselves. Here each row installs it a minute after the moment
  *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
  *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
+ *    The day headings ("Today", "Yesterday") read that same clock, so the seed is written on one
+ *    UTC day with the rows' reach after it (`e2e/visual-day.ts`) and the rows draw in UTC.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
  *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are masked as well. The cost is
  *    that the text of a timestamp is in no baseline; its place, its size and the layout around

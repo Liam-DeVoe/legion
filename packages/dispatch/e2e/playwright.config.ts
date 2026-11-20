@@ -600,7 +600,14 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    // UTC: the zone the pinned image's Chromium drew every baseline in, named so that the day
+    // the page heads its events with is the day `e2e/visual-seed.ts` keeps the corpus on
+    // (e2e/visual-day.ts). Every context a row makes takes it, as it takes the viewport.
+    use: {
+      ...devices["Desktop Chrome"],
+      timezoneId: "UTC",
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -609,7 +616,7 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const, timezoneId: "UTC" },
     workers: 1,
     retries: 0,
   },

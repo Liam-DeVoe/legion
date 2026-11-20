@@ -1845,6 +1845,10 @@ jobs:
       - name: Pull the stack's Postgres image
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       - name: Browser-test dispatch dashboard against its baselines
+        # A seed in the last two minutes of a UTC day waits for midnight and seeds again
+        # (packages/dispatch/e2e/visual-day.ts): at most 2 min, and one more seed, which with the
+        # stack's start took under 7 s in job 135974266127, over the 66 s and 81 s that green runs
+        # of this step took (jobs 135832072234 and 135974266127's forward pass), inside 4 minutes.
         timeout-minutes: 4
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of the stack
