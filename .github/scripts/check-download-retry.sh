@@ -197,20 +197,31 @@
 #      around the whole of a path, `"$script_dir/ci-retry.sh"`, leaves the path as written, and
 #      reads as it did. EVERY PATTERN IS READ AS BASH READS IT WITH ITS DEFAULT OPTIONS, and a
 #      setting that changes how bash expands a word is refused by name rather than read, one class
-#      whatever the option (expansion_settings; dispatch://INFRA-1545, round 41): wherever this
-#      check reads run text, in a step, a composite action's step, a script, the text of a
-#      shell's `-c` and a `trap`'s action, whatever the text holds, a `shopt` setting or unsetting
-#      an option that changes expansion or matching (EXPANSION_SHOPT, read from bash 5.2.37's own
-#      list and manual: nocaseglob, nullglob, dotglob, extglob, globstar and sixteen more), or
-#      naming its options with a word that is no literal text; a `set` of noglob, braceexpand,
-#      histexpand, keyword or posix, by its letter in any cluster, `set -euf` or `set +B`, or after
-#      `-o` or `+o`; a shell started with one of them, `bash -O nocaseglob`, `bash -f`, `sh -o
-#      noglob`, `bash --posix` or `bash -i`, where it runs a `-c` text or a file (one reading its
-#      standard input is refused by that route where the route can hide a fetch); a word setting
-#      or unsetting GLOBIGNORE, BASHOPTS, SHELLOPTS, BASH_COMPAT or POSIXLY_CORRECT, an assignment
-#      anywhere in a command, one through `export`, `declare`, `local`, `readonly`, `typeset`,
-#      `read`, `printf -v` or a loop, or an `unset`; and, in a workflow or an action, an `env:`
-#      naming one of those variables and a `shell:` starting a shell with such a setting. A
+#      whatever the option (expansion_settings; dispatch://INFRA-1545, round 41), in the run text
+#      this check reads for it: a step, a composite action's step, a script, and the text of a
+#      shell's `-c` and a `trap`'s action where that shell or that `trap` is the command once the
+#      wrappers this check drops are gone (reduce_words). There, whatever the text holds, it
+#      refuses a `shopt` setting or unsetting an option that changes expansion or matching
+#      (EXPANSION_SHOPT, read from bash 5.2.37's own list and manual: nocaseglob, nullglob,
+#      dotglob, extglob, globstar and sixteen more), or naming its options with a word that is no
+#      literal text; a `set` of noglob, braceexpand, histexpand, keyword or posix, by its letter
+#      in any cluster, `set -euf` or `set +B`, or after `-o` or `+o`; a shell started with one of
+#      them, `bash -O nocaseglob`, `bash -f`, `sh -o noglob`, `bash --posix` or `bash -i`, where
+#      that shell is the command once those wrappers are gone and it runs a `-c` text or a file
+#      (one reading its standard input is refused by that route where the route can hide a
+#      fetch); a word setting or unsetting GLOBIGNORE, BASHOPTS, SHELLOPTS, BASH_COMPAT or
+#      POSIXLY_CORRECT, an assignment anywhere in a command, one through `export`, `declare`,
+#      `local`, `readonly`, `typeset`, `read`, `printf -v` or a loop, or an `unset`; and, in a
+#      workflow or an action, an `env:` naming one of those variables and a `shell:` starting a
+#      shell with such a setting. A SHELL STARTED AS ANOTHER PROGRAM'S ARGUMENT IS NOT READ SO:
+#      this check reads neither its options nor its `-c` text as run text, so `flock /tmp/l2 bash
+#      -O nocaseglob -c 'flock /tmp/l-opts .github/scripts/R38-FE[T]CH.SH'` passes r38-fetch.sh's
+#      1050 s under a 17-minute key, where the same text without the outer `flock` is refused.
+#      That is the stated limit W-flock-bash: no line of the tree writes its form, since none runs
+#      an interpreter behind `flock` and none sets nocaseglob (measured at fd9552f6), and the path
+#      it reaches is a glob, not a literal path or a bare command, so under THE REACH OF THIS
+#      CHECK ENDS AT THE FORMS THE TREE WRITES below it is an undercount recorded with its shape
+#      in dispatch://INFRA-1545/artifact/r37-accepted-refusals-md rather than a finding. A
 #      command another refusal names already, as `bash -O extglob .github/scripts/x.sh` is named
 #      where x.sh fetches, is named once. A Dockerfile RUN is read for no pattern, so for none of
 #      these. Until round 41 `shopt -s nocaseglob` and then `cd .github/scripts &&
@@ -427,15 +438,17 @@
 #     it as none (odd_command; dispatch://INFRA-1545, round 38); a wrapper is read by its name
 #     whatever directory names it, so `/usr/bin/env -S` is `env -S` (program_name; round 42);
 #   - a setting that changes how bash expands a word, a `shopt`, a `set`, a shell's options, a
-#     variable such as GLOBIGNORE, BASH_ENV or ENV, an `env:` or a `shell:`, wherever written in a
-#     step, a composite action, a script, the text of a shell's `-c` or a `trap`'s action,
-#     whatever the text holds, since every pattern is read as bash reads it with its default
-#     options (expansion_settings, and the reach under item 1; dispatch://INFRA-1545, rounds 41
-#     and 42);
+#     variable such as GLOBIGNORE, BASH_ENV or ENV, an `env:` or a `shell:`, written in a step, a
+#     composite action, a script, or the text of a shell's `-c` or a `trap`'s action where that
+#     shell or that `trap` is the command once the wrappers this check drops are gone, whatever
+#     the text holds, since every pattern is read as bash reads it with its default options; a
+#     shell started as another program's argument, `flock /tmp/l bash -O nocaseglob -c '…'`, is
+#     the stated limit W-flock-bash (expansion_settings, the reach under item 1 and THE REACH OF
+#     THIS CHECK ENDS below; dispatch://INFRA-1545, rounds 41 and 42);
 #   - a `.` or a `source` of anything but a literal path to a file of the tree, and a write into
 #     `$GITHUB_ENV` that sets such a variable or whose lines this check cannot read as literal
-#     text, wherever written and whatever the text holds (tree_sources, env_file_writes, and the
-#     reach under item 1; dispatch://INFRA-1545, round 42);
+#     text, in that same run text and whatever the text holds (tree_sources, env_file_writes,
+#     and the reach under item 1; dispatch://INFRA-1545, round 42);
 #   - a `timeout-minutes` of a step or a job written as anything but a whole number with no
 #     leading zero or an expression, and a line of text below a pricing comment that reads as
 #     `timeout-minutes: <n>` and is no key, wherever written;
@@ -755,13 +768,20 @@
 #      worth stating here rather than leaving for whoever writes the next one.
 #      `written_minutes` takes a whole number and nothing else, so `timeout-minutes: ${{ matrix.timeout_minutes }}`
 #      reads as a job that wrote none and is judged at the 360-minute default, whatever the
-#      matrix row really allows. The instance in this tree is .github/workflows/e2e.yaml's
-#      `proof` job, whose limits are the rows of .github/e2e-scripts.json: those rows are
+#      matrix row really allows. This tree writes two such jobs. .github/workflows/e2e.yaml's
+#      `proof` job takes its limits from the rows of .github/e2e-scripts.json: those rows are
 #      derived by hand, each against the slowest retried step its own flags select, and that
-#      file says so where they are written. Anyone adding such a row gets no gate, so the
+#      file says so where they are written. .github/workflows/dispatch-unit-repeat.yaml's
+#      `repeat` job writes `timeout-minutes: ${{ matrix.job_minutes }}` (:147), and its matrix's
+#      comment (:155-161) derives each lane's figure by hand, the job's first term plus the
+#      setup-bun step's two `ci_tools_fetch` calls, 3416 s: web 1020 + 3416 = 4436 s under 74
+#      minutes (4440 s), web-cold 180 + 3416 = 3596 s under 60 (3600 s), and harness
+#      1980 + 3416 = 5396 s under 90 (5400 s). Anyone adding such a row gets no gate, so the
 #      arithmetic has to be written beside it. A step that writes its budget as an expression
-#      is read the same way, which for a step means it is refused as writing none, so no step
-#      of this tree writes one.
+#      is read the same way, as writing none, which refuses it where it holds a retried call:
+#      the same file's `Run the lane under one seed with --reruns ${{ matrix.reruns }}` step
+#      writes `timeout-minutes: ${{ matrix.step_minutes }}` (:264), and passes because it holds
+#      no retried call.
 #
 #      PYTHON IS READ IN ONE PLACE ONLY, which is the other gap worth stating here. Rule 6
 #      reads a `urlopen` written in a heredoc of a `.sh` under .github/scripts, so those
@@ -1442,8 +1462,9 @@ WRAPPER_OPTIONS = {
     "env": {"-i": 0, "-u": 1},
     "nice": {"-n": 1},
     # `-u <user>` since this branch's merge of main's #4267, whose
-    # .github/workflows/dispatch-unit-repeat.yaml:208 (the `Start PostgreSQL for the harness rows
-    # that need a database` step) runs `sudo -u postgres psql …`, which the gate refused by name.
+    # .github/workflows/dispatch-unit-repeat.yaml:238 (the `Start PostgreSQL for the harness rows
+    # that need a database` step) runs `sudo -u postgres psql …` at :242, which the gate refused
+    # by name.
     "sudo": {"-E": 0, "-u": 1},
 }
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
@@ -4882,10 +4903,11 @@ script_files = set(scripts)
 # for the key that holds the build once the Dockerfiles are read.
 dockerfile_built: list[tuple[str, str, str, Mapping, str | None, object]] = []
 # Each mapping of a workflow or an action that may hold an `env:` or a `shell:`, the file's own,
-# each job's and each step's, as (the file, what a refusal calls it, the mapping), read for the
-# settings that change how bash expands a word once expansion_settings is defined
-# (dispatch://INFRA-1545, round 41).
-expansion_holders: list[tuple[str, str, Mapping]] = []
+# each job's and each step's, as (the file, what a refusal calls it, the mapping, which of the
+# three it is), read for the settings that change how bash expands a word once expansion_settings
+# is defined (dispatch://INFRA-1545, round 41); the kind says what such a setting reaches
+# (KEY_REACH, round 43).
+expansion_holders: list[tuple[str, str, Mapping, str]] = []
 
 
 def local_action(uses: object) -> str | None:
@@ -5109,12 +5131,12 @@ for path in workflows + actions:
     # The file, each job and each step, whose `env:` and `shell:` are read once the readings they
     # need are defined (expansion_holders; dispatch://INFRA-1545, round 41).
     jobs_read = document.get("jobs")
-    expansion_holders += [(path, "this file", document)] + [
-        (path, f"job '{job_id}'", job)
+    expansion_holders += [(path, "this file", document, "file")] + [
+        (path, f"job '{job_id}'", job, "job")
         for job_id, job in (jobs_read.items() if isinstance(jobs_read, Mapping) else ())
         if isinstance(job, Mapping)] + [
         (path, f"step '{name}' of job '{job}'" if job is not None else f"step '{name}' of {path}",
-         step) for job, name, step, _shell, _holder in steps_of(path, document)]
+         step, "step") for job, name, step, _shell, _holder in steps_of(path, document)]
     credentialed = credentialed_jobs(path, document)
     for job, name, step, shell, holder in steps_of(path, document):
         cost: int | None = 0
@@ -6237,18 +6259,47 @@ NO_DIRECTORY_RUN = ("which names a script with no directory, so the shell finds 
 # holds an expansion. Its text runs in this shell, a setting that changes how bash expands a word
 # among it, and no rule here reads that text. Until round 42 `. /dev/stdin <<<'shopt -s
 # nocaseglob'` and then `flock /tmp/l .github/scripts/R38-FE[T]CH.SH` passed r38-fetch.sh's 1050 s
-# under a 17-minute key.
-NO_TREE_SOURCE = ("which is no literal path to a file of this tree, and the text a `.` or a "
-                  "`source` reads runs in this shell, a setting that changes how bash expands a "
-                  "word among it")
+# under a 17-minute key. The refusal is a sentence of its own, after what the command does, and
+# no run's: until round 43 it was said inside UNNAMED_RUN, which told `. /etc/os-release` that
+# this check cannot name the script that runs there and that it refuses a path built from data.
+# Its cure is SOURCE_CURE's, and for the text a here-string or a heredoc feeds, to write it in
+# place (dispatch://INFRA-1545, round 43).
+NO_TREE_SOURCE = ("which is no literal path to a file of this tree. A `.` or a `source` runs the "
+                  "text it reads in this shell, and this check reads no shell text but what the "
+                  "files of this tree hold, so no rule here reads what that text holds: a fetch, a "
+                  "run of a script or a setting that changes how bash expands a word may be among "
+                  "it")
+NO_TREE_SOURCE_CURE = (SOURCE_CURE[0].upper() + SOURCE_CURE[1:] + "; and write the commands a "
+                       "here-string or a heredoc feeds it in the text itself, where this check "
+                       "reads them")
 # A word that is no literal path, its globs, braces, quotes, backslashes and expansions read as
 # bash reads them with every expansion a wildcard, which could name a CI script that fetches or a
 # file under .github/scripts/ this check does not read (pattern_words; dispatch://INFRA-1545,
-# round 38). One reason and one cure, wherever the word stands: at a run's target, read by its
-# last element, and anywhere else, where its literal text holds `.github/`.
+# round 38). One reason wherever the word stands, at a run's target, read by its last element,
+# and anywhere else, where its literal text holds `.github/`; what follows it is UNNAMED_RUN's
+# at a run's target and PATTERN_ELSEWHERE's anywhere else (round 43).
 PATTERN_RUN = ("a script that fetches or a file this check does not read, since bash fills in its "
                "patterns and expansions from the files and the values the step holds as it runs, "
                "which this check does not see")
+# The cure of such a word written anywhere but at a run's target, PATTERN_ELSEWHERE's and
+# UNREADABLE_ELSEWHERE's, each form of it driven to a step this check passes (round 43).
+ARGUMENT_CURE = ("List the directory with no pattern and match its names as text, `ls "
+                 ".github/scripts/ | grep -x '[c-z].*\\.sh'`, or let bash fill the pattern in as "
+                 "an argument of `printf`, whose words no shell runs, `printf '%s\\n' "
+                 ".github/scripts/[c-z]*.sh`")
+# What the refusal of such a word says after PATTERN_RUN where the word stands anywhere but at a
+# run's target, a sentence of its own: until round 43 it was said inside UNNAMED_RUN, which told
+# `ls .github/scripts/[c-z]*.sh` that this check cannot name the script that runs there and to
+# write that script's literal path, which call_of refuses as an argument of `ls`. At a run's
+# target the refusal is UNNAMED_RUN's still, with PATTERN_RUN's cure (dispatch://INFRA-1545,
+# round 43).
+PATTERN_ELSEWHERE = (
+    "This check refuses such a word wherever its literal text holds `.github/`, but as an "
+    "argument of `echo` or `printf` and, where each file it could name is one this check does "
+    "not read, in a place this tree writes one, since which programs run the files a word names "
+    "is no list it can hold, so it cannot tell whether those this word names run here. "
+    + ARGUMENT_CURE + "; run a Python program with `python3 .github/scripts/<name>.py …`; a "
+    "pattern that names no such file, such as `ls .github/workflows/*.yaml`, passes")
 # A word holding a pattern bash accepts that this check cannot turn into the regular expression
 # pattern_words matches the tree's files with is refused by name whatever it could name, since
 # this check cannot tell (pattern_words; dispatch://INFRA-1545, round 39): a `[…]` range that
@@ -6264,7 +6315,28 @@ PATTERN_RUN = ("a script that fetches or a file this check does not read, since 
 UNREADABLE_PATTERN = ("which holds a pattern bash reads and this check cannot turn into a match, "
                       "such as a `[…]` range that runs backwards, `[z-c]`, a bracket expression "
                       "other than a plain set, `[[:alpha:]]`, or a brace expansion with a part "
-                      "that is no literal text, `{x,y*}`")
+                      "that is no literal text, `{x,y*}`, so this check cannot tell which files "
+                      "bash fills it in with")
+# What the refusal of such a word says after UNREADABLE_PATTERN, a sentence of its own for each
+# place pattern_words reads a word in. At a run's target the cure is the literal path: a pattern
+# this check can read is refused there in turn where it could name a script that fetches
+# (PATTERN_RUN), as `cd .github/scripts && ./r38-fe[c-z]ch.sh` is, or where unnamed_target reads
+# it as an expansion, as it reads `.github/scripts/r38-[c-z]etch.sh`. Anywhere else the cure is
+# to name the files with no pattern a program is handed. Until round 43 both were said inside
+# UNNAMED_RUN, which told `ls .github/scripts/[z-c]*.sh` that this check cannot name the script
+# that runs there and advised `[c-z]`, which pattern_words then refuses as a word that could
+# name a script that fetches, or the script's literal path, which call_of refuses as an argument
+# of `ls` (dispatch://INFRA-1545, round 43).
+UNREADABLE_AT_RUN = ("A script under .github/scripts/ that fetches may run there, and its "
+                     "attempts would be charged to no budget. Write the path of the script that "
+                     "runs there literally, `.github/scripts/<name>.sh …`, with what varies as its "
+                     "arguments")
+UNREADABLE_ELSEWHERE = (
+    "This check refuses a word that could name a script under .github/scripts/ that fetches "
+    "wherever the word's literal text holds `.github/`, but as an argument of `echo` or `printf`, "
+    "since which programs run the files a word names is no list it can hold, and it cannot tell "
+    "that this word names none. " + ARGUMENT_CURE + "; a pattern this check can read, `[c-z]` "
+    "rather than `[z-c]`, is refused in turn wherever it could name such a script")
 # THE SETTINGS THAT CHANGE HOW BASH EXPANDS A WORD (dispatch://INFRA-1545, round 41). Every
 # pattern above is read as bash reads it with its default options (globs_in, plain_set,
 # word_pattern), so a setting that changes how bash expands a word or matches a pattern makes a
@@ -6363,11 +6435,42 @@ EXPANSION_LETTERS = {letter: name for name, letter in EXPANSION_SET.items() if l
 STARTUP_VARIABLES = frozenset({"BASH_ENV", "ENV"})
 EXPANSION_VARIABLES = frozenset({"GLOBIGNORE", "BASHOPTS", "SHELLOPTS", "BASH_COMPAT",
                                  "POSIXLY_CORRECT"}) | STARTUP_VARIABLES
-# What the refusal says of the setting it found, after naming the step or the script and, inside a
-# shell's `-c` text, that text, and before the cure REASON_CURES writes for it.
+# What the refusal says of a setting written in run text, after naming the step or the script and,
+# inside a shell's `-c` text, that text, and before the cure REASON_CURES writes for it. Such a
+# setting reaches the words of that text, or of a shell the text starts, which inherits what the
+# text exports and runs the startup file it names: until round 43 the refusal said "a word of this
+# text" alone, which `export BASH_ENV=…` reaches only through the shells the text starts. A key's
+# setting is KEY_SETTING's, and a `$GITHUB_ENV` line's ENV_FILE_SETTING's (dispatch://INFRA-1545,
+# round 43).
 EXPANSION_SETTING = ("{setting}, which {changes} how bash expands a word, and this check reads "
                      "every pattern as bash does with its default options, so it cannot tell "
-                     "which file a word of this text names")
+                     "which file a word of this text, or of a shell it starts, names")
+# What the refusal of an `env:` key or a `shell:` that changes how bash expands a word says after
+# naming the file, the job or the step that writes it, and the cures. Such a key is no text: it
+# reaches what KEY_REACH says for its holder, the first of each pair for an `env:` and the second
+# for a `shell:`, which applies to a `run:` alone. Until round 43 it was EXPANSION_SETTING's, which
+# told `job 'build' sets ENV in its env:` that this check could not tell which file a word of
+# "this text" names (dispatch://INFRA-1545, round 43).
+KEY_REACH = {
+    "file": ("every step this file runs",
+             "each `run:` in this file that no job's or step's own `shell:` overrides"),
+    "job": ("every step of the job", "each `run:` of the job that names no `shell:` of its own"),
+    "step": ("the text this step runs", "the text this step runs"),
+}
+KEY_SETTING = ("which reaches {reach}, so it {changes} how bash expands a word there, and this "
+               "check reads every pattern as bash does with its default options, so it cannot tell "
+               "which file a word there names")
+ENV_KEY_CURE = (
+    "Set none of " + ", ".join(f"`{name}`" for name in sorted(EXPANSION_VARIABLES))
+    + " in an `env:`; leave bash's expansion options at their defaults in every step, and where "
+    "a glob may match no file, test the name it gives, `[ -e \"$file\" ] || continue`, rather "
+    "than set `nullglob`")
+SHELL_KEY_CURE = ("Write `shell: bash`, or no `shell:`, and leave bash's expansion options at "
+                  "their defaults; where a glob may match no file, test the name it gives, "
+                  "`[ -e \"$file\" ] || continue`, rather than set `nullglob`")
+# What either cure adds where the key names a startup file (STARTUP_VARIABLES).
+STARTUP_STEP_CURE = ("; and where a step needs the commands a startup file would run, write them "
+                     "in that step, where this check reads them")
 # What the cure adds where the setting names a startup file (STARTUP_VARIABLES).
 STARTUP_CURE = ("; and name no startup file in `BASH_ENV` or `ENV`: write the commands of the "
                 "file it names in the step itself, where this check reads them")
@@ -6391,16 +6494,10 @@ REASON_CURES = {
         "with what varies as its arguments, and run a Python program with `python3 "
         ".github/scripts/<name>.py …`; a pattern that names no such file, such as `ls "
         ".github/workflows/*.yaml`, passes"),
-    UNREADABLE_PATTERN: (
-        "Write the path of the script that runs there literally, `.github/scripts/<name>.sh …`, "
-        "with what varies as its arguments, or write each `[…]` of the pattern as a plain set, "
-        "its characters and its ranges run forwards, `[c-z]` rather than `[z-c]` or "
-        "`[[:alpha:]]`, and each part of a brace literally, `{x,y}` rather than `{x,y*}`"),
     EXPANSION_SETTING: (
         "Write each path the text runs or names literally, `.github/scripts/<name>.sh`, and "
         "leave bash's expansion options at their defaults; where a glob may match no file, test "
         "the name it gives, `[ -e \"$file\" ] || continue`, rather than set `nullglob`"),
-    NO_TREE_SOURCE: SOURCE_CURE[0].upper() + SOURCE_CURE[1:],
 }
 # THE FILE A JOB'S LATER STEPS TAKE THEIR ENVIRONMENT FROM (env_file_writes; dispatch://INFRA-1545,
 # round 42). A line `NAME=value` or `NAME<<DELIMITER` written into `$GITHUB_ENV` sets NAME for
@@ -6417,6 +6514,24 @@ ENV_FILE_UNREAD = (
     "Write each line with its name spelled out: `echo \"NAME=$value\" >> \"$GITHUB_ENV\"`, "
     "`printf '%s\\n' \"NAME=$value\" … >> \"$GITHUB_ENV\"`, or a heredoc or a here-string of "
     "such lines fed to `cat >> \"$GITHUB_ENV\"` (dispatch://INFRA-1545, round 42).")
+# What the refusal of a line written into `$GITHUB_ENV` that sets a variable of
+# EXPANSION_VARIABLES says after naming the step or the script and what it writes
+# (env_file_refusal), and its cure. The variable reaches every later step of the job and not the
+# text that writes it, so this is a sentence of its own: until round 43 it was EXPANSION_SETTING's,
+# which told `echo "BASH_ENV=/tmp/x" >> "$GITHUB_ENV"` that this check could not tell which file
+# a word of that text names (dispatch://INFRA-1545, round 43).
+ENV_FILE_SETTING = ("which {changes} how bash expands a word in each of those steps, and this "
+                    "check reads every pattern as bash does with its default options, so it "
+                    "cannot tell which file a word of those steps names")
+ENV_FILE_SETTING_CURE = (
+    "Write no line into `$GITHUB_ENV` that sets any of "
+    + ", ".join(f"`{name}`" for name in sorted(EXPANSION_VARIABLES))
+    + "; leave bash's expansion options at their defaults in every step, and where a glob may "
+    "match no file, test the name it gives, `[ -e \"$file\" ] || continue`, rather than set "
+    "`nullglob`")
+# What that cure adds where the line names a startup file (STARTUP_VARIABLES).
+ENV_FILE_STARTUP_CURE = ("; and where a later step needs the commands a startup file would run, "
+                         "write them in that step, where this check reads them")
 
 
 def runners_of(loops: Loops) -> dict[str, tuple[int, bool]]:
@@ -6947,8 +7062,9 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
                   within: str = "", depth: int = 0) -> list[tuple[int, int, str, str]]:
     """Each command of a body holding a word that is no literal path and could name a CI script
     that fetches or a file of unread_files, as (the first and the last line of the command, what
-    it does with the first such word, why it is refused), UNNAMED_RUN's `does` and `why`, the
-    reason PATTERN_RUN (dispatch://INFRA-1545, round 38). The word is read as bash reads it
+    it does with the first such word, why it is refused), the reason PATTERN_RUN, UNNAMED_RUN's
+    `does` and `why` at a run's target, and PATTERN_ELSEWHERE, the sentence after PATTERN_RUN,
+    anywhere else (dispatch://INFRA-1545, rounds 38 and 43). The word is read as bash reads it
     (word_pattern): its globs, braces and expansions are filled in from the files and the values
     the step holds as it runs, so it names whatever matches then.
       - At a run's target (run_places), in the step or in the text a shell's `-c` runs, the word
@@ -6967,8 +7083,9 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
     In both, a variable the same text sets once to a literal value (literal_values) is read as
     that value (substituted), so `d=.github/scripts` and then `flock /tmp/l "$d"/x.s[h]` or `cp
     "$d"/x.p? "$RUNNER_TEMP/zz"` is refused, which a reader of the text as written can see.
-    And in both, a word whose pattern this check cannot turn into a match is refused with the
-    reason UNREADABLE_PATTERN whatever it could name, since this check cannot tell what that is:
+    And in both, a word whose pattern this check cannot turn into a match is refused for
+    UNREADABLE_PATTERN whatever it could name, since this check cannot tell what that is, with
+    the sentence of its place after it, UNREADABLE_AT_RUN or UNREADABLE_ELSEWHERE (round 43):
     one Python cannot compile (compiled_pattern), such as a `[…]` range that runs backwards,
     `[z-c]`, which bash accepts (round 39), and one holding a bracket expression other than a
     plain set (plain_set), such as `[[:alpha:]]`, `[]t]` or `[!]]`, or a brace expansion with a
@@ -7070,7 +7187,10 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
             found.append((command.line, max(last_line, command.line),
                           f"{within}{does}, which could name {names}" if matcher is not None
                           else f"{within}{does}",
-                          PATTERN_RUN if matcher is not None else UNREADABLE_PATTERN))
+                          (PATTERN_ELSEWHERE if does.startswith("writes") else PATTERN_RUN)
+                          if matcher is not None
+                          else UNREADABLE_ELSEWHERE if does.startswith("writes")
+                          else UNREADABLE_AT_RUN))
             break
         if head in INTERPRETERS and depth < 3:
             kind, target = shell_operand(reduced)
@@ -7171,6 +7291,11 @@ def option_settings(words: list[str], plain: list[frozenset[int]]
     return settings, None
 
 
+# A word assigning a variable, `NAME=…`, `NAME+=…` or `NAME[…]=…`, read for the variables of
+# EXPANSION_VARIABLES (variable_settings, env_file_printed).
+SETTING_WORD = re.compile(r"([A-Za-z_]\w*)(?:\+?=|\[)")
+
+
 def variable_settings(words: list[str], start: int) -> list[tuple[str, str]]:
     """The variables of EXPANSION_VARIABLES a command's words set or unset, as (`sets` or
     `unsets`, the name), `start` being where the command reduce_words reads begins
@@ -7182,7 +7307,7 @@ def variable_settings(words: list[str], start: int) -> list[tuple[str, str]]:
     -v "$n"`, is read by no rule here."""
     found = []
     for word in words:
-        assigned = re.match(r"([A-Za-z_]\w*)(?:\+?=|\[)", word)
+        assigned = SETTING_WORD.match(word)
         if assigned and assigned.group(1) in EXPANSION_VARIABLES:
             found.append(("sets", assigned.group(1)))
         found += [("sets", name) for name in re.findall(r"\$\{([A-Za-z_]\w*):?=", word)
@@ -7203,13 +7328,15 @@ def variable_settings(words: list[str], start: int) -> list[tuple[str, str]]:
 
 
 def expansion_settings(text: str, first_line: int, within: str = "",
-                       depth: int = 0) -> list[tuple[int, int, str, str, bool]]:
+                       depth: int = 0) -> list[tuple[int, int, str, str, bool, bool]]:
     """Each command of a body that changes how bash expands a word, as (the first and the last
     line of the command, what it sets or unsets, `changes` or `may change`), EXPANSION_SETTING's
-    two parts, and whether it sets a startup file (STARTUP_VARIABLES, round 42), which may hold
-    such a setting or none (dispatch://INFRA-1545, round 41). Every pattern this check reads is
-    read as bash reads it with its default options, so each such setting is refused by name
-    wherever it is written and whatever the text holds, rather than read: a `shopt` setting or
+    two parts, whether it sets a startup file (STARTUP_VARIABLES, round 42), which may hold
+    such a setting or none, and whether what it sets is a line it writes into `$GITHUB_ENV`
+    (env_file_printed, round 43), which reaches every later step of the job rather than this
+    text (dispatch://INFRA-1545, round 41). Every pattern this check reads is read as bash reads
+    it with its default options, so each such setting is refused by name wherever this check
+    reads run text for it and whatever the text holds, rather than read: a `shopt` setting or
     unsetting an option of EXPANSION_SHOPT, or of EXPANSION_SET with `-o`, or naming its options
     with a word that is no literal text; a `set` turning on or off an option of EXPANSION_SET, by
     its letter or after `-o` or `+o`, or holding such a word among its options; a shell started
@@ -7251,9 +7378,16 @@ def expansion_settings(text: str, first_line: int, within: str = "",
             last_line = first_line + text.count("\n", 0, max(ends)) if ends else command.line
             # A startup file may hold such a setting or none (STARTUP_VARIABLES).
             startup = any(name in STARTUP_VARIABLES for _verb, name in settings)
+            # Where every setting is a line the command writes into `$GITHUB_ENV`, it sets
+            # nothing in this text, and the refusal says where it does (env_file_refusal).
+            printed = env_file_printed(commands, index) if unread is None else []
+            later = bool(printed) and sorted(settings) == sorted(("sets", name)
+                                                                 for name, _word in printed)
             found.append((command.line, max(last_line, command.line),
-                          f"{within}{said} (`{' '.join(shown)}`)",
-                          "may change" if unread is not None or startup else "changes", startup))
+                          within + env_file_setting(printed) if later
+                          else f"{within}{said} (`{' '.join(shown)}`)",
+                          "may change" if unread is not None or startup else "changes", startup,
+                          later))
         if kind == "text" and target and depth < 3:
             found += expansion_settings(target, command.line,
                                         f"in the text `{head} -c` runs, ", depth + 1)
@@ -7267,14 +7401,69 @@ def expansion_settings(text: str, first_line: int, within: str = "",
     return found
 
 
+def env_file_printed(commands: list[Command], index: int) -> list[tuple[str, str]]:
+    """The variables of EXPANSION_VARIABLES the command at `index` writes into `$GITHUB_ENV` as
+    lines, each with the word that writes it: an argument of an `echo` or a `printf` that
+    assigns one, `NAME=…` (SETTING_WORD), where the command's own redirect writes into
+    `$GITHUB_ENV` or a `tee` naming it reads the command's output through a pipe
+    (expansion_settings; dispatch://INFRA-1545, round 43). Such a word sets nothing in the text
+    that prints it: the runner sets the variable for every later step of the job."""
+    command = commands[index]
+    reduced = reduce_words(command.words)[0]
+    if not reduced or program_name(reduced[0]) not in ("echo", "printf"):
+        return []
+    written = any(ENV_FILE.search(word) for word in command.writes)
+    if not written and command.piped:
+        consumer = next((other for other in commands[index + 1:]
+                         if other.context == command.context), None)
+        teed = reduce_words(consumer.words)[0] if consumer is not None else []
+        written = (bool(teed) and program_name(teed[0]) == "tee"
+                   and any(ENV_FILE.search(word) for word in teed[1:]))
+    if not written:
+        return []
+    return [(assigned.group(1), word) for word in reduced[1:]
+            if (assigned := SETTING_WORD.match(word)) and assigned.group(1) in EXPANSION_VARIABLES]
+
+
+def env_file_setting(listed: list[tuple[str, str]]) -> str:
+    """What a write into `$GITHUB_ENV` sets, as a refusal says it after naming the step or the
+    script: each variable of EXPANSION_VARIABLES its lines name, `listed` as (the name, the line
+    or the word that writes it), for every later step of the job (env_file_writes,
+    expansion_settings; dispatch://INFRA-1545, round 42)."""
+    return ("sets " + " and ".join(f"`{name}`" for name, _line in listed)
+            + " for every later step of the job, writing "
+            + ", ".join(f"`{line}`" for _name, line in listed) + " into `$GITHUB_ENV`")
+
+
 def expansion_refusal(setting: str, changes: str, startup: bool = False,
                       rounds: str = "round 41") -> str:
-    """What the refusal of a setting expansion_settings finds says after naming the step, the
-    script, the job or the file holding it: EXPANSION_SETTING and its cure (dispatch://INFRA-1545,
+    """What the refusal of a setting expansion_settings finds in run text says after naming the
+    step, the script or the text holding it: EXPANSION_SETTING and its cure (dispatch://INFRA-1545,
     round 41), with STARTUP_CURE where the setting names a startup file, which round 42 refuses
     (STARTUP_VARIABLES), and the rounds that refuse it."""
     return (EXPANSION_SETTING.format(setting=setting, changes=changes) + ". "
             + REASON_CURES[EXPANSION_SETTING] + (STARTUP_CURE if startup else "")
+            + f" (dispatch://INFRA-1545, {'round 42' if startup else rounds}).")
+
+
+def key_refusal(setting: str, kind: str, shell: bool, changes: str, startup: bool) -> str:
+    """What the refusal of an `env:` key, or a `shell:`, that changes how bash expands a word says
+    after naming the file, the job or the step that writes it, `kind` being which of the three it
+    is: KEY_SETTING with what the key reaches there (KEY_REACH), ENV_KEY_CURE or SHELL_KEY_CURE,
+    and STARTUP_STEP_CURE where it names a startup file (dispatch://INFRA-1545, round 43)."""
+    return (f"{setting}, " + KEY_SETTING.format(reach=KEY_REACH[kind][shell], changes=changes)
+            + ". " + (SHELL_KEY_CURE if shell else ENV_KEY_CURE)
+            + (STARTUP_STEP_CURE if startup else "")
+            + f" (dispatch://INFRA-1545, {'round 42' if startup else 'round 41'}).")
+
+
+def env_file_refusal(setting: str, changes: str, startup: bool, rounds: str) -> str:
+    """What the refusal of a line written into `$GITHUB_ENV` that sets a variable of
+    EXPANSION_VARIABLES says after naming the step or the script, `setting` being what it writes
+    (env_file_setting): ENV_FILE_SETTING and its cure, with ENV_FILE_STARTUP_CURE where the line
+    names a startup file, and the rounds that refuse it (dispatch://INFRA-1545, round 43)."""
+    return (f"{setting}, " + ENV_FILE_SETTING.format(changes=changes) + ". "
+            + ENV_FILE_SETTING_CURE + (ENV_FILE_STARTUP_CURE if startup else "")
             + f" (dispatch://INFRA-1545, {'round 42' if startup else rounds}).")
 
 
@@ -7324,8 +7513,8 @@ def tree_source(word: str, action: str | None) -> bool:
 def tree_sources(text: str, first_line: int, action: str | None, within: str = "",
                  depth: int = 0) -> list[tuple[int, int, str]]:
     """Each `.` or `source` of a body whose operand is no literal path to a file of the tree
-    (tree_source), as (the first and the last line of its command, what it does), UNNAMED_RUN's
-    `does` for the reason NO_TREE_SOURCE (dispatch://INFRA-1545, round 42), read in the text of
+    (tree_source), as (the first and the last line of its command, what it does), the `does`
+    the sentence NO_TREE_SOURCE follows (dispatch://INFRA-1545, round 42), read in the text of
     a shell's `-c` and a `trap`'s action in turn. Its text runs in this shell, a setting that
     changes how bash expands a word among it, and no rule here reads that text: `. /dev/stdin
     <<<'shopt -s nocaseglob'` and `source /dev/fd/0 <<'EOF'` are refused, whatever a here-string
@@ -7501,11 +7690,9 @@ def env_file_writes(text: str, first_line: int,
             listed = [(name, line) for name, line in names if name in EXPANSION_VARIABLES]
             if listed:
                 startup = any(name in STARTUP_VARIABLES for name, _line in listed)
-                found.append((command.line, last, within + expansion_refusal(
-                    "sets " + " and ".join(f"`{name}`" for name, _line in listed)
-                    + " for every later step of the job, writing "
-                    + ", ".join(f"`{line}`" for _name, line in listed) + " into `$GITHUB_ENV`",
-                    "may change" if startup else "changes", startup, "round 42")))
+                found.append((command.line, last, within + env_file_refusal(
+                    env_file_setting(listed), "may change" if startup else "changes", startup,
+                    "round 42")))
         for inner, said in inner_texts(reduced) if depth < 3 else ():
             found += env_file_writes(without_heredocs(inner)[0], command.line,
                                      heredoc_bodies(inner, command.line), said, depth + 1)
@@ -7909,19 +8096,19 @@ for path, line, who, sentence, waits, targets, names, sources in unread_shapes:
 # `shell:` starting a shell with a setting that changes how bash expands a word, a step's own or
 # the file's or a job's `defaults.run.shell`, change how each `run:` under them expands its
 # words, and are refused by name as the same settings written in a `run:` are
-# (expansion_settings; dispatch://INFRA-1545, round 41). GitHub runs a step's `run:` as the file
-# its shell's `{0}` names, so the shell's options are read as those of a run of a script. A key
-# naming a startup file, BASH_ENV or ENV, is refused the same way since round 42
-# (STARTUP_VARIABLES). The tree writes no `env:` of them, and no `shell:` but `bash`.
-for path, owner, holder in expansion_holders:
+# (expansion_settings; dispatch://INFRA-1545, round 41), each with what it reaches from where it
+# is written (key_refusal; round 43). GitHub runs a step's `run:` as the file its shell's `{0}`
+# names, so the shell's options are read as those of a run of a script. A key naming a startup
+# file, BASH_ENV or ENV, is refused the same way since round 42 (STARTUP_VARIABLES). The tree
+# writes no `env:` of them, and no `shell:` but `bash`.
+for path, owner, holder, kind in expansion_holders:
     env = holder.get("env")
     for key in env if isinstance(env, Mapping) else ():
         if key in EXPANSION_VARIABLES:
             startup = key in STARTUP_VARIABLES
             problem(path, env.lines.get(key, 0),
-                    f"{owner} " + expansion_refusal(f"sets `{key}` in its `env:`",
-                                                    "may change" if startup else "changes",
-                                                    startup))
+                    f"{owner} " + key_refusal(f"sets `{key}` in its `env:`", kind, False,
+                                              "may change" if startup else "changes", startup))
     defaults = holder.get("defaults")
     for key, shell_holder in (("shell", holder),
                               ("defaults.run.shell",
@@ -7929,11 +8116,11 @@ for path, owner, holder in expansion_holders:
         shell = shell_holder.get("shell") if isinstance(shell_holder, Mapping) else None
         if not isinstance(shell, str):
             continue
-        for line, _last, setting, changes, startup in expansion_settings(
+        for line, _last, setting, changes, startup, _later in expansion_settings(
                 shell, shell_holder.lines.get("shell", 0)):
             problem(path, line,
-                    f"{owner} " + expansion_refusal(f"{setting} in its `{key}:`", changes,
-                                                    startup))
+                    f"{owner} " + key_refusal(f"{setting} in its `{key}:`", kind, True, changes,
+                                              startup))
 
 # The library calls each body makes more than once, as (file, step name or "-", the step's
 # Budget or None, what a refusal calls the body, {library: (line, the functions called)}).
@@ -8086,10 +8273,13 @@ for path, name, (who, loops, found, called), owner in body_reads:
             named_at = tuple(f"::error file={path},line={at}::{who} "
                              for at in range(line, last + 1))
             if not any(earlier.startswith(named_at) for earlier in problems):
-                problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=why,
-                                                                   cure=REASON_CURES[why])
-                        + " (dispatch://INFRA-1545, "
-                        + ("round 38" if why == PATTERN_RUN else "rounds 39 and 40") + ").")
+                problem(path, line, f"{who} " + (
+                    UNNAMED_RUN.format(does=does, why=why, cure=REASON_CURES[why])
+                    + " (dispatch://INFRA-1545, round 38)." if why == PATTERN_RUN
+                    else f"{does}, {PATTERN_RUN}. {why} (dispatch://INFRA-1545, round 38)."
+                    if why == PATTERN_ELSEWHERE
+                    else f"{does}, {UNREADABLE_PATTERN}. {why} (dispatch://INFRA-1545, rounds 39 "
+                    "and 40)."))
     # A `.` or a `source` of anything but a literal path to a file of the tree is refused by name
     # (tree_sources; dispatch://INFRA-1545, round 42), where no refusal above names its command
     # already: a pattern there is pattern_words's, which names what it could reach, and an
@@ -8099,24 +8289,26 @@ for path, name, (who, loops, found, called), owner in body_reads:
             named_at = tuple(f"::error file={path},line={at}::{who} "
                              for at in range(line, last + 1))
             if not any(earlier.startswith(named_at) for earlier in problems):
-                problem(path, line, f"{who} " + UNNAMED_RUN.format(
-                    does=does, why=NO_TREE_SOURCE, cure=REASON_CURES[NO_TREE_SOURCE])
-                    + " (dispatch://INFRA-1545, round 42).")
-    # A setting that changes how bash expands a word is refused by name wherever it is written,
-    # whatever the text holds, since every pattern above is read as bash reads it with its
-    # default options (expansion_settings; dispatch://INFRA-1545, round 41), where no refusal
-    # above names its command already: such a command fails this check already, as `bash -O
-    # extglob .github/scripts/x.sh` does where x.sh fetches, as an argument of the shell. So is
+                problem(path, line, f"{who} {does}, {NO_TREE_SOURCE}. {NO_TREE_SOURCE_CURE} "
+                        "(dispatch://INFRA-1545, round 42).")
+    # A setting that changes how bash expands a word is refused by name wherever this check reads
+    # run text for it, whatever the text holds, since every pattern above is read as bash reads it
+    # with its default options (expansion_settings; dispatch://INFRA-1545, round 41), where no
+    # refusal above names its command already: such a command fails this check already, as `bash
+    # -O extglob .github/scripts/x.sh` does where x.sh fetches, as an argument of the shell. So is
     # one in a heredoc body a shell runs as its program, and the shell's own option where that
     # body holds a word that is no literal text, which the option may change: `bash -O extglob
-    # <<'EOF'` around `echo "nothing to fetch"` passes.
+    # <<'EOF'` around `echo "nothing to fetch"` passes. A line an `echo` or a `printf` writes into
+    # `$GITHUB_ENV` sets nothing in this text, and its refusal says so (env_file_refusal; round 43).
     for read_text, read_line, within in readings:
-        for line, last, setting, changes, startup in expansion_settings(read_text, read_line,
-                                                                        within):
+        for line, last, setting, changes, startup, later in expansion_settings(read_text, read_line,
+                                                                               within):
             named_at = tuple(f"::error file={path},line={at}::{who} "
                              for at in range(line, last + 1))
             if not any(earlier.startswith(named_at) for earlier in problems):
-                problem(path, line, f"{who} " + expansion_refusal(setting, changes, startup))
+                problem(path, line, f"{who} " + (
+                    env_file_refusal(setting, changes, startup, "round 41") if later
+                    else expansion_refusal(setting, changes, startup)))
     for operator, consumer, _start, held in loops.programs:
         if PROGRAM.sub("", consumer[0]).rsplit("/", 1)[-1] not in INTERPRETERS or all(
                 literal_word(word, places)
@@ -8762,11 +8954,16 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     min`): the pattern ties a sum to a key only where the arrow follows the sum's `s` with
 #     nothing between them, so such a sum is no derivation here, and its key is read by the
 #     priced-comment clause alone, which checks the arrow against the key and no sum;
-#   - a job whose comment derives its key by a CONSTRUCTION rather than a sum: `tool-fallback`
-#     carries a position rule, and .github/ci-budgets.md's "The tool-fallback job's budget,
-#     part by part" states the construction its key comes from — `114 is the 104 this
-#     construction gives with ten minutes added`. A clause that refused that job would be a
-#     correct job refused, which is how a check gets silenced.
+#   - a job whose comment derives its key by a CONSTRUCTION and states no sum for it, no
+#     `<a> + <b> = <c> s -> <key> min` naming that key: the clause stands aside, and the key is
+#     read by the priced-comment clause alone. A clause that refused such a job would be a
+#     correct job refused, which is how a check gets silenced. `tool-fallback` derives its key
+#     both ways, so it is no instance of this: .github/ci-budgets.md's "The tool-fallback job's
+#     budget, part by part" states the construction, `114 was the 104 this construction gives
+#     with ten minutes added` and, at the staging step's 114 minutes, 114 + 18 = 132 and 142 with
+#     the ten, and the comment above its key (.github/workflows/ci-job-tool-fallback.yaml:36-42)
+#     also writes the Budgets note's sum, `1722 + 6832 = 8554 s -> 143 min`, which this clause
+#     reads and which the key's 8580 s strictly exceeds.
 # Each of the three has a harness case that pins it, so a change that starts or stops reading one
 # of them is one a reader sees in the harness rather than in the tree.
 # A KEY LOWERED ON ITS OWN IS NOT IN THAT LIST ANY MORE: it leaves an arrow its key no longer

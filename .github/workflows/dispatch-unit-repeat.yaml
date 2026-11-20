@@ -155,10 +155,10 @@ jobs:
         # Each lane's reruns, and the budgets of its test step and its job, which the comments on
         # those two derive. The head says why a web or harness leg runs 20 times and a web-cold
         # leg once. job_minutes is an expression's value to .github/scripts/check-download-retry.sh,
-        # whose rule 8 reads no number out of it (as of e2e.yaml's proof job), so each is derived
-        # here by hand, and moves when the setup-bun step is re-priced: web 1020 + 3416 = 4436 s,
-        # 74 minutes; web-cold 180 + 3416 = 3596 s, 60 minutes; harness 1980 + 3416 = 5396 s,
-        # 90 minutes.
+        # whose rule 8 reads no number out of it (its paragraph A CEILING WRITTEN AS AN EXPRESSION
+        # names this job), so each is derived here by hand, and moves when the setup-bun step is
+        # re-priced: web 1020 + 3416 = 4436 s, 74 minutes; web-cold 180 + 3416 = 3596 s, 60 minutes;
+        # harness 1980 + 3416 = 5396 s, 90 minutes.
         include:
           - lane: web
             reruns: 20

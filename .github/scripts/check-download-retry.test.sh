@@ -2683,8 +2683,9 @@ check "with the job written at the figure advised, refuses nothing" \
 # that earned it: a comment naming a step that stopped being the slowest (eight jobs of this
 # repository, dispatch://INFRA-1545 round 28), a key under the sum its own comment states
 # (`download-retry`, 221 minutes against its own 14322 s), and the job it must NOT refuse — one
-# whose comment derives its key by a construction rather than by a sum, which `tool-fallback`
-# does and which a clause that assumed first-plus-slowest would have refused.
+# whose comment derives its key by a construction rather than by a sum, which a clause that
+# assumed first-plus-slowest would have refused. `tool-fallback`'s comment writes such a
+# construction and, beside it, the sum the clause reads.
 echo "case: a job whose comment names a step that is no longer its slowest is refused"
 root=$(fixture job-derivation)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -2910,11 +2911,13 @@ check "reads the sum the two lines state" \
   "$(contains "$out" "its own comment derives 700 + 1050 = 1750 s, which that key does not strictly exceed")"
 check "says what to write" "$(contains "$out" 'timeout-minutes: 30. or more')"
 
-# The stand-aside, which is the clause's whole design: `tool-fallback` of this repository states
-# `114 is the 104 this construction gives with ten minutes added`, which .github/ci-budgets.md
-# holds for that job, and carries a position rule,
-# so no `<a> + <b> = <c> s -> <key> min` ties a sum to its key, and a clause that refused it
-# would be a correct job refused — which is how a check gets silenced.
+# The stand-aside, which is the clause's whole design: a comment that derives its key by a
+# construction, with no `<a> + <b> = <c> s -> <key> min` tying a sum to that key, is passed over,
+# and a clause that refused it would be a correct job refused — which is how a check gets
+# silenced (the case "a job whose comment derives its key another way is passed over" below).
+# `tool-fallback` of this repository derives its key both ways: .github/ci-budgets.md states its
+# construction, `114 was the 104 this construction gives with ten minutes added`, and the comment
+# above its key also writes `1722 + 6832 = 8554 s -> 143 min`, which the clause reads.
 # The arrow rule, which is this issue's own control moved into the check: a key lowered while
 # its comment is left alone. Before it, each of the nine keys dispatch://INFRA-1545 raised could
 # be put back with its sentence untouched and this check stayed green, because the derivation
@@ -5524,6 +5527,47 @@ check "exits 1" "$(is "$status" 1)"
 check "charges both loops' waits along the path, once each" \
   "$(contains "$out" 'its own retries take 6500 s to exhaust')"
 check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 109')"
+
+# Two loops nested in one text, each sleeping between its passes, are folded outwards from the
+# inner one (around): the outer loop runs the inner loop, its waits among it, once for each of its
+# own passes. The step runs r43-fetch.sh, which retries at 30 s, 5 x 30 + 150 = 300 s, in two
+# passes of an inner loop with `sleep 600` between them, inside two passes of an outer loop with
+# `sleep 480` between them. It waits 4 x 300 = 1200 s for the attempts, 2 x 600 = 1200 s for the
+# inner loop's sleeps and 480 s for the outer loop's, 2880 s, which `timeout-minutes: 48`, 2880 s,
+# does not exceed. A fold that adds the inner loop's waits once, `wait + …` for `passes * wait + …`
+# in around(), charges 2280 s and passes the step (dispatch://INFRA-1545, round 43).
+echo "case: r43 two loops nested in one text, each sleeping, charge the inner loop's waits at every pass of the outer"
+root=$(fixture r43-nested-loop-waits)
+cat > "$root/.github/scripts/r43-fetch.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+chmod +x "$root/.github/scripts/r43-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch inside two nested loops, each sleeping between its passes
+        timeout-minutes: 48
+        run: |
+          for round in 1 2; do
+            for pass in 1 2; do
+              .github/scripts/r43-fetch.sh
+              sleep 600
+            done
+            sleep 480
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "charges the inner loop's waits at both passes of the outer one" \
+  "$(contains "$out" 'its own retries take 2880 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 49')"
 
 # Two paths reaching one file with the same product of loop factors are both charged, each run
 # with the waits of the loops around it (dispatch://INFRA-1545, round 37; until then the file
@@ -12791,10 +12835,10 @@ for refusal in "10	Source the setting from /dev/fd/0	sources ./dev/fd/0." \
   "22	Source a file an earlier step wrote	sources .\\\$RUNNER_TEMP/settings."; do
   IFS=$'\t' read -r line step says <<<"$refusal"
   check "refuses '$step' by name, as no literal path to a file of the tree" \
-    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, which is no literal path to a file of this tree, and the text a .\.. or a .source. reads runs in this shell")"
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, which is no literal path to a file of this tree\. A .\.. or a .source. runs the text it reads in this shell, and this check reads no shell text but what the files of this tree hold")"
 done
-check "tells each to source a library by its literal path and read a data file as data" \
-  "$(is "$(printf '%s\n' "$out" | grep -c "no literal path to a file of this tree.*Source a library of this repository by its literal path, .\. \.github/scripts/<name>\.sh., and read a data file as data")" 3)"
+check "tells each to source a library by its literal path, read a data file as data and write a here-string's commands in place" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "no literal path to a file of this tree.*Source a library of this repository by its literal path, .\. \.github/scripts/<name>\.sh., and read a data file as data.*; and write the commands a here-string or a heredoc feeds it in the text itself, where this check reads them")" 3)"
 check "passes a script of the tree sourced by its literal path" \
   "$(is "$(contains "$out" "step 'Source a script of the tree by its literal path'")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
@@ -12831,8 +12875,8 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-check "refuses the GLOBIGNORE line a pipe hands tee by name" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::step 'Write GLOBIGNORE through a pipe into tee' of job 'build' sets .GLOBIGNORE. for every later step of the job, writing .GLOBIGNORE=x. into .\\\$GITHUB_ENV., which changes how bash expands a word")"
+check "refuses the GLOBIGNORE line a pipe hands tee by name, as a setting of the job's later steps" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::step 'Write GLOBIGNORE through a pipe into tee' of job 'build' sets .GLOBIGNORE. for every later step of the job, writing .GLOBIGNORE=x. into .\\\$GITHUB_ENV., which changes how bash expands a word in each of those steps, and this check reads every pattern as bash does with its default options, so it cannot tell which file a word of those steps names\. Write no line into .\\\$GITHUB_ENV. that sets any of ")"
 check "refuses a group's output into GITHUB_ENV by name, as no literal lines" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Write the setting from a group' of job 'build' writes into .\\\$GITHUB_ENV. the output of a group or a subshell, .{ …; }. or .( … )., which this check cannot read as literal lines")"
 check "refuses a line whose name is built by name, as no literal lines" \
@@ -12900,14 +12944,18 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-check "refuses the job's ENV key by name" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=7::job 'build' sets .ENV. in its .env:., which may change how bash expands a word")"
-check "refuses BASH_ENV through export by name" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::step 'Export BASH_ENV naming that startup file' of job 'build' sets .BASH_ENV. (.export BASH_ENV=\\\$RUNNER_TEMP/settings.), which may change how bash expands a word")"
-check "refuses BASH_ENV in a GITHUB_ENV heredoc by name" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=23::step 'Write BASH_ENV into GITHUB_ENV in a heredoc' of job 'build' sets .BASH_ENV. for every later step of the job, writing .BASH_ENV=\\\$RUNNER_TEMP/settings. into .\\\$GITHUB_ENV., which may change how bash expands a word")"
-check "tells each to name no startup file, citing round 42" \
-  "$(is "$(printf '%s\n' "$out" | grep -c "name no startup file in .BASH_ENV. or .ENV.: write the commands of the file it names in the step itself, where this check reads them (dispatch://INFRA-1545, round 42)")" 3)"
+check "refuses the job's ENV key by name, as a setting every step of the job takes" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=7::job 'build' sets .ENV. in its .env:., which reaches every step of the job, so it may change how bash expands a word there, and this check reads every pattern as bash does with its default options, so it cannot tell which file a word there names")"
+check "refuses BASH_ENV through export by name, as a setting of this text or a shell it starts" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::step 'Export BASH_ENV naming that startup file' of job 'build' sets .BASH_ENV. (.export BASH_ENV=\\\$RUNNER_TEMP/settings.), which may change how bash expands a word, and this check reads every pattern as bash does with its default options, so it cannot tell which file a word of this text, or of a shell it starts, names")"
+check "refuses BASH_ENV in a GITHUB_ENV heredoc by name, as a setting of the job's later steps" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=23::step 'Write BASH_ENV into GITHUB_ENV in a heredoc' of job 'build' sets .BASH_ENV. for every later step of the job, writing .BASH_ENV=\\\$RUNNER_TEMP/settings. into .\\\$GITHUB_ENV., which may change how bash expands a word in each of those steps, and this check reads every pattern as bash does with its default options, so it cannot tell which file a word of those steps names")"
+check "tells the export to name no startup file, citing round 42" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "name no startup file in .BASH_ENV. or .ENV.: write the commands of the file it names in the step itself, where this check reads them (dispatch://INFRA-1545, round 42)")" 1)"
+check "tells the job's key to set no such variable in an env: and a startup file's commands in the step, citing round 42" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=7::.*Set none of .* in an .env:.; .*; and where a step needs the commands a startup file would run, write them in that step, where this check reads them (dispatch://INFRA-1545, round 42)")"
+check "tells the GITHUB_ENV heredoc to write no such line and a startup file's commands in the later step, citing round 42" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=23::.*Write no line into .\\\$GITHUB_ENV. that sets any of .*; and where a later step needs the commands a startup file would run, write them in that step, where this check reads them (dispatch://INFRA-1545, round 42)")"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
 
 # W10 and W11. W1, W2, W6 and W9 above share one cure: the gate reads the `.sh` scripts directly
@@ -13479,8 +13527,8 @@ check "charges the script an escape in ANSI-C quotes names its 1050 s, so its on
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=38::step 'Run the fetching script with an escape in ANSI-C quotes as a command' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust, which that budget does not strictly exceed\. That arithmetic is the step's own and that of .github/scripts/r38-fetch\.sh, which it runs")"
 check "passes the quoted part of a name under a key that holds its script's 1050 s" \
   "$(is "$(contains "$out" "step 'Run the fetching script with a quoted part in its name under a key that holds it'")" false)"
-check "refuses the star in an argument of ls, which could name a CI script that fetches" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=47::step 'Write glob characters where no run is' of job 'build' writes ..github/scripts/.\.sh. as an argument of .ls., which could name .github/scripts/[a-z-]*\.sh, .* a script that fetches or a file this check does not read")"
+check "refuses the star in an argument of ls, which could name a CI script that fetches, and gives the argument its own reason and the advice that passes" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=47::step 'Write glob characters where no run is' of job 'build' writes ..github/scripts/.\.sh. as an argument of .ls., which could name .github/scripts/[a-z-]*\.sh, .* a script that fetches or a file this check does not read, since bash fills in its patterns and expansions from the files and the values the step holds as it runs, which this check does not see\. This check refuses such a word wherever its literal text holds .\.github/., but as an argument of .echo. or .printf. .*so it cannot tell whether those this word names run here\. List the directory with no pattern and match its names as text")"
 for line in "45	a question mark in quotes" "46	a question mark after a backslash" \
   "48	a star in an argument of rm" "49	python3 runs it" \
   "50	python3 runs it in ANSI-C quotes" "53	a case pattern after a comment line" \
@@ -14938,7 +14986,8 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # that silently lowers fewer is seen; and the list the case walks is first held to the tree, so it
 # is not narrower than it: every workflow job that writes its own whole-number `timeout-minutes`
 # and holds a site --list prints must be in --jobs. A key written as an expression is outside, as
-# the gate's header says under A CEILING WRITTEN AS AN EXPRESSION (e2e.yaml's `proof`).
+# the gate's header says under A CEILING WRITTEN AS AN EXPRESSION (e2e.yaml's `proof` and
+# dispatch-unit-repeat.yaml's `repeat`).
 # THIS CASE FOUND A GAP THE FIXTURES DID NOT: at the head before round 35, `arrows`, both decoys
 # and `split` left `download-retry`, `download-retry-images`, `re-record`, `embedder` and
 # `visual` unnamed, because the derivation clause read only the comment block directly above the
