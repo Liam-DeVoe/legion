@@ -59,7 +59,11 @@ describe("Dispatch pictures", () => {
   // body past `markdownWorkerThreshold` and so in the parse worker's hands. The page's own
   // `new Worker(…)` names a module this process cannot serve, so these rows drive the faked one
   // (`parse-worker-fixture.ts`) and answer it: what they prove - a long name drawn and opened -
-  // is proved on the path the dashboard itself takes for a body that size.
+  // is proved on the path the dashboard itself takes for a body that size. The engine sends such
+  // a body only once its lazily loaded modules have loaded, and no row here warms it first: in the
+  // cold lane (`web/src/__tests__/hold-lazy-loads.ts`) that load is held back a second when such a
+  // row runs first in the file, past the 500 tasks `answer` waits for its body. So each row waits
+  // for the body to reach the worker before it answers it.
   let worker: InstalledParseWorker;
 
   beforeEach(() => {
@@ -361,6 +365,7 @@ describe("Dispatch pictures", () => {
     );
 
     try {
+      await waitFor(() => expect(worker.requests).toHaveLength(1));
       await act(() => worker.answer(0));
       const shot = await within(view.container).findByRole("img", { name: "shot" });
       expect(shot).toHaveAttribute("src", `/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
@@ -403,6 +408,7 @@ describe("Dispatch pictures", () => {
     );
 
     try {
+      await waitFor(() => expect(worker.requests).toHaveLength(1));
       await act(() => worker.answer(0));
       const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
       expect(designs).toHaveLength(2);
@@ -456,6 +462,7 @@ describe("Dispatch pictures", () => {
     );
 
     try {
+      await waitFor(() => expect(worker.requests).toHaveLength(1));
       await act(() => worker.answer(0));
       const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
       expect(designs).toHaveLength(1);
