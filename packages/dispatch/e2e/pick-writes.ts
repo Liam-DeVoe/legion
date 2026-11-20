@@ -46,6 +46,15 @@ export interface HeldPatches {
   readonly release: () => void;
 }
 
+/** Sleeps until `Date.now()` reads at least `until`, the clock `HeldPatch` records. A timer of
+ *  `ms` can end before `Date.now()` has moved `ms`: the timer counts on the monotonic clock, and
+ *  `Date.now()` is the wall clock, which a runner may slew or step against it. Merge-group runs
+ *  44424277368, 44632529216 and 44650607607 read holds of 2,999 ms. So the rest is slept again
+ *  until the clock the rows read says the hold is whole. */
+async function sleepUntil(until: number): Promise<void> {
+  for (let left = until - Date.now(); left > 0; left = until - Date.now()) await sleep(left);
+}
+
 /**
  * Holds every save of `issueKey` the page makes - a pick, a board move, a key of the issue page -
  * with Playwright's route control, each for at least `PICK_HOLD_MS` and until the row lets the
@@ -70,7 +79,7 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([sleepUntil(patch.arrivedAt + PICK_HOLD_MS), released.promise]);
       await route.fallback();
       forwarded.push(patch.body);
     } catch {

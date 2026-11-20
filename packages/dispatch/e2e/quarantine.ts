@@ -57,6 +57,14 @@ export const quarantine: readonly QuarantineEntry[] = [
     issue: "dispatch://INFRA-3904",
     added: "2026-11-19",
   },
+  {
+    file: "board.e2e.ts",
+    project: "chromium",
+    title:
+      "picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane",
+    issue: "dispatch://INFRA-3904",
+    added: "2026-11-20",
+  },
 ];
 
 /** A row a commit on main fixed, which a quarantine entry is not: the row stays in every gating
