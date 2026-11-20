@@ -5121,6 +5121,15 @@ redWorldRun(
   { "calls.jsonl": calls([redLogCall]) },
   redSpent("test (notify) is red at the head.")
 );
+// INFRA-1303, the class of D8 in the completion: a summary whose second paragraph says the head's
+// one re-run is spent.
+redWorldRun(
+  "trial-e-head-3",
+  "e",
+  { after: "red" },
+  { "calls.jsonl": calls([redLogCall]) },
+  redSpent("test (notify) is red at the head.\nRe-run already spent at this head.")
+);
 
 /** World `f`: the title check, which judges the pull request rather than its code. */
 const redTitleLine = 'The title "feat: greet() (LWEVAL-1)" has no scope.';
@@ -5668,6 +5677,15 @@ test("a head whose one re-run is spent is declined in those words, or the world 
     /^trial-e-head-1\tpass=true\tref=true\tworld=e .* outcome=true /
   );
   redFails("trial-e-head-2", "outcome=false");
+});
+
+// INFRA-1303, the class of D8 in the round's own words: catches a scorer that reads the completion
+// through JSON.stringify, where the line break before "Re-run already spent" is `\\n` and no word
+// boundary falls before `Re`, so a role that declined in those words fails the outcome.
+test("a completion that says the re-run is spent at the start of a line is read as it says", () => {
+  expect(rowOf("trial-e-head-3")).toMatch(
+    /^trial-e-head-3\tpass=true\tref=true\tworld=e .* outcome=true /
+  );
 });
 
 test("a title check is the pull request's own, and the round fails with no re-run", () => {
