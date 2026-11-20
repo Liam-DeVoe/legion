@@ -44,7 +44,10 @@ func requireNoPrivateReference(t *testing.T, line string) {
 // words of the reading and drops every one that holds `://`, a private or Dispatch host, or an
 // issue key of a project this Dispatch holds, in any case, and cuts what is left to the budget. A
 // plain hyphenated word that is no such key stays: one whose first part names no project, and a
-// project's name followed by a version.
+// project's name followed by a version. A word the cut writes in part is judged also as the first
+// 80 characters of the kept text hold it, which can run on into a key that neither the written part
+// nor the whole word holds; a first word the cut writes whole is judged whole, as every other word
+// the line writes is.
 func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
@@ -159,6 +162,16 @@ func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 			name:     "a cut that would leave an issue key after a kept word keeps that word alone",
 			observed: "Run " + strings.Repeat("/", checkResultReadingRunes-len("Run ")-len("ACME-12")) + "ACME-12xyz tail words",
 			want:     "Run…",
+		},
+		{
+			name:     "a cut that would leave an issue key after an address keeps the address, with a blank before the ellipsis",
+			observed: "Log www.example.com/runs/7777 " + strings.Repeat("/", checkResultReadingRunes-len("Log www.example.com/runs/7777 ")-len("ACME-12")) + "ACME-12xyz tail words",
+			want:     "Log www.example.com/runs/7777 …",
+		},
+		{
+			name:     "a first word the line writes whole is judged whole, though its first 80 characters end in a private host",
+			observed: strings.Repeat("a", checkResultReadingRunes-len(".internal")) + ".internal" + strings.Repeat("z", 10) + " more words",
+			want:     strings.Repeat("a", checkResultReadingRunes-len(".internal")) + ".internal" + strings.Repeat("z", 10) + "…",
 		},
 		{
 			name:     "a first word after slashes that names no project is kept whole",
@@ -431,13 +444,14 @@ func keepWithoutTheNextWord(w lineWords, text string, budget int) string {
 }
 
 // The line judges a text's words only until it has kept one word after its kept text passed the
-// cut's budget, because the cut reads no further: a first word past the budget is kept whole, and
-// only whether a word follows it decides its `…`. For each body the line from that shortened
-// reading equals the line from reading the whole body: one body whose private words sit just past
-// the cut, one whose dropped words come before it, so later words move in, and one whose first
-// kept word is longer than the budget. The control stops without that one word
-// (keepWithoutTheNextWord): it prints the long first word with no `…`, which shows the comparison
-// can fail.
+// cut's budget and held a word of letters or numbers, because the cut reads no further: a first
+// word past the budget is kept whole with all that leads into it, and only whether a word follows
+// it decides its `…`. For each body the line from that shortened reading equals the line from
+// reading the whole body: one body whose private words sit just past the cut, one whose dropped
+// words come before it, so later words move in, one whose first kept word is longer than the
+// budget, and one whose lead-in of marks runs past the budget before its first word of letters.
+// The control stops without that one word (keepWithoutTheNextWord): it prints the long first word
+// with no `…`, and the lead-in alone, which shows the comparison can fail.
 func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
 	words := lineWordsFor([]string{"ACME"}, testServerURL)
 	for _, row := range []struct {
@@ -456,6 +470,11 @@ func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
 		{
 			name:    "a first kept word past the budget, then more words",
 			body:    "ACME-1 " + strings.Repeat("w", 110) + " ACME-2 tail",
+			control: true,
+		},
+		{
+			name:    "a lead-in of marks past the budget, then the first word of letters",
+			body:    "ACME-1 " + strings.Repeat("- ", checkResultReadingRunes/2+5) + "Then ACME-2 tail",
 			control: true,
 		},
 	} {
@@ -615,12 +634,14 @@ func TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt(t *testing.T) {
 
 // earlyStopTokens are the words a body of TestTheEarlyStopPrintsWhatWholeTextJudgingPrints is
 // made of: plain words short and long, words the line drops (keys, links, hosts, markup, invisible
-// and invalid runes), and words whose length puts them at the cut's edge.
+// and invalid runes), words whose length puts them at the cut's edge, and marks with no letter or
+// number, which lead into the first word of letters or numbers however far they run.
 var earlyStopTokens = []string{
 	"a", "ab", "abc", "abcd", "abcde", "abcdefgh", "abcdefghijkl", "é", "日本語", "e\u0301",
 	"UTF-8", "SHA-256", "kernel-6.8", "Lists", "[1,", "2]", "f(x)", "x\ufe0f",
 	strings.Repeat("x", 79), strings.Repeat("y", 80), strings.Repeat("z", 81), strings.Repeat("w", 100),
 	strings.Repeat("q", 75) + "ACME-12xyz", "ACME-12xyz",
+	"-", "/", "--", "...", strings.Repeat("-", 40), strings.Repeat("/", 81),
 	"ACME-12", "acme-3", "(ACME-4)", "dispatch://x/y", "https://dispatch.example/a", "dispatch.example",
 	"vm-1.c.proj-1.internal", "vm.internal.", "box.example-tailnet.ts.net", "a->b", "Vec<u8>", "[ACME](#)-12",
 	"ACME<!--", "-->-12", "**ACME**-12", "ACME\u034f-12", "ACME&#45;12", "\xff\xfe", "\xff",
@@ -708,10 +729,12 @@ func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 }
 
 // The line of a check CI proves ends at its run when the cut keeps nothing of the check's words,
-// as it does when the words keep nothing before the cut: a text whose only word is longer than the
-// budget and whose raw budget prefix holds an issue key the whole word did not. After a kept word,
-// such a word is left out and the kept word stays. A first word whose raw budget prefix holds no
-// key is printed whole, with the slashes that lead into it, which is the control.
+// as it does when the words keep nothing before the cut: a text whose only word the cut writes in
+// part and whose raw budget prefix holds an issue key the whole word did not. After a kept word,
+// such a word is left out and the kept word stays, with a blank before the `…` where the kept word
+// is an address GitHub links. A first word whose raw budget prefix holds no key is printed whole,
+// with the slashes that lead into it, which is the control. A first word the cut writes whole is
+// judged whole, so a raw budget prefix of it that ends in a private host drops nothing.
 func TestTheCILineEndsAtTheRunWhenTheCutKeepsNothing(t *testing.T) {
 	words := lineWordsFor([]string{"ACME"}, testServerURL)
 	prefix := "- Check c1 (before_merge): pass at " + headCommit + ", from CI run " + ciCheckRun + "."
@@ -721,6 +744,12 @@ func TestTheCILineEndsAtTheRunWhenTheCutKeepsNothing(t *testing.T) {
 			"Run " + strings.Repeat("/", checkResultReadingRunes-len("Run ")-len("ACME-12")) + "ACME-12xyz tail words", prefix + " Run…"},
 		{"a first word after slashes that names no project", strings.Repeat("/", 73) + "abcdefgh tail words",
 			prefix + " " + strings.Repeat("/", 73) + "abcdefgh…"},
+		{"a cut that would leave an issue key after an address",
+			"Log www.example.com/runs/7777 " + strings.Repeat("/", checkResultReadingRunes-len("Log www.example.com/runs/7777 ")-len("ACME-12")) + "ACME-12xyz tail words",
+			prefix + " Log www.example.com/runs/7777 …"},
+		{"a first word written whole whose raw budget prefix ends in a private host",
+			strings.Repeat("a", checkResultReadingRunes-len(".internal")) + ".internal" + strings.Repeat("z", 10) + " more words",
+			prefix + " " + strings.Repeat("a", checkResultReadingRunes-len(".internal")) + ".internal" + strings.Repeat("z", 10) + "…"},
 	} {
 		check := model.CheckBlock{BlockID: "c1", When: "before_merge", Text: row.text}
 		if got := ciVerdictLine(check, ciCheckRun, "pass", headCommit, words); got != row.want {

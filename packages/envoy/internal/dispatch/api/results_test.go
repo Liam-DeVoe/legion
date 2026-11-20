@@ -216,12 +216,13 @@ func letterWord(length int) string {
 // word that ends at the budget's last character is kept, and a reading of exactly the budget
 // prints whole. A first word longer than the budget is never cut in two, at any length: the line
 // keeps it whole, with all that leads into it, such as a parenthesis, a quote, a slash, a full
-// stop or a hyphen, marked as cut only where more of the reading follows it. Text in a script
-// written without spaces between its words is cut inside the budget at a UAX #29 boundary. A
-// public address GitHub links with no scheme (`www.`) is one word, kept whole or left out, and
-// where it ends what the line keeps, a blank stands before the `…`, so the link does not take the
-// `…` into its address. Each row's words are plain, so #4517's filter keeps them and the row
-// tests the cut.
+// stop or a hyphen, however long that lead-in is, marked as cut only where more of the reading
+// follows it; a reading with no word of letters or numbers is cut inside the budget. Text in a
+// script written without spaces between its words is cut inside the budget at a UAX #29
+// boundary. A public address GitHub links with no scheme (`www.`) is one word, kept whole or left
+// out, and where it ends what the line keeps, a blank stands before the `…`, so the link does not
+// take the `…` into its address. Each row's words are plain, so #4517's filter keeps them and the
+// row tests the cut.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
@@ -267,6 +268,19 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 			observed: lead + name + " passed 20 of 20 runs.", want: lead + name + "…",
 		})
 	}
+	// A lead-in that itself runs past the budget leads into the first word of letters or numbers
+	// as a short one does, so the line never ends with the lead-in alone; with no such word after
+	// it, it is cut inside the budget.
+	slashes := strings.Repeat("/", checkResultReadingRunes+1)
+	rule := strings.Repeat("-", 100)
+	spaced := strings.Repeat("- ", checkResultReadingRunes/2+5)
+	rows = append(rows,
+		lineRow{name: "a first word after 81 slashes is kept whole with them", observed: slashes + "abc tail words", want: slashes + "abc…"},
+		lineRow{name: "a rule of 100 hyphens leads into the first word after it", observed: rule + " Then the run passed.", want: rule + " Then…"},
+		lineRow{name: "spaced hyphens past the budget lead into the first word after them", observed: spaced + "Then the run passed.", want: spaced + "Then…"},
+		lineRow{name: "slashes past the budget with no word of letters after them are cut inside the budget", observed: strings.Repeat("/", 100), want: strings.Repeat("/", checkResultReadingRunes) + "…"},
+		lineRow{name: "spaced hyphens past the budget with no word of letters after them are cut inside the budget", observed: strings.Repeat("- ", 60), want: strings.Repeat("- ", checkResultReadingRunes/2-1) + "-…"},
+	)
 	for _, length := range []int{81, 110, 161, 1000} {
 		word := letterWord(length)
 		rows = append(rows,
@@ -3199,8 +3213,9 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 // The pull-request body line of a check CI proves cuts the check's words as a recorded line cuts
 // a reading (TestThePullRequestLineCarriesTheReading), after the same filter: words of exactly
 // the budget print whole, and a first word longer than the budget is kept whole, with all that
-// leads into it, marked as cut where more words follow it and printed whole where it is all the
-// check says.
+// leads into it, however long that lead-in is, marked as cut where more words follow it and
+// printed whole where it is all the check says. The spaced lead-in is of slashes, since a check's
+// words are markdown and a line that opens with a hyphen and a blank is a list item.
 func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Check words cut at a word")
@@ -3222,6 +3237,15 @@ func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 			words: lead + name + " builds at the head.", want: lead + name + "…",
 		})
 	}
+	slashes := strings.Repeat("/", checkResultReadingRunes+1)
+	rule := strings.Repeat("-", 100)
+	spaced := strings.Repeat("/ ", checkResultReadingRunes/2+5)
+	rows = append(rows,
+		ciRow{name: "a first word after 81 slashes is kept whole with them", words: slashes + "abc builds at the head.", want: slashes + "abc…"},
+		ciRow{name: "a rule of 100 hyphens leads into the first word after it", words: rule + " Then the run passed.", want: rule + " Then…"},
+		ciRow{name: "spaced slashes past the budget lead into the first word after them", words: spaced + "Then the run passed.", want: spaced + "Then…"},
+		ciRow{name: "slashes past the budget with no word of letters after them are cut inside the budget", words: strings.Repeat("/", 100), want: strings.Repeat("/", checkResultReadingRunes) + "…"},
+	)
 	var document strings.Builder
 	for index, row := range rows {
 		fmt.Fprintf(&document, ":::check{#c%d %s}\n%s\n:::\n\n", index+1, ciCheckKept, row.words)

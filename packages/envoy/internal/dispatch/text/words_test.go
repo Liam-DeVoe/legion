@@ -64,11 +64,14 @@ func TestHeadWordsEndsAWordAtWhiteSpace(t *testing.T) {
 
 // Opening punctuation that leads into a word goes with that word. The first word is the first
 // word that holds a letter or a number, with all that comes before it: white space, any
-// punctuation, a symbol or an emoji. Where it runs past the limit, the answer keeps it whole with
-// what leads into it, as a test's name in backticks or a path such as `./TestName` is written, and
-// never the lead-in alone. A later word that runs past the limit is left out with the opening
-// marks before it, so the answer never ends with a backtick or a bracket that opens a word it left
-// out. After a word of letters or numbers, a separator, such as a slash, stays a word boundary.
+// punctuation, a symbol or an emoji, at any length. Where it runs past the limit, the answer keeps
+// it whole with what leads into it, as a test's name in backticks or a path such as `./TestName`
+// is written, and never the lead-in alone, even where the lead-in itself runs past the limit, as a
+// rule of hyphens before a sentence does. A value with no word of letters or numbers is cut at the
+// last end of a word inside the limit. A later word that runs past the limit is left out with the
+// opening marks before it, so the answer never ends with a backtick or a bracket that opens a word
+// it left out. After a word of letters or numbers, a separator, such as a slash, stays a word
+// boundary.
 func TestHeadWordsKeepsAnOpeningMarkWithTheWordItLeadsInto(t *testing.T) {
 	name := "TestA" + strings.Repeat("LongName", 12) // 101 characters, a test's name
 	var rows []headWordsRow
@@ -95,6 +98,12 @@ func TestHeadWordsKeepsAnOpeningMarkWithTheWordItLeadsInto(t *testing.T) {
 	checkHeadWords(t, append(rows,
 		headWordsRow{name: "a first word after a backtick that is the whole value is returned whole", value: "`" + name, limit: 80, want: "`" + name, cut: false},
 		headWordsRow{name: "a first word after 79 slashes is kept whole with them", value: strings.Repeat("/", 79) + "ab tail words", limit: 80, want: strings.Repeat("/", 79) + "ab", cut: true},
+		headWordsRow{name: "a first word after 81 slashes is kept whole with them", value: strings.Repeat("/", 81) + "ab tail words", limit: 80, want: strings.Repeat("/", 81) + "ab", cut: true},
+		headWordsRow{name: "a rule of 100 hyphens leads into the first word after it", value: strings.Repeat("-", 100) + " Then the run passed.", limit: 80, want: strings.Repeat("-", 100) + " Then", cut: true},
+		headWordsRow{name: "41 spaced hyphens lead into the first word after them", value: strings.Repeat("- ", 41) + name + " passed.", limit: 80, want: strings.Repeat("- ", 41) + name, cut: true},
+		headWordsRow{name: "one word of 100 underscores leads into the first word after it", value: strings.Repeat("_", 100) + " Then the run passed.", limit: 80, want: strings.Repeat("_", 100) + " Then", cut: true},
+		headWordsRow{name: "100 slashes with no word of letters or numbers after them are cut inside the limit", value: strings.Repeat("/", 100), limit: 80, want: strings.Repeat("/", 80), cut: true},
+		headWordsRow{name: "spaced hyphens with no word of letters or numbers after them are cut inside the limit", value: strings.Repeat("- ", 60), limit: 80, want: strings.Repeat("- ", 39) + "-", cut: true},
 		headWordsRow{name: "a first word after a backtick that ends inside the limit is cut at a word boundary as before", value: "`short` passed 20 of 20 runs", limit: 20, want: "`short` passed 20 of", cut: true},
 		headWordsRow{name: "a long word after a first word that ends inside the limit is left out", value: "Run " + name + " now", limit: 80, want: "Run", cut: true},
 		headWordsRow{name: "a long word after a number that ends inside the limit is left out", value: "1 " + name, limit: 80, want: "1", cut: true},
@@ -160,9 +169,10 @@ func TestHeadWordsCutsAScriptWithoutSpacesAtItsWordBoundaries(t *testing.T) {
 // is one flag (WB15, WB16), and the punctuation the rules keep inside a word: a colon or a full
 // stop between two letters (WB6, WB7) and a full stop or a comma between two digits (WB11, WB12).
 // So a long run of them with no space is cut inside the limit, and a path is cut at a slash. A
-// chain of pictographs joined by zero-width joiners is one word: kept whole where it is the first
-// word, and left out where a word ends before it inside the limit, an opening mark too, which
-// leads only into a word of letters or numbers.
+// chain of pictographs joined by zero-width joiners is one word: before the first word of letters
+// or numbers it leads into that word as any word does, an opening mark before it too; where the
+// value holds no such word, a chain that is the first word is kept whole; and after a word that
+// ends inside the limit, it is left out.
 func TestHeadWordsCutsEmojiSymbolsAndPunctuationAtTheirWordBoundaries(t *testing.T) {
 	chain := strings.Repeat("🛑\u200d", 99) + "🛑" // 100 pictographs joined, 199 runes
 	checkHeadWords(t, []headWordsRow{
@@ -177,9 +187,10 @@ func TestHeadWordsCutsEmojiSymbolsAndPunctuationAtTheirWordBoundaries(t *testing
 		{name: "a full stop between two digits is inside a number", value: "3.14159 is pi", limit: 4, want: "3.14159", cut: true},
 		{name: "a path is cut at the last slash inside the limit", value: "/srv/data/" + strings.Repeat("segment/", 12), limit: 80, want: "/srv/data/" + strings.Repeat("segment/", 8), cut: true},
 		{name: "a chain of 100 joined pictographs that is the whole value is returned whole", value: chain, limit: 80, want: chain, cut: false},
-		{name: "a chain of 100 joined pictographs that is the first word is kept whole before more words", value: chain + " and more", limit: 80, want: chain, cut: true},
+		{name: "a chain of 100 joined pictographs leads into the first word of letters after it", value: chain + " and more", limit: 80, want: chain + " and", cut: true},
+		{name: "a chain of 100 joined pictographs with no word of letters after it is kept whole", value: chain + " 🛑 🛑", limit: 80, want: chain, cut: true},
 		{name: "a chain of 100 joined pictographs after a first word is left out", value: "Log " + chain, limit: 80, want: "Log", cut: true},
-		{name: "a chain of 100 joined pictographs after an opening parenthesis is left out", value: "(" + chain + " and more", limit: 80, want: "(", cut: true},
+		{name: "an opening parenthesis and a chain of 100 joined pictographs lead into the first word of letters after them", value: "(" + chain + " and more", limit: 80, want: "(" + chain + " and", cut: true},
 	})
 }
 
@@ -201,7 +212,11 @@ func TestHeadWordsKeepsAURLWhole(t *testing.T) {
 		{name: "a www inside a word starts no link, so its run is cut at a slash", value: "See a" + www, limit: 80, want: "See awww.example.com/" + strings.Repeat("segment/", 7), cut: true},
 		{name: "a markdown link's address is not cut inside", value: "See [the log](" + url + ") now", limit: 80, want: "See [the", cut: true},
 	}
-	// GitHub starts a link with no scheme after each of these as at the start of a run.
+	// cmark-gfm, GitHub's markdown, links a `www.` address with no scheme at the start of a run or
+	// after one of `*`, `_`, `~` and `(`, and in lower case only (extensions/autolink.c of
+	// github/cmark-gfm at commit 46829933c3, www_match, lines 178-183). isURL is wider on purpose:
+	// it reads such an address after `[` and `]` too, and in any case, so no text GitHub links is
+	// cut; a run it reads as a URL that GitHub does not link is only kept whole or left out.
 	for _, lead := range []string{"(", "*", "_", "[", "]", "~"} {
 		rows = append(rows, headWordsRow{
 			name:  fmt.Sprintf("an address that starts with www after %q is one word", lead),
@@ -257,6 +272,7 @@ func TestHeadRunesReadsOnlyTheRunesItKeeps(t *testing.T) {
 		{"日本語です", 3, "日本語"},
 		{"a🛑b", 2, "a🛑"},
 		{"\xffab", 2, "\ufffda"},
+		{"\xff\xfeab", 3, "\ufffd\ufffda"},
 		{"a\xff", 4, "a\xff"},
 	} {
 		if got := HeadRunes(row.value, row.limit); got != row.want {
