@@ -1,4 +1,4 @@
-import { BROKER_URL_VAR, IDENTITY_VAR } from "@legion/broker-client/environment";
+import { BROKER_URL_VAR, IDENTITY_VAR, type ReadTrade } from "@legion/broker-client/environment";
 import { isCleanUrl } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
@@ -44,6 +44,10 @@ export type DispatchEnvironment = EnvoyConfigEnvironment & {
   readonly DISPATCH_TOKEN?: string | undefined;
   readonly DISPATCH_TOKEN_FILE?: string | undefined;
   readonly DISPATCH_TOKEN_BROKER?: string | undefined;
+  /** The broker route's read trade (`readTradeSetting`): `1` narrows Dispatch's credential to
+   *  reading, and the cut names the past time it reads at. */
+  readonly DISPATCH_TOKEN_BROKER_READ?: string | undefined;
+  readonly DISPATCH_TOKEN_BROKER_AS_OF?: string | undefined;
   readonly DISPATCH_PUBLIC_URL?: string | undefined;
   /** The `dispatch` command's token files (`fileTokenCredential`), which no plugin reads. */
   readonly DISPATCH_BROKER_TOKEN_FILE?: string | undefined;
@@ -201,6 +205,14 @@ export function lostDispatchUrlNotice(
  * reads as off, and a value other than `1` written there is a mistake in the deployment, refused
  * rather than read as on or as off.
  *
+ * `DISPATCH_TOKEN_BROKER_READ=1` narrows the trade of Dispatch's credential to reading, and
+ * `DISPATCH_TOKEN_BROKER_AS_OF` beside it names the cut, the past time it reads at
+ * (`readTradeSetting`). Either takes the broker route as `DISPATCH_TOKEN_BROKER=1` does and reads
+ * no bearer, so a shell that also holds `DISPATCH_TOKEN` never writes with it. They narrow
+ * Dispatch's trade alone (`brokerCredential`'s `read`): the Envoy listener and NATS refuse a
+ * read-only token and keep the session's shared client. A value either setting does not take
+ * turns Dispatch off with an error naming the setting.
+ *
  * `DISPATCH_BROKER_TOKEN_FILE` and `DISPATCH_BROKER_DPOP_KEY_FILE` are checked before every other
  * source (`tokenFilesTarget`): a broker token traded elsewhere and the key it is bound to, which
  * only the `dispatch` command takes (`options.tokenFiles`). Every other caller that finds either
@@ -224,7 +236,7 @@ export function dispatchSettings(
   const { url, urlSetting, source } = target;
   let credential: RequestCredential;
   try {
-    if (source.kind === "broker") credential = brokerCredential(env, options.session);
+    if (source.kind === "broker") credential = brokerCredential(env, options.session, source.read);
     else if (source.kind === "files") credential = fileTokenCredential(source, url);
     else {
       credential = bearerCredential(
@@ -272,11 +284,11 @@ export function dispatchUrl(env: DispatchEnvironment, config: EnvoyConfig): stri
 }
 
 /** Where Dispatch's credential comes from: a variable, a file with the server written beside it,
- * the secrets broker, where this machine's identity, or a person's sign-in on it, is traded, or
- * the `dispatch` command's token files. */
+ * the secrets broker, where this machine's identity, or a person's sign-in on it, is traded, with
+ * the read trade the read settings ask for, or the `dispatch` command's token files. */
 type TokenSource =
   | Exclude<BearerSource, { readonly kind: "none" }>
-  | { readonly kind: "broker" }
+  | { readonly kind: "broker"; readonly read: ReadTrade | undefined }
   | ({ readonly kind: "files" } & TokenFiles);
 
 /** Dispatch on, as `dispatchTarget` resolves it. */
@@ -384,6 +396,71 @@ function brokerRouteForced(env: DispatchEnvironment): boolean | SectionOff {
   );
 }
 
+/** A cut as the broker takes one (`oauthwire.FormAsOf`, its `cutForm`): an RFC 3339 time with at
+ *  most six fractional digits, and `Z` or a numeric offset. */
+const CUT_FORM =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/** Whether `text` is a cut the broker takes: {@link CUT_FORM}, naming a day its month has and a
+ *  time of day and an offset that exist. */
+function isCut(text: string): boolean {
+  const parts = CUT_FORM.exec(text);
+  if (parts === null) return false;
+  const [
+    year = 0,
+    month = 0,
+    day = 0,
+    hour = 0,
+    minute = 0,
+    second = 0,
+    zoneHour = 0,
+    zoneMinute = 0,
+  ] = parts.slice(1).map((part) => Number(part ?? "0"));
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    zoneHour <= 23 &&
+    zoneMinute <= 59
+  );
+}
+
+/**
+ * The read trade `DISPATCH_TOKEN_BROKER_READ` and `DISPATCH_TOKEN_BROKER_AS_OF` ask Dispatch's
+ * credential for: undefined where neither is set, the read trade and its cut where the first is
+ * `1`, and a refusal naming the setting otherwise. `DISPATCH_TOKEN_BROKER_READ` takes `1` alone;
+ * the cut goes only beside it, and is an RFC 3339 time the broker takes ({@link isCut}). The
+ * broker refuses a cut later than the trade, which only its clock can tell. Neither value is
+ * quoted: a token pasted into the wrong variable would be printed.
+ */
+function readTradeSetting(env: DispatchEnvironment): ReadTrade | undefined | SectionOff {
+  const read = (env.DISPATCH_TOKEN_BROKER_READ ?? "").trim();
+  const cut = (env.DISPATCH_TOKEN_BROKER_AS_OF ?? "").trim();
+  if (read !== "" && read !== "1") {
+    return offWithError(
+      "DISPATCH_TOKEN_BROKER_READ takes 1: set it to 1 where this session's Dispatch credential is a broker token that only reads, and leave it unset where it writes"
+    );
+  }
+  if (read === "") {
+    if (cut === "") return undefined;
+    return offWithError(
+      "DISPATCH_TOKEN_BROKER_AS_OF names the cut a read-only token reads at, and goes only beside DISPATCH_TOKEN_BROKER_READ=1: set DISPATCH_TOKEN_BROKER_READ to 1 beside it, or unset DISPATCH_TOKEN_BROKER_AS_OF"
+    );
+  }
+  if (cut === "") return {};
+  if (!isCut(cut)) {
+    return offWithError(
+      "DISPATCH_TOKEN_BROKER_AS_OF is not an RFC 3339 time with at most six fractional digits and Z or a numeric offset, such as 1999-12-31T23:59:59Z"
+    );
+  }
+  return { asOf: cut };
+}
+
 /** Dispatch as `dispatchSettings` resolves it up to its token: its URL, the setting that URL was
  * read from (`urlSetting`: `DISPATCH_URL`, `dispatch.serverUrl in <file>`, or Dispatch's default),
  * and the token's source, or off saying why. The token files come first, for a caller that takes
@@ -396,8 +473,12 @@ function dispatchTarget(
   if (config.kind === "failed") return offWithError(config.error);
   const files = tokenFilesTarget(env, config, tokenFiles);
   if (files !== undefined) return files;
-  const forced = brokerRouteForced(env);
-  if (typeof forced !== "boolean") return forced;
+  const brokerOnly = brokerRouteForced(env);
+  if (typeof brokerOnly !== "boolean") return brokerOnly;
+  const read = readTradeSetting(env);
+  if (read !== undefined && "enabled" in read) return read;
+  // The read settings take the broker route as DISPATCH_TOKEN_BROKER=1 does.
+  const forced = brokerOnly || read !== undefined;
   const explicitUrl = nonEmpty(env.DISPATCH_URL);
   const checkoutFile = explicitUrl === undefined ? config.checkout : null;
   if (checkoutFile?.kind === "invalid") return offWithError(checkoutFile.error);
@@ -461,11 +542,11 @@ function dispatchTarget(
           : own.serverUrl !== undefined
             ? `dispatch.serverUrl in ${config.path}`
             : DEFAULT_URL_SETTING;
-      return { enabled: true, url: brokered, urlSetting, source: { kind: "broker" } };
+      return { enabled: true, url: brokered, urlSetting, source: { kind: "broker", read } };
     }
     if (forced) {
       return offWithError(
-        `DISPATCH_TOKEN_BROKER is set, so this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and ${route.gap}: Dispatch is off rather than written with whatever bearer this box holds`
+        `${read === undefined ? "DISPATCH_TOKEN_BROKER" : "DISPATCH_TOKEN_BROKER_READ"} is set, so this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and ${route.gap}: Dispatch is off rather than written with whatever bearer this box holds`
       );
     }
     return offWithError(
