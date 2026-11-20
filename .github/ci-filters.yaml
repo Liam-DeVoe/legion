@@ -2374,6 +2374,7 @@ worker_image:
   - 'packages/envoy/docker/**'
   - 'packages/envoy/docs/**'
   - 'packages/envoy/going/**'
+  - 'packages/envoy/heldprocess/**'
   - 'packages/envoy/internal/**'
   - 'packages/envoy/listenerwire/**'
   - 'packages/envoy/listenfd/**'
