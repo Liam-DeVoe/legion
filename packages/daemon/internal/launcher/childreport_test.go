@@ -17,8 +17,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// The lines are the pinned Oh My Pi's own, as it wrote them for each store (impl-4's
-// omp-report-probe.log), with only the URL file's path shortened.
+// The lines are the pinned Oh My Pi's own, as it wrote them for each store, with only the URL
+// file's path shortened.
 func TestAChildsOwnReportOfAStoreItCouldNotOpenIsReadByWhereItsFailureCameFrom(t *testing.T) {
 	const prefix = "Error: OMP_SESSION_SQL_DSN_FILE names /tmp/dsn, but the session database could not be opened: "
 	for name, tc := range map[string]struct {
