@@ -331,6 +331,16 @@ holds, under `F6-madeup/` as one made-up repository's tree:
 | `installers/skills.sh` | a dotfiles installer script that links each skill directory into `~/.claude/skills` and `~/.omp/agent/skills` |
 | `tree/init.py` | a Python loader whose default TOML template names each role's skills in `[roles.<role>] skills = [...]`, `tool-loop-alpha` among them |
 
+## F1c and F7: the psql captures of the read count and the models query (`F1c.jsonl`, `F7-*`)
+
+`F1c.jsonl` is F1's subagent transcript with its `model_change` line taken out, so its model comes
+from its `session_init` line (`grep -v '"type":"model_change"' <F1 subagent file> > F1c.jsonl`).
+The `F7-*.txt` files are psql's output under the store command's flags for `count.sql` and
+`models.sql` on fixture databases that `fixturedb.ts` loads from F1, F1b, F1c and F4. Their exact
+capture commands are in the headers of `psql-rows.test.ts` (the count, the pull, the tasks query
+and the edge shapes) and `count.test.ts` (the models query), and `count.test.ts` checks each query's
+rows against its capture.
+
 ## The scan
 
 `bun $TOOLS/scan.ts packages/pi-legion/scripts/skill-cuts/testdata` reads every file here, and the

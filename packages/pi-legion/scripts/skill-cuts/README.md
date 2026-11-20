@@ -81,11 +81,12 @@ its answer names that finding. It exits 0 when the control held, 1 when it did n
 ### `count-sql`
 
 ```
-bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>]
+bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]
 ```
 
 Prints `count.sql` filled for one store and one UTC day (or hour), the same as
-`bun scripts/skill-cuts/countsql.ts`.
+`bun scripts/skill-cuts/countsql.ts`. `--query models` prints `models.sql` instead: each session
+file's model, read from the file's first part only, as one row per file hash.
 
 ### `load`
 
@@ -136,13 +137,17 @@ copy-prefix table the read count is attributed by. Its files are listed in `copi
 
 ```
 bun scripts/skill-cuts/cli.ts attribute --config <skill-cuts.json> --count <count dir> \
-  --copies <copies out dir> --spans <spans.jsonl> --out <dir> [--changed <cut id>=<file>]...
+  --copies <copies out dir> --spans <spans.jsonl> --out <dir> [--changed <cut id>=<file>]... \
+  [--models <models dir>]
 ```
 
 The read count per skill copy (`attribute.ts`): it maps each read's copy path to a repository
-copy by the prefix table, counts each session once across the count's queries, marks ties and
-loaded skills, states each store's span, and ranks each cut's changed skills for the behaviour
-test.
+copy by the prefix table, then by the repository-relative skill directory a checkout's path ends
+with, then by the copies the store's context installs; counts each session once across the
+count's queries; marks ties and loaded skills; states each store's span; ranks each cut's changed
+skills for the behaviour test and writes each ranked skill's reading sessions
+(`<out>/<cut id>/sessions/<skill>.jsonl`, file hashes only). With `--models`, it also counts each
+copy's reading sessions by model.
 
 ### `build-cases` and `build-tasks`
 
