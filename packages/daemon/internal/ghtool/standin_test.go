@@ -33,7 +33,9 @@ func TestMain(m *testing.M) {
 // behaviour is how the stand-in answers a run: its stdout (or the response for its exact arguments,
 // joined by spaces), its stderr, how long it sleeps first and its exit status; HelpDir is the saved
 // help it answers --help from. Visibility is what it answers the leak guard's own read of a
-// repository's visibility with, "public" where a behaviour names none.
+// repository's visibility with, "public" where a behaviour names none; VisibilityRefused, where it
+// is set, is what it prints for that read instead, exiting 1, as gh prints GitHub's refusal of the
+// read (leakguardtest.GhReadNotFound).
 type behaviour struct {
 	Stdout    string
 	Stderr    string
@@ -42,9 +44,10 @@ type behaviour struct {
 	Exit      int
 	// Killed has the stand-in end itself with SIGKILL once it has printed, as a kill from outside
 	// the tool would end gh.
-	Killed     bool
-	HelpDir    string
-	Visibility string
+	Killed            bool
+	HelpDir           string
+	Visibility        string
+	VisibilityRefused string
 }
 
 // invocation is one run of the stand-in: its arguments, and for a run that is no help read, its
@@ -100,6 +103,10 @@ func standIn() int {
 	// The guard's own visibility read is answered with the visibility and nothing else: the
 	// run's stdout, sleep and exit are a call's, and this read is no call of the tool's.
 	if inv.guardRead() {
+		if b.VisibilityRefused != "" {
+			os.Stdout.WriteString(b.VisibilityRefused)
+			return 1
+		}
 		visibility := b.Visibility
 		if visibility == "" {
 			visibility = "public"

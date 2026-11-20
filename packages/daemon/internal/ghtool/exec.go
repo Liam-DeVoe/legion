@@ -53,11 +53,13 @@ func (a *Answer) toolPath() string {
 // leakGuard is the shared leak guard's read of the call, the one check a Legion write to a public
 // GitHub repository passes before it writes (internal/leakguard). It runs where a pane's own gh
 // runs it, between the directory the call was routed to and the gh about to be started
-// (cmd/legion's runGh), and its error — a *leakguard.Refusal, about the text the call carries, or
-// a *leakguard.SetupFailure, a check that could not be made to run — refuses the call with the
-// guard's own message: a check that did not run has cleared nothing. check is the check it runs,
-// the host's installed one (Host.LeakCheck), and "" for a host that names none, which leaves the
-// guard to resolve one in the daemon's environment.
+// (cmd/legion's runGh), and its error — a *leakguard.Refusal, about the text the call carries, a
+// *leakguard.SetupFailure, a check that could not be made to run, or a *leakguard.NotFound, a
+// repository whose visibility read GitHub answered 404 — refuses the call with the guard's own
+// message, as `legion gh` refuses it: a check that did not run has cleared nothing, and neither
+// has a visibility read GitHub answered 404. check is the check it runs, the host's installed one
+// (Host.LeakCheck), and "" for a host that names none, which leaves the guard to resolve one in
+// the daemon's environment.
 //
 // The whole argv is what it reads, the footer added and all, rather than the options a parser
 // calls text: the shared check's own gh-guard reads full argv, and a private name is refusable

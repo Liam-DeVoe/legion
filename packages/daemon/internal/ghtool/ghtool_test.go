@@ -1762,6 +1762,52 @@ func TestACheckThatCannotBeRunRefusesTheCall(t *testing.T) {
 	}
 }
 
+// A call whose repository GitHub answers the guard's visibility read of with 404 is refused as
+// `legion gh` refuses it: the guard read no visibility, so it has cleared nothing
+// (leakguard.NotFound). gh never starts the call, the model reads the guard's own words, which
+// name GitHub's 404 and hold neither a refusal's marker nor a setup error's, the call is recorded
+// with that refusal and no exit, and the guard's one line names the issue, the role, the
+// repository and why, as for each of the guard's refusals. The check ran, and the guard made one
+// read of the repository, which the stand-in gh answers as gh printed GitHub's 404
+// (leakguardtest.GhReadNotFound).
+func TestACallWhoseRepositoryGitHubAnswers404ForIsRefused(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n", VisibilityRefused: leakguardtest.GhReadNotFound})
+	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+	got := f.run(1, argv...)
+	why := (&leakguard.NotFound{What: leakguard.WhatGhCall, Repo: "acme/widgets"}).Error()
+	if got.Ran || got.Exit != -1 || got.Output != "refused: "+why {
+		t.Fatalf("gh %q = %+v; want the refusal %q, gh never run", argv, got, "refused: "+why)
+	}
+	for _, marker := range []string{"LEAK CHECK: refusing", "LEAK CHECK SETUP ERROR"} {
+		if strings.Contains(got.Output, marker) {
+			t.Errorf("the refusal %q holds %q; want GitHub's 404 told as such", got.Output, marker)
+		}
+	}
+	if ran := f.invocations(false); len(ran) != 0 {
+		t.Errorf("gh ran for a call whose repository GitHub answered 404 for: %+v", ran)
+	}
+	if f.checked() == "" {
+		t.Errorf("the shared check was never run for %q", argv)
+	}
+	if reads := f.guardReads(); len(reads) != 1 || !slices.Contains(reads[0].Argv, "repos/acme/widgets") {
+		t.Errorf("the guard's visibility reads were %+v; want one read of repos/acme/widgets", reads)
+	}
+	row, recorded := f.calls.row(question, 1)
+	if !recorded || row.Result == nil || *row.Result != got.Output || row.Exit != nil || row.FinishedAt == nil {
+		t.Errorf("the refused call is recorded as %+v (%t); want the guard's refusal and no exit", row, recorded)
+	}
+	lines := f.logLines("answers: gh call refused by the leak guard")
+	if len(lines) != 1 {
+		t.Fatalf("the guard's refusal logged %d lines, want one: %s", len(lines), f.logs)
+	}
+	if line := lines[0]; line["issue"] != "LEG-1" || line["role"] != "implementer" || line["repository"] != "acme/widgets" || line["why"] != why {
+		t.Errorf("the refusal line = %v; want the issue LEG-1, the role implementer, acme/widgets and %q", line, why)
+	}
+	if ordinary := f.logLines("answers: gh"); len(ordinary) != 1 {
+		t.Errorf("the refused call logged %d `answers: gh` lines, want the one every call logs: %s", len(ordinary), f.logs)
+	}
+}
+
 // A call the check passes runs exactly as it did before the guard: gh started once, with the
 // arguments and the environment the tool gives it, and its record finished with gh's exit. The
 // check read the whole call, the footer and all.

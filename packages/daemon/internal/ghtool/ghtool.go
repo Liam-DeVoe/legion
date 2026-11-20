@@ -380,9 +380,10 @@ func (a *Answer) refuse(ctx context.Context, seq int, argv []string, started tim
 	return result
 }
 
-// guardRefusal refuses a call over err, the leak guard's refusal or setup failure, logging the
-// one line of its own a guard's refusal gets before the call's: the issue, the role, the
-// repository the call was routed to ("" for one refused before routing) and the reason.
+// guardRefusal refuses a call over err, the leak guard's refusal, setup failure or not-found
+// answer, logging the one line of its own a guard's refusal gets before the call's: the issue,
+// the role, the repository the call was routed to ("" for one refused before routing) and the
+// reason.
 func (a *Answer) guardRefusal(ctx context.Context, seq int, run []string, started time.Time, repository string, err error) Result {
 	a.host.Log.Warn("answers: gh call refused by the leak guard", "question", a.question, "seq", seq,
 		"issue", a.agent.Issue, "role", a.agent.Role, "repository", repository, "why", err.Error())
