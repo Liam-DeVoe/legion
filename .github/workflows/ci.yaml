@@ -813,6 +813,7 @@ jobs:
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/projectscope/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
@@ -975,6 +976,7 @@ jobs:
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
+              - 'packages/envoy/internal/projectscope/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
@@ -1039,6 +1041,7 @@ jobs:
               # The testdata of envoy's internal/contracts, which the daemon compiles.
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/principal/*'
+              - 'packages/envoy/internal/projectscope/*'
               # The fixtures of packages/contracts this suite's tests read, and no other file of
               # it; no go:embed or go:generate of packages/daemon reaches outside the module.
               # Each is a RULES row of .github/scripts/ci_job_reads.py, citing the test line.
@@ -2202,6 +2205,7 @@ jobs:
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/projectscope/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
@@ -2243,6 +2247,7 @@ jobs:
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
+              - 'packages/envoy/internal/projectscope/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
@@ -2307,6 +2312,7 @@ jobs:
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/projectscope/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
@@ -4155,6 +4161,7 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/principal/*'
+              - 'packages/envoy/internal/projectscope/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
