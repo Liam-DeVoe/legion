@@ -231,6 +231,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"volume.switchedOff"}},
 	{kind: texts.SessionLost, from: "workflow/engine.go:sessionLost (the role, the phase, the detail)",
 		keys: []string{"issue", "role", "phase", "detail"}},
+	{kind: texts.SessionForgotten, from: "workflow/engine.go:sessionLost at a4cd4949 (the role, the phase, the session forgotten)",
+		keys: []string{"issue", "role", "phase", "session"}},
 	{kind: texts.SessionStoreFault, from: "workflow/engine.go:sessionStoreFault (the role, the phase, the detail)",
 		keys: []string{"issue", "role", "phase", "detail"}},
 

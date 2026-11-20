@@ -602,7 +602,8 @@ type Notice struct {
 	NotPassedStatuses []texts.StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int                    `json:"passed,omitempty"`
 	ListPassed        string                  `json:"list_passed,omitempty"`
-	// The session that wrote a status and the status it wrote (status-reasserted).
+	// The session that wrote a status and the status it wrote (status-reasserted), and the session
+	// a claim forgot (session-forgotten).
 	Session string `json:"session,omitempty"`
 	Wrote   string `json:"wrote,omitempty"`
 	// The runtime's account of a lost session or a faulty session store, and how often the

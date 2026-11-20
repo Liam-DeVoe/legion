@@ -122,7 +122,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1,
+		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateDrift:    []runtime.DriftItem{{Key: runtime.DriftImage, Image: "ghcr.io/cybermonklabs/legion-worker@sha256:4c1b8e2a6f9d"}},
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
@@ -141,7 +141,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
 		EndedWork: supervise.EndedWork{At: at.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
-		SessionLost: true,
+		SessionLost: supervise.SessionLossGone,
 		Step: supervise.StepRecord{
 			At: at.Add(-time.Minute), TurnStartedAt: at.Add(-2 * time.Minute),
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",

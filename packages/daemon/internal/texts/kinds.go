@@ -53,6 +53,7 @@ const (
 	StatusReasserted        Kind = "status-reasserted"
 	VolumeNearFull          Kind = "volume-near-full"
 	SessionLost             Kind = "session-lost"
+	SessionForgotten        Kind = "session-forgotten"
 	SessionStoreFault       Kind = "session-store-fault"
 )
 
@@ -130,6 +131,7 @@ var list = []Entry{
 	{Kind: StatusReasserted, Form: Notice, Record: StatusReassertedRecord{}, Readers: toArchitect},
 	{Kind: VolumeNearFull, Form: Notice, Record: VolumeNearFullRecord{}, Readers: toArchitect},
 	{Kind: SessionLost, Form: Notice, Record: SessionLostRecord{}, Readers: toArchitectAndController},
+	{Kind: SessionForgotten, Form: Notice, Record: SessionForgottenRecord{}, Readers: toArchitectAndController},
 	{Kind: SessionStoreFault, Form: Notice, Record: SessionStoreFaultRecord{}, Readers: toController},
 
 	{Kind: Triage, Form: ControllerNotice, Record: TriageRecord{}, Readers: toController},

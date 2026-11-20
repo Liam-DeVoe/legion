@@ -1240,6 +1240,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		mustNotice(t, texts.StatusReassertedRecord{NoticeHead: head(texts.StatusReasserted), Session: "ses_1", Wrote: "todo", Status: "in_progress"}),
 		mustNotice(t, texts.SessionLostRecord{NoticeHead: head(texts.SessionLost), Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Detail: "no session store holds ses_1"}),
+		mustNotice(t, texts.SessionForgottenRecord{NoticeHead: head(texts.SessionForgotten), Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Session: "ses_1"}),
 		mustNotice(t, texts.SessionStoreFaultRecord{NoticeHead: head(texts.SessionStoreFault), Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Detail: "the session store did not answer", RetryEvery: "1m0s"}),
 		mustNotice(t, texts.VolumeNearFullRecord{NoticeHead: head(texts.VolumeNearFull),

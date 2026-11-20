@@ -1488,7 +1488,8 @@ func CutTurnNote(issue, cause string) texts.CutTurnNoteRecord {
 //
 // The reason is the provider's own text, so it is a field of its own, which the renderer quotes
 // where it must (texts.Render): a newline or a quote inside it is escaped rather than read as a
-// line of the daemon's own.
+// line of the daemon's own. The abandoned session's id, which the agent's registration chose, is
+// a field of its own for the same reason.
 func AbandonedSessionNote(issue string, role claim.Role, session, why string) texts.AbandonedSessionNoteRecord {
 	note := texts.AbandonedSessionNoteRecord{
 		TaskHead: texts.TaskHead{Kind: texts.AbandonedSessionNote, Issue: issue},

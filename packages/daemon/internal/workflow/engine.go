@@ -1486,36 +1486,67 @@ func VolumeNearFullNotice(issue string, sweep record.VolumeNearFull) texts.Volum
 	return texts.VolumeNearFullRecord{NoticeHead: texts.NoticeHead{Kind: texts.VolumeNearFull, Issue: issue}, Volume: &sweep}
 }
 
-// sessionLost tells the issue, its architect and the controller that a worker's recorded session
-// is in no session store any more, so the agent working the issue now has read none of its own
-// earlier work: it runs from a fresh session, and only what it pushed and committed survives.
-// Nothing of the issue moves — the worker is running — and nothing is held: the report is the
-// whole point, since a worker that lost its memory is otherwise indistinguishable from one that
-// is merely slow. An issue the record does not hold tells nobody.
+// sessionLost tells the issue, its architect and the controller that a worker forgot its recorded
+// session, so the agent working the issue now has read none of its own earlier work: it runs from
+// a fresh session, and only what it pushed and committed survives. Nothing of the issue moves — the
+// worker is running — and nothing is held: the report is the whole point, since a worker that lost
+// its memory is otherwise indistinguishable from one that is merely slow. An issue the record does
+// not hold tells nobody.
 //
-// The detail is the runtime's own account of the failed resume, which carries a session file name
-// and a transport error from outside the daemon. The message posted on the issue is read by a
-// person and quotes it as a Go string (strconv.Quote), so a quote or a newline inside it is
-// escaped rather than closing the one around it; the notice carries it as a field of its own.
-// sessionStoreFault does the same with its own detail.
+// The fact's cause chooses the words of the message posted on the issue, the notice's kind and
+// the warning line. A session no store holds (gone, and a fact with no cause) and a Claude Code
+// claim's session with no transcript file are told as lost, in a session-lost notice
+// (SessionLostNotice). A session that the pod's launcher, older than this release, could not look
+// up by its id, and that Oh My Pi did not resume by that id, is told as forgotten, in a
+// session-forgotten notice (SessionForgottenNotice), and nothing says it was lost: nothing of it
+// was deleted, and a store may hold it still (dispatch://INFRA-4108 R3). The kind is part of what
+// the architect and the controller hear, since the outbox publishes each notice as `<kind> on
+// <issue>` (the daemon's noticeSummary), so that forget has a kind of its own.
+//
+// The detail of a lost session can be the runtime's own account of the failed resume, which
+// carries a session file name and a transport error from outside the daemon. The message posted
+// on the issue is read by a person and quotes it as a Go string (strconv.Quote), so a quote or a
+// newline inside it is escaped rather than closing the one around it; the notice carries it as a
+// field of its own. sessionStoreFault does the same with its own detail. The message of a
+// forgotten session carries no detail: it names the session the claim forgot
+// (intake.SessionLost.Session), which the agent's registration chose, quoted the same way, and
+// its notice carries that session as a field of its own.
 func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.SessionLost) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	var notice any = SessionLostNotice(issue.Key, fact.Role, issue.Phase, fact.Detail)
 	told := fmt.Sprintf("The %s of %s lost the session it recorded: %s. It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
 		fact.Role, issue.Key, strconv.Quote(fact.Detail))
+	line := "workflow: a worker's recorded session was in no session store"
+	fields := []any{"issue", issue.Key, "role", fact.Role, "detail", fact.Detail}
+	if fact.Cause == supervise.SessionLossNotResumedByID {
+		notice = SessionForgottenNotice(issue.Key, fact.Role, issue.Phase, fact.Session)
+		told = fmt.Sprintf("The %s of %s forgot the session it recorded, %s: its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id. "+
+			"The daemon deleted nothing of that session. The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
+			fact.Role, issue.Key, strconv.Quote(fact.Session), fact.Role)
+		line = "workflow: a worker forgot its recorded session, which its pod's launcher could not look up and Oh My Pi did not resume by its id"
+		fields = []any{"issue", issue.Key, "role", fact.Role, "session", fact.Session, "cause", fact.Cause, "detail", fact.Detail}
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
 		return intake.Result{}, err
 	}
-	e.warnOnCommit(ctx, "workflow: a worker's recorded session was in no session store", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
-	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, SessionLostNotice(issue.Key, fact.Role, issue.Phase, fact.Detail))
+	e.warnOnCommit(ctx, line, fields...)
+	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, notice)
 }
 
 // SessionLostNotice is the session-lost notice of issue: the role whose recorded session is in no
 // session store, the issue's phase and the runtime's own account of the failed resume.
 func SessionLostNotice(issue string, role claim.Role, at phase.Phase, detail string) texts.SessionLostRecord {
 	return texts.SessionLostRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionLost, Issue: issue}, Role: role, Phase: at, Detail: detail}
+}
+
+// SessionForgottenNotice is the session-forgotten notice of issue: the role whose claim forgot the
+// session it recorded, which the pod's launcher could not look up by its id and Oh My Pi did not
+// resume by that id, the issue's phase and the session forgotten.
+func SessionForgottenNotice(issue string, role claim.Role, at phase.Phase, session string) texts.SessionForgottenRecord {
+	return texts.SessionForgottenRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionForgotten, Issue: issue}, Role: role, Phase: at, Session: session}
 }
 
 // sessionStoreFault tells the issue and the controller that no worker of the issue can start

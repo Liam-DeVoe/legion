@@ -5303,6 +5303,40 @@
       }
     },
     {
+      "kind": "session-forgotten",
+      "variant": "forgotten",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "session-forgotten on ALPHA-1100",
+      "payload": {
+        "kind": "session-forgotten",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "ALPHA-1100",
+        "session": "session-86673faf-d670-6103-b90d-f297e92198b3 a, b"
+      }
+    },
+    {
+      "kind": "session-forgotten",
+      "variant": "forgotten",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "session-forgotten on BRAVO-2100",
+      "payload": {
+        "kind": "session-forgotten",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "BRAVO-2100",
+        "session": "session-68737d67-3874-4882-2ab9-65f48af3e50c say \"so\""
+      }
+    },
+    {
       "kind": "session-store-fault",
       "variant": "store-fault",
       "sample": 1,

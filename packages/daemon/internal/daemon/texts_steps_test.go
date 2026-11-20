@@ -15,8 +15,8 @@ import (
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
-// c7e1cbd5, 3d2dddd0 or 6d50ef31 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
-// stand for any text), the readers, and the passage of the readers' prompt
+// c7e1cbd5, 3d2dddd0, 6d50ef31 or a4cd4949 for a sentence main wrote since (a format verb, %s,
+// %[1]s or %d, and … stand for any text), the readers, and the passage of the readers' prompt
 // (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
 // word for word from one line of the file.
 type goldenStep struct {
@@ -279,6 +279,18 @@ var goldenSteps = []goldenStep{
 	{texts.SessionLost, "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "architect",
 		goPrompts + "architect-common.md", "the daemon runs the role in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives."},
 	{texts.SessionLost, "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "controller",
+		rolePrompts + "controller-root.md", "the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it."},
+	{texts.SessionForgotten, "its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id.", "architect",
+		goPrompts + "architect-common.md", "A `session-forgotten` notice says that a role forgot the session it recorded (`session`) because its pod's launcher is older than the daemon and could not look that session up by its id, and Oh My Pi did not resume it by that id"},
+	{texts.SessionForgotten, "its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id.", "controller",
+		rolePrompts + "controller-root.md", "A `session-forgotten` notice says that a role of the issue forgot the session it recorded (`session`) because its pod's launcher is older than the daemon and could not look that session up by its id, and Oh My Pi did not resume it by that id"},
+	{texts.SessionForgotten, "The daemon deleted nothing of that session.", "architect",
+		goPrompts + "architect-common.md", "the daemon deleted nothing of that session, and it runs the role in a fresh agent"},
+	{texts.SessionForgotten, "The daemon deleted nothing of that session.", "controller",
+		rolePrompts + "controller-root.md", "the daemon deleted nothing of that session, and the role runs on in a fresh agent"},
+	{texts.SessionForgotten, "The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "architect",
+		goPrompts + "architect-common.md", "it runs the role in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives."},
+	{texts.SessionForgotten, "The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "controller",
 		rolePrompts + "controller-root.md", "the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it."},
 	{texts.SessionStoreFault, " Nothing is lost and nothing is charged; the daemon tries again every minute, and no worker of this issue runs until the store answers.", "controller",
 		rolePrompts + "controller-root.md", "nothing is lost or charged, the daemon asks the store again every `retry_every`, and no worker of the issue runs until the store answers, so name it in the day's report."},

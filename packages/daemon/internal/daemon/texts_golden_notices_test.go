@@ -297,6 +297,9 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	detail := r.words("lost/detail", 120) + ` "` + goldenHostile[r.n-1][5] + `"`
 	b.notice(r, "lost", arch, workflow.SessionLostNotice(issue.Key, claim.RoleTester, phase.Testing, detail),
 		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "detail", detail))
+	forgotten := "session-" + r.id("forgotten") + " " + goldenHostile[r.n-1][4]
+	b.notice(r, "forgotten", arch, workflow.SessionForgottenNotice(issue.Key, claim.RoleTester, phase.Testing, forgotten),
+		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "session", forgotten))
 	b.notice(r, "store-fault", claim.RoleController, workflow.SessionStoreFaultNotice(issue.Key, claim.RoleTester, phase.Testing, detail),
 		goldenWant("issue", issue.Key, "role", claim.RoleTester, "phase", phase.Testing, "detail", detail))
 

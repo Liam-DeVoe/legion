@@ -636,6 +636,20 @@ type SessionLostRecord struct {
 	Detail string      `json:"detail"`
 }
 
+// SessionForgottenRecord is the notice that a worker's claim forgot the session it recorded
+// because the pod's launcher, older than the release that added the kind, could not look that
+// session up by its id, and Oh My Pi did not resume it by that id (workflow's sessionLost): the
+// role, the phase and the session forgotten. It is a kind of its own, and not session-lost,
+// because the kind is the notice's one-line message and that session was not lost: nothing of it
+// was deleted, and a store may hold it still. No earlier release decodes the kind, so the way back
+// of migration 20261120042902 deletes its unsent rows.
+type SessionForgottenRecord struct {
+	NoticeHead
+	Role    claim.Role  `json:"role,omitempty"`
+	Phase   phase.Phase `json:"phase,omitempty"`
+	Session string      `json:"session"`
+}
+
 // SessionStoreFaultRecord is the notice that no worker of the issue can start because the session
 // store cannot be asked (workflow's sessionStoreFault): the role, the phase, the runtime's account,
 // and how often the daemon tries again.
