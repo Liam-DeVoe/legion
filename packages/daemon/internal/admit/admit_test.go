@@ -602,10 +602,12 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 					t.Fatalf("record the %s claim %s: %v", state, token, err)
 				}
 			}
+			// putPending records the claim's pending task; a confirmed one is a take whose turn
+			// started (turn_started), as the task numbers' fill reads a confirmed row.
 			putPending := func(generation uint64, p phase.Phase, confirmedAt *time.Time) {
 				t.Helper()
-				if _, err := pool.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at)
-					values ($1, 'outbox:7', 'Carry on.', now(), $2, $3, $4)`, string(token), int64(generation), string(p), confirmedAt); err != nil {
+				if _, err := pool.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at, turn_started)
+					values ($1, 'outbox:7', 'Carry on.', now(), $2, $3, $4::timestamptz, $4::timestamptz is not null)`, string(token), int64(generation), string(p), confirmedAt); err != nil {
 					t.Fatalf("record the pending task: %v", err)
 				}
 			}

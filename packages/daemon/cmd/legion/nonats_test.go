@@ -19,8 +19,8 @@ func TestCheckConfigSaysNoNATSLaunchesNoWorker(t *testing.T) {
 		projects string
 		want     string
 	}{
-		{"a file that names no NATS", "projects:\n  DEMO: {}\n", demoCheckConfigOKNoNATS + tmuxCapabilityGaps},
-		{"a file that names NATS", "nats_urls: [nats://127.0.0.1:4222]\nprojects:\n  DEMO: {}\n", demoCheckConfigOK + tmuxCapabilityGaps},
+		{"a file that names no NATS", "projects:\n  DEMO: {}\n", demoCheckConfigOKNoNATS + tmuxCapabilityGaps + tmuxPauseUnavailable},
+		{"a file that names NATS", "nats_urls: [nats://127.0.0.1:4222]\nprojects:\n  DEMO: {}\n", demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			legionState(t)
@@ -80,7 +80,7 @@ func TestCheckConfigSaysADaemonOnThePaneSeedIsRefusedItsBoot(t *testing.T) {
 			if printed := out.String() + errb.String(); strings.Contains(printed, paneSeed) || strings.Contains(printed, daemonSeed) {
 				t.Fatalf("the check printed a seed: stdout %q stderr %q", out.String(), errb.String())
 			}
-			if want := row.want + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+			if want := row.want + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}
 		})
