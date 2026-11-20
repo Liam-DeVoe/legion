@@ -901,6 +901,9 @@ func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDeli
 	if delivery == nil || !delivery.handedBack() {
 		return true
 	}
+	if waiting := handBacksWaiting.Load(); waiting != nil {
+		(*waiting)()
+	}
 	landed := delivery.handBacksLanded()
 	select {
 	case <-landed:
@@ -914,6 +917,11 @@ func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDeli
 	}
 	return d.flushHandBacks()
 }
+
+// handBacksWaiting is nil outside the release row. It runs when a stop starts to wait for the
+// hand-backs its delivery published (handBacksReached), before the stop releases its hold, so the
+// row sees that the stop waits for its hand-backs with its hold live.
+var handBacksWaiting atomic.Pointer[func()]
 
 // flushHandBacks is handBacksSettled within intakeFlushWait, on a bound of its own as the release
 // that follows it is: both are part of what follows the stop's deadline (intakeStopBudget), and a

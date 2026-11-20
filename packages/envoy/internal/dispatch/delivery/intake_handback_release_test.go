@@ -285,9 +285,10 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // publish (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers
 // published to the durable and the durable's creations, on a connection of its own, and every step
 // waits for an event:
-//   - a hand-back that lands before the stop's deadline: the link moves once the stop has gone on
-//     without the publish (its log line). The hold is released by the time the stop returns, and the
-//     hand-back reached the server before the standby created the durable.
+//   - a hand-back that lands before the stop's deadline: the stop goes on without the publish (its
+//     log line). Then, before the link moves, the stop is seen waiting for its hand-back with its
+//     hold live (handBacksWaiting). Once the link moves, the hold is released by the time the stop
+//     returns, and the hand-back reached the server before the standby created the durable.
 //   - a hand-back still pending at the stop's deadline: the link stays held, and the stop returns
 //     while it is, with the hand-back still pending (handBacksLanded). The hold still names the
 //     holder then, and the standby has not created the durable. With the link still held, the hold is
@@ -302,19 +303,46 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 //     durable.
 //
 // No step waits on a time but the stop's own deadline (intakeStopBudget) and the hold's own expiry;
-// a 30 s wait only guards against a stop that never returns. The negative controls: a release that
-// does not wait for the hand-backs fails the first's order; a stop that never releases its hold when
-// a publish was left running fails the first's release; a release made at the deadline with a
-// hand-back pending fails the second's hold; a stop that leaves its hold to lapse with a hand-back
-// pending fails the second's renewal; and an untracked finalizer fails the third
-// by returning from its shutdown stop with the hold live.
+// each 30 s wait only guards against a stop that never gets to the step the wait is for. The
+// negative controls, each with the subtests that it fails:
+//   - a release that does not wait for the hand-backs fails all three. The first sees the hold
+//     released before the link moves. The second sees the hold released when the stop returns
+//     with the hand-back pending. The third sees no finalizer settle the hand-back after the client
+//     closes;
+//   - a stop that never releases its hold when a publish was left running fails the first: the
+//     hold is still live after the stop returns;
+//   - a release made at the deadline with a hand-back pending fails the second: the hold is gone
+//     when the stop returns;
+//   - a stop that leaves its hold to lapse with a hand-back pending fails the second: the hold
+//     reaches its expiry unrenewed;
+//   - an untracked finalizer fails the third: its shutdown stop returns with the hold live.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)
+		// The stop runs the hook on its own goroutine, so the hook only closes waiting. The hook is
+		// stored before stopWithAHeldHandBack starts the stop, so the stop finds it in handBacksReached.
+		waiting := make(chan struct{})
+		var signal sync.Once
+		hook := func() { signal.Do(func() { close(waiting) }) }
+		handBacksWaiting.Store(&hook)
+		t.Cleanup(func() { handBacksWaiting.Store(nil) })
 		row := stopWithAHeldHandBack(t)
 		waitFor(t, 30*time.Second, func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
 		})
+		waitFor(t, 30*time.Second, func() bool {
+			select {
+			case <-waiting:
+				return true
+			default:
+				return !holdLive(t, row.pool)
+			}
+		}, func() string {
+			return "the stop did not start to wait for its hand-back and did not release its hold within 30 s of going on without the publish: " + consumerState(row.publisher)
+		})
+		if !holdLive(t, row.pool) {
+			t.Fatalf("the stop released its hold before its hand-back reached the server, so a standby could recreate the durable first; the holder logged %q", loggedMessages(logs()))
+		}
 		row.thaw()
 		select {
 		case <-row.stopped:
