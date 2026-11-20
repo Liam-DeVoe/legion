@@ -250,10 +250,12 @@ function blocksOf(nodes: readonly Parsed[]): DisplayTree[] {
 /**
  * The reading of one block of the parse and what it holds, by the server's name for it. A block
  * of HTML is a paragraph holding it as one `html` leaf, as the server shows one, since the
- * server's schema carries HTML inline only. Front matter is one text run of its lines between
- * two plain `---` fences, and of the two fences alone where it holds nothing, as the server
- * writes it (`parseFrontmatterBlock`, `pmdoc/lines.go`). A link reference definition, which only
- * names a link's target, draws nothing and is `undefined`.
+ * server's schema carries HTML inline only. An ordered list keeps the number it starts on as its
+ * `order`, as the server keeps it (`parseList`, `pmdoc/parse.go`), so `3. Ship it` reads `3.`.
+ * Front matter is one text run of its lines between two plain `---` fences, and of the two fences
+ * alone where it holds nothing, as the server writes it (`parseFrontmatterBlock`,
+ * `pmdoc/lines.go`). A link reference definition, which only names a link's target, draws
+ * nothing and is `undefined`.
  */
 function blockOf(node: Parsed): DisplayTree | undefined {
   switch (node.type) {
@@ -263,10 +265,12 @@ function blockOf(node: Parsed): DisplayTree | undefined {
     case "blockquote":
       return withContent("blockquote", blocksOf(node.children));
     case "list":
-      return withContent(
-        node.ordered === true ? "ordered_list" : "bullet_list",
-        blocksOf(node.children)
-      );
+      return node.ordered === true
+        ? {
+            ...withContent("ordered_list", blocksOf(node.children)),
+            attrs: { order: node.start ?? 1 },
+          }
+        : withContent("bullet_list", blocksOf(node.children));
     case "listItem":
       return withContent("list_item", blocksOf(node.children));
     case "code": {

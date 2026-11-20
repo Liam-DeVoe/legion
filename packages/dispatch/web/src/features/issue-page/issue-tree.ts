@@ -15,6 +15,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import type { PublishedReferences, ReferenceNameReading } from "../refs/reference-names";
+import type { DispatchReferenceRoute } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import { chipWords } from "./node-row-chip";
@@ -103,10 +104,10 @@ export interface NodeChip {
   readonly label?: string;
   /** How the target is named, by the batched reference read and the issue's own documents
    *  (`treeContext`): the reading the page publishes for it, which the shared reader projects
-   *  into the name a chip, a reference in a row's words and a reference in a node's one line all
-   *  draw (`refs/reference-names.tsx`). A block by its first line, as a row draws one (R1), from
-   *  the first block of the server's reading of its words (`blockNaming`); where the read
-   *  answered with no reading or one that holds no words, the page's word for the block's kind
+   *  into the name every surface reads the target by, whole (`refs/reference-names.tsx`), and
+   *  which a chip cuts where it draws it (`chipName`). A block by the first block of the server's
+   *  reading of its words that holds any (`firstWordedBlock`); where the read answered with no
+   *  reading or one that holds no words, the page's word for the block's kind
    *  (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read; a whole
    *  document by the page's word for one, never `spec.md`; an ask's, a comment's and a
    *  message's stored text; an issue's title; and anything else's name as that read answers it.
@@ -461,14 +462,13 @@ export function firstWordedBlock(reading: DisplayTree): DisplayTree | undefined 
   return block === undefined ? undefined : { ...reading, content: [block] };
 }
 
-/** What a node's one line is projected from (`lineReading`). */
-export interface LineReading {
-  /** A reading to project the line from. */
-  readonly tree?: DisplayTree;
-  /** The stored text to project it from where the node carries no reading: the projection
-   *  parses it and reads its first line (`usePlainHeadline`'s `firstLine`). */
-  readonly markdown?: string;
-}
+/** What a node's one line is projected from (`lineReading`): a reading; the stored text, which
+ *  the projection parses and reads the first line of (`usePlainHeadline`'s `firstLine`), where
+ *  the node carries no reading; or nothing, for a reading none of whose blocks holds a word. */
+export type LineReading =
+  | { readonly tree: DisplayTree }
+  | { readonly markdown: string }
+  | { readonly none: true };
 
 /**
  * What a node's one line is projected from by the shared plain-text projection, which R1's
@@ -483,8 +483,9 @@ export interface LineReading {
  *   or a paragraph (`firstWordedBlock`). A heading so ends at its own line and its marker is no
  *   word of it, so `## # 1 rule` reads `# 1 rule`. A block that holds no words - a horizontal
  *   rule, a paragraph that is only an image - is passed over, or the line would be empty while
- *   the node has words. A decision's reading opens with its own `##` heading, and a line cut
- *   from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
+ *   the node has words, and a reading none of whose blocks holds a word reads as none (`none`).
+ *   A decision's reading opens with its own `##` heading, and a line cut from the whole reading
+ *   ran the heading into its body: "Keep it Keep the model pure.".
  * - **The issue and a child issue** by its `text`, its key and title or its title, which is no
  *   markdown and carries no reading: read as one text run (`titleReading`), so nothing in it is
  *   parsed and `1. Migrate the table` keeps its label, ``Add `x` flag`` its backticks and
@@ -502,29 +503,25 @@ export function lineReading(node: {
   }
   if (node.tree === undefined) return { markdown: node.text };
   const block = firstWordedBlock(node.tree);
-  return block === undefined ? {} : { tree: block };
+  return block === undefined ? { none: true } : { tree: block };
 }
 
-/** A block's name as a chip draws it, from the words its first block projects to: the line a row
- *  draws for it (`drawnLine`, `firstLineOf`), cut to a chip's words (`chipWords`). */
-function blockName(words: string): string {
-  return chipWords(drawnLine(firstLineOf(words)));
-}
-
-/** How a block is named (`treeContext`'s `lineOf`): the first block of its reading that holds
- *  any words (`firstWordedBlock`), projected and then cut as a row's first line and a chip's
- *  words are (`blockName`). Undefined for a reading none of whose blocks holds a word. Handed to
- *  `tree-drafts.ts`, which cannot import it, since this module imports that one. */
-function blockNaming(reading: DisplayTree): ReferenceNameReading | undefined {
-  const block = firstWordedBlock(reading);
-  return block === undefined ? undefined : { cut: blockName, tree: block };
+/** The words a chip draws for a target `name` names (ruling 5): a block's first line, as a row
+ *  draws one (R1, `firstLineOf`, `drawnLine`), and any other target's name whole, each cut to a
+ *  chip's room (`chipWords`). The page publishes every name whole (R8), so a tie's chip
+ *  (`NodeRow.tsx`) and a block or a document drawn as a chip in a node's words
+ *  (`row-references.ts`) each cut it here, where they draw it, and draw one target alike. */
+export function chipName(route: DispatchReferenceRoute | undefined, name: string): string {
+  const block = route !== undefined && "block" in route && route.block !== undefined;
+  return chipWords(block ? drawnLine(firstLineOf(name)) : name);
 }
 
 /** The reads as the tree and the page's published names both read them (`treeContext`), with a
- *  block named by `blockNaming`: the one call both make, so a chip and a link name one target by
- *  one rule and cannot drift apart. */
+ *  block named by the first block of its reading that holds any words (`firstWordedBlock`): the
+ *  one call both make, so a chip and a link name one target by one rule and cannot drift
+ *  apart. */
 function namingContext(reads: IssueTreeReads): TreeContext {
-  return treeContext(reads, blockNaming);
+  return treeContext(reads, firstWordedBlock);
 }
 
 /** The issue's whole tree, from the reads it was given. */
@@ -537,31 +534,34 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * What the page publishes from the targets of the batched reference read (`reads.targets`) for
  * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
  * rule a chip naming the target is named by (`namingContext`), so a link and a chip naming one
- * target never disagree. All three are read from one context in one walk over the targets, so
+ * target never disagree. All four are read from one context in one walk over the targets, so
  * they cannot disagree either.
  *
  * - **`readings`**: how each target that something answers to now is named, by its address: the
- *   reading of a chip naming it (`NodeChip.reading`), which the store projects. A target with no
- *   reading is left out: one that is gone, another issue's block the read sent no words for, and
- *   an ambiguous short reference.
+ *   reading of a chip naming it (`NodeChip.reading`), which the store projects.
  * - **`ambiguous`**: the references the read answered ambiguous: each writes short an id two or
  *   more targets carry, so it names none of them, and a chip naming it says so
  *   (`NodeChip.ambiguous`). A surface draws one as its author wrote it and links nothing.
  * - **`gone`**: the references the read answered that nothing answers to now, an ambiguous one
  *   apart, which a surface draws as the words its author wrote (R8) and reads no target for.
+ * - **`unnamed`**: the references the read answered with nothing to name them by - another
+ *   issue's block it sent no words for - which a surface reads for itself, as a link to the
+ *   target does (R8).
  */
 export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
   const context = namingContext(reads);
   const ambiguous = new Set<string>();
   const gone = new Set<string>();
+  const unnamed = new Set<string>();
   const readings = new Map<string, ReferenceNameReading>();
   for (const target of reads.targets ?? []) {
     const chip = context.chipOf(target.ref);
     if (chip.ambiguous === true) ambiguous.add(target.ref);
     else if (chip.gone) gone.add(target.ref);
-    if (chip.reading !== undefined) readings.set(target.ref, chip.reading);
+    else if (chip.reading === undefined) unnamed.add(target.ref);
+    else readings.set(target.ref, chip.reading);
   }
-  return { ambiguous, gone, readings };
+  return { ambiguous, gone, readings, unnamed };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

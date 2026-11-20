@@ -159,9 +159,11 @@ const READING_CONSTRUCTS: readonly ReadingConstruct[] = [
     hooks: [],
     name: "a mount of the reference card",
   },
+  // `useNodeLine` is the new issue page's one line of a node, which hands its `surface` on to
+  // the projection it is made of (`NodeRow.tsx`).
   {
     elements: ["PlainText"],
-    hooks: ["usePlainHeadline"],
+    hooks: ["usePlainHeadline", "useNodeLine"],
     name: "a mount of the plain-text projection",
   },
 ];

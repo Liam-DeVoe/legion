@@ -12,7 +12,11 @@ import {
 } from "../../api/queries";
 import type { IssueDetails, ReferenceTarget } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
+import {
+  type PublishedReferences,
+  usePublishReferenceNames,
+  useSameReferences,
+} from "../refs/reference-names";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import {
   buildIssueTree,
@@ -50,6 +54,11 @@ export interface IssueTreeView {
    *  fails holds no names, and turns it true all the same. It is false while a read is out that
    *  has not failed yet, and once both reads have answered with success. */
   readonly namesFailed: boolean;
+  /** What the page publishes of its batched read (`usePublishReferenceNames`), which the view
+   *  that draws the tree's rows hands them as well, in the render that draws them
+   *  (`PublishedReferenceNames`), so no row reads a reference the page is asking for. Each of its
+   *  sets is the same set while it holds the same references. */
+  readonly published: PublishedReferences;
   readonly root: TreeNode;
 }
 
@@ -110,6 +119,7 @@ const NO_TARGET_NAMING: Omit<PublishedReferences, "asked"> = {
   ambiguous: new Set(),
   gone: new Set(),
   readings: new Map(),
+  unnamed: new Set(),
 };
 
 /** What the one more names read holds where nothing is left for it to name: no names, and the
@@ -361,9 +371,10 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // and the store projects each once, so every one of them draws a target in the same words.
   // Beside the readings go the references the read answered ambiguous and those it answered
   // gone, read by that same rule, each of which a surface draws as its author wrote it rather
-  // than reading it itself, and every reference the page asks the read for, which a surface
-  // waits on the page's answer for rather than reading it itself, from before the first answer
-  // on. A chip's reading is read from the issue, the documents' blocks and the names alone
+  // than reading it itself; those it answered with nothing to name them by, which a surface reads
+  // itself, as a link to one does; and every reference the page asks the read for, which a
+  // surface waits on the page's answer for rather than reading it itself, from before the first
+  // answer on. A chip's reading is read from the issue, the documents' blocks and the names alone
   // (`treeContext`), so it is built from those and nothing else: an answer of any other read - an
   // ask, a comment, the coverage, the reader's login - names nothing new.
   const naming = useMemo(
@@ -373,9 +384,16 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
         : targetNaming({ documents: documents.blocks, issue, targets: named }),
     [documents.blocks, issue, named]
   );
+  // Each set the same set while it holds the same references: the tree is read anew whenever any
+  // of its reads answers, and a set read anew that holds what it held is no change to publish.
+  const askedNow = useMemo(() => new Set([...refs, ...extra]), [extra, refs]);
+  const asked = useSameReferences(askedNow);
+  const ambiguous = useSameReferences(naming.ambiguous);
+  const gone = useSameReferences(naming.gone);
+  const wordless = useSameReferences(naming.unnamed);
   const published = useMemo<PublishedReferences>(
-    () => ({ ...naming, asked: new Set([...refs, ...extra]) }),
-    [extra, naming, refs]
+    () => ({ ambiguous, asked, gone, readings: naming.readings, unnamed: wordless }),
+    [ambiguous, asked, gone, naming.readings, wordless]
   );
   usePublishReferenceNames(published);
   const root = useMemo(
@@ -386,7 +404,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     [first, firstTree, named, reads]
   );
   return useMemo(
-    () => ({ blocksHeld: documents.held, blocksRead: documents.read, namesFailed, root }),
-    [documents.held, documents.read, namesFailed, root]
+    () => ({
+      blocksHeld: documents.held,
+      blocksRead: documents.read,
+      namesFailed,
+      published,
+      root,
+    }),
+    [documents.held, documents.read, namesFailed, published, root]
   );
 }

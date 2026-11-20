@@ -215,6 +215,7 @@ function Named({ children }: { children: ReactNode }): ReactNode {
       asked: new Set(["dispatch://CORE-2"]),
       gone: new Set(),
       readings: new Map([["dispatch://CORE-2", { words: "Draw the children" }]]),
+      unnamed: new Set(),
     }),
     []
   );

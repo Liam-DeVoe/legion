@@ -1,15 +1,8 @@
 import { isPartyRoute } from "../refs/party-references";
 import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
-import { textHead } from "../refs/tree-fragment";
+import { chipName } from "./issue-tree";
 import { documentWord } from "./node-row-chip";
-
-/** How many characters of a target's words a link to it draws: a link's title elsewhere is cut
- *  at the same count (`TITLE_HEADLINE_MAX`, `refs/reference-target.ts`). It is written again
- *  here because that module keeps the count to itself and loads the markdown engine with it
- *  (`markdown-engine.ts`), which nothing this module draws needs; `useIssueTree.ts` reads this
- *  one for the citations of every node's words. */
-const TITLE_MAX = 60;
 
 /**
  * What a node's words cite, and how a row of the issue page draws it.
@@ -224,16 +217,15 @@ export function rowReferences(
 }
 
 /**
- * What a row draws a reference as, from `names`, the name each reference has (`RowText.tsx`'s
- * names, by `useReferenceNames`): a whole document by the page's word for it, the one the page
- * published (`tree-drafts.ts`'s `documentWord`) or, until it has, the word for a document
- * (`node-row-chip.ts`'s `documentWord`); an issue by its key, then its title; a party by the name
- * its own read gives it; anything else by its target's own words, cut to at most `TITLE_MAX`
- * characters by `textHead` - at a word where one ends in the budget's second half - and drawn
- * with no ellipsis. A reference with no name - its target has not answered yet, or Dispatch
- * answered it has none - reads as the words its author wrote, as a link of any other body reads
- * until its title resolves (R8, INFRA-1196 decision 350, which replaces decision 95's short
- * form).
+ * What a row draws a reference as, from `names`, the whole name each reference has
+ * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
+ * the one the page published (`tree-drafts.ts`'s `documentWord`) or, until it has, the word for
+ * a document (`node-row-chip.ts`'s `documentWord`); an issue by its key, then its title; a party
+ * by the name its own read gives it; anything else as a chip in place, by its target's own words
+ * cut as a tie's chip cuts them (`chipName`). A reference with no name - its target has not
+ * answered yet, or Dispatch answered it has none - reads as the words its author wrote, as a
+ * link of any other body reads until its title resolves (R8, INFRA-1196 decision 350, which
+ * replaces decision 95's short form).
  */
 export function rowReferenceWords(
   one: Pick<RowReference, "reference" | "route" | "written">,
@@ -244,7 +236,7 @@ export function rowReferenceWords(
   if (word !== undefined) return { key: undefined, words: name === "" ? word : name };
   if (name === "") return { key: undefined, words: one.written };
   if (one.route.kind === "issue") return { key: one.route.key, words: name };
-  return { key: undefined, words: isPartyRoute(one.route) ? name : textHead(name, TITLE_MAX) };
+  return { key: undefined, words: isPartyRoute(one.route) ? name : chipName(one.route, name) };
 }
 
 /** The mark a row's own reference carries: the reference it names, by which a later pass gives
@@ -262,25 +254,23 @@ export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]
 /** Writes `element`'s words: an issue's key set apart from its title, as a link to an issue
  *  reads everywhere (`RefLink.tsx`). An element that already reads them is left as it is: only
  *  this writes a row's reference, so its words tell what it holds, and a pass whose names
- *  changed nothing writes nothing. Answers whether it wrote anything. */
+ *  changed nothing writes nothing. */
 function nameReference(
   element: HTMLElement,
   one: Pick<RowReference, "reference" | "route" | "written">,
   names: ReadonlyMap<string, string>
-): boolean {
+): void {
   const { key, words } = rowReferenceWords(one, names);
   if (key === undefined) {
-    if (element.textContent === words) return false;
-    element.textContent = words;
-    return true;
+    if (element.textContent !== words) element.textContent = words;
+    return;
   }
   const title = words === "" ? "" : ` ${words}`;
-  if (element.textContent === `${key}${title}`) return false;
+  if (element.textContent === `${key}${title}`) return;
   const strong = document.createElement("span");
   strong.className = "font-semibold whitespace-nowrap";
   strong.textContent = key;
   element.replaceChildren(strong, title);
-  return true;
 }
 
 /**
@@ -293,27 +283,23 @@ function nameReference(
  * reference the read has answered ambiguous since is put back as the words it was made over, so
  * it is drawn as written. Out of the tab order, as everything inside a row is (R9). Run again
  * after every paint and whenever `names`, `issues` or `ambiguous` changes; it finds nothing to
- * do twice. Answers whether it changed the words, which then lay out anew.
+ * do twice.
  */
 export function linkRowReferences(
   root: HTMLElement,
   names: ReadonlyMap<string, string>,
   issues: readonly string[],
   ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
-): boolean {
-  let changed = false;
+): void {
   for (const element of root.querySelectorAll<HTMLElement>(`[${ROW_REFERENCE}]`)) {
     const reference = element.getAttribute(ROW_REFERENCE) ?? "";
     const written = element.getAttribute(ROW_WRITTEN) ?? reference;
     if (ambiguous.has(reference)) {
       element.replaceWith(written);
-      changed = true;
       continue;
     }
     const route = parseNodeReference(reference);
-    if (route !== undefined && nameReference(element, { reference, route, written }, names)) {
-      changed = true;
-    }
+    if (route !== undefined) nameReference(element, { reference, route, written }, names);
   }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
@@ -346,7 +332,5 @@ export function linkRowReferences(
     }
     pieces.push(value.slice(at));
     text.replaceWith(...pieces);
-    changed = true;
   }
-  return changed;
 }

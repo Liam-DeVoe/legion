@@ -13,8 +13,9 @@ import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
+  PublishedReferenceNames,
   type PublishedReferences,
   ReferenceNamesProvider,
   usePublishReferenceNames,
@@ -24,7 +25,6 @@ import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import { FIRST_LINE_LIMIT, type NodeChip, type TreeNode } from "./issue-tree";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
-import { chipWords } from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import {
   type AuthorKind,
@@ -98,11 +98,13 @@ function publishedNames(
     asked: new Set([...names.keys(), ...ambiguous, ...gone, ...asked]),
     gone,
     readings: new Map([...names].map(([reference, words]) => [reference, { words }])),
+    unnamed: new Set(),
   };
 }
 
 /** What the page's chips publish (`issue-tree.ts`'s `targetNaming`): each chip's reading, the
- *  chips that are gone or ambiguous, and every chip's reference as one the page asks for. */
+ *  chips that are gone or ambiguous, every answered chip with no reading as one the read
+ *  answered with no words, and every chip's reference as one the page asks for. */
 function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
   return {
     ambiguous: new Set(chips.filter((chip) => chip.ambiguous === true).map((chip) => chip.ref)),
@@ -112,6 +114,11 @@ function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
     ),
     readings: new Map(
       chips.flatMap((chip) => (chip.reading === undefined ? [] : [[chip.ref, chip.reading]]))
+    ),
+    unnamed: new Set(
+      chips
+        .filter((chip) => chip.answered && !chip.gone && chip.reading === undefined)
+        .map((chip) => chip.ref)
     ),
   };
 }
@@ -136,8 +143,9 @@ function knowParties(queryClient: QueryClient, { login, role, session }: Parties
   if (login !== undefined) queryClient.setQueryData(["users"], [{ login }]);
 }
 
-/** Publishes `published` to the names store while it is drawn, as the page publishes its one
- *  batched read (`useIssueTree.ts`); nothing where it is undefined. */
+/** Publishes `published` to the names store while it is drawn, and hands it to what it draws in
+ *  the render that draws it, as the page publishes its one batched read and hands it its rows
+ *  (`useIssueTree.ts`, `ConversationRows.tsx`); nothing where it is undefined. */
 function Named({
   children,
   published,
@@ -146,7 +154,7 @@ function Named({
   published: PublishedReferences | undefined;
 }): ReactNode {
   usePublishReferenceNames(published);
-  return children;
+  return <PublishedReferenceNames published={published}>{children}</PublishedReferenceNames>;
 }
 
 /** One row, drawn with its body open, as the focused row draws it, unless `body` is false;
@@ -578,6 +586,50 @@ test("a numbered step keeps its number in a chip and in a folded line", async ()
     );
   } finally {
     shut.unmount();
+  }
+});
+
+// R8 over ruling 5: the page publishes a target's name whole, as every surface reads the target
+// by it, and a chip cuts it to a chip's room where it draws it. So the plain line a row draws
+// beside the chip - here its parent's line - reads the target by its whole name, and only the
+// chip by the cut one.
+test("a plain line beside a chip reads the chip's target by its whole name", async () => {
+  const target = "dispatch://CORE-1/comment/c9";
+  const whole = "Hold the deploy until the plan lands and the gate is green";
+  const chip: NodeChip = {
+    answered: true,
+    gone: false,
+    reading: { tree: readingOf(whole) },
+    ref: target,
+  };
+  const words = `Wait on ${target} first.`;
+  const view = renderRow(
+    node({
+      chips: [chip],
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: "dispatch://CORE-1/spec#b-r2",
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: "Draw the rows.",
+      type: "plan_task",
+    }),
+    { body: false, published: publishedChips([chip]) }
+  );
+  try {
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+        `Wait on ${whole} first.`
+      );
+      expect(view.container.querySelector("[data-chip-name]")?.textContent).toBe(
+        "Hold the deploy until the plan…"
+      );
+    });
+  } finally {
+    view.unmount();
   }
 });
 
@@ -1217,10 +1269,10 @@ test("a parent line naming a person draws its words with no link, beside an agen
 });
 
 // F18 and decisions 66 and 88 in a node's words: a chip in place is named from the batched
-// read, whose reading of a target's name the page publishes and the store projects in plain
-// words, with no list or block reading but for an ordered list's number, and cuts as a tie's
-// chip is cut, so a numbered step keeps its number. The words are drawn under the page's own
-// providers (`ProvidersSlot`), as the page draws them.
+// read, whose reading of a target's name the page publishes whole and the store projects in
+// plain words, with no list or block reading but for an ordered list's number, and the row cuts
+// it as a tie's chip is cut (`chipName`), so a numbered step keeps its number. The words are
+// drawn under the page's own providers (`ProvidersSlot`), as the page draws them.
 test("a chip in a node's words draws its target's plain words, a numbered step's number kept", async () => {
   const target = "dispatch://CORE-1/artifact/plan-md#b-t1";
   const text = `It follows ${target}.`;
@@ -1228,9 +1280,8 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
     ambiguous: new Set(),
     asked: new Set([target]),
     gone: new Set(),
-    readings: new Map([
-      [target, { cut: chipWords, tree: readingOf("1. Stand the harness up and read the rows") }],
-    ]),
+    readings: new Map([[target, { tree: readingOf("1. Stand the harness up and read the rows") }]]),
+    unnamed: new Set(),
   };
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -1266,27 +1317,31 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
   }
 });
 
-// Decision 102: the batched read's names are named and cut as chips once for each answer of the
-// read, not once for each row. A block's name is its whole reading, so naming every name again
-// for every row cost the page seconds on an issue of 650 rows. The store projects and cuts each
-// reading once (`refs/reference-names.tsx`), and every row draws from its one map.
+// Decision 102: the batched read's names are projected once for each answer of the read, not
+// once for each row. A block's name is its whole reading, so naming every name again for every
+// row cost the page seconds on an issue of 650 rows. The store projects each reading once
+// (`refs/reference-names.tsx`), and every row draws from its one map, cutting its own chips'.
 test("the read's names are named as chips once per answer, not once per row", async () => {
-  let cuts = 0;
-  const cut = (words: string): string => {
-    cuts += 1;
-    return chipWords(words);
-  };
   const readings = new Map(
     Array.from({ length: 30 }, (_unused, at) => [
       `dispatch://CORE-1/spec#b-r${at}`,
-      { cut, words: `The words of statement ${at}, which run on well past the room a chip has.` },
+      {
+        tree: readingOf(
+          `The words of statement ${at}, which run on well past the room a chip has.`
+        ),
+      },
     ])
   );
+  const names = new Set<unknown>([...readings.values()].map((reading) => reading.tree));
+  const engine = loadedEngine();
+  if (engine === undefined) throw new Error("the markdown engine has not loaded");
+  const draw = spyOn(engine, "draw");
   const published: PublishedReferences = {
     ambiguous: new Set(),
     asked: new Set(readings.keys()),
     gone: new Set(),
     readings,
+    unnamed: new Set(),
   };
   const target = "dispatch://CORE-1/spec#b-r0";
   const text = `It follows ${target}.`;
@@ -1311,8 +1366,12 @@ test("the read's names are named as chips once per answer, not once per row", as
       expect(chips).toHaveLength(20);
       expect(chips[19]?.textContent).toBe("The words of statement 0, which…");
     });
-    expect(cuts, "every row named the read's names again").toBeLessThanOrEqual(readings.size);
+    const projections = draw.mock.calls.filter(([tree]) => names.has(tree)).length;
+    expect(projections, "every row named the read's names again").toBeLessThanOrEqual(
+      readings.size
+    );
   } finally {
+    draw.mockRestore();
     view.unmount();
   }
 });

@@ -38,7 +38,6 @@ import type {
   NodeOption,
   TreeAsk,
 } from "./issue-tree";
-import { chipWords } from "./node-row-chip";
 import {
   type AskState,
   blockAttributeLabel,
@@ -248,19 +247,17 @@ export function coverageStatements(
 }
 
 /**
- * The reads as every builder reads them. `lineOf` is how a block is named, from the server's
- * reading of its words: `buildIssueTree` and `targetNaming` hand in the reading of its first
- * block and R1's first-line rule over what that projects to (`issue-tree.ts`'s `blockNaming`),
- * which this module cannot import, since `issue-tree.ts` imports it. Every caller hands one in,
- * so no chip names a block by anything but the line its caller chose: a default would name it by
- * its whole reading.
+ * The reads as every builder reads them. `lineOf` is the block of the server's reading of a
+ * block's words that names it: `buildIssueTree` and `targetNaming` hand in the first block of it
+ * that holds any words (`issue-tree.ts`'s `firstWordedBlock`), which this module cannot import,
+ * since `issue-tree.ts` imports it. Every caller hands one in, so no chip names a block by
+ * anything but the block its caller chose: a default would name it by its whole reading.
  *
  * A chip carries how its target is named (`NodeChip.reading`), and never the words: the page
  * publishes each reading and the shared reader projects it (`refs/reference-names.tsx`), as a
  * title drawn over one record, so no word of a name is written by a reader of this page's own,
- * and markup is never a word of one (R21). Every name but an issue's is cut as a chip's words are
- * (`chipWords`), so a chip, a reference in a row's words and a reference in a node's one line
- * draw one target in the same words.
+ * and markup is never a word of one (R21). The name is whole, as every surface reads the target
+ * by it (R8), and a chip cuts it where it draws it (`issue-tree.ts`'s `chipName`).
  *
  * - **A target nothing answers to now** by nothing, which the chip draws as gone. A short
  *   reference two or more targets carry the id of is such a target, which the read answers
@@ -270,10 +267,11 @@ export function coverageStatements(
  *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`). Where the read
  *   answered and sent no reading, or one that holds no words, a block of this issue whose
  *   document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`), never
- *   by its id (R22); another issue's block, whose kind no read of this page gives, by nothing. A
- *   block the read has not answered for yet has no name either, which the chip draws as not yet
- *   named (`NodeChip.answered`). The read's `name` for a block is its stored excerpt, which is
- *   the block's source: a typed block's directive and the markdown its words are written in are
+ *   by its id (R22), and so is one whose block projects to no words; another issue's block,
+ *   whose kind no read of this page gives, by nothing, and a surface reads it itself. A block the
+ *   read has not answered for yet has no name either, which the chip draws as not yet named
+ *   (`NodeChip.answered`). The read's `name` for a block is its stored excerpt, which is the
+ *   block's source: a typed block's directive and the markdown its words are written in are
  *   markup and no word of it (R21).
  * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
  *   word for it (`documentWord`), and never by its file name.
@@ -293,7 +291,7 @@ export function coverageStatements(
  */
 export function treeContext(
   reads: IssueTreeReads,
-  lineOf: (reading: DisplayTree) => ReferenceNameReading | undefined
+  lineOf: (reading: DisplayTree) => DisplayTree | undefined
 ): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
@@ -335,11 +333,10 @@ export function treeContext(
     if (block !== undefined || target?.kind === "block") {
       if (target === undefined) return undefined;
       const kind = kinds.get(nodeIdOfReference(reference) ?? "");
-      const word = kind === undefined ? "" : NODE_TYPE_NAMES[kind];
-      const line = target.text_tree === undefined ? undefined : lineOf(target.text_tree);
-      if (line === undefined) return word === "" ? undefined : { words: word };
-      // A reading whose words project to nothing is named as one with no reading is.
-      return word === "" ? line : { ...line, cut: (words) => (line.cut?.(words) ?? words) || word };
+      const word = kind === undefined ? undefined : NODE_TYPE_NAMES[kind];
+      const named = target.text_tree === undefined ? undefined : lineOf(target.text_tree);
+      if (named === undefined) return word === undefined ? undefined : { words: word };
+      return word === undefined ? { tree: named } : { fallback: word, tree: named };
     }
     // Another issue's document is named by no role of this issue's.
     if (route?.kind === "spec") {
@@ -351,12 +348,13 @@ export function treeContext(
     }
     if (target === undefined) return undefined;
     if (target.kind === "ask" || target.kind === "comment" || target.kind === "message") {
-      return { cut: chipWords, tree: storedReading(target.name, target) };
+      return { tree: storedReading(target.name, target) };
     }
-    if (target.kind === "issue")
+    if (target.kind === "issue") {
       return { tree: titleReading(titles.get(reference) ?? target.name) };
+    }
     const words = blockWords(target.name);
-    return words === "" ? undefined : { cut: chipWords, words };
+    return words === "" ? undefined : { words };
   };
   // One chip per reference, made the first time it is asked for: a tree asks once for every
   // citation of a target, and no caller changes a chip - its fields are read-only (`NodeChip`),

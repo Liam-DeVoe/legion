@@ -128,7 +128,8 @@ interface RowNames {
  * names a reference by (`useReferenceNames`), so a node's one line and its row draw one
  * reference in the same words: the name the page published from its batched read, and a party's
  * own read, by the issue the record is on (`issue`), where a role is read. The page's names are
- * read once for each of its answers and shared by every row.
+ * read once for each of its answers and shared by every row. An issue's name is its title, which
+ * a row draws apart from its key.
  */
 function useRowNames(words: string, issue: string | undefined): RowNames {
   const known = useKnownReferenceNames();
@@ -141,10 +142,7 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
     const byReference = new Map<string, string>();
     for (const one of found) {
       const name = named.get(one.reference)?.name;
-      if (name === undefined) continue;
-      // An issue reads as its key and title, which a row draws apart.
-      const key = one.route.kind === "issue" ? `${one.route.key} ` : "";
-      byReference.set(one.reference, name.startsWith(key) ? name.slice(key.length) : name);
+      if (name !== undefined) byReference.set(one.reference, name);
     }
     return byReference;
   }, [found, named]);

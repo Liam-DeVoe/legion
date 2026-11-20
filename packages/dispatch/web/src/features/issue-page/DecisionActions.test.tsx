@@ -624,6 +624,7 @@ const QUOTE_NAMES: PublishedReferences = {
   asked: new Set(["dispatch://CORE-7"]),
   gone: new Set(),
   readings: new Map([["dispatch://CORE-7", { words: "Draw the rows" }]]),
+  unnamed: new Set(),
 };
 
 /** Publishes `QUOTE_NAMES` while it is drawn, as the page publishes its batched read. */

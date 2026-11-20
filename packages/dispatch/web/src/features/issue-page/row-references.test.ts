@@ -142,9 +142,11 @@ test("an issue reads as its key and title, and anything else as its target's own
   // other target, as a link of any body does until its title resolves (R8, INFRA-1196 decision
   // 350, which replaces decision 95's short form).
   expect(rowReferenceWords(unnamed, NAMES)).toEqual({ key: undefined, words: "dispatch://CORE-9" });
+  // The page publishes a name whole (R8), and a target the row draws as a chip in place is cut
+  // as a tie's chip cuts it (`chipName`).
   expect(rowReferenceWords(ask, NAMES)).toEqual({
     key: undefined,
-    words: "At which width does the identity block condense?",
+    words: "At which width does the…",
   });
   expect(rowReferenceWords(ask, new Map())).toEqual({
     key: undefined,

@@ -1,9 +1,17 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { wordsOf } from "../refs/tree-fragment";
 import { firstWordedBlock } from "./issue-tree";
+import { projectedNames } from "./projection-fixture";
 import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
+
+// One row reads a reading through the shared engine, which loads lazily, and the rows run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The words of a stored text's reading on one line (`storedReading`), its white space
  *  collapsed to single spaces, which is what a chip's name is projected from. */
@@ -44,6 +52,21 @@ test("a stored text of thousands of nested list markers reads to words within th
   const words = wordsOfText(`${"- ".repeat(3000)}x`);
   expect(performance.now() - start).toBeLessThan(NESTING_BUDGET_MS);
   expect(words).toBe(`${"- ".repeat(2950)}x`);
+});
+
+// The server keeps the number a stored ordered list starts on as the list's `order`
+// (`pmdoc/parse.go`'s `parseList`, `list.Start`), and so does the reading of a stored text the
+// read sent none for, so a name the page projects from it reads `3. Ship it`, never `1.`.
+test("a stored list that starts at 3 reads its first item as 3", () => {
+  const reading = storedReading("3. Ship it\n4. Then the rest");
+  const [list] = (reading.content ?? []) as DisplayTree[];
+  expect(list?.type).toBe("ordered_list");
+  expect(list?.attrs).toEqual({ order: 3 });
+  expect(projectedNames(new Map([["stored", { tree: reading }]])).get("stored")).toBe(
+    "3. Ship it 4. Then the rest"
+  );
+  const [bullets] = (storedReading("- Ship it").content ?? []) as DisplayTree[];
+  expect(bullets?.attrs, "a bullet list holds no number").toBeUndefined();
 });
 
 // A quote marker opens one block, so the first 100 of 150 open quotes and the 50 past the bound

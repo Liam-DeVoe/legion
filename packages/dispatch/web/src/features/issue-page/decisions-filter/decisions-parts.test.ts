@@ -1,18 +1,18 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
-import { projectNow, warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import {
   type DocumentBlocks,
   drawnLine,
   firstLineOf,
-  lineReading,
   type ParentLine,
   type TreeNode,
 } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
+import { lineWordsOf } from "../projection-fixture";
 import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
 import {
   AGENT,
@@ -59,20 +59,10 @@ const nodeIdOf = issueNodeIdOf(issueDetails());
 
 /** The one line a row draws for a node of the filter - a parent, or a statement a decision
  *  shaped (`ParentLine`, `ShapedStatement.node`) - as every one line of a node is drawn: its
- *  words projected by the shared reader (`lineReading`), cut by R1's first-line rule, and the
+ *  words projected by the shared reader (`lineWordsOf`), cut by R1's first-line rule, and the
  *  page's word for its kind where they hold none. */
 function lineOf(node: Pick<ParentLine, "text" | "tree" | "type">): string {
-  const reading = lineReading(node);
-  const words =
-    reading.tree === undefined && reading.markdown === undefined
-      ? ""
-      : (projectNow(
-          reading.tree,
-          Number.POSITIVE_INFINITY,
-          reading.markdown,
-          undefined,
-          reading.markdown !== undefined
-        )?.text ?? "");
+  const words = lineWordsOf(node);
   return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
 }
 

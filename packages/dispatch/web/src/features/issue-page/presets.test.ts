@@ -1,10 +1,11 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
-import { projectNow, warmMarkdownRenderer } from "../refs/markdown-engine";
-import { drawnLine, firstLineOf, lineReading, type ParentLine, type TreeNode } from "./issue-tree";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { drawnLine, firstLineOf, type ParentLine, type TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView } from "./presets";
+import { lineWordsOf } from "./projection-fixture";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
 
@@ -68,20 +69,10 @@ function drawn(root: TreeNode, preset: Preset, query = ""): string[] {
 }
 
 /** The one line a row draws for `line`'s parent (`NodeRow.tsx`'s `ParentLink`): the parent's
- *  words projected by the shared reader (`lineReading`), cut by R1's first-line rule, and the
+ *  words projected by the shared reader (`lineWordsOf`), cut by R1's first-line rule, and the
  *  page's word for its kind where they hold none. */
 function drawnParentLine(line: ParentLine): string {
-  const reading = lineReading(line);
-  const words =
-    reading.tree === undefined && reading.markdown === undefined
-      ? ""
-      : (projectNow(
-          reading.tree,
-          Number.POSITIVE_INFINITY,
-          reading.markdown,
-          undefined,
-          reading.markdown !== undefined
-        )?.text ?? "");
+  const words = lineWordsOf(line);
   return words === "" ? NODE_TYPE_NAMES[line.type] : drawnLine(firstLineOf(words));
 }
 
