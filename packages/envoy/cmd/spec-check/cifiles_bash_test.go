@@ -378,3 +378,26 @@ func TestFirstArgumentsRunsEachScriptInItsOwnShell(t *testing.T) {
 		}
 	}
 }
+
+// A script must not read the records of later scripts from the batch's standard input. The first
+// script reads one line and reports compare if it got one. For every possible batch count from one
+// to sixteen, a later script in that batch starts with a newline, so a driver that drops </dev/null>
+// gives the first script a line. The head gives it EOF and it reports tree.
+func TestFirstArgumentsGivesEachScriptEmptyStandardInput(t *testing.T) {
+	t.Parallel()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+	}
+	scripts := []string{`if IFS= read -r line; then spec-check compare; else spec-check tree; fi`}
+	want := [][]string{{"tree"}}
+	for range 16 {
+		scripts = append(scripts, "\n:")
+		want = append(want, nil)
+	}
+	for i, got := range firstArguments(t, bash, scripts) {
+		if !slices.Equal(got, want[i]) {
+			t.Errorf("script %d %q calls %q, want %q", i, scripts[i], got, want[i])
+		}
+	}
+}
