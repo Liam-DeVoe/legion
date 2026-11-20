@@ -100,7 +100,7 @@ func heldLines(t *testing.T, rig *podUpdateRig) []map[string]any {
 	lines := loggedMessages(t, rig.logs.String(), backgroundWaitLine)
 	for _, line := range lines {
 		if line["issue"] != podUpdateIssue || line["round"] != podUpdateRound {
-			t.Errorf("the hold's line is %+v, want it of issue %s and round %s", line, podUpdateIssue, podUpdateRound)
+			t.Errorf("the hold's line names round %v and issue number %s, want round %s and issue number %s", line["round"], issueNumber(fmt.Sprint(line["issue"])), podUpdateRound, issueNumber(podUpdateIssue))
 		}
 		for _, field := range []string{"working", "unanswered"} {
 			if _, present := line[field]; present {
@@ -302,7 +302,7 @@ func TestPodUpdateBackgroundThatOutlivesTheBoundEndsAtTheBound(t *testing.T) {
 	}
 	line := bounded[0]
 	if line["round"] != podUpdateRound || line["pod"] != podUpdatePod || line["issue"] != podUpdateIssue {
-		t.Errorf("the bounded end's line is %+v, want it of round %s, pod %s and issue %s", line, podUpdateRound, podUpdatePod, podUpdateIssue)
+		t.Errorf("the bounded end's line names round %v, pod %v and issue number %s, want round %s, pod %s and issue number %s", line["round"], line["pod"], issueNumber(fmt.Sprint(line["issue"])), podUpdateRound, podUpdatePod, issueNumber(podUpdateIssue))
 	}
 	wantHold(t, line, map[claim.Role][]string{claim.RoleImplementer: {"subagent"}})
 	wantField(t, line, "unanswered")

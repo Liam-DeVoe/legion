@@ -30,7 +30,7 @@ func (r *podUpdateRig) asks() []record.UpdateAsk {
 	r.t.Helper()
 	for _, row := range r.rows(record.OutboxKindUpdateAsk) {
 		if row.Issue != podUpdateIssue {
-			r.t.Fatalf("update ask %d is on %s, want %s", row.ID, row.Issue, podUpdateIssue)
+			r.t.Fatalf("update ask %d is on the issue numbered %s, want the issue numbered %s", row.ID, issueNumber(row.Issue), issueNumber(podUpdateIssue))
 		}
 		var ask record.UpdateAsk
 		if err := json.Unmarshal(row.Payload, &ask); err != nil {

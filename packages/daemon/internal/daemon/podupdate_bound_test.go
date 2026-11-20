@@ -171,7 +171,7 @@ func TestPodUpdateBoundReplacesThePodOfAClaimThatNeverAnswers(t *testing.T) {
 	}
 	line := bounded[0]
 	if line["msg"] != podUpdateBoundLine || line["round"] != podUpdateRound || line["pod"] != podUpdatePod || line["issue"] != podUpdateIssue {
-		t.Errorf("the bounded end's line is %+v, want the exact words with round %s, pod %s and issue %s", line, podUpdateRound, podUpdatePod, podUpdateIssue)
+		t.Errorf("the bounded end's line says %q with round %v, pod %v and issue number %s, want the exact words with round %s, pod %s and issue number %s", line["msg"], line["round"], line["pod"], issueNumber(fmt.Sprint(line["issue"])), podUpdateRound, podUpdatePod, issueNumber(podUpdateIssue))
 	}
 	wantField(t, line, "answered", claim.RoleTester)
 	wantField(t, line, "unanswered", claim.RoleImplementer)

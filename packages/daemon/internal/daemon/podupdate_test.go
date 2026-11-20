@@ -656,7 +656,7 @@ func (r *podUpdateRig) notices() []record.ControllerNotice {
 			r.t.Fatalf("decode controller notice %d: %v", row.ID, err)
 		}
 		if row.Issue != podUpdateIssue {
-			r.t.Fatalf("controller notice %d is on %s, want %s", row.ID, row.Issue, podUpdateIssue)
+			r.t.Fatalf("controller notice %d is on the issue numbered %s, want the issue numbered %s", row.ID, issueNumber(row.Issue), issueNumber(podUpdateIssue))
 		}
 		notices = append(notices, notice)
 	}
@@ -2995,7 +2995,11 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 				}
 			}
 			if calls := rig.rt.CallsOf("IssuePod"); len(calls) != 1 || calls[0].Issue != podUpdateIssue {
-				t.Fatalf("the sweep asked the runtime about the issue's pod %+v, want once about %s", calls, podUpdateIssue)
+				asked := make([]string, len(calls))
+				for i, call := range calls {
+					asked[i] = issueNumber(call.Issue)
+				}
+				t.Fatalf("the sweep asked the runtime about the pods of the issues numbered %v, want once about the issue numbered %s", asked, issueNumber(podUpdateIssue))
 			}
 			if lines := loggedLines(t, rig.logs.String(), waits); len(lines) != 1 {
 				t.Errorf("the sweep logged the podless round's wait %d times, want once: %+v", len(lines), lines)
