@@ -12,7 +12,9 @@
  *  (`e2e/stub/recording.ts`) is the whole of the judgement and its header says why, and
  *  `e2e/__tests__/stub-recording.test.ts` is where that judgement is read.
  *
- *  Three findings, and each exits 1:
+ *  It prints one line for each recording either set holds, named by its path under the set:
+ *  `CHECK <recording>: PASS` where the fresh one answers as the committed one holds, and
+ *  `CHECK <recording>: FAIL: <reason>` for each of three findings, any of which exits 1:
  *
  *  - a route whose status changed, named with both answers;
  *  - a recording the tree holds that the fresh run wrote nothing for, which is a row that no
@@ -81,37 +83,44 @@ if (freshFiles.length === 0) {
 const read = (root: string, name: string): Har =>
   JSON.parse(readFileSync(join(root, name), "utf8")) as Har;
 
-const moved: string[] = [];
-const gone: string[] = [];
-for (const name of committedFiles) {
-  if (!freshFiles.includes(name)) {
-    gone.push(name);
-    continue;
+const committedSet = new Set(committedFiles);
+const freshSet = new Set(freshFiles);
+
+/** Why one recording fails the comparison, or nothing where the fresh one answers as the
+ *  committed one holds. */
+function finding(name: string): string | undefined {
+  if (!freshSet.has(name)) {
+    return "the re-recording wrote no such file, so no row writes it any more";
   }
-  for (const line of statusDrift(read(committedRecordings, name), read(fresh, name))) {
-    moved.push(`  ${name}\n    ${line}`);
+  if (!committedSet.has(name)) {
+    return "the re-recording wrote this, and the tree holds no committed copy";
+  }
+  const moved = statusDrift(read(committedRecordings, name), read(fresh, name));
+  if (moved.length === 0) return undefined;
+  return `${moved.length} route(s) no longer answer as the recording holds: ${moved.join("; ")}`;
+}
+
+const uncommitted = freshFiles.filter((name) => !committedSet.has(name));
+let failed = 0;
+for (const name of [...committedFiles, ...uncommitted]) {
+  const reason = finding(name);
+  if (reason === undefined) {
+    console.log(`CHECK ${name}: PASS`);
+  } else {
+    failed += 1;
+    console.log(`CHECK ${name}: FAIL: ${reason}`);
   }
 }
-const uncommitted = freshFiles.filter((name) => !committedFiles.includes(name));
 
-if (moved.length === 0 && gone.length === 0 && uncommitted.length === 0) {
+if (failed === 0) {
   console.log(
     `every one of the ${committedFiles.length} committed recordings still answers as it holds`
   );
   process.exit(0);
 }
-if (moved.length > 0) {
-  console.error(`${moved.length} route(s) no longer answer as their recording holds:`);
-  for (const line of moved) console.error(line);
-}
-for (const name of gone) {
-  console.error(`  ${name}: the re-recording wrote no such file, so no row writes it any more`);
-}
-for (const name of uncommitted) {
-  console.error(`  ${name}: the re-recording wrote this, and the tree holds no committed copy`);
-}
 console.error(
-  "\nThe re-recorded set is this run's `dispatch-browser-recordings` artifact. Replace " +
+  `\n${failed} of the ${committedFiles.length + uncommitted.length} recordings failed. ` +
+    "The re-recorded set is this run's `dispatch-browser-recordings` artifact. Replace " +
     "packages/dispatch/e2e/__recordings__ with it - delete the directory first and put the " +
     "artifact in its place - and read the diff. A copy over the directory would leave behind " +
     "every recording named above as written by no row any more, and the next run would report " +

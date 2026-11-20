@@ -541,9 +541,11 @@ bun e2e/tools/compare-recordings.ts "$fresh"
 rm -rf e2e/__recordings__ && cp -R "$fresh" e2e/__recordings__
 ```
 
-`compare-recordings.ts` names each route whose status moved, each committed recording the run
-wrote nothing for and each recording the tree does not hold, and exits 1 on any of them, so it
-says what the diff of the replacement will hold before you read it.
+`compare-recordings.ts` prints one line for each recording either set holds,
+`CHECK <recording>: PASS` or `CHECK <recording>: FAIL: <reason>`, where a FAIL names each route
+whose status moved, a committed recording the run wrote nothing for or a recording the tree does
+not hold, and it exits 1 on any FAIL, so it says what the diff of the replacement will hold
+before you read it.
 The full lane runs the same recording and comparison in every merge group (the `recordings`
 job of `.github/workflows/dispatch-browser.yaml`) and fails on a route that moved; a failed run
 uploads its fresh set as the artifact `dispatch-browser-recordings-<attempt>`, which replaces the

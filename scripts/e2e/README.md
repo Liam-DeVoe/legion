@@ -195,8 +195,11 @@ The tests of the Sandbox runtime and of the whole daemon on a kind cluster are G
 ## stage1-skeleton.sh
 
 ```sh
-bash scripts/e2e/stage1-skeleton.sh     # → "stage 1 e2e: PASS", exit 0
+bash scripts/e2e/stage1-skeleton.sh     # → one "CHECK <name>: PASS" line per check, then "stage 1 e2e: PASS", exit 0
 ```
+
+Each check it makes prints one line, `CHECK <name>: PASS`, or `CHECK <name>: FAIL: <reason>` for the first that does not hold, and the run exits 1 there.
+A command that fails outside a check's own assertions names the check it ended, with its line and status.
 
 Needs:
 

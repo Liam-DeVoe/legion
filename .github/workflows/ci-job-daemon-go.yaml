@@ -137,9 +137,10 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
-      # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
-      # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134).
+      # The tmux runtime's tests drive a real tmux server and fail without one here
+      # (testprereq.Require), and the daemon supervises under tmux and refuses to start without
+      # it, which is also what the Stage 1 proof's boot needs (scripts/e2e/stage1-skeleton.sh's
+      # `command -v tmux` refusal).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 
