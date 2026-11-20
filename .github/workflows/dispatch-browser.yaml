@@ -157,7 +157,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # Both go steps below read the module cache alone (GOPROXY=off, this file's env): the
       # cgo-less build and the connections command's `go run`. This step fetches what they load
@@ -1197,7 +1197,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
@@ -1528,7 +1528,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile

@@ -100,7 +100,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # Every go step below reads the module cache alone (GOPROXY=off, this file's env): the test
       # steps' own go test with each tag they add, the sizing step's `go run`, the skip counter's

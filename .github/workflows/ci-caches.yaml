@@ -446,14 +446,15 @@ jobs:
           cache: false
 
       # The key hashes the root workspace's module files, every fetch file go-envoy-test's
-      # readers run and go-fetch.sh, as go-envoy's does and for its reason.
+      # readers run (including envoy-go-claim-model's API test) and go-fetch.sh, as go-envoy's
+      # does and for its reason.
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
 
       # The lookup's key and whether this leg fills it, as the job's outputs name them.
@@ -468,14 +469,15 @@ jobs:
           echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
 
       # What the readers' fetch steps fetch, each reader's fetch file in the order of their paths:
-      # envoy-go's tests with each tag its steps add and the other platforms its tests build for,
-      # and the commands the browser lane's three jobs build.
+      # envoy-go's tests with each tag its steps add and the other platforms its tests build, the
+      # claim-model job's API test, and the commands the browser lane's three jobs build.
       - name: Fetch what go-envoy-test's readers fetch
         if: steps.go-envoy-test.outputs.cache-hit != 'true'
         run: |
           .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-browser-binaries.txt
           .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-browser-multiprocess.txt
           .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-browser-visual.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-claim-model.txt
           .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go.txt
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
@@ -496,7 +498,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
   # .github/actions/architecture-check, run as ci.yaml's envoy-go-checks runs it. The action sets

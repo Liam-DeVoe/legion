@@ -4462,6 +4462,8 @@ jobs:
             envoy_go_claim_model:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-claim-model.yaml'
+              - '.github/go-fetch/envoy-go-claim-model.txt'
+              - '.github/scripts/go-fetch.sh'
               - *go_workspace
               - 'packages/envoy/**'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the step compiles
@@ -4542,6 +4544,7 @@ jobs:
               - '!packages/envoy/internal/fileowner/**/*_test.go'
               - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/ghrename/**/*_test.go'
+              - '!packages/envoy/internal/gofetch/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
               - '!packages/envoy/internal/integration/**/*_test.go'
