@@ -16,12 +16,14 @@ import (
 // duplicate verdict named could not be read (storedCopy), or a send or a topic publish was refused
 // while an earlier publish under the same message id was still in process
 // (bus.ErrDuplicateInProcess), so that no copy is stored yet. A role forward refused that way is
-// tried again as any forward that failed is, and its next answer names the copy (sendToRole). The
-// cause is named in the text and not wrapped, so no comparison of a read's error (a denial, a
-// refused subject) can turn the answer into another one: writeBusUnavailable answers it 503 with
-// Retry-After: 1 under storedCopyUnreadablePrefix, whatever the read met. Every error wrapping it
-// is written "<its text>: <reason>", so writeBusUnavailable writes the reason alone after the
-// prefix.
+// tried again as any forward that failed is, and its next answer names the copy (sendToRole). A
+// read's cause is named in the text and not wrapped, so no comparison of a read's error (a denial,
+// a refused subject) can turn the answer into another one: writeBusUnavailable answers it 503 with
+// Retry-After: 1 under storedCopyUnreadablePrefix, whatever the read met. The in-process refusal
+// is wrapped whole, since it is the publish's own answer and may follow a first send nothing
+// answered (bus.ErrUnacknowledged), which the 503 then says with listenerwire.CodeMaybeStored
+// (mayHaveStored). Every error wrapping errStoredCopyUnread is written "<its text>: <reason>", so
+// writeBusUnavailable writes the reason alone after the prefix.
 var errStoredCopyUnread = errors.New("no stored copy read")
 
 // storedPublish is the publish of an envelope on its own topic that returns the stream's
@@ -111,7 +113,7 @@ func publishHeld(ctx context.Context, reader storedReader, publish storedPublish
 	ack, err := publish(ctx, *item)
 	charge.published(ack, err)
 	if errors.Is(err, bus.ErrDuplicateInProcess) {
-		return false, fmt.Errorf("%w: %v", errStoredCopyUnread, err)
+		return false, fmt.Errorf("%w: %w", errStoredCopyUnread, err)
 	}
 	if err != nil || !ack.Duplicate {
 		return false, err

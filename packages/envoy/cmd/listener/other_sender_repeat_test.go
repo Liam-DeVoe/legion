@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -86,7 +86,7 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 		}
 		req := postJSON(r.path, messageJSON(t, body, nil))
 		if token != "" {
-			req = req.WithContext(withBrokerCaller(req.Context(), brokertoken.Caller{Session: token}))
+			req = req.WithContext(withBrokerCaller(req.Context(), ciphertoken.Caller{Session: token}))
 		}
 		return held(t, serveLimited(t, rig.mux, rig.harness.logs.String, req))
 	}

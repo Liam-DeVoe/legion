@@ -116,7 +116,7 @@ func TestNoReaderOfTheRoleBucketReportsARecordWithNoProcessOrRenewalUnreadable(t
 		}
 	}
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -283,7 +283,7 @@ func renewableRoleClaim(t *testing.T, role, holder, instance string) (*Registry,
 	t.Cleanup(cleanup)
 	claimed := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return claimed.Add(time.Duration(elapsed.Load())) }))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return claimed.Add(time.Duration(elapsed.Load())) }))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -470,8 +470,8 @@ func TestARenewalThatLosesItsCompareAndSwapWritesNothingAndIsNotRetried(t *testi
 	advance(beat)
 	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
 	racing.beforeFirstUpdate = func() {
-		// A hard claim writes unconditionally, so it lands under the renewal's read and
-		// the renewal's own update meets the bucket's refusal, not one this hook invented.
+		// A hard claim retries a conflict until it lands, so it lands under the renewal's read
+		// and the renewal's own update meets the bucket's refusal, not one this hook invented.
 		winning := RoleClaimRequest{SessionID: winner, MachineID: "example-host", ClientInstanceID: roleClaimSecondInstance, Role: role}
 		if _, err := reg.SetRoleWithPrevious(context.Background(), winning); err != nil {
 			t.Errorf("the claim that wins the race: %v", err)
