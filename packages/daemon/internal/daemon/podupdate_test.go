@@ -2673,8 +2673,8 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	held := len(rig.logs.String())
 	rig.tick()
 	if waits := turnWaits(t, rig.logs.String()[held:], podUpdateIssue, podUpdateRound); len(waits) != 1 || !waits[0].names(claim.RoleImplementer) {
-		t.Fatalf("a turn in the round's own pod with every worker answered held the replacement by %d lines %q of issue %s and round %s, want one, naming the implementer under %q: %v",
-			len(waits), podUpdateTurnWaitLine, podUpdateIssue, podUpdateRound, "working", waits)
+		t.Fatalf("a turn in the round's own pod with every worker answered held the replacement by %d lines %q of issue number %s and round %s, want one, naming the implementer under %q: %v",
+			len(waits), podUpdateTurnWaitLine, issueNumber(podUpdateIssue), podUpdateRound, "working", waits)
 	}
 	rig.handle(claim.RoleImplementer, supervise.StreamTurnEnd{Claim: rig.tokens[claim.RoleImplementer]})
 	rig.settleAll()

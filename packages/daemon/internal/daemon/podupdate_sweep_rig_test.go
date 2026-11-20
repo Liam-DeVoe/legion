@@ -253,11 +253,14 @@ type sweepViewState struct {
 // flight while the tick reads it — a stop is, and holds the machine's lock until it is let go, so
 // the tick reads that claim as one that has not answered (roundGroup's mask) — and letGo lets such
 // a decision end once the tick has read the group, before the outbox runs its rows, which publish
-// under that lock. end lets the rest go and waits for the machine's own work, once the rows ran.
+// under that lock. decided is the machine's claim as the decision left it, read once letGo has
+// returned and before any row ran (sweepPath.letGo), so the delivery mark a row writes is not its
+// own expectation. end lets the rest go and waits for the machine's own work, once the rows ran.
 type sweepHeld struct {
 	machine  *supervise.Machine
 	deciding bool
 	letGo    func()
+	decided  *supervise.Claim
 	end      func()
 }
 
@@ -273,7 +276,9 @@ var sweepViewStates = []sweepViewState{
 	{
 		field: "SendInFlight", what: "with a prompt on its way to the agent",
 		take: func(p *sweepPath, c supervise.Claim) (*supervise.Machine, *sweepHeld) {
-			conn := &heldPrompt{Conn: fake.NewConn(), release: make(chan struct{})}
+			// The package's held prompt (supervisor_test.go): the one send this machine starts
+			// waits at its door until end lets it through, and the entry it reports is not read.
+			conn := newGatedPrompt()
 			deps := p.deps
 			deps.Conns = sweepConns{Conns: p.deps.Conns, token: c.Token, conn: conn}
 			m := p.machine(deps, c)
@@ -377,14 +382,40 @@ func (p *sweepPath) viewStatesRead(base supervise.Claim) (wrong []string) {
 	return wrong
 }
 
-// letGo lets each machine held deciding end its decision (sweepHeld.letGo).
+// letGo lets each machine held deciding end its decision (sweepHeld.letGo), and keeps the claim
+// each decision left (sweepHeld.decided).
 func (p *sweepPath) letGo() {
 	for _, h := range p.held {
 		if h.letGo != nil {
 			h.letGo()
 			h.letGo = nil
+			decided := h.machine.View().Claim
+			h.decided = &decided
 		}
 	}
+}
+
+// deciding is what the tick and the publish do with c where its machine is held deciding
+// (sweepHeld), and whether it is. The tick reads such a claim through the deciding mask as one
+// that has not answered the round (roundGroup), so it asks c where asks holds for c with its answer
+// taken off; the ask's row, run once the decision ended, reaches the role only where the rule
+// still owes the claim an ask as the decision left it (supervise's Machine.PublishUpdateAsk, which
+// reads Claim.OwesUpdateAsk under the claim's lock). It is read after letGo and before any row
+// runs. asks is the test's own statement of whom the tick asks.
+func (p *sweepPath) deciding(c supervise.Claim, asks func(supervise.Claim) bool) (asked, heard, deciding bool) {
+	p.rig.t.Helper()
+	h := p.held[c.Token]
+	if h == nil || !h.deciding {
+		return false, false, false
+	}
+	if h.decided == nil {
+		p.rig.t.Fatalf("what the publish does with %s was read before its machine's decision was let go (sweepPath.letGo)", describeSwept(c))
+	}
+	read := c
+	read.UpdateSignalledAt, read.UpdateHead = nil, ""
+	asked = asks(read)
+	owed, _ := h.decided.OwesUpdateAsk(podUpdateRound)
+	return asked, asked && owed, true
 }
 
 // end lets every held machine go and waits for its own work (sweepHeld.end).
@@ -396,21 +427,6 @@ func (p *sweepPath) end() {
 		}
 		delete(p.held, token)
 	}
-}
-
-// heldPrompt is a connection whose prompt waits until the test lets it go, so the send a machine
-// starts over it stays in flight (supervise's ClaimView.SendInFlight).
-type heldPrompt struct {
-	*fake.Conn
-	release chan struct{}
-}
-
-func (c *heldPrompt) Prompt(ctx context.Context, deliveryID, message string) error {
-	select {
-	case <-c.release:
-	case <-ctx.Done():
-	}
-	return c.Conn.Prompt(ctx, deliveryID, message)
 }
 
 // sweepConns is the rig's connections with token's in conn's place.
@@ -605,7 +621,7 @@ func newSweepRig(t *testing.T) *sweepRig {
 		for _, row := range rows {
 			ask, ok := row.(record.UpdateAsk)
 			if !ok || issue != podUpdateIssue {
-				t.Fatalf("the sweep enqueued %T on %s, want only update asks of %s", row, issue, podUpdateIssue)
+				t.Fatalf("the sweep enqueued %T on the issue numbered %s, want only update asks of issue number %s", row, issueNumber(issue), issueNumber(podUpdateIssue))
 			}
 			r.asked = append(r.asked, ask)
 		}
@@ -667,12 +683,6 @@ func (r *sweepRig) drive(group []supervise.Claim, round string) (asked int, wron
 	r.path.sweep(group, podUpdatePod, round)
 	wrong = r.path.posts(group, podUpdateRound, round == "")
 	r.path.letGo()
-	decided := map[claim.Token]supervise.Claim{}
-	for token, h := range r.path.held {
-		if h.deciding {
-			decided[token] = h.machine.View().Claim
-		}
-	}
 	r.heard.mu.Lock()
 	r.heard.delivered = r.heard.delivered[:0]
 	r.heard.mu.Unlock()
@@ -700,12 +710,8 @@ func (r *sweepRig) drive(group []supervise.Claim, round string) (asked int, wron
 		if h := r.path.held[c.Token]; h != nil {
 			state = ", its machine " + r.path.view.what
 		}
-		if after, ok := decided[c.Token]; ok {
-			read := c
-			read.UpdateSignalledAt, read.UpdateHead = nil, ""
-			wantAsked = r.asks(read)
-			afterOwed, _ := after.OwesUpdateAsk(podUpdateRound)
-			wantHeard = wantAsked && afterOwed
+		if asks, reaches, ok := r.path.deciding(c, r.asks); ok {
+			wantAsked, wantHeard = asks, reaches
 			state += " and deciding as the tick read it"
 		}
 		gotListed, gotAsked := 0, 0
@@ -748,7 +754,13 @@ func sweptToken(token claim.Token) string {
 	if !ok {
 		return "a claim of no role"
 	}
-	return fmt.Sprintf("the %s claim of issue number %s", role, podUpdateIssue[strings.LastIndexByte(podUpdateIssue, '-')+1:])
+	return fmt.Sprintf("the %s claim of issue number %s", role, issueNumber(podUpdateIssue))
+}
+
+// issueNumber is the number of an issue's key, the part after its last '-': what a failure text
+// names an issue by, so a text a report quotes carries no key form.
+func issueNumber(key string) string {
+	return key[strings.LastIndexByte(key, '-')+1:]
 }
 
 func describeSwept(c supervise.Claim) string {
