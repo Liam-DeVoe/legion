@@ -66,6 +66,11 @@ class Session {
       this.received.push(input);
       this.updateIssue.variables = input;
     },
+    // The keyed write's Retry makes its newest press again; the fake receives it as a write.
+    retry: () => {
+      const { variables } = this.updateIssue;
+      if (variables !== undefined) this.updateIssue.mutate(variables);
+    },
     variables: undefined,
   };
   issue = startIssue;
