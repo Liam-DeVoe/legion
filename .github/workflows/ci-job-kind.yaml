@@ -35,7 +35,7 @@ name: CI job kind
 # its tests' state when it fails, ends with the ci-ok-report step, and stays within the time of
 # daemon-go's median green run, about 24 minutes, its setup included; the comment on each part says
 # its budget and the run it was measured in. .github/scripts/ci_job_reads.py's KIND_PARTS is the one
-# list of what each part but the two tree parts runs, and KIND_TREE_PARTS theirs, one test of
+# list of what each part but the tree parts runs, and KIND_TREE_PARTS theirs, one test of
 # KIND_TREE_FILES each; it builds each part's test step from them, and daemon-go's two `-skip`s from
 # their union (KIND_TESTS), and holds each step to what it builds.
 #
@@ -58,9 +58,14 @@ name: CI job kind
 # identity of the cluster's own, PostgreSQL in the cluster and this repository's own broker in the
 # test process. A part selects its group by -run alone. Each group brings up a rig of its own and
 # redoes first what its checks need of the state another group's checks leave, so no part depends
-# on another. tree-claude and tree-stage4b each run one of internal/daemon's two whole-tree tests,
-# which boot the whole daemon on the rig with real agents in issue pods: tree-claude the Claude Code
-# backend's in an issue pod, and tree-stage4b Stage 4b's tree.
+# on another. tree-claude, tree-stage4b, tree-stage4b-restart and tree-stage4b-move each run one of
+# internal/daemon's whole-tree tests, which boot the whole daemon on the rig with real agents in
+# issue pods: tree-claude the Claude Code backend's in an issue pod, and the other three Stage 4b's
+# tree, whose checkpoints one rig runs past the part budget, so three tests hold them, each on a
+# rig of its own: tree-stage4b the tree through one role's end and its pod's loss,
+# tree-stage4b-restart the daemon's restarts at the same addresses and at another address of the
+# listener, and tree-stage4b-move its restarts onto a moved worker stream and under
+# `controller: daemon`, then every pod's shape.
 #
 # A failed test leaves the cluster's pods, Sandboxes, events, logs and the Agent Sandbox
 # controller's log, the fake GitHub's requests and the test's own logs under kind-logs, which the
@@ -747,13 +752,20 @@ jobs:
     # whose own report has posted the failure.
     if: ${{ !cancelled() && needs.image.result != 'failure' }}
     runs-on: ubuntu-24.04
-    # Budget: unmeasured. Stage 4b's tree has not run whole in CI: a run has taken it as far as its
-    # third checkpoint of fourteen, at 554 s, and the fourteen include a credential refresh and two
-    # daemon restarts that relaunch every claim. The part budget, 24 minutes 21 seconds, is checked
-    # against its first whole run, which these limits are then set from. Until then the test binary
-    # has two hours (-timeout 120m), and the job that, the setup's five minutes as tree-claude's
-    # and room to spare: 150 minutes.
-    timeout-minutes: 150
+    # Budget, by estimate from CI run 44744458379 (job 136321348462), where Stage 4b's tree ran as
+    # one test to its eighth checkpoint of fourteen: the steps before the test step took 126 s, the
+    # test binary's build 115 s, the rig 501 s to the first checkpoint, two minutes of it the
+    # daemon's image probe, and the state's dump and the cluster's teardown after the failure 27 s,
+    # so a part costs 771 s besides its checkpoints; the first seven checkpoints took 174 s. The
+    # fourteen on one rig, with four daemon restarts of about two minutes of image probe each, come
+    # to about 30 minutes, past the part budget of 24 minutes 21 seconds. So this part runs the ten
+    # that need no restart, about 249 s of checkpoints and about 17 minutes in all, and
+    # tree-stage4b-restart and tree-stage4b-move run the four restarts, two each. The test binary's
+    # -timeout is 20m, more than half again over the test's estimated 777 s; the job has that, the
+    # setup's five minutes on top, and five more for a failed test's upload, so a hung test's own
+    # -timeout ends it first and its state still uploads: 30 minutes. A green run's times set the
+    # three parts' limits again.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -787,7 +799,7 @@ jobs:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
           LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
           LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
-        run: go test -v -count=1 -timeout 120m -run '^(TestStage4bSandboxTreeOnTheKindRigLive)$' ./internal/daemon/
+        run: go test -v -count=1 -timeout 20m -run '^(TestStage4bSandboxTreeOnTheKindRigLive)$' ./internal/daemon/
         working-directory: packages/daemon
 
       # A failed test's state, as tree-claude uploads its own.
@@ -796,6 +808,137 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: kind-tree-stage4b-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tree-stage4b-restart:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, by estimate from the run tree-stage4b's comment names: a part's 771 s besides its
+    # checkpoints; about 55 s for the four claims the test seeds to register; restart-mid-tree, a
+    # restart and its 75 s wait, about 210 s; and address-moved-env-same-pod, a restart and four
+    # relaunches in their pods, about 190 s: about 20 minutes 26 seconds in all, within the part
+    # budget of about 24. The test binary's -timeout is 25m, more than half again over the test's
+    # estimated 985 s; the job has that, the setup's five minutes on top, and five more for a failed
+    # test's upload: 35 minutes.
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Go, for what tree-claude's comments say: the test's rig is the same.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name, as tree-claude runs its own.
+      - name: Run Stage 4b's restart test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 25m -run '^(TestStage4bDaemonRestartsOnTheKindRigLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, as tree-claude uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-tree-stage4b-restart-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tree-stage4b-move:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget, by estimate from the run tree-stage4b's comment names: a part's 771 s besides its
+    # checkpoints; about 55 s for the four claims the test seeds to register;
+    # address-moved-stream-new-pod, a restart, two pods replaced and four relaunches, about 210 s;
+    # controller, a restart and the controller's first tick a minute after the runtime starts, about
+    # 195 s; and pod-shape, about 5 s: about 20 minutes 36 seconds in all, within the part budget of
+    # about 24. Its -timeout and timeout-minutes are tree-stage4b-restart's, for the same reasons.
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Go, for what tree-claude's comments say: the test's rig is the same.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The test, by name, as tree-claude runs its own.
+      - name: Run Stage 4b's stream move and controller test
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 25m -run '^(TestStage4bStreamMoveAndControllerOnTheKindRigLive)$' ./internal/daemon/
+        working-directory: packages/daemon
+
+      # A failed test's state, as tree-claude uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-tree-stage4b-move-logs-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kind-logs
 
       - name: Report ci-ok when this job decides a merge-group run

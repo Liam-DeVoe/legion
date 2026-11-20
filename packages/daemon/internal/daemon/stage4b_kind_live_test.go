@@ -1,15 +1,21 @@
 // Stage 4b's tree on the kind rig (kind_tree_rig_live_test.go), which the kind job of ci.yaml runs:
 // the whole daemon drives an issue tree on the Agent Sandbox runtime, its roles real Oh My Pi
 // agents of the worker image under test in issue pods under gVisor, each pod's launcher dialling
-// the daemon's worker stream at advertise_host, the kind network's gateway. One subtest per
-// checkpoint prints `CHECK <name>: PASS`, and the first that fails ends the test, since every
-// checkpoint reads the state the ones before it left.
+// the daemon's worker stream at advertise_host, the kind network's gateway. Three tests hold the
+// checkpoints, each on a rig of its own and run by a kind part of its own, since one rig running
+// all fourteen runs past the part budget. One subtest per checkpoint prints `CHECK <name>: PASS`,
+// and in each test the first that fails ends the test, since every checkpoint reads the state the
+// ones before it left.
 //
 // The tree: tree 1 is seeded in planning, its architect and planner launched into its pod by the
 // boot; two children filed under it in Dispatch take the cap's other two slots, each in a pod and
 // on a disk of its own, while tree 2, a root set todo, waits in the line; child 1 closed and child
 // 2 parked free the slots, and tree 2 takes one. Tree 1's planner completes planning through the
-// `legion` tool, so its implementer starts in the same pod. The model is the rig's stand-in, which
+// `legion` tool, so its implementer starts in the same pod. TestStage4bSandboxTreeOnTheKindRigLive
+// drives that tree, then ends one role's generation and loses its pod. The daemon's restarts start
+// from the claims that tree holds at the end of it, seeded (newStage4bRunningTree): two restarts
+// in TestStage4bDaemonRestartsOnTheKindRigLive and two in
+// TestStage4bStreamMoveAndControllerOnTheKindRigLive. The model is the rig's stand-in, which
 // answers every turn with a WAITING line and the turns a checkpoint scripts with a call of the
 // tool the checkpoint names.
 //
@@ -81,12 +87,16 @@ type stage4bLive struct {
 	rootPod, child1Pod, child2Pod string
 }
 
-// TestStage4bSandboxTreeOnTheKindRigLive drives the tree through every checkpoint of the stage 4b
-// proof that a kind cluster can show, each a subtest.
+// TestStage4bSandboxTreeOnTheKindRigLive drives tree 1 and its children through the checkpoints of
+// the stage 4b proof up to one role's end and its pod's loss, each a subtest. The daemon's restarts
+// are TestStage4bDaemonRestartsOnTheKindRigLive's and
+// TestStage4bStreamMoveAndControllerOnTheKindRigLive's, each on a rig of its own: one rig running
+// all fourteen checkpoints runs past the kind job's part budget.
 func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 	// A token lives seventeen minutes, so the daemon's refresh, which comes at least fifteen
-	// minutes before a lease's expiry, comes inside the run.
-	rig := newKindTreeRig(t, kindTreeOptions{prefix: "SB", admissionCap: 3, tokenLifetime: 17 * time.Minute})
+	// minutes before a lease's expiry, comes inside the run. A quiet pod is kept thirty minutes,
+	// past the test's -timeout, so no idle release takes a pod a checkpoint reads.
+	rig := newKindTreeRig(t, kindTreeOptions{prefix: "SB", admissionCap: 3, tokenLifetime: 17 * time.Minute, idleMinutes: 30})
 	r := &stage4bLive{kindTreeRig: rig}
 	r.tree1 = r.seedRoot("stage 4b tree 1", phase.Planning, claim.RolePlanner)
 	r.branch(r.tree1)
@@ -100,11 +110,49 @@ func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 	r.checkpoint("full-agent", r.fullAgent)
 	r.checkpoint("kill-role-resume", r.killRoleResume)
 	r.checkpoint("fence", r.fence)
+	r.checkpoint("pod-shape", r.podShape)
+}
+
+// TestStage4bDaemonRestartsOnTheKindRigLive restarts the daemon over a running tree at the same
+// addresses, then handing the pods another address of the listener.
+func TestStage4bDaemonRestartsOnTheKindRigLive(t *testing.T) {
+	r := newStage4bRunningTree(t)
 	r.checkpoint("restart-mid-tree", r.restartMidTree)
 	r.checkpoint("address-moved-env-same-pod", r.addressMovedEnvSamePod)
+}
+
+// TestStage4bStreamMoveAndControllerOnTheKindRigLive restarts the daemon over a running tree with
+// its API and worker stream ports swapped, then under `controller: daemon`, and judges the shape of
+// every pod it ran.
+func TestStage4bStreamMoveAndControllerOnTheKindRigLive(t *testing.T) {
+	r := newStage4bRunningTree(t)
 	r.checkpoint("address-moved-stream-new-pod", r.addressMovedStreamNewPod)
 	r.checkpoint("controller", r.controllerCheck)
 	r.checkpoint("pod-shape", r.podShape)
+}
+
+// newStage4bRunningTree brings up a rig and boots the daemon on the claims
+// TestStage4bSandboxTreeOnTheKindRigLive's tree holds when the daemon's restarts begin: tree 1 in
+// implementing, its architect, planner and implementer in its pod, and tree 2 promoted from the
+// line, its architect in a pod of its own, each registered. Tree 1's planner and implementer are
+// seeded mid-launch beside its architect (seedRoot), and tree 2 is filed and set todo after the
+// boot, as issue-independence files it, so admission's promotion starts its architect. The first
+// checkpoint of each test reads the live claims at once, so the four are waited for here.
+func newStage4bRunningTree(t *testing.T) *stage4bLive {
+	// A quiet pod is kept thirty minutes, past either test's -timeout: the seeded roles take no
+	// turn, and the checkpoints read their pods for longer than the default ten minutes.
+	r := &stage4bLive{kindTreeRig: newKindTreeRig(t, kindTreeOptions{prefix: "SB", admissionCap: 3, idleMinutes: 30})}
+	r.tree1 = r.seedRoot("stage 4b tree 1", phase.Implementing, claim.RolePlanner, claim.RoleImplementer)
+	r.branch(r.tree1)
+	r.boot()
+	r.tree2 = r.newIssue("stage 4b tree 2", "")
+	r.setStatus(r.tree2, "todo")
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer} {
+		r.awaitLive(r.tree1, role)
+	}
+	r.awaitLive(r.tree2, claim.RoleArchitect)
+	r.note("%s in implementing runs its architect, planner and implementer; %s runs its architect", r.tree1, r.tree2)
+	return r
 }
 
 // boot: the daemon boots on the run's file, its image probe passes, and its capability report
@@ -685,9 +733,11 @@ func (r *stage4bLive) workerView(issue, role string) map[string]json.RawMessage 
 	return state.Issues[issue].Workers[role].Claim
 }
 
-// kill-role-resume: one kill of tree 1's planner's worker-shim process group ends its generation
-// alone: the claim resumes the same session in the same pod, the roles container the same, and
-// every other role of the pod keeps its generation and process.
+// kill-role-resume: one kill of tree 1's planner's worker-shim process group, sent from the roles
+// container outside every role's namespaces, found through the role-init of the planner's
+// generation (killRole), ends that generation alone: the claim resumes the same session in the
+// same pod, the roles container the same, and every other role of the pod keeps its generation and
+// process.
 func (r *stage4bLive) killRoleResume() {
 	t := r.t
 	planner := r.awaitLive(r.tree1, claim.RolePlanner)
@@ -700,8 +750,8 @@ func (r *stage4bLive) killRoleResume() {
 	if len(peers) == 0 {
 		t.Fatalf("no other role runs in the planner's pod %s, so the kill proves nothing about its peers", pod)
 	}
-	if out, err := r.roleExec(pod, claim.RolePlanner, "sh", "-c", `for d in /proc/[0-9]*; do [ "$(tr '\0' '\n' 2>/dev/null <"$d/cmdline" | sed -n 2p)" = worker-shim ] && { kill -KILL -- -"$(cut -d' ' -f5 "$d/stat")"; exit 0; }; done; exit 1`); err != nil {
-		t.Fatalf("kill the planner's worker-shim process group in %s: %v %s", pod, err, out)
+	if out, err := r.killRole(pod, claim.RolePlanner, planner.Locator.Sandbox.Generation); err != nil {
+		t.Fatalf("kill the planner's worker-shim process group at generation %d in %s: %v %s", planner.Locator.Sandbox.Generation, pod, err, out)
 	}
 	var resumed api.OperatorClaim
 	r.await("the planner to resume after only its generation ended", kindTreeWait, func() bool {

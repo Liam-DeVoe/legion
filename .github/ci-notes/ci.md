@@ -1822,8 +1822,11 @@ worker image of this commit. Its parts, each a job of the called file, run the t
 .github/scripts/ci_job_reads.py's KIND_TESTS names, which both daemon-go steps skip by name:
 the rig's own measuring test in one, the share test in another, the burstable and controller
 sweep tests in a third, the Sandbox runtime's live test in four, one group of its checks each,
-each of those seven within about 24 minutes, and the two whole-tree tests in two more, one each:
-tree-claude, within about 24 minutes too, and tree-stage4b, which no run has timed whole yet.
+each of those seven within about 24 minutes, and the whole-tree tests in four more, one each:
+tree-claude the Claude Code backend's, within about 24 minutes too, and tree-stage4b,
+tree-stage4b-restart and tree-stage4b-move Stage 4b's tree, whose fourteen checkpoints one rig
+runs past that budget, so three tests on rigs of their own hold them, each within it by the
+estimate from CI run 44744458379 until a green run times it.
 The image under test is the worker-image job's on a pull request where that job built the
 head, handed down as `worker-image`, and otherwise the called file's image job builds it once
 per run; so this job needs worker-image for the order, and ci-images too, since the rig pulls

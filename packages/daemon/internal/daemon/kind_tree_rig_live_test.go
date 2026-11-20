@@ -1,5 +1,8 @@
-// The rig the daemon's two whole-tree kind tests share (stage4b_kind_live_test.go and
-// claude_backend_kind_live_test.go), which the kind job of ci.yaml runs on the rig of
+// The rig the daemon's whole-tree kind tests share: TestStage4bSandboxTreeOnTheKindRigLive,
+// TestStage4bDaemonRestartsOnTheKindRigLive and TestStage4bStreamMoveAndControllerOnTheKindRigLive
+// of stage4b_kind_live_test.go, and
+// TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive of
+// claude_backend_kind_live_test.go. The kind job of ci.yaml runs each on the rig of
 // internal/kindtest: the whole daemon, booted in this process from a legion.yaml its own loader
 // reads, with the Agent Sandbox runtime it configures launching real issue pods in the kind
 // cluster under gVisor, every role of them a real agent of the worker image under test.
@@ -26,8 +29,8 @@
 //     with a call of the tool the step names.
 //
 // What the rig stands in for lies outside the daemon and its pods: the model, GitHub, and the
-// operator's own reads, which kubectl and the role namespaces' entry of
-// scripts/e2e/lib/role-namespaces.sh make, as an operator reads a pod.
+// operator's own reads and kills, which kubectl and the role namespaces' entry and a role's kill of
+// scripts/e2e/lib/role-namespaces.sh make, as an operator reads a pod and ends one role in it.
 package daemon
 
 import (
@@ -62,6 +65,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fakegithub"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/kindtest"
+	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -112,6 +116,12 @@ type kindTreeOptions struct {
 	// tokenLifetime, when set, is how long every App installation token the fake GitHub mints
 	// lives (fakegithub.Server.SetTokenLifetime).
 	tokenLifetime time.Duration
+	// idleMinutes, when set, is runtime.kubernetes.idle_release.idle_minutes: how long a quiet
+	// issue pod is kept before the daemon releases it. A test whose checkpoints read a quiet pod
+	// for longer than the default ten minutes sets it past its own -timeout, since a release would
+	// take the pod the checkpoint reads; the release itself is the idle-release tests' own
+	// (idle_release_and_wake_test.go, idle_rig_test.go).
+	idleMinutes int
 }
 
 // kindTreeRig is one run of the rig: the booted daemon and everything it runs against.
@@ -144,8 +154,9 @@ type kindTreeRig struct {
 	envoyURL, configPath string
 	controller           bool
 	tokens               *appauth.Manager
-	enter                string
-	watch                *kindPodWatch
+	// enter and kill are role_enter_sh and role_kill_sh of scripts/e2e/lib/role-namespaces.sh.
+	enter, kill string
+	watch       *kindPodWatch
 }
 
 // newKindTreeRig brings the rig up and readies everything the daemon boots against: the cluster,
@@ -208,12 +219,13 @@ func newKindTreeRig(t *testing.T, opts kindTreeOptions) *kindTreeRig {
 	if _, err := r.st.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate the store: %v", err)
 	}
-	enter, err := exec.Command("bash", "-c", `. "$1" && printf %s "$role_enter_sh"`, "role-enter",
+	scripts, err := exec.Command("bash", "-c", `. "$1" && printf '%s\0%s' "$role_enter_sh" "$role_kill_sh"`, "role-namespaces",
 		filepath.Join(root, "scripts", "e2e", "lib", "role-namespaces.sh")).Output()
-	if err != nil || len(enter) == 0 {
-		t.Fatalf("read role_enter_sh from scripts/e2e/lib/role-namespaces.sh: %v", err)
+	enter, kill, split := strings.Cut(string(scripts), "\x00")
+	if err != nil || !split || enter == "" || kill == "" {
+		t.Fatalf("read role_enter_sh and role_kill_sh from scripts/e2e/lib/role-namespaces.sh: %v", err)
 	}
-	r.enter = string(enter)
+	r.enter, r.kill = enter, kill
 	r.watch = startKindPodWatch(t, r)
 	r.note("project %s on %s; Dispatch %s, listener %s, NATS %s, the stand-in %s, all reached by the pods at the kind network's gateway",
 		r.cfg.Project, r.repo.Slug(), r.dispatchURL, r.listenerURL, r.natsURL, r.model.url)
@@ -332,6 +344,10 @@ func (r *kindTreeRig) writeConfig() {
 	if r.controller {
 		controller = "controller: daemon\n"
 	}
+	idle := ""
+	if r.opts.idleMinutes > 0 {
+		idle = fmt.Sprintf("    idle_release:\n      idle_minutes: %d\n", r.opts.idleMinutes)
+	}
 	body := fmt.Sprintf(`project: %[1]s
 bind: 0.0.0.0
 advertise_host: %[2]s
@@ -364,14 +380,14 @@ github_apps:
     context: %[20]s
     session_store: postgres
     session_dsn_secret: SESSION_DSN
-%[21]s%[22]s    pod:
+%[21]s%[22]s%[25]s    pod:
 %[24]s
 `, r.cfg.Project, r.kind.Gateway, r.apiPort, r.streamPort, os.Getenv("LEGION_TEST_PG_DSN"), filepath.Join(r.work, "state"),
 		r.envoyURL, r.natsURL, r.dispatchURL, r.opts.admissionCap,
 		r.implement.ID, r.kind.AppTokenCommand(t, r.implement, r.repo.Owner, "theorem-labs"),
 		r.review.ID, r.kind.AppTokenCommand(t, r.review, r.repo.Owner),
 		r.opts.topLevel, controller, kindTreeNamespace, r.kind.Image, r.kind.Kubeconfig, r.kind.Context,
-		kindTreeIssueResources, kindLiveCache, providerKeys, strings.Join(podLines, "\n"))
+		kindTreeIssueResources, kindLiveCache, providerKeys, strings.Join(podLines, "\n"), idle)
 	r.configPath = filepath.Join(r.work, "legion.yaml")
 	if err := os.WriteFile(r.configPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -672,6 +688,46 @@ func (r *kindTreeRig) podExec(pod string, command ...string) (string, error) {
 // shim's user: the view the role's agent has (role_enter_sh).
 func (r *kindTreeRig) roleExec(pod string, role claim.Role, command ...string) (string, error) {
 	return r.podExec(pod, append([]string{"sh", "-c", r.enter, "role-enter", string(role)}, command...)...)
+}
+
+// roleInit is the pid, as pod's roles container sees it, of the one `launcher role-init` there
+// whose --role is role and whose --generation is generation: the init of that role generation's
+// namespaces. The container prints each process's pid and its argv up to the shim's `--`, one line
+// a process (printf, since dash's echo would expand a backslash an argv holds into a line break),
+// and the match is made here on those words: role-init's own flags, which carry no space.
+func (r *kindTreeRig) roleInit(pod string, role claim.Role, generation uint64) (string, error) {
+	out, err := r.podExec(pod, "sh", "-c", `for d in /proc/[0-9]*; do printf '%s %s\n' "${d##*/}" "$(tr '\0' '\n' 2>/dev/null <"$d/cmdline" | sed '/^--$/q' | tr '\n' ' ')"; done`)
+	if err != nil {
+		return "", err
+	}
+	var inits, matched []string
+	for _, line := range strings.Split(out, "\n") {
+		// The pid, then the argv, whose argv[1] and argv[2] a role-init's are `launcher role-init`.
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[2] != "launcher" || fields[3] != launcher.RoleInitSubcommand {
+			continue
+		}
+		inits = append(inits, line)
+		if argValue(fields[1:], "--role") == string(role) && argValue(fields[1:], "--generation") == strconv.FormatUint(generation, 10) {
+			matched = append(matched, fields[0])
+		}
+	}
+	if len(matched) != 1 {
+		return "", fmt.Errorf("pod %s runs %d role-inits of %s generation %d, not one; its role-inits: %q", pod, len(matched), role, generation, inits)
+	}
+	return matched[0], nil
+}
+
+// killRole sends SIGKILL to the process group of role's worker-shim at generation in pod from the
+// roles container, outside every role's namespaces (role_kill_sh over that generation's
+// role-init, roleInit): the shim and its agent die, and the launcher and every other role run on.
+// Its error is the kill's own, with role_kill_sh's refusal or kill's message in it.
+func (r *kindTreeRig) killRole(pod string, role claim.Role, generation uint64) (string, error) {
+	pid, err := r.roleInit(pod, role, generation)
+	if err != nil {
+		return "", err
+	}
+	return r.podExec(pod, "sh", "-c", r.kill, "role-kill", pid)
 }
 
 // pod is the pod as the API server holds it now.

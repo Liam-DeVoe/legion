@@ -1939,31 +1939,43 @@ KIND_PARTS = {
         KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/pod-update"],
     }),
 }
-# The tree parts' tests: the daemon's two whole-tree tests of internal/daemon, which boot the whole
+# The tree parts' tests: the daemon's whole-tree tests of internal/daemon, which boot the whole
 # daemon on the rig with Dispatch, the Envoy listener and natsd built from the checkout and real
-# agents in issue pods (kind_tree_rig_live_test.go, their shared rig): Stage 4b's tree, one subtest
-# per checkpoint, and the Claude Code backend in an issue pod. Each brings up a rig of its own, and
-# the two one after the other run past the part budget, so each runs in a part of its own, beside
-# KIND_PARTS': KIND_TREE_PARTS below.
+# agents in issue pods (kind_tree_rig_live_test.go, their shared rig): Stage 4b's tree in three
+# tests, one subtest per checkpoint, and the Claude Code backend in an issue pod. Each brings up a
+# rig of its own, and two one after the other run past the part budget, so each runs in a part of
+# its own, beside KIND_PARTS': KIND_TREE_PARTS below.
 KIND_TREE_FILES = {
     "internal/daemon": (["claude_backend_kind_live_test.go", "kind_tree_rig_live_test.go", "stage4b_kind_live_test.go"],
-                        ["TestStage4bSandboxTreeOnTheKindRigLive",
+                        ["TestStage4bDaemonRestartsOnTheKindRigLive", "TestStage4bSandboxTreeOnTheKindRigLive",
+                         "TestStage4bStreamMoveAndControllerOnTheKindRigLive",
                          "TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"]),
 }
 # The tree parts, in the order the called file holds them and in KIND_PARTS' shape: each part's job
 # id, the name of its one test step, its test binary's -timeout, and its one test of KIND_TREE_FILES
 # by package; hold_kind_tree_parts() holds them to run each of those tests once and nothing else.
-# -timeout is more than half again over the test's time where a run has measured it: 20m for the
-# Claude Code backend's, which took 732 s and 706 s in CI runs 44615479190 and 44625956146. Stage
-# 4b's tree, which no run has taken whole yet - its fourteen checkpoints include a credential
-# refresh and two daemon restarts that relaunch every claim - has 120m until its first whole run
-# measures it.
+# -timeout is more than half again over the test's time, its rig included: 20m for the Claude Code
+# backend's, which took 732 s and 706 s in CI runs 44615479190 and 44625956146. Stage 4b's fourteen
+# checkpoints run past the part budget on one rig: in CI run 44744458379 (job 136321348462) the rig
+# took 501 s to the first checkpoint and the first seven checkpoints 174 s, and the rest, with a
+# credential refresh and four daemon restarts of about two minutes of image probe each, come to
+# about 30 minutes in all by estimate. So they run in three tests, each on a rig of its own, whose
+# times are estimates until a green run measures them: tree-stage4b the tree through one role's
+# end and its pod's loss, about 777 s, so 20m; tree-stage4b-restart the restarts at the same
+# addresses and at another address of the listener, and tree-stage4b-move the stream's move, the
+# controller and the pod shape, each about 985 s, so 25m.
 KIND_TREE_PARTS = {
     "tree-claude": ("Run the Claude Code backend's tree test", "20m", {
         "internal/daemon": ["TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"],
     }),
-    "tree-stage4b": ("Run Stage 4b's tree test", "120m", {
+    "tree-stage4b": ("Run Stage 4b's tree test", "20m", {
         "internal/daemon": ["TestStage4bSandboxTreeOnTheKindRigLive"],
+    }),
+    "tree-stage4b-restart": ("Run Stage 4b's restart test", "25m", {
+        "internal/daemon": ["TestStage4bDaemonRestartsOnTheKindRigLive"],
+    }),
+    "tree-stage4b-move": ("Run Stage 4b's stream move and controller test", "25m", {
+        "internal/daemon": ["TestStage4bStreamMoveAndControllerOnTheKindRigLive"],
     }),
 }
 KIND_JOB = "kind"
@@ -2048,8 +2060,8 @@ def hold_kind_parts():
 def hold_kind_tree_parts():
     """Refuse KIND_TREE_PARTS where its parts no longer run each test of KIND_TREE_FILES once, one
     test a part, and nothing else: a part whose job id KIND_PARTS holds too, which would pin two
-    test steps on one job; a part that runs other than one test, since each of the two brings up a
-    rig of its own and the two one after the other run past the part budget; a test KIND_TREE_FILES
+    test steps on one job; a part that runs other than one test, since each brings up a rig of its
+    own and two one after the other run past the part budget; a test KIND_TREE_FILES
     does not hold for its package, which nothing holds to that package's files; a test two parts
     run; and a test of KIND_TREE_FILES no part runs, which both daemon-go steps skip by name, so it
     would run nowhere while every other check passes green."""
@@ -3759,11 +3771,11 @@ GATES = [
         pinned_step(part, step, DAEMON, KIND_TREE_PART_SCRIPTS[part], [
             (DAEMON, [f"./{package}/" for package in tests], "go test -run over the package the part's tree test is in", {}),
             (ENVOY, ["./cmd/listener", "./internal/testnats/cmd/natsd"],
-             "internal/daemon/kind_tree_rig_live_test.go:803,830 testbuild.EnvoyBinary, which runs go build "
+             "internal/daemon/kind_tree_rig_live_test.go:914,941 testbuild.EnvoyBinary, which runs go build "
              "./internal/testnats/cmd/natsd and ./cmd/listener in packages/envoy (internal/testbuild/testbuild.go:112)",
              {"mode": "build"}),
             (DAEMON, [LEGION_BUILD], "internal/daemon/live_agent_proof_test.go buildProofLegion, which "
-                                     "kind_tree_rig_live_test.go:197 calls, runs go build ./cmd/legion", {"mode": "build"}),
+                                     "kind_tree_rig_live_test.go:206 calls, runs go build ./cmd/legion", {"mode": "build"}),
         ], workflow=KIND_WORKFLOW)
         for part, (step, _, tests) in KIND_TREE_PARTS.items()
     ], reads=reads(
@@ -3777,8 +3789,9 @@ GATES = [
                                                         "for the run's operator route ConfigMap"),
         ("deploy/kubernetes/operator-route/overlay.yml", "internal/runtime/sandbox/live_test.go:470 newKindLiveEnv puts it "
                                                          "in the run's operator route ConfigMap"),
-        ("scripts/e2e/lib/role-namespaces.sh", "internal/daemon/share_volumes_live_test.go:180 and "
-                                               "kind_tree_rig_live_test.go:208 source it for role_enter_sh"),
+        ("scripts/e2e/lib/role-namespaces.sh", "internal/daemon/share_volumes_live_test.go:180 sources it for "
+                                               "role_enter_sh, and kind_tree_rig_live_test.go:216 for role_enter_sh "
+                                               "and role_kill_sh"),
         ("scripts/e2e/lib/pack-plugin.sh", "internal/runtime/sandbox/live_test.go:550 packLivePlugins runs it for "
                                            "pi-envoy and pi-legion"),
     ) + [
