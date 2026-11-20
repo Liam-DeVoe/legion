@@ -14,25 +14,25 @@ import { limitsNotSummed } from "@legion/test-fixtures/row-sums";
 import ts from "typescript";
 import { stepEndsVariable } from "./step-end";
 
-/** Each place in `text`, the source of the container removal module, that reads a clock or runs a
- *  program other than through the machine's own (`machine`), and each number in that machine, as
- *  "<line>:<column> <text>": a limit the removal set on the real clock, which the row on the row's
- *  clock cannot see, is one of them. The names it reads are the globals that read the time or wait
- *  (`Date`, `performance`, `setTimeout`, `setInterval`, `setImmediate`, `Bun`, `process`),
- *  `AbortSignal.timeout`, and every name an import of `node:timers`, `node:timers/promises` or
- *  `node:child_process` binds. */
-function offTheMachine(text: string): string[] {
-  const source = ts.createSourceFile("removal.ts", text, ts.ScriptTarget.Latest, true);
-  const real = new Set([
-    "Date",
-    "performance",
-    "setTimeout",
-    "setInterval",
-    "setImmediate",
-    "Bun",
-    "process",
-  ]);
-  let machine: ts.Node | undefined;
+/** The globals that read the time or wait, or run a program. */
+const clockGlobals = [
+  "Date",
+  "performance",
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "Bun",
+  "process",
+];
+
+/** The objects a source also reaches a global through, as a member: `globalThis.setTimeout`,
+ *  `window["setTimeout"]`. */
+const globalObjects = new Set(["globalThis", "global", "window", "self"]);
+
+/** The globals of `clockGlobals`, and every name an import of `node:timers`,
+ *  `node:timers/promises` or `node:child_process` binds in `source`. */
+function clockNames(source: ts.SourceFile): Set<string> {
+  const real = new Set(clockGlobals);
   for (const statement of source.statements) {
     if (
       ts.isImportDeclaration(statement) &&
@@ -47,24 +47,30 @@ function offTheMachine(text: string): string[] {
         for (const element of bindings.elements) real.add(element.name.text);
       }
     }
-    if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name) && declaration.name.text === "machine") {
-          machine = declaration;
-        }
-      }
-    }
   }
-  const found: string[] = machine === undefined ? ["no declaration of machine"] : [];
-  const inMachine = (node: ts.Node) =>
-    machine !== undefined && node.pos >= machine.pos && node.end <= machine.end;
+  return real;
+}
+
+/** Each place under `root`, a node of `source`, that reads a clock or runs a program, as
+ *  "<line>:<column> <text>": a name of `real` that is no property's name, the same name as a
+ *  member of a global object (`globalObjects`, dotted or indexed), and `AbortSignal.timeout`.
+ *  Nothing under a node `skip` answers true for is read. */
+function clockReads(
+  source: ts.SourceFile,
+  root: ts.Node,
+  real: ReadonlySet<string>,
+  skip: (node: ts.Node) => boolean
+): string[] {
+  const found: string[] = [];
   const place = (node: ts.Node) => {
     const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
     return `${line + 1}:${character + 1} ${node.getText(source)}`;
   };
+  const ofGlobal = (object: ts.Expression) =>
+    ts.isIdentifier(object) && globalObjects.has(object.text);
   const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node)) return;
-    if (ts.isIdentifier(node) && real.has(node.text) && !inMachine(node)) {
+    if (ts.isImportDeclaration(node) || skip(node)) return;
+    if (ts.isIdentifier(node) && real.has(node.text)) {
       const { parent } = node;
       // A name after a dot, or the name of a property or a method, is no global and no import.
       const property =
@@ -76,25 +82,114 @@ function offTheMachine(text: string): string[] {
       if (!property) found.push(place(node));
     }
     if (
-      ts.isPropertyAccessExpression(node) &&
-      node.name.text === "timeout" &&
-      node.expression.getText(source) === "AbortSignal"
+      (ts.isPropertyAccessExpression(node) &&
+        ofGlobal(node.expression) &&
+        clockGlobals.includes(node.name.text)) ||
+      (ts.isElementAccessExpression(node) &&
+        ofGlobal(node.expression) &&
+        ts.isStringLiteralLike(node.argumentExpression) &&
+        clockGlobals.includes(node.argumentExpression.text)) ||
+      (ts.isPropertyAccessExpression(node) &&
+        node.name.text === "timeout" &&
+        node.expression.getText(source) === "AbortSignal")
     ) {
       found.push(place(node));
     }
-    if (ts.isNumericLiteral(node) && inMachine(node)) found.push(place(node));
     ts.forEachChild(node, visit);
   };
-  ts.forEachChild(source, visit);
+  ts.forEachChild(root, visit);
   return found;
 }
 
+/** Each place in `text`, the source of the container removal module, that reads a clock or runs a
+ *  program other than through the machine's own (`machine`), and each number in that machine, as
+ *  "<line>:<column> <text>": a limit the removal set on the real clock, which the row on the row's
+ *  clock cannot see, is one of them (`clockReads`). */
+function offTheMachine(text: string): string[] {
+  const source = ts.createSourceFile("removal.ts", text, ts.ScriptTarget.Latest, true);
+  let machine: ts.Node | undefined;
+  for (const statement of source.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.name.text === "machine") {
+          machine = declaration;
+        }
+      }
+    }
+  }
+  if (machine === undefined) return ["no declaration of machine"];
+  const numbers: string[] = [];
+  const count = (node: ts.Node): void => {
+    if (ts.isNumericLiteral(node)) {
+      const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+      numbers.push(`${line + 1}:${character + 1} ${node.getText(source)}`);
+    }
+    ts.forEachChild(node, count);
+  };
+  count(machine);
+  return [
+    ...clockReads(source, source, clockNames(source), (node) => node === machine),
+    ...numbers,
+  ];
+}
+
+/** Each function of `text`, the sweep's source (`e2e/harness-postgres-removal.ts`), that the
+ *  removal of one container runs under: each that calls `removeContainer`, and each that calls one
+ *  of those, at any depth (`under`); and each place in their bodies that reads a clock or runs a
+ *  program (`found`, `clockReads`, prefixed with the function's name). A limit put on the removal
+ *  by a caller, a timer raced against it, is one of them, and no row on the row's clock, which
+ *  calls `removeContainer` itself, runs that caller. */
+function aroundTheRemoval(text: string): { under: string[]; found: string[] } {
+  const source = ts.createSourceFile("sweep.ts", text, ts.ScriptTarget.Latest, true);
+  const functions = new Map<string, ts.FunctionDeclaration>();
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
+      functions.set(statement.name.text, statement);
+    }
+  }
+  const calls = (body: ts.Node, names: ReadonlySet<string>): boolean => {
+    let found = false;
+    const visit = (node: ts.Node): void => {
+      if (found) return;
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        found = names.has(node.expression.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(body);
+    return found;
+  };
+  const under = new Set(["removeContainer"]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, declaration] of functions) {
+      if (!under.has(name) && calls(declaration, under)) {
+        under.add(name);
+        grew = true;
+      }
+    }
+  }
+  under.delete("removeContainer");
+  const real = clockNames(source);
+  const found = [...under].flatMap((name) => {
+    const declaration = functions.get(name);
+    return declaration === undefined
+      ? []
+      : clockReads(source, declaration, real, () => false).map((place) => `${name} ${place}`);
+  });
+  return { under: [...under].sort(), found };
+}
+
 // The rows of `harness-postgres-removal.test.ts` on the row's clock see a limit of the removal on
-// that clock; one on the real clock never fires in their moment of real time. So this row reads
-// the removal module's source: it reads the time, waits and runs `docker` only through its
-// machine, and the machine's own sets no number. Its controls are such limits, planted in copies
-// of the source, which it must name.
-test("v-no-leftover-postgres: a start's removal of a dead stack's container reads the time, waits and runs docker only through its machine, which sets no limit of its own", () => {
+// that clock; one on the real clock never fires in their moment of real time, and they call
+// `removeContainer` itself, not the sweep that runs it. So this row reads the source: the removal
+// module reads the time, waits and runs `docker` only through its machine, and the machine's own
+// sets no number; and no function of the sweep that the removal runs under reads a clock at all.
+// Its controls are such limits, planted in copies of the sources, which it must name: a timer
+// called bare and as a member of the global object, an `AbortSignal.timeout`, a number in the
+// machine, and a timer raced against the removal by its caller; and the machine's own timers,
+// which it must pass.
+test("v-no-leftover-postgres: a start's removal of a dead stack's container reads the time, waits and runs docker only through its machine, which sets no limit of its own, and no function the removal runs under sets one", () => {
   const text = readFileSync(
     fileURLToPath(new URL("../harness-postgres-container-removal.ts", import.meta.url)),
     "utf8"
@@ -104,12 +199,53 @@ test("v-no-leftover-postgres: a start's removal of a dead stack's container read
   expect(offTheMachine(`${text}\nsetTimeout(() => undefined, 120_000);\n`)).toEqual([
     expect.stringMatching(/^\d+:1 setTimeout$/),
   ]);
+  for (const member of ["globalThis.setTimeout", 'globalThis["setTimeout"]', "window.setTimeout"]) {
+    expect(offTheMachine(`${text}\n${member}(() => undefined, 120_000);\n`)).toEqual([
+      expect.stringMatching(new RegExp(`^\\d+:1 ${member.replace(/[.[\]]/g, "\\$&")}$`)),
+    ]);
+  }
   expect(
     offTheMachine(`${text}\nconst limit = AbortSignal.any([AbortSignal.timeout(120_000)]);\n`)
   ).toEqual([expect.stringMatching(/^\d+:\d+ AbortSignal\.timeout$/)]);
   const capped = text.replace("sleep(ms, undefined,", "sleep(Math.min(ms, 120_000), undefined,");
   expect(capped).not.toBe(text);
   expect(offTheMachine(capped)).toEqual([expect.stringMatching(/^\d+:\d+ 120_000$/)]);
+  // The machine's own timers are the clock the rows move, and pass, as a member of the global
+  // object too.
+  const ownTimer = text.replace(
+    "sleep: (ms, signal) => sleep(ms, undefined, { signal })",
+    "sleep: (ms, signal) => new Promise((done) => void globalThis.setTimeout(done, ms, { signal }))"
+  );
+  expect(ownTimer).not.toBe(text);
+  expect(offTheMachine(ownTimer)).toEqual([]);
+
+  const sweep = readFileSync(
+    fileURLToPath(new URL("../harness-postgres-removal.ts", import.meta.url)),
+    "utf8"
+  );
+  const read = aroundTheRemoval(sweep);
+  // The control that the walk found the callers: the container sweep and the start's sweep.
+  expect(read.under).toEqual(
+    expect.arrayContaining(["removeContainers", "removeLeftoverPostgres"])
+  );
+  expect(read.found).toEqual([]);
+  const raced = sweep.replace(
+    "const removal = await removeContainer(",
+    "const removal = await Promise.race([new Promise<never>((_, fail) => setTimeout(fail, 120_000)), removeContainer("
+  );
+  expect(raced).not.toBe(sweep);
+  expect(aroundTheRemoval(raced).found).toEqual([
+    expect.stringMatching(/^removeContainers \d+:\d+ setTimeout$/),
+  ]);
+  const globalCap = sweep.replace(
+    "  const self = stackOwner();\n  const left: Left",
+    "  globalThis.setTimeout(() => process.exit(1), 120_000);\n  const self = stackOwner();\n  const left: Left"
+  );
+  expect(globalCap).not.toBe(sweep);
+  expect(aroundTheRemoval(globalCap).found).toEqual([
+    expect.stringMatching(/^removeLeftoverPostgres \d+:\d+ globalThis\.setTimeout$/),
+    expect.stringMatching(/^removeLeftoverPostgres \d+:\d+ process$/),
+  ]);
 });
 
 /** The test files whose rows count their waits with these fixtures (`rowOf`), which the shared
