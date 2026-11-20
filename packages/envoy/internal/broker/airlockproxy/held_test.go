@@ -115,12 +115,18 @@ type heldRig struct {
 	stand    *heldStand
 }
 
-func newHeldRig(t *testing.T) *heldRig {
+// newHeldRig builds the rig with ada's grant and bob's, the proxy counting its answers on answers,
+// broker_answers_total on registry, which it makes there when answers is nil: a table that counts
+// many rigs' answers on one counter hands its own.
+func newHeldRig(t *testing.T, registry *metrics.Registry, answers *metrics.Counter) *heldRig {
 	t.Helper()
+	if answers == nil {
+		answers = answer.NewAnswers(registry)
+	}
 	h := &heldRig{
 		store:    storetest.Open(t),
 		clock:    &testClock{now: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)},
-		registry: metrics.New(),
+		registry: registry,
 		stand:    &heldStand{joins: map[string]*frameStand{}, streams: map[string]chan error{}},
 	}
 	h.dispatch = projectaccesstest.NewServer(t, nil, map[string]string{heldPerson: projectaccess.MemberFull, servedPerson: projectaccess.MemberFull})
@@ -128,7 +134,7 @@ func newHeldRig(t *testing.T) *heldRig {
 	client := projectaccess.New(h.dispatch.URL, h.account, nil)
 	client.UseClock(h.clock.read)
 	gate := hold.New(hold.Config{Access: client, Store: h.store, Log: slog.New(slog.DiscardHandler), Now: h.clock.read})
-	h.rig = newRig(t, Options{Hold: gate, Watch: watchFast, Answers: answer.NewAnswers(h.registry)}, func(c net.Conn) net.Conn {
+	h.rig = newRig(t, Options{Hold: gate, Watch: watchFast, Answers: answers}, func(c net.Conn) net.Conn {
 		h.accepts.Add(1)
 		return c
 	})
@@ -485,7 +491,7 @@ func TestHeldAirlockOpenConnectionIsRefused(t *testing.T) {
 			status: http.StatusServiceUnavailable, code: "HOLD_UNCHECKABLE", words: unkeptHeldAnswer, refusedTo: "after the unkept hold"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			h := newHeldRig(t)
+			h := newHeldRig(t, metrics.New(), nil)
 			ada := h.openSide(t, "ada", workerPlaceholder, workerValue, testGrantID)
 			bob := h.openSide(t, "bob", bobPlaceholder, bobValue, bobGrantID)
 
@@ -514,7 +520,7 @@ func TestHeldAirlockOpenConnectionIsRefused(t *testing.T) {
 	}
 
 	t.Run("Dispatch refuses the broker's own account", func(t *testing.T) {
-		h := newHeldRig(t)
+		h := newHeldRig(t, metrics.New(), nil)
 		ada := h.openSide(t, "ada", workerPlaceholder, workerValue, testGrantID)
 		bob := h.openSide(t, "bob", bobPlaceholder, bobValue, bobGrantID)
 
