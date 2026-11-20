@@ -323,6 +323,21 @@ func countDocumentRender(markdown string) {
 	}
 }
 
+// blockReadBacksCounted is the count a test installs over every read-back of a document-level
+// block this package makes (blockReadBacks.of, pmdoc.ReadBackBlock), as documentRenders is the
+// record over its renders: the block an edit lands in can hold the whole document's text, so an
+// edit costs what its read-backs cost. Outside a test it is nil, and a read-back loads it and does
+// nothing else. One test at a time holds it, and clears it in t.Cleanup.
+var blockReadBacksCounted atomic.Pointer[atomic.Int64]
+
+// countBlockReadBack counts one read-back of a document-level block on the count a test
+// installed.
+func countBlockReadBack() {
+	if count := blockReadBacksCounted.Load(); count != nil {
+		count.Add(1)
+	}
+}
+
 // RoomCapsForTest is the service's room and connection caps (reserveRoom, reserveConnection).
 // cmd/dispatch's settings test reads it to see DISPATCH_MAX_LIVE_ROOMS and
 // DISPATCH_MAX_DOC_CONNECTIONS reach the service through Deps.

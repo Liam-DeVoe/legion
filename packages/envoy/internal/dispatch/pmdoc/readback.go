@@ -61,7 +61,13 @@ func readBackWritten(doc *Node, spanCells int) (WrittenReadBack, error) {
 	if err != nil {
 		return WrittenReadBack{}, err
 	}
-	markdown := r.b.String()
+	return readStored(doc, r.b.String())
+}
+
+// readStored is markdown, the text doc is stored as, read back as every stored text is read
+// (ParseRendering). A refusal of blocks nested past the bound is told by how many blocks doc nests
+// (renderedNesting), since the line the parser names counts lines of a text nobody wrote.
+func readStored(doc *Node, markdown string) (WrittenReadBack, error) {
 	back, err := ParseRendering(markdown)
 	return WrittenReadBack{Markdown: markdown, Tree: back}, renderedNesting(doc, err)
 }
@@ -110,7 +116,6 @@ func newMisread(before, after *Node, spanCells int) (string, error) {
 	}
 	previous := asWritten(before)
 	drift := skip{names: attributeDrift(previous, backBefore)}
-	type sameMisread struct{ id, differs string }
 	known := map[sameMisread]bool{}
 	for _, stale := range misreads(previous, backBefore, drift) {
 		known[sameMisread{stale.id, stale.differs}] = true
@@ -123,30 +128,74 @@ func newMisread(before, after *Node, spanCells int) (string, error) {
 	return "", nil
 }
 
+// sameMisread is what makes a misread one a document already held (NewMisread,
+// RefuseMisreadStored): the block's id and what differs, which is the same for the same misread
+// whatever else changed around it.
+type sameMisread struct{ id, differs string }
+
 // documentMisread names how doc, a whole document a write makes, reads back otherwise, or is ""
-// when it does not: every block that reads back otherwise is the write's, the first named as far
-// down as its markdown still pairs (misreads). A doc whose markdown no reader of this package
-// reads at all is that parser's own refusal instead, answered as refused, which refuseMisread
-// turns into ErrRenderingRefused. Only a refusal (ErrSchema) is a verdict; any other error is the
-// error. It answers the read-back it judged as well, which is the zero value where it made none,
-// so a write that stores that rendering shares the one parse of it (WrittenReadBack).
+// when it does not: its rendering is judged as the text the write stores (storedMisread), so every
+// block that reads back otherwise is the write's, the first named as far down as its markdown
+// still pairs (misreads). A doc the renderer refuses, or whose markdown no reader of this package
+// reads at all, is that refusal instead, answered as refused, which refuseMisread turns into
+// ErrRenderingRefused. Only a refusal (ErrSchema) is a verdict; any other error is the error. It
+// answers the read-back it judged as well, which is the zero value where it made none, so a write
+// that stores that rendering shares the one parse of it (WrittenReadBack).
 func documentMisread(doc *Node) (read WrittenReadBack, misread string, refused error, err error) {
-	read, err = readBackWritten(doc, maxSpanCells)
+	r, err := render(doc, maxSpanCells)
 	if err != nil {
 		if errors.Is(err, ErrSchema) {
 			return WrittenReadBack{}, "", err, nil
 		}
 		return WrittenReadBack{}, "", nil, err
 	}
+	reading, refused, err := storedMisread(doc, r.b.String())
+	return reading.read, reading.misread(), refused, err
+}
+
+// storedReading is how a stored text reads back (storedMisread): the read-back itself, the first
+// way the whole reads back otherwise (readDifference), "" where it reads back as written, and each
+// block that reads back otherwise (misreads), which is listed only where difference is not "".
+type storedReading struct {
+	read       WrittenReadBack
+	difference string
+	found      []misread
+}
+
+// misread names how the stored text reads back otherwise, "" where it does not: the first block
+// that does, as far down as its markdown still pairs, or the whole's difference where no block is
+// named.
+func (s storedReading) misread() string {
+	switch {
+	case s.difference == "":
+		return ""
+	case len(s.found) > 0:
+		return s.found[0].reason
+	}
+	return s.difference
+}
+
+// storedMisread is how markdown, the text a write stores doc as, reads back: markdown parsed as
+// every stored text is read (readStored) and compared with doc as written (asWritten), every
+// attribute and every textblock's text and marks. It is the one comparison an upload's rendering is
+// judged by (documentMisread) and a write into a document judges the very text it stores by
+// (RefuseMisreadStored), so the two cannot disagree. A markdown no reader of this package reads at
+// all is that reader's refusal, answered as refused. Only a refusal (ErrSchema) is a verdict; any
+// other error is the error.
+func storedMisread(doc *Node, markdown string) (reading storedReading, refused error, err error) {
+	read, err := readStored(doc, markdown)
+	if err != nil {
+		if errors.Is(err, ErrSchema) {
+			return storedReading{}, err, nil
+		}
+		return storedReading{}, nil, err
+	}
 	written := asWritten(doc)
-	difference := readDifference(written, read.Tree, skip{})
-	if difference == "" {
-		return read, "", nil, nil
+	reading = storedReading{read: read, difference: readDifference(written, read.Tree, skip{})}
+	if reading.difference != "" {
+		reading.found = misreads(written, read.Tree, skip{})
 	}
-	if found := misreads(written, read.Tree, skip{}); len(found) > 0 {
-		return read, found[0].reason, nil, nil
-	}
-	return read, difference, nil, nil
+	return reading, nil, nil
 }
 
 // RefuseMisreadDocument refuses (ErrSchema) a whole document a write makes, a spec, an upload or a
@@ -159,6 +208,89 @@ func documentMisread(doc *Node) (read WrittenReadBack, misread string, refused e
 func RefuseMisreadDocument(doc *Node) error {
 	_, misread, refused, err := documentMisread(doc)
 	return refuseMisread(misread, refused, err)
+}
+
+// StoredMisread is a block a stored text reads back otherwise in, named without the document's
+// text: its block id and the kind of difference (misread.kind) - a paragraph's text, a list item
+// that reads back as a paragraph, a heading's level - never what the block holds, so a log line
+// may carry it.
+type StoredMisread struct {
+	Block, Kind string
+}
+
+// StoredVerdict is RefuseMisreadStored's verdict on the text a write into a document stores.
+// Refusal is nil where the text may be stored, and otherwise the refusal an upload of that text
+// gets (ErrMisreadRendering, ErrRenderingRefused); Block is the id of the block it names, "" where
+// it names none; Excused is each block that reads back otherwise as it already did in the text the
+// document was stored as before the write.
+type StoredVerdict struct {
+	Refusal error
+	Block   string
+	Excused []StoredMisread
+}
+
+// RefuseMisreadStored judges markdown, the text a write into a document stores after as, by the
+// comparison an upload is refused by (storedMisread), so a write stores no text an upload of it
+// would be refused for: what is stored is the text, and the next read gives it back as another
+// document. The text is judged exactly as it is stored, whatever wrote it, so the verdict does not
+// rest on the renderer writing every tree in a spelling that reads back.
+//
+// One difference is excused: a block that reads back otherwise under the same block id and with
+// the same difference (sameMisread) in previous, the text the document was stored as before the
+// write, read against before, the tree previous was stored from. So a write beside a block that a
+// browser edit or an earlier writer left reading back otherwise is stored, while a new misread in
+// that block is still refused. previous is parsed only where markdown reads back otherwise, so a
+// write whose text reads back pays for one parse, as an upload does. A nil before - the document
+// stood outside the schema, and no text of it was read - excuses nothing, and neither does a
+// previous the parser refuses. A refusal of markdown by the parser itself names no block, and is
+// never excused. Only a refusal (ErrSchema) is a verdict; any other error, a panic (ErrPanic)
+// among them, is the error.
+func RefuseMisreadStored(before *Node, previous string, after *Node, markdown string) (StoredVerdict, error) {
+	reading, refused, err := storedMisread(after, markdown)
+	switch {
+	case err != nil:
+		return StoredVerdict{}, err
+	case refused != nil:
+		return StoredVerdict{Refusal: refuseMisread("", refused, nil)}, nil
+	case reading.difference == "":
+		return StoredVerdict{}, nil
+	}
+	known, err := storedMisreadsOf(before, previous)
+	if err != nil {
+		return StoredVerdict{}, err
+	}
+	var verdict StoredVerdict
+	for _, found := range reading.found {
+		if found.id != "" && known[sameMisread{found.id, found.differs}] {
+			verdict.Excused = append(verdict.Excused, StoredMisread{Block: found.id, Kind: found.kind})
+			continue
+		}
+		if verdict.Refusal == nil {
+			verdict.Refusal, verdict.Block = refuseMisread(found.reason, nil, nil), found.id
+		}
+	}
+	if len(reading.found) == 0 {
+		verdict.Refusal = refuseMisread(reading.difference, nil, nil)
+	}
+	return verdict, nil
+}
+
+// storedMisreadsOf is each block previous, the text before was stored as, reads back otherwise in
+// (sameMisread), judged as RefuseMisreadStored judges a write's text: none where before is nil or
+// the parser refuses previous, since then nothing was read back to excuse.
+func storedMisreadsOf(before *Node, previous string) (map[sameMisread]bool, error) {
+	if before == nil {
+		return nil, nil
+	}
+	reading, refused, err := storedMisread(before, previous)
+	if err != nil || refused != nil {
+		return nil, err
+	}
+	known := make(map[sameMisread]bool, len(reading.found))
+	for _, stale := range reading.found {
+		known[sameMisread{stale.id, stale.differs}] = true
+	}
+	return known, nil
 }
 
 // RefuseMisreadWrite refuses a write into a document; see RefuseMisreadDocument. It reads both
@@ -204,9 +336,11 @@ func refuseMisread(misread string, refused, err error) error {
 }
 
 // misread is a block that reads back otherwise: its id, what differs (the same for the same
-// misread whatever else changed around it), and how a reader is told.
+// misread whatever else changed around it), the kind of difference, which names block types and
+// an attribute's name and never the document's text or an attribute's value (StoredMisread), and
+// how a reader is told.
 type misread struct {
-	id, differs, reason string
+	id, differs, kind, reason string
 }
 
 // misreads lists the blocks under want, a block as written, that read back otherwise in got, in
@@ -219,20 +353,20 @@ func misreads(want, got *Node, ignore skip) []misread {
 }
 
 func collectMisreads(want, got *Node, ignore skip, found *[]misread) {
-	add := func(id, differs, reason string) {
-		*found = append(*found, misread{id: id, differs: differs, reason: reason})
+	add := func(id, differs, kind, reason string) {
+		*found = append(*found, misread{id: id, differs: differs, kind: kind, reason: reason})
 	}
 	own := selfDifference(want, got, ignore)
 	switch {
 	case own.kind != "":
-		add(blockIDOf(want), want.Type+" as "+got.Type, own.kind)
+		add(blockIDOf(want), want.Type+" as "+got.Type, want.Type+" as "+got.Type, own.kind)
 		return
 	case own.attribute != "":
-		add(blockIDOf(want), want.Type+" "+own.attribute, own.attribute)
+		add(blockIDOf(want), want.Type+" "+own.attribute, want.Type+" "+own.attributeKey, own.attribute)
 	}
 	if isTextblock(want.Type) {
 		if own.text != "" {
-			add(blockIDOf(want), want.Type+" text "+own.textDiffers, own.text)
+			add(blockIDOf(want), want.Type+" text "+own.textDiffers, want.Type+" text", own.text)
 		}
 		return
 	}
@@ -248,7 +382,7 @@ func collectMisreads(want, got *Node, ignore skip, found *[]misread) {
 	sort.Ints(indexes)
 	for _, index := range indexes {
 		child := written[index]
-		add(blockIDOf(child), child.Type+" unpaired", unpaired[index])
+		add(blockIDOf(child), child.Type+" unpaired", child.Type+" unpaired", unpaired[index])
 	}
 }
 
@@ -267,16 +401,18 @@ func pairChildren(parent string, written, back []*Node, ignore skip) ([][2]int, 
 }
 
 // ownDifference is how a block differs from its read-back apart from its child blocks: its kind,
-// its first differing attribute, and a textblock's text, each "" where they agree.
+// its first differing attribute and that attribute's name, and a textblock's text, each "" where
+// they agree.
 type ownDifference struct {
-	kind, attribute, text, textDiffers string
+	kind, attribute, attributeKey, text, textDiffers string
 }
 
 func selfDifference(want, got *Node, ignore skip) ownDifference {
 	if want.Type != got.Type {
 		return ownDifference{kind: blockName(want.Type) + " reads back as " + blockName(got.Type)}
 	}
-	own := ownDifference{attribute: attributeReason(want, got, ignore)}
+	own := ownDifference{}
+	own.attribute, own.attributeKey = attributeReason(want, got, ignore)
 	if isTextblock(want.Type) && !ignore.text && !inlineEqual(want.Children, got.Children) {
 		wanted, read := TextContent(want), TextContent(got)
 		own.text = fmt.Sprintf("%s reads back holding %q, not %q", blockName(want.Type), read, wanted)
@@ -603,16 +739,17 @@ func readDifference(want, got *Node, ignore skip) string {
 	return own.attribute
 }
 
-// attributeReason names the first attribute want and got hold with different values, or is "".
-func attributeReason(want, got *Node, ignore skip) string {
+// attributeReason names the first attribute want and got hold with different values, and the
+// attribute's name, or is "" twice.
+func attributeReason(want, got *Node, ignore skip) (reason, key string) {
 	key, wanted, read, differs := attributeDifference(want, got, ignore)
 	switch {
 	case !differs:
-		return ""
+		return "", ""
 	case want.Type == "list_item" && key == "checked" && read == nil:
-		return "a task item reads back as a plain list item"
+		return "a task item reads back as a plain list item", key
 	default:
-		return fmt.Sprintf("%s reads back with %s %v, not %v", blockName(want.Type), key, orNone(read), orNone(wanted))
+		return fmt.Sprintf("%s reads back with %s %v, not %v", blockName(want.Type), key, orNone(read), orNone(wanted)), key
 	}
 }
 
