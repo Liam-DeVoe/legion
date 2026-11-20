@@ -166,6 +166,63 @@ export async function setListsState(state: ListsState): Promise<void> {
   await fixtureRequest("/__fixture/lists", "PUT", { state });
 }
 
+/** How far `spendPageTimeUntil` moves the page's clock at each jump: the longest wait the shared
+ *  retry policy takes before it asks again for a read Dispatch refused as refilling - the
+ *  listener's `Retry-After: 5`, which Dispatch passes on, and up to as much again
+ *  (`queryRetryDelay`, `web/src/api/query-client.ts`) - so one jump fires whichever retry waits. */
+const PAGE_TIME_STEP_MS = 10_000;
+
+/**
+ * Spends `ms` of the page's own time in one jump, then sets the page's date back to the wall
+ * clock's: the timers the jump fired keep the time they were moved, and only `Date.now()` goes
+ * back. The clock is the page's context's (`page.clock` is its `BrowserContext`'s), so every page
+ * of that context moves with it; a row installs it before the context's first page loads.
+ *
+ * The date goes back because nothing but the page's timers moves with this clock. The server
+ * sends each live socket a heartbeat every 15 s of real time, and the page replaces a socket that
+ * has carried no frame for 45 s by its own date (`LIVE_SOCKET_SILENT_MS`, read by
+ * `replaceIfSilent` in `web/src/api/live-socket.ts`): a date left ahead by a few jumps passes that
+ * between two heartbeats, and the new socket sends every subscription again. And the fake
+ * listener and a row's seeds date what they write by the wall clock, so the page reads a
+ * `last_seen` against the time it was written in.
+ */
+export async function spendPageTime(page: Page, ms: number): Promise<void> {
+  await page.clock.fastForward(ms);
+  await page.clock.setSystemTime(Date.now());
+}
+
+/**
+ * Spends the page's own time, one `PAGE_TIME_STEP_MS` jump at a time (`spendPageTime`), until
+ * `ready` answers true: how a row waits for a view to say the agent list is refilling, or to stop
+ * saying so, without waiting out the page's timers on the wall clock. A view says so only once
+ * the retry policy's two retries of the refused read are out, and each retry waits on a page
+ * timer armed when the refusal before it comes back over the real network, so no single jump
+ * fires both: a jump fires the retry whose refusal is in, and the pause between two jumps lets
+ * the next refusal come back. A page that polls the agent list every 15 s
+ * (`AGENT_REGISTRY_POLL_MS`) polls as the jumps pass its interval. `message` names what is waited
+ * for, for a failure to say.
+ */
+export async function spendPageTimeUntil(
+  page: Page,
+  ready: () => Promise<boolean>,
+  message: string
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        // The page is read before the clock moves, a poll interval after the last jump, so what
+        // that jump started has drawn: a poll it fired sends a read that has not answered yet
+        // back to loading, and a reading taken straight after the jump could still show the
+        // refusal the page has just let go of.
+        if (await ready()) return true;
+        await spendPageTime(page, PAGE_TIME_STEP_MS);
+        return false;
+      },
+      { intervals: [50, 50, 100, 200, 500], message }
+    )
+    .toBe(true);
+}
+
 /** One Legion agent registry entry as the daemon writes it to the listener
  *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is
  *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. */
