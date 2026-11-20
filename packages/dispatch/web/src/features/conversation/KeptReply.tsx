@@ -33,22 +33,30 @@ export function KeptReply({
  *  longer lists (`ListedReplies`), whose Reply is gone with it, or for one its author deleted
  *  (`deleted`), which keeps its place and takes no reply (`409 POST_DELETED`): the reply's text is
  *  drawn after these words with its own presses (`DraftOffer`), since no Reply goes on with it,
- *  and no word of the post it answered. Where Use it here waits for the field to be empty
- *  (`KeptDrafts.awayTakes`), the words say so (`waits`). */
+ *  and no word of the post it answered. The post is named by its author where the host knows
+ *  which post the reply answered (`actor`), and by its kind alone where it does not. Where Use it
+ *  here waits for the field to be empty (`KeptDrafts.awayTakes`), the words say so (`waits`). */
 export function GoneReply({
   actor,
   deleted = false,
   parentKind,
   waits = false,
 }: {
-  readonly actor: Actor;
+  readonly actor: Actor | undefined;
   readonly deleted?: boolean;
   readonly parentKind: ReplyTarget["parentKind"];
   readonly waits?: boolean;
 }): ReactNode {
   return (
     <>
-      The {parentKind} by <AgentName actor={actor} inline /> that your reply answered{" "}
+      The {parentKind}
+      {actor === undefined ? null : (
+        <>
+          {" "}
+          by <AgentName actor={actor} inline />
+        </>
+      )}{" "}
+      that your reply answered{" "}
       {deleted ? "was deleted, so it takes no reply" : "is no longer listed"}. Your reply is kept
       here{waits ? ", to use in this field once it is empty" : ""}:
     </>

@@ -1064,11 +1064,11 @@ for (const kept of ["typed", "refused", "stopped"] as const) {
 // Dispatch saves no edit of a deleted comment (409 POST_DELETED). An editor open over a comment
 // its author then deletes - holding words of the reader's own, or a save Dispatch refused - is
 // not left open on an empty body: the comment reads as deleted where its body was, and the edit
-// waits under it as the reader's own, never as the comment's text, until Discard my edit drops it
-// where it is kept. By the architect's ruling the edit is drawn from the browser's own store and
-// never sent again, under the deleted line with the label that says it is the reader's, with no
-// editor and no Save - Discard my edit is its one action - and with no word of the comment the
-// edit was written over: the body the editor opened on is not drawn anywhere in the card.
+// waits as the reader's own until Discard my edit drops it where it is kept. By the architect's
+// ruling of 2026-11-20 07:52Z the edit is announced and not drawn: an edit is mostly the words of
+// the comment it was written over, so the card says under the deleted line that the unsaved edit
+// is kept in this browser, offers Copy my edit and Discard my edit and nothing else - no editor,
+// no Save - and draws no word of the edit, and so none of the comment the edit was written over.
 for (const kept of ["typed", "refused"] as const) {
   test(`an edit ${heldDraftWords[kept]} over a comment deleted since closes, and waits under the deleted line until discarded`, async () => {
     const user = userEvent.setup();
@@ -1109,9 +1109,9 @@ for (const kept of ["typed", "refused"] as const) {
     const card = () => screen.getByTestId(`margin-comment-${root.id}`);
     const editKey = ["comment-edit", root.id];
     const edit = `An edit ${heldDraftWords[kept]}`;
-    // The label the kept edit is drawn under, which says it is the reader's own.
+    // The line the kept edit is announced by, which says it is the reader's own.
     const lead =
-      "This comment was deleted, and Dispatch saves no edit of a deleted comment. Your edit is kept here:";
+      "This comment was deleted, and Dispatch saves no edit of a deleted comment. Your unsaved edit is kept in this browser.";
 
     try {
       const [rootEdit] = within(card()).getAllByRole("button", { name: "Edit" });
@@ -1133,8 +1133,8 @@ for (const kept of ["typed", "refused"] as const) {
       view.rerender(tree(thread({ root: { comment: deletedRoot, kind: "comment" } })));
       await within(card()).findByRole("button", { name: "Discard my edit" });
       // The card's words outside its replies, its controls and its times: the words of the
-      // document the comment is anchored to, the deleted line, the root's byline, the label and
-      // the edit, and nothing of the comment the edit was written over.
+      // document the comment is anchored to, the deleted line, the root's byline and the label,
+      // and nothing of the edit or of the comment the edit was written over.
       const words = card().cloneNode(true);
       if (words instanceof Element) {
         for (const part of words.querySelectorAll('ol[aria-label="Replies"], button, time')) {
@@ -1146,6 +1146,7 @@ for (const kept of ["typed", "refused"] as const) {
         actions: [...(offer?.querySelectorAll("button") ?? [])].map((press) => press.textContent),
         body: card().textContent?.includes(root.body),
         deleted: card().textContent?.includes("Deleted by alice"),
+        edit: card().textContent?.includes(edit),
         editor: within(card()).queryByLabelText("Edit comment") !== null,
         field: screen.queryByLabelText("Edit comment") !== null,
         lines: statusLines(card()),
@@ -1166,14 +1167,15 @@ for (const kept of ["typed", "refused"] as const) {
       }).toEqual({
         discarded: { held: false, kept: false, lines: [] },
         offered: {
-          actions: ["Discard my edit"],
+          actions: ["Copy my edit", "Discard my edit"],
           body: false,
           deleted: true,
+          edit: false,
           editor: false,
           field: false,
-          lines: [`${lead}${edit}`],
+          lines: [lead],
           save: false,
-          words: `${root.anchor?.quote}Deleted by alice · alice · ${lead}${edit}`,
+          words: `${root.anchor?.quote}Deleted by alice · alice · ${lead}`,
         },
         saves: { after: 0, before: kept === "refused" ? 1 : 0 },
         started: root.body,
@@ -1185,6 +1187,129 @@ for (const kept of ["typed", "refused"] as const) {
     }
   });
 }
+
+/** A card whose root the reader was editing when its author deleted it, with `draft` typed over
+ *  the root's whole body and never saved: the edit waits under the deleted line. */
+async function editKeptOverDeletedRoot(draft: string) {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
+    blocks: [],
+    indexed: false,
+    item: graphNode({ id: root.id, issue_key: "CORE-1", kind: "comment" }),
+  });
+  const tree = (current: Thread) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <EditableCard
+          actionFailure={undefined}
+          artifactSlug="spec"
+          expanded
+          hovered={false}
+          isClosed={false}
+          onAction={() => {}}
+          onEdit={async () => {}}
+          onRetryAction={() => {}}
+          onToggle={() => {}}
+          owner={{ key: "CORE-1", kind: "issue" }}
+          pendingAction={false}
+          thread={current}
+          viewerLogin="alice"
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(thread()));
+  const card = () => screen.getByTestId(`margin-comment-${root.id}`);
+  const [rootEdit] = within(card()).getAllByRole("button", { name: "Edit" });
+  if (rootEdit === undefined) throw new Error("The root comment has no Edit button.");
+  await user.click(rootEdit);
+  await user.click(screen.getByLabelText("Edit comment"));
+  await user.keyboard("{Control>}a{/Control}");
+  await user.paste(draft);
+  view.rerender(tree(thread({ root: { comment: deletedRoot, kind: "comment" } })));
+  await within(card()).findByRole("button", { name: "Copy my edit" });
+  return {
+    card,
+    done: () => {
+      view.unmount();
+      commentBlocks.mockRestore();
+    },
+    kept: () =>
+      unsentDraftsOf(queryClient).readAway(hashKey(["comment-edit", root.id]), null) !== undefined,
+    user,
+  };
+}
+
+const KEPT_EDIT_LINE =
+  "This comment was deleted, and Dispatch saves no edit of a deleted comment. Your unsaved edit is kept in this browser.";
+
+// The kept edit is drawn nowhere, so Copy my edit is how the reader takes it with them: the whole
+// edit, every line of it, goes to the clipboard, and still none of it is drawn.
+test("Copy my edit puts the whole kept edit on the clipboard, and draws none of it", async () => {
+  const draft = "Root comment, said again.\n\nAnd a second paragraph of mine.";
+  const kept = await editKeptOverDeletedRoot(draft);
+  const originalClipboard = navigator.clipboard;
+  const writeText = spyOn({ writeText: async (_text: string) => undefined }, "writeText");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  try {
+    await kept.user.click(within(kept.card()).getByRole("button", { name: "Copy my edit" }));
+    await waitFor(() => expect(writeText.mock.calls).toEqual([[draft]]));
+    await waitFor(() =>
+      expect(statusLines(kept.card())).toEqual([`${KEPT_EDIT_LINE}Your edit is copied.`])
+    );
+    expect(kept.card()).not.toHaveTextContent("said again");
+    expect(kept.kept()).toBe(true);
+  } finally {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    kept.done();
+  }
+});
+
+// A browser can refuse the clipboard (its permission denied, and the older copy too): the card
+// says the edit was not copied, and the edit stays kept, with both its presses.
+test("a Copy my edit the browser refuses says so in words and keeps the edit", async () => {
+  const kept = await editKeptOverDeletedRoot("Root comment, said again.");
+  const originalClipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  const writeText = spyOn(
+    {
+      writeText: async (_text: string): Promise<void> => {
+        throw new DOMException("Write permission denied.", "NotAllowedError");
+      },
+    },
+    "writeText"
+  );
+  const execCommand = spyOn({ execCommand: (_command: string) => false }, "execCommand");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+  try {
+    await kept.user.click(within(kept.card()).getByRole("button", { name: "Copy my edit" }));
+    await waitFor(() =>
+      expect(statusLines(kept.card())).toEqual([
+        `${KEPT_EDIT_LINE}Your edit was not copied: this browser refused the clipboard. It is still kept here.`,
+      ])
+    );
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(kept.card()).not.toHaveTextContent("said again");
+    expect(kept.kept()).toBe(true);
+    expect(
+      within(kept.card())
+        .getAllByRole("button")
+        .map((press) => press.textContent)
+        .filter((label) => label?.includes("my edit"))
+    ).toEqual(["Copy my edit", "Discard my edit"]);
+  } finally {
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    kept.done();
+  }
+});
 
 // The card's reply box quotes the thread's root, so the root's edit is marked in that quote as on
 // the root's own byline, as the Inbox's box quoting the same thread marks it: a quote of an

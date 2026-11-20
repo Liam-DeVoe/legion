@@ -108,18 +108,21 @@ export function DraftOffer({
  * POST_DELETED`), so no Reply or Send goes on with the reply. Its own words are drawn instead,
  * from where the thread's reply composer kept them under `mutationKey` - typed and never sent
  * (`unsent-drafts.ts`, an inline reply's or a standing box's), or a send Dispatch refused or the
- * reader stopped (`held-sends.ts`) - saying the post was deleted and giving no word of it, with
- * Discard my draft, which drops them where they are kept. Nothing is sent. The margin's thread
- * card draws it under a deleted root (`ThreadCard`), and so does the Inbox's thread
- * (`ThreadBody`).
+ * reader stopped (`held-sends.ts`) - saying the post it answered was deleted and giving no word
+ * of it, with Discard my draft, which drops them where they are kept. Nothing is sent. A refused
+ * send names the author of the post it answered (`SentRequest.replyTo`); a typed draft records
+ * none, so it names the host's `actor`, or nobody where the host cannot tell which post it
+ * answered. The margin's thread card draws it under a deleted root (`ThreadCard`), and so does
+ * the Inbox's thread (`ThreadBody`).
  */
 export function KeptReplyToDeleted({
   actor,
   mutationKey,
   parentKind,
 }: {
-  /** The deleted post's author. */
-  readonly actor: Actor;
+  /** The author of the deleted post a typed draft answered, where every reply of the thread
+   *  answers that one post: a deleted root's. */
+  readonly actor?: Actor;
   readonly mutationKey: MutationKey;
   readonly parentKind: ReplyTarget["parentKind"];
 }): ReactNode {
@@ -131,6 +134,7 @@ export function KeptReplyToDeleted({
   const refused = held?.status === "refused" ? held : undefined;
   const draft = refused?.draft.draft ?? typed;
   if (draft === undefined) return null;
+  const answered = refused === undefined ? actor : refused.request.replyTo?.actor;
   return (
     <div className="mt-2">
       <DraftOffer
@@ -142,7 +146,7 @@ export function KeptReplyToDeleted({
             else unsent.write(name, undefined);
           },
         }}
-        lead={<GoneReply actor={actor} deleted parentKind={parentKind} />}
+        lead={<GoneReply actor={answered} deleted parentKind={parentKind} />}
         note={
           refused?.refusal instanceof SendStoppedError
             ? "Dispatch has not confirmed this reply: it may have been posted, and if it was, it is listed in this thread."

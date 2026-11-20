@@ -432,7 +432,9 @@ export function NodeRow({
  * session nothing names reads as the page's word for an agent, and never as its short id. The
  * node's text is the same line as the model writes it (`tree-drafts.ts`'s `deletedPostLine`),
  * with the actor named as no registry knows it and the time as stored, so the row draws the line
- * from the delete and never from that text.
+ * from the delete and never from that text. The line's words are the page's own, marked as its
+ * chrome and declared in `page-words.ts` (`CONTROL_LABELS.post_deleted_by`), and the actor's name
+ * and the time are not (FixAudit3 F8).
  */
 function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
   const agentText = useAgentText();
@@ -440,6 +442,7 @@ function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
     <DeletedBody
       {...(deleted.by === null ? {} : { actorName: agentText.author(deleted.by) })}
       deleted={deleted}
+      marks={{ own: pageChrome, theirs: authorText }}
     />
   );
 }
@@ -766,9 +769,10 @@ export function RowMargin({
             )}
             {/* A post its author edited says so after its time, as its byline does on every
                 surface (`EditedMark`, INFRA-1523, R2): here at the right of the row, which no
-                cut of its words reaches, so a post cut to six lines or folded to one keeps it. */}
+                cut of its words reaches, so a post cut to six lines or folded to one keeps it.
+                The mark is the page's own word (`CONTROL_LABELS.post_edited`). */}
             {node.editedAt === undefined ? null : (
-              <span className="whitespace-nowrap" data-node-edited="" {...authorText}>
+              <span className="whitespace-nowrap" data-node-edited="" {...pageChrome}>
                 <EditedMark at={node.editedAt} />
               </span>
             )}
@@ -1146,16 +1150,38 @@ function Chip({
   // nothing, as gone.
   const deletedName = deleted !== null && chip.name !== "";
   const name = deletedName ? deletedLineText(deleted, { label: agentText.author }) : chip.name;
-  const words = ambiguous
-    ? chip.ref
-    : (word ?? editedName(chipWords(name), chip.editedAt !== undefined));
-  const shown = deletedName ? (
-    <span className="italic" data-post-deleted="">
-      {words}
+  const cut = chipWords(name);
+  const edited = chip.editedAt !== undefined && cut !== "";
+  const words = ambiguous ? chip.ref : (word ?? editedName(cut, edited));
+  // A target's name is its author's words, but for the page's own in it: the deleted line's
+  // opening and the edited mark, marked as the page's chrome (FixAudit3 F8).
+  const opening =
+    deleted === null
+      ? ""
+      : deleted.by === null
+        ? CONTROL_LABELS.post_deleted
+        : `${CONTROL_LABELS.post_deleted_by} `;
+  const mark = edited ? (
+    <span {...pageChrome}>
+      {" · "}
+      {CONTROL_LABELS.post_edited}
     </span>
-  ) : (
-    words
-  );
+  ) : null;
+  const shown =
+    ambiguous || word !== undefined ? (
+      words
+    ) : deletedName && cut.startsWith(opening) ? (
+      <span className="italic" data-post-deleted="" {...pageChrome}>
+        {opening}
+        {cut === opening ? null : <span {...authorText}>{cut.slice(opening.length)}</span>}
+        {mark}
+      </span>
+    ) : (
+      <>
+        {cut}
+        {mark}
+      </>
+    );
   if (!gone && words === "") return null;
   const route = chip.gone ? undefined : target;
   // The page's word for a document is the page's, and a target's own words are its author's.
@@ -1204,7 +1230,7 @@ function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean })
     deleted === null ? (
       <>
         {line.line}
-        <EditedMark at={line.editedAt} />
+        <EditedMark at={line.editedAt} marks={pageChrome} />
       </>
     ) : (
       <DeletedLine deleted={deleted} />

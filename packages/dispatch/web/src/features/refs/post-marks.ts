@@ -35,13 +35,27 @@ export function postDeletion(post: DeletablePost | undefined): PostDeletion | nu
   return { at, by: post?.deleted_by ?? null };
 }
 
+/**
+ * The words every surface marks a corrected post with: the deleted line's opening, `Deleted` or
+ * `Deleted by` before the actor (`DeletedBody`, `deletedLineText`), and the word after an edited
+ * post's byline or name (`EditedMark`, `editedName`). One list, so the issue page declares these
+ * among its own words (`page-words.ts`) as every surface draws them.
+ */
+export const POST_MARK_WORDS = Object.freeze({
+  deleted: "Deleted",
+  deleted_by: "Deleted by",
+  edited: "edited",
+} as const);
+
 /** The deleted line's words as plain text, for a place that holds only a string: `Deleted by
  *  <name>`, the actor named by `text.label` (`useAgentText`'s, or `actorLabelText` where no
  *  registry is read), or `Deleted` for a payload that names nobody. The time stays the visible
  *  line's. It lives here rather than beside `DeletedBody` because `PostBody.tsx` imports
  *  `MarkdownBody`, whose reference links draw these words too. */
 export function deletedLineText(deleted: PostDeletion, text: Pick<AgentText, "label">): string {
-  return deleted.by === null ? "Deleted" : `Deleted by ${text.label(deleted.by)}`;
+  return deleted.by === null
+    ? POST_MARK_WORDS.deleted
+    : `${POST_MARK_WORDS.deleted_by} ${text.label(deleted.by)}`;
 }
 
 /** The name of a post its author edited - a comment, a message or a block of either - as a link
@@ -51,5 +65,5 @@ export function deletedLineText(deleted: PostDeletion, text: Pick<AgentText, "la
  *  the cut left, so no cut takes the mark. Every place that marks a name marks it here, so no
  *  two can drift apart. */
 export function editedName(words: string, edited: boolean): string {
-  return !edited || words === "" ? words : `${words} · edited`;
+  return !edited || words === "" ? words : `${words} · ${POST_MARK_WORDS.edited}`;
 }

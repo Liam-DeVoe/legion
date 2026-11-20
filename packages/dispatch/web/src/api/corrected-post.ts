@@ -1,21 +1,30 @@
-import type { QueryClient } from "@tanstack/react-query";
+import {
+  type Query,
+  type QueryClient,
+  type QueryKey,
+  replaceEqualDeep,
+} from "@tanstack/react-query";
 
 import { type PostDeletion, postDeletion } from "../features/refs/post-marks";
+import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { correctedPostAddresses } from "./event-refresh";
-import { dismissedThreadsQuery, inboxThreadsQuery, type ReferenceTargetsAnswer } from "./queries";
+import type { ReferenceTargetsAnswer } from "./queries";
 import type {
   Actor,
-  AskRead,
+  AskThread,
   CommentEventPayload,
   CommentRead,
   CommentWithTrees,
   DispatchEvent,
   DisplayTree,
+  GraphEdge,
   GraphReferences,
   MessageEventPayload,
   MessageRead,
   MessageWithTrees,
+  MyAnswerRow,
+  MyAnswersResponse,
   MyRepliesResponse,
   MyReplyRow,
   ReferenceTarget,
@@ -38,7 +47,163 @@ interface CorrectedPost {
   /** What every block of the post's node id starts with: a block's is `<kind>/<id>#<block id>`. */
   readonly blockNodes: string;
   readonly mark: PostMark;
+  /** Whether an address a names read holds names the post or a block of it
+   *  (`correctedPostAddresses`); undefined for an event whose id is no post's. */
+  readonly names: ((address: string) => boolean) | undefined;
 }
+
+/** What one family's cached answer becomes once `post` is corrected: `answer`, as the query keyed
+ *  `queryKey` holds it, with the correction's facts in each copy of the post it holds; undefined
+ *  where it holds none. */
+type FamilyWrite = (answer: unknown, post: CorrectedPost, queryKey: QueryKey) => unknown;
+
+/**
+ * Every query family whose answer holds a comment or an issue message, or a copy of one's body or
+ * marks, with what a correction writes into it (`markCorrectedPost`). A family is named as census
+ * query C-Q1 names it (class C of dispatch://INFRA-1523's surface census): the key's first
+ * element, and its second where the key writes one as a string, joined by a space
+ * (`["references", "to", …]` is `references to`). Every family the web app's source keys a query
+ * under is here or in `NO_POST_FAMILIES`, and nothing else is in either
+ * (`corrected-post-families.test.ts`).
+ */
+export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
+  /** An ask's read (`["ask", id]`): its thread's replies. */
+  ask: ofKind("comment", (answer, post) => markedAskThread(answer as AskThread, post)),
+  /** An Inbox thread's ask (`askThreadQuery`): its thread's replies. */
+  "ask-thread": ofKind("comment", (answer, post) => markedAskThread(answer as AskThread, post)),
+  /** An issue's asks (`["asks", key, …]`), each with its thread where the read asked for it. */
+  asks: ofKind("comment", markedAskRows),
+  /** A session's conversation (`agentMessagesQuery`, `["agents", session, "messages"]`), which
+   *  lists each issue message sent to it; `["agents"]` itself lists the sessions. */
+  agents: ofKind("message", (answer, post, queryKey) =>
+    queryKey[2] === "messages"
+      ? markEach(listOf<MessageRead>(answer), (read) => markedMessageRead(read, post))
+      : undefined
+  ),
+  /** A document's comments (`["artifact", id, "comments"]`) and asks with their threads
+   *  (`["artifact", id, "asks"]`); the document's own reads hold no post. */
+  artifact: ofKind("comment", (answer, post, queryKey) =>
+    queryKey[2] === "comments"
+      ? markEach(listOf<CommentWithTrees>(answer), (comment) => markedComment(comment, post))
+      : queryKey[2] === "asks"
+        ? markedAskRows(answer, post)
+        : undefined
+  ),
+  /** A comment's read (`["comment", id]`): the comment and its replies. */
+  comment: ofKind("comment", (answer, post) => markedCommentRead(answer as CommentRead, post)),
+  /** An issue's comments, or a document's on it (`["comments", key, …]`). */
+  comments: ofKind("comment", (answer, post) =>
+    markEach(listOf<CommentWithTrees>(answer), (comment) => markedComment(comment, post))
+  ),
+  /** An issue's event log (`["events", key]`, pages), its unread line and head, and the margin's
+   *  pinned events: each event of the post's own that carries its body. */
+  events: (answer, post) => {
+    const marked = (event: DispatchEvent) => markedEvent(event, post);
+    return isPages<DispatchEvent[]>(answer)
+      ? markedPages(answer, (page) => markEach(page, marked))
+      : markEach(listOf<DispatchEvent>(answer), marked);
+  },
+  /** The Inbox's ask rows (`inboxQuery`, `["inbox", project]`), each with its thread. */
+  inbox: ofKind("comment", markedAskRows),
+  /** A message's read (`["issue-message", key, id]`): the message and its replies. */
+  "issue-message": ofKind("message", (answer, post) =>
+    markedMessageRead(answer as MessageRead, post)
+  ),
+  /** An issue's messages (`["issue-messages", key]`) and the margin's pinned ones
+   *  (`["issue-messages", key, "margin-pinned", …]`). */
+  "issue-messages": ofKind("message", (answer, post) =>
+    markEach(listOf<MessageRead>(answer), (read) => markedMessageRead(read, post))
+  ),
+  /** The reader's answers and ask replies (`["me", "answers"]`, pages): each reply's body. */
+  "me answers": ofKind("comment", (answer, post) =>
+    isPages<MyAnswersResponse>(answer)
+      ? markedPages(answer, (page) => markedAnswerPage(page, post))
+      : undefined
+  ),
+  /** The reader's thread rows (`["me", "replies", …]`): the Inbox's, what they dismissed (pages),
+   *  each owner's unread set and the count's one-row page. */
+  "me replies": (answer, post) =>
+    isPages<MyRepliesResponse>(answer)
+      ? markedPages(answer, (page) => markedThreadPage(page, post))
+      : isThreadPage(answer)
+        ? markedThreadPage(answer, post)
+        : undefined,
+  /** Each names read (`referenceTargetsQuery`): every member naming the post or a block of it. */
+  "reference-targets": (answer, post) =>
+    post.names === undefined
+      ? undefined
+      : markedNamesRead(answer as ReferenceTargetsAnswer | undefined, post.names, post.mark),
+  /** A graph read (`referencesQuery`, `["references", "to", …]`): its node where that is the post
+   *  or a block of it, and each edge whose other end is, as the Referenced by panel lists them. */
+  "references to": (answer, post) => markedGraphRead(answer as GraphReferences, post),
+  /** The search palette's answers (`["search", …]`): each hit of the post. */
+  search: (answer, post) => markedSearch(answer as SearchResponse, post),
+};
+
+/**
+ * Every other query family the web app's source keys a query under, each with why its answer
+ * holds no comment or issue message and no copy of one's body or marks: census row C.15's list,
+ * and the families C-Q1 has found since. A family added to the source is in neither table until
+ * someone reads its answer and puts it in one (`corrected-post-families.test.ts`).
+ */
+export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
+  "agent-artifacts": "a session's files and their names",
+  "agent-tokens": "the reader's agent tokens: names, scopes and times",
+  "agents issue-picker": "the issues the Agents page's picker offers: keys and titles",
+  architecture: "a project's architecture components",
+  "architecture-sources": "the repositories a project's architecture is read from",
+  "artifact-ref": "a document read by its project and slug: its text and versions, no comment",
+  "artifact-reviews": "a document's review steps and who approved them",
+  artifacts: "an issue's documents by name, which prints no version name (census C.15); no comment",
+  broadcast:
+    "a broadcast's copies, messages on no issue, which Dispatch edits and deletes none of (`NOT_AN_ISSUE_MESSAGE`, census C.13)",
+  "broadcast list": "the reader's broadcasts, the same copies on no issue (census C.13)",
+  components: "a refresh target alone: no query of this build reads it",
+  "credential-capabilities": "what the secrets broker can grant",
+  "credential-grants": "the credentials the reader granted",
+  "credential-pending": "the credential requests waiting on the reader",
+  decisions: "the issue's decisions, read from its decisions document (census 1.16)",
+  delivery: "the delivery dashboard's prefix: runs, jobs and measures",
+  "delivery measures": "the delivery dashboard's measures",
+  "delivery pipeline": "the delivery pipeline's runs and jobs",
+  "delivery run": "one deploy run with its jobs",
+  "delivery timeline": "the delivery timeline's pull requests and runs",
+  "delivery-settings": "the delivery timeline's configuration",
+  "doc-summary": "a document's name and owner for a link's card (census C.15)",
+  "document-read": "the version of a document the reader last read",
+  github: "GitHub's own answer for an unfurl",
+  "github-link": "a linked pull request as GitHub answers it",
+  "github-link-checks": "a linked pull request's checks as GitHub answers them",
+  handoff: "one phase handoff with its body: a handoff is no comment or message",
+  handoffs: "an issue's phase handoffs, without their bodies",
+  issue:
+    "an issue's details, coverage, results, collaborators, steps and referenced documents: no comment or message; a version an accepted suggestion was named after is renamed by the delete itself (census 6.5), and the answer names no comment it came from",
+  "issue-ancestors": "the parents of the issues a listing holds: keys and titles",
+  "issue-summary": "an issue's title and status for a link's card (census C.15)",
+  issues: "issue lists: keys, titles, statuses and labels",
+  "issues advances": "the issues advancing a priority",
+  "issues pinned": "the reader's pinned issues",
+  "issues project": "a project's issue list",
+  "legion-daemon": "a project's Legion daemon setting",
+  "machine-logins": "the reader's machine logins",
+  "new-issue-settings": "the label and session a new issue from the bar takes",
+  priorities: "the priorities and the work under them",
+  "priorities full": "the priorities and the work under them",
+  "priorities history": "one priority's history of its own fields",
+  "priorities summary": "the two counts of work under no priority and parked under one",
+  project: "a project's documents by name, as `artifacts` lists an issue's",
+  "project-default-assignees": "each project's default assignee",
+  projects: "the projects",
+  "references questions": "which asks a source cites, by id (census C.15)",
+  related: "issues related by their words, printed by owner label alone (census C.15)",
+  "repo-projects": "the project each repository maps to",
+  signins: "the reader's sign-ins",
+  subscribers: "who follows an issue, a document or an ask",
+  "user-agent-state": "the reader's read mark, pin and Clear per session",
+  "user-state": "the reader's read, pin and dismiss marks per issue",
+  users: "everyone who has signed in",
+  whoami: "the signed-in principal",
+};
 
 /**
  * Writes a post's correction (`comment.edited`, `comment.deleted`, `message.edited`,
@@ -50,99 +215,183 @@ interface CorrectedPost {
  * already holds the deciding fact: the delete's mark (`deleted_at`, `deleted_by`) or the edit's
  * time (`edited_at`).
  *
- * A delete takes every copy of the post's words out and writes its mark beside where they were:
+ * Every family whose answer holds a copy of a post is written, by its writer in
+ * `CORRECTED_POST_FAMILIES`. A delete takes every copy of the post's words out and writes its
+ * mark beside where they were:
  * - a comment's or a message's row (`body` empty and no `body_tree`, a comment's `suggestion`
- *   null and, where the delete emptied it, its anchor's `quote`), in the issue's comment lists
- *   (`["comments", …]`), each ask thread's replies (`["ask-thread", id]`), a comment's read and its
- *   replies (`["comment", id]`), a message's read and its replies (`["issue-message", …]`) and
- *   the margin's pinned messages (`["issue-messages", key, "margin-pinned", …]`);
+ *   null and, where the delete emptied it, its anchor's `quote`), wherever a list, a read, an
+ *   ask's thread or a session's conversation holds it;
  * - the quote a reply in any of those rows holds of a block of the post (`reply_block`): removed,
  *   with no text, as a read of the reply answers it;
- * - each event of the post's own that carries its body, among the margin's pinned events
- *   (`["events", key, "margin-pinned", …]`): no `body`, `body_truncated`, `suggestion` or body
- *   tree, as the server's read of the event log gives it (`attachPostMarks` in
+ * - each event of the post's own that carries its body, in an issue's log and the margin's pinned
+ *   events: no `body`, `body_truncated`, `suggestion` or body tree, and the anchor quote the
+ *   delete emptied, as the server's read of the event log gives it (`attachPostMarks` in
  *   `api/events.go`), which leaves the previews a reply's events froze of the post;
- * - an Inbox thread row (`inboxThreadsQuery`, `dismissedThreadsQuery`) whose root is the post
- *   (`subject` empty) or whose latest reply is (`reply.first_line` empty);
+ * - a thread row of the reader's (`["me", "replies", …]`) whose root is the post (`subject`
+ *   empty) or whose latest reply is (`reply.first_line` empty), and a reply of the reader's
+ *   answers (`["me", "answers"]`, `body` empty);
  * - a search hit of the post (`["search", …]`): an empty `snippet` and no `snippet_tree`;
- * - a block read of a block of the post (`["references", "to", …]`): its node with no text, no
- *   tree and no pinned text. The server answers that read 404, which no cached answer holds,
- *   and the node's mark is what a reference to the block reads the deletion from;
+ * - a graph read (`["references", "to", …]`) whose node is the post or a block of it, and each of
+ *   its edges whose other end is: the node with no text, no tree and no pinned text, and an edge
+ *   with no excerpt. The server answers a read of a deleted post's block 404, which no cached
+ *   answer holds, and the node's mark is what a reference to the block reads the deletion from;
  * - each member of a names read naming the post or a block of it (`["reference-targets", …]`,
  *   by `correctedPostAddresses`): the post's named `""`, a block's gone, with no tree.
  *
- * An edit writes its time (`edited_at`) on each of those copies that carries one, and nothing
- * else: an edit event's body can be cut short (`body_truncated`), so the words stay those of the
- * answer until a read gives the new ones.
+ * An edit writes its time (`edited_at`) on each of those copies that carries one, unless the copy
+ * carries a later edit's already (`editedAfter`), and nothing else: an edit event's body can be
+ * cut short (`body_truncated`), so the words stay those of the answer until a read gives the new
+ * ones.
+ *
+ * A read already out when the event arrives is not cancelled (`query-refresh.ts`), and its answer
+ * was composed before the correction, so it would land the old words over the marks written here,
+ * and keep them if the refetch the event owes it then fails. So the correction is kept while any
+ * such read is out (`keepCorrection`), and each answer of a written family that lands meanwhile is
+ * written again with every kept correction's facts.
  *
  * A member a names read answered ambiguous or gone names no post, and is left as it is. An
- * answer holding no copy of the post, or no answer yet, is written nothing: each updater answers
- * `undefined`, where an answer written back unchanged would still count as a new one and clear
- * the read's stale mark. A delete's event carries the delete's time, as every one this server
- * writes does; one that carried none would have no mark to write, and writes nothing.
+ * answer holding no copy of the post, or no answer yet, is written nothing, and nor is one that
+ * already reads as the correction leaves it: an answer written back unchanged would still count as
+ * a new one and clear the read's stale mark. A delete's event carries the delete's time, as every
+ * one this server writes does; one that carried none would have no mark to write, and writes
+ * nothing.
  */
 export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent): void {
   const post = correctedPost(event);
   if (post === undefined) {
     return;
   }
-  const { mark } = post;
-  const names = correctedPostAddresses(event);
-  if (names !== undefined) {
-    queryClient.setQueriesData<ReferenceTargetsAnswer>(
-      { queryKey: ["reference-targets"] },
-      (answer) => markedNamesRead(answer, names, mark)
-    );
+  const out = new Set<string>();
+  for (const query of queryClient.getQueryCache().getAll()) {
+    if (familyWrite(query.queryKey) === undefined) {
+      continue;
+    }
+    writeCorrections(queryClient, query, [post]);
+    if (query.state.fetchStatus === "fetching") {
+      out.add(query.queryHash);
+    }
   }
-  if (post.kind === "comment") {
-    const comment = (row: CommentWithTrees) => markedComment(row, post);
-    queryClient.setQueriesData<CommentWithTrees[]>({ queryKey: ["comments"] }, (comments) =>
-      markEach(comments, comment)
-    );
-    queryClient.setQueriesData<AskRead>({ queryKey: ["ask-thread"] }, (thread) => {
-      const replies = markEach(thread?.replies, comment);
-      return thread === undefined || replies === undefined ? undefined : { ...thread, replies };
-    });
-    queryClient.setQueriesData<CommentRead>({ queryKey: ["comment"] }, (read) => {
-      const root = read === undefined ? undefined : comment(read.comment);
-      const replies = markEach(read?.replies, comment);
-      return read === undefined || (root === undefined && replies === undefined)
-        ? undefined
-        : { ...read, comment: root ?? read.comment, replies: replies ?? read.replies };
-    });
-  } else {
-    const message = (read: MessageRead) => markedMessageRead(read, post);
-    queryClient.setQueriesData<MessageRead>({ queryKey: ["issue-message"] }, (read) =>
-      read === undefined ? undefined : message(read)
-    );
-    queryClient.setQueriesData<MessageRead[]>(
-      {
-        queryKey: ["issue-messages"],
-        predicate: ({ queryKey }) => queryKey[2] === "margin-pinned",
-      },
-      (reads) => markEach(reads, message)
-    );
+  keepCorrection(queryClient, post, out);
+}
+
+/** The family of `queryKey`, as `CORRECTED_POST_FAMILIES` names one: its first element, with its
+ *  second where the two name a family of their own; undefined for a key no string opens. */
+function queryFamily(queryKey: QueryKey): string | undefined {
+  const [first, second] = queryKey;
+  if (typeof first !== "string") {
+    return undefined;
   }
-  queryClient.setQueriesData<DispatchEvent[]>(
-    { queryKey: ["events"], predicate: ({ queryKey }) => queryKey[2] === "margin-pinned" },
-    (events) => markEach(events, (pinned) => markedEvent(pinned, post))
-  );
-  queryClient.setQueryData(inboxThreadsQuery().queryKey, (page) =>
-    page === undefined ? undefined : markedThreadPage(page, post)
-  );
-  queryClient.setQueryData(dismissedThreadsQuery().queryKey, (dismissed) => {
-    const pages = markEach(dismissed?.pages, (page) => markedThreadPage(page, post));
-    return dismissed === undefined || pages === undefined ? undefined : { ...dismissed, pages };
+  const pair = typeof second === "string" ? `${first} ${second}` : undefined;
+  return pair !== undefined &&
+    (Object.hasOwn(CORRECTED_POST_FAMILIES, pair) || Object.hasOwn(NO_POST_FAMILIES, pair))
+    ? pair
+    : first;
+}
+
+/** The writer of the family `queryKey` is of, or undefined for a family that holds no post. */
+function familyWrite(queryKey: QueryKey): FamilyWrite | undefined {
+  const family = queryFamily(queryKey);
+  return family !== undefined && Object.hasOwn(CORRECTED_POST_FAMILIES, family)
+    ? CORRECTED_POST_FAMILIES[family]
+    : undefined;
+}
+
+/** Writes each of `posts`' corrections, in order, into the answer `query` holds, where its family
+ *  holds posts and the answer then reads otherwise than it does. */
+function writeCorrections(
+  queryClient: QueryClient,
+  query: Query,
+  posts: readonly CorrectedPost[]
+): void {
+  const write = familyWrite(query.queryKey);
+  const answer = query.state.data;
+  if (write === undefined || answer === undefined) {
+    return;
+  }
+  let marked: unknown = answer;
+  for (const post of posts) {
+    marked = write(marked, post, query.queryKey) ?? marked;
+  }
+  if (replaceEqualDeep(answer, marked) !== answer) {
+    queryClient.setQueryData(query.queryKey, marked);
+  }
+}
+
+/**
+ * The most corrections a page keeps at once (`keepCorrection`). Each is kept only while a read
+ * that was out at its arrival is still out, so a page holds many only under a burst of corrections
+ * that arrives while one read is slow. Past this the oldest goes, and a read out at its arrival
+ * that lands after a hundred corrections since can bring its post's old words back, until the
+ * refetch that event owes the read lands.
+ */
+const KEPT_CORRECTIONS_MAX = 100;
+
+/** A correction the cache keeps for the reads of a written family that were out when it arrived,
+ *  by query hash, each until its fetch is no longer out. */
+interface KeptCorrection {
+  readonly post: CorrectedPost;
+  readonly out: Set<string>;
+}
+
+/** Per QueryClient, the corrections kept, oldest first. */
+const keptCorrections = new WeakMap<QueryClient, KeptCorrection[]>();
+
+/**
+ * Keeps `post`'s correction while any read of `out` is still out, and writes every kept
+ * correction's facts into each answer of a written family that lands meanwhile: the answer an out
+ * read lands was composed before the correction, and a mutation's or a seed's write made from such
+ * an answer was too. Its facts are final - a delete is never taken back, and an edit's time is the
+ * time it was made, which never moves a copy's later edit back (`editedAfter`) - so writing them
+ * again into an answer composed after the correction, which already reads that way, changes
+ * nothing.
+ *
+ * The bound is the reads themselves, not a clock: a read that begins after the event is answered
+ * as the server reads the corrected post, so only one out at the event can land an answer that
+ * predates it. A read is out until its fetch lands, fails, pauses or is cancelled, and the client
+ * gives one up once Dispatch says nothing on it for `REQUEST_DEADLINE_MS`, so a read whose
+ * Dispatch has gone silent is let go of by that deadline. A clock of that deadline would not be
+ * safe on its own: the deadline is on Dispatch's silence, not on the transfer, so a slow answer
+ * that keeps arriving outlives it (`client.ts`). At most `KEPT_CORRECTIONS_MAX` are kept.
+ */
+function keepCorrection(queryClient: QueryClient, post: CorrectedPost, out: Set<string>): void {
+  if (out.size === 0) {
+    return;
+  }
+  const kept = keptCorrectionsOf(queryClient);
+  kept.push({ out, post });
+  kept.splice(0, Math.max(0, kept.length - KEPT_CORRECTIONS_MAX));
+}
+
+/** The corrections kept for `queryClient`, with the one cache subscription that writes them into
+ *  each answer that lands and lets each go once no read it was kept for is out. */
+function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
+  const existing = keptCorrections.get(queryClient);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const kept: KeptCorrection[] = [];
+  keptCorrections.set(queryClient, kept);
+  queryClient.getQueryCache().subscribe((change) => {
+    if (kept.length === 0 || (change.type !== "updated" && change.type !== "removed")) {
+      return;
+    }
+    const { query } = change;
+    if (change.type === "updated" && change.action.type === "success") {
+      writeCorrections(
+        queryClient,
+        query,
+        kept.map((correction) => correction.post)
+      );
+    }
+    if (change.type === "removed" || query.state.fetchStatus !== "fetching") {
+      const left = kept.filter((correction) => {
+        correction.out.delete(query.queryHash);
+        return correction.out.size > 0;
+      });
+      kept.splice(0, kept.length, ...left);
+    }
   });
-  queryClient.setQueriesData<SearchResponse>({ queryKey: ["search"] }, (answer) => {
-    const results = markEach(answer?.results, (hit) =>
-      hit.kind === post.kind && hit.id === post.id ? markedHit(hit, mark) : undefined
-    );
-    return answer === undefined || results === undefined ? undefined : { ...answer, results };
-  });
-  queryClient.setQueriesData<GraphReferences>({ queryKey: ["references", "to"] }, (read) =>
-    read === undefined ? undefined : markedBlockRead(read, post)
-  );
+  return kept;
 }
 
 /** The post `event` corrects and what the correction writes; undefined for every other event, and
@@ -177,7 +426,14 @@ function correctedPost(event: DispatchEvent): CorrectedPost | undefined {
       return undefined;
   }
   const { id } = event.payload;
-  return { blockNodes: `${kind}/${id}#`, id, kind, mark };
+  return { blockNodes: `${kind}/${id}#`, id, kind, mark, names: correctedPostAddresses(event) };
+}
+
+/** `write` for a family whose answers hold posts of `kind` alone: a post of the other kind has no
+ *  copy there. */
+function ofKind(kind: CorrectedPost["kind"], write: FamilyWrite): FamilyWrite {
+  return (answer, post, queryKey) =>
+    post.kind === kind ? write(answer, post, queryKey) : undefined;
 }
 
 /** `items` with each item `mark` answers for in its place, or undefined where it answers for
@@ -196,12 +452,58 @@ function markEach<T>(
     : undefined;
 }
 
+/** An infinite read's answer (`useInfiniteQuery`): its pages, each one request's answer. */
+interface Pages<P> {
+  readonly pageParams: readonly unknown[];
+  readonly pages: readonly P[];
+}
+
+/** Whether `answer` is an infinite read's. */
+function isPages<P>(answer: unknown): answer is Pages<P> {
+  return (
+    typeof answer === "object" &&
+    answer !== null &&
+    "pages" in answer &&
+    Array.isArray(answer.pages)
+  );
+}
+
+/** `answer` as a list of a family's rows, where the read is one; undefined for a read of another
+ *  shape under the family's prefix. A family's list holds rows of one type, which the caller
+ *  names (`T`): a cached answer is the one its own read returned. */
+function listOf<T>(answer: unknown): readonly T[] | undefined {
+  return Array.isArray(answer) ? (answer as readonly T[]) : undefined;
+}
+
+/** `answer` with each page `mark` answers for in its place; undefined where it answers for none. */
+function markedPages<P>(answer: Pages<P>, mark: (page: P) => P | undefined): Pages<P> | undefined {
+  const pages = markEach(answer.pages, mark);
+  return pages === undefined ? undefined : { ...answer, pages };
+}
+
 /** The delete's mark as a read writes it where the actor is optional: no `deleted_by` for a
  *  delete that names nobody. */
 function deletionMarks(deletion: PostDeletion): { deleted_at: string; deleted_by?: Actor } {
   return deletion.by === null
     ? { deleted_at: deletion.at }
     : { deleted_at: deletion.at, deleted_by: deletion.by };
+}
+
+/**
+ * The time an edit writes over `current`, a copy's own `edited_at`: the edit's, unless the copy
+ * already carries a later one. A correction kept for a read out at its arrival is written again
+ * into every answer that lands meanwhile (`keepCorrection`), and an answer composed after a later
+ * edit, whose event has not arrived yet, carries that edit's time, which no older edit may move
+ * back. The two are ordered as instants (`compareTimestamps`); a time that is no timestamp is
+ * not ordered, and the edit's own is written.
+ */
+function editedAfter(current: string | null | undefined, at: string): string {
+  return typeof current === "string" &&
+    isTimestamp(current) &&
+    isTimestamp(at) &&
+    compareTimestamps(current, at) > 0
+    ? current
+    : at;
 }
 
 /** `block`, the block of its parent a reply names, as a read of the reply answers it once `post`
@@ -216,7 +518,7 @@ function markedReplyBlock(
     return undefined;
   }
   if (post.mark.kind === "edited") {
-    return { ...block, edited_at: post.mark.at };
+    return { ...block, edited_at: editedAfter(block.edited_at, post.mark.at) };
   }
   const { deleted_by: _by, text_tree: _tree, ...kept } = block;
   return { ...kept, ...deletionMarks(post.mark.deletion), removed: true, text: "" };
@@ -233,7 +535,7 @@ function markedComment(
     return block === undefined ? undefined : { ...comment, reply_block: block };
   }
   if (post.mark.kind === "edited") {
-    return { ...comment, edited_at: post.mark.at };
+    return { ...comment, edited_at: editedAfter(comment.edited_at, post.mark.at) };
   }
   const { deletion, quoteCleared } = post.mark;
   const { body_tree: _tree, ...kept } = comment;
@@ -247,6 +549,62 @@ function markedComment(
   };
 }
 
+/** A comment's read, the comment and its replies, once `post` is corrected; undefined where it
+ *  holds no copy of the post. */
+function markedCommentRead(read: CommentRead, post: CorrectedPost): CommentRead | undefined {
+  const root = markedComment(read.comment, post);
+  const replies = markEach(read.replies, (reply) => markedComment(reply, post));
+  return root === undefined && replies === undefined
+    ? undefined
+    : { ...read, comment: root ?? read.comment, replies: replies ?? read.replies };
+}
+
+/** An ask's thread - an ask's own read, or the thread an ask row carries - once `post`, a
+ *  comment, is corrected: its replies; undefined where none is the post or quotes it. */
+function markedAskThread<T extends Pick<AskThread, "replies">>(
+  thread: T,
+  post: CorrectedPost
+): T | undefined {
+  const replies = markEach(thread.replies, (reply) => markedComment(reply, post));
+  return replies === undefined ? undefined : { ...thread, replies };
+}
+
+/** A list of ask rows, each with its thread where the read carries one (`InboxRow`,
+ *  `IssueAskThreadRow`), once `post` is corrected; undefined where no thread holds a copy. */
+function markedAskRows(answer: unknown, post: CorrectedPost): unknown[] | undefined {
+  return markEach(listOf<{ readonly thread?: AskThread | null }>(answer), (row) => {
+    const thread =
+      row.thread === undefined || row.thread === null
+        ? undefined
+        : markedAskThread(row.thread, post);
+    return thread === undefined ? undefined : { ...row, thread };
+  });
+}
+
+/** One page of the reader's answers and ask replies once `post`, a comment, is corrected: each
+ *  row whose reply is the post; undefined where none is. */
+function markedAnswerPage(
+  page: MyAnswersResponse,
+  post: CorrectedPost
+): MyAnswersResponse | undefined {
+  const rows = markEach(page.rows, (row) => markedAnswerRow(row, post));
+  return rows === undefined ? undefined : { ...page, rows };
+}
+
+/** `row` once `post` is corrected, where its reply is the post: the edit's time, or the delete's
+ *  mark with no body; undefined for any other row. */
+function markedAnswerRow(row: MyAnswerRow, post: CorrectedPost): MyAnswerRow | undefined {
+  const { reply } = row;
+  if (reply === undefined || reply.id !== post.id) {
+    return undefined;
+  }
+  if (post.mark.kind === "edited") {
+    return { ...row, reply: { ...reply, edited_at: editedAfter(reply.edited_at, post.mark.at) } };
+  }
+  const { body_tree: _tree, deleted_by: _by, ...kept } = reply;
+  return { ...row, reply: { ...kept, ...deletionMarks(post.mark.deletion), body: "" } };
+}
+
 /** `message` as a read answers it once `post`, a message, is corrected: the post itself, or a
  *  reply quoting a block of it; undefined for any other message. */
 function markedMessage(
@@ -258,7 +616,7 @@ function markedMessage(
     return block === undefined ? undefined : { ...message, reply_block: block };
   }
   if (post.mark.kind === "edited") {
-    return { ...message, edited_at: post.mark.at };
+    return { ...message, edited_at: editedAfter(message.edited_at, post.mark.at) };
   }
   const { body_tree: _tree, ...kept } = message;
   return {
@@ -322,15 +680,20 @@ function markedEvent(event: DispatchEvent, post: CorrectedPost): DispatchEvent |
   }
   const { mark } = post;
   if (mark.kind === "edited") {
-    return { ...event, payload: { ...event.payload, edited_at: mark.at } } as DispatchEvent;
+    const editedAt = editedAfter(event.payload.edited_at, mark.at);
+    return { ...event, payload: { ...event.payload, edited_at: editedAt } } as DispatchEvent;
   }
   // The body, the mark that it was cut short, and a comment's suggestion, whose replacement text
-  // is the comment's text too.
+  // is the comment's text too, as is the anchor quote an insert suggestion's delete emptied.
   const deleted = { deleted_at: mark.deletion.at, deleted_by: mark.deletion.by };
   const trees = withoutBodyTree(event.trees);
   if ("suggestion" in event.payload) {
     const { body: _body, body_truncated: _cut, suggestion: _suggestion, ...kept } = event.payload;
-    return { ...event, payload: { ...kept, ...deleted }, trees } as DispatchEvent;
+    const anchor =
+      mark.quoteCleared && kept.anchor !== null && kept.anchor !== undefined
+        ? { ...kept.anchor, quote: "" }
+        : kept.anchor;
+    return { ...event, payload: { ...kept, anchor, ...deleted }, trees } as DispatchEvent;
   }
   const { body: _text, body_truncated: _truncated, ...kept } = event.payload;
   return { ...event, payload: { ...kept, ...deleted }, trees } as DispatchEvent;
@@ -345,6 +708,13 @@ function withoutBodyTree(
   }
   const { [BODY_TREE]: _tree, ...kept } = trees;
   return kept;
+}
+
+/** Whether `answer` is one page of thread rows (`GET /api/v1/me/replies`). */
+function isThreadPage(answer: unknown): answer is MyRepliesResponse {
+  return (
+    typeof answer === "object" && answer !== null && "rows" in answer && Array.isArray(answer.rows)
+  );
 }
 
 /** One page of Inbox thread rows once `post` is corrected; undefined where no row of it holds a
@@ -370,7 +740,7 @@ function markedThreadRow(row: MyReplyRow, post: CorrectedPost): MyReplyRow | und
   const root = row.kind === post.kind && row.thread_id === post.id;
   const reply = replyKind === post.kind && row.reply.id === post.id;
   if (post.mark.kind === "edited") {
-    return root ? { ...row, edited_at: post.mark.at } : undefined;
+    return root ? { ...row, edited_at: editedAfter(row.edited_at, post.mark.at) } : undefined;
   }
   if (!root && !reply) {
     return undefined;
@@ -384,27 +754,66 @@ function markedThreadRow(row: MyReplyRow, post: CorrectedPost): MyReplyRow | und
   };
 }
 
+/** A search answer once `post` is corrected: each hit of the post; undefined where none is. */
+function markedSearch(answer: SearchResponse, post: CorrectedPost): SearchResponse | undefined {
+  const results = markEach(answer.results, (hit) =>
+    hit.kind === post.kind && hit.id === post.id ? markedHit(hit, post.mark) : undefined
+  );
+  return results === undefined ? undefined : { ...answer, results };
+}
+
 /** A search hit of the post once it is corrected: the edit's time, or the delete's mark with no
  *  snippet, as the server answers a hit of a deleted post (`stampSearchPostMarks` in
  *  `api/search.go`). */
 function markedHit(hit: SearchResult, mark: PostMark): SearchResult {
   if (mark.kind === "edited") {
-    return { ...hit, edited_at: mark.at };
+    return { ...hit, edited_at: editedAfter(hit.edited_at, mark.at) };
   }
   const { deleted_by: _by, snippet_tree: _tree, ...kept } = hit;
   return { ...kept, ...deletionMarks(mark.deletion), snippet: "" };
 }
 
-/** A block read (`blockQuery`) of a block of the post once it is corrected: its node carries the
- *  edit's time, or the delete's mark with no text, no tree and no pinned text. Undefined for a
- *  read of anything else. */
-function markedBlockRead(read: GraphReferences, post: CorrectedPost): GraphReferences | undefined {
-  const { node } = read;
-  if (node.kind !== "block" || !node.id.startsWith(post.blockNodes)) {
+/** A graph read (`referencesQuery`) once `post` is corrected: its node, where that is the post or
+ *  a block of it, and each edge whose other end is, as the Referenced by panel lists it; undefined
+ *  where neither holds a copy. */
+function markedGraphRead(read: GraphReferences, post: CorrectedPost): GraphReferences | undefined {
+  const node = markedGraphNode(read.node, post);
+  const edges = markEach(read.edges, (edge) => markedEdge(edge, post));
+  return node === undefined && edges === undefined
+    ? undefined
+    : { ...read, edges: edges ?? read.edges, node: node ?? read.node };
+}
+
+/** `edge` once `post` is corrected, where its other end is the post or a block of it: that end
+ *  marked, and, for a delete, no excerpt of its words; undefined for any other edge. */
+function markedEdge(edge: GraphEdge, post: CorrectedPost): GraphEdge | undefined {
+  // An edge's end is a node as a graph read's own is, less the reading of its text.
+  const node = markedGraphNode(edge.node as GraphReferences["node"], post);
+  if (node === undefined) {
     return undefined;
   }
   if (post.mark.kind === "edited") {
-    return { ...read, node: { ...node, edited_at: post.mark.at } };
+    return { ...edge, node };
+  }
+  const { excerpt: _excerpt, ...kept } = edge;
+  return { ...kept, node };
+}
+
+/** A graph node once `post` is corrected, where it is the post or a block of it: the edit's time,
+ *  or the delete's mark with no text, no tree and no pinned text. Undefined for any other node. */
+function markedGraphNode(
+  node: GraphReferences["node"],
+  post: CorrectedPost
+): GraphReferences["node"] | undefined {
+  const ofPost =
+    node.kind === "block"
+      ? node.id.startsWith(post.blockNodes)
+      : node.kind === post.kind && node.id === post.id;
+  if (!ofPost) {
+    return undefined;
+  }
+  if (post.mark.kind === "edited") {
+    return { ...node, edited_at: editedAfter(node.edited_at, post.mark.at) };
   }
   const { deleted_by: _by, pin, text, text_tree: _tree, ...kept } = node;
   const marked = {
@@ -413,10 +822,10 @@ function markedBlockRead(read: GraphReferences, post: CorrectedPost): GraphRefer
     ...(text === undefined ? {} : { text: "" }),
   };
   if (pin === undefined) {
-    return { ...read, node: marked };
+    return marked;
   }
   const { text_tree: _pinTree, ...pinKept } = pin;
-  return { ...read, node: { ...marked, pin: { ...pinKept, text: "" } } };
+  return { ...marked, pin: { ...pinKept, text: "" } };
 }
 
 /** A names read once the post is corrected: each member naming the post or a block of it
@@ -430,7 +839,7 @@ function markedNamesRead(
     target.ambiguous === true || target.gone || !names(target.ref)
       ? undefined
       : mark.kind === "edited"
-        ? { ...target, edited_at: mark.at }
+        ? { ...target, edited_at: editedAfter(target.edited_at, mark.at) }
         : deletedTarget(target, mark.deletion)
   );
   return answer === undefined || targets === undefined ? undefined : { ...answer, targets };

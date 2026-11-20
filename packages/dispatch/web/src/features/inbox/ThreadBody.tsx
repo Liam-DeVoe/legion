@@ -52,7 +52,7 @@ import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
 import type { ComposerOwner } from "../conversation/composer-model";
-import { rootOf } from "../conversation/conversation-model";
+import { listedReplies, rootOf } from "../conversation/conversation-model";
 import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
@@ -604,12 +604,10 @@ function AgentThreadBody({
           agent === undefined || read === undefined ? null : newest === undefined ? (
             // No message of the thread stands, so the thread draws no box, as a comment thread
             // draws none under a deleted root (`CommentThreadBody`): a reply the reader kept for
-            // it is drawn itself, with Discard my draft, naming the thread's newest message.
-            <KeptReplyToDeleted
-              actor={((read.replies ?? []).at(-1) ?? read.message).author}
-              mutationKey={sendKey}
-              parentKind="message"
-            />
+            // it is drawn itself, with Discard my draft. The box moved from message to message,
+            // so the thread cannot say which one a typed draft answered: a refused send names the
+            // author of its own (`replyTo`), and a typed draft names nobody.
+            <KeptReplyToDeleted mutationKey={sendKey} parentKind="message" />
           ) : (
             <div data-inbox-agent-composer="">
               {noDelivery !== undefined ? (
@@ -623,11 +621,14 @@ function AgentThreadBody({
               {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`), and
                   its send named by it (`threadSendKey`): the draft, its uploads and its reply out
                   or refused are this thread's, and the session's other sends it shows are the
-                  ones answering this thread. */}
+                  ones answering this thread. It lists the thread's messages as they stand
+                  (`listed`), so a reply refused for one its author deleted since, which moved the
+                  box back onto an older one, says that message was deleted. */}
               <AgentMessageComposer
                 agent={agent}
                 hold={hold}
                 key={`composer:${thread.thread_id}`}
+                listed={listedReplies([read])}
                 onCancelReply={noReturn}
                 onClose={noReturn}
                 replyParent={newest}

@@ -23,14 +23,17 @@ import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
+import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "./page-structure";
 import {
   type AuthorKind,
   authorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  DECLARED_WORDS,
   type GapKind,
   NODE_TYPE_NAMES,
   type NodeType,
+  wordsIn,
 } from "./page-words";
 import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
@@ -382,6 +385,161 @@ test("a parent line draws a deleted parent as its deleted line, and an edited on
   } finally {
     edited.unmount();
   }
+});
+
+/** The words of `region` by the mark each is read under, as a reader of the page's words reads
+ *  them (`page-words.ts`): a word whose nearest marked element is `[data-page-chrome]` is the
+ *  page's own, one whose nearest is `[data-author-text]` is its author's, and any other is
+ *  marked neither. */
+function wordsByMark(region: Element | null | undefined) {
+  const marked = { author: [] as string[], chrome: [] as string[], unmarked: [] as string[] };
+  if (region === null || region === undefined) return marked;
+  const walker = document.createTreeWalker(region, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+    const holder = text.parentElement?.closest(
+      `[${PAGE_CHROME_ATTRIBUTE}], [${AUTHOR_TEXT_ATTRIBUTE}]`
+    );
+    const words = wordsIn(text.textContent ?? "");
+    if (holder === null || holder === undefined) marked.unmarked.push(...words);
+    else if (holder.hasAttribute(PAGE_CHROME_ATTRIBUTE)) marked.chrome.push(...words);
+    else marked.author.push(...words);
+  }
+  return marked;
+}
+
+// FixAudit3 F8 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:52Z: the
+// deleted line ("Deleted by …", "Deleted") and the edited mark (" · edited") a row draws are the
+// page's own words, so each carries the page-chrome mark and is declared in `page-words.ts`, as
+// its rule says; the actor's name, and the time, stay its author's. That holds of the row's words
+// whole and folded, of its margin, of a parent line, and of a chip.
+test("a row's deleted line and edited mark are the page's own words, and the actor's name stays the author's", () => {
+  const chrome = (region: Element | null | undefined) => {
+    const { author, chrome: own, unmarked } = wordsByMark(region);
+    return {
+      author: author.filter((word) => ["alice", "an", "agent", "ship", "it"].includes(word)),
+      chrome: own,
+      undeclared: own.filter((word) => !DECLARED_WORDS.includes(word)),
+      unmarked,
+    };
+  };
+  const deletedLine = {
+    author: ["alice"],
+    chrome: ["deleted", "by"],
+    undeclared: [],
+    unmarked: [],
+  };
+  const alice: Actor = { id: "alice", kind: "user" };
+  const shown: Record<string, unknown> = {};
+
+  for (const folded of [false, true]) {
+    const view = renderRow(
+      deletedTurn(alice, folded ? { held: 1 } : {}),
+      folded ? { body: false, expanded: false, folded: 1 } : { body: false }
+    );
+    try {
+      const words = view.container.querySelector(
+        folded ? "[data-node-first-line]" : "[data-node-words]"
+      );
+      shown[folded ? "folded" : "whole"] = chrome(words?.querySelector("[data-post-deleted]"));
+    } finally {
+      view.unmount();
+    }
+  }
+  const edited = renderRow(
+    node({
+      at: "2026-11-05T12:00:00Z",
+      editedAt: "2026-11-05T13:00:00Z",
+      id: "m-1",
+      type: "message",
+    }),
+    { author: { kind: "person", name: "alice", reader: false }, body: false }
+  );
+  try {
+    shown.edited = chrome(edited.container.querySelector("[data-node-edited]"));
+  } finally {
+    edited.unmount();
+  }
+  const under = (line: ParentLine) =>
+    renderRow(
+      node({ id: "plan-md#b-t1", parentLine: line, text: "Stand it up.", type: "plan_task" }),
+      {
+        body: false,
+      }
+    );
+  const deletedParent = under({
+    deletedAt: DELETED_AT,
+    deletedBy: alice,
+    id: "comment-1",
+    line: `Deleted by alice · ${DELETED_AT}`,
+    reference: "dispatch://CORE-1/comment/comment-1",
+    type: "comment",
+  });
+  try {
+    shown.deletedParent = chrome(
+      deletedParent.container.querySelector("[data-node-parent-line] [data-post-deleted]")
+    );
+  } finally {
+    deletedParent.unmount();
+  }
+  const editedParent = under({
+    editedAt: "2026-11-05T13:00:00Z",
+    id: "message-1",
+    line: "Ship it.",
+    reference: "dispatch://CORE-1/message/message-1",
+    type: "message",
+  });
+  try {
+    shown.editedParent = chrome(editedParent.container.querySelector("[data-node-parent-line] a"));
+  } finally {
+    editedParent.unmount();
+  }
+  const chips = renderRow(
+    node({
+      chips: [
+        {
+          answered: true,
+          deletedAt: DELETED_AT,
+          deletedBy: UNTITLED,
+          gone: false,
+          name: `Deleted by ${actorLabelText(UNTITLED)}`,
+          ref: "dispatch://CORE-1/comment/c-deleted",
+        },
+        {
+          answered: true,
+          editedAt: "2026-11-05T13:00:00Z",
+          gone: false,
+          name: "Ship it.",
+          ref: "dispatch://CORE-1/message/m-edited",
+        },
+      ],
+      id: "comment-9",
+      text: "Read these.",
+      type: "comment",
+    }),
+    { body: false }
+  );
+  try {
+    const [deletedChip, editedChip] = [...chips.container.querySelectorAll("[data-chip-name]")];
+    shown.deletedChip = chrome(deletedChip);
+    shown.editedChip = chrome(editedChip);
+  } finally {
+    chips.unmount();
+  }
+
+  expect(shown).toEqual({
+    deletedChip: {
+      author: ["an", "agent"],
+      chrome: ["deleted", "by"],
+      undeclared: [],
+      unmarked: [],
+    },
+    deletedParent: deletedLine,
+    edited: { author: [], chrome: ["edited"], undeclared: [], unmarked: [] },
+    editedChip: { author: ["ship", "it"], chrome: ["edited"], undeclared: [], unmarked: [] },
+    editedParent: { author: ["ship", "it"], chrome: ["edited"], undeclared: [], unmarked: [] },
+    folded: deletedLine,
+    whole: deletedLine,
+  });
 });
 
 // A view that edits rows in place passes `editable`, and the row element itself carries

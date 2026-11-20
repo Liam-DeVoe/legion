@@ -394,6 +394,8 @@ test("a comment thread whose root is deleted draws no box, and keeps the reply t
 // the newest message of its thread that still stands, and its Send goes there. A thread none of
 // whose messages stands draws no box, as a comment thread draws none under a deleted root, and a
 // reply the reader typed in the box before the deletes is drawn itself, with Discard my draft.
+// A typed draft records no message it answered, and the box moved from one to another, so its
+// line names no author (FixAudit3 F7).
 test("an Agent card's box answers the newest message that still stands, and a thread with none draws no box", async () => {
   const user = userEvent.setup();
   spy("listAgents", [session]);
@@ -452,7 +454,7 @@ test("an Agent card's box answers the newest message that still stands, and a th
   }).toEqual({
     box: false,
     lines: [
-      `The message by Planner that your reply answered was deleted, so it takes no reply. Your reply is kept here:${typed}`,
+      `The message that your reply answered was deleted, so it takes no reply. Your reply is kept here:${typed}`,
     ],
     sent: [["planner", "reply-1"]],
   });
@@ -588,4 +590,115 @@ test("an Agent card whose thread moves on under a refused reply says what its bo
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
+});
+
+// FixAudit3 F6 of dispatch://INFRA-1523: a delete moves an Agent card's box back onto the newest
+// message that still stands, an older one. A reply Dispatch refused for the message deleted since
+// says what is true of it - the message it answered was deleted and takes no reply - and never
+// that the box now replies to a newer message.
+test("an Agent card whose replied message is deleted under a refused reply says that message was deleted", async () => {
+  spy("listAgents", [session]);
+  const planner = { id: "planner", kind: "session" } as const;
+  const answer = message("reply-1", "Looked at it.", {
+    author: planner,
+    created_at: "2026-10-12T01:00:00Z",
+    in_reply_to: "message-1",
+  });
+  const list = spyOn(api, "listAgentMessages").mockResolvedValue([
+    { message: message("message-1", "Have a look at the build"), replies: [answer] },
+  ]);
+  restores.push(list);
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+  restores.push(createAgentMessage);
+  const client = renderCard(plannerAgentRow());
+  const user = userEvent.setup();
+
+  await user.click(await screen.findByRole("textbox", { name: "Comment" }));
+  await user.paste("Reply to the answer");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByText("Couldn't send — Dispatch refused the message");
+
+  list.mockResolvedValue([
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [{ ...answer, body: "", deleted_at: "2026-10-12T03:00:00Z", deleted_by: planner }],
+    },
+  ]);
+  await act(() => client.invalidateQueries());
+  expect(
+    await screen.findByText(
+      "This message was written as a reply to a message that was deleted, which takes no reply. Discard it to write here."
+    )
+  ).toBeTruthy();
+  expect(screen.queryByText(/this box now replies to a newer one/u)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(
+    createAgentMessage.mock.calls.map(([sessionId, input]) => [sessionId, input.in_reply_to])
+  ).toEqual([["planner", "reply-1"]]);
+});
+
+// FixAudit3 F7 of dispatch://INFRA-1523: a reply the reader kept under an Agent thread none of
+// whose messages stands answered one message of it, which need not be the newest. A send Dispatch
+// refused knows the message it answered (`replyTo`), so its kept line names that message's
+// author, never the author of the thread's newest message.
+test("a refused reply kept under an Agent thread whose messages are all deleted names the author of the message it answered", async () => {
+  spy("listAgents", [session]);
+  const planner = { id: "planner", kind: "session" } as const;
+  const alice = { id: "alice", kind: "user" } as const;
+  const answer = message("reply-1", "Looked at it.", {
+    author: planner,
+    created_at: "2026-10-12T01:00:00Z",
+    in_reply_to: "message-1",
+  });
+  const followUp = message("reply-2", "Any news?", {
+    author: alice,
+    created_at: "2026-10-12T02:00:00Z",
+    in_reply_to: "reply-1",
+  });
+  const root = message("message-1", "Have a look at the build");
+  const list = spyOn(api, "listAgentMessages").mockResolvedValue([
+    { message: root, replies: [answer] },
+  ]);
+  restores.push(list);
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+  restores.push(createAgentMessage);
+  const client = renderCard(plannerAgentRow());
+  const user = userEvent.setup();
+  const card = await screen.findByTestId("inbox-thread-agent");
+  const refused = "Reply to the answer";
+
+  await user.click(await within(card).findByRole("textbox", { name: "Comment" }));
+  await user.paste(refused);
+  await user.click(within(card).getByRole("button", { name: "Send" }));
+  await within(card).findByText("Couldn't send — Dispatch refused the message");
+
+  const deleted = (post: Message, by: Message["author"]) => ({
+    ...post,
+    body: "",
+    deleted_at: "2026-10-12T03:00:00Z",
+    deleted_by: by,
+  });
+  list.mockResolvedValue([
+    {
+      message: deleted(root, alice),
+      replies: [deleted(answer, planner), deleted(followUp, alice)],
+    },
+  ]);
+  await act(() => client.invalidateQueries());
+  await waitFor(() => expect(card.querySelector("[data-inbox-agent-composer]")).toBeNull());
+  expect(
+    within(card)
+      .queryAllByRole("status")
+      .map((status) => status.textContent ?? "")
+      .filter((text) => text.includes(refused))
+  ).toEqual([
+    `The message by Planner that your reply answered was deleted, so it takes no reply. Your reply is kept here:${refused}`,
+  ]);
+  expect(
+    createAgentMessage.mock.calls.map(([sessionId, input]) => [sessionId, input.in_reply_to])
+  ).toEqual([["planner", "reply-1"]]);
 });

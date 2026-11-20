@@ -1755,8 +1755,10 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * fails keeps the answer it would have replaced, so a post's correction writes its own marks
  * into each answer the cache holds as it arrives (`markCorrectedPost`): a read that then fails
  * names a deleted post by the deleted line and an edited one with its mark. An answer that a
- * read already out at the correction lands was composed before it and carries neither, and a
- * refetch of it that fails keeps it.
+ * read already out at an event lands was composed before it, and a refetch of it that fails
+ * keeps it, which stands for every refresh but a correction's own facts: the feed keeps a
+ * correction while a read out at its arrival is out, and writes its marks into the answer that
+ * read lands (`keepCorrection` in `corrected-post.ts`).
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
