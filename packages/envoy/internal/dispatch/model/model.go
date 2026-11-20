@@ -1316,8 +1316,9 @@ type ArtifactReviewEventPayload struct {
 // CheckBasisNamed, CheckBasisPullRequest, CheckBasisBranch and CheckBasisBranchHead are the kinds
 // of thing a check's results are compared with: the one commit a reader named in `at`, the head
 // of a pull request Dispatch holds for the check's issue, a branch of the check's issue's
-// repository, and the head of a branch that a CI job's result on the check's issue names, the
-// commit that branch is at as GitHub answered it on this read.
+// repository or, for one result, of a repository the issue links a pull request in
+// (CheckBasis.Repo), and the head of a branch that a CI job's result on the check's issue names,
+// the commit that branch is at as GitHub answered it on this read.
 const (
 	CheckBasisNamed       = "named"
 	CheckBasisPullRequest = "pull_request"
@@ -1376,12 +1377,17 @@ const (
 // `named`, a `pull_request` and a `branch_head` basis, Branch for a `branch` and a `branch_head`
 // one, and PullRequest is the number of the pull request whose head the commit is. Merged is
 // set on a `pull_request` basis whose pull request merged, whose commit is its final head: a
-// reader tells it from an open pull request's head, and counts it apart. Repo is set on a
-// `pull_request` basis whose pull request is in another repository than the one the check's issue
-// resolves to, compared without case: `owner/repo`, which a reader names beside the number, since
-// a number alone does not say which repository holds the pull request (R18 of the spec of several
-// open pull requests). It is empty for a pull request of the issue's own repository, and for every
-// basis where Dispatch cannot name the issue's repository.
+// reader tells it from an open pull request's head, and counts it apart. Repo is the
+// `owner/repo` of a basis in another repository than the one the check's issue resolves to,
+// compared without case: the head of a pull request the issue links there (one its link makes
+// the issue's own, R19, or one its external links name, under the canonical name the link is
+// read by), and a branch of such a repository that a result whose commit is that repository's
+// stands at (CheckResult.CommitRepo). A reader names it beside the number or the branch, since a
+// number alone does not say which repository holds the pull request (R18 of the spec of several
+// open pull requests), so pull request #7 or branch main of the linked repository reads apart
+// from those of the issue's own. It is empty for every other basis, which is of the repository
+// the check's issue resolves to or is the commit a reader named, and for a pull request basis
+// where Dispatch cannot name the issue's repository and the issue's links do not name it.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch,branch_head"`
 	Commit      string          `json:"commit,omitempty"`
@@ -1473,11 +1479,17 @@ const ResultNotCountedAnotherJob = "a run of another CI job recorded it, and onl
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
 // (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
-// which CheckResult.CheckWordsMoved answers on its own.
+// which CheckResult.CheckWordsMoved answers on its own. Repo is the `owner/repo` of the linked
+// repository an other_commit or unknown answer is about: the one the result's commit is taken to
+// be of (CheckResult.CommitRepo), one the check's issue links a pull request in and does not
+// resolve to, which decided the answer, so a reader names that repository and not the issue's
+// own. It is empty for every answer about the issue's own repository, and for at_basis, whose
+// basis names a linked repository itself (CheckBasis.Repo).
 type ResultCommitStands struct {
 	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
 	Basis  *CheckBasis `json:"basis,omitempty"`
 	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
+	Repo   string      `json:"repo,omitempty"`
 }
 
 // CheckResultRetracted is the retraction one result carries on a read of the results
@@ -1622,6 +1634,18 @@ type CheckResult struct {
 	// which names no branch head. A field of its own, since a dispatch command released before
 	// this one reads CommitStands and prints a basis of a kind it does not know as a commit it named.
 	AtBranchHead *CheckBasis `json:"at_branch_head,omitempty"`
+	// CommitRepo is the linked repository the record route took CommitSHA to be of
+	// (check_results.commit_repo), one the check's issue links a pull request in and does not
+	// resolve to: one with an open or merged linked pull request that GitHub said holds the
+	// commit, and no other. A linked read that did not answer, where no repository was shown to
+	// hold the commit, and a failed read of the issue's links store no row at all. It is nil for
+	// every other result: a commit of the issue's own repository, a commit whose read there did
+	// not answer and that no linked repository was shown to hold, and a result nothing was asked
+	// about. The results read compares a branch check's result with that repository's branches,
+	// reads a `before_merge` result's pull requests through it, and decides such a result by it
+	// where it is set, and names it in CommitStands.Repo where it decided an other_commit or
+	// unknown answer. It is no part of the wire shape.
+	CommitRepo *string `json:"-"`
 	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
 	// for a caller that sent `Dispatch-Trees: 1`.
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`

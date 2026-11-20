@@ -552,7 +552,11 @@ optional ones:
   line and every other section runs.
 
 One rule governs every result the script records, beside the refusals above.
-A result at a 40-character commit the repository of the check's issue does not hold is refused `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
+The record route takes a result at a 40-character commit the repository of the check's issue holds, one a repository of another open or merged pull request of that issue holds, or one a repository the issue links an open or merged pull request in holds (`https://github.com/<owner>/<repo>/pull/<n>`), and refuses any other `400 RESULT_COMMIT_UNKNOWN`, naming the commit and each `owner/repo` it asked.
+It asks the issue's own repository first, and asks the other repositories only where GitHub does not say that repository holds the commit: where GitHub proves it does not, and where that read does not answer, which stores the result under the issue's own repository unless another repository holds the commit.
+Where a read of a repository does not answer, or Dispatch cannot read the repository, and no repository is shown to hold the commit, it stores the result as before; where its own read of the issue's links fails, it answers a server error, `500 INTERNAL`, stores nothing, and the caller records the result again.
+One record reads at most 10 linked pull requests, each distinct repository once, and a refusal says how many links the bound left unread.
+The script links no pull request to any issue it writes, so no linked repository is asked about any result it records.
 Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
 Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
 Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.

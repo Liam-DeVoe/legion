@@ -27,6 +27,9 @@
 --   session, actor     the session of the token, its workflow's own, and the actor naming it and
 --                      no person.
 --   event_seq          the seq of the result.recorded event on the check's issue.
+--   commit_repo        the repository other than the check's issue's that the record route took
+--                      commit_sha to be of, as check_results.commit_repo holds it for a role's
+--                      row (api/results_linked.go, refuseUnknownCommit), and null for every other.
 -- Nothing updates or deletes a row: a result is a record of one run, and another run or another
 -- attempt is another row. One writer inserts them (insertCIJobCheckResult), and a retraction of
 -- one is a row of ci_check_result_retractions, below. A row goes only with its issue or its
@@ -61,7 +64,8 @@ create table ci_check_results (
     session text not null,
     actor jsonb not null,
     created_at timestamptz not null default now(),
-    event_seq bigint
+    event_seq bigint,
+    commit_repo text
 );
 
 -- The results read: every result of one Verification document's checks, newest first.

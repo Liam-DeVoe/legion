@@ -28,12 +28,37 @@ const BRIEF_READING_CHARACTERS = 200;
 
 /** The three reasons a check compared its results with nothing, and the two a result's commit
  *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
- *  no_pull_request_or_branch, so the check's set types this map and answers both. */
-const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
-  no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
-  repository_unreadable: "Dispatch cannot read the repository",
-  read_failed: "a read Dispatch made did not answer",
+ *  no_pull_request_or_branch, so the check's set types this map and answers both. Each takes the
+ *  repository the answer is about where the server names one (`repo`): a result whose commit is
+ *  taken to be of a repository the issue links a pull request in is decided by that repository,
+ *  and "the repository" would read as the issue's own. Keyed by `compared_nothing`'s reasons, so a
+ *  reason the contract adds to that union is a type error until it has words here; one it adds to
+ *  the result's `commit_stands.reason` alone is not, and `reasonText` prints it by its code, as it
+ *  prints any reason this build has no words for. */
+const COMPARISON_REASONS: Readonly<
+  Record<NonNullable<CheckBlock["compared_nothing"]>, (repo: string | undefined) => string>
+> = {
+  no_pull_request_or_branch: () => "the issue has no pull request and no branch to compare with",
+  repository_unreadable: (repo = "the repository") => `Dispatch cannot read ${repo}`,
+  read_failed: (repo) =>
+    repo === undefined
+      ? "a read Dispatch made did not answer"
+      : `a read Dispatch made of ${repo} did not answer`,
 };
+
+/** Whether a reason the server sent is one this build words. The server gives the reasons its
+ *  own build knows, so a later server can send one this build has no words for. */
+function isComparisonReason(reason: string): reason is keyof typeof COMPARISON_REASONS {
+  return Object.hasOwn(COMPARISON_REASONS, reason);
+}
+
+/** `reason` in words, naming `repo` where the server names the repository the answer is about.
+ *  A reason this build has no words for is printed as the server gave it, with that repository
+ *  beside it in parentheses, so the answer still says which repository it is about. */
+function reasonText(reason: string, repo?: string): string {
+  if (isComparisonReason(reason)) return COMPARISON_REASONS[reason](repo);
+  return repo === undefined ? reason : `${reason} (${repo})`;
+}
 
 /** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
  *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
@@ -42,14 +67,31 @@ function learnedText(learned: BasisLearnedAt): string {
   return `GitHub updated it ${learned.at}`;
 }
 
+/** A pull request as a reader tells it apart: `owner/repo#7`, GitHub's own name for it, for one
+ *  of another repository than the one the issue resolves to, which the server names in `repo`,
+ *  and `pull request #7` for one of the issue's own repository. */
+function pullRequestName(basis: CheckBasis, number: number): string {
+  return basis.repo === undefined ? `pull request #${number}` : `${basis.repo}#${number}`;
+}
+
+/** A branch as a reader tells it apart: `main of owner/repo` for a branch of a linked repository,
+ *  and `main` for one of the issue's own repository. */
+function branchName(basis: CheckBasis): string {
+  const branch = basis.branch ?? "unnamed";
+  return basis.repo === undefined ? branch : `${branch} of ${basis.repo}`;
+}
+
 /** One thing a check compared its results with, as the head line names it. */
 function basisText(basis: CheckBasis): string {
   const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
   if (basis.kind === "pull_request") {
-    const number = basis.pull_request === undefined ? "" : `#${basis.pull_request} `;
-    return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
+    const pullRequest =
+      basis.pull_request === undefined
+        ? "pull request "
+        : `${pullRequestName(basis, basis.pull_request)} `;
+    return `the head of ${pullRequest}at ${basis.commit ?? "an unnamed commit"}${learned}`;
   }
-  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
+  if (basis.kind === "branch") return `branch ${branchName(basis)}${learned}`;
   if (basis.kind === "branch_head") {
     return `the head of branch ${basis.branch ?? "unnamed"} at ${basis.commit ?? "an unnamed commit"}`;
   }
@@ -62,16 +104,16 @@ function basisPlace(basis: CheckBasis): string {
   if (basis.kind === "pull_request") {
     return basis.pull_request === undefined
       ? "the head of a pull request"
-      : `the head of pull request #${basis.pull_request}`;
+      : `the head of ${pullRequestName(basis, basis.pull_request)}`;
   }
-  if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
+  if (basis.kind === "branch") return `on branch ${branchName(basis)}`;
   if (basis.kind === "branch_head") return `at the head of branch ${basis.branch ?? "unnamed"}`;
   return "the commit you named";
 }
 
 /** The first of R4's two facts: where one result's commit stands against what its check compared
  *  with. A Dispatch server that does not answer it says so rather than reading as another
- *  commit. */
+ *  commit. An answer a linked repository decided names it (`repo`). */
 function commitStandsText(stands: CheckResult["commit_stands"]): string {
   if (stands === undefined) {
     return "Where that commit stands is not known: this Dispatch server does not say";
@@ -81,12 +123,19 @@ function commitStandsText(stands: CheckResult["commit_stands"]): string {
       ? "That commit is one of the compared commits"
       : `That commit is ${basisPlace(stands.basis)}`;
   }
-  if (stands.answer === "other_commit") return "That commit is none of the compared commits";
+  if (stands.answer === "other_commit") {
+    return stands.repo === undefined
+      ? "That commit is none of the compared commits"
+      : `That commit, of ${stands.repo}, is none of the compared commits`;
+  }
   // The reason is the server's to give and may be absent, so the answer stands on its own
   // where there is none.
-  return stands.reason === undefined
-    ? "Where that commit stands is not known"
-    : `Where that commit stands is not known: ${COMPARISON_REASONS[stands.reason]}`;
+  if (stands.reason === undefined) {
+    return stands.repo === undefined
+      ? "Where that commit stands is not known"
+      : `Where that commit of ${stands.repo} stands is not known`;
+  }
+  return `Where that commit stands is not known: ${reasonText(stands.reason, stands.repo)}`;
 }
 
 /** R4's other fact: whether the check's words moved after the result was recorded. Both versions
@@ -305,7 +354,7 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
         ? `Compared with ${bases.map(basisText).join(", ")}`
         : reason === undefined
           ? "Compared with nothing, and this Dispatch server does not say why"
-          : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
+          : `Compared with nothing: ${reasonText(reason)}`;
   const results = check.results ?? [];
   return [
     pass === undefined

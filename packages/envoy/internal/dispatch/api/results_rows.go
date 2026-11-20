@@ -17,10 +17,12 @@ import (
 
 // checkResultColumns is the column list every check_results read scans, in scanCheckResult's
 // order. check_results holds what a role recorded, so a row names no branch and no statement.
+// commit_repo is the repository other than the check's issue's that the record route took the
+// row's commit to be of (model.CheckResult.CommitRepo), null for every other row.
 const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact_id::text, check_block_id,
 	check_version, check_sha256, role, surface, run, observed, commit_sha, negative_control,
 	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq,
-	''::text, null::jsonb`
+	''::text, null::jsonb, commit_repo`
 
 // ciCheckResultColumns is the same column list read from ci_check_results, which holds what a CI
 // job recorded (insertCIJobCheckResult): its role is ciResultRole, a job counts no case and
@@ -28,7 +30,7 @@ const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact
 const ciCheckResultColumns = `id::text, issue_key, check_issue_key, check_artifact_id::text, check_block_id,
 	check_version, check_sha256, '` + ciResultRole + `'::text, surface, run, observed, commit_sha, negative_control,
 	0, 0, 0, verdict, '{}'::text[], session, actor, created_at, event_seq,
-	branch, attestation`
+	branch, attestation, commit_repo`
 
 // insertCheckResult writes one role's result as a row of check_results and fills in the
 // created_at the row takes, which the record route answers with: the pointer is the caller's own
@@ -42,15 +44,15 @@ func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult
 		insert into check_results (
 			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
 			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq
+			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo
 		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		returning created_at
 	`,
 		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
 		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
 		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq,
+		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo,
 	).Scan(&result.CreatedAt)
 }
 
@@ -76,16 +78,16 @@ func insertCIJobCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckR
 		insert into ci_check_results (
 			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
 			check_sha256, run, surface, negative_control, observed, commit_sha, branch, verdict,
-			attestation, session, actor, event_seq
+			attestation, session, actor, event_seq, commit_repo
 		)
 		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			`+stampedAttestation("$15")+`, $16, $17, $18)
+			`+stampedAttestation("$15")+`, $16, $17, $18, $19)
 		returning created_at, attestation
 	`,
 		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
 		result.CheckVersion, result.CheckSHA256, result.Run, result.Surface, result.NegativeControl,
 		result.Observed, result.CommitSHA, result.Branch, result.Verdict, attestation,
-		result.Session, actorJSON, result.EventSeq,
+		result.Session, actorJSON, result.EventSeq, result.CommitRepo,
 	).Scan(&result.CreatedAt, &stored); err != nil {
 		return err
 	}
@@ -133,7 +135,7 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 		&result.CheckVersion, &result.CheckSHA256, &result.Role, &result.Surface, &result.Run,
 		&result.Observed, &result.CommitSHA, &result.NegativeControl, &result.Failed, &result.Skipped,
 		&result.Excluded, &result.Verdict, &result.Screenshots, &result.Session, &actorJSON,
-		&result.CreatedAt, &result.EventSeq, &result.Branch, &attestationJSON,
+		&result.CreatedAt, &result.EventSeq, &result.Branch, &attestationJSON, &result.CommitRepo,
 	); err != nil {
 		return model.CheckResult{}, err
 	}

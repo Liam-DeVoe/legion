@@ -235,11 +235,17 @@ func (c *comparisonReader) branchHeadOf(ctx context.Context, repo, branch string
 // request in another repository, which an issue's link makes its own (R19), names its repository
 // beside its number, compared without case (R18); a head of the issue's own repository names
 // none, and nor does any head where Dispatch cannot name the issue's repository (a nil issueRepo),
-// so each prints with its number alone, as before.
+// so each prints with its number alone, as before. The head of a pull request the issue links in
+// a repository it does not resolve to names that repository under the canonical name the link is
+// read by (AttributedHead.LinkedRepo), whatever issueRepo is, so a reader can tell it from a pull
+// request of the same number in the issue's own repository.
 func headBasis(head delivery.AttributedHead, issueRepo *string) model.CheckBasis {
 	number := head.Number
 	basis := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: head.HeadSHA, PullRequest: &number, Merged: !head.Open}
-	if issueRepo != nil && !strings.EqualFold(head.Repo, *issueRepo) {
+	switch {
+	case head.LinkedRepo != "":
+		basis.Repo = head.LinkedRepo
+	case issueRepo != nil && !strings.EqualFold(head.Repo, *issueRepo):
 		basis.Repo = head.Repo
 	}
 	switch {
