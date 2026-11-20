@@ -571,6 +571,7 @@ claude_envoy:
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/contracts/fixtures/envelope-without-role.json'
   - 'packages/envoy-client/test/**'
+  - 'packages/pi-shared/test/image-manifest.ts'
   - 'packages/test-fixtures/src/**'
   - 'packages/pi-shared/test/daemon-state.ts'
   # why: .github/ci-notes/ci.md#claude_envoy-testsenvoy-channel-servertestts-holds-the-marketplace
@@ -1299,6 +1300,9 @@ pi_shared:
   - 'packages/contracts/src/**'
   - 'packages/test-fixtures/src/**'
   - 'packages/contracts/fixtures/daemon-api/**'
+  - 'packages/pi-legion/src/**'
+  - 'packages/pi-legion/extensions/**'
+  - 'packages/claude-envoy/src/**'
   - 'skills/**'
   - 'scripts/pi-plugin-prepack.sh'
   - 'packages/daemon/internal/prompts/**'
