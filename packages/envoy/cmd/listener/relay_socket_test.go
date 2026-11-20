@@ -226,7 +226,8 @@ func describeUpgrade(response *http.Response) string {
 	return response.Status + " " + strings.TrimSpace(body.String())
 }
 
-// relayFrameRead is one frame the server sent a socket client, decoded as K-E2 spells it.
+// relayFrameRead is one frame the server sent a socket client, decoded as the wire spells it
+// (relay_socket.go).
 type relayFrameRead struct {
 	Op      string              `json:"op"`
 	SID     *int64              `json:"sid"`
@@ -514,7 +515,7 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 }
 
 // Rows 4, 5, 7 and 8, in one process, each on its own socket: the broker's answer for the
-// socket's token changes, and the socket closes with the code K-E2 gives that case within a
+// socket's token changes, and the socket closes with the code the wire gives that case within a
 // second of the first check that reads it (the rig's verifier clock moved past the five seconds a
 // live answer is reused for, so the next check asks the broker). The last case is the negative
 // control of all of them: an answer that has not changed keeps the socket open. Each row's own
@@ -601,7 +602,7 @@ func TestAnOpenSocketsReopenIsRefused503WhileTheBrokerCannotBeAsked(t *testing.T
 	}
 }
 
-// K-E2's upgrade, its refusals each with its control: a token naming another session is refused
+// The upgrade's refusals, each with its control: a token naming another session is refused
 // 403 before the upgrade, with sessionNotBound's line (control: the token's own session opens); a
 // client that offers no envoy-relay.v1 is refused 400; a fifth socket of one session is refused 429
 // (control: the fourth opens); and a socket the listener closes at its stop is closed 1012.
@@ -660,7 +661,7 @@ func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
 	}
 }
 
-// A frame the socket cannot read as K-E2's - one that is not JSON, one of an unknown op, a sub or
+// A frame the socket cannot read as the wire's - one that is not JSON, one of an unknown op, a sub or
 // unsub that names no sid, and a sub of a sid the socket already holds - is answered the err frame
 // bad_frame, and the socket is closed 1008 with reason bad_frame. Control: a well-formed sub on the
 // same rig is taken and closes nothing.
@@ -737,7 +738,7 @@ func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
 	client.stillOpen(time.Second, "a sub past the limit")
 }
 
-// K-E2 clarification (1): a socket's frames are read one at a time, in order, and a sub is handled
+// Frames are handled in order: a socket's frames are read one at a time, and a sub is handled
 // whole - its subscribe and the flush that makes the server hold it - before the next frame is
 // read. The socket's replica reaches NATS over a link with a 400 ms round trip, so a subscribe
 // takes that long to be held. The row sends a sub of its own relay subject and, at once, a sub of
@@ -765,7 +766,7 @@ func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
 	}
 }
 
-// K-E2 clarification (3), row 10: the client's flush() is a ping, answered on the socket's one
+// Row 10: the client's flush() is a ping, answered on the socket's one
 // reader only after every frame read before it is handled, so a ping sent right after a sub gets
 // its pong only once that sub's subscribe is held, and a message published the moment the pong
 // arrives reaches the socket. The replica's link has a 400 ms round trip, as above. Control: a
@@ -793,7 +794,7 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 	}
 }
 
-// K-E2 clarification (2): msg.headers is always present, a JSON object mapping each header name as
+// Headers: msg.headers is always present, a JSON object mapping each header name as
 // NATS carries it, its case kept, to every one of its values in order, and {} when the message
 // carries none. Control: the headers read one value per name (Header.Get); the repeated values are
 // lost and the row fails naming them.
