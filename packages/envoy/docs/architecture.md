@@ -560,7 +560,10 @@ acknowledged. A frame that is no role message costs the decode of its topic and 
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
 resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
 less one sweep interval) resolves the holder again first, so a forward the previous holder was
-chosen for is stored inside the window a takeover's passes read. Delivery stays at least once: a
+chosen for is stored inside the window a takeover's passes read. A held role-lane message pinned
+to the holder an earlier forward of it may have reached is that same forward again and resolves
+nothing; a copy of it stored late on that holder's subject is one a takeover's passes read, for
+the 71 hours a takeover record lives. Delivery stays at least once: a
 frame the previous holder was being handed at the takeover, one it acknowledged out of order above
 its floor, and every role message of the hour before a takeover whose holder's floor is unknown
 can reach both sessions.
@@ -591,7 +594,14 @@ flush failed, or whose acknowledgement did not come for a subject the stream cap
 responders answer, or a stream answer that can change with the stream's state, such as a full
 stream - ends nothing: the lane holds the message, counted in `envoy_role_forwards_outstanding`,
 and runs its delivery again, under the same `Nats-Msg-Id`, for 71 hours at most, after which it
-keeps it on the kept lane. Once a forward of a message may have been stored - it left the
+keeps it on the kept lane. A held message logs one ERROR, `listener role message held for another
+delivery attempt`, at its first hold and DEBUG after it. Held messages count against the lane's
+4,096 forward slots (`roleForwardWaitLimit`): at that bound the handler waits for a slot, and its
+role messages wait in the lane's subscription. The lane logs one ERROR when its handler first
+waits, `role lane forward slots are all held; the role lane takes no more role messages until one
+ends`, and one once at most half the slots are held again, `role lane forward slots have room
+again`, with how long it was full. An alert reads `envoy_role_forwards_outstanding` at 4,096.
+Once a forward of a message may have been stored - it left the
 process, and no answer said the stream did not store it - every later attempt is that forward
 again, to the same holder, so the stream stores the message once even when the role moves
 meanwhile, for as long as that holder's session still has a record; a holder whose record is gone
