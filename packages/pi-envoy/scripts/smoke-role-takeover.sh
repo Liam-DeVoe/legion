@@ -705,7 +705,7 @@ row4_handoff() {
 # resumes X and is held off, A then stops answering and B takes the role, and A's release on its
 # way out frees nothing of B's.
 row5_omp() {
-  local role x left topic instance_a instance_b
+  local role x left topic instance_a instance_b holder holder_instance
   role="$(role_for r5omp)"
   x="$(session_for r5x)"
   left="$(session_for r5left)"
@@ -757,9 +757,12 @@ row5_omp() {
   begin_row "INFRA-783 — a release from the process that no longer holds the claim frees nothing"
   # The row before gave B the role, and A's release is weighed against B's claim only where it
   # did. So the row reads that first: where that row failed, this one fails naming B's missing
-  # hold, and not on a release that freed A's own claim.
-  expect "process B holds the role under X, as the row before left it" \
-    "$(role_holder "$role") $(role_instance "$role")" "${x} ${instance_b}"
+  # hold, and not on a release that freed A's own claim. The session and the process are read
+  # apart, so a role with no holder prints as <empty>.
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  expect "the role is held under X, as the row before left it" "$holder" "$x"
+  expect "process B holds it, as the row before left it" "$holder_instance" "$instance_b"
   # A's branch records a release, so A ends its hold and hands the role topic back naming its own
   # process. A is the second process in X now — the standing claim is B's — and a release frees
   # the claims of the process that asks and no others, so B keeps the role. This is the incident
