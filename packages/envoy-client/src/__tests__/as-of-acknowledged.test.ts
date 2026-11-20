@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { DISPATCH_AS_OF_HEADER } from "@legion/contracts";
-import { READ_FORMS, startAsOfStandIn } from "./as-of-stand-in";
+import { READ_COMMANDS, startAsOfStandIn } from "./as-of-stand-in";
 
 // A Dispatch older than `as_of` ignores the parameter and answers the present, with no
 // `Dispatch-As-Of` header (dispatch://INFRA-4620, decision 4). Each of the seven read commands
@@ -13,19 +13,8 @@ const standIn = startAsOfStandIn("as-of-acknowledged");
 
 afterAll(() => standIn.stop());
 
-/** One form of each of the seven read commands. */
-const COMMANDS = [
-  READ_FORMS.issue,
-  READ_FORMS.blocks,
-  READ_FORMS.search,
-  READ_FORMS.answers,
-  READ_FORMS.openAsks,
-  READ_FORMS.inbox,
-  READ_FORMS.results,
-];
-
 describe("an answer that does not name the cut is refused", () => {
-  for (const argv of COMMANDS) {
+  for (const argv of READ_COMMANDS) {
     test(`dispatch ${argv.join(" ")} --as-of ${CUT}`, async () => {
       const run = await standIn.run([...argv, "--as-of", CUT], { acknowledges: false });
       const output = `${run.stdout}${run.stderr}`;

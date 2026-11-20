@@ -1,6 +1,10 @@
 import type { WhoamiAgent } from "@legion/contracts";
 import { type DispatchToolName, dispatchCommands } from "../dispatch-commands/table";
-import type { ExecuteDispatchToolInput } from "../dispatch-execute";
+import {
+  type DispatchToolResult,
+  type ExecuteDispatchToolInput,
+  executeDispatchTool as executeTool,
+} from "../dispatch-execute";
 
 // A read command (`reads` in the command table: read, doc-read, search, results, answers,
 // open-asks and inbox) reads `GET /api/v1/whoami` before any other request, since a token that
@@ -27,7 +31,7 @@ export function asksWhoami(pathname: string): boolean {
 
 /** `fetchImpl` with `GET /api/v1/whoami` answered as `WHOAMI_NO_CUT`, before it is asked: every
  *  other request goes to `fetchImpl` as it came, so what it records is unchanged. */
-export function answeringWhoami(fetchImpl: typeof fetch): typeof fetch {
+function answeringWhoami(fetchImpl: typeof fetch): typeof fetch {
   return Object.assign(
     async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
       const url = new URL(input instanceof Request ? input.url : String(input));
@@ -39,9 +43,15 @@ export function answeringWhoami(fetchImpl: typeof fetch): typeof fetch {
 }
 
 /** `input` with whoami answered where its tool is a read command, and as it is otherwise. */
-export function withWhoamiAnswered(input: ExecuteDispatchToolInput): ExecuteDispatchToolInput {
+function withWhoamiAnswered(input: ExecuteDispatchToolInput): ExecuteDispatchToolInput {
   const command = dispatchCommands[input.tool as DispatchToolName];
   return command?.reads === true
     ? { ...input, fetchImpl: answeringWhoami(input.fetchImpl ?? fetch) }
     : input;
+}
+
+/** The executor, with whoami answered for a read command (`withWhoamiAnswered`): a test's
+ *  stand-in answers the reads the test is about. */
+export function executeDispatchTool(input: ExecuteDispatchToolInput): Promise<DispatchToolResult> {
+  return executeTool(withWhoamiAnswered(input));
 }

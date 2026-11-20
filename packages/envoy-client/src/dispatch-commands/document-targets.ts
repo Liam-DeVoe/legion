@@ -46,12 +46,13 @@ function artifactByReference(
   return artifact;
 }
 
+/** The document `artifactReference` names under `owner`, read at `read`'s cut where it names
+ *  one. `canonical` reads the reference as a slug first, as a dispatch:// reference means. */
 export async function resolveArtifact(
   client: DispatchClient,
   owner: Owner,
   artifactReference: string | undefined,
-  { canonical = false }: { readonly canonical?: boolean } = {},
-  read: AsOfRead = {}
+  { canonical = false, read = {} }: { readonly canonical?: boolean; readonly read?: AsOfRead } = {}
 ): Promise<ResolvedArtifact> {
   if (owner.kind === "project") {
     if (artifactReference === undefined) {
@@ -141,13 +142,10 @@ export async function documentTargets(
       return owner;
     },
     resolveDocument: (documentOwner, reference) =>
-      resolveArtifact(
-        client,
-        documentOwner,
-        reference,
-        { canonical: reference !== undefined && reference === refDocument },
-        read
-      ),
+      resolveArtifact(client, documentOwner, reference, {
+        canonical: reference !== undefined && reference === refDocument,
+        read,
+      }),
   };
 }
 
@@ -374,26 +372,26 @@ export interface LiveBlocks {
  * with `?blocks=true`: Dispatch renders the markdown, the blocks, the token and the version from
  * one tree, so a write by another session cannot leave the offsets slicing text they were not
  * computed over. A Dispatch older than that parameter answers the text with no blocks at all,
- * which is said rather than listed as a document with none. At `at`'s cut, the version that stood
- * then and its blocks.
+ * which is said rather than listed as a document with none. At `read`'s cut, the version that
+ * stood then and its blocks.
  */
 export async function liveBlocks(
   client: DispatchClient,
   artifact: Artifact,
-  at: AsOfRead = {}
+  read: AsOfRead = {}
 ): Promise<LiveBlocks> {
-  const read = await client.docReadWithBlocks(artifact.id, at);
-  if (read.blocks === undefined) {
+  const text = await client.docReadWithBlocks(artifact.id, read);
+  if (text.blocks === undefined) {
     throw new Error(
       `${artifact.name} was read from a Dispatch older than this command: it serves a document's blocks only on their own route, not beside the text they index, so nothing was listed.`
     );
   }
   return {
-    bytes: new TextEncoder().encode(read.markdown),
-    token: read.token,
+    bytes: new TextEncoder().encode(text.markdown),
+    token: text.token,
     // A Dispatch that names no version at all reads as a document with none.
-    version: read.version ?? null,
-    blocks: read.blocks,
+    version: text.version ?? null,
+    blocks: text.blocks,
   };
 }
 /** A document as a Dispatch call names it: `dispatch doc-edit`'s owner and document arguments. */

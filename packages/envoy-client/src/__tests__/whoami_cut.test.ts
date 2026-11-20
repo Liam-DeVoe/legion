@@ -3,9 +3,10 @@ import {
   ASK_OPENED,
   callsAtCutProblems,
   leftOutParts,
-  READ_FORMS,
+  READ_COMMANDS,
   startAsOfStandIn,
 } from "./as-of-stand-in";
+import { ISSUE } from "./dispatch-command-surface-responses";
 
 // A token that carries a cut reads Dispatch at that cut, whatever `--as-of` the command is given
 // (dispatch://INFRA-4620, decision 6). Whoami names the cut, and each of the seven read commands,
@@ -30,17 +31,6 @@ afterAll(() => {
   standIn.stop();
 });
 
-/** One form of each of the seven read commands. */
-const COMMANDS = [
-  READ_FORMS.issue,
-  READ_FORMS.blocks,
-  READ_FORMS.search,
-  READ_FORMS.answers,
-  READ_FORMS.openAsks,
-  READ_FORMS.inbox,
-  READ_FORMS.results,
-];
-
 /** What a run under the token's cut printed that only a count from that cut prints: the answers'
  *  window, each open ask's age and the Inbox's left-out Later band. */
 function countedFrom(argv: readonly string[], stdout: string): string[] {
@@ -58,7 +48,7 @@ function countedFrom(argv: readonly string[], stdout: string): string[] {
 }
 
 describe("a token's cut replaces --as-of", () => {
-  for (const argv of COMMANDS) {
+  for (const argv of READ_COMMANDS) {
     for (const asOf of [[], ["--as-of", LATER]]) {
       test(`dispatch ${[...argv, ...asOf].join(" ")} under a token cut at ${TOKEN_CUT}`, async () => {
         const run = await standIn.run([...argv, ...asOf], { whoamiCut: TOKEN_CUT });
@@ -78,4 +68,29 @@ describe("a token's cut replaces --as-of", () => {
       });
     }
   }
+});
+
+// `dispatch issues` is no read command of the seven, so it reads no whoami and sends no `as_of`,
+// but under a token that carries a cut Dispatch answers its listing as of that cut all the same,
+// and leaves out where each route reaches. The listing then names the route, and says nothing of
+// whether it reaches anyone: no value of the present, and no `undefined`.
+describe("dispatch issues under a token's cut", () => {
+  test("names a route whose reach the listing left out, and claims no reach for it", async () => {
+    const argv = ["issues", "--project", "DSP"];
+    const present = await standIn.run(argv);
+    const past = await standIn.run(argv, { whoamiCut: TOKEN_CUT });
+    const route = (stdout: string) =>
+      stdout.split("\n").find((line) => line.startsWith(`${ISSUE} `)) ?? stdout;
+    expect({
+      present: [present.code, route(present.stdout).split(" · ").at(-1)],
+      past: [past.code, route(past.stdout).split(" · ").at(-1)],
+      undefinedPrinted: past.stdout.includes("undefined"),
+      sentAsOf: past.calls.filter((call) => call.asOf.length > 0).map((call) => call.text),
+    }).toEqual({
+      present: [0, "route role:implementer (nobody holds it right now)"],
+      past: [0, "route role:implementer (the listing does not say whether it reaches anyone)"],
+      undefinedPrinted: false,
+      sentAsOf: [],
+    });
+  });
 });

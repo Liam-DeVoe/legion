@@ -520,9 +520,10 @@ const DispatchAsOfNotServed = "AS_OF_NOT_SERVED"
 const DispatchInvalidAsOf = "INVALID_AS_OF"
 
 // DispatchAsOfSearchNotFilled is the code of the 409 for a search at a past time that the fill of
-// the keyword table has not reached. The message and DispatchAsOfFilledThroughHeader name the time
-// that the fill reached. Generated from DISPATCH_AS_OF_SEARCH_NOT_FILLED in packages/contracts so
-// the server's refusal and every client's reading of it cannot drift apart.
+// the keyword table has not reached. Where the fill has reached a time, the message and
+// DispatchAsOfFilledThroughHeader name that time; where it has reached no time yet, the message
+// says so and the answer has no such header. Generated from DISPATCH_AS_OF_SEARCH_NOT_FILLED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
 const DispatchAsOfSearchNotFilled = "AS_OF_SEARCH_NOT_FILLED"
 
 // DispatchAsOfHeader is the response header on every answer that Dispatch gives as of a past time
@@ -538,8 +539,9 @@ const DispatchAsOfHeader = "Dispatch-As-Of"
 // packages/contracts so the server and every client name the header once.
 const DispatchAsOfAbsentHeader = "Dispatch-As-Of-Absent"
 
-// DispatchAsOfFilledThroughHeader is the response header on a 409 DispatchAsOfSearchNotFilled. The
-// value is the time that the fill of the keyword table reached, in RFC 3339. Generated from
+// DispatchAsOfFilledThroughHeader is the response header on a 409 DispatchAsOfSearchNotFilled when
+// the fill of the keyword table has reached a time. The value is that time, in RFC 3339; a refusal
+// whose fill has reached no time yet has no such header. Generated from
 // DISPATCH_AS_OF_FILLED_THROUGH_HEADER in packages/contracts so the server and every client name
 // the header once.
 const DispatchAsOfFilledThroughHeader = "Dispatch-As-Of-Filled-Through"

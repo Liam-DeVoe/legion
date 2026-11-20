@@ -414,8 +414,9 @@ export class AsOfNotAnswered extends Error {
  * Dispatch's refusal of a read at a cut, in words: what the code means for the read, then
  * Dispatch's own message. The code and the status stay the refusal's, so a reader that branches
  * on the code reads it as before. A search that the keyword table does not reach yet names the
- * time that the table reaches, which Dispatch sends in `Dispatch-As-Of-Filled-Through`. Undefined
- * for every other refusal. `route` is the request as it was sent, and `cut` its `as_of`.
+ * time that the table reaches, which Dispatch sends in `Dispatch-As-Of-Filled-Through`, or says
+ * that the table reaches no time yet where Dispatch sends no such header. Undefined for every
+ * other refusal. `route` is the request as it was sent, and `cut` its `as_of`.
  */
 function asOfRefusalWords(
   refusal: DispatchServiceError,
@@ -430,7 +431,9 @@ function asOfRefusalWords(
     case DISPATCH_INVALID_AS_OF:
       return `Dispatch cannot read ${cut} as a past time. Give one RFC 3339 time that is not later than the time on the server. ${said}`;
     case DISPATCH_AS_OF_SEARCH_NOT_FILLED:
-      return `Dispatch cannot search as of ${cut} yet: its table of past text reaches ${filledThrough ?? "a time that it does not name"} only. Search as of that time or earlier, or search again later. ${said}`;
+      return filledThrough === null
+        ? `Dispatch cannot search as of ${cut} yet: its table of past text reaches no time yet. Search again later. ${said}`
+        : `Dispatch cannot search as of ${cut} yet: its table of past text reaches ${filledThrough} only. Search as of that time or earlier, or search again later. ${said}`;
     case DISPATCH_AS_OF_TOKEN_NOT_SERVED:
       return `This token reads Dispatch as of ${cut}, and ${route} gives no answer as of that time: this Dispatch server answers no read at a past time there. ${said}`;
     default:
@@ -2084,16 +2087,13 @@ export class DispatchClient {
     );
     return this.#noRoute(async () => {
       const response = await this.#send("GET", url, undefined, "*/*");
-      if (!response.ok) {
-        return this.#response<never>("GET", url, response).catch((error: unknown) => {
-          throw this.#refusedAtCut(error, url, response, read.asOf);
-        });
-      }
-      this.#answeredAtCut(url, response, read);
-      return {
-        mime: response.headers.get("Content-Type") ?? "application/octet-stream",
-        bytes: new Uint8Array(await response.arrayBuffer()),
-      };
+      return this.#answerAtCut(url, response, read, async () => {
+        if (!response.ok) return this.#response<never>("GET", url, response);
+        return {
+          mime: response.headers.get("Content-Type") ?? "application/octet-stream",
+          bytes: new Uint8Array(await response.arrayBuffer()),
+        };
+      });
     });
   }
 
@@ -2351,7 +2351,7 @@ export class DispatchClient {
 
   /**
    * A read of a route that answers `as_of`: `#json`'s GET, which sends `read.asOf` as `as_of`
-   * where it names a cut. An answer to a read at a cut must name the cut (`#answeredAtCut`).
+   * where it names a cut. An answer to a read at a cut must name the cut (`#answerAtCut`).
    */
   async #read<T>(
     path: readonly string[],
@@ -2359,17 +2359,26 @@ export class DispatchClient {
     read: AsOfRead,
     signal?: AbortSignal
   ): Promise<T> {
-    const asOf = read.asOf;
-    if (asOf === undefined) return this.#json("GET", path, undefined, query, signal);
-    const url = this.#url(path, query, asOf);
-    return this.#noRoute(async () => {
-      const response = await this.#send("GET", url, undefined, undefined, signal);
-      const payload = await this.#response<T>("GET", url, response).catch((error: unknown) => {
-        throw this.#refusedAtCut(error, url, response, asOf);
-      });
-      this.#answeredAtCut(url, response, read);
-      return payload;
-    }, signal);
+    return (await this.#jsonAnswer<T>("GET", path, undefined, { query, signal, read })).payload;
+  }
+
+  /**
+   * `payload()`, the answer `response` carries, as the answer to a read at `read`'s cut: a
+   * refusal is put in words (`#refusedAtCut`), and a 2xx answer that does not name the cut is
+   * refused (`#answeredAtCut`). A read at no cut is `payload()` as it is.
+   */
+  async #answerAtCut<T>(
+    url: string,
+    response: Response,
+    read: AsOfRead,
+    payload: () => Promise<T>
+  ): Promise<T> {
+    if (read.asOf === undefined) return payload();
+    const answer = await payload().catch((error: unknown) => {
+      throw this.#refusedAtCut(error, url, response, read.asOf);
+    });
+    this.#answeredAtCut(url, response, read);
+    return answer;
   }
 
   /** `error` put in words where it is Dispatch's refusal of a read at the cut `asOf`
@@ -2412,7 +2421,8 @@ export class DispatchClient {
   /** `#json` with the status Dispatch answered, for a route whose status says what it did.
    *  `signal` aborts the call beside the client's own signal. `writes: false` marks a POST that
    *  writes nothing (a conversion, `markdownRoundTrip`): it is sent as a POST is, under one key
-   *  with its retries, but never read as a write that may have landed (`WriteCall.writes`). */
+   *  with its retries, but never read as a write that may have landed (`WriteCall.writes`).
+   *  `read` is a read's cut, which a read of a route that answers `as_of` sends (`#read`). */
   async #jsonAnswer<T>(
     method: string,
     path: readonly string[],
@@ -2422,10 +2432,11 @@ export class DispatchClient {
       readonly signal?: AbortSignal | undefined;
       readonly key?: string | undefined;
       readonly writes?: boolean;
+      readonly read?: AsOfRead;
     } = {}
   ): Promise<{ readonly status: number; readonly payload: T }> {
-    const { query, signal, key, writes = true } = options;
-    const url = this.#url(path, query);
+    const { query, signal, key, writes = true, read = {} } = options;
+    const url = this.#url(path, query, read.asOf);
     const encoded: EncodedBody | undefined =
       body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" };
     const write = this.#writeCall(method, url, key, writes);
@@ -2435,7 +2446,10 @@ export class DispatchClient {
     }
     return this.#noRoute(async () => {
       const response = await this.#send(method, url, encoded, undefined, signal);
-      return { status: response.status, payload: await this.#response<T>(method, url, response) };
+      const payload = await this.#answerAtCut(url, response, read, () =>
+        this.#response<T>(method, url, response)
+      );
+      return { status: response.status, payload };
     }, signal);
   }
 

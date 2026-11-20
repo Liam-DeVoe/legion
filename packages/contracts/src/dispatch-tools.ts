@@ -2215,7 +2215,7 @@ export const dispatchToolSpecs = [
         .optional(),
       as_of: asOfArgument(
         z,
-        "It leaves out the parts that keep no history: the reference graph (the node line, Referenced by and Links), an issue's References and Coverage, and whether a session runs. It reads a block from its document, comment or ask at that time."
+        "It leaves out the parts that keep no history: the reference graph (the node line, Referenced by and Links), an issue's References and Coverage, and whether a session runs. It reads a block from its document, ask, comment or message at that time."
       ),
     }),
     validation: readValidation,

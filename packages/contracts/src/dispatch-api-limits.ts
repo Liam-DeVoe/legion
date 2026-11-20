@@ -494,7 +494,9 @@ export const DISPATCH_INVALID_AS_OF = "INVALID_AS_OF";
 /**
  * The code of the `409` for a search at a past time that the fill of the keyword table has not
  * reached. That table holds each past version of the text of issues, comments, messages and asks.
- * The message and `DISPATCH_AS_OF_FILLED_THROUGH_HEADER` name the time that the fill reached.
+ * Where the fill has reached a time, the message and `DISPATCH_AS_OF_FILLED_THROUGH_HEADER` name
+ * that time. Where the fill has reached no time yet, the message says so and the answer has no
+ * such header.
  */
 export const DISPATCH_AS_OF_SEARCH_NOT_FILLED = "AS_OF_SEARCH_NOT_FILLED";
 
@@ -517,9 +519,10 @@ export const DISPATCH_AS_OF_HEADER = "Dispatch-As-Of";
 export const DISPATCH_AS_OF_ABSENT_HEADER = "Dispatch-As-Of-Absent";
 
 /**
- * The response header on a `409 AS_OF_SEARCH_NOT_FILLED` (`DISPATCH_AS_OF_SEARCH_NOT_FILLED`).
- * The value is the time that the fill of the keyword table reached, in RFC 3339. A search at that
- * time or at an earlier time does not get that refusal.
+ * The response header on a `409 AS_OF_SEARCH_NOT_FILLED` (`DISPATCH_AS_OF_SEARCH_NOT_FILLED`) when
+ * the fill of the keyword table has reached a time. The value is that time, in RFC 3339. A search
+ * at that time or at an earlier time does not get that refusal. When the fill has reached no time
+ * yet, the refusal has no such header.
  */
 export const DISPATCH_AS_OF_FILLED_THROUGH_HEADER = "Dispatch-As-Of-Filled-Through";
 

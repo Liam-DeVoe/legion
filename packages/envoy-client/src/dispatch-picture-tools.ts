@@ -336,7 +336,7 @@ export function shownPictureAddresses(texts: Iterable<string>): string[] {
 interface PictureTarget {
   /** Dedupes concurrent reads of one artifact: `<owner>/<slug>`. */
   readonly key: string;
-  readonly read: (client: DispatchClient, at: AsOfRead) => Promise<Artifact>;
+  readonly read: (client: DispatchClient, read: AsOfRead) => Promise<Artifact>;
   readonly version: number;
 }
 
@@ -347,7 +347,7 @@ function pictureTarget(address: string): PictureTarget | undefined {
     if (agent.version === undefined) return undefined;
     return {
       key: `agent/${agent.session}/${agent.slug}`,
-      read: (client, at) => client.getAgentArtifact(agent.session, agent.slug, at),
+      read: (client, read) => client.getAgentArtifact(agent.session, agent.slug, read),
       version: agent.version,
     };
   }
@@ -357,12 +357,12 @@ function pictureTarget(address: string): PictureTarget | undefined {
   return owner.kind === "issue"
     ? {
         key: `${owner.issue}/${slug}`,
-        read: (client, at) => client.getIssueArtifact(owner.issue, slug, at),
+        read: (client, read) => client.getIssueArtifact(owner.issue, slug, read),
         version: ref.version,
       }
     : {
         key: `${owner.project}/${slug}`,
-        read: (client, at) => client.getProjectArtifact(owner.project, slug, at),
+        read: (client, read) => client.getProjectArtifact(owner.project, slug, read),
         version: ref.version,
       };
 }
@@ -416,14 +416,14 @@ export function forgetShownPictures(sessionId: string): void {
  * it. Dispatch's stated size and type rule a picture out before its bytes are fetched. An address
  * in `shown`, the pictures this session was already shown, is named as shown earlier, read
  * nothing and counts toward neither limit. `shown` is only read: the result's `shown` names the
- * pictures shown here, which the caller adds once the model has them. With `at`'s cut, each
+ * pictures shown here, which the caller adds once the model has them. With `read`'s cut, each
  * picture and its bytes are read as they stood at that cut.
  */
 export async function readPictures(
   client: DispatchClient,
   addresses: readonly string[],
   shown?: ReadonlySet<string>,
-  at: AsOfRead = {}
+  read: AsOfRead = {}
 ): Promise<PicturesRead> {
   if (addresses.length === 0) return { lines: [], images: [], shown: [] };
   const artifacts = new Map<string, Promise<Artifact>>();
@@ -448,12 +448,12 @@ export async function readPictures(
       continue;
     }
     try {
-      let read = artifacts.get(target.key);
-      if (read === undefined) {
-        read = target.read(client, at);
-        artifacts.set(target.key, read);
+      let artifactRead = artifacts.get(target.key);
+      if (artifactRead === undefined) {
+        artifactRead = target.read(client, read);
+        artifacts.set(target.key, artifactRead);
       }
-      const artifact = await read;
+      const artifact = await artifactRead;
       const version = (artifact.versions ?? []).find(
         (candidate) => candidate.number === target.version
       );
@@ -478,7 +478,7 @@ export async function readPictures(
         skip(overBudget);
         continue;
       }
-      const file = await client.fileVersion(artifact.id, target.version, at);
+      const file = await client.fileVersion(artifact.id, target.version, read);
       const image = toolImage(file.bytes);
       if (image === undefined) {
         skip(

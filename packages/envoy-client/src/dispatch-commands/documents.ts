@@ -88,7 +88,7 @@ async function blockAsks(
  * other file comes back as text when it is UTF-8, and is described with the route that serves its
  * bytes when it is not. A file carries no token, anchors or approval, so nothing else is read. A
  * picture is shown whatever `shown` holds, and joins it under its address, so the session's later
- * reads name it instead of sending it. At `at`'s cut, the version is the one that stood then.
+ * reads name it instead of sending it. At `read`'s cut, the version is the one that stood then.
  */
 async function readUploadedFile(
   client: DispatchClient,
@@ -97,7 +97,7 @@ async function readUploadedFile(
   requested: number | undefined,
   owner: string,
   shown: Set<string> | undefined,
-  at: AsOfRead = {}
+  read: AsOfRead = {}
 ): Promise<DispatchToolResult> {
   const versions = artifact.versions ?? [];
   const latest = Math.max(0, ...versions.map((version) => version.number));
@@ -118,7 +118,7 @@ async function readUploadedFile(
   ) {
     return tooLarge(stated.mime ?? "image", stated.size);
   }
-  const file = await client.fileVersion(artifact.id, number, at);
+  const file = await client.fileVersion(artifact.id, number, read);
   const size = `${file.bytes.length.toLocaleString("en-US")} bytes`;
   if (artifact.kind === "image") {
     const image = toolImage(file.bytes);
@@ -171,9 +171,9 @@ const BLOCK_OPENING_CHARS = 60;
 async function listDocumentBlocks(
   client: DispatchClient,
   artifact: Artifact,
-  at: AsOfRead = {}
+  read: AsOfRead = {}
 ): Promise<{ text: string; token: string | undefined; version: number | null }> {
-  const live = await liveBlocks(client, artifact, at);
+  const live = await liveBlocks(client, artifact, read);
   const { bytes, blocks } = live;
   const decoder = new TextDecoder();
   const lines = [
@@ -194,9 +194,10 @@ async function listDocumentBlocks(
     // At a cut a block's token is left out, and so is the id of an untyped block of a version no
     // index holds: neither prints as a value, nor as "no token".
     const id: string | undefined = block.id;
-    const shownId = id === undefined && at.asOf !== undefined ? `(id ${leftOutAt(at.asOf)})` : id;
+    const shownId =
+      id === undefined && read.asOf !== undefined ? `(id ${leftOutAt(read.asOf)})` : id;
     const token =
-      block.token ?? (at.asOf === undefined ? "no token" : `token ${leftOutAt(at.asOf)}`);
+      block.token ?? (read.asOf === undefined ? "no token" : `token ${leftOutAt(read.asOf)}`);
     lines.push(
       `${indent}${shownId} ${block.type} (${token}; ${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}): ${opening}`
     );

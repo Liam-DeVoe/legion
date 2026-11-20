@@ -590,7 +590,9 @@ function carriedBodyNote(event: DispatchEvent): string | undefined {
  *  followed by the mark every line prints for one (` · edited <time>`, `editedMark`): the card a
  *  host renders with this body re-read the post, so it prints the words the post holds now, which
  *  an edit since the event may have changed. A card that prints only what its frame carried reads
- *  nothing here, and keeps the delivery Dispatch sent as it was sent. */
+ *  nothing here, and keeps the delivery Dispatch sent as it was sent. A read at a cut whose answer
+ *  leaves out the body (`Dispatch-As-Of-Absent`) answers undefined as well, so the caller keeps
+ *  the part its event carried. */
 export async function wholeCarriedBody(
   client: DispatchClient,
   item: CarriedItem,
@@ -613,7 +615,8 @@ export async function wholeCarriedBody(
     const post = posts.find((candidate) => candidate.id === item.id);
     if (post === undefined) return undefined;
     if (post.deleted_at != null) return deletedMark(post.deleted_at, post.deleted_by);
-    return withEditedMark(post.body, post.edited_at);
+    const body: string | undefined = post.body;
+    return body === undefined ? undefined : withEditedMark(body, post.edited_at);
   } catch {
     return undefined;
   }

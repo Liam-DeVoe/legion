@@ -160,9 +160,10 @@ export interface LiveAgents {
  *
  * `undefined` is no registry: none was needed, the agents request failed, or the read is at a cut
  * (`cut`), where the registry, which answers the present only, is not read and is left out. Names
- * then fall back to the title each session stamped on its write, and a session's claim reads
- * "liveness unknown" (`claimText`) rather than running or not running. A holder the registry does
- * not list is the ordinary case, a session that has ended, whose claim the next agent may take.
+ * then fall back to the title each session stamped on its write. A session's claim then reads
+ * "liveness unknown" (`claimText`) rather than running or not running, and at a cut it reads
+ * "liveness left out at <cut>". A holder the registry does not list is the ordinary case, a
+ * session that has ended, whose claim the next agent may take.
  */
 export async function liveAgents(
   client: DispatchClient,

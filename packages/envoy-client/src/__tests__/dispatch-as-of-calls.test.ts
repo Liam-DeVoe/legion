@@ -5,7 +5,6 @@ import {
   DISPATCH_AS_OF_NOT_SERVED,
   DISPATCH_INVALID_AS_OF,
   type PostHistoryRead,
-  type WhoamiAgent,
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -29,8 +28,9 @@ import {
   versionBody,
 } from "./dispatch-command-surface-responses";
 import { fakeSearchResponse } from "./fake-search-response";
+import { WHOAMI_NO_CUT } from "./whoami-stand-in";
 
-// The calls of each read command under `--as-of` (INFRA-4620, plan task t17). The plan's table
+// The calls of each read command under `--as-of` (dispatch://INFRA-4620). The plan's table
 // "Routes and their kinds" gives each route a read command calls one kind. A route of kind
 // "answers" takes `as_of` and answers as of the cut. A route of kind "no history" answers only the
 // present. Whoami describes the caller now. Each row below runs one form of one command with
@@ -45,9 +45,8 @@ const makeDirectory = temporaryDirectories("dispatch-as-of-calls");
 /** The fixed cut each row sends with `--as-of`. */
 const CUT = "2026-11-10T12:00:00Z";
 
-/** The host session the command runs in. */
-const SESSION = "ses-1";
-const OWNER = "person@example.com";
+/** The host session the command runs in: whoami's own. */
+const SESSION = WHOAMI_NO_CUT.session;
 /** The session that holds the issue's claim and its route. */
 const HOLDER = "ses-holder";
 /** The session whose conversation holds an upload. */
@@ -204,17 +203,6 @@ const HOLDER_AGENT: Agent = {
   state: "live",
   title: "Implementer",
 };
-
-/** Whoami of a token that carries no cut: the command reads the past at `--as-of` alone. */
-const WHOAMI = {
-  kind: "agent",
-  owner: OWNER,
-  service: null,
-  session: SESSION,
-  project: null,
-  scopes: ["person"],
-  cut: null,
-} satisfies WhoamiAgent;
 
 const HISTORY = {
   deleted_at: null,
@@ -743,7 +731,8 @@ function answerFor(
   const id = params.id ?? "";
   switch (route) {
     case "GET /api/v1/whoami":
-      return Response.json(WHOAMI);
+      // A token that carries no cut: the command reads the past at `--as-of` alone.
+      return Response.json(WHOAMI_NO_CUT);
     case "GET /api/v1/issues/resolve":
       return answer(query.get("ref") === EXTERNAL ? { key: ISSUE } : undefined);
     case "GET /api/v1/issues/{key}":

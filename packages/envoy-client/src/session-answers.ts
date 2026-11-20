@@ -4,6 +4,7 @@ import { actorActText, type SessionAnswer } from "@legion/contracts";
 import { urlForText } from "@legion/contracts/log-text";
 import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
+import type { ReadTime } from "./dispatch-commands/as-of";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
@@ -285,16 +286,12 @@ export function renderSessionAnswers(
   return text;
 }
 
-/** What `dispatch answers` prints: every item of the 72 hours before `now`, newest first, in the
+/** What `dispatch answers` prints: every item of the 72 hours before `time`, newest first, in the
  *  per-request list's item format and with no cap, or a line saying there is none. A list read at
- *  a cut (`cut`, RFC 3339) counts the 72 hours back from that cut, and says so. */
-export function renderSessionAnswersList(
-  items: readonly SessionAnswer[],
-  options: { readonly now: number | Date } | { readonly cut: string }
-): string {
-  const now = "cut" in options ? Date.parse(options.cut) : Number(options.now);
-  const window =
-    "cut" in options ? `in the 72 hours before ${options.cut}` : "in the last 72 hours";
+ *  a cut (`asOf`, RFC 3339) counts the 72 hours back from that cut, and says so. */
+export function renderSessionAnswersList(items: readonly SessionAnswer[], time: ReadTime): string {
+  const now = "asOf" in time ? Date.parse(time.asOf) : time.now;
+  const window = "asOf" in time ? `in the 72 hours before ${time.asOf}` : "in the last 72 hours";
   const shown = withinWindow(items, now);
   if (shown.length === 0) return `No person wrote to this session ${window}.`;
   return [

@@ -1,5 +1,6 @@
 import type { WhoamiResponse } from "@legion/contracts";
 import type { AsOfRead } from "../dispatch-http";
+import { ToolInputError } from "../tool-input-errors";
 import { type DispatchToolResult, optionalString, type SessionContext } from "./context";
 
 /**
@@ -30,9 +31,22 @@ export const LEFT_OUT = {
   snoozes: "snoozes",
 } as const;
 
+/** A part a read command left out at a cut: one of `LEFT_OUT`'s words. */
+export type LeftOutPart = (typeof LEFT_OUT)[keyof typeof LEFT_OUT];
+
 /** What a read prints in place of a part or a field it left out at `asOf`, the cut. */
 export function leftOutAt(asOf: string): string {
   return `left out at ${asOf}`;
+}
+
+/** The time a read counts its ages and windows from: the present on this machine's clock
+ *  (`now`, in epoch milliseconds), or the cut it read Dispatch at (`asOf`). */
+export type ReadTime = { readonly now: number } | { readonly asOf: string };
+
+/** The time a read at `read`'s cut counts from: the cut, or the present where it names none. */
+export function readTime(read: AsOfRead | undefined): ReadTime {
+  const asOf = read?.asOf;
+  return asOf === undefined ? { now: Date.now() } : { asOf };
 }
 
 /** Why `dispatch results` refuses `--at` with `--as-of`: `--at` compares each check with one
@@ -50,10 +64,11 @@ export function resultsAtACutProblem(cut: string): string {
  * The words for a field an answer named in `Dispatch-As-Of-Absent`, by the end of its JSON
  * Pointer: a key starting with `/` is the whole pointer, any other the pointer's last segments
  * (`/open_asks/*\/referenced_by_count` ends in `referenced_by_count`). The longest match wins, and
- * a pointer that matches none is named as the pointer itself. The fields are the plan's list
- * "Absent fields, by route".
+ * a pointer that matches none is named as the pointer itself. The fields are each pointer that
+ * `AbsentFields` in `packages/envoy/internal/dispatch/asof/absent.go` names, which is the only
+ * table a route names absent fields from.
  */
-const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
+export const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   route_status: "the route's state now",
   route_holder: "the route's holder now",
   route_status_reason: "why the route stands as it does now",
@@ -70,13 +85,17 @@ const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   waiting_on_person: "the person an ask waits on by its project's default",
   "approval/documents": "the documents of each approval request",
   body: "the bodies of posts deleted or edited since",
+  "reply_block/text": "the text of the block a reply answers",
   "reply_block/removed": "whether the block a reply answers was removed",
+  anchor_block: "where each anchored block stands in its document",
   "deliveries/*/state": "the state of each delivery",
   "deliveries/*/reply_id": "the reply of each delivery",
   "deliveries/*/envelope_id": "the envelope of each delivery",
   "deliveries/*/resolve_error": "the error of each delivery",
   "deliveries/*/created_at": "the time of each delivery",
   "deliveries/*/requested_by": "who asked for each delivery",
+  "deliveries/*/delivery": "the delivery mode of each delivery",
+  "deliveries/*/session_id": "the session of each delivery",
   snoozed_until: "snoozes",
   "/token": "the document token",
   token: "the block tokens",
@@ -95,7 +114,7 @@ const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   sha256: "the digest of the words of each check",
   check_words_moved: "whether the words of a check moved after each result",
   "query/broadened": "the broadened query",
-  snippet_tree: "the snippet trees",
+  href: "the link of each ask hit whose document changed since",
 };
 
 /** A field an answer named absent, in words (`ABSENT_FIELD_WORDS`). */
@@ -129,8 +148,8 @@ export class ReadCut implements AsOfRead {
     for (const pointer of pointers) this.#absent.add(pointer);
   }
 
-  /** Records `part` (`LEFT_OUT`) as left out, and answers the row a section prints for it. */
-  leave(part: string): string {
+  /** Records `part` as left out, and answers the row a section prints for it. */
+  leave(part: LeftOutPart): string {
     this.#parts.add(part);
     return leftOutAt(this.asOf);
   }
@@ -155,11 +174,21 @@ export interface Reading {
 /**
  * Reads `GET /api/v1/whoami` before any other request of a read command. A token that carries a
  * cut reads at that cut, whatever `--as-of` the call names (decision 6 of dispatch://INFRA-4620),
- * so its cut replaces the call's own. A Dispatch older than the cut names none.
+ * so its cut replaces the call's own. A Dispatch older than the cut names none. A token's cut
+ * refuses `dispatch results --at` here, before any other request, as `check.ts` refuses `--at`
+ * beside `--as-of` before any request at all.
  */
 export async function readAtCut(session: SessionContext): Promise<Reading> {
   const identity = await session.newClient().whoami();
   const tokenCut = identity.kind === "agent" ? (identity.cut ?? null) : null;
+  const { tool } = session.input;
+  if (
+    tokenCut !== null &&
+    tool === "dispatch_results" &&
+    optionalString(session.args, "at") !== undefined
+  ) {
+    throw new ToolInputError(tool, [resultsAtACutProblem(tokenCut)]);
+  }
   const asOf = tokenCut ?? optionalString(session.args, "as_of");
   return { identity, cut: asOf === undefined ? undefined : new ReadCut(asOf) };
 }

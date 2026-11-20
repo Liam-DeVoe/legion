@@ -8,6 +8,7 @@ import type {
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  IssueSummary,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -22,9 +23,7 @@ import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owne
 import { messageFor } from "../errors";
 import { relatedCheckLines } from "../related-check";
 import { pageSummaryText, searchAnswer } from "../search-answer";
-import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
-import { resultsAtACutProblem } from "./as-of";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -42,7 +41,14 @@ import {
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
 import { linkFor } from "./links";
-import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
+import {
+  claimText,
+  holdsSession,
+  type LiveAgents,
+  liveAgents,
+  progressText,
+  routeText,
+} from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
 
@@ -545,7 +551,7 @@ export async function searchCommand(
     },
     reading.cut
   );
-  return searchAnswer(search, query, offset, linkBase);
+  return searchAnswer(search, query, offset, linkBase, reading.cut?.asOf);
 }
 
 /** `dispatch related`: the issues a title and text look like, before one more is opened. */
@@ -570,6 +576,60 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
     }).join("\n"),
     details: { project, suggestions },
   };
+}
+
+/** One issue of `dispatch issues` as the call's details carry it. */
+function issueListingRow(row: IssueSummary) {
+  return {
+    key: row.key,
+    title: row.title,
+    status: row.status,
+    priority: row.priority,
+    parent: row.parent,
+    labels: row.labels ?? [],
+    open_asks: row.open_asks,
+    claim: row.claim ?? null,
+    route: row.route ?? null,
+    route_status: row.route_status ?? null,
+    route_holder: row.route_holder ?? null,
+    route_status_reason: row.route_status_reason ?? null,
+    updated_at: row.updated_at,
+    progress: row.progress,
+  };
+}
+
+/**
+ * What a line of `dispatch issues` says of the issue's route. A route that reaches a live session
+ * changes nothing about the line; one that reaches nobody, or cannot be judged, is what the owner
+ * audit reads. A listing read with a token that carries a cut answers as of that cut, and leaves
+ * out where each route reaches (`Dispatch-As-Of-Absent`): its state is then absent, not null, and
+ * the line names the route and says that the listing does not say whether it reaches anyone, so
+ * it never reads as a route that reaches a live session.
+ */
+function listingRouteText(row: IssueSummary): string {
+  const route = row.route ?? null;
+  const status: string | null | undefined = row.route_status;
+  if (route === null || status === "live" || status === null) return "";
+  if (status === undefined) {
+    return ` · route ${route} (the listing does not say whether it reaches anyone)`;
+  }
+  return ` · route ${routeText(row)}`;
+}
+
+/** One issue of `dispatch issues` as a line: its key, status, priority and title, its open asks,
+ *  its claim, its progress, and its route (`listingRouteText`). */
+function issueListingLine(row: IssueSummary, agents: LiveAgents | undefined): string {
+  const claim = row.claim ?? null;
+  const progress = progressText(row.progress, " · ");
+  return (
+    `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ${row.title}` +
+    (row.open_asks === 0
+      ? ""
+      : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
+    (claim === null ? "" : ` · claimed by ${claimText(claim, agents)}`) +
+    (progress === "" ? "" : ` · ${progress}`) +
+    listingRouteText(row)
+  );
 }
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask. */
@@ -609,57 +669,27 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
           offset: optionalNumber(args, "offset") ?? 0,
         });
   const { total, limit, offset } = page;
-  const rows = (page.issues ?? []).map((row) => ({
-    key: row.key,
-    title: row.title,
-    status: row.status,
-    priority: row.priority,
-    parent: row.parent,
-    labels: row.labels ?? [],
-    open_asks: row.open_asks,
-    claim: row.claim ?? null,
-    route: row.route ?? null,
-    route_status: row.route_status ?? null,
-    route_holder: row.route_holder ?? null,
-    route_status_reason: row.route_status_reason ?? null,
-    updated_at: row.updated_at,
-    progress: row.progress,
-  }));
+  const issues = page.issues ?? [];
   const agents = await liveAgents(
     client,
-    rows.some((row) => holdsSession(row.claim))
+    issues.some((row) => holdsSession(row.claim))
   );
-  const isPartial = offset !== 0 || rows.length !== total;
+  const isPartial = offset !== 0 || issues.length !== total;
   const showing = !isPartial
     ? ""
-    : rows.length === 0
+    : issues.length === 0
       ? `showing 0-0 of ${total}`
-      : pageSummaryText(offset, rows.length, total);
+      : pageSummaryText(offset, issues.length, total);
   return {
     text:
-      rows.length === 0
+      issues.length === 0
         ? `No issues in ${project}.${isPartial ? ` (${showing})` : ""}`
         : [
-            `${rows.length} ${rows.length === 1 ? "issue" : "issues"} in ${project}` +
+            `${issues.length} ${issues.length === 1 ? "issue" : "issues"} in ${project}` +
               (isPartial ? ` (${showing})` : ""),
-            ...rows.map((row) => {
-              const progress = progressText(row.progress, " · ");
-              return (
-                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ${row.title}` +
-                (row.open_asks === 0
-                  ? ""
-                  : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
-                (row.claim === null ? "" : ` · claimed by ${claimText(row.claim, agents)}`) +
-                (progress === "" ? "" : ` · ${progress}`) +
-                // A route that reaches a live session changes nothing about the row; one
-                // that reaches nobody, or cannot be judged, is what the owner audit reads.
-                (row.route === null || row.route_status === "live" || row.route_status === null
-                  ? ""
-                  : ` · route ${routeText(row)}`)
-              );
-            }),
+            ...issues.map((row) => issueListingLine(row, agents)),
           ].join("\n"),
-    details: { issues: rows, total, offset, limit },
+    details: { issues: issues.map(issueListingRow), total, offset, limit },
   };
 }
 
@@ -750,18 +780,16 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it; at a cut, the checks and results recorded by then. A token's cut refuses `--at`
- *  here, as the call's own `--as-of` is refused beside it before any request (`check.ts`). */
+ *  against it; at a cut, the checks and results recorded by then. `--at` is refused with a cut
+ *  before this runs: beside `--as-of` before any request (`check.ts`), and under a token's cut
+ *  right after whoami (`readAtCut`). */
 export async function resultsCommand(
   context: ReadingContext<CommandContext>
 ): Promise<DispatchToolResult> {
-  const { args, client, input, reading } = context;
+  const { args, client, reading } = context;
   const issue = stringArg(args, "issue");
   const at = optionalString(args, "at");
   const brief = optionalBoolean(args, "brief") === true;
-  if (at !== undefined && reading.cut !== undefined) {
-    throw new ToolInputError(input.tool, [resultsAtACutProblem(reading.cut.asOf)]);
-  }
   const results = await client.issueResults(issue, at, reading.cut);
   const checks = results.checks ?? [];
   return {

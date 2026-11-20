@@ -2,6 +2,8 @@ import {
   type Agent,
   DISPATCH_AS_OF_ABSENT_HEADER,
   DISPATCH_AS_OF_HEADER,
+  DISPATCH_AS_OF_TOKEN_NOT_SERVED,
+  type SearchResult,
   type SessionAnswer,
   type WhoamiAgent,
 } from "@legion/contracts";
@@ -14,6 +16,8 @@ import { forgetShownPictures } from "../dispatch-picture-tools";
 import {
   AT,
   actor,
+  askBody,
+  askReadBody,
   commentBody,
   coverageBody,
   ISSUE,
@@ -21,6 +25,7 @@ import {
   issueResultsBody,
 } from "./dispatch-command-surface-responses";
 import { fakeSearchResponse } from "./fake-search-response";
+import { WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // A stand-in Dispatch for the read commands at a cut (dispatch://INFRA-4620, R3). It answers one
 // world: the routes that one form of each of the seven read commands calls. A call that sends
@@ -28,18 +33,23 @@ import { fakeSearchResponse } from "./fake-search-response";
 // in `Dispatch-As-Of` and each field the world leaves out at a cut in `Dispatch-As-Of-Absent`, as
 // Dispatch answers it. A call with no `as_of` is answered at the present, on the clock the test
 // sets (`setSystemTime`): every time the world names counts from the one or the other, so a
-// command that counts from its own clock at a cut prints other ages and windows. Each run records
-// every request it makes, by the bearer the run is handed.
+// command that counts from its own clock at a cut prints other ages and windows. A run whose
+// token carries a cut (`whoamiCut`) is answered as Dispatch answers such a token (decision 6):
+// every call of kind "answers" at the token's cut, whatever `as_of` it sends, and every call of
+// kind "no history" 403 `AS_OF_TOKEN_NOT_SERVED`. Each run records every request it makes, by the
+// bearer the run is handed.
 
-/** The host session the command runs in, and the person its token acts for. */
-export const SESSION = "ses-1";
-export const OWNER = "person@example.com";
+/** The host session the command runs in, and the person its token acts for: whoami's own. */
+const SESSION = WHOAMI_NO_CUT.session;
+export const OWNER = WHOAMI_NO_CUT.owner;
 /** The session that holds the issue's claim and its route, and its title. */
-export const HOLDER = "ses-holder";
+const HOLDER = "ses-holder";
 export const HOLDER_TITLE = "Implementer";
 
-export const COMMENT = "c0e00001-0000-4000-8000-000000000001";
-export const REPLY = "c0e00002-0000-4000-8000-000000000002";
+const COMMENT = "c0e00001-0000-4000-8000-000000000001";
+const REPLY = "c0e00002-0000-4000-8000-000000000002";
+const ASK = "a5c00001-0000-4000-8000-000000000001";
+const ASK_REPLY = "c0e00003-0000-4000-8000-000000000003";
 
 const HOUR = 3_600_000;
 
@@ -235,8 +245,8 @@ const HOLDER_AGENT: Agent = {
 };
 
 /** `GET /api/v1/comments/{id}`: a comment and a reply to one of its blocks. At a cut the
- *  comment's body is left out, as for a long comment edited since, and so is whether the block
- *  the reply answers was removed. */
+ *  comment's body is left out, as for a long comment edited since, and so is the block the reply
+ *  answers: whether it was removed and its text, as for a comment changed since. */
 function commentRead(when: When): Answered {
   const block = {
     block_id: "b1",
@@ -258,11 +268,92 @@ function commentRead(when: When): Answered {
           id: REPLY,
           reply_to: COMMENT,
           body: "A reply.",
-          reply_block: presentOnly(block, when, ["removed"]),
+          reply_block: presentOnly(block, when, ["removed", "text"]),
         },
       ],
     },
-    absent: ["/comment/body", "/replies/*/reply_block/removed"],
+    absent: ["/comment/body", "/replies/*/reply_block/removed", "/replies/*/reply_block/text"],
+  };
+}
+
+/** `GET /api/v1/asks/{id}`: a question with one reply in its thread. At a cut the reply's body is
+ *  left out, as for a long reply edited since. */
+function askRead(when: When): Answered {
+  const reply = {
+    ...commentBody(),
+    id: ASK_REPLY,
+    ask_id: ASK,
+    body: "The words of the reply before its edit.",
+  };
+  return {
+    body: {
+      ...askReadBody(),
+      ask: { ...askBody(), id: ASK },
+      replies: [presentOnly(reply, when, ["body"])],
+    },
+    absent: ["/replies/*/body"],
+  };
+}
+
+/** `GET /api/v1/issues`: the project's one issue, as one page. A session holds its claim, and its
+ *  route reaches nobody. At a cut where the route reaches is left out, and so is the component
+ *  split. */
+function issueListing(when: When): Answered {
+  const row = {
+    key: ISSUE,
+    title: "Native workspace",
+    status: "todo",
+    priority: 1,
+    labels: ["infra"],
+    parent: null,
+    open_asks: 0,
+    claim: { actor: { kind: "session", id: HOLDER }, at: AT },
+    route: "role:implementer",
+    route_status: "no_holder",
+    route_holder: null,
+    route_status_reason: null,
+    updated_at: AT,
+    progress: { tasks: null, children: null },
+    components: presentOnly(
+      { mode: "explicit", ids: ["cli"], unknown: [], reason: null, inherited_from: null },
+      when,
+      ["ids", "unknown"]
+    ),
+  };
+  return {
+    body: {
+      issues: [presentOnly(row, when, ["route_status", "route_holder", "route_status_reason"])],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    },
+    absent: [
+      "/issues/*/route_status",
+      "/issues/*/route_holder",
+      "/issues/*/route_status_reason",
+      "/issues/*/components/ids",
+      "/issues/*/components/unknown",
+    ],
+  };
+}
+
+/** `GET /api/v1/search` and `GET /api/v1/search/results`: one ask hit. At a cut its link is left
+ *  out, as for an ask whose block's document changed after the cut, and so is the broadened
+ *  query. */
+function searchResults(when: When): Answered {
+  const hit = {
+    kind: "ask",
+    owner: { kind: "issue", key: ISSUE, title: "Native workspace", status: "todo" },
+    id: ASK,
+    snippet: "Which way should the <mark>release</mark> go?",
+    rank: 0.5,
+    href: `/issues/${ISSUE}/ask/${ASK}`,
+    ask: { state: "open" },
+  };
+  const body = fakeSearchResponse([presentOnly(hit, when, ["href"]) as SearchResult]);
+  return {
+    body: when.cut === undefined ? body : { ...body, query: { operators: [] } },
+    absent: ["/query/broadened", "/results/*/href"],
   };
 }
 
@@ -477,6 +568,8 @@ function answerFor(
   when: When
 ): Answered | undefined {
   switch (route) {
+    case "GET /api/v1/issues":
+      return issueListing(when);
     case "GET /api/v1/issues/{key}":
       return params.key === ISSUE ? issueRead(when) : undefined;
     case "GET /api/v1/issues/{key}/events": {
@@ -487,18 +580,15 @@ function answerFor(
       return { body: [] };
     case "GET /api/v1/comments/{id}":
       return params.id === COMMENT ? commentRead(when) : undefined;
+    case "GET /api/v1/asks/{id}":
+      return params.id === ASK ? askRead(when) : undefined;
     case "GET /api/v1/artifacts/{id}/text":
       return documentText(when, query.get("blocks") === "true");
     case "GET /api/v1/issues/{key}/results":
       return results(when);
     case "GET /api/v1/search":
-    case "GET /api/v1/search/results": {
-      const body = fakeSearchResponse([]);
-      return {
-        body: when.cut === undefined ? body : { ...body, query: { operators: [] } },
-        absent: ["/query/broadened"],
-      };
-    }
+    case "GET /api/v1/search/results":
+      return searchResults(when);
     case "GET /api/v1/agents/{session_id}/answers":
       return answers(when);
     case "GET /api/v1/asks/open":
@@ -539,14 +629,15 @@ export interface Call {
 
 /** How one run's stand-in answers, beside the world. */
 export interface StandInOptions {
-  /** The cut whoami names, as for a token that carries one; none when unset. */
+  /** The cut whoami names, as for a token that carries one, which every answer then answers at;
+   *  none when unset. */
   readonly whoamiCut?: string;
   /** Whether an answer to a call that sent `as_of` names the cut: false is a Dispatch older than
    *  `as_of`, which ignores the parameter and answers the present. True when unset. */
   readonly acknowledges?: boolean;
-  /** The answer in place of the world's to a call of kind "answers" that sent `as_of`, where it
-   *  gives one: a refusal. */
-  readonly refuseAtCut?: (call: Call) => Response | undefined;
+  /** The answer in place of the world's to a call of kind "answers" read at a cut, where it gives
+   *  one: a refusal. */
+  readonly refuseAtCut?: () => Response | undefined;
 }
 
 /** What one run of the command did: its exit, its output and the requests it made, in order. */
@@ -589,25 +680,30 @@ export function startAsOfStandIn(name: string): AsOfStandIn {
       held.calls.push(call);
       const { options } = held;
       if (kind === "caller now") {
-        const whoami = {
-          kind: "agent",
-          owner: OWNER,
-          service: null,
-          session: SESSION,
-          project: null,
-          scopes: ["person"],
+        return Response.json({
+          ...WHOAMI_NO_CUT,
           cut: options.whoamiCut ?? null,
-        } satisfies WhoamiAgent;
-        return Response.json(whoami);
+        } satisfies WhoamiAgent);
       }
-      const acknowledged = asOf.length > 0 && kind === "answers" && options.acknowledges !== false;
+      // A token's cut wins over any `as_of` the call sends, and a route that holds no history
+      // refuses the token, naming its cut (decision 6).
+      const tokenCut = options.whoamiCut;
+      if (tokenCut !== undefined && kind === "no history") {
+        return refusal(
+          403,
+          DISPATCH_AS_OF_TOKEN_NOT_SERVED,
+          `this token reads Dispatch as of ${tokenCut}; ${route} holds no past answer`
+        );
+      }
+      const cut = tokenCut ?? asOf[0];
+      const acknowledged =
+        cut !== undefined && kind === "answers" && options.acknowledges !== false;
       if (acknowledged) {
-        const refused = options.refuseAtCut?.(call);
+        const refused = options.refuseAtCut?.();
         if (refused !== undefined) return refused;
       }
-      const cutMs = acknowledged ? Date.parse(asOf[0] ?? "") : Number.NaN;
       const when: When = acknowledged
-        ? { ms: cutMs, cut: asOf[0] }
+        ? { ms: Date.parse(cut), cut }
         : { ms: Date.now(), cut: undefined };
       const answered = answerFor(route, params, url.searchParams, when);
       if (answered === undefined) {
@@ -616,8 +712,10 @@ export function startAsOfStandIn(name: string): AsOfStandIn {
       const response = Response.json(answered.body);
       if (acknowledged) {
         // The cut as Dispatch names it: RFC 3339 in UTC, with six fractional digits.
-        const named = new Date(cutMs).toISOString().replace(/Z$/, "000Z");
-        response.headers.set(DISPATCH_AS_OF_HEADER, named);
+        response.headers.set(
+          DISPATCH_AS_OF_HEADER,
+          new Date(when.ms).toISOString().replace(/Z$/, "000Z")
+        );
         if ((answered.absent ?? []).length > 0) {
           response.headers.set(DISPATCH_AS_OF_ABSENT_HEADER, (answered.absent ?? []).join(","));
         }
@@ -665,10 +763,11 @@ export function startAsOfStandIn(name: string): AsOfStandIn {
   };
 }
 
-/** One form of each of the seven read commands (spec R3), as the stand-in's world answers it. */
+/** The forms of the seven read commands (spec R3) that the stand-in's world answers. */
 export const READ_FORMS = {
   issue: ["read", "--issue", ISSUE],
   comment: ["read", "--ref", `dispatch://${ISSUE}/comment/${COMMENT}`],
+  ask: ["read", "--ref", `dispatch://${ISSUE}/ask/${ASK}`],
   blocks: ["doc-read", "--issue", ISSUE, "--blocks"],
   search: ["search", "--query", "astrolabe"],
   answers: ["answers"],
@@ -676,6 +775,17 @@ export const READ_FORMS = {
   inbox: ["inbox"],
   results: ["results", "--issue", ISSUE],
 } as const satisfies Record<string, readonly string[]>;
+
+/** One form of each of the seven read commands. */
+export const READ_COMMANDS = [
+  READ_FORMS.issue,
+  READ_FORMS.blocks,
+  READ_FORMS.search,
+  READ_FORMS.answers,
+  READ_FORMS.openAsks,
+  READ_FORMS.inbox,
+  READ_FORMS.results,
+] as const;
 
 /** Why the calls of a run that reads at `cut` break the plan's table, each call named: whoami
  *  first and with no `as_of`, the cut as the one `as_of` of every call of kind "answers", and no

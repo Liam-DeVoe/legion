@@ -13,7 +13,7 @@ import { textHead } from "../ask-answer";
 import type { DispatchClient, GraphReferencesQuery } from "../dispatch-http";
 import { ITEM_KINDS, type ItemKind, type ParsedDispatchRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
-import { LEFT_OUT, type ReadCut } from "./as-of";
+import { LEFT_OUT, type LeftOutPart, type ReadCut } from "./as-of";
 import { dispatchAnswered } from "./failures";
 
 /** A graph read's edges as a read shows them: edge type, the other node and its address,
@@ -72,34 +72,39 @@ function unavailableReason(error: unknown): string {
   return dispatchAnswered(error, 404) ? "unavailable" : `unavailable: ${messageFor(error)}`;
 }
 
-/** One direction of a node's reference graph: the answer's node and its edges, or why the server
- *  could not serve it. The graph holds no history, so at a cut it is not read and is left out. */
-export async function graphReferences(
-  client: DispatchClient,
-  query: GraphReferencesQuery,
-  cut?: ReadCut
-): Promise<GraphReferences | string> {
-  if (cut !== undefined) return cut.leave(LEFT_OUT.graph);
+/** `read`'s answer, or why the server could not serve it (`unavailableReason`). The part `part`
+ *  names comes from a route that holds no history, so at a cut it is not read and is left out. */
+async function presentOrUnavailable<T>(
+  cut: ReadCut | undefined,
+  part: LeftOutPart,
+  read: () => Promise<T>
+): Promise<T | string> {
+  if (cut !== undefined) return cut.leave(part);
   try {
-    return await client.getReferences(query);
+    return await read();
   } catch (error) {
     return unavailableReason(error);
   }
 }
 
+/** One direction of a node's reference graph: the answer's node and its edges, or why the server
+ *  could not serve it. The graph holds no history, so at a cut it is not read and is left out. */
+export function graphReferences(
+  client: DispatchClient,
+  query: GraphReferencesQuery,
+  cut?: ReadCut
+): Promise<GraphReferences | string> {
+  return presentOrUnavailable(cut, LEFT_OUT.graph, () => client.getReferences(query));
+}
+
 /** The issue's references, or why the server could not serve them; left out at a cut, as the
  *  graph they come from holds no history. */
-export async function issueReferencesOrUnavailable(
+export function issueReferencesOrUnavailable(
   client: DispatchClient,
   key: string,
   cut?: ReadCut
 ): Promise<IssueReferences | string> {
-  if (cut !== undefined) return cut.leave(LEFT_OUT.issueReferences);
-  try {
-    return await client.getIssueReferences(key);
-  } catch (error) {
-    return unavailableReason(error);
-  }
+  return presentOrUnavailable(cut, LEFT_OUT.issueReferences, () => client.getIssueReferences(key));
 }
 
 /**
@@ -109,17 +114,12 @@ export async function issueReferencesOrUnavailable(
  * uncovered requirements read exactly like a fully covered one. The coverage read holds no
  * history, so at a cut it is left out.
  */
-export async function issueCoverageOrReason(
+export function issueCoverageOrReason(
   client: DispatchClient,
   key: string,
   cut?: ReadCut
 ): Promise<IssueCoverage | string> {
-  if (cut !== undefined) return cut.leave(LEFT_OUT.coverage);
-  try {
-    return await client.issueCoverage(key);
-  } catch (error) {
-    return unavailableReason(error);
-  }
+  return presentOrUnavailable(cut, LEFT_OUT.coverage, () => client.issueCoverage(key));
 }
 
 /**

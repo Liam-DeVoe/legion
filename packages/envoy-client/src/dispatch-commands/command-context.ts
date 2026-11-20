@@ -28,12 +28,12 @@ function toolActor(origin: DispatchOrigin, input: ExecuteDispatchToolInput): Act
  * The context a command that acts for this session runs on, built once per call: the origin a
  * write is recorded against (a subprocess, which is why no command that answers without one
  * reaches this), the client every request goes through, the owner the call names with Dispatch's
- * own key for it, and the pictures helpers a write posts with. A read command at a cut (`cut`)
+ * own key for it, and the pictures helpers a write posts with. A read command at a cut (`read`)
  * resolves the owner and its documents as they stood at that cut.
  */
 export async function commandContext(
   session: SessionContext,
-  cut?: AsOfRead
+  read?: AsOfRead
 ): Promise<CommandContext> {
   const { input, ownerArguments, pictures } = session;
   const actor = toolActor(
@@ -44,7 +44,7 @@ export async function commandContext(
   const { owner, documentOwner, resolveDocument } = await documentTargets(
     client,
     ownerArguments,
-    cut
+    read
   );
   // An external issue reference beside an issue ref is compared here, once Dispatch has resolved
   // it to the key the ref spells (`ownerConflictProblems` compares native keys before any request).

@@ -1,3 +1,4 @@
+import type { AskWithTrees } from "@legion/contracts";
 import { askAnswerText } from "../ask-answer";
 import type { IssueReadOptions } from "../dispatch-http";
 import {
@@ -49,7 +50,13 @@ import {
   olderServerWarnings,
   routeHeldBySession,
 } from "./render-issue";
-import { askSummary, commentSummary, messageSummary, postHistorySummary } from "./render-item";
+import {
+  askSummary,
+  commentSummary,
+  messageSummary,
+  optionText,
+  postHistorySummary,
+} from "./render-item";
 
 /**
  * `dispatch read`: whatever the call names — a message's conversation, an ask, a comment, a
@@ -186,7 +193,7 @@ export async function readCommand(
       graphReferences(client, { from: askRef }, cut),
     ]);
     return {
-      text: askSummary(askRead, askRef, pictures.lines, incoming, outgoing),
+      text: askSummary(askRead, askRef, pictures.lines, incoming, outgoing, cut?.asOf),
       details:
         ref.owner.kind === "project" ? { project: ref.owner.project } : { issue: ref.owner.issue },
       ...showImages(pictures),
@@ -512,15 +519,7 @@ async function blockAtCut(
     // A part's id and the ask's revision are given only for an ask that has not changed since
     // the cut, so a part of an ask that changed reads as a `Part`, with no text.
     const noun = askPartNoun(ask, {}, blockID);
-    const option = (ask.options ?? []).find((candidate) => candidate.id === blockID);
-    const text =
-      option !== undefined
-        ? `${option.label}${option.description ? ` — ${option.description}` : ""}`
-        : noun === "Answer"
-          ? askAnswerText(ask.answer)
-          : noun === "Question"
-            ? ask.question
-            : undefined;
+    const text = askPartText(ask, blockID, noun);
     lines = blockLines(
       { block_id: blockID, ...(text === undefined ? {} : { text }) },
       ref,
@@ -552,4 +551,15 @@ async function blockAtCut(
     ];
   }
   return { text: [...lines, ...graph].join("\n"), details };
+}
+
+/** The text of the part of `ask` that `blockID` names, as a block read at a cut prints it, by the
+ *  part's `noun` (`askPartNoun`): an option's words, the answer, or the question. A part the ask
+ *  does not place has no text. */
+function askPartText(ask: AskWithTrees, blockID: string, noun: string): string | undefined {
+  const option = (ask.options ?? []).find((candidate) => candidate.id === blockID);
+  if (option !== undefined) return optionText(option);
+  if (noun === "Answer") return askAnswerText(ask.answer);
+  if (noun === "Question") return ask.question;
+  return undefined;
 }

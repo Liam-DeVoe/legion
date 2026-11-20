@@ -1,5 +1,6 @@
 import type {
   Actor,
+  AskOption,
   AskRead,
   AskWithTrees,
   BlockPath,
@@ -30,14 +31,15 @@ import { edgeLine, graphSectionLines } from "./render-graph";
  * edge stays under the ask, the ones at its question among them: no read carries the question's
  * part id. An ask whose parts carry no id — an older server, or an ask the index has not reached,
  * whose revision is 0 — reads as it did before the parts: its options bare, every edge under the
- * ask.
+ * ask. At a cut (`asOf`) a reply's body the records at the cut cannot give is left out.
  */
 export function askSummary(
   { ask, replies, answers }: AskRead,
   askRef: string,
   pictures: readonly string[],
   incoming: GraphReferences | string,
-  outgoing: GraphReferences | string
+  outgoing: GraphReferences | string,
+  asOf?: string
 ): string {
   const answer = ask.answer;
   const earlierAnswers = (answers ?? []).slice(0, -1);
@@ -45,7 +47,7 @@ export function askSummary(
   const partRef = (id: string) => `${askRef}#b-${encodeBlockId(id)}`;
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
-    ...postBodyLines(reply),
+    ...postBodyLines(reply, asOf),
   ]);
   const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
@@ -55,7 +57,7 @@ export function askSummary(
     ...((ask.options ?? []).length === 0
       ? ["- none"]
       : (ask.options ?? []).flatMap((option) => [
-          `- ${option.label}${option.description ? ` — ${option.description}` : ""}${option.id === undefined ? "" : ` (${partRef(option.id)})`}`,
+          `- ${optionText(option)}${option.id === undefined ? "" : ` (${partRef(option.id)})`}`,
           ...partReferenceLines(parts.at, option.id),
         ])),
     `State: ${ask.state}`,
@@ -98,6 +100,12 @@ export function askSummary(
     ...pictures,
     ...graphSectionLines(parts.rest, outgoing),
   ].join("\n");
+}
+
+/** An ask option as every read names it: its label, and its description after a dash where it
+ *  has one. */
+export function optionText(option: Pick<AskOption, "label" | "description">): string {
+  return `${option.label}${option.description ? ` — ${option.description}` : ""}`;
 }
 
 /** An ask's inbound edges split by the part each points at: `at` holds the edges at one of its
@@ -300,7 +308,7 @@ export function commentSummary(
  *  `Edited:` line beside it (a comment's or message's read answers the post named and its
  *  replies, never the post it quotes). A comment or message that answers no block prints
  *  nothing. At a cut (`asOf`), whether the block was removed is left out where no event records
- *  it. */
+ *  it, and so is the block's text: the line then names the block alone. */
 function replyBlockLines(record: Pick<Comment, "reply_block">, asOf: string | undefined): string[] {
   const block = record.reply_block;
   if (block === undefined || block === null) return [];
@@ -310,15 +318,15 @@ function replyBlockLines(record: Pick<Comment, "reply_block">, asOf: string | un
     ];
   }
   const removed: boolean | undefined = block.removed;
+  if (removed === true)
+    return [withEditedMark(`Re: block ${block.block_id} (removed)`, block.edited_at)];
+  const head =
+    removed === undefined && asOf !== undefined
+      ? `Re: block ${block.block_id} (whether it was removed is ${leftOutAt(asOf)})`
+      : `Re: block ${block.block_id}`;
+  const text: string | undefined = block.text;
   return [
-    withEditedMark(
-      removed === undefined && asOf !== undefined
-        ? `Re: block ${block.block_id} (whether it was removed is ${leftOutAt(asOf)}): ${textHead(block.text)}`
-        : removed
-          ? `Re: block ${block.block_id} (removed)`
-          : `Re: block ${block.block_id}: ${textHead(block.text)}`,
-      block.edited_at
-    ),
+    withEditedMark(text === undefined ? head : `${head}: ${textHead(text)}`, block.edited_at),
   ];
 }
 
@@ -390,20 +398,20 @@ export function messageSummary(
  *  open comment thread with its root and every reply in order. A reply carries no anchor, so the
  *  threads are read from the owner's comments unfiltered and grouped by their ask or root. A
  *  resolved or answered ask and a resolved thread are not printed, nor are their replies. At
- *  `at`'s cut, the threads as they stood then. */
+ *  `read`'s cut, the threads as they stood then. */
 export async function openAnchoredThreads(
   client: DispatchClient,
   resolved: ResolvedArtifact,
-  at: AsOfRead = {}
+  read: AsOfRead = {}
 ): Promise<string[]> {
   const asksPromise =
     resolved.owner.kind === "project"
-      ? client.getArtifactAsks(resolved.artifact.id, undefined, at)
+      ? client.getArtifactAsks(resolved.artifact.id, undefined, read)
       : Promise.resolve(resolved.issue?.open_asks ?? []);
   const commentsPromise =
     resolved.owner.kind === "project"
-      ? client.getArtifactComments(resolved.artifact.id, at)
-      : client.getComments(resolved.issue?.key ?? "", at);
+      ? client.getArtifactComments(resolved.artifact.id, read)
+      : client.getComments(resolved.issue?.key ?? "", read);
   const commentsResultPromise = commentsPromise.then(
     (value) => ({ status: "fulfilled" as const, value }),
     (reason) => ({ status: "rejected" as const, reason })
@@ -427,7 +435,7 @@ export async function openAnchoredThreads(
       `ask ${ask.id} · ${actorText(ask.author)} · ${ask.created_at}`,
       ...anchorLines(ask),
       `Question: ${ask.question}`,
-      ...threadReplyLines(askReplies.get(ask.id) ?? [], at.asOf),
+      ...threadReplyLines(askReplies.get(ask.id) ?? [], read.asOf),
     ].join("\n")
   );
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
@@ -447,8 +455,8 @@ export async function openAnchoredThreads(
     [
       `comment ${root.id} · ${actorText(root.author)} · ${root.created_at}`,
       ...anchorLines(root),
-      ...postBodyLines(root, at.asOf),
-      ...threadReplyLines(replies.get(root.id) ?? [], at.asOf),
+      ...postBodyLines(root, read.asOf),
+      ...threadReplyLines(replies.get(root.id) ?? [], read.asOf),
     ].join("\n")
   );
   return [...askThreads, ...commentThreads];

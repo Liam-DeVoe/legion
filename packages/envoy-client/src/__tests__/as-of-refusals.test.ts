@@ -7,13 +7,14 @@ import {
   DISPATCH_INVALID_AS_OF,
 } from "@legion/contracts";
 import { RESULTS_AT_AS_OF_PROBLEM, resultsAtACutProblem } from "../dispatch-commands/as-of";
-import { READ_FORMS, type Run, refusal, startAsOfStandIn } from "./as-of-stand-in";
+import { READ_COMMANDS, READ_FORMS, type Run, refusal, startAsOfStandIn } from "./as-of-stand-in";
 import { ISSUE } from "./dispatch-command-surface-responses";
 
 // Dispatch's refusals of a read at a cut (dispatch://INFRA-4620): each read command prints the
 // code and says in words what it means for the read, and exits 1. A search the keyword table
 // does not reach yet names the time the table reaches, which Dispatch sends in
-// `Dispatch-As-Of-Filled-Through`. `results --at` with a cut is refused before any call.
+// `Dispatch-As-Of-Filled-Through`, or says that the table reaches no time yet where Dispatch
+// sends no such header. `results --at` with a cut is refused before any call but whoami.
 
 const CUT = "2026-11-10T12:00:00Z";
 const TOKEN_CUT = "2026-11-05T08:00:00Z";
@@ -23,17 +24,6 @@ const FILLED_THROUGH = "2026-11-01T00:00:00.000000Z";
 const standIn = startAsOfStandIn("as-of-refusals");
 
 afterAll(() => standIn.stop());
-
-/** One form of each of the seven read commands. */
-const COMMANDS = [
-  READ_FORMS.issue,
-  READ_FORMS.blocks,
-  READ_FORMS.search,
-  READ_FORMS.answers,
-  READ_FORMS.openAsks,
-  READ_FORMS.inbox,
-  READ_FORMS.results,
-];
 
 function output(run: Run): string {
   return `${run.stdout}${run.stderr}`;
@@ -74,7 +64,7 @@ const REFUSALS: readonly Refused[] = [
 
 describe("a refusal of a read at a cut is printed in words", () => {
   for (const { code, status, asOf, whoamiCut, words } of REFUSALS) {
-    for (const argv of COMMANDS) {
+    for (const argv of READ_COMMANDS) {
       test(`dispatch ${argv.join(" ")} --as-of ${asOf}: ${code}`, async () => {
         const run = await standIn.run([...argv, "--as-of", asOf], {
           ...(whoamiCut === undefined ? {} : { whoamiCut }),
@@ -109,6 +99,25 @@ describe("a refusal of a read at a cut is printed in words", () => {
       filledThrough: output(run).includes(FILLED_THROUGH),
     }).toEqual({ code: 1, start: true, words: true, filledThrough: true });
   });
+
+  test("a search the keyword table does not reach at all says it reaches no time yet", async () => {
+    // Dispatch sends no `Dispatch-As-Of-Filled-Through` where the fill has reached no time.
+    const run = await standIn.run([...READ_FORMS.search, "--as-of", CUT], {
+      refuseAtCut: () =>
+        refusal(
+          409,
+          DISPATCH_AS_OF_SEARCH_NOT_FILLED,
+          "as_of: the keyword table has reached no time yet"
+        ),
+    });
+    expect({
+      code: run.code,
+      start: output(run).startsWith(`${DISPATCH_AS_OF_SEARCH_NOT_FILLED}: `),
+      words: output(run).includes(
+        `cannot search as of ${CUT} yet: its table of past text reaches no time yet. Search again later.`
+      ),
+    }).toEqual({ code: 1, start: true, words: true });
+  });
 });
 
 describe("results --at with a cut", () => {
@@ -121,14 +130,18 @@ describe("results --at with a cut", () => {
     }).toEqual({ code: 2, calls: [], says: true });
   });
 
-  test("--at under a token that carries a cut is refused after whoami alone", async () => {
-    const run = await standIn.run(["results", "--issue", ISSUE, "--at", "abc1234"], {
-      whoamiCut: TOKEN_CUT,
+  // An issue named by an external reference is resolved through Dispatch, so a refusal after the
+  // owner's resolution makes that call before it.
+  for (const issue of [ISSUE, "owner/repo#12"]) {
+    test(`--at under a token that carries a cut is refused after whoami alone: --issue ${issue}`, async () => {
+      const run = await standIn.run(["results", "--issue", issue, "--at", "abc1234"], {
+        whoamiCut: TOKEN_CUT,
+      });
+      expect({
+        code: run.code,
+        calls: run.calls.map((call) => call.text),
+        says: output(run).includes(resultsAtACutProblem(TOKEN_CUT)),
+      }).toEqual({ code: 2, calls: ["GET /api/v1/whoami"], says: true });
     });
-    expect({
-      code: run.code,
-      calls: run.calls.map((call) => call.text),
-      says: output(run).includes(resultsAtACutProblem(TOKEN_CUT)),
-    }).toEqual({ code: 2, calls: ["GET /api/v1/whoami"], says: true });
-  });
+  }
 });

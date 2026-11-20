@@ -6,8 +6,14 @@ import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_FILLED_THROUGH_HEADER,
+  DISPATCH_AS_OF_HEADER,
+  DISPATCH_AS_OF_NOT_SERVED,
+  DISPATCH_AS_OF_SEARCH_NOT_FILLED,
   DISPATCH_AS_OF_TOKEN_NOT_SERVED,
   DISPATCH_EVENT_TYPES,
+  DISPATCH_INVALID_AS_OF,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
   DISPATCH_READ_ONLY_TOKEN,
@@ -50,14 +56,6 @@ import {
   SEARCH_OPERATOR_PHRASE,
   STORE_UNCONFIRMED_CAUSE,
 } from "../src/dispatch-api";
-import {
-  DISPATCH_AS_OF_ABSENT_HEADER,
-  DISPATCH_AS_OF_FILLED_THROUGH_HEADER,
-  DISPATCH_AS_OF_HEADER,
-  DISPATCH_AS_OF_NOT_SERVED,
-  DISPATCH_AS_OF_SEARCH_NOT_FILLED,
-  DISPATCH_INVALID_AS_OF,
-} from "../src/dispatch-api-limits";
 import {
   DISPATCH_BLOCK_UNITS,
   DISPATCH_EVENT_BODY_MAX,
@@ -708,9 +706,10 @@ const DispatchAsOfNotServed = ${JSON.stringify(DISPATCH_AS_OF_NOT_SERVED)}
 const DispatchInvalidAsOf = ${JSON.stringify(DISPATCH_INVALID_AS_OF)}
 
 // DispatchAsOfSearchNotFilled is the code of the 409 for a search at a past time that the fill of
-// the keyword table has not reached. The message and DispatchAsOfFilledThroughHeader name the time
-// that the fill reached. Generated from DISPATCH_AS_OF_SEARCH_NOT_FILLED in packages/contracts so
-// the server's refusal and every client's reading of it cannot drift apart.
+// the keyword table has not reached. Where the fill has reached a time, the message and
+// DispatchAsOfFilledThroughHeader name that time; where it has reached no time yet, the message
+// says so and the answer has no such header. Generated from DISPATCH_AS_OF_SEARCH_NOT_FILLED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
 const DispatchAsOfSearchNotFilled = ${JSON.stringify(DISPATCH_AS_OF_SEARCH_NOT_FILLED)}
 
 // DispatchAsOfHeader is the response header on every answer that Dispatch gives as of a past time
@@ -726,8 +725,9 @@ const DispatchAsOfHeader = ${JSON.stringify(DISPATCH_AS_OF_HEADER)}
 // packages/contracts so the server and every client name the header once.
 const DispatchAsOfAbsentHeader = ${JSON.stringify(DISPATCH_AS_OF_ABSENT_HEADER)}
 
-// DispatchAsOfFilledThroughHeader is the response header on a 409 DispatchAsOfSearchNotFilled. The
-// value is the time that the fill of the keyword table reached, in RFC 3339. Generated from
+// DispatchAsOfFilledThroughHeader is the response header on a 409 DispatchAsOfSearchNotFilled when
+// the fill of the keyword table has reached a time. The value is that time, in RFC 3339; a refusal
+// whose fill has reached no time yet has no such header. Generated from
 // DISPATCH_AS_OF_FILLED_THROUGH_HEADER in packages/contracts so the server and every client name
 // the header once.
 const DispatchAsOfFilledThroughHeader = ${JSON.stringify(DISPATCH_AS_OF_FILLED_THROUGH_HEADER)}

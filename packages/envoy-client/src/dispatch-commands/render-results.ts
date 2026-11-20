@@ -131,7 +131,8 @@ function commitStandsText(stands: CheckResult["commit_stands"], asOf: string | u
  *  cut (`asOf`) the fact and the check's version are left out where no index holds the version. */
 function checkWordsText(check: CheckBlock, result: CheckResult, asOf: string | undefined): string {
   const version: number | undefined = check.version;
-  const versions = `result version ${result.check_version}, check version ${version ?? "left out"}`;
+  const checkVersion = version === undefined && asOf !== undefined ? leftOutAt(asOf) : version;
+  const versions = `result version ${result.check_version}, check version ${checkVersion}`;
   if (result.check_words_moved === undefined) {
     return asOf === undefined
       ? `Whether the check's words moved is not known (${versions})`
@@ -224,22 +225,27 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
   ];
 }
 
+/** What a check's head line says it compared its results with: each basis, or why it compared
+ *  them with nothing. At a cut (`asOf`) both are left out: they are read from GitHub now. */
+function comparedText(check: CheckBlock, asOf: string | undefined): string {
+  const bases = check.compared_with ?? [];
+  if (bases.length > 0) return `Compared with ${bases.map(basisText).join(", ")}`;
+  const reason = check.compared_nothing;
+  if (asOf !== undefined && check.compared_with === undefined && reason === undefined) {
+    return `What it is compared with is ${leftOutAt(asOf)}`;
+  }
+  if (reason === undefined)
+    return "Compared with nothing, and this Dispatch server does not say why";
+  return `Compared with nothing: ${reasonText(reason)}`;
+}
+
 /** One check: a head line naming what it compared with and whether a pass of it stands, the
  *  check's own words once, then every result recorded against it. A read at a cut (`asOf`)
  *  reads nothing from GitHub, so a check CI proves reads as any other, its derived result left
  *  out. */
 function checkLines(check: CheckBlock, brief: boolean, asOf: string | undefined): string[] {
   if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
-  const bases = check.compared_with ?? [];
-  const reason = check.compared_nothing;
-  const compared =
-    bases.length > 0
-      ? `Compared with ${bases.map(basisText).join(", ")}`
-      : asOf !== undefined && check.compared_with === undefined && reason === undefined
-        ? `What it is compared with is ${leftOutAt(asOf)}`
-        : reason === undefined
-          ? "Compared with nothing, and this Dispatch server does not say why"
-          : `Compared with nothing: ${reasonText(reason)}`;
+  const compared = comparedText(check, asOf);
   const results = check.results ?? [];
   return [
     `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands, asOf)}.`,

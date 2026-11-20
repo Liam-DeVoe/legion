@@ -212,10 +212,12 @@ async function present(
   return { body: answer, code, status: response.status };
 }
 
-/** The answer a request must get: a status, or any 2xx, and the code where one is wanted. */
+/** The answer a request must get: a status, or any 2xx, the code where one is wanted, and words
+ *  its error message must hold where some are wanted. */
 interface Want {
   readonly status: number | "2xx";
   readonly code?: string;
+  readonly says?: string;
 }
 
 let mismatches = 0;
@@ -233,11 +235,13 @@ function answered(what: string, answer: Answer, want: Want): void {
     want.status === "2xx"
       ? answer.status >= 200 && answer.status < 300
       : answer.status === want.status;
+  const message = typeof answer.body.error === "string" ? answer.body.error : "";
+  const saysOk = want.says === undefined || message.includes(want.says);
   report(
     what,
-    statusOk && (want.code === undefined || answer.code === want.code),
-    `${answer.status} ${answer.code || "-"}`,
-    `${want.status}${want.code === undefined ? "" : ` ${want.code}`}`
+    statusOk && (want.code === undefined || answer.code === want.code) && saysOk,
+    `${answer.status} ${answer.code || "-"}${want.says === undefined ? "" : ` "${message}"`}`,
+    `${want.status}${want.code === undefined ? "" : ` ${want.code}`}${want.says === undefined ? "" : ` saying "${want.says}"`}`
   );
 }
 
@@ -546,13 +550,18 @@ async function main(): Promise<void> {
     `200 cut ${goldenCut}`
   );
   // The token with a cut reads Dispatch as of its cut. The issue, made after the cut, is not
-  // found then. A read that holds no past answer and the live socket refuse the token, naming
-  // its cut.
+  // found then: the issue read's own 404 NOT_FOUND, which a gateway's page does not carry. A read
+  // that holds no past answer and the live socket refuse the token, naming its cut.
   answered(`GET ${issuePath} [${cutWhat}]`, await present(cutPresents, "GET", issuePath), {
     status: 404,
+    code: "NOT_FOUND",
   });
   const references = `${issuePath}/references`;
-  const noPastAnswer: Want = { code: DISPATCH_AS_OF_TOKEN_NOT_SERVED, status: 403 };
+  const noPastAnswer: Want = {
+    code: DISPATCH_AS_OF_TOKEN_NOT_SERVED,
+    status: 403,
+    says: `as of ${goldenCut}`,
+  };
   answered(
     `GET ${references} [${cutWhat}]`,
     await present(cutPresents, "GET", references),
