@@ -317,8 +317,9 @@ func (s *Store) DuePodBackstops(ctx context.Context, project string, now time.Ti
 // its silent claims (internal/daemon's tellSilentPhaseWorkers) and the wake tick the issues of its
 // due rows (fireDueBackstops). Each passes over a quiet worker or a backstop of such an issue
 // inside workflow.WaitSilenceBound, so a worker that waits costs neither pass a fact transaction a
-// minute. The handlers stay the rule: each reads the mark again inside its fact's own transaction
-// (workflow.SilenceBound).
+// minute. The handlers stay the rule: each reads the mark again inside its fact's own transaction,
+// the silence handler through workflow.SilenceBound and the backstop handler in workflow's
+// backstopWaits.
 func (s *Store) IssuesReleasedForWait(ctx context.Context, keys []string) (map[string]bool, error) {
 	if len(keys) == 0 {
 		return nil, nil
