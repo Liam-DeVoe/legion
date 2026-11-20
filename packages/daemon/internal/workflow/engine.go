@@ -885,10 +885,17 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // while it stands at admitted. Admitted is the architect's own phase (phase.RoleFor), which
 // completes nothing (handoff), and it comes before every phase a worker works, so no worker's phase
 // there is one the issue moved on from: the guard keeps the refusal a completion at admitted had
-// while no role was named for that phase. A task with plan rows takes it the same way, whatever
-// step it stands at now; the test of the run itself is ranUnreported.
+// while no role was named for that phase. A parent held for its children (record.HeldForChildren)
+// is the one hold read where it stands, at its retro (record.StandsAt): the pass of its last step
+// moved it there in place of the retro, as an approval moves an issue into accepting, so the
+// report of the run that pass ended is taken as it is there. A task with plan rows takes it the
+// same way, whatever step it stands at now; the test of the run itself is ranUnreported.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
-	if issue.Phase == phase.Admitted || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
+	at := issue.Phase
+	if record.HeldForChildren(issue) {
+		at = record.StandsAt(issue)
+	}
+	if at == phase.Admitted || RoleFor(at) == "" || phase.LeftBy(role, at) == "" {
 		return false, nil
 	}
 	return e.ranUnreported(ctx, tx, issue, role, token)

@@ -277,7 +277,8 @@ const (
 
 // pastReportOf is the run that role's completion of reported, a phase issue no longer stands in,
 // reports. A held issue stands where no role works, so no role has left its phase there
-// (leftItsPhase), and a run of a left phase is never also the run a stop ended.
+// (leftItsPhase), but a parent held for its children, which stands at its retro; and a run of a
+// left phase is never also the run a stop ended, since a stop holds its issue for its task.
 func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
 	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
 	switch {
