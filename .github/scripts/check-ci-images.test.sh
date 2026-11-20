@@ -134,6 +134,7 @@ jobs:
     services:
       nats:
         image: $REGISTRY@$NATS
+        credentials: \${{ fromJSON('{"username":"anonymous"}') }}
     steps:
       - uses: ./.github/actions/pull-test-images
       - run: docker pull $REGISTRY@$NATS
@@ -245,6 +246,67 @@ run_check() {
   set -e
 }
 
+# runner_precheckout_pull <workflow>: what runner v2.338.2 does with each service and job
+# container of that workflow before checkout, against a registry that refuses every login. The
+# runner's two rules (ContainerOperationProvider.cs): when BOTH credentials are empty it fills
+# them with the GitHub actor and token, and it logs in only when both are non-empty. The
+# `fromJSON` expression supplies only `username: anonymous`, so it skips login and pulls the
+# public image anonymously. Sets `out` and `status` like run_check.
+runner_precheckout_pull() {
+  local workflow=$1
+  set +e
+  out=$(python3 - "$workflow" <<'PY'
+import json
+import re
+import sys
+import yaml
+
+# The runner provides GITHUB_TOKEN to each job before it reads the workflow.
+SECRETS = {"GITHUB_TOKEN": "ghs_token"}
+
+
+def credentials_of(value):
+    if isinstance(value, dict):
+        return value
+    match = re.fullmatch(r"\$\{\{\s*fromJSON\('(.+)'\)\s*\}\}", str(value or ""))
+    if match:
+        decoded = json.loads(match.group(1))
+        if isinstance(decoded, dict):
+            return decoded
+    return {}
+
+def resolve(text):
+    secret = r"\$\{\{\s*secrets\.(\w+)\s*\}\}"
+    return re.sub(secret, lambda m: SECRETS.get(m.group(1), ""), str(text or ""))
+
+
+workflow = yaml.safe_load(open(sys.argv[1]))
+for job in workflow.get("jobs", {}).values():
+    images = []
+    container = job.get("container")
+    if isinstance(container, dict):
+        images.append(container)
+    elif container is not None:
+        images.append({})
+    services = job.get("services", {})
+    if isinstance(services, dict):
+        images.extend(value if isinstance(value, dict) else {} for value in services.values())
+    for image in images:
+        credentials = credentials_of(image.get("credentials"))
+        username = resolve(credentials.get("username"))
+        registry_secret = resolve(credentials.get("password"))
+        if not username and not registry_secret:
+            username, registry_secret = "github-actor", "ghs_token"
+        if username and registry_secret:
+            print("registry refused runner login")
+            raise SystemExit(1)
+        print("anonymous pull")
+PY
+)
+  status=$?
+  set -e
+}
+
 # golang_next_row <root>: appends the row a Go bump's first commit lands, the next release
 # beside the one ARG GO_VERSION pins.
 golang_next_row() {
@@ -275,6 +337,7 @@ browser_job() {
     runs-on: ubuntu-24.04
     container:
       image: $REGISTRY@$2
+      credentials: \${{ fromJSON('{"username":"anonymous"}') }}
     steps:
       - run: bun test
 YAML
@@ -309,6 +372,82 @@ check "counts the reach" "$(contains "$out" "reference(s) in .* file(s) of CI's 
 run_check package "$root"
 check "the package mode exits 0" "$(is "$status" 0)"
 check "says what the package holds" "$(contains "$out" 'holds 4 row(s), 4 of them in the package')"
+
+echo "case: a service image without the no-login credentials"
+root=$(fixture service-runner-login)
+sed -i '/^        credentials:/d' "$root/.github/workflows/ci.yaml"
+runner_precheckout_pull "$root/.github/workflows/ci.yaml"
+check "a registry that refuses logins rejects the old service form" "$(is "$status" 1)"
+check "the stand-in saw the runner login" "$(contains "$out" 'registry refused runner login')"
+run_check tree "$root"
+check "the gate rejects the old service form" "$(is "$status" 1)"
+check "the gate names its anonymous credentials" "$(contains "$out" 'credentials:.*fromJSON')"
+
+echo "case: a container image without the no-login credentials"
+root=$(fixture container-runner-login)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+sed -i '/^      credentials:/d' "$root/.github/workflows/ci.yaml"
+runner_precheckout_pull "$root/.github/workflows/ci.yaml"
+check "a registry that refuses logins rejects the old container form" "$(is "$status" 1)"
+run_check tree "$root"
+check "the gate rejects the old container form" "$(is "$status" 1)"
+check "the gate names the job container" "$(contains "$out" "this job's container image")"
+
+echo "case: the configured public images make no registry login"
+root=$(fixture no-runner-login)
+runner_precheckout_pull "$root/.github/workflows/ci.yaml"
+check "the configured service starts with an anonymous pull" "$(is "$status" 0)"
+check "the stand-in saw no login" "$(contains "$out" '^anonymous pull$')"
+
+echo "case: a non-empty password is a registry login"
+root=$(fixture service-password-login)
+sed -i 's|credentials:.*|credentials: ${{ fromJSON('\''{"username":"anonymous","password":"unused"}'\'') }}|' "$root/.github/workflows/ci.yaml"
+runner_precheckout_pull "$root/.github/workflows/ci.yaml"
+check "the rejecting registry sees the supplied password's login" "$(is "$status" 1)"
+run_check tree "$root"
+check "the gate rejects a non-empty password" "$(is "$status" 1)"
+
+echo "case: an empty username lets the runner inject its token"
+root=$(fixture service-empty-username-login)
+sed -i 's|credentials:.*|credentials: ${{ fromJSON('\''{"username":""}'\'') }}|' "$root/.github/workflows/ci.yaml"
+runner_precheckout_pull "$root/.github/workflows/ci.yaml"
+check "the rejecting registry sees the injected-token login" "$(is "$status" 1)"
+run_check tree "$root"
+check "the gate rejects an empty username" "$(is "$status" 1)"
+
+echo "case: a configured job container makes no registry login"
+root=$(fixture container-no-runner-login)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+runner_precheckout_pull "$root/.github/workflows/ci.yaml"
+check "the configured container starts with an anonymous pull" "$(is "$status" 0)"
+check "the stand-in sees the container's anonymous pull" "$(contains "$out" '^anonymous pull$')"
+
+echo "case: a scalar job container has no credentials"
+root=$(fixture scalar-container)
+browser_row "$root"
+cat >> "$root/.github/workflows/ci.yaml" <<YAML
+  scalar:
+    runs-on: ubuntu-24.04
+    container: $REGISTRY@$BROWSER
+    steps:
+      - run: bun test
+YAML
+runner_precheckout_pull "$root/.github/workflows/ci.yaml"
+check "the rejecting registry sees the scalar container's login" "$(is "$status" 1)"
+run_check tree "$root"
+check "the gate rejects a scalar job container" "$(is "$status" 1)"
+check "the gate names the scalar job container" "$(contains "$out" "this job's container image")"
+
+echo "case: a docker action can restore the pre-checkout pull"
+root=$(fixture docker-action)
+cat >> "$root/.github/workflows/ci.yaml" <<YAML
+      - uses: docker://$REGISTRY@$NATS
+YAML
+run_check tree "$root"
+check "the gate rejects a docker action" "$(is "$status" 1)"
+check "the gate names the docker action" "$(contains "$out" 'docker:// actions can pull before checkout')"
 
 echo "case: each mode runs its own half"
 # The tree mode's refusals read files, and the package mode's one refusal reads ghcr.io. This
@@ -885,17 +1024,11 @@ set -e
 check "both modes in one call fails" "$(is "$status" 1)"
 check "naming them" "$(contains "$out" 'this check takes one mode')"
 
-# The package mode alone. ci.yaml's lint job runs `check-ci-images.sh tree` over this
-# repository on every change (.github/workflows/ci-job-lint.yaml, "Check every image a CI job
-# fetches is a row of .github/ci-images.yaml"), so a tree-mode case here would run that same
-# check a second time in the same CI run. The package mode runs in a CI run too: ci.yaml's
-# ci-images job runs `check-ci-images.sh package` (.github/workflows/ci-job-ci-images.yaml,
-# "Check the package holds every row of .github/ci-images.yaml") on every event ci.yaml runs
-# on - a pull request, a merge group and a dispatch - whenever the ci_images filter selects
-# it, and there it reads ghcr.io itself. This case runs that mode over this tree's rows against
-# a stand-in for the registry instead (CI_IMAGES_MANIFEST_HEAD and LABELS below), so the mode's
-# own reading of the rows is held in every run of this suite, which reaches no registry.
-echo "case: the repository's own tree, in the package mode"
+# The repository's tree mode is the integration control for every image reference and every
+# pre-checkout credential. The package mode runs against the same tree through the registry
+# stand-in below, so the test reaches no registry while it still holds the published built row to
+# this tree's recipe.
+echo "case: the repository's own tree"
 
 # This tree's own `built` row carries the digest of an image this repository published, and
 # rule 10 holds that image's label to the recipe this tree holds. The row is read out of
@@ -909,6 +1042,9 @@ import yaml
 rows = yaml.safe_load(open(".github/ci-images.yaml"))["images"]
 print(next(row["digest"] for row in rows if "built" in row))
 ')
+
+run_check tree "$repository"
+check "the repository tree keeps every pre-checkout pull anonymous" "$(is "$status" 0)"
 set +e
 out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" LABELS="$built_digest=$(recipe "$repository")" \
   "$check_script" package 2>&1)

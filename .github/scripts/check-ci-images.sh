@@ -88,6 +88,12 @@
 #      reads the package. A second image this repository builds is a second build workflow,
 #      and this rule and rule 10 would then name the Dockerfile each of them builds.
 #
+# A `services:` or `container:` image from ghcr.io must set
+# `credentials: ${{ fromJSON('{"username":"anonymous"}') }}`. The evaluated mapping gives the
+# runner a non-empty username and no password, so it neither injects the job token nor logs in
+# before its anonymous pull of this public package. A `uses: docker://` action is refused: it can
+# add the same pre-checkout pull without a credentials field.
+#
 # IN PACKAGE MODE:
 #
 #   9. a row whose digest the package does not hold: the manifest is read with an anonymous
@@ -277,6 +283,7 @@ PACKAGE = "package"
 MODE = os.environ["CI_IMAGES_MODE"]
 
 REGISTRY = "ghcr.io/cybermonklabs/legion/ci"
+ANONYMOUS_CREDENTIALS = '${{ fromJSON(\'{"username":"anonymous"}\') }}'
 REPOSITORY = "cybermonklabs/legion/ci"
 CI_IMAGES = Path(".github/ci-images.yaml")
 MIRROR_SCRIPT = ".github/scripts/mirror-ci-images.sh"
@@ -1192,32 +1199,46 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
     if isinstance(runs, dict):
         holders.append(runs)
     for holder in holders:
-        images: list[tuple[int, object, str]] = []
+        images: list[tuple[int, object, str, object]] = []
         container = holder.get("container")
         how = "this job's container image"
         if isinstance(container, dict):
-            images.append((key_line(container, "image"), container.get("image"), how))
+            images.append((key_line(container, "image"), container.get("image"), how, container))
         elif container is not None:
-            images.append((key_line(holder, "container"), container, how))
+            images.append((key_line(holder, "container"), container, how, container))
         services = holder.get("services")
         if isinstance(services, dict):
             for name, service in services.items():
                 how = f"the {name} service's image"
                 if isinstance(service, dict):
-                    images.append((key_line(service, "image"), service.get("image"), how))
+                    images.append((key_line(service, "image"), service.get("image"), how, service))
                 else:
-                    images.append((key_line(services, name), service, how))
-        for line, image, how in images:
+                    images.append((key_line(services, name), service, how, service))
+        for line, image, how, definition in images:
             if not isinstance(image, str) or "${{" in image:
                 problems.append(
                     f"{path}:{line}: {how} is {one_line(image)}, which this check cannot read. "
                     f"Write {REGISTRY}@<digest>, naming a digest {CI_IMAGES} holds."
                 )
                 continue
+            if image.lower().startswith("ghcr.io/"):
+                credentials = definition.get("credentials") if isinstance(definition, dict) else None
+                if credentials != ANONYMOUS_CREDENTIALS:
+                    problems.append(
+                        f"{path}:{line}: {how} pulls from ghcr.io before checkout, so set "
+                        f"credentials: {ANONYMOUS_CREDENTIALS} to pull the public image without "
+                        "the runner's GitHub-token login."
+                    )
             note(path, line, image, how)
         for step in holder.get("steps", []) or []:
             if not isinstance(step, dict):
                 continue
+            uses = step.get("uses")
+            if isinstance(uses, str) and uses.lower().startswith("docker://"):
+                problems.append(
+                    f"{path}:{key_line(step, 'uses')}: docker:// actions can pull before checkout; "
+                    "use a checked-out action or a bounded docker command after checkout."
+                )
             with_ = step.get("with")
             if isinstance(with_, dict):
                 options = with_.get("driver-opts")

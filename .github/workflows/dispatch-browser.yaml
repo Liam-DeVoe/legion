@@ -215,6 +215,7 @@ jobs:
     # container a pid 1 that reaps the browsers' orphans, which four stacks of them make many of.
     container:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      credentials: ${{ fromJSON('{"username":"anonymous"}') }}
       options: --user 1001 --ipc=host --init
     #
     # This job runs no `go` command, directly or through a script: the binaries job above builds
@@ -661,6 +662,7 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
+          # shellcheck disable=SC2086 # project and lane option strings are deliberately word-split
           { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
@@ -777,6 +779,7 @@ jobs:
     # too, and so do their reasons.
     container:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      credentials: ${{ fromJSON('{"username":"anonymous"}') }}
       options: --user 1001 --ipc=host --init
     # This job takes the container because its matrix holds webkit-alone and firefox-alone,
     # which launch the two engines the image exists for; chromium-alone is a leg of a container
