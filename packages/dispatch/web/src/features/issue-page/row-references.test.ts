@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
+import * as textReferences from "../refs/text-references";
 import {
   citedReferences,
   knownIssueKeys,
@@ -64,23 +65,49 @@ test("a bare key links only where the batched read answered that its issue exist
 });
 
 // The graph holds no node for a party, so the batched read refuses a request that names one,
-// which would leave every row of the tree unnamed. A row asks for none and links none: it draws
-// an agent's session, a role and a person as written.
-test("a party is neither asked for nor linked, and is drawn as written", () => {
+// which would leave every row of the tree unnamed. A row asks for none.
+test("a party is never asked for", () => {
   const parties =
     "Ask dispatch://role/reviewer, dispatch://person/alice@example.com and " +
     "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce about dispatch://CORE-7.";
   expect(citedReferences(parties)).toEqual(["dispatch://CORE-7"]);
-  expect(rowReferences(parties, []).map((one) => one.reference)).toEqual(["dispatch://CORE-7"]);
+});
+
+/** The links a pass over `text` makes, each as its href and its words. */
+function partyLinks(text: string): (string | null)[][] {
   const root = document.createElement("div");
-  root.innerHTML = `<p>${parties}</p>`;
+  root.innerHTML = `<p>${text}</p>`;
   linkRowReferences(root, NAMES);
-  expect([...root.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual([
-    "/issues/CORE-7",
+  // A second pass, as a page makes once names arrive, keeps each party's words.
+  linkRowReferences(root, NAMES);
+  return [...root.querySelectorAll("a")].map((link) => [
+    link.getAttribute("href"),
+    link.textContent,
   ]);
-  expect(root.textContent).toContain(
-    "Ask dispatch://role/reviewer, dispatch://person/alice@example.com and dispatch://agent/"
-  );
+}
+
+// A row links a party from its address alone, as every other sink of a reference does
+// (`referenceHref`): the read brings no name for one, so the link keeps its writer's words.
+test("an agent's session links to its live view, in the words its writer wrote", () => {
+  const agent = "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce";
+  expect(partyLinks(`Ask ${agent}.`)).toEqual([
+    ["/agents/01a1bb84-93b2-74d6-9d65-fb75e08653ce/live", agent],
+  ]);
+});
+
+test("a role links to the agents list that role filters, in the words its writer wrote", () => {
+  expect(partyLinks("Ask dispatch://role/reviewer.")).toEqual([
+    ["/agents?role=reviewer", "dispatch://role/reviewer"],
+  ]);
+});
+
+// No page shows a person (R5), so a person's address is drawn as written and links nothing.
+test("a person links to nothing and is drawn as written", () => {
+  const text = "Ask dispatch://person/alice@example.com about dispatch://CORE-7.";
+  expect(partyLinks(text)).toEqual([
+    ["/issues/CORE-7", "CORE-7 The header draws the approval of each step"],
+  ]);
+  expect(rowReferences(text, []).map((one) => one.reference)).toEqual(["dispatch://CORE-7"]);
 });
 
 test("an issue reads as its key and title, and anything else as its target's own words", () => {
@@ -174,4 +201,68 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
   linkRowReferences(earlier, NAMES, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
+});
+
+// Each row's words were read again on every draw. A text is read once for each list
+// of issue keys it is read against, however often a row draws it; another text, or another list
+// of keys, is read anew. A new set of ambiguous references is applied to the kept reading, so the
+// row drops the link it names with no second reading and draws no stale one.
+test("a text is read once however often a row draws it, and again for another text or other keys", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Kept reading: see dispatch://CORE-206/spec#b-r1 and CORE-207.";
+    const issues = ["CORE-207"];
+    const first = rowReferences(text, issues);
+    expect(rowReferences(text, issues), "a second draw read other references").toEqual(first);
+    expect(
+      rowReferences(text, [...issues]),
+      "the same keys in another list read other references"
+    ).toEqual(first);
+    expect(reads, "the same text and keys were read more than once").toHaveBeenCalledTimes(1);
+    expect(first.map((one) => [one.reference, one.path])).toEqual([
+      ["dispatch://CORE-206/spec#b-r1", "/issues/CORE-206/spec#b-r1"],
+      ["dispatch://CORE-207", "/issues/CORE-207"],
+    ]);
+
+    const ambiguous = new Set(["dispatch://CORE-206/spec#b-r1"]);
+    expect(
+      rowReferences(text, issues, ambiguous).map((one) => one.reference),
+      "a reference read ambiguous since is still linked"
+    ).toEqual(["dispatch://CORE-207"]);
+    expect(reads, "a new ambiguous set read the text again").toHaveBeenCalledTimes(1);
+
+    expect(rowReferences(text, []).map((one) => one.reference)).toEqual([
+      "dispatch://CORE-206/spec#b-r1",
+    ]);
+    rowReferences(`${text} More.`, issues);
+    expect(reads, "other keys or another text were not read").toHaveBeenCalledTimes(3);
+  } finally {
+    reads.mockRestore();
+  }
+});
+
+// A text keeps a reading for four lists of keys. A list it is asked again is its newest, so the
+// slot a fifth list evicts is the one asked longest ago, and not the one read first. Each list is
+// one array throughout, so its id is the same whatever other sets of keys are forgotten.
+test("a text's fifth list of keys evicts the slot asked longest ago, and keeps one just asked again", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Slots kept: see CORE-301, CORE-302, CORE-303, CORE-304 and CORE-305.";
+    const first = ["CORE-301"];
+    const second = ["CORE-302"];
+    for (const issues of [first, second, ["CORE-303"], ["CORE-304"]]) {
+      rowReferences(text, issues);
+    }
+    expect(reads, "four lists of keys were not each read once").toHaveBeenCalledTimes(4);
+    rowReferences(text, first);
+    expect(reads, "a kept list was read again").toHaveBeenCalledTimes(4);
+    rowReferences(text, ["CORE-305"]);
+    expect(reads, "the fifth list of keys was not read").toHaveBeenCalledTimes(5);
+    rowReferences(text, first);
+    expect(reads, "the list just asked again was evicted by the fifth").toHaveBeenCalledTimes(5);
+    rowReferences(text, second);
+    expect(reads, "the list asked longest ago was kept past the fifth").toHaveBeenCalledTimes(6);
+  } finally {
+    reads.mockRestore();
+  }
 });

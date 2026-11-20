@@ -355,9 +355,15 @@ function attempt(
   const parties = draftParties(body);
   const baseBody = kind === "suggestion" && body.trim() === "" ? "Suggested replacement." : body;
   const plan = deliveryPlan(baseBody, parties.named ? plainDelivery : undefined);
+  // A reply under an ask names the ask (`ask_id`), and a reply to a comment names the comment
+  // (`reply_to`): the server reads `reply_to` as a comment's id alone.
   const comment: CreateCommentInput = {
     body: plan.body,
-    ...(replyTo === null ? {} : { reply_to: replyTo.id }),
+    ...(replyTo === null
+      ? {}
+      : replyTo.parentKind === "ask"
+        ? { ask_id: replyTo.id }
+        : { reply_to: replyTo.id }),
     ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
     ...(parties.named ? { delivery: plan.delivery ?? plainDelivery } : {}),
   };
