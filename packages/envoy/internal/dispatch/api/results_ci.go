@@ -137,6 +137,12 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	if len(proved) == 0 {
 		return nil, nil
 	}
+	// Every case below writes a line, and every line names the run, so the rule its words are kept
+	// by is read before any of them; an issue holding no check CI proves still reads nothing.
+	words, err := s.readLineWords(ctx, s.deps.Store.Pool)
+	if err != nil {
+		return nil, err
+	}
 	heads, err := s.ciHeadsOf(ctx, issueKey)
 	if err != nil {
 		return nil, err
@@ -144,7 +150,7 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	if len(heads) == 0 {
 		for _, p := range proved {
 			p.check.CI = ciUnconcluded(*p.check, p.name, nil, model.CIStateNoResult, ciCaseNoHead,
-				fmt.Sprintf("Dispatch holds no open or merged pull request head of %s.", issueKey))
+				fmt.Sprintf("Dispatch holds no open or merged pull request head of %s.", issueKey), words)
 		}
 		return nil, nil
 	}
@@ -155,10 +161,10 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		for index, head := range heads {
 			if reads[index].err != nil {
 				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseUnreadable,
-					ciUnreadDetail(head, reads[index].err))
+					ciUnreadDetail(head, reads[index].err), words)
 				continue
 			}
-			answer, result := ciAnswerOf(*p.check, p.name, head, reads[index].runs[p.name])
+			answer, result := ciAnswerOf(*p.check, p.name, head, reads[index].runs[p.name], words)
 			atHead[ciHeadKeyOf(head)] = answer
 			if result != nil {
 				p.check.Results = append(p.check.Results, *result)
@@ -438,21 +444,22 @@ func ciRunOf(id int64, name string, object map[string]any) *ciRun {
 
 // ciAnswerOf decides one check CI proves from run, the run named name at head, nil where head
 // carries none: the `ci` member, which names head and, for a pass or a fail, the id of the result
-// derived from run, and that derived result, nil for every other case.
-func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, run *ciRun) (*model.CheckCI, *model.CheckResult) {
+// derived from run, and that derived result, nil for every other case. words is the rule the
+// pull-request body line keeps the run's name and the check's words by.
+func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, run *ciRun, words lineWords) (*model.CheckCI, *model.CheckResult) {
 	at := fmt.Sprintf("%s, the head of %s#%d", head.HeadSHA, head.Repo, head.Number)
 	switch {
 	case run == nil:
 		return ciUnconcluded(check, name, &head, model.CIStateNoResult, ciCaseAbsent,
-			fmt.Sprintf("No CI run named %s is on %s.", name, at)), nil
+			fmt.Sprintf("No CI run named %s is on %s.", name, at), words), nil
 	case run.status != ciRunCompleted:
 		return ciUnconcluded(check, name, &head, model.CIStateNoResult, ciCaseNotCompleted,
-			fmt.Sprintf("CI run %s is %s at %s, and has not concluded.", run.name, run.status, at)), nil
+			fmt.Sprintf("CI run %s is %s at %s, and has not concluded.", run.name, run.status, at), words), nil
 	}
 	switch run.conclusion {
 	case ciConclusionNeutral, ciConclusionSkipped, ciConclusionCancelled:
 		return ciUnconcluded(check, name, &head, model.CIStateNoResult, run.conclusion,
-			fmt.Sprintf("CI run %s concluded %s at %s, which proves nothing.", run.name, run.conclusion, at)), nil
+			fmt.Sprintf("CI run %s concluded %s at %s, which proves nothing.", run.name, run.conclusion, at), words), nil
 	}
 	verdict := model.CIStateFail
 	if run.conclusion == ciConclusionSuccess {
@@ -471,7 +478,7 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 	answer := &model.CheckCI{
 		Run: run.name, State: verdict, Case: run.conclusion,
 		Detail: fmt.Sprintf("CI run %s concluded %s at %s.", run.name, run.conclusion, at),
-		Line:   ciVerdictLine(check, name, verdict, head.HeadSHA),
+		Line: ciVerdictLine(check, name, verdict, head.HeadSHA, words),
 		Commit: head.HeadSHA, Repo: head.Repo, Result: result.ID,
 	}
 	return answer, &result
@@ -479,10 +486,10 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 
 // ciUnconcluded is the `ci` member of a check its run, the one named name, did not decide, for
 // the case given, at head, nil where Dispatch holds no head to read at.
-func ciUnconcluded(check model.CheckBlock, name string, head *delivery.NewestHead, state, ciCase, detail string) *model.CheckCI {
+func ciUnconcluded(check model.CheckBlock, name string, head *delivery.NewestHead, state, ciCase, detail string, words lineWords) *model.CheckCI {
 	ci := &model.CheckCI{
 		Run: name, State: state, Case: ciCase, Detail: detail,
-		Line: fmt.Sprintf("- Check %s (%s): CI run %s has no result (%s)", check.BlockID, check.When, name, ciCase),
+		Line: fmt.Sprintf("- Check %s (%s): %s has no result (%s)", check.BlockID, check.When, ciRunOfLine(name, words), ciCase),
 	}
 	if head != nil {
 		ci.Commit, ci.Repo = head.HeadSHA, head.Repo
@@ -490,16 +497,29 @@ func ciUnconcluded(check model.CheckBlock, name string, head *delivery.NewestHea
 	return ci
 }
 
+// ciRunOfLine is the run a check's ci_check names as a pull-request body line names it, `CI run`
+// and the words words keeps of the name, since the name is text the check's author wrote; where
+// words keeps none of it, the line says `the CI run the check names`.
+func ciRunOfLine(name string, words lineWords) string {
+	kept := words.keep(name)
+	if kept == "" {
+		return "the CI run the check names"
+	}
+	return "CI run " + kept
+}
+
 // ciVerdictLine is the pull-request body line of a derived result: the recorded line's grammar,
-// with name, the run that proved it, where a recorded line names its recorder, and the check's
-// own words where a recorded line carries the role's reading, since no role read anything. The
-// words are cut as checkResultLine cuts a reading.
-func ciVerdictLine(check model.CheckBlock, name, verdict, sha string) string {
-	line := fmt.Sprintf("- Check %s (%s): %s at %s, from CI run %s.", check.BlockID, check.When, verdict, sha, name)
-	if check.Text == "" {
+// with the run that proved it (ciRunOfLine), where a recorded line names its recorder, and the
+// check's own words where a recorded line carries the role's reading, since no role read anything.
+// The words are kept by words and cut as checkResultLine keeps and cuts a reading; a check of whose
+// words nothing is left after the cut ends the line at the run, as a check with no words does.
+func ciVerdictLine(check model.CheckBlock, name, verdict, sha string, words lineWords) string {
+	line := fmt.Sprintf("- Check %s (%s): %s at %s, from %s.", check.BlockID, check.When, verdict, sha, ciRunOfLine(name, words))
+	tail := words.cut(words.keepThrough(check.Text, checkResultReadingRunes))
+	if tail == "" {
 		return line
 	}
-	return line + " " + cutWords(check.Text)
+	return line + " " + tail
 }
 
 // ciObserved is what a derived result says was observed, one part a line: the run's conclusion,

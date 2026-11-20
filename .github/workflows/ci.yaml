@@ -165,10 +165,14 @@ on:
   workflow_dispatch:
     inputs:
       # The commit main pointed at before the push the bypass check read: envoy-go-checks compares
-      # every migration it holds with this run's tree, the range the push landed. A dispatch
-      # without it fails that check, which cannot tell what the run lands.
+      # every migration it holds with this run's tree, the range the push landed. A dispatch on
+      # main without it fails that check, which cannot tell what the run lands. A dispatch on
+      # another branch without it, a full run started by hand, compares with the branch's merge
+      # base with main (.github/scripts/edited-migrations-base.sh).
       migration-base:
-        description: The commit main pointed at before the push this run tests.
+        description: >-
+          The commit main pointed at before the push this run tests. A run on main must name it;
+          a run on another branch that names none compares with the branch's merge base with main.
         type: string
         required: false
 
@@ -379,6 +383,7 @@ jobs:
       find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
+      edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
@@ -863,6 +868,7 @@ jobs:
               - 'packages/daemon/internal/ompdirs/*'
               - 'packages/daemon/internal/omplaunch/*'
               - 'packages/daemon/internal/ompsessions/*'
+              - 'packages/daemon/internal/pause/*'
               - 'packages/daemon/internal/phase/*'
               - 'packages/daemon/internal/pods/**'
               - 'packages/daemon/internal/podsafety/**'
@@ -1068,6 +1074,7 @@ jobs:
               - 'scripts/e2e/lib/loopback-dsn.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
+              - 'scripts/e2e/lib/process-tree.sh'
               - 'scripts/e2e/lib/built-from.sh'
               - 'packages/pi-legion/package.json'
               - 'packages/pi-envoy/package.json'
@@ -1221,6 +1228,7 @@ jobs:
               - '!packages/daemon/internal/ompdirs/**/*_test.go'
               - '!packages/daemon/internal/omplaunch/**/*_test.go'
               - '!packages/daemon/internal/ompsessions/**/*_test.go'
+              - '!packages/daemon/internal/pause/**/*_test.go'
               - '!packages/daemon/internal/phase/**/*_test.go'
               - '!packages/daemon/internal/podsafety/**/*_test.go'
               - '!packages/daemon/internal/procgroup/**/*_test.go'
@@ -1668,6 +1676,12 @@ jobs:
               # :198-210 holds every run: step of the bypass workflow to a shell with pipefail,
               # and :216-227 holds the decision's HEAD_SHA and HEAD_MESSAGE to the push payload.
               - '.github/workflows/main-bypass-check.yaml'
+            edited_migrations_base_test: &edited_migrations_base_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/edited-migrations-base.test.sh'
+              - '.github/scripts/edited-migrations-base.sh'
             dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1824,6 +1838,7 @@ jobs:
               - *find_pr_payload_test
               - *merge_group_cancels_test
               - *main_bypass_check_test
+              - *edited_migrations_base_test
               - *dispatch_browser_latest_blobs_test
               - *dispatch_browser_run_reads_test
               - *dispatch_browser_samples_test
@@ -2903,7 +2918,93 @@ jobs:
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
-
+            # The text checks of the three Go modules, the Dispatch API's nine static source
+            # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
+            # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
+            # packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
+            # which the three Go lanes leave out of their own runs, those checks' seventeen tests
+            # by name, and those two pins by name, which the daemon-go plain step skips.
+            # packages/envoy stays a wide
+            # root: file_copy_test.go walks every .go file under it (infra included), the API's
+            # guards and one_expression_guard_test.go walk every non-test .go file of the
+            # module, and the guard step compiles that package's whole test closure, which
+            # reaches testdata and goldens across the module.
+            # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
+            # the .go files the supervise pins type-check from source - internal/supervise and
+            # every package of this module it imports - the prompt below, the committed copies
+            # its text checks hold to the texts they copy, and the store's migrations; and its
+            # credential-argument check reads every text file of the repository, so `**` below
+            # selects the job for every change but one under docs/plans or docs/superpowers. The
+            # patterns after it name what the other checks read, which `**` covers too, so that
+            # each read keeps its reason here.
+            text_checks:
+              - *ci_router
+              - '.github/workflows/ci-job-text-checks.yaml'
+              - *go_workspace
+              - 'packages/envoy/**'
+              - 'packages/daemon/**/*.go'
+              # credential_argument_test.go:143,174 lists every file git tracks or would track and
+              # reads each of them, but docs/plans and docs/superpowers, which are dated history.
+              - '**'
+              - '!docs/plans/**'
+              - '!docs/superpowers/**'
+              # The prompt design_approved_wake_test.go:32-38 holds the resume's wake to, the copy
+              # of the phrase it reads in place of importing internal/workflow (:26-27), and the
+              # committed extract reclaim_doc_test.go:50 holds the guide's paragraph to.
+              - 'packages/daemon/internal/prompts/roles/architect-root.md'
+              - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
+              - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
+              # The store's migrations, which the text checks read through migrations.All and
+              # migrations.WayBack to hold the guide to them: its list of those above the phase
+              # entry, and its way backs of the step records and of the plan ratings, to the block
+              # each migration's header carries.
+              - 'packages/daemon/internal/store/migrations/*.up.sql'
+              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
+              # reads to hold them to the texts themselves: the waiting line's four, the two way
+              # backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
+              # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
+              # own check reads it. They are .txt files, which the module's `**/*.go` above does
+              # not match.
+              - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
+              - 'packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt'
+              - 'packages/daemon/cmd/legion/waiting_line_block_extract.txt'
+              - 'packages/daemon/internal/api/waiting_line_contract_extract.txt'
+              - 'packages/daemon/internal/daemon/upgrade_architect_entry_way_back_extract.txt'
+              - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
+              - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
+              # The shipped texts the waiting line's four copies are held to, and the ban over
+              # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also
+              # the page the refusal table's copy is held to. The way back's guide is
+              # docs/kubernetes.md, below.
+              - 'docs/site/src/content/docs/legion/concepts.md'
+              - 'docs/site/src/content/docs/legion/running-legion.md'
+              - 'docs/site/src/content/docs/legion/troubleshooting.md'
+              - 'packages/contracts/src/legion-api.ts'
+              - 'packages/pi-legion/AGENTS.md'
+              - 'packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml'
+              - 'packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml'
+              - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'
+              - 'skills/legion-controller/references/admission.md'
+              - 'skills/legion-controller/references/wakes.md'
+              # The second page production_check_rule_test.go:30 holds to the production check's
+              # rule, beside concepts.md above.
+              - 'scripts/e2e/README.md'
+              # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
+              # and packages/daemon/internal/daemon hold their committed extracts to
+              # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,281 and
+              # way_back_doc_test.go:181).
+              - 'docs/kubernetes.md'
+              # The skill file packages/daemon/internal/textcheck/design_approved_wake_test.go
+              # holds the architect's prompt to (:32-38).
+              - 'skills/legion-architect/references/wake-routing.md'
+              # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
+              # compiles with the rest of that package.
+              - 'packages/contracts/fixtures/live/**'
+              # internal/dispatch/api/openapi_test.go:199-200, whose
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document
+              # at run time, through a path built relative to the test binary; the guard step
+              # compiles it with the rest of that package.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
             # `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
             # when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
             # not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
@@ -3212,9 +3313,8 @@ jobs:
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
               - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
               - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
-              # The documents cmd/listener/grace_margin_doc_test.go:18-20 read: each states the
+              # The documents cmd/listener/grace_margin_doc_test.go:17-18 read: each states the
               # margin a listener pod grants, held to listenerGraceMargin.
-              - 'packages/envoy/AGENTS.md'
               - 'packages/envoy/infra/README.md'
               - 'packages/envoy/infra/docs/nats-hub.md'
               # The infra module's copy of the stop budget, which
@@ -3537,9 +3637,9 @@ jobs:
               # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
               # cites to a heading of that skill's SKILL.md.
               - 'skills/**'
-              # src/__tests__/dispatch-asked-of.test.ts's scannedTexts reads every package's AGENTS.md,
-              # and its ALLOWED names lines of four of them, so rewording one of those lines
-              # fails that test and this job has to run for it.
+              # src/__tests__/dispatch-asked-of.test.ts:298-302 reads every package's AGENTS.md,
+              # so a line there that tells an agent to hand an ask on fails that test and this
+              # job has to run for it.
               - 'packages/*/AGENTS.md'
               # src/__tests__/dispatch-who-waits.test.ts's `no text states the old rule` reads
               # every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md,
@@ -3551,8 +3651,8 @@ jobs:
               - 'packages/dispatch/e2e/**'
               - 'docs/site/src/**'
               - '**/AGENTS.md'
-              # src/__tests__/dispatch-who-waits.test.ts's rows `states the rule` read the CLI guide's
-              # sentence on an assignee move, which must name the project's default assignee.
+              # src/__tests__/dispatch-who-waits.test.ts:766,770 reads the CLI guide's sentence on
+              # an assignee move, which must name the project's default assignee.
               - 'packages/envoy/cmd/dispatch/README.md'
               # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
               # which topics reach a private stream subject, the file
@@ -4430,6 +4530,7 @@ jobs:
               - 'packages/daemon/internal/ompdirs/*'
               - 'packages/daemon/internal/omplaunch/*'
               - 'packages/daemon/internal/ompsessions/*'
+              - 'packages/daemon/internal/pause/*'
               - 'packages/daemon/internal/phase/*'
               - 'packages/daemon/internal/pods/**'
               - 'packages/daemon/internal/podsafety/**'
@@ -5391,6 +5492,7 @@ jobs:
       find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
+      edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
