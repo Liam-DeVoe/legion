@@ -52,9 +52,8 @@ In sjawhar/legion#2688, `TestAnAnsweredAsksPartEdgesAreListedSince` took one
 `GET /api/v1/references?since=` read as final. That route lists only edges at or below the event
 log's safe horizon and waits at most `referencesSinceWait`, one second, for it
 (`packages/envoy/internal/dispatch/api/references.go`, `referencesSinceWait` and `sinceHorizon`,
-which falls back to the horizon it has rather than failing). The horizon was instance-wide then
-(it waits only on its own database's event writes since 2026-11-18), and the
-holder inside that very package was the test process's own `storetest` database clone and drop, so
+which falls back to the horizon it has rather than failing). The horizon is instance-wide, and the
+holder inside that very package is the test process's own `storetest` database clone and drop, so
 the test failed about one run in six on main: measured in an issue pod, 25 of 40 runs passed with
 a transaction held 2 s of every 2.5 s and 0 of 10 with one held open throughout, while 40 of 40
 passed with nothing holding one.

@@ -15,8 +15,6 @@ related_issues:
 
 # Code that waits on instance-wide database state is tested under a loop that holds that state
 
-Since 2026-11-18 the Dispatch event horizon (`packages/envoy/internal/dispatch/events/horizon.go`) waits only on the event writes of its own database, so a transaction in another database no longer delays it, and the api tests hold the horizon with an event write of the test's own database (`holdEventWrite`). The rules below still hold for code that waits on state that spans the instance; the evidence describes the horizon as it was.
-
 - When code waits on state that spans the whole Postgres instance (snapshots, `pg_snapshot_xmin`, any open transaction id), the test packages that share one test cluster delay each other. Run the whole affected package under a loop that holds that state in another database (for example, a transaction holding its id for 2 s of every 2.5 s), and fix every test that then fails.
 - A stream or connection test that fails to open must cancel its request and close the body. Otherwise the server's `Close` waits on the open handler, and the package times out with no named failing test.
 - Wait for the event a test needs (a recompute, a cursor at an id) rather than for a quiet period. An event the horizon delays can arrive after any fixed quiet time.
