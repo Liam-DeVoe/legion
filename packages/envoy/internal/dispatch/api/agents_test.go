@@ -245,7 +245,7 @@ func TestAgentsIncludeGroupedOpenAskCountsAndLastActivity(t *testing.T) {
 			('TEST-1', '{"kind":"session","id":"planner"}', 'Second open question', 'open'),
 			('TEST-2', '{"kind":"session","id":"planner"}', 'Closed issue question', 'open')`,
 		`insert into events (issue_key, seq, type, actor, payload, notify, created_at) values
-			('TEST-1', 1, 'message.created', '{"kind":"session","id":"planner"}', '{}', false, '2026-09-13T12:00:00Z'),
+			('TEST-1', 1, 'ask.opened', '{"kind":"session","id":"planner"}', '{}', false, '2026-09-13T12:00:00Z'),
 			('TEST-1', 2, 'message.created', '{"kind":"session","id":"planner"}', '{}', false, '2026-09-13T13:00:00Z')`,
 	} {
 		if _, err := database.Pool.Exec(ctx, query); err != nil {
@@ -265,9 +265,11 @@ func TestAgentsIncludeGroupedOpenAskCountsAndLastActivity(t *testing.T) {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}
 	rows := decodeBody[[]struct {
-		SessionID    string  `json:"session_id"`
-		OpenAsks     int     `json:"open_asks"`
-		LastActivity *string `json:"last_activity"`
+		SessionID         string  `json:"session_id"`
+		OpenAsks          int     `json:"open_asks"`
+		LastActivity      *string `json:"last_activity"`
+		LastActivityIssue *string `json:"last_activity_issue"`
+		LastActivityType  *string `json:"last_activity_type"`
 	}](t, response)
 	if len(rows) != 2 {
 		t.Fatalf("rows = %#v, want two live sessions", rows)
@@ -278,7 +280,12 @@ func TestAgentsIncludeGroupedOpenAskCountsAndLastActivity(t *testing.T) {
 	if rows[0].LastActivity == nil || *rows[0].LastActivity != "2026-09-13T13:00:00Z" {
 		t.Fatalf("planner activity = %#v, want newest session event", rows[0].LastActivity)
 	}
-	if rows[1].SessionID != "reviewer" || rows[1].OpenAsks != 0 || rows[1].LastActivity != nil {
+	// The newest event says where the activity is: its issue and its type, which the command
+	// bar's agent reads to find what a session last wrote.
+	if issue, kind := rows[0].LastActivityIssue, rows[0].LastActivityType; issue == nil || *issue != "TEST-1" || kind == nil || *kind != "message.created" {
+		t.Fatalf("planner activity is on %v, of type %v; want the newest event's, TEST-1 and message.created", issue, kind)
+	}
+	if rows[1].SessionID != "reviewer" || rows[1].OpenAsks != 0 || rows[1].LastActivity != nil || rows[1].LastActivityIssue != nil || rows[1].LastActivityType != nil {
 		t.Fatalf("reviewer row = %#v, want no open asks or activity", rows[1])
 	}
 }

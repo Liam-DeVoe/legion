@@ -18,6 +18,12 @@ type agentResponse struct {
 	envoy.Session
 	OpenAsks     int     `json:"open_asks"`
 	LastActivity *string `json:"last_activity"`
+	// LastActivityIssue and LastActivityType are where the session's newest event, the one
+	// LastActivity dates, is: the issue it belongs to, absent for an event of a document that is
+	// on no issue, and its type, such as comment.created or message.created; both absent where
+	// the session has no event.
+	LastActivityIssue *string `json:"last_activity_issue,omitempty"`
+	LastActivityType  *string `json:"last_activity_type,omitempty"`
 }
 
 func (s *server) agentOpenAskCounts(ctx context.Context, sessionIDs []string) (map[string]int, error) {
@@ -59,12 +65,13 @@ func (s *server) agentOpenAskCounts(ctx context.Context, sessionIDs []string) (m
 // against 20 buffers here — because Postgres has no index skip scan. The lateral repeats
 // actor->>'kind' = 'session' because that index is partial on it, and it is joined with `cross
 // join`, not a left join: a session with no event is a session the caller's map must not hold,
-// which is what the grouped read answered by returning it no row.
+// which is what the grouped read answered by returning it no row. Beside its time it answers the
+// event's issue and type, which say where that activity is.
 const agentLastActivityQuery = `
-		select s.id, e.created_at
+		select s.id, e.created_at, e.issue_key, e.type
 		from unnest($1::text[]) s(id)
 		cross join lateral (
-			select created_at
+			select created_at, issue_key, type
 			from events
 			where actor->>'kind' = 'session' and actor->>'id' = s.id
 			order by created_at desc
@@ -72,21 +79,29 @@ const agentLastActivityQuery = `
 		) e
 	`
 
-func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (map[string]time.Time, error) {
+// agentActivity is one session's newest event: when it was written, the issue it belongs to, nil
+// for an event of a document on no issue, and its type.
+type agentActivity struct {
+	at    time.Time
+	issue *string
+	kind  string
+}
+
+func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (map[string]agentActivity, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, agentLastActivityQuery, sessionIDs)
 	if err != nil {
 		return nil, fmt.Errorf("query agent activity: %w", err)
 	}
 	defer rows.Close()
 
-	activity := make(map[string]time.Time)
+	activity := make(map[string]agentActivity)
 	for rows.Next() {
 		var sessionID string
-		var createdAt time.Time
-		if err := rows.Scan(&sessionID, &createdAt); err != nil {
+		var newest agentActivity
+		if err := rows.Scan(&sessionID, &newest.at, &newest.issue, &newest.kind); err != nil {
 			return nil, fmt.Errorf("scan agent activity: %w", err)
 		}
-		activity[sessionID] = createdAt
+		activity[sessionID] = newest
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate agent activity: %w", err)
@@ -171,10 +186,11 @@ func (s *server) agentRoster(ctx context.Context) (routeRoster, error) {
 }
 
 // agentRows is the agents list's rows for the listed sessions: newest seen first, at most limit
-// of them (every one for a limit of 0), each with its open asks and last activity, the machine
-// standing in for a host a listener left out. Only the sessions it answers are looked up, so a
-// limit bounds the rows its two reads load as it bounds the rows it answers. GET /api/v1/agents
-// and the going run's roster read (going_reads.go) answer through it alike.
+// of them (every one for a limit of 0), each with its open asks and its last activity, when and
+// where it is, the machine standing in for a host a listener left out. Only the sessions it
+// answers are looked up, so a limit bounds the rows its two reads load as it bounds the rows it
+// answers. GET /api/v1/agents and the going run's roster read (going_reads.go) answer through it
+// alike.
 func (s *server) agentRows(ctx context.Context, listed []envoy.Session, limit int) ([]agentResponse, error) {
 	sessions := newestSessions(listed, limit)
 	if len(sessions) == 0 {
@@ -196,19 +212,16 @@ func (s *server) agentRows(ctx context.Context, listed []envoy.Session, limit in
 
 	rows := make([]agentResponse, 0, len(sessions))
 	for _, session := range sessions {
-		var lastActivity *string
-		if createdAt, ok := activity[session.SessionID]; ok {
-			lastActivity = timestampPtr(&createdAt)
+		row := agentResponse{OpenAsks: openAsks[session.SessionID]}
+		if newest, ok := activity[session.SessionID]; ok {
+			row.LastActivity, row.LastActivityIssue, row.LastActivityType = timestampPtr(&newest.at), newest.issue, &newest.kind
 		}
 		// A listener that predates the "host" field (packages/envoy/internal/session's
 		// SessionEntry.Host) answers with none; fall back to the routing machine_id rather
 		// than showing an empty machine on the Agents page during a partial rollout.
 		session.Host = cmp.Or(session.Host, session.MachineID)
-		rows = append(rows, agentResponse{
-			Session:      session,
-			OpenAsks:     openAsks[session.SessionID],
-			LastActivity: lastActivity,
-		})
+		row.Session = session
+		rows = append(rows, row)
 	}
 	return rows, nil
 }

@@ -267,10 +267,16 @@ func (g *goingReadRun) readRoster(ctx context.Context, arguments json.RawMessage
 		if len(sessions) == goingReadSessionMax {
 			continue
 		}
-		sessions = append(sessions, map[string]any{
+		session := map[string]any{
 			going.FieldSessionID: row.SessionID, going.FieldTitle: row.Title, going.FieldState: row.State, "roles": row.Roles,
 			going.FieldOpenAsks: row.OpenAsks, going.FieldLastActivity: row.LastActivity,
-		})
+		}
+		// Where the session's last activity is, where it has one: the issue and the type of
+		// its newest event (agentRows).
+		if row.LastActivityType != nil {
+			session["last_activity_issue"], session["last_activity_type"] = row.LastActivityIssue, *row.LastActivityType
+		}
+		sessions = append(sessions, session)
 	}
 	return going.Read{
 		Facts: map[string]any{"source": frame.Source, "age_ms": frame.AgeMS},
@@ -390,7 +396,7 @@ func (s *server) storedAgentRows(ctx context.Context) ([]agentResponse, error) {
 		return nil, err
 	}
 	sort.SliceStable(sessionIDs, func(left, right int) bool {
-		leftAt, rightAt := activity[sessionIDs[left]], activity[sessionIDs[right]]
+		leftAt, rightAt := activity[sessionIDs[left]].at, activity[sessionIDs[right]].at
 		if !leftAt.Equal(rightAt) {
 			return leftAt.After(rightAt)
 		}
@@ -401,8 +407,8 @@ func (s *server) storedAgentRows(ctx context.Context) ([]agentResponse, error) {
 		row := agentResponse{OpenAsks: openAsks[id]}
 		row.SessionID, row.Title, row.State = id, titles[id], "unknown"
 		row.Roles, row.Capabilities = []string{}, []string{}
-		if at, active := activity[id]; active {
-			row.LastActivity = timestampPtr(&at)
+		if newest, active := activity[id]; active {
+			row.LastActivity, row.LastActivityIssue, row.LastActivityType = timestampPtr(&newest.at), newest.issue, &newest.kind
 		}
 		agents = append(agents, row)
 	}

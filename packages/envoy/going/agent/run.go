@@ -126,8 +126,11 @@ type worker struct {
 	drawn sync.Map
 	// withheld is the tool steps of the run whose results the model is no longer given, by their
 	// numbers, each with its tool: the content filter refused a model call that held them
-	// (withhold). Only the run's goroutine writes it, between its model calls.
-	withheld map[int]string
+	// (withhold); filterRefused is set once the filter refused a call that is made again as it
+	// was, until a step saves its model call. Only the run's goroutine writes them, between its
+	// model calls.
+	withheld      map[int]string
+	filterRefused bool
 }
 
 // newWorker is the worker of run, its context ctx's, its slot freed by release.
@@ -296,7 +299,8 @@ type stepOutcome struct {
 // tools it calls; the model call is saved (OnStep), each tool call as it ends (toolRun). The
 // watchdog gives up the run when the step runs past its model call's time and watchdogGrace. A
 // call the chat model's content filter refused, or whose reply it stopped, saves nothing, and
-// the step is made again without the results the filter may have refused (withhold).
+// the step is made again (withhold). The run's last model call, which is offered no tool, is told
+// so (lastCallNote).
 func (w *worker) step() stepOutcome {
 	messages, err := conversation(w.run, lastWhole(w.history), w.withheld)
 	if err != nil {
@@ -317,6 +321,9 @@ func (w *worker) step() stepOutcome {
 		}
 	}
 	request := w.level.request(w.agent.config.Model, w.used)
+	if request.Bounds.Calls == 1 {
+		messages = withLastCallNote(messages)
+	}
 	request.Model = w.agent.pacer.paced(request.Model, func() int { return prompt/charsPerToken + w.level.OutputTokens })
 	request.System, request.Input, request.Tools = system, messages, w.tools(base)
 	request.OnStep = func(step agentloop.Step) error {
@@ -335,6 +342,7 @@ func (w *worker) step() stepOutcome {
 	case !kept || w.lost.Load() || w.grantEnded.Load() != nil || w.ctx.Err() != nil:
 		return stepOutcome{}
 	case errors.Is(err, errStepTaken):
+		w.filterRefused = false
 		switch {
 		case finish == "length":
 			return stepOutcome{state: agentwire.StateStopped, reason: w.level.cut(w.name), offers: []string{agentwire.OfferContinue}}
@@ -354,14 +362,23 @@ func (w *worker) step() stepOutcome {
 	return w.faulted(result)
 }
 
-// withhold is how a step goes on whose model call the chat model's content filter refused: every
-// tool step of the run whose result holds data that people, agents, GitHub or a web page wrote
-// (storedDataNote), which the agent cannot vouch for, and that is not yet withheld, is withheld,
+// withhold is how a step goes on whose model call the chat model's content filter refused. The
+// filter's verdict is on what a call holds and what the model writes back, which the model writes
+// anew at each call, so a first refusal makes the same call again. A refusal of that call again
+// withholds every tool step of the run whose result holds data that people, agents, GitHub or a
+// web page wrote (storedDataNote), which the agent cannot vouch for, and that is not yet withheld,
 // so the model is told of each that its result was withheld (conversation), and the step is made
 // again; a reply that ends the turn then tells the person which results were withheld
 // (saveReply). A call refused with no such result left to withhold ends the run failed with
-// codeContentFilter and the provider's detail.
+// codeContentFilter and the provider's detail. A step that saves its model call makes the next
+// refusal a first one again.
 func (w *worker) withhold(detail string) stepOutcome {
+	if !w.filterRefused {
+		w.filterRefused = true
+		slog.Warn("agent: the chat model's content filter refused a model call; the call is made again as it was",
+			"run", w.run.ID, "detail", note(detail))
+		return stepOutcome{}
+	}
 	added := 0
 	for _, step := range w.history {
 		if _, done := w.withheld[step.Step]; done || step.Kind != agentwire.StepTool {
@@ -380,9 +397,25 @@ func (w *worker) withhold(detail string) stepOutcome {
 			"%s: the chat model's content filter refused a model call of this run with every tool result of the run withheld from it (%s)",
 			codeContentFilter, note(detail))}
 	}
-	slog.Warn("agent: the chat model's content filter refused a model call; its tool results are withheld and the call is made again",
+	slog.Warn("agent: the chat model's content filter refused a model call again; its tool results are withheld and the call is made again",
 		"run", w.run.ID, "withheld", added, "detail", note(detail))
 	return stepOutcome{}
+}
+
+// lastCallNote is what the run's last model call is told, which agentloop offers no tool: a model
+// that is not told so writes that it will read more, and ends the turn without an answer, or
+// repeats that until its output tokens are spent.
+const lastCallNote = "This is the last model call this run's level allows, and it is offered no tool: answer the person now, from what the results above hold, and say what you did not read. Write no promise to read more."
+
+// withLastCallNote is messages with lastCallNote said as the person's last words after them, in
+// a message of their own or added to the person's last message.
+func withLastCallNote(messages []agentloop.Message) []agentloop.Message {
+	told := agentloop.Block{Kind: agentloop.TextBlock, Text: lastCallNote}
+	if last := len(messages) - 1; last >= 0 && messages[last].Role == agentloop.User {
+		messages[last].Blocks = append(slices.Clone(messages[last].Blocks), told)
+		return messages
+	}
+	return append(messages, agentloop.Message{Role: agentloop.User, Blocks: []agentloop.Block{told}})
 }
 
 // runModel makes request's one model call on the run's context, under the watchdog, adds what it
