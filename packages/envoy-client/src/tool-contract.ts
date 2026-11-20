@@ -58,15 +58,19 @@ const STORED_DELIVERY = storedDelivery(
   "agent, dispatch, github, slack, legion, ghostwispr, whatsapp, team"
 );
 
-// The listener's publish route refuses the agent topics, and Dispatch's and GitHub's lanes, by
-// name (R7 of dispatch://INFRA-3589). No NATS grant can refuse an HTTP caller of a listener whose
-// own user holds one of those two lanes. So the publish tool lists none of them as stored.
+// The listener's publish route refuses these topics by name (`publishHandler`, R7 of
+// dispatch://INFRA-3589): the agent topics, Dispatch's and GitHub's lanes, which no NATS grant can
+// refuse an HTTP caller of a listener whose own user holds one, the Legion wake subject, and the
+// listener's own lanes (`bus.ListenerOwnLaneOf`). So the publish tool lists none of them as stored.
 const PUBLISHED_DELIVERY =
-  "A publish to an agent topic is refused by name: envoy_send sends to one session. A publish " +
-  "to a topic under notifications.dispatch. or notifications.github. is refused by name too: " +
-  "only Dispatch publishes on Dispatch's lane, and only the listener that receives GitHub's " +
-  `webhooks publishes on GitHub's. ${storedDelivery(
-    "Every other topic a publish names is stored",
+  "The listener refuses a publish to each of these topics by name, and stores nothing: an agent " +
+  "topic, since envoy_send sends to one session; a topic under notifications.dispatch., since " +
+  "only Dispatch publishes on Dispatch's lane; a topic under notifications.github., since only " +
+  "the listener that receives GitHub's webhook publishes on GitHub's lane; " +
+  "notifications.legion.wake, since only the listener reports a Legion pod wake; and a topic " +
+  "under notifications.envoy.kept., notifications.envoy.resume. or notifications.envoy.takeover., " +
+  `since those lanes are the listener's own. ${storedDelivery(
+    "Every other topic the stream captures is stored",
     "slack, legion, ghostwispr, whatsapp, team"
   )}`;
 

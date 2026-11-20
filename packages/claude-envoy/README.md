@@ -117,9 +117,11 @@ message from Dispatch's Agents page as that person's own turn.
   the session receives again, and tells the session once, as a notice, that Envoy inbound is
   restored and that what the stream stored meanwhile arrives now. A registration the listener
   answers with the bus-outage 503 (its message bus did not answer) is held for two minutes from
-  the first such answer, also where its retry got no answer; after that the server says once that
-  the listener did not record the registration, and, when one is accepted, that the listener
-  recorded one. A refusal or a lost relay subject after that notice is told once more, as Envoy
+  the first such answer, also where its retry got no answer or a 5xx that names no reason; after
+  that the server says once that the registration is not recorded for certain, since the retry
+  may have landed, and, when one is accepted, that the listener recorded one. A retry the
+  listener refuses with a reason, such as `consumer_limit`, is told at once as Envoy inbound
+  unavailable. A refusal or a lost relay subject after that notice is told once more, as Envoy
   inbound unavailable, and the accepted registration after it says that Envoy inbound is
   restored. A session whose shutdown has begun registers nothing, and is told neither that Envoy
   inbound is unavailable nor that it is restored.

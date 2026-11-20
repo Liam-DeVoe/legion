@@ -882,10 +882,10 @@ describe("consumer delivery", () => {
     }
   });
 
-  // The pane note and the log line of that episode say what the card says: the listener did not
-  // record the registration, and then that it recorded one. None says that the session receives
-  // nothing, that its inbound messages are unavailable, or that they are back.
-  test("(e) the pane and the log tell a bus-outage 503 past the bound as a registration the listener did not record, and the accepted registration after it as one it recorded", async () => {
+  // The pane note and the log line of that episode say what the card says: the registration is
+  // not recorded for certain, and then that the listener recorded one. None says that the session
+  // receives nothing, that its inbound messages are unavailable, or that they are back.
+  test("(e) the pane and the log tell a bus-outage 503 past the bound as a registration not recorded for certain, and the accepted registration after it as one the listener recorded", async () => {
     const logged: string[] = [];
     const stopSink = logger.registerLogSink((entry) => {
       if (entry.message.startsWith("envoy: ")) logged.push(`${entry.level} ${entry.message}`);
@@ -902,10 +902,10 @@ describe("consumer delivery", () => {
       setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
       expect(session.notifications).toContain(
-        `envoy: the listener did not record this session's registration (${UNRECORDED}), and the session registers again at every heartbeat`
+        `envoy: this session's registration is not recorded for certain (${UNRECORDED}), and the session registers again at every heartbeat`
       );
       expect(logged).toContain(
-        `warn envoy: the listener did not record this session's registration: ${UNRECORDED}`
+        `warn envoy: this session's registration is not recorded for certain: ${UNRECORDED}`
       );
 
       session.accept();

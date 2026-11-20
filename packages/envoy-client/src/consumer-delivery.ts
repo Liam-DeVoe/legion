@@ -833,7 +833,7 @@ export function gapNoticeText(notice: ConsumerGapNotice): string {
 
 /**
  * Whether `why`, the message `inboundUnavailable` told a session, is a registration the listener
- * did not record: the bus-outage 503 (`isBusUnanswered`), whose message begins with
+ * may not have recorded: the bus-outage 503 (`isBusUnanswered`), whose message begins with
  * `BUS_UNANSWERED_PREFIX`. Each host picks the words of its own one-line texts by this, so no host
  * tests the prefix itself.
  */
@@ -849,10 +849,11 @@ export function isUnrecordedRegistration(why: string): boolean {
  * shows it where it shows a gap notice and says once per outage.
  *
  * A `why` that begins with the bus-outage prefix (`isUnrecordedRegistration`) is a registration
- * the listener did not record, because its message bus did not answer in time (`isBusUnanswered`).
- * The client cannot tell which of the registration's calls failed, and the session's consumer
- * may well exist and deliver. So that notice says that the registration was not recorded, and
- * not that the session has no consumer.
+ * the listener may not have recorded, because its message bus did not answer in time
+ * (`isBusUnanswered`). The client cannot tell which of the registration's calls failed. A retry
+ * that got no answer after that 503 may have landed (`busUnansweredStands`), and the session's
+ * consumer may well exist and deliver. So that notice says that the registration is not recorded
+ * for certain, and not that the session has no consumer.
  */
 export function inboundUnavailableNoticeText(why: string): string {
   if (isUnrecordedRegistration(why)) {
@@ -860,7 +861,7 @@ export function inboundUnavailableNoticeText(why: string): string {
       notice: "Envoy inbound unavailable",
       error: why,
       detail:
-        "The listener did not record this session's registration, because its message bus did not answer in time. Envoy messages may still reach the session, but nothing confirms it until a registration is accepted. Everything else works, and the session registers again at every heartbeat.",
+        "This session's registration is not recorded for certain: the listener's message bus did not answer in time, so the listener may or may not have recorded it. Envoy messages may still reach the session, but nothing confirms it until a registration is accepted. Everything else works, and the session registers again at every heartbeat.",
     });
   }
   return envoyNoticeText({
@@ -874,9 +875,10 @@ export function inboundUnavailableNoticeText(why: string): string {
 /**
  * What a session is told when a registration is accepted after an outage it was told of
  * (`inboundUnavailableNoticeText`), worded once for every host and shown where that notice was
- * shown. `why` is the message that notice told. After a registration the listener did not record
- * (`isUnrecordedRegistration`), the consumer may have delivered all along. So that notice says
- * that the listener recorded a registration, and not that the session receives again.
+ * shown. `why` is the message that notice told. After a registration that is not recorded for
+ * certain (`isUnrecordedRegistration`), the consumer may have delivered all along. So that notice
+ * says that the listener recorded a registration, and not that the session receives again. An
+ * accepted registration is answered only once the listener wrote its record, so that is true.
  */
 export function inboundRestoredNoticeText(why: string): string {
   if (isUnrecordedRegistration(why)) {
@@ -918,7 +920,7 @@ export interface InboundUnavailable {
    * No registration was sent, because the session holds no relay subject. Before the session's
    * first accepted registration this is the start race, held until the bound passes; after it,
    * a relay that was open was lost, which tells the session at once. Either way it is told once
-   * per outage, and once more after a told registration the listener did not record.
+   * per outage, and once more after a told registration that is not recorded for certain.
    */
   noRelay(error: unknown): void;
   /**
@@ -975,7 +977,7 @@ export interface InboundUnavailableOptions {
  * its start, and it receives once the relay opens. So until the session's first accepted
  * registration, an outage with no relay subject is held: the first such call starts the bound,
  * and only a call at or after its end tells the session. A registration the listener answered
- * with the bus-outage 503 is held the same way, at any time: the listener did not record it,
+ * with the bus-outage 503 is held the same way, at any time: it is not recorded for certain,
  * the session's consumer may still deliver, and the next heartbeat's registration is usually
  * accepted, so the first such refusal since the last accepted registration starts the bound and
  * an accepted registration inside it ends the hold with nothing said. Any other refusal is told
@@ -998,8 +1000,8 @@ export function inboundUnavailable(
   let everAccepted = false;
   let heldSince: number | undefined;
   let unansweredSince: number | undefined;
-  // A told registration the listener did not record says that the consumer may still deliver,
-  // so a refusal or a lost relay subject after it is told once more.
+  // A told registration that is not recorded for certain says that the consumer may still
+  // deliver, so a refusal or a lost relay subject after it is told once more.
   const say = (error: unknown) => {
     if (stopping()) return;
     const why = messageFor(error);

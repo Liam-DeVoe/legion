@@ -837,9 +837,10 @@ export class EnvoyApiError extends Error {
  * the listener did before that call can have landed: an unsubscribe gets this answer after it
  * wrote the session's record, when only the update of the consumer's filter met the reconnect.
  * A registration (`subscribe`) or a removal (`unsubscribe`) that got this answer on an attempt
- * fails with it, also where a later attempt got no answer or another 5xx (`busUnansweredStands`),
- * so this reads true for it. Every other call throws the error of its last attempt alone, so a
- * first attempt that got this answer and a retry that failed another way reads false here.
+ * fails with it, also where a later attempt got no answer or a 5xx that names no reason
+ * (`busUnansweredStands`), so this reads true for it. Every other call throws the error of its
+ * last attempt alone, so a first attempt that got this answer and a retry that failed another way
+ * reads false here.
  */
 export function isBusUnanswered(error: unknown): boolean {
   return (
@@ -949,14 +950,16 @@ type RequestOptions = {
   readonly onAttempt?: () => void;
   /**
    * Whether an attempt's bus-outage 503 (`isBusUnanswered`) is the call's error when a later
-   * attempt gets no answer, sends nothing or gets another 5xx. A registration and a removal set
-   * it. The listener may have done part of the call before that 503: a registration's consumer
-   * may exist though its record was not written, and a removal may have freed the claim or
-   * written the record. A retry that then got no answer tells nothing more, so the caller is
-   * told of the 503: the session is told that the registration was not recorded
-   * (`inboundUnavailable`), and a removal is warned as one that may already have landed. A 4xx
-   * on a later attempt is still the call's error. Every other call throws what its last attempt
-   * got, because its callers read that: a send's unconfirmed error names it.
+   * attempt gets no answer, sends nothing or gets a 5xx that names no reason. A registration and
+   * a removal set it. The listener may have done part of the call before that 503: a
+   * registration's consumer may exist though its record was not written, and a removal may have
+   * freed the claim or written the record. A retry that then got no answer tells nothing more, so
+   * the caller is told of the 503: the session is told that the registration is not recorded for
+   * certain (`inboundUnavailable`), and a removal is warned as one that may already have landed.
+   * A later attempt's refusal is still the call's error: a 4xx, and a 5xx that names a reason (a
+   * registration's `no_grant`, `consumer_limit` or `consumer_error` 503), since the listener
+   * answered the call itself. Every other call throws what its last attempt got, because its
+   * callers read that: a send's unconfirmed error names it.
    */
   readonly busUnansweredStands?: boolean;
   /**
@@ -1171,7 +1174,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           await waitForRetry(retryDelayMs);
           continue;
         }
-        throw busUnanswered ?? error;
+        // A 5xx that names a reason is the listener's refusal of the call, which stands.
+        throw error.reason === undefined ? (busUnanswered ?? error) : error;
       }
       throw error;
     }
@@ -1230,8 +1234,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             subscribeBody(input),
             // Every call below whose body names the session it acts for presents that session's
             // own credential, since the listener binds a broker token's session to it. A
-            // registration an attempt of which got the bus-outage 503 fails with that answer
-            // where a later attempt gets no answer or another 5xx (`busUnansweredStands`).
+            // registration an attempt of which got the bus-outage 503 fails with that answer where
+            // a later attempt gets no answer or a 5xx that names no reason (`busUnansweredStands`).
             { actingSession: input.sessionID, busUnansweredStands: true }
           ),
           "POST",
@@ -1252,8 +1256,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             : { client_instance_id: input.clientInstanceID }),
         },
         // A removal an attempt of which got the bus-outage 503 fails with that answer where a
-        // later attempt gets no answer or another 5xx (`busUnansweredStands`): the listener may
-        // already have freed the claim or written the record.
+        // later attempt gets no answer or a 5xx that names no reason (`busUnansweredStands`): the
+        // listener may already have freed the claim or written the record.
         { actingSession: input.sessionID, busUnansweredStands: true }
       );
     },

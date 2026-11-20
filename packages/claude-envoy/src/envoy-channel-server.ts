@@ -1320,27 +1320,28 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   }
 
   /**
-   * Said once per outage: the listener refused this session's registration or did not record it,
-   * or the session holds no relay subject. The session still runs, and the heartbeat registers
-   * again every tick until one is accepted. `why` is the error's message: for a refusal, the
-   * listener's own, with a reason `ErrorWireSchema.reason` lists. `inboundUnavailableNoticeText`
-   * words it for every host. A refusal leaves the session no consumer. After a bus-outage 503
-   * (`isUnrecordedRegistration`) the consumer may still deliver, so the stderr lines say only that
-   * the listener did not record the registration, and a refusal or a lost relay subject after it
-   * is said once more. An accepted registration after a told outage tells the session once, by the
-   * same path, worded for the last `why` it was told. A session whose shutdown has begun is told
-   * neither (`stopping`): the shutdown closed the relay on purpose, and the record is deleted next.
+   * Said once per outage: the listener refused this session's registration or may not have
+   * recorded it, or the session holds no relay subject. The session still runs, and the heartbeat
+   * registers again every tick until one is accepted. `why` is the error's message: for a refusal,
+   * the listener's own, with a reason `ErrorWireSchema.reason` lists.
+   * `inboundUnavailableNoticeText` words it for every host. A refusal leaves the session no
+   * consumer. After a bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver,
+   * and a retry after it may have landed, so the stderr lines say only that the registration is
+   * not recorded for certain, and a refusal or a lost relay subject after it is said once more.
+   * An accepted registration after a told outage tells the session once, by the same path,
+   * worded for the last `why` it was told. A session whose shutdown has begun is told neither
+   * (`stopping`): the shutdown closed the relay on purpose, and the record is deleted next.
    */
   const inboundOutage = inboundUnavailable(
     (why) => {
       const unrecorded = isUnrecordedRegistration(why)
       process.stderr.write(
         unrecorded
-          ? `envoy-channel: the listener did not record this session's registration (${why}), and the session registers again at every heartbeat\n`
+          ? `envoy-channel: this session's registration is not recorded for certain (${why}), and the session registers again at every heartbeat\n`
           : `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
       )
       const told = unrecorded
-        ? "that the listener did not record its registration"
+        ? "that its registration is not recorded for certain"
         : "that it receives nothing"
       delivery.notice(inboundUnavailableNoticeText(why)).catch((noticeError: unknown) => {
         process.stderr.write(
@@ -1484,10 +1485,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // A registration the listener refused, for any of the reasons `ErrorWireSchema.reason`
       // lists, leaves the session with no consumer at all: the session is told once, at once, and
       // the heartbeat asks again. A registration the bus-outage 503 answered (`isBusUnanswered`)
-      // was not recorded, but its consumer may still deliver. That failure is held for the bound
-      // first (`INBOUND_FIRST_OPEN_BOUND_MS`): the session is told once only when such a failure
-      // comes at or after the bound's end, and an accepted registration inside the bound ends the
-      // hold with nothing said.
+      // is not recorded for certain, but its consumer may still deliver. That failure is held
+      // for the bound first (`INBOUND_FIRST_OPEN_BOUND_MS`): the session is told once only when
+      // such a failure comes at or after the bound's end, and an accepted registration inside
+      // the bound ends the hold with nothing said.
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
       },

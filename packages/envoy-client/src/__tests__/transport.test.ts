@@ -1528,10 +1528,11 @@ describe("EnvoyClient", () => {
 
   // Finding 7 of the read-ahead at 73c124fe (dispatch://INFRA-3589, R26): the listener answers a
   // registration whose known-session record did not land with its bus-outage 503, and its route
-  // may take 4.5 s, so the client's retry can then time out. The registration was not recorded,
-  // and a retry that got no answer says nothing more. So the registration fails with that 503:
-  // the outage report holds it, and words it as a registration the listener did not record. A
-  // refusal on the retry is still that refusal.
+  // may take 4.5 s, so the client's retry can then time out. The retry may have landed, and a
+  // retry that got no answer says nothing more. So the registration fails with that 503: the
+  // outage report holds it, and words it as a registration that is not recorded for certain. A
+  // refusal on the retry is still that refusal: a 4xx, and a 503 that names a reason (C1 of the
+  // second read-ahead), which says the listener can give the session no consumer.
   describe("a registration whose first attempt got the bus-outage 503", () => {
     const UNRECORDED = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ses_sender: context deadline exceeded`;
     const BOUND = 60_000;
@@ -1602,17 +1603,40 @@ describe("EnvoyClient", () => {
       expect(session.calls()).toBe(6);
       expect(session.told).toEqual([UNRECORDED]);
       const notice = inboundUnavailableNoticeText(session.told[0] ?? "");
-      expect(notice).toContain("The listener did not record this session's registration");
+      expect(notice).toContain("This session's registration is not recorded for certain");
       expect(notice).not.toContain("no durable consumer");
       expect(notice).not.toContain("receives none");
     });
 
+    // The listener's own refusals of a registration's consumer, each a 503 that names its reason
+    // (`session_delivery.go`): the session receives nothing, so it is told at once.
+    test.each([
+      [
+        "consumer_limit",
+        "the ENVOY_NOTIFICATIONS stream holds as many consumers as its max_consumers allows, so it can give ses_sender none and that session receives nothing: raise the stream's max_consumers",
+      ],
+      [
+        "no_grant",
+        "this listener may not manage session consumers, so it can give ses_sender none",
+      ],
+      ["consumer_error", "the session consumer of ses_sender could not be read or created"],
+    ] as const)("a retry the listener refuses with its %s 503 fails with that refusal, told at once", async (reason, error) => {
+      const session = registrations(async () => Response.json({ error, reason }, { status: 503 }));
+
+      const failure = await session.register().catch((thrown: unknown) => thrown);
+
+      expect(session.calls()).toBe(2);
+      expect(isBusUnanswered(failure)).toBe(false);
+      expect(failure).toMatchObject({ reason, details: { status: 503 } });
+      expect(session.told).toEqual([`${error} (reason: ${reason})`]);
+      expect(inboundUnavailableNoticeText(session.told[0] ?? "")).toContain("receives none");
+    });
+
     test("a retry the listener refuses with a 4xx fails with that refusal, told at once", async () => {
+      const refusal =
+        "ses_sender asked for no session consumer: a session receives only what its own consumer holds, so register with delivery.consumer true";
       const session = registrations(async () =>
-        Response.json(
-          { error: "the listener can give this session no consumer", reason: "no_grant" },
-          { status: 409 }
-        )
+        Response.json({ error: refusal, reason: "not_requested" }, { status: 409 })
       );
 
       const failure = await session.register().catch((thrown: unknown) => thrown);
@@ -1620,9 +1644,7 @@ describe("EnvoyClient", () => {
       expect(session.calls()).toBe(2);
       expect(isBusUnanswered(failure)).toBe(false);
       expect((failure as EnvoyApiError).details.status).toBe(409);
-      expect(session.told).toEqual([
-        "the listener can give this session no consumer (reason: no_grant)",
-      ]);
+      expect(session.told).toEqual([`${refusal} (reason: not_requested)`]);
     });
 
     // Only a registration and a removal fail with an earlier attempt's 503. A send names what its
@@ -1651,9 +1673,9 @@ describe("EnvoyClient", () => {
 
   // The class of finding 7, in a removal: the listener frees the claim and writes the record
   // before it sets the consumer's filter, so its bus-outage 503 can come after the removal
-  // landed. A retry that then got no answer or another 5xx says nothing more. So the removal
-  // fails with that 503, and each caller warns that the removal may already have landed
-  // (`isBusUnanswered`), never that it did not happen.
+  // landed. A retry that then got no answer or a 5xx that names no reason says nothing more. So
+  // the removal fails with that 503, and each caller warns that the removal may already have
+  // landed (`isBusUnanswered`), never that it did not happen.
   test.each([
     [
       "times out",
@@ -1662,7 +1684,7 @@ describe("EnvoyClient", () => {
         throw new DOMException("The operation timed out.", "TimeoutError");
       },
     ],
-    ["gets another 5xx", async () => new Response("bad gateway", { status: 502 })],
+    ["gets a 5xx that names no reason", async () => new Response("bad gateway", { status: 502 })],
   ] as const)("an unsubscribe whose first attempt got the bus-outage 503 and whose retry %s fails with that 503", async (_name, retry) => {
     const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_sender's session consumer: bus: NATS is reconnecting`;
     let calls = 0;

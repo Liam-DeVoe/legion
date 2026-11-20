@@ -146,10 +146,11 @@ describe("envoyToolSpecs", () => {
     );
   });
 
-  // R7 of dispatch://INFRA-3589: the listener's publish route refuses Dispatch's and GitHub's
-  // lanes by name, as it refuses the agent topics. So the publish tool lists none of them among
-  // the topics a publish stores, and says why; the subscribe tool still lists every stored lane.
-  test("tells an agent that a publish to an agent topic or to Dispatch's or GitHub's lane is refused", () => {
+  // R7 of dispatch://INFRA-3589: the listener's publish route refuses by name the agent topics,
+  // Dispatch's and GitHub's lanes, the Legion wake subject and the listener's own lanes
+  // (`publishHandler`). So the publish tool lists none of them among the topics a publish stores,
+  // and says why; the subscribe tool still lists every stored lane.
+  test("tells an agent each topic the listener refuses a publish to, and that every other topic the stream captures is stored", () => {
     const subscribe = envoyToolSpecs.find((spec) => spec.name === "envoy_subscribe");
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 
@@ -157,16 +158,14 @@ describe("envoyToolSpecs", () => {
       "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, whatsapp, team;"
     );
     expect(publish?.description).toContain(
-      "A publish to an agent topic is refused by name: envoy_send sends to one session."
+      "The listener refuses a publish to each of these topics by name, and stores nothing: an agent topic, since envoy_send sends to one session; a topic under notifications.dispatch., since only Dispatch publishes on Dispatch's lane; a topic under notifications.github., since only the listener that receives GitHub's webhook publishes on GitHub's lane; notifications.legion.wake, since only the listener reports a Legion pod wake; and a topic under notifications.envoy.kept., notifications.envoy.resume. or notifications.envoy.takeover., since those lanes are the listener's own."
     );
     expect(publish?.description).toContain(
-      "A publish to a topic under notifications.dispatch. or notifications.github. is refused by name too: only Dispatch publishes on Dispatch's lane, and only the listener that receives GitHub's webhooks publishes on GitHub's."
-    );
-    expect(publish?.description).toContain(
-      "Every other topic a publish names is stored (slack, legion, ghostwispr, whatsapp, team;"
+      "Every other topic the stream captures is stored (slack, legion, ghostwispr, whatsapp, team;"
     );
     expect(publish?.description).not.toContain("dispatch, github");
     expect(publish?.description).not.toContain("Every notification topic is stored");
+    expect(publish?.description).not.toContain("webhooks");
   });
 
   test("tells an agent the three answers a role message has, the kept one as a success", () => {
