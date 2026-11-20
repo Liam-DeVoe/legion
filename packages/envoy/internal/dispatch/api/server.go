@@ -1948,17 +1948,22 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.L
 
 // transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
 // queue has run: the ledger's, when it is the version this transaction queued
-// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it. Either
+// is the text every read of the version answers (docs.MaskedVersionText), so the diff a version's
+// event carries gives no word of a pending insert whose comment was deleted.
 func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
-	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
-		return markdown, true, nil
+	markdown, insertTree, pending := ledger.PendingVersionMarkdown(artifactID, number)
+	if !pending {
+		err := tx.QueryRow(ctx, `
+			select markdown, insert_tree from artifact_versions where artifact_id = $1 and number = $2
+		`, artifactID, number).Scan(&markdown, &insertTree)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
 	}
-	var markdown string
-	err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, number).Scan(&markdown)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
-	}
-	return markdown, err == nil, err
+	masked, err := docs.MaskedVersionText(ctx, tx, artifactID, markdown, insertTree)
+	return masked, err == nil, err
 }

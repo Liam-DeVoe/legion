@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  A stored document version gives no word of a pending insert suggestion whose comment its author
+  deleted, unless an accept made the words document text: GET on
+  /api/v1/artifacts/{id}/versions/{number} and on the issue and project slug forms answers the
+  version's Markdown without them, as JSON and as the download, and so do the diff a named
+  version's artifact.version event carries and the diff of an artifact.human_edited notice. The
+  version still stores the words, and its sha256 and size stay the stored text's, so an approval
+  pinned to the version stays as it was and a masked answer's text no longer hashes to sha256.
+  Every version write stores the tree its markdown was rendered from when that tree holds an insert
+  suggestion's mark, in the new nullable column artifact_versions.insert_tree (migration
+  20261120213507), which the read masks by the mark's id. A version stored before this release
+  holds no such tree and is read as stored.
+time: 2026-11-20T21:35:07Z
+custom:
+    Issue: pr3512

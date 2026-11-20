@@ -5,11 +5,13 @@
 // the quote of an insert suggestion's anchor that no accept made document text, that insert's
 // words in the quote of every other anchor on them, and the name of the document version an
 // accepted suggestion made — each rewritten in the one transaction that clears it. The
-// event log's payloads stay as written and are masked at each read (attachPostMarks), and a
-// reply's events that quote the comment - its creation, and each later event of the reply but its
-// own delete, written before this one - keep the preview they froze, as another anchor's events
-// written before this delete keep the quote they froze. The delete's own comment.deleted, of a
-// comment that is itself a reply, carries no text of the post it answers
+// event log's payloads stay as written and are masked at each read (attachPostMarks), and so do
+// the stored document versions that hold a pending insert's words, which every read of a version
+// gives without them (docs.MaskedVersionText); a reply's events that quote the comment - its
+// creation, and each later event of the reply but its own delete, written before this one - keep
+// the preview they froze, as another anchor's events written before this delete keep the quote
+// they froze. The delete's own comment.deleted, of a comment that is itself a reply, carries no
+// text of the post it answers
 // (commentCorrectionPayload). A pending suggestion's proof is in the document itself, so the same
 // transaction rejects it before the clear.
 package api

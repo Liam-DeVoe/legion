@@ -2563,6 +2563,11 @@ Such a repository is one with an open or merged linked pull request that GitHub 
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
 A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
+Migration `20261120213507_artifact_versions_insert_tree` adds the nullable `jsonb` column `artifact_versions.insert_tree`: the tree a document version's markdown was rendered from, as pmdoc's JSON, written in the insert that stores the markdown and only when that tree holds an insert suggestion's mark (`docs.InsertTree`), and null for every other row, the rows before it included.
+The markdown carries no anchor mark, so the column is the one record of which of a version's words a pending insert put there, by the mark's id: every read of a version's text - the three document version routes, the diff a named version's `artifact.version` event carries and the diff of an `artifact.human_edited` notice - drops the words of each insert whose comment (`anchor.mark_id`) its author deleted and that no accept made document text (`docs.MaskedVersionText`), while the stored markdown, its `sha256` and every approval pinned to it stay as they were.
+A version stored before the column, or by the release before this one during the roll, is read as stored.
+A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `artifact_versions` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
+
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
 The `role` check names the six Legion roles, and a row goes with its issue.
