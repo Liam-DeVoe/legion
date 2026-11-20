@@ -1411,7 +1411,11 @@ test("on a phone the live view never scrolls the page, keeps its header and comp
   const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-0000000390a4" };
   await setLiveSessions([planner, phone]);
   await publishAgentStreamFrame(phone.session_id, longReplay(phone.session_id), "replay");
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line: the line comes out of the height the live view, its header and
+  // its composer are measured in.
+  const context = await asUser(browser, rowPerson("alice"));
   const page = await context.newPage();
   try {
     await page.setViewportSize({ height: 844, width: 390 });
@@ -1653,7 +1657,10 @@ test("a reader scrolled back into a live session's transcript keeps their place,
     rebuiltReplay(reading.session_id, 0, FOLD_FRAMES),
     "replay"
   );
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own, for the reason the phone row above gives: the
+  // header's line comes out of the thread whose place and Jump to latest the row reads.
+  const me = rowPerson("alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   const jump = page.getByTestId("jump-to-latest");
   try {
@@ -1685,10 +1692,14 @@ test("a reader scrolled back into a live session's transcript keeps their place,
     // What the count is of is the transcript, not the stream: a message somebody else sends the
     // session through Dispatch is one more thing the reader has not seen, and it moves them no
     // more than the session's own turn does.
-    await createAgentMessage(reading.session_id, {
-      body: "Someone else asks about the notes",
-      delivery: "aside",
-    });
+    await createAgentMessage(
+      reading.session_id,
+      {
+        body: "Someone else asks about the notes",
+        delivery: "aside",
+      },
+      { login: me }
+    );
     await expect(jump).toHaveText("Jump to latest · 3 new");
     expect((await liveViewLayout(page)).threadScrollTop).toBe(1_200);
 

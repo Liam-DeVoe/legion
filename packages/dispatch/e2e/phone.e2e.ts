@@ -40,6 +40,12 @@ const initialMarkdown =
   "| 1 | 2 | 3 | 4 | 5 | 6 |";
 const pinnedMessage = "Pin me before you forget";
 
+// The rows below that press the margin sheet's composer, at a phone's width, read as a person of
+// their own (`rowPerson`, e2e/test.ts), who makes the row's project and issue as alice did. The
+// phone's header draws the reader's Inbox and New replies counts, and alice's, which every row
+// before on the worker raises, take a second line: that moves the document, and the selection's
+// action bar beside its text, down onto the sheet's composer, whose Send the bar then covers.
+
 function turn(page: Page, text: string) {
   return page
     .getByRole("list", { name: "Conversation turns" })
@@ -71,15 +77,19 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
+  const me = rowPerson("alice");
   const isPhone = testInfo.project.name === "iphone";
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({
-    project: core,
-    spec: initialMarkdown,
-    title: "Cache invalidation issue with a long descriptive title",
-  });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: initialMarkdown,
+      title: "Cache invalidation issue with a long descriptive title",
+    },
+    { login: me }
+  );
   await createMessage(issue.key, { body: pinnedMessage }, session);
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -129,7 +139,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await expect
         .poll(() => getAsk(openAsk.id))
         .toMatchObject({
-          ask: { answer: { text: "Yes.", user: "alice" }, state: "answered" },
+          ask: { answer: { text: "Yes.", user: me }, state: "answered" },
         });
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
@@ -211,13 +221,17 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({
-    project: core,
-    spec: initialMarkdown,
-    title: "Held composer focus trap",
-  });
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: initialMarkdown,
+      title: "Held composer focus trap",
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -273,13 +287,17 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({
-    project: core,
-    spec: initialMarkdown,
-    title: "Held composer reverse focus trap",
-  });
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: initialMarkdown,
+      title: "Held composer reverse focus trap",
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();

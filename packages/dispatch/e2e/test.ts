@@ -59,7 +59,7 @@
  *  visual review (e2e/visual.e2e.ts), whose rows seed outside Playwright.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 import { PROJECT_KEY_PATTERN, PROJECT_KEY_RULE } from "@legion/contracts";
 import { test as base, type TestInfo } from "@playwright/test";
@@ -81,6 +81,14 @@ import { expectTimeout } from "./expect-timeout";
 import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
+import {
+  checkLogicalLogin,
+  type RowIdentity,
+  rowKeyOf,
+  rowNumberOf,
+  rowPersonOf,
+  rowSessionIdOf,
+} from "./row-names";
 import { broadcastIds, deleteBroadcastsBut, resetDatabase, resetFakes, sqlLiteral } from "./seed";
 import { signIn } from "./users";
 import { workspaceSessions } from "./workspace";
@@ -89,9 +97,6 @@ import { workspaceSessions } from "./workspace";
  *  second run of the suite against the same database, or a retry in a new worker, draws others,
  *  so it never meets a key the first one made. */
 const processNonce = randomBytes(16).toString("hex");
-
-/** How many keys the five-letter suffix of `rowKey` tells apart: 26 ** 5 (A-Z). */
-const SUFFIXES = 26 ** 5;
 
 /** The phase each row that has moved on from its first is in (`nextRowPhase`); a row that never
  *  moved on is in phase 0. */
@@ -107,28 +112,19 @@ export function nextRowPhase(): void {
   rowPhases.set(row, (rowPhases.get(row) ?? 0) + 1);
 }
 
-/** A SHA-256 of the running row (`testId`, `repeatEachIndex`, `retry`, and the phase it is in,
- *  `nextRowPhase`), of this process's nonce and of `logical`: what `rowKey`, `rowPerson`,
- *  `rowSessionId` and `rowNumber` derive their names from. Outside a running row it throws, as
- *  `test.info()` does. */
-function rowDigest(logical: string): Buffer {
+/** The running row as every name of it derives from it (`RowIdentity`, e2e/row-names.ts): its
+ *  `testId`, `repeatEachIndex` and `retry`, the phase it is in (`nextRowPhase`), and this
+ *  process's nonce. `rowKey`, `rowPerson`, `rowSessionId` and `rowNumber` hand it to the
+ *  derivations there. Outside a running row it throws, as `test.info()` does. */
+function runningRow(): RowIdentity {
   const row = base.info();
-  const phase = rowPhases.get(row) ?? 0;
-  return createHash("sha256")
-    .update([row.testId, row.repeatEachIndex, row.retry, phase, processNonce, logical].join("\n"))
-    .digest();
-}
-
-/** The five letters A-Z, in base 26, of `rowDigest(logical)`: the suffix `rowKey` and
- *  `rowPerson` put after the name a spec writes. */
-function rowSuffix(logical: string): string {
-  let rest = rowDigest(logical).readUIntBE(0, 6) % SUFFIXES;
-  let suffix = "";
-  for (let place = 0; place < 5; place += 1) {
-    suffix = String.fromCharCode(65 + (rest % 26)) + suffix;
-    rest = Math.floor(rest / 26);
-  }
-  return suffix;
+  return {
+    nonce: processNonce,
+    phase: rowPhases.get(row) ?? 0,
+    repeatEachIndex: row.repeatEachIndex,
+    retry: row.retry,
+    testId: row.testId,
+  };
 }
 
 /** The project key the running row makes and names for the key `logical` its spec writes, so
@@ -136,10 +132,10 @@ function rowSuffix(logical: string): string {
  *
  *  It is the first five characters of `logical` (all of it when it is shorter) and five more,
  *  the letters A-Z in base 26, from a SHA-256 of the row (`testId`, `repeatEachIndex`, `retry`,
- *  its phase), of this process's nonce and of `logical` itself, so two logical keys of one row
- *  differ even when their first five characters agree. A key is at most ten characters, and
- *  starts with A-Z, as the server's ProjectKeyPattern requires (`^[A-Z][A-Z0-9]{1,9}$`,
- *  packages/envoy/internal/contracts/generated.go).
+ *  its phase), of this process's nonce and of `logical` itself (`rowKeyOf`, e2e/row-names.ts),
+ *  so two logical keys of one row differ even when their first five characters agree. A key is
+ *  at most ten characters, and starts with A-Z, as the server's ProjectKeyPattern requires
+ *  (`^[A-Z][A-Z0-9]{1,9}$`, packages/envoy/internal/contracts/generated.go).
  *
  *  The suffix is letters, never digits, so a key holds a digit only where its logical key does:
  *  a count drawn beside a key (`toContainText("2")`), or a digit a row says is not there
@@ -159,12 +155,7 @@ function rowSuffix(logical: string): string {
  *      await createProject({ key: core, name: "Core" });
  *      await page.goto(`/projects/${core}`); */
 export function rowKey(logical: string): RowKey {
-  if (!/^[A-Z][A-Z0-9]*$/.test(logical)) {
-    throw new Error(
-      `rowKey: the logical key ${JSON.stringify(logical)} must start with A-Z and hold only A-Z and 0-9`
-    );
-  }
-  return `${logical.slice(0, 5)}${rowSuffix(logical)}` as RowKey;
+  return rowKeyOf(runningRow(), logical) as RowKey;
 }
 
 /** `key`, a key of the running row's own (`rowKey`), behind `prefix`: a key no other row makes
@@ -182,16 +173,6 @@ export function rowKeyBehind(prefix: string, key: RowKey): RowKey {
   return behind as RowKey;
 }
 
-/** Whether `logical` is a name `rowPerson`, `own`, `rowSessionId` and `rowNumber` take: a-z,
- *  then a-z and 0-9. */
-function checkLogicalLogin(caller: string, logical: string): void {
-  if (!/^[a-z][a-z0-9]*$/.test(logical)) {
-    throw new Error(
-      `${caller}: the logical name ${JSON.stringify(logical)} must start with a-z and hold only a-z and 0-9`
-    );
-  }
-}
-
 /** The Envoy session id the running row seeds and names for the session `logical` its spec
  *  writes (`planner`, `reviewer`), so that no two rows share a session and a row reads no message,
  *  ask, read mark or pin another row left on it: Dispatch keeps what a session said and what was
@@ -199,25 +180,15 @@ function checkLogicalLogin(caller: string, logical: string): void {
  *
  *  It is a UUID, since Dispatch's agent routes refuse any other id (`agentStreamSessionID`): the
  *  first sixteen bytes of `rowKey`'s SHA-256, taken over `session:` and `logical`, with RFC
- *  9562's version 8 and its variant written into them. Within a row (a phase of it,
- *  `nextRowPhase`) every call with the same `logical` answers the same id; outside a running row
- *  it throws, as `rowKey` does.
+ *  9562's version 8 and its variant written into them (`rowSessionIdOf`, e2e/row-names.ts).
+ *  Within a row (a phase of it, `nextRowPhase`) every call with the same `logical` answers the
+ *  same id; outside a running row it throws, as `rowKey` does.
  *
  *      const planner = { session_id: rowSessionId("planner"), title: "Planner" };
  *      await setLiveSessions([planner]); */
 export function rowSessionId(logical: string): string {
-  checkLogicalLogin("rowSessionId", logical);
-  const bytes = rowDigest(`session:${logical}`).subarray(0, 16);
-  bytes.writeUInt8((bytes.readUInt8(6) & 0x0f) | 0x80, 6);
-  bytes.writeUInt8((bytes.readUInt8(8) & 0x3f) | 0x80, 8);
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return rowSessionIdOf(runningRow(), logical);
 }
-
-/** The first number `rowNumber` answers. Every number the suite writes as a fixed one - the
- *  review corpus's pull requests and runs (e2e/delivery-seed.ts), a pull request a spec names -
- *  is below it, so a row's number is never one of them. */
-const FIRST_ROW_NUMBER = 10_000;
 
 /** A number of the running row's own for the number `logical` its spec writes - a pull
  *  request's, a run's - so that no two rows share one a table holds unique (a pull request's head
@@ -225,16 +196,16 @@ const FIRST_ROW_NUMBER = 10_000;
  *  names one) and a row reads none another row left.
  *
  *  It is `rowKey`'s suffix read as a number rather than spelled in letters, from the same SHA-256
- *  of the row, of this process's nonce and of `number:` and `logical`, plus `FIRST_ROW_NUMBER`: a
- *  whole number from 10,000 up and below 10,000 + 26 ** 5, so it fits a Postgres `integer`, which
- *  a pull request's number is. Within a row (a phase of it, `nextRowPhase`) every call with the
- *  same `logical` answers the same number; outside a running row it throws, as `rowKey` does.
+ *  of the row, of this process's nonce and of `number:` and `logical`, plus 10,000
+ *  (`rowNumberOf`, e2e/row-names.ts): a whole number from 10,000 up and below 10,000 + 26 ** 5,
+ *  so it fits a Postgres `integer`, which a pull request's number is. Within a row (a phase of
+ *  it, `nextRowPhase`) every call with the same `logical` answers the same number; outside a
+ *  running row it throws, as `rowKey` does.
  *
  *      const pull = rowNumber("pull");
  *      const url = `https://github.com/acme/widgets/pull/${pull}`; */
 export function rowNumber(logical: string): number {
-  checkLogicalLogin("rowNumber", logical);
-  return FIRST_ROW_NUMBER + (rowDigest(`number:${logical}`).readUIntBE(0, 6) % SUFFIXES);
+  return rowNumberOf(runningRow(), logical);
 }
 
 /** Every login `rowPerson` has named in the running row, which `ownPeople` deletes when the row
@@ -246,11 +217,12 @@ const namedPeople = new Set<string>();
  *  a person keeps - reads a list no other row added to.
  *
  *  It is `logical` whole and five more letters, a-z: `rowKey`'s suffix, from the same SHA-256 of
- *  the row, of this process's nonce and of `logical`, lower-cased, since the server records a
- *  login trimmed and lower-cased (`authDevSignIn`, packages/envoy/internal/dispatch/routes/
- *  devsignin.go): `alice` -> `alicekqzvm`. Two logical logins of one row differ, and so does one
- *  logical login in two rows. Within a row (a phase of it, `nextRowPhase`) every call with the
- *  same `logical` answers the same login; outside a running row it throws, as `rowKey` does.
+ *  the row, of this process's nonce and of `logical`, lower-cased (`rowPersonOf`,
+ *  e2e/row-names.ts), since the server records a login trimmed and lower-cased
+ *  (`authDevSignIn`, packages/envoy/internal/dispatch/routes/devsignin.go): `alice` ->
+ *  `alicekqzvm`. Two logical logins of one row differ, and so does one logical login in two
+ *  rows. Within a row (a phase of it, `nextRowPhase`) every call with the same `logical` answers
+ *  the same login; outside a running row it throws, as `rowKey` does.
  *
  *  The person needs no seeding: a dev sign-in records any login it signs in (`People.Record`
  *  in the same route), which is what makes the login one a project, an issue or an ask can name.
@@ -269,8 +241,7 @@ const namedPeople = new Set<string>();
  *      await createProject({ key: rowKey("CORE"), name: "Core" }, { login: me });
  *      const context = await asUser(browser, me); */
 export function rowPerson(logical: string): string {
-  checkLogicalLogin("rowPerson", logical);
-  const login = `${logical}${rowSuffix(logical).toLowerCase()}`;
+  const login = rowPersonOf(runningRow(), logical);
   namedPeople.add(login);
   return login;
 }

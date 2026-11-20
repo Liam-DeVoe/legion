@@ -478,7 +478,7 @@ test("anchored and unanchored comments reach Conversation for both viewers", asy
   browser,
 }) => {
   const commentKey = rowKey("COMMENT");
-  await createProject({ key: commentKey, name: "Issue comments" });
+  await createProject({ key: commentKey, name: "Comment threads" });
   const issue = await createIssue({
     project: commentKey,
     spec: initialMarkdown,

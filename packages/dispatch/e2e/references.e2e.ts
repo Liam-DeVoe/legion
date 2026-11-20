@@ -18,90 +18,102 @@ import { sql } from "./psql";
 import { settledState } from "./settled";
 import { expect, own, rowKey, rowPerson, test } from "./test";
 
-// @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
-test("an issue and its ask show a cross-project message and structural backlinks @pr", async ({
-  page,
-}, testInfo) => {
-  const core = rowKey("CORE");
-  const opsKey = rowKey("OPS");
-  await createProject({ key: core, name: "Core" });
-  await createProject({ key: opsKey, name: "Operations" });
-  const target = await createIssue({ project: core, title: "Target issue" });
-  const decision = await createAsk(target.key, { question: "Should the target issue ship?" });
-  const child = await createIssue({ parent: target.key, project: core, title: "Child issue" });
-  const source = await createIssue({ project: opsKey, title: "Source issue" });
-  await createMessage(source.key, {
-    body: `Depends on dispatch://${target.key} and dispatch://${target.key}/ask/${decision.id}.`,
-  });
+// The Inbox draws a question's card in its row below 1280 px and in the reading column for the
+// row selected from there, and it opens on its first row: a person's whole Inbox is the list. So
+// each row that reads an ask's card on the Inbox is a person of its own (`rowPerson`,
+// e2e/test.ts), who holds the issue its asks are asked on, and whose Inbox holds those asks and no
+// other row's.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  await page.setViewportSize({ height: 900, width: 1440 });
-  await page.goto(`/issues/${target.key}`);
-  await page
-    .getByTestId("issue-header")
-    .getByRole("button", { name: /^Referenced by/ })
-    .click();
+  // @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
+  test("an issue and its ask show a cross-project message and structural backlinks @pr", async ({
+    page,
+  }, testInfo) => {
+    const core = rowKey("CORE");
+    const opsKey = rowKey("OPS");
+    await createProject({ key: core, name: "Core" });
+    await createProject({ key: opsKey, name: "Operations" });
+    const target = await createIssue(
+      { project: core, title: "Target issue" },
+      { login: rowPerson("alice") }
+    );
+    const decision = await createAsk(target.key, { question: "Should the target issue ship?" });
+    const child = await createIssue({ parent: target.key, project: core, title: "Child issue" });
+    const source = await createIssue({ project: opsKey, title: "Source issue" });
+    await createMessage(source.key, {
+      body: `Depends on dispatch://${target.key} and dispatch://${target.key}/ask/${decision.id}.`,
+    });
 
-  const issueReferences = page.getByTestId("issue-header").getByRole("region", {
-    name: "Referenced by",
-  });
-  await expect(issueReferences).toContainText(`Message · ${source.key}`);
-  await expect(issueReferences).toContainText(`Depends on dispatch://${target.key}`);
-  await expect(issueReferences).toContainText(`Child issue · ${child.key}`);
-  await expect(issueReferences).toContainText("Child issue");
-  await expect(issueReferences).toContainText(`Attached document · ${target.key}`);
-  await expect(issueReferences).toContainText("spec.md");
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/issues/${target.key}`);
+    await page
+      .getByTestId("issue-header")
+      .getByRole("button", { name: /^Referenced by/ })
+      .click();
 
-  const desktopHeader = testInfo.outputPath("referenced-by-issue-header-1440.png");
-  await page.getByTestId("issue-header").screenshot({ path: desktopHeader });
-  await testInfo.attach("Referenced by issue header (1440px)", {
-    contentType: "image/png",
-    path: desktopHeader,
-  });
+    const issueReferences = page.getByTestId("issue-header").getByRole("region", {
+      name: "Referenced by",
+    });
+    await expect(issueReferences).toContainText(`Message · ${source.key}`);
+    await expect(issueReferences).toContainText(`Depends on dispatch://${target.key}`);
+    await expect(issueReferences).toContainText(`Child issue · ${child.key}`);
+    await expect(issueReferences).toContainText("Child issue");
+    await expect(issueReferences).toContainText(`Attached document · ${target.key}`);
+    await expect(issueReferences).toContainText("spec.md");
 
-  await page.setViewportSize({ height: 844, width: 390 });
-  const phoneHeader = testInfo.outputPath("referenced-by-issue-header-390.png");
-  await page.getByTestId("issue-header").screenshot({ path: phoneHeader });
-  await testInfo.attach("Referenced by issue header (390px)", {
-    contentType: "image/png",
-    path: phoneHeader,
-  });
-  await expect(
-    page.evaluate(
-      () => document.documentElement.scrollWidth === document.documentElement.clientWidth
-    )
-  ).resolves.toBe(true);
+    const desktopHeader = testInfo.outputPath("referenced-by-issue-header-1440.png");
+    await page.getByTestId("issue-header").screenshot({ path: desktopHeader });
+    await testInfo.attach("Referenced by issue header (1440px)", {
+      contentType: "image/png",
+      path: desktopHeader,
+    });
 
-  await page.goto("/");
-  const phoneCard = page.getByTestId(`ask-${decision.id}`);
-  await phoneCard.getByRole("button", { name: /^Referenced by \(1\)$/ }).click();
-  await expect(phoneCard.getByRole("region", { name: "Referenced by" })).toContainText(
-    `Message · ${source.key}`
-  );
+    await page.setViewportSize({ height: 844, width: 390 });
+    const phoneHeader = testInfo.outputPath("referenced-by-issue-header-390.png");
+    await page.getByTestId("issue-header").screenshot({ path: phoneHeader });
+    await testInfo.attach("Referenced by issue header (390px)", {
+      contentType: "image/png",
+      path: phoneHeader,
+    });
+    await expect(
+      page.evaluate(
+        () => document.documentElement.scrollWidth === document.documentElement.clientWidth
+      )
+    ).resolves.toBe(true);
 
-  const phoneAsk = testInfo.outputPath("referenced-by-ask-card-390.png");
-  await phoneCard.screenshot({ path: phoneAsk });
-  await testInfo.attach("Referenced by ask card (390px)", {
-    contentType: "image/png",
-    path: phoneAsk,
-  });
+    await page.goto("/");
+    const phoneCard = page.getByTestId(`ask-${decision.id}`);
+    await phoneCard.getByRole("button", { name: /^Referenced by \(1\)$/ }).click();
+    await expect(phoneCard.getByRole("region", { name: "Referenced by" })).toContainText(
+      `Message · ${source.key}`
+    );
 
-  // The card is drawn where its width draws it: in the row below 1280 px, and in the Inbox's
-  // reading column from there (INFRA-575). So the resize unmounts the node resolved at 390 px
-  // and draws a fresh card in the column, with its own collapsed backlink panel: resolve the
-  // card again, and open that panel again, before the shot.
-  await page.setViewportSize({ height: 900, width: 1440 });
-  const desktopCard = await askCard(page, decision.id);
-  await expect(desktopCard).toBeVisible();
-  await desktopCard.getByRole("button", { name: /^Referenced by \(1\)$/ }).click();
-  await expect(desktopCard.getByRole("region", { name: "Referenced by" })).toContainText(
-    `Message · ${source.key}`
-  );
+    const phoneAsk = testInfo.outputPath("referenced-by-ask-card-390.png");
+    await phoneCard.screenshot({ path: phoneAsk });
+    await testInfo.attach("Referenced by ask card (390px)", {
+      contentType: "image/png",
+      path: phoneAsk,
+    });
 
-  const desktopAsk = testInfo.outputPath("referenced-by-ask-card-1440.png");
-  await desktopCard.screenshot({ path: desktopAsk });
-  await testInfo.attach("Referenced by ask card (1440px)", {
-    contentType: "image/png",
-    path: desktopAsk,
+    // The card is drawn where its width draws it: in the row below 1280 px, and in the Inbox's
+    // reading column from there (INFRA-575). So the resize unmounts the node resolved at 390 px
+    // and draws a fresh card in the column, with its own collapsed backlink panel: resolve the
+    // card again, and open that panel again, before the shot.
+    await page.setViewportSize({ height: 900, width: 1440 });
+    const desktopCard = await askCard(page, decision.id);
+    await expect(desktopCard).toBeVisible();
+    await desktopCard.getByRole("button", { name: /^Referenced by \(1\)$/ }).click();
+    await expect(desktopCard.getByRole("region", { name: "Referenced by" })).toContainText(
+      `Message · ${source.key}`
+    );
+
+    const desktopAsk = testInfo.outputPath("referenced-by-ask-card-1440.png");
+    await desktopCard.screenshot({ path: desktopAsk });
+    await testInfo.attach("Referenced by ask card (1440px)", {
+      contentType: "image/png",
+      path: desktopAsk,
+    });
   });
 });
 
@@ -143,72 +155,80 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
   await expect(references).not.toContainText("after the rollback", live);
 });
 
-// The Inbox row carries the ask's backlink count instead of the card reading the graph, so the
-// count is only as live as the Inbox response — and a plain message or a comment replying to no
-// ask is exactly the write whose Inbox refresh is otherwise skipped. A card at zero has no
-// control at all, so without this the newly cited ask is invisible until a reload.
-test("Inbox cards gain and move their backlink control as writes elsewhere cite their asks", async ({
-  page,
-}) => {
-  const core = rowKey("CORE");
-  const opsKey = rowKey("OPS");
-  await createProject({ key: core, name: "Core" });
-  await createProject({ key: opsKey, name: "Operations" });
-  const target = await createIssue({ project: core, title: "Target issue" });
-  const uncited = await createAsk(target.key, { question: "Nothing cites this yet?" });
-  const cited = await createAsk(target.key, { question: "Should the target issue ship?" });
-  const source = await createIssue({ project: opsKey, title: "Source issue" });
-  await createMessage(source.key, {
-    body: `Waiting on dispatch://${target.key}/ask/${cited.id}.`,
-  });
+// The row reads its two asks' cards on the Inbox, so it is a person of its own, as above.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  // The Inbox count follows the event feed, whose refetch is held to one per second
-  // (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
-  await page.clock.install();
-  await page.goto("/");
-  // The backlink control is the card's. From 1280 px the Inbox draws the card of the row the
-  // reader has selected (INFRA-575), so each question is read on its own card, in turn.
-  const openCard = async (askId: string) => {
-    const card = await askCard(page, askId);
-    await expect(card).toBeVisible();
-    return card;
-  };
-  const live = { timeout: 30_000 };
-  await expect(
-    (await openCard(cited.id)).getByRole("button", { name: /^Referenced by \(1\)$/ })
-  ).toBeVisible(live);
-  await expect(
-    (await openCard(uncited.id)).getByRole("button", { name: /^Referenced by/ })
-  ).toHaveCount(0);
+  // The Inbox row carries the ask's backlink count instead of the card reading the graph, so the
+  // count is only as live as the Inbox response — and a plain message or a comment replying to no
+  // ask is exactly the write whose Inbox refresh is otherwise skipped. A card at zero has no
+  // control at all, so without this the newly cited ask is invisible until a reload.
+  test("Inbox cards gain and move their backlink control as writes elsewhere cite their asks", async ({
+    page,
+  }) => {
+    const core = rowKey("CORE");
+    const opsKey = rowKey("OPS");
+    await createProject({ key: core, name: "Core" });
+    await createProject({ key: opsKey, name: "Operations" });
+    const target = await createIssue(
+      { project: core, title: "Target issue" },
+      { login: rowPerson("alice") }
+    );
+    const uncited = await createAsk(target.key, { question: "Nothing cites this yet?" });
+    const cited = await createAsk(target.key, { question: "Should the target issue ship?" });
+    const source = await createIssue({ project: opsKey, title: "Source issue" });
+    await createMessage(source.key, {
+      body: `Waiting on dispatch://${target.key}/ask/${cited.id}.`,
+    });
 
-  await createMessage(source.key, {
-    body: `Now also waiting on dispatch://${target.key}/ask/${uncited.id}.`,
-  });
-  await createMessage(source.key, {
-    body: `Second cite of dispatch://${target.key}/ask/${cited.id}.`,
-  });
-  await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-  await expect(
-    (await openCard(uncited.id)).getByRole("button", { name: /^Referenced by \(1\)$/ })
-  ).toBeVisible(live);
-  await expect(
-    (await openCard(cited.id)).getByRole("button", { name: /^Referenced by \(2\)$/ })
-  ).toBeVisible(live);
+    // The Inbox count follows the event feed, whose refetch is held to one per second
+    // (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
+    await page.clock.install();
+    await page.goto("/");
+    // The backlink control is the card's. From 1280 px the Inbox draws the card of the row the
+    // reader has selected (INFRA-575), so each question is read on its own card, in turn.
+    const openCard = async (askId: string) => {
+      const card = await askCard(page, askId);
+      await expect(card).toBeVisible();
+      return card;
+    };
+    const live = { timeout: 30_000 };
+    await expect(
+      (await openCard(cited.id)).getByRole("button", { name: /^Referenced by \(1\)$/ })
+    ).toBeVisible(live);
+    await expect(
+      (await openCard(uncited.id)).getByRole("button", { name: /^Referenced by/ })
+    ).toHaveCount(0);
 
-  // A comment that replies to no ask is the other half of #1248's subtraction.
-  const note = await createComment(source.key, {
-    body: `Third citation of dispatch://${target.key}/ask/${cited.id}.`,
-  });
-  await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-  await expect(
-    (await openCard(cited.id)).getByRole("button", { name: /^Referenced by \(3\)$/ })
-  ).toBeVisible(live);
+    await createMessage(source.key, {
+      body: `Now also waiting on dispatch://${target.key}/ask/${uncited.id}.`,
+    });
+    await createMessage(source.key, {
+      body: `Second cite of dispatch://${target.key}/ask/${cited.id}.`,
+    });
+    await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
+    await expect(
+      (await openCard(uncited.id)).getByRole("button", { name: /^Referenced by \(1\)$/ })
+    ).toBeVisible(live);
+    await expect(
+      (await openCard(cited.id)).getByRole("button", { name: /^Referenced by \(2\)$/ })
+    ).toBeVisible(live);
 
-  await editComment(note.id, { body: "Withdrawn; nothing to wait on." });
-  await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-  await expect(
-    (await openCard(cited.id)).getByRole("button", { name: /^Referenced by \(2\)$/ })
-  ).toBeVisible(live);
+    // A comment that replies to no ask is the other half of #1248's subtraction.
+    const note = await createComment(source.key, {
+      body: `Third citation of dispatch://${target.key}/ask/${cited.id}.`,
+    });
+    await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
+    await expect(
+      (await openCard(cited.id)).getByRole("button", { name: /^Referenced by \(3\)$/ })
+    ).toBeVisible(live);
+
+    await editComment(note.id, { body: "Withdrawn; nothing to wait on." });
+    await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
+    await expect(
+      (await openCard(cited.id)).getByRole("button", { name: /^Referenced by \(2\)$/ })
+    ).toBeVisible(live);
+  });
 });
 
 // Answering an ask moves no backlink count, and a citation written afterwards does. Both are the
@@ -288,72 +308,87 @@ test("an answered decision keeps its backlink control and still moves with a lat
   await expect(card.getByRole("button", { name: /^Referenced by \(2\)$/ })).toBeVisible(live);
 });
 
-// An ask's clarification thread is rendered on the card itself; counting those replies as
-// backlinks would advertise a panel that only repeats it.
-test("an ask's own clarification replies are not backlinks", async ({ page }) => {
-  const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Reply-counted" });
-  const decision = await createAsk(issue.key, { question: "Reply-counted?" });
-  await createComment(issue.key, { ask_id: decision.id, body: "First clarification." });
-  await createComment(issue.key, { ask_id: decision.id, body: "Second clarification." });
+// Each of these rows reads its ask's card on the Inbox it opens on, so each is a person of its
+// own, as above.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  await page.goto("/");
-  const askCard = page.getByTestId(`ask-${decision.id}`);
-  await expect(askCard).toContainText("Second clarification.");
-  await expect(askCard.getByRole("button", { name: /^Referenced by/ })).toHaveCount(0);
-});
+  // An ask's clarification thread is rendered on the card itself; counting those replies as
+  // backlinks would advertise a panel that only repeats it.
+  test("an ask's own clarification replies are not backlinks", async ({ page }) => {
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue(
+      { project: core, title: "Reply-counted" },
+      { login: rowPerson("alice") }
+    );
+    const decision = await createAsk(issue.key, { question: "Reply-counted?" });
+    await createComment(issue.key, { ask_id: decision.id, body: "First clarification." });
+    await createComment(issue.key, { ask_id: decision.id, body: "Second clarification." });
 
-// A project document's body cites the same nodes a message does, and its version event carries
-// the same targets: an ask a document cites gains its control on an open Inbox.
-test("an Inbox card gains its count when a project document cites the ask", async ({ page }) => {
-  const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Document-cited" });
-  const decision = await createAsk(issue.key, { question: "Should the document decide this?" });
-
-  await page.goto("/");
-  const askCard = page.getByTestId(`ask-${decision.id}`);
-  await expect(askCard).toContainText("Should the document decide this?");
-  await expect(askCard.getByRole("button", { name: /^Referenced by/ })).toHaveCount(0);
-
-  await createProjectDocument(core, {
-    content: `# Decision record\n\nWaiting on dispatch://${issue.key}/ask/${decision.id}.\n`,
-    name: "Decision record",
-  });
-  await expect(askCard.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible({
-    timeout: 30_000,
-  });
-});
-
-// `dispatch doc-edit` writes through `POST /api/v1/artifacts/{id}/edits`, which records its own
-// version and appends its own event: the path agents actually use has to name what it cited.
-test("an Inbox card gains its count when a document edit cites the ask", async ({ page }) => {
-  const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Edit-cited" });
-  const decision = await createAsk(issue.key, { question: "Should the edit decide this?" });
-  const document = await createProjectDocument(core, {
-    content: "# Decision record\n\nPending.\n",
-    name: "Decision record",
+    await page.goto("/");
+    const askCard = page.getByTestId(`ask-${decision.id}`);
+    await expect(askCard).toContainText("Second clarification.");
+    await expect(askCard.getByRole("button", { name: /^Referenced by/ })).toHaveCount(0);
   });
 
-  await page.goto("/");
-  const askCard = page.getByTestId(`ask-${decision.id}`);
-  await expect(askCard).toContainText("Should the edit decide this?");
-  await expect(askCard.getByRole("button", { name: /^Referenced by/ })).toHaveCount(0);
+  // A project document's body cites the same nodes a message does, and its version event carries
+  // the same targets: an ask a document cites gains its control on an open Inbox.
+  test("an Inbox card gains its count when a project document cites the ask", async ({ page }) => {
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue(
+      { project: core, title: "Document-cited" },
+      { login: rowPerson("alice") }
+    );
+    const decision = await createAsk(issue.key, { question: "Should the document decide this?" });
 
-  await editArtifact(document.artifact.id, {
-    ops: [
-      {
-        op: "replace",
-        find: "Pending.",
-        with: `Waiting on dispatch://${issue.key}/ask/${decision.id}.`,
-      },
-    ],
+    await page.goto("/");
+    const askCard = page.getByTestId(`ask-${decision.id}`);
+    await expect(askCard).toContainText("Should the document decide this?");
+    await expect(askCard.getByRole("button", { name: /^Referenced by/ })).toHaveCount(0);
+
+    await createProjectDocument(core, {
+      content: `# Decision record\n\nWaiting on dispatch://${issue.key}/ask/${decision.id}.\n`,
+      name: "Decision record",
+    });
+    await expect(askCard.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible({
+      timeout: 30_000,
+    });
   });
-  await expect(askCard.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible({
-    timeout: 30_000,
+
+  // `dispatch doc-edit` writes through `POST /api/v1/artifacts/{id}/edits`, which records its own
+  // version and appends its own event: the path agents actually use has to name what it cited.
+  test("an Inbox card gains its count when a document edit cites the ask", async ({ page }) => {
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue(
+      { project: core, title: "Edit-cited" },
+      { login: rowPerson("alice") }
+    );
+    const decision = await createAsk(issue.key, { question: "Should the edit decide this?" });
+    const document = await createProjectDocument(core, {
+      content: "# Decision record\n\nPending.\n",
+      name: "Decision record",
+    });
+
+    await page.goto("/");
+    const askCard = page.getByTestId(`ask-${decision.id}`);
+    await expect(askCard).toContainText("Should the edit decide this?");
+    await expect(askCard.getByRole("button", { name: /^Referenced by/ })).toHaveCount(0);
+
+    await editArtifact(document.artifact.id, {
+      ops: [
+        {
+          op: "replace",
+          find: "Pending.",
+          with: `Waiting on dispatch://${issue.key}/ask/${decision.id}.`,
+        },
+      ],
+    });
+    await expect(askCard.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible({
+      timeout: 30_000,
+    });
   });
 });
 

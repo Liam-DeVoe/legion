@@ -321,17 +321,16 @@ async function cellUnder(table: Locator, row: Locator, header: string): Promise<
   return row.getByRole("cell").nth(await columnIndex(table, header));
 }
 
-/** The text of one column of every row of a table, which is how a row reads the cells R6 names
- *  without spelling each row out. A table draws only the rows its box has scrolled to and a few
- *  beyond them (the virtualizer's `overscan`, `web/src/components/DataTable.tsx`), and a fault
- *  list holds every issue of the deployment its fault names, more than its box draws at once
- *  once other rows' issues stand in flight beside the row's own. So the box is read as a reader
- *  reads it: scrolled from its top to its end a box's height at a time, two frames drawn after
- *  each step so the rows it reached are drawn, each row read once by the name a reader hears,
- *  and the box put back at its top. */
-async function columnTexts(table: Locator, header: string): Promise<string[]> {
-  const at = await columnIndex(table, header);
-  return table.evaluate(async (element, index) => {
+/** Every row of a table, each once, by the name a reader hears, with the text of its cell under
+ *  the column at `index` (none where `index` is -1). A table draws only the rows its box has
+ *  scrolled to and a few beyond them (the virtualizer's `overscan`,
+ *  `web/src/components/DataTable.tsx`), and a fault list holds every issue of the deployment its
+ *  fault names, more than its box draws at once once other rows' issues stand in flight beside
+ *  the row's own. So the box is read as a reader reads it: scrolled from its top to its end a
+ *  box's height at a time, two frames drawn after each step so the rows it reached are drawn,
+ *  each row read once by the name a reader hears, and the box put back at its top. */
+async function everyRow(table: Locator, index: number): Promise<[string, string][]> {
+  return table.evaluate(async (element, at) => {
     const box = element.closest('[data-testid="issues-table-scroll"]');
     if (!(box instanceof HTMLElement)) throw new Error("the table is drawn in no scroll box");
     const drawn = () => {
@@ -346,7 +345,7 @@ async function columnTexts(table: Locator, header: string): Promise<string[]> {
       for (const row of element.querySelectorAll("tr[data-issue-row]")) {
         texts.set(
           row.getAttribute("aria-label") ?? "",
-          row.querySelectorAll("td")[index]?.textContent?.trim() ?? ""
+          at === -1 ? "" : (row.querySelectorAll("td")[at]?.textContent?.trim() ?? "")
         );
       }
       const from = box.scrollTop;
@@ -354,8 +353,14 @@ async function columnTexts(table: Locator, header: string): Promise<string[]> {
       if (box.scrollTop <= from) break;
     }
     box.scrollTop = 0;
-    return [...texts.values()];
-  }, at);
+    return [...texts.entries()];
+  }, index);
+}
+
+/** The text of one column of every row of a table (`everyRow`), which is how a row reads the
+ *  cells R6 names without spelling each row out. */
+async function columnTexts(table: Locator, header: string): Promise<string[]> {
+  return (await everyRow(table, await columnIndex(table, header))).map(([, text]) => text);
 }
 
 /** The badge beside the rail's Priorities entry, which is its last span; an entry with no count
@@ -645,18 +650,21 @@ test("a priority row opens its work by status, and four writes survive a reload"
     // is a moment that has passed, and no relative label reads forwards. Each absence is read
     // once the parts that carry dates and counts have drawn - the work under P1 and both fault
     // lists, each a read of its own - since a page still loading them would pass it on text it
-    // never drew. Each fault list is the deployment's: the first draws the row's four beside the
-    // issues in flight before it, up to the page the table opens on (`defaultView`), and the
-    // second the row's child beside the work parked before it.
+    // never drew. Each fault list is the deployment's: the first holds the row's four beside the
+    // issues in flight before it, up to the page the table opens on (`defaultView`), read whole
+    // (`everyRow`), since its box draws fewer rows than that page once other rows' issues stand
+    // in flight; and the second the row's child beside the work parked before it.
     await expectRowNames(section(page, `Work advancing ${seed.titles[0]}`), [
       `${seed.rollout} Daemon rollout to the fleet`,
       `${seed.smoke} Daemon smoke suite`,
     ]);
-    await expect(
-      page
-        .getByRole("table", { exact: true, name: NO_PRIORITY_TABLE })
-        .locator("tr[data-issue-row]")
-    ).toHaveCount(Math.min(held.unplaced + 4, defaultView.pageSize));
+    await expect
+      .poll(
+        async () =>
+          (await everyRow(page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE }), -1))
+            .length
+      )
+      .toBe(Math.min(held.unplaced + 4, defaultView.pageSize));
     await expectRowNames(page.getByRole("table", { exact: true, name: PARKED_TABLE }), [
       ...held.parked,
       `${seed.child} Ledger client migration`,

@@ -11,7 +11,14 @@ import {
   seedPickerList,
   shownAgentRows,
 } from "./agents";
-import { createIssue, createProject, getIssue, paletteSearch, patchIssue } from "./api";
+import {
+  createIssue,
+  createProject,
+  getIssue,
+  listProjects,
+  paletteSearch,
+  patchIssue,
+} from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
 import { keyedSearchWord } from "./search";
 import { expect, type Locator, rowKey, rowSessionId, test } from "./test";
@@ -53,6 +60,21 @@ async function expectAnswer(dialog: Locator, words: string, answer: SearchRespon
   await expect(dialog.getByText(`No results for "${words}"`)).toHaveCount(
     drawn.length === 0 ? 1 : 0
   );
+}
+
+/** No project of the stack has a key or a name holding `words`. The bar lists every project whose
+ *  key or name holds the words in its box as a row of its own, above the hits and above every
+ *  action that holds them further in (`projectRows`, web/src/features/search/SearchPalette.tsx),
+ *  and it reads them from every project of the stack, not the row's alone. A row whose claim is
+ *  that before the search answers the list holds only those actions, and so no highlight, reads
+ *  first that no other row's project stands above them: the highlight would start on it, and
+ *  Enter would open it and close the bar. So no project of this suite is named with `issue`, the
+ *  word those rows search. */
+async function expectNoProjectHolds(words: string): Promise<void> {
+  const holding = (await listProjects())
+    .map((project) => `${project.key} ${project.name}`)
+    .filter((project) => project.toLowerCase().includes(words.toLowerCase()));
+  expect(holding, `the projects the bar lists above the actions for "${words}"`).toEqual([]);
 }
 
 test("the palette lists the issue page's actions, guarded like their buttons, and runs one", async ({
@@ -582,6 +604,8 @@ test("an arrow pressed before the search answers reaches no action the query fin
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Arrow before the issue search" });
   await patchIssue(issue.key, { status: "in_progress" });
+  // The list `issue` draws before the search answers holds no project (`expectNoProjectHolds`).
+  await expectNoProjectHolds("issue");
   const context = await asUser(browser, "alice");
 
   try {
@@ -641,6 +665,8 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Stale answer for an issue search" });
   await patchIssue(issue.key, { status: "in_progress" });
+  // The list `issue` draws holds no project above its hit (`expectNoProjectHolds`).
+  await expectNoProjectHolds("issue");
   const context = await asUser(browser, "alice");
 
   try {

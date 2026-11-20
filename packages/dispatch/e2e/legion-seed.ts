@@ -27,3 +27,20 @@ export async function seedLegionDaemon(project: string, stateUrl: string): Promi
        VALUES ('${project}', '${stateUrl}', ${SEED_ACTOR}, now())`
   );
 }
+
+/** The projects whose daemon the stack names, in the order the Settings section lists them (by
+ *  key, compared as the section compares them): the store's own table, `legion_settings`, which
+ *  is what each project's daemon read answers from and its delete takes a row out of. No route
+ *  lists every daemon - the section reads the project list and then each project's own
+ *  (`useLegionDaemons`) - and the list is the stack's whole, every row's daemons in it, so a row
+ *  that asserts the list reads it here at its start. */
+export async function legionDaemonsHeld(): Promise<string[]> {
+  const held = await sql("SELECT project FROM legion_settings");
+  return held === "" ? [] : held.split("\n").sort();
+}
+
+/** Takes `project`'s daemon out again, as its Remove does, for the `finally` of a row that named
+ *  one: the next row of the worker reads the list this row started on. */
+export async function removeLegionDaemon(project: string): Promise<void> {
+  await sql(`DELETE FROM legion_settings WHERE project = '${project}'`);
+}

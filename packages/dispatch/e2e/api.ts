@@ -397,6 +397,12 @@ export function createProject(
   return post("/api/v1/projects", { body: input }, options);
 }
 
+/** `GET /api/v1/projects`: every project of the stack, as the SPA's own `["projects"]` query
+ *  reads them - the read the search bar lists its Projects rows from. */
+export function listProjects(options: ApiOptions = {}) {
+  return get("/api/v1/projects", {}, options);
+}
+
 /** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
  *  serves `project` gates, in the order it gates them, published as that deployment's daemon
  *  publishes them - over the agent bearer, naming its session in `actor`, since the list is the

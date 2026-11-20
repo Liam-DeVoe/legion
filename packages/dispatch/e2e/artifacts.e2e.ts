@@ -19,7 +19,17 @@ import {
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
-import { expect, type Locator, type Page, type Request, rowKey, type TestInfo, test } from "./test";
+import {
+  expect,
+  type Locator,
+  own,
+  type Page,
+  type Request,
+  rowKey,
+  rowPerson,
+  type TestInfo,
+  test,
+} from "./test";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -68,145 +78,164 @@ function postAsPage(page: Page, path: string, data?: object) {
   return page.request.post(path, { data, headers: { Origin: dashboardOrigin } });
 }
 
-// SLOW(>=2s): three real uploads with the versions they build, the artifact page's version list
-// and comparison, and the references and phone layout read after them.
-// @pr: Upload and download: three real uploads, the versions they build, the Download link on a version, and the references that cite them.
-test("artifacts upload, version, references, and phone layout @phone @pr", async ({
-  page,
-}, testInfo) => {
-  const core = rowKey("CORE");
-  const sockets = countDocumentSockets(page);
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({
-    project: core,
-    spec: "# Initial spec\n\nThe original document.",
-    title: "Artifact review",
-  });
-  await createAsk(issue.key, { question: "Can this ship?" });
+// The row reads its own ask as the Inbox's first card on a phone, and presses the review panel's
+// toggle there, so its default context is a person of its own (`own`, e2e/test.ts), who makes the
+// row's project, issue, ask and comments as alice did: alice's Inbox holds every earlier row's
+// questions, and her counts give the phone's header a second line.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  await page.goto(`/issues/${issue.key}`);
-  await page.getByRole("tab", { name: "Spec" }).click();
-  await expect(documentEditor(page)).toContainText("The original document.");
-  await expect.poll(sockets).toBe(1);
-  await openArtifacts(page, testInfo.project.name === "iphone");
+  // SLOW(>=2s): three real uploads with the versions they build, the artifact page's version list
+  // and comparison, and the references and phone layout read after them.
+  // @pr: Upload and download: three real uploads, the versions they build, the Download link on a version, and the references that cite them.
+  test("artifacts upload, version, references, and phone layout @phone @pr", async ({
+    page,
+  }, testInfo) => {
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    const sockets = countDocumentSockets(page);
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue(
+      {
+        project: core,
+        spec: "# Initial spec\n\nThe original document.",
+        title: "Artifact review",
+      },
+      { login: me }
+    );
+    await createAsk(issue.key, { question: "Can this ship?" }, { login: me });
 
-  const upload = page.getByLabel("Upload artifact");
-  const diagramUpload = await diagramFile(testInfo);
-  await upload.setInputFiles(diagramUpload);
-  await confirmUpload(page);
-  const diagram = page.getByTestId("artifact-diagram-png");
-  await expect(diagram).toContainText("diagram.png");
-  await expect(diagram).toContainText("1 version");
-  await expect(diagram.getByRole("img", { name: "diagram.png version 1" })).toBeVisible();
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByRole("tab", { name: "Spec" }).click();
+    await expect(documentEditor(page)).toContainText("The original document.");
+    await expect.poll(sockets).toBe(1);
+    await openArtifacts(page, testInfo.project.name === "iphone");
 
-  await upload.setInputFiles(diagramUpload);
-  await confirmUpload(page);
-  await expect(diagram).toContainText("2 versions");
-  await expect(diagram.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
-    "download",
-    ""
-  );
-  // The tab is a compact row list now — versions, compare, and references live on the
-  // artifact's own page, not stacked under every row.
-  await expect(diagram.getByRole("button", { name: "Show all versions" })).toHaveCount(0);
-  await expect(page.getByLabel("Filter artifacts")).toBeVisible();
+    const upload = page.getByLabel("Upload artifact");
+    const diagramUpload = await diagramFile(testInfo);
+    await upload.setInputFiles(diagramUpload);
+    await confirmUpload(page);
+    const diagram = page.getByTestId("artifact-diagram-png");
+    await expect(diagram).toContainText("diagram.png");
+    await expect(diagram).toContainText("1 version");
+    await expect(diagram.getByRole("img", { name: "diagram.png version 1" })).toBeVisible();
 
-  await navigateInApp(page, `/issues/${issue.key}/artifacts/diagram-png`);
-  await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
-  await expect(page.getByTestId("artifact-header")).toContainText("diagram.png");
-  expect(sockets()).toBe(1);
-  await page.getByRole("button", { name: "Show all versions" }).click();
-  const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
-  await expect(versions).toContainText("Version 1");
-  await expect(versions).toContainText("Version 2");
-  await expect(versions).toContainText("SHA-256");
-  await expect(versions.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
-    "download",
-    ""
-  );
-  const compare = page.getByRole("region", { name: "Compare versions for diagram.png" });
-  await expect(compare).toBeVisible();
-  await expect(compare).not.toContainText("From · Version");
-  await compare.getByRole("button", { name: "Show comparison" }).click();
-  await expect(compare).toContainText("From · Version");
-  await expect(compare).toContainText("To · Version");
+    await upload.setInputFiles(diagramUpload);
+    await confirmUpload(page);
+    await expect(diagram).toContainText("2 versions");
+    await expect(diagram.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
+      "download",
+      ""
+    );
+    // The tab is a compact row list now — versions, compare, and references live on the
+    // artifact's own page, not stacked under every row.
+    await expect(diagram.getByRole("button", { name: "Show all versions" })).toHaveCount(0);
+    await expect(page.getByLabel("Filter artifacts")).toBeVisible();
 
-  await navigateInApp(page, `/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
+    await navigateInApp(page, `/issues/${issue.key}/artifacts/diagram-png`);
+    await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
+    await expect(page.getByTestId("artifact-header")).toContainText("diagram.png");
+    expect(sockets()).toBe(1);
+    await page.getByRole("button", { name: "Show all versions" }).click();
+    const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
+    await expect(versions).toContainText("Version 1");
+    await expect(versions).toContainText("Version 2");
+    await expect(versions).toContainText("SHA-256");
+    await expect(versions.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
+      "download",
+      ""
+    );
+    const compare = page.getByRole("region", { name: "Compare versions for diagram.png" });
+    await expect(compare).toBeVisible();
+    await expect(compare).not.toContainText("From · Version");
+    await compare.getByRole("button", { name: "Show comparison" }).click();
+    await expect(compare).toContainText("From · Version");
+    await expect(compare).toContainText("To · Version");
 
-  await upload.setInputFiles(await notesFile(testInfo));
-  await confirmUpload(page);
-  const notes = page.getByTestId("artifact-notes-md");
-  await expect(notes).toContainText("notes.md");
-  await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-  await page.getByRole("tab", { name: "Spec" }).click();
-  await expect(documentEditor(page)).toContainText("The original document.");
-
-  await createComment(issue.key, {
-    body: `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`,
-  });
-
-  await createComment(issue.key, {
-    body: `See dispatch://${issue.key}/artifact/diagram-png before deciding.`,
-  });
-  // No reload: both citations reach the open page on its event feed, and the panel below reads
-  // what the feed left.
-  await openArtifacts(page, testInfo.project.name === "iphone");
-
-  await diagram.getByRole("link", { name: "diagram.png" }).click();
-  await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
-  // The panel names the record that cites this artifact and quotes it; its link goes to that
-  // source, not back to the artifact the reader is already on.
-  const diagramReferencedBy = page.getByRole("region", { name: "Referenced by" });
-  await expect(diagramReferencedBy).toContainText(`Comment · ${issue.key}`);
-  await expect(diagramReferencedBy).toContainText(
-    `See dispatch://${issue.key}/artifact/diagram-png before deciding.`
-  );
-  await diagramReferencedBy.getByRole("link", { name: `Comment · ${issue.key}` }).click();
-  await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/comments/`));
-
-  // One cold load, so the notes.md panel below is read by a page that cached nothing.
-  await page.goto(`/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
-  await notes.getByRole("link", { name: "notes.md" }).click();
-  await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
-  const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
-  await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
-  await expect(notesReferencedBy).toContainText(
-    `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`
-  );
-  await navigateInApp(page, `/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
-  await page.screenshot({ path: testInfo.outputPath("artifacts-tab.png"), fullPage: true });
-
-  if (testInfo.project.name === "iphone") {
-    await page.goto("/");
-    await expect(page.getByTestId(/ask-/).first()).toContainText("Can this ship?");
-    await page.screenshot({ path: testInfo.outputPath("iphone-inbox.png"), fullPage: true });
-
-    const openNavigation = page.getByRole("button", { name: "Open navigation" });
-    await expect(openNavigation).toBeVisible();
-    await openNavigation.click();
-    await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
-    await page.getByRole("button", { name: "Close navigation" }).click();
     await navigateInApp(page, `/issues/${issue.key}`);
-    const openMargin = reviewPanelToggle(page);
-    await shutReviewPanel(page);
-    const [navigationBox, marginBox] = await Promise.all([
-      openNavigation.boundingBox(),
-      openMargin.boundingBox(),
-    ]);
-    expect(navigationBox?.width).toBeGreaterThanOrEqual(44);
-    expect(navigationBox?.height).toBeGreaterThanOrEqual(44);
-    expect(marginBox?.width).toBeGreaterThanOrEqual(44);
-    expect(marginBox?.height).toBeGreaterThanOrEqual(44);
-    await openMargin.click();
-    await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
-    await page.screenshot({ path: testInfo.outputPath("iphone-margin-sheet.png"), fullPage: true });
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-    ).toBe(true);
-  }
+    await openArtifacts(page, testInfo.project.name === "iphone");
+
+    await upload.setInputFiles(await notesFile(testInfo));
+    await confirmUpload(page);
+    const notes = page.getByTestId("artifact-notes-md");
+    await expect(notes).toContainText("notes.md");
+    await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
+    await page.getByRole("tab", { name: "Spec" }).click();
+    await expect(documentEditor(page)).toContainText("The original document.");
+
+    await createComment(
+      issue.key,
+      { body: `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.` },
+      { login: me }
+    );
+
+    await createComment(
+      issue.key,
+      { body: `See dispatch://${issue.key}/artifact/diagram-png before deciding.` },
+      { login: me }
+    );
+    // No reload: both citations reach the open page on its event feed, and the panel below reads
+    // what the feed left.
+    await openArtifacts(page, testInfo.project.name === "iphone");
+
+    await diagram.getByRole("link", { name: "diagram.png" }).click();
+    await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
+    // The panel names the record that cites this artifact and quotes it; its link goes to that
+    // source, not back to the artifact the reader is already on.
+    const diagramReferencedBy = page.getByRole("region", { name: "Referenced by" });
+    await expect(diagramReferencedBy).toContainText(`Comment · ${issue.key}`);
+    await expect(diagramReferencedBy).toContainText(
+      `See dispatch://${issue.key}/artifact/diagram-png before deciding.`
+    );
+    await diagramReferencedBy.getByRole("link", { name: `Comment · ${issue.key}` }).click();
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/comments/`));
+
+    // One cold load, so the notes.md panel below is read by a page that cached nothing.
+    await page.goto(`/issues/${issue.key}`);
+    await openArtifacts(page, testInfo.project.name === "iphone");
+    await notes.getByRole("link", { name: "notes.md" }).click();
+    await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
+    const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
+    await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
+    await expect(notesReferencedBy).toContainText(
+      `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`
+    );
+    await navigateInApp(page, `/issues/${issue.key}`);
+    await openArtifacts(page, testInfo.project.name === "iphone");
+    await page.screenshot({ path: testInfo.outputPath("artifacts-tab.png"), fullPage: true });
+
+    if (testInfo.project.name === "iphone") {
+      await page.goto("/");
+      await expect(page.getByTestId(/ask-/).first()).toContainText("Can this ship?");
+      await page.screenshot({ path: testInfo.outputPath("iphone-inbox.png"), fullPage: true });
+
+      const openNavigation = page.getByRole("button", { name: "Open navigation" });
+      await expect(openNavigation).toBeVisible();
+      await openNavigation.click();
+      await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
+      await page.getByRole("button", { name: "Close navigation" }).click();
+      await navigateInApp(page, `/issues/${issue.key}`);
+      const openMargin = reviewPanelToggle(page);
+      await shutReviewPanel(page);
+      const [navigationBox, marginBox] = await Promise.all([
+        openNavigation.boundingBox(),
+        openMargin.boundingBox(),
+      ]);
+      expect(navigationBox?.width).toBeGreaterThanOrEqual(44);
+      expect(navigationBox?.height).toBeGreaterThanOrEqual(44);
+      expect(marginBox?.width).toBeGreaterThanOrEqual(44);
+      expect(marginBox?.height).toBeGreaterThanOrEqual(44);
+      await openMargin.click();
+      await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
+      await page.screenshot({
+        path: testInfo.outputPath("iphone-margin-sheet.png"),
+        fullPage: true,
+      });
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true);
+    }
+  });
 });
 
 // The base a multipart upload names: the value of its `precondition` form field, parsed, and

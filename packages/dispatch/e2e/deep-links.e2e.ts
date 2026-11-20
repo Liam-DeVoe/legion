@@ -477,7 +477,11 @@ test("a composer opened from the document is in the margin's view after a commen
   browser,
 }, testInfo) => {
   const { comment, issue, markId } = await seedLongDocument();
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line, which moves the document, and the action bar fixed beside its
+  // selection, against the review sheet whose composer the row measures.
+  const context = await asUser(browser, rowPerson("alice"));
 
   try {
     const page = await context.newPage();
@@ -1013,7 +1017,11 @@ test("an iPhone document item link brings its far-away mark above the closed rev
   browser,
 }) => {
   const { comment, issue, markId } = await seedLongDocument();
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line, which moves the document's mark against the closed review sheet
+  // it is measured above.
+  const context = await asUser(browser, rowPerson("alice"));
 
   try {
     const page = await context.newPage();

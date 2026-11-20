@@ -723,17 +723,22 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
   }
 });
 
+// The reader is a person of the row's own (`rowPerson`, e2e/test.ts), who makes the row's project
+// and issue as alice did. The phone's header draws the reader's Inbox and New replies counts, and
+// alice's, which every row before on the worker raises, take a second line, which moves the turns
+// against the docked composer the row measures and the turn it hovers beside it.
 test("the iPhone Conversation fits controls and keeps the composer above the review panel @phone @phone-only", async ({
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Phone conversation" });
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Phone conversation" }, { login: me });
   for (let index = 0; index < 10; index += 1) {
     await createMessage(issue.key, { body: `Phone turn ${index}` }, agent);
   }
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);

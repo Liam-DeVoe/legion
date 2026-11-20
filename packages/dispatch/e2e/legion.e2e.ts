@@ -7,11 +7,21 @@
 // DELETE, both deployment-scoped; the route stores a base URL and never calls the host, so these
 // specs need no daemon to be reachable.
 import { baseUrl, userHeaders } from "./api";
-import { seedLegionDaemon, seedLegionProject } from "./legion-seed";
+import {
+  legionDaemonsHeld,
+  removeLegionDaemon,
+  seedLegionDaemon,
+  seedLegionProject,
+} from "./legion-seed";
 import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const DAEMON_URL = "http://legion.acme.internal:9731";
+
+// The section lists every project's daemon of the stack, every row's among them, so a row reads
+// its own project's daemon by the row the section draws for it (`data-legion-daemon`), and takes
+// it out again in its `finally` (`removeLegionDaemon`): the next row of the worker reads the list
+// this one started on.
 
 // A1/A4: naming a project's daemon on the Settings page, beside the Delivery settings. No Legion
 // view exists for it to bring, so the row is the naming itself: a project that named no daemon is
@@ -38,9 +48,10 @@ test("the Settings page names a project's Legion daemon @legion", async ({ brows
     // The section lists the daemon the naming stored, as the server reads it back: the section
     // fills its list before its refetch settles, so only a reload proves what was stored.
     await page.reload();
-    await expect(page.locator("[data-legion-daemons]")).toContainText(DAEMON_URL);
+    await expect(page.locator(`[data-legion-daemon="${acme}"]`)).toContainText(DAEMON_URL);
   } finally {
     await context.close();
+    await removeLegionDaemon(acme);
   }
 });
 
@@ -52,6 +63,9 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
   browser,
 }) => {
   const acme = rowKey("ACME");
+  // The daemons the stack names before this row adds its own, which the section lists again
+  // once its Remove has taken the row's away (`legionDaemonsHeld`).
+  const held = await legionDaemonsHeld();
   await seedLegionDaemon(acme, DAEMON_URL);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -70,7 +84,8 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
 
     await page.goto("/settings");
     const section = page.locator("[data-legion-daemons]");
-    await expect(section).toContainText(DAEMON_URL);
+    const daemon = section.locator(`[data-legion-daemon="${acme}"]`);
+    await expect(daemon).toContainText(DAEMON_URL);
 
     // The page refuses the same URL, in the server's own words, and sends no write at all.
     let wrote = false;
@@ -88,9 +103,10 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     await expect(page.getByRole("alert")).toHaveText(refused.error);
     expect(wrote).toBe(false);
     // The refusal changed nothing: the project still reads the daemon it did.
-    await expect(section).toContainText(DAEMON_URL);
+    await expect(daemon).toContainText(DAEMON_URL);
 
-    // Remove stops the reading, and the section lists no daemon.
+    // Remove stops the reading, and the section lists no daemon but the ones it listed before
+    // this row named its own: none, where the stack named none.
     const removed = page.waitForResponse(
       (response) =>
         response.request().method() === "DELETE" &&
@@ -98,8 +114,18 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     );
     await page.getByRole("button", { name: `Remove the Legion daemon of ${acme}` }).click();
     expect((await removed).status()).toBeLessThan(300);
-    await expect(section.locator("[data-legion-daemons-empty]")).toBeVisible();
+    await expect
+      .poll(() =>
+        section
+          .locator("[data-legion-daemon]")
+          .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-legion-daemon")))
+      )
+      .toEqual(held);
+    await expect(section.locator("[data-legion-daemons-empty]")).toHaveCount(
+      held.length === 0 ? 1 : 0
+    );
   } finally {
     await context.close();
+    await removeLegionDaemon(acme);
   }
 });

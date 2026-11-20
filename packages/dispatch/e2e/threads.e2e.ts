@@ -378,21 +378,34 @@ test("an agent comment reply appears in the root Conversation thread", async ({ 
   }
 });
 
+// This row and "two suggestions on one block..." below read as a person of their own
+// (`rowPerson`, e2e/test.ts), who makes the row's project, issue and comments as alice did. The
+// phone's header draws the reader's Inbox and New replies counts, and alice's, which every row
+// before on the worker raises, take a second line, which moves the turns against the docked
+// composer and the foot's Jump to latest, where these rows press and measure.
 test("the phone Conversation opens a full-height thread view with its composer pinned at the bottom @phone @phone-only", async ({
   browser,
 }) => {
   const phone = rowKey("PHONE");
-  await createProject({ key: phone, name: "Phone threads" });
-  const issue = await createIssue({
-    project: phone,
-    spec: "The quick brown fox",
-    title: "Phone thread view",
-  });
-  const root = await createComment(issue.key, {
-    anchor: { artifact: "spec", quote: "brown" },
-    body: "Thread summary",
-  });
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  await createProject({ key: phone, name: "Phone threads" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: phone,
+      spec: "The quick brown fox",
+      title: "Phone thread view",
+    },
+    { login: me }
+  );
+  const root = await createComment(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "brown" },
+      body: "Thread summary",
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -516,23 +529,35 @@ test("two suggestions on one block are each accepted from their collapsed card @
   browser,
 }, testInfo) => {
   const sugg = rowKey("SUGG");
-  await createProject({ key: sugg, name: "Suggestion cards" });
-  const issue = await createIssue({
-    project: sugg,
-    spec: "The quick brown fox",
-    title: "Accept from the card",
-  });
-  const first = await createComment(issue.key, {
-    anchor: { artifact: "spec", quote: "quick" },
-    body: "Suggested replacement.",
-    suggestion: { replace_with: "swift" },
-  });
-  const second = await createComment(issue.key, {
-    anchor: { artifact: "spec", quote: "brown" },
-    body: "Closer to the photo.",
-    suggestion: { replace_with: "red" },
-  });
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  await createProject({ key: sugg, name: "Suggestion cards" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: sugg,
+      spec: "The quick brown fox",
+      title: "Accept from the card",
+    },
+    { login: me }
+  );
+  const first = await createComment(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "quick" },
+      body: "Suggested replacement.",
+      suggestion: { replace_with: "swift" },
+    },
+    { login: me }
+  );
+  const second = await createComment(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "brown" },
+      body: "Closer to the photo.",
+      suggestion: { replace_with: "red" },
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();

@@ -26,7 +26,7 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 test("the table sorts, searches facets and fuzzy text, groups, pages and receives a second page's edit live", async ({
@@ -373,7 +373,11 @@ test("a refused bulk write retries after reload while the other operations have 
   const rows: Issue[] = [];
   for (const title of ["First move", "Second move", "Third move"])
     rows.push(await createIssue({ project: core, parent: epic.key, title }));
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line, which moves the table against the selection toolbar fixed under
+  // the header.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 844 });
@@ -578,7 +582,10 @@ test("compact tables keep three full issues readable after scrolling the page @p
     "Restore unavailable session",
   ])
     await createIssue({ project: core, title });
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line: the line comes out of the window the table's box is sized from.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     for (const viewport of [
       { width: 390, height: 844 },
@@ -650,7 +657,8 @@ test("compact windows give the table three full rows and let the page scroll @ph
   await createProject({ key: core, name: "Core" });
   for (let index = 0; index < 8; index++)
     await createIssue({ project: core, title: `Compact row ${index}` });
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own, for the reason the row above gives.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     for (const viewport of [
