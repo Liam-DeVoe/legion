@@ -146,10 +146,12 @@ func (c AgentCaller) named() bool {
 
 func (c BootCaller) named() bool { return c.BootToken != "" }
 
-// TurnOutcomeRequest is the outcome of one turn, reported by the producer that ended it.
-// Sequence is that producer's own count of the turns it has ended at Generation, from 1, and the
-// daemon keeps the report under the pair: a report that arrives late or out of order lands in its
-// own place, and the run of refused turns the daemon derives is the same either way. Message is
+// TurnOutcomeRequest is the outcome of one turn, reported by the producer that ended it. A turn is
+// a run the harness yields: an attempt it goes on from by itself (a retry of the same model, a
+// walk to a fallback model) is no turn and is not reported, so one turn is one report. Sequence
+// is that producer's own count of the turns it has ended at Generation, from 1, and the daemon
+// keeps the report under the pair: a report that arrives late or out of order lands in its own
+// place, and the run of refused turns the daemon derives is the same either way. Message is
 // what the provider said about a refusal, and is left out of a clean turn. HTTPStatus is the HTTP
 // status the provider answered the refused turn's failed request with, where the harness gives
 // one (Oh My Pi's AssistantMessage.errorStatus, Claude Code's api_error_status), and is left out

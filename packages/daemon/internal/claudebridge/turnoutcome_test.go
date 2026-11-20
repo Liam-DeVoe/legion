@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -116,6 +117,37 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	}
 	if refused.Message == "" || refused.BootToken != testBootToken || refused.HTTPStatus != 529 {
 		t.Fatalf("the refused turn was reported %+v, want the provider's message, its status 529 and the launch's boot token", refused)
+	}
+}
+
+// Claude Code retries a request the provider refused inside the turn, and writes an `api_retry`
+// line for each attempt it retries (testdata/api-error-529.jsonl:2-3) before the one result that
+// ends the turn. The bridge reports the turn at that result and at nothing else, so an attempt
+// Claude Code goes on from is no turn: one turn is one report, as pi-legion reports only the ends
+// Oh My Pi yields, and the daemon's run of refused turns moves by one for it.
+func TestAnAttemptClaudeCodeRetriesIsNoTurnOfItsOwn(t *testing.T) {
+	r := newReportingRig(t, "-p", "--resume", sessionID)
+
+	r.prompt("p1", "replay api-error-529.jsonl")
+	r.open()
+	r.untilTurnEnds()
+	r.prompt("p2", "say hello")
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+
+	var got []claim.TurnOutcomeRequest
+	for len(got) == 0 || got[len(got)-1].Outcome != claim.TurnClean {
+		got = append(got, r.reported())
+	}
+	want := []claim.TurnOutcomeRequest{
+		{BootToken: testBootToken, Generation: 4, Sequence: 1, Outcome: claim.TurnRefused, HTTPStatus: 529},
+		{BootToken: testBootToken, Generation: 4, Sequence: 2, Outcome: claim.TurnClean},
+	}
+	for i := range got {
+		got[i].Message = "" // Claude Code's words; the case is about how many turns are reported
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("a turn Claude Code retried twice inside, then a clean turn, were reported %+v, want %+v", got, want)
 	}
 }
 

@@ -2218,9 +2218,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(steered(worker)).toEqual([steeredReminder(REMINDER)]);
     });
 
-    // The daemon's own counter: every turn's end is reported, under a sequence this plugin counts
-    // itself within the claim's launch generation, so the daemon can fail a claim whose provider
-    // refuses turn after turn.
+    // The daemon's record of the claim's turns: every end the host yields is reported, under a
+    // sequence this plugin counts itself within the claim's launch generation, and an attempt the
+    // host goes on from by itself (`willContinue`, a retry or a walk down the fallback chain) is
+    // not, so the daemon counts each turn once.
     test("every turn's end reports its outcome to the daemon, in sequence", async () => {
       const worker = await bootStalling({});
       const outcomes = () =>
@@ -2228,6 +2229,17 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
           .map((request) => request.body);
 
+      await worker.ends({
+        willContinue: true,
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "invalid_request_error",
+            errorStatus: 400,
+          },
+        ],
+      });
       await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
       await worker.ends({
         messages: [

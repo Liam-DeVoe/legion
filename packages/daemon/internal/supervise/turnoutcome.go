@@ -17,10 +17,14 @@ import (
 // that names no status among them, fails nothing however long the run.
 //
 // The producer is the one counter. Oh My Pi's turns are reported by pi-legion's agent_end hook and
-// Claude Code's by the Claude bridge, each over POST /legion/v1/claims/turn-outcome; the turn's end
-// on the worker stream (StreamTurnEnd) and every turn ordinal the daemon keeps take no part in
-// this, so no two counters can drift. A turn no report arrived for — the process died before it
-// could send one — is a key the window never holds, which counts neither way.
+// Claude Code's by the Claude bridge, each over POST /legion/v1/claims/turn-outcome, one report for
+// each turn its harness yields: an attempt the harness goes on from by itself — Oh My Pi's
+// willContinue end of a retry or of a walk down its fallback chain, Claude Code's api_retry — is no
+// turn and is not reported, so a turn moves the run of refused reports by one, as its prompt result
+// moves the run of provider errors (Claim.ProviderErrorRun) by one. The turn's end on the worker
+// stream (StreamTurnEnd) and every turn ordinal the daemon keeps take no part in this, so no two
+// counters can drift. A turn no report arrived for — the process died before it could send one —
+// is a key the window never holds, which counts neither way.
 //
 // Run is how many refused turns the entry stands for when the window's bound has counted older
 // refused reports into it (recordTurnOutcome), and zero for an entry that stands for its own turn

@@ -1343,8 +1343,9 @@ export const LegionTurnOutcomeBootRequest = z.strictObject({
 
 /** `claim.TurnOutcomeRequest`, the body of `POST /legion/v1/claims/turn-outcome`: how one turn of
  * the claim's agent ended, reported by the producer that ended it, under exactly one of the two
- * caller identities above. A body that names both, or neither, is refused
- * (`claim.TurnOutcomeRequest.Caller`). */
+ * caller identities above. A turn is a run the harness yields, so an attempt it goes on from by
+ * itself (a retry, a walk to a fallback model) is reported as nothing. A body that names both
+ * caller identities, or neither, is refused (`claim.TurnOutcomeRequest.Caller`). */
 export const LegionTurnOutcomeRequest = z.union([
   LegionTurnOutcomeAgentRequest,
   LegionTurnOutcomeBootRequest,

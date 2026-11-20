@@ -146,6 +146,57 @@ test("the sequence counts this plugin's own turns, from one and in order, within
   expect(posted.every((body) => body.generation === 3)).toBe(true);
 });
 
+// What the pinned Oh My Pi does when it goes on from a failed attempt by itself: it ends the attempt
+// with `agent_end` and `willContinue`, and the run goes on. A walk down `retry.fallbackChains` after
+// the role's model answers 400 ends well on the next model, and one overloaded prompt under the
+// default retry is ten such ends and then the one that spends the budget. Each run is one turn, so
+// it is one report, of the end the host yields: reported refused, the walked 400 would fail the claim
+// of a turn that ended well, and the overload would count eleven refused turns instead of one.
+test("an attempt the host goes on from by itself is no turn: only the end it yields is reported", async () => {
+  const { report, posted } = rig();
+  const failed = (errorStatus: number) => ({
+    role: "assistant",
+    stopReason: "error",
+    errorMessage: "the provider failed the request",
+    errorStatus,
+  });
+
+  await report(SESSION, { willContinue: true, messages: [failed(400)] });
+  await report(SESSION, clean);
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    await report(SESSION, { willContinue: true, messages: [failed(529)] });
+  }
+  await report(SESSION, { messages: [failed(529)] });
+
+  expect(posted.map((body) => [body.sequence, body.outcome, body.httpStatus])).toEqual([
+    [1, "clean", undefined],
+    [2, "refused", 529],
+  ]);
+});
+
+// An end that waits on a background job is one the host yields: the pane is idle until the job's
+// result starts the next run, and Oh My Pi's own prompt result reports it, so it is a turn.
+test("an end the pane yields while a background job runs is a turn, and is reported", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, {
+    willContinue: true,
+    awaitingAsyncWork: true,
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "invalid_request_error",
+        errorStatus: 400,
+      },
+    ],
+  });
+
+  expect(posted.map((body) => [body.sequence, body.outcome, body.httpStatus])).toEqual([
+    [1, "refused", 400],
+  ]);
+});
+
 // Reports that overlap still take their numbers in the order their turns ended: the number is
 // taken before anything is awaited, so the daemon can order them however late they arrive.
 test("overlapping reports take their numbers in the order the turns ended", async () => {

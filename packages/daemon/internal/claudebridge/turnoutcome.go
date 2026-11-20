@@ -29,6 +29,11 @@ const reportTimeout = 15 * time.Second
 // daemon's prompt did not start gets: a turn Claude Code started by itself, or one an Envoy
 // message started, ends with no prompt_result (result).
 //
+// A turn is reported once, at the result Claude Code ends it with. An attempt Claude Code retries
+// inside the turn writes only an `api_retry` line (testdata/api-error-529.jsonl:2-3), which the
+// bridge reads as nothing, so a turn Claude Code retried is one report, as a turn Oh My Pi retried
+// is one report of pi-legion's.
+//
 // The bridge is the producer because it is what sees the refusal: a step Claude Code ends with an
 // error is the assistant message it writes with stopReason "error" (result), and the pane's own
 // Claude Code hook for a stopped turn is not measured to fire in a pod

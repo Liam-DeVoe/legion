@@ -14,6 +14,19 @@ import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
  * reminder's, an Envoy card's, a background job's follow-up — gets no prompt result, so this
  * report is all the daemon learns of it.
  *
+ * A turn is a run the host yields: an `agent_end` without `willContinue`, or one with
+ * `awaitingAsyncWork`, whose pane waits on a background job — the ends that Oh My Pi's own prompt
+ * result reports (`rpc-prompt-results.ts` at the pinned tag reports an `agent_end` only when it is
+ * `yielded`, and `agent-session.ts`'s `#settleAgentEnd` sets `yielded` for exactly these). An end
+ * with `willContinue` and no `awaitingAsyncWork` is an attempt the host goes on from by itself: a
+ * retry of the same model after an overload, a walk down `retry.fallbackChains` after a 4xx, a
+ * compaction that continues the run after a context overflow, a todo or plan-mode continuation.
+ * It is reported as nothing, and spends no sequence: reported refused, a 400 the host walks past to
+ * its fallback model would fail the claim of a turn that ends well, and one overloaded prompt under
+ * the default retry would count eleven refused turns instead of one. So one turn is one report,
+ * which is what the daemon's count of refused turns and the prompt results' count of provider
+ * errors each move by.
+ *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
  * only one of them can own the number a report is keyed by. It starts at 1 within a claim's
@@ -44,9 +57,10 @@ export interface TurnOutcomeReporterDeps {
 
 export interface TurnOutcomeReporter {
   /**
-   * Reports the turn that `agent_end` just ended, for the claim the session holds. Never rejects:
-   * Oh My Pi does not await an `agent_end` handler, so a rejection here would be an unhandled one,
-   * and nothing of the turn waits on the report either way.
+   * Reports the turn that `agent_end` just ended, for the claim the session holds, when the host
+   * yields that end, and nothing for an attempt the host goes on from (see the module's comment).
+   * Never rejects: Oh My Pi does not await an `agent_end` handler, so a rejection here would be an
+   * unhandled one, and nothing of the turn waits on the report either way.
    */
   readonly report: (sessionID: string, event: AgentEndEvent) => Promise<void>;
 }
@@ -67,6 +81,8 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
 
   return {
     report: async (sessionID, event) => {
+      // An attempt the host goes on from is no turn: the run's yielded end reports it.
+      if (event.willContinue === true && event.awaitingAsyncWork !== true) return;
       const claim = deps.claim(sessionID);
       if (claim === undefined) return;
       // Taken before the first await, so two turns can never take the same number nor take them
