@@ -37,6 +37,7 @@ import {
   searchTerms,
   skillFields,
   TREE_JOBS,
+  TREE_JOBS_PER_REPOSITORY,
   type TreeEntry,
   tsv,
 } from "./copies";
@@ -288,6 +289,10 @@ class World {
   /** When set, each owner's first search answer is held until this many owners have a search in
    *  flight: a run that searched the owners one after another would never release it. */
   holdFirstSearches = 0;
+  /** When set, every GraphQL tree batch is refused, as GitHub refuses one past a node limit. */
+  refuseTreeBatches = false;
+  /** The GraphQL tree batches answered, each with its subtrees. */
+  readonly treeBatches: number[] = [];
   /** Each tree answer waits this many microtask turns (no timer), so reads made at once overlap;
    *  the most tree reads in flight at once. */
   treeTurns = 0;
@@ -366,6 +371,30 @@ class World {
         !query.includes("repository(owner: $owner, name: $name)")
       ) {
         return fail(`gh: Could not resolve to a Repository with the name '${query}'.`);
+      }
+      if (query.includes("... on Tree")) {
+        // A tree batch: each field one subtree by its id, one level of entries, the mode a number.
+        if (this.refuseTreeBatches)
+          return fail("gh: Something went wrong while executing your query.");
+        const trees = [...query.matchAll(/(t\d+): object\(oid: "([0-9a-f]{40})"\)/g)];
+        this.treeBatches.push(trees.length);
+        const repository = Object.fromEntries(
+          trees.map(([, alias = "", sha = ""]) => {
+            const found = this.trees.get(`${owner}/${name} ${sha}`) as
+              | { tree: TreeEntry[] }
+              | undefined;
+            if (found === undefined) return [alias, null];
+            const entries = found.tree.map((entry) => ({
+              name: entry.path,
+              type: entry.type,
+              mode: Number.parseInt(entry.mode, 8),
+              oid: entry.sha,
+              size: entry.size ?? 0,
+            }));
+            return [alias, { entries }];
+          })
+        );
+        return ok({ data: { repository } });
       }
       // A field names a blob by its id (`oid`) or by `<commit>:<path>` (`expression`).
       const fields = [
@@ -1360,21 +1389,118 @@ describe("a truncated tree", () => {
     return w;
   }
 
-  test("it is read by directory into the same tree and the same copies, its subtrees at once under the cap", async () => {
+  test("it is read by directory, its subtrees in GraphQL batches, into the same tree and copies", async () => {
     const whole = await run(world(), ["--only", "cybermonklabs/legion"]);
     const w = truncatedWorld();
-    w.treeTurns = 5;
     const byDirectory = await run(w, ["--only", "cybermonklabs/legion"]);
-    // skills/ is truncated and holds 17 skill directories, read at once up to the cap.
-    expect(w.maxTreeReads).toBe(TREE_JOBS);
     const legion = byDirectory.table("repositories.tsv")[0];
     expect(legion?.tree_read).toMatch(/^by directory, \d+ reads$/);
     expect(legion?.error).toBe("");
-    expect(
-      w.calls.some((call) => call[1] === `repos/cybermonklabs/legion/git/trees/${LEGION_ROOT}`)
-    ).toBe(true);
+    // One REST read of the whole (truncated) tree, then one batch per level of the walk.
+    expect(w.calls.filter((call) => /\/git\/trees\//.test(call[1] ?? "")).length).toBe(1);
+    expect(w.treeBatches.length).toBeGreaterThan(1);
+    expect(Math.max(...w.treeBatches)).toBeGreaterThan(1);
     expect(byDirectory.text("skill-copies.tsv")).toBe(whole.text("skill-copies.tsv"));
     expect(byDirectory.text("manifests.tsv")).toBe(whole.text("manifests.tsv"));
+  });
+
+  test("the batched walk and the REST walk give the same kept entries and counts", async () => {
+    const read = async (refuse: boolean) => {
+      const w = truncatedWorld();
+      w.refuseTreeBatches = refuse;
+      w.treeTurns = 5;
+      const result = await listCopies(
+        parseConfig(CONFIG),
+        { at: AT, only: ["cybermonklabs/legion"], maxSearchCalls: 0 },
+        {
+          gh: w.gh,
+          sleep: w.sleep,
+          now: w.now,
+          out: () => {},
+          err: () => {},
+          peakRssBytes: () => 0,
+        }
+      );
+      const repo = result.repositories[0];
+      return {
+        w,
+        count: repo?.treeEntries,
+        kept: repo?.tree.map((entry) => JSON.stringify(entry)).sort(),
+      };
+    };
+    const batched = await read(false);
+    const rest = await read(true);
+    expect(batched.count).toBeGreaterThan(0);
+    expect(batched.count).toBe(rest.count);
+    expect(batched.kept).toEqual(rest.kept);
+    // Refused batches are halved, then each subtree is read over REST, under the per-repository cap.
+    expect(rest.w.treeBatches).toEqual([]);
+    expect(rest.w.maxTreeReads).toBe(TREE_JOBS_PER_REPOSITORY);
+    expect(TREE_JOBS).toBeGreaterThan(TREE_JOBS_PER_REPOSITORY);
+  });
+});
+
+describe("a run started again over --cache-dir", () => {
+  const only = [
+    "--only",
+    "cybermonklabs/legion",
+    "--only",
+    "acme/skills",
+    "--only",
+    "acme/old-skills",
+  ];
+  /** The world with no read that fails, so a first run caches every read. */
+  const clean = () => {
+    const w = world();
+    w.failingBlobs.clear();
+    return w;
+  };
+  const outputs = (r: Run) =>
+    Object.fromEntries(readdirSync(r.out).map((file) => [file, r.text(file)]));
+
+  test("a second run makes no gh call and writes the same output", async () => {
+    const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+    scratch.push(cacheDir);
+    const first = await run(clean(), [...only, "--cache-dir", cacheDir]);
+    expect(first.code).toBe(0);
+    const w = clean();
+    const second = await run(w, [...only, "--cache-dir", cacheDir]);
+    expect(second.code).toBe(0);
+    expect(w.calls).toEqual([]);
+    expect(outputs(second)).toEqual(outputs(first));
+    // The fork's tree: its 4 files and the 4 directories that hold them.
+    expect(first.errors).toContainEqual(
+      expect.stringMatching(
+        /^copies: tree \d\/3 acme\/old-skills: 8 entries, 1 tree reads, 0 s, read$/
+      )
+    );
+    expect(second.errors).toContainEqual(
+      expect.stringMatching(
+        /^copies: tree \d\/3 acme\/old-skills: 8 entries, 0 tree reads, 0 s, cached$/
+      )
+    );
+  });
+
+  test("a cache file a killed write left is never read", async () => {
+    const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+    scratch.push(cacheDir);
+    const first = await run(clean(), [...only, "--cache-dir", cacheDir]);
+    // A kill between the write and the rename leaves only the temporary file: here, each
+    // repository's file moved to its temporary name, with a commit no run read.
+    const repositories = path.join(cacheDir, "repository");
+    for (const file of readdirSync(repositories)) {
+      const text = readFileSync(path.join(repositories, file), "utf8");
+      writeFileSync(
+        path.join(repositories, `${file}.tmp-1-0`),
+        text.replace(/"commit":"[0-9a-f]+"/, '"commit":"0000"')
+      );
+      rmSync(path.join(repositories, file));
+    }
+    const w = clean();
+    const second = await run(w, [...only, "--cache-dir", cacheDir]);
+    expect(w.calls.filter((call) => /\/commits\?/.test(call[1] ?? "")).length).toBe(3);
+    expect(second.text("repositories.tsv")).toBe(first.text("repositories.tsv"));
+    expect(second.text("repositories.tsv")).not.toContain("0000");
   });
 });
 

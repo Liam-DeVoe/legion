@@ -4,7 +4,7 @@
  * one, and the copy-path prefix table R1's attribution reads.
  *
  *   bun scripts/skill-cuts/copies.ts --config <skill-cuts.json> --at <ISO instant> --out <dir>
- *     [--only <owner/repo>]... [--max-search-calls <n>]
+ *     [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
  *
  * Task t7 adds it to cli.ts as `skill-cuts copies`; `main(argv, io)` and the pure parts are exported
  * for that and for copies.test.ts, which injects the command runner (`io.gh`).
@@ -21,6 +21,15 @@
  * above MEMORY_LIMIT_BYTES (1.5 GiB) the run stops, exit 3, writing nothing; it is in the summary
  * line and skill-copies.md otherwise.
  *
+ * `--cache-dir <dir>` keeps each finished read (`ReadCache`), so a run stopped and started again
+ * loses nothing: each owner's listing, each repository whole (its commit at `--at`, kept tree
+ * entries and their count, and every SKILL.md, manifest and fork-scan blob it read, written the
+ * moment that repository is done, keyed by repository, default branch and `--at`, which name one
+ * commit), and each code search run whole, keyed by its query. A cached read makes no GitHub
+ * call; a read that failed is not cached, so it is tried again. stderr gets one line per
+ * repository done (`copies: tree <n>/<total> <owner/repo>: <entries> entries, <calls> tree reads,
+ * <seconds> s, cached|read`) and one per 25 searches with the calls so far.
+ *
  * 1. Repositories. `gh repo list <owner> --limit 2000 --json nameWithOwner,isFork,isArchived,
  *    defaultBranchRef,parent` for each configured owner (with `--only`, for the owners of the named
  *    repositories, keeping those alone). For each repository, the default branch's commit at `--at`
@@ -29,10 +38,10 @@
  *    never sits in this process). Of each tree only the entries this list uses are kept
  *    (`keepsEntry`: each `SKILL.md`, each file of a manifest kind, and in a fork each text file its
  *    scan may read); the rest are counted (`repositories.tsv`'s `tree_entries`) and dropped. A tree
- *    GitHub answers `truncated` is read again by directory: each subtree is read recursively, and
- *    one that is truncated too is read one level down. A listing, commit or tree read that fails
- *    names its repository with gh's error. Forks and archived repositories stay, marked (a fork
- *    with its parent).
+ *    GitHub answers `truncated` is walked a level at a time, each level's subtrees in GraphQL
+ *    batches of up to 50 (`readTree`), with REST where GitHub refuses a batch. A listing, commit or
+ *    tree read that fails names its repository with gh's error. Forks and archived repositories
+ *    stay, marked (a fork with its parent).
  * 2. Skills. Each `SKILL.md` blob outside a configured `excludePaths` prefix of its repository: its
  *    frontmatter `name` (else its directory's name) and `description`, read from the blob. The
  *    frontmatter is read as YAML (Bun.YAML); one that is not valid YAML is read by `lenientFields`
@@ -114,7 +123,8 @@
  *   skill-copies.md   the repositories read and not listable, the shared names, the loaders and the
  *                     installers, the prefix rows outside the targets, and every failure.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
@@ -180,11 +190,14 @@ function rethrowStop(error: unknown): void {
 const RATE_LIMITED = /rate limit|HTTP 429/i;
 const MAX_RATE_RETRIES = 5;
 const REST_JOBS = 4;
-/** The most tree reads in flight at once, across a run: a truncated tree's subtrees are read at
- *  once under this cap. Each read is a gh process of its own, about 110 MB resident in the pod
- *  whatever the tree (measured 2026-11-20), so the cap is what the run costs the pod beside its
- *  own memory; it also keeps a run under GitHub's 15,000 REST calls an hour per token. */
-export const TREE_JOBS = 4;
+/** The most tree reads in flight at once, across a run and per repository: a truncated tree's
+ *  subtrees are read at once under these caps, so one large repository's walk does not hold every
+ *  slot. Each read is a gh process of its own, about 110 MB resident in the pod whatever the tree
+ *  (measured 2026-11-20), so the caps are what the run costs the pod beside its own memory. */
+export const TREE_JOBS = 8;
+export const TREE_JOBS_PER_REPOSITORY = 4;
+/** The most subtrees one GraphQL tree read asks for. */
+const TREE_BATCH = 50;
 /** The most blobs, and bytes of blobs, one GraphQL read asks for. */
 const BLOB_BATCH = 50;
 const BLOB_BATCH_BYTES = 2_000_000;
@@ -286,15 +299,105 @@ export type FileRead =
   | { readonly kind: "missing" }
   | { readonly kind: "failed"; readonly error: string };
 
+const TreeBatch = z.looseObject({
+  data: z.looseObject({
+    repository: z
+      .record(
+        z.string(),
+        z
+          .looseObject({
+            entries: z.array(
+              z.looseObject({
+                name: z.string(),
+                type: z.string(),
+                mode: z.number(),
+                oid: z.string(),
+                size: z.number().nullish(),
+              })
+            ),
+          })
+          .nullable()
+      )
+      .nullable(),
+  }),
+});
+
+const CachedEntry = z.object({
+  path: z.string(),
+  mode: z.string(),
+  type: z.string(),
+  sha: z.string(),
+  size: z.number().optional(),
+});
+/** A repository read whole, as `--cache-dir` keeps it. */
+const CachedRepository = z.object({
+  commit: z.string(),
+  treeEntries: z.number(),
+  treeRead: z.string(),
+  treeCalls: z.number(),
+  tree: z.array(CachedEntry),
+  blobs: z.record(z.string(), z.string()),
+});
+/** A search run whole, as `--cache-dir` keeps it. */
+const CachedSearch = z.object({
+  status: z.literal("ok"),
+  total_count: z.number(),
+  incomplete_results: z.boolean(),
+  pages: z.number(),
+  calls: z.number(),
+  rate_limit_retries: z.number(),
+  items_read: z.number(),
+  unread: z.number(),
+  hits: z.array(z.object({ repository: z.string(), path: z.string() })),
+});
+
+/**
+ * The finished reads of a run (`--cache-dir`), so that a run started again skips them: each value
+ * is one JSON file under `<dir>/<kind>/`, named by the SHA-1 of its key and holding the key, which
+ * is checked on reading. A value is written to a temporary name and renamed, so a killed write
+ * leaves no file under a name this reads; a file that is not of its shape is not read.
+ */
+class ReadCache {
+  private writes = 0;
+
+  constructor(private readonly dir: string | undefined) {}
+
+  private file(kind: string, key: string): string {
+    const name = createHash("sha1").update(key).digest("hex");
+    return path.join(this.dir ?? "", kind, `${name}.json`);
+  }
+
+  get<T>(kind: string, key: string, schema: z.ZodType<T>): T | undefined {
+    if (this.dir === undefined) return undefined;
+    let text: string;
+    try {
+      text = readFileSync(this.file(kind, key), "utf8");
+    } catch {
+      return undefined;
+    }
+    const parsed = z.object({ key: z.literal(key), value: schema }).safeParse(parseJson(text));
+    return parsed.success ? parsed.data.value : undefined;
+  }
+
+  put(kind: string, key: string, value: unknown): void {
+    if (this.dir === undefined) return;
+    const file = this.file(kind, key);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.tmp-${process.pid}-${this.writes++}`;
+    writeFileSync(temporary, JSON.stringify({ key, value }));
+    renameSync(temporary, file);
+  }
+}
+
 /** gh's reads, with a blob cache, a sleep to the reset when the core limit is spent, and the run's
  *  memory limit checked before each call. */
 class Github {
   private readonly blobs = new Map<string, Promise<string>>();
   private treeReads = 0;
-  private readonly treeReadQueue: (() => void)[] = [];
+  private readonly treeReadsOf = new Map<string, number>();
+  private readonly treeReadQueue: { repository: string; start: () => void }[] = [];
   /** The largest peak resident memory read so far, in bytes. */
   peakBytes = 0;
-
   constructor(
     readonly io: CopiesIo,
     private readonly peakRss: () => number
@@ -317,22 +420,46 @@ class Github {
     return this.io.gh(args);
   }
 
-  /** `read`, run once fewer than TREE_JOBS tree reads are in flight; a read that ends hands its
-   *  slot to the next one waiting. */
-  async treeRead<T>(read: () => Promise<T>): Promise<T> {
-    if (this.treeReads < TREE_JOBS) this.treeReads++;
+  private mayStartTreeRead(repository: string): boolean {
+    return (
+      this.treeReads < TREE_JOBS &&
+      (this.treeReadsOf.get(repository) ?? 0) < TREE_JOBS_PER_REPOSITORY
+    );
+  }
+
+  private countTreeRead(repository: string, by: number): void {
+    this.treeReads += by;
+    this.treeReadsOf.set(repository, (this.treeReadsOf.get(repository) ?? 0) + by);
+  }
+
+  /** `read`, a tree read of `repository`, run once fewer than TREE_JOBS tree reads are in flight
+   *  and fewer than TREE_JOBS_PER_REPOSITORY of that repository's; a read that ends starts the
+   *  first waiting read that may start, handing it its slots. */
+  async treeRead<T>(repository: string, read: () => Promise<T>): Promise<T> {
+    if (this.mayStartTreeRead(repository)) this.countTreeRead(repository, 1);
     else {
       const slot = Promise.withResolvers<void>();
-      this.treeReadQueue.push(slot.resolve);
+      this.treeReadQueue.push({ repository, start: slot.resolve });
       await slot.promise;
     }
     try {
       return await read();
     } finally {
-      const next = this.treeReadQueue.shift();
-      if (next === undefined) this.treeReads--;
-      else next();
+      this.countTreeRead(repository, -1);
+      const next = this.treeReadQueue.findIndex((waiting) =>
+        this.mayStartTreeRead(waiting.repository)
+      );
+      const [waiting] = next < 0 ? [] : this.treeReadQueue.splice(next, 1);
+      if (waiting !== undefined) {
+        this.countTreeRead(waiting.repository, 1);
+        waiting.start();
+      }
     }
+  }
+
+  /** Puts a blob's text, read by an earlier run, in the cache. */
+  seedBlob(sha: string, text: string): void {
+    this.blobs.set(sha, Promise.resolve(text));
   }
 
   /** gh's standard output for `args`; throws gh's first error line. */
@@ -623,11 +750,14 @@ export function keepsEntry(
   );
 }
 
-/** The tree `sha` of `repository`: the entries `keep` keeps, and how many it holds. A truncated
- *  answer is read again by directory: each subtree recursively, and one truncated too one level
- *  at a time. A truncated tree's subtrees are read at once, at most TREE_JOBS reads in flight
- *  across the run (a data repository's directory of a hundred samples is a hundred reads). Each
- *  read comes through gh's jq (TREE_JQ), one line per entry, and only kept entries outlive it. */
+/** The tree `sha` of `repository`: the entries `keep` keeps, and how many it holds. The whole tree
+ *  is asked for in one REST read (through gh's jq, TREE_JQ, one line per entry). A tree GitHub
+ *  answers truncated is walked a level at a time: each level's subtrees are read in GraphQL
+ *  batches of up to TREE_BATCH (`object(oid:)` fields, one level of entries each, routed as
+ *  `graphqlArgs` says), batches at once under the tree-read slots. A batch GitHub refuses (a node
+ *  limit, a timeout) is halved, and a subtree refused alone is read over REST, one level. The
+ *  entries and their count are the same whichever way a subtree is read; only kept entries
+ *  outlive a read. `reads` counts the gh calls. */
 export async function readTree(
   github: Github,
   repository: string,
@@ -635,59 +765,110 @@ export async function readTree(
   keep: (entry: TreeEntry) => boolean
 ): Promise<{ entries: TreeEntry[]; count: number; reads: number; truncated: boolean }> {
   let reads = 0;
-  const read = async (treeSha: string, prefix: string, recursive: boolean) => {
+  let count = 0;
+  const kept: TreeEntry[] = [];
+  /** A tree's entries over REST, the whole tree when `recursive`, else one level. */
+  const restRead = async (treeSha: string, prefix: string, recursive: boolean) => {
     reads++;
     const endpoint = `repos/${repository}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
     const lines = (
-      await github.treeRead(() => github.text(["api", endpoint, "--jq", TREE_JQ]))
+      await github.treeRead(repository, () => github.text(["api", endpoint, "--jq", TREE_JQ]))
     ).split("\n");
     const flag = lines[0];
     if (flag !== "true" && flag !== "false") throw new Error("the tree answer is not of its shape");
-    const kept: TreeEntry[] = [];
-    const subtrees: TreeEntry[] = [];
-    let count = 0;
+    const entries: TreeEntry[] = [];
     for (const line of lines.slice(1)) {
       if (line === "") continue;
       const parsed = TreeLine.safeParse(parseJson(line));
       if (!parsed.success)
         throw new Error(`a tree answer line is not of its shape: ${schemaFaults(parsed.error)}`);
       const [entryPath, mode, type, entrySha, size] = parsed.data;
-      const entry: TreeEntry = {
+      entries.push({
         path: prefix === "" ? entryPath : `${prefix}/${entryPath}`,
         mode,
         type,
         sha: entrySha,
         ...(size >= 0 ? { size } : {}),
-      };
-      count++;
-      if (keep(entry)) kept.push(entry);
-      if (!recursive && type === "tree") subtrees.push(entry);
+      });
     }
-    return { kept, subtrees, count, truncated: flag === "true" };
+    return { entries, truncated: flag === "true" };
   };
-  const walk = async (
-    treeSha: string,
-    prefix: string
-  ): Promise<{ entries: TreeEntry[]; count: number }> => {
-    const whole = await read(treeSha, prefix, true);
-    if (!whole.truncated) return { entries: whole.kept, count: whole.count };
-    const level = await read(treeSha, prefix, false);
-    if (level.truncated)
-      throw new Error(`the tree of ${shown(prefix)} is truncated even one level at a time`);
-    const below = await Promise.all(level.subtrees.map((tree) => walk(tree.sha, tree.path)));
-    return {
-      entries: [...level.kept, ...below.flatMap((subtree) => subtree.entries)],
-      count: below.reduce((sum, subtree) => sum + subtree.count, level.count),
-    };
+  /** One level of each of `trees`, in one GraphQL read; halved, then read over REST, where
+   *  GitHub refuses it. */
+  const levelOf = async (
+    trees: readonly { sha: string; prefix: string }[]
+  ): Promise<TreeEntry[][]> => {
+    reads++;
+    const fields = trees
+      .map(
+        (tree, index) =>
+          `t${index}: object(oid: "${tree.sha}") { ... on Tree { entries { name type mode oid size } } }`
+      )
+      .join(" ");
+    const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
+    const result = await github.treeRead(repository, () =>
+      github.call(graphqlArgs(repository, query))
+    );
+    const parsed = TreeBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
+    const answers = parsed.success
+      ? trees.map((_, index) => parsed.data.data.repository?.[`t${index}`])
+      : [];
+    if (answers.length === trees.length && answers.every((answer) => answer != null)) {
+      return answers.map((answer, index) => {
+        const prefix = trees[index]?.prefix ?? "";
+        return (answer?.entries ?? []).map(
+          (entry): TreeEntry => ({
+            path: prefix === "" ? entry.name : `${prefix}/${entry.name}`,
+            // GraphQL gives the mode as a number; REST as its octal digits, six of them.
+            mode: entry.mode.toString(8).padStart(6, "0"),
+            type: entry.type,
+            sha: entry.oid,
+            ...(entry.type === "blob" && entry.size != null ? { size: entry.size } : {}),
+          })
+        );
+      });
+    }
+    if (trees.length > 1) {
+      const half = Math.ceil(trees.length / 2);
+      const halves = await Promise.all([levelOf(trees.slice(0, half)), levelOf(trees.slice(half))]);
+      return halves.flat();
+    }
+    const [tree] = trees;
+    if (tree === undefined) return [];
+    const one = await restRead(tree.sha, tree.prefix, false);
+    if (one.truncated)
+      throw new Error(`the tree of ${shown(tree.prefix)} is truncated even one level at a time`);
+    return [one.entries];
   };
-  const { entries, count } = await walk(sha, "");
-  return { entries, count, reads, truncated: reads > 1 };
+  const whole = await restRead(sha, "", true);
+  if (!whole.truncated) {
+    for (const entry of whole.entries) if (keep(entry)) kept.push(entry);
+    return { entries: kept, count: whole.entries.length, reads, truncated: false };
+  }
+  let level = [{ sha, prefix: "" }];
+  while (level.length > 0) {
+    const batches: { sha: string; prefix: string }[][] = [];
+    for (let start = 0; start < level.length; start += TREE_BATCH)
+      batches.push(level.slice(start, start + TREE_BATCH));
+    const next: { sha: string; prefix: string }[] = [];
+    for (const entries of (await Promise.all(batches.map(levelOf))).flat()) {
+      for (const entry of entries) {
+        count++;
+        if (keep(entry)) kept.push(entry);
+        if (entry.type === "tree") next.push({ sha: entry.sha, prefix: entry.path });
+      }
+    }
+    level = next;
+  }
+  return { entries: kept, count, reads, truncated: true };
 }
 
-async function readRepository(github: Github, repo: Repository, at: string): Promise<void> {
+/** Reads the commit of `repo` at `at` and its tree; returns the tree's gh calls. A read that
+ *  fails sets `repo.error`. */
+async function readRepository(github: Github, repo: Repository, at: string): Promise<number> {
   if (repo.branch === "") {
     repo.error = "the listing gives no default branch (an empty repository)";
-    return;
+    return 0;
   }
   let treeSha: string;
   try {
@@ -698,14 +879,14 @@ async function readRepository(github: Github, repo: Repository, at: string): Pro
     const first = commits[0];
     if (first === undefined) {
       repo.error = `no commit on ${repo.branch} at or before ${at}`;
-      return;
+      return 0;
     }
     repo.commit = first.sha;
     treeSha = first.commit.tree.sha;
   } catch (error) {
     rethrowStop(error);
     repo.error = `commit read failed: ${(error as Error).message}`;
-    return;
+    return 0;
   }
   try {
     const tree = await readTree(github, repo.repository, treeSha, (entry) =>
@@ -714,10 +895,65 @@ async function readRepository(github: Github, repo: Repository, at: string): Pro
     repo.tree = tree.entries;
     repo.treeEntries = tree.count;
     repo.treeRead = tree.truncated ? `by directory, ${tree.reads} reads` : "whole";
+    return tree.reads;
   } catch (error) {
     rethrowStop(error);
     repo.error = `tree read failed: ${(error as Error).message}`;
+    return 0;
   }
+}
+
+/** What a run reads of one repository beside its tree: its SKILL.md files (and those left out by
+ *  `excludePaths`), its manifest files, and, in a fork that holds a skill, the text files outside
+ *  its skills that the fork scan reads. */
+function repositoryReads(
+  repo: Repository,
+  excludePaths: SkillCutsConfig["excludePaths"]
+): {
+  skillFiles: TreeEntry[];
+  excluded: TreeEntry[];
+  manifests: { entry: TreeEntry; kind: ManifestKind }[];
+  forkFiles: TreeEntry[];
+} {
+  const skillFiles: TreeEntry[] = [];
+  const excluded: TreeEntry[] = [];
+  for (const entry of repo.tree) {
+    if (entry.type !== "blob" || path.posix.basename(entry.path) !== "SKILL.md") continue;
+    const left = excludePaths.some(
+      (exclude) =>
+        exclude.repo.toLowerCase() === repo.repository.toLowerCase() &&
+        entry.path.startsWith(exclude.prefix)
+    );
+    (left ? excluded : skillFiles).push(entry);
+  }
+  const skills = skillFiles.map((entry) => ({ path: dirOf(entry.path), file: entry.path }));
+  const withSkill = skillFiles.length + excluded.length > 0;
+  // An extension is read only where a skills-sources.json is, which it may read.
+  const sources = repo.tree.some((entry) => path.posix.basename(entry.path) === SKILL_SOURCES);
+  const manifests: { entry: TreeEntry; kind: ManifestKind }[] = [];
+  for (const entry of repo.tree) {
+    const kind = manifestKind(entry);
+    if (
+      kind === undefined ||
+      (kind === "omp-package" && !withSkill) ||
+      (kind === "omp-extension" && !sources) ||
+      (kind !== "skill-link" && insideSkill(skills, entry.path) !== undefined)
+    )
+      continue;
+    manifests.push({ entry, kind });
+  }
+  const forkFiles =
+    repo.fork && withSkill
+      ? repo.tree.filter(
+          (entry) =>
+            entry.type === "blob" &&
+            entry.mode !== "120000" &&
+            (Object.hasOwn(TEXT_EXTENSIONS, path.posix.extname(entry.path).toLowerCase()) ||
+              Object.hasOwn(TEXT_NAMES, path.posix.basename(entry.path))) &&
+            insideSkill(skills, entry.path) === undefined
+        )
+      : [];
+  return { skillFiles, excluded, manifests, forkFiles };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2417,7 +2653,8 @@ class CodeSearch {
 
   constructor(
     private readonly github: Github,
-    readonly budget: number
+    readonly budget: number,
+    readonly cache: ReadCache
   ) {}
 
   private pace(owner: string): OwnerPace {
@@ -2533,8 +2770,16 @@ function newRecord(job: SearchJob): QueryRecord {
   };
 }
 
-/** Runs one search job, every page up to GitHub's 1,000 results. */
+/** Runs one search job, every page up to GitHub's 1,000 results; one an earlier run finished
+ *  (`--cache-dir`) is taken from the cache, with no call, and one finished here is written to it. */
 async function runSearch(search: CodeSearch, job: SearchJob, record: QueryRecord): Promise<void> {
+  const cached = search.cache.get("search", record.q, CachedSearch);
+  if (cached !== undefined) {
+    Object.assign(record, cached, {
+      hits: cached.hits.map((hit) => ({ ...hit, verdict: "", match: "" })),
+    });
+    return;
+  }
   for (let page = 1; page <= 10; page++) {
     let answer: SearchPage | undefined;
     try {
@@ -2567,6 +2812,17 @@ async function runSearch(search: CodeSearch, job: SearchJob, record: QueryRecord
   }
   record.status = "ok";
   record.unread = Math.max(0, (record.total_count ?? 0) - record.items_read);
+  search.cache.put("search", record.q, {
+    status: record.status,
+    total_count: record.total_count,
+    incomplete_results: record.incomplete_results,
+    pages: record.pages,
+    calls: record.calls,
+    rate_limit_retries: record.rate_limit_retries,
+    items_read: record.items_read,
+    unread: record.unread,
+    hits: record.hits.map(({ repository, path: file }) => ({ repository, path: file })),
+  });
 }
 
 /**
@@ -2630,9 +2886,8 @@ async function runSearches(
       for (let index = 0; index < queue.length; index++) {
         const entry = queue[index];
         if (entry === undefined) continue;
-        if (search.calls >= search.budget)
-          entry.record.error = `the search-call budget (${search.budget}) is spent`;
-        else await runSearch(search, entry.job, entry.record);
+        // runSearch takes a cached search first, then stops at the budget (status "not run").
+        await runSearch(search, entry.job, entry.record);
         for (const job of followUps(entry.job, entry.record)) {
           const next = { job, record: newRecord(job) };
           queued.push(next);
@@ -2713,7 +2968,10 @@ export interface LoaderRow {
 
 /** The copy of `copies` (one repository's) that `file` is inside: under its directory, or, for a
  *  skill at the root, its SKILL.md alone. */
-function insideSkill(copies: readonly SkillCopy[], file: string): SkillCopy | undefined {
+function insideSkill<T extends Pick<SkillCopy, "path" | "file">>(
+  copies: readonly T[],
+  file: string
+): T | undefined {
   return copies.find((copy) =>
     copy.path === "" ? file === copy.file : file.startsWith(`${copy.path}/`)
   );
@@ -3200,6 +3458,8 @@ export interface CopiesOptions {
   readonly at: string;
   readonly only: readonly string[];
   readonly maxSearchCalls: number;
+  /** `--cache-dir`: where finished reads are kept, and read back by a run started again. */
+  readonly cacheDir?: string | undefined;
 }
 
 /** Reads the repositories, skills, manifests and loaders of one run. */
@@ -3212,18 +3472,7 @@ export async function listCopies(
     io.peakRssBytes === undefined ? procPeakRssBytes() : io.peakRssBytes()
   );
   const failures: string[] = [];
-  /** Reads the blobs of `wanted` into the cache, a GraphQL batch at a time per repository. */
-  const prefetch = async (wanted: readonly { repository: string; entry: TreeEntry }[]) => {
-    const byRepository = new Map<string, TreeEntry[]>();
-    for (const { repository, entry } of wanted) {
-      const entries = byRepository.get(repository);
-      if (entries === undefined) byRepository.set(repository, [entry]);
-      else entries.push(entry);
-    }
-    await mapLimit([...byRepository], REST_JOBS, ([repository, entries]) =>
-      github.prefetch(repository, entries)
-    );
-  };
+  const cache = new ReadCache(options.cacheDir);
   const only = options.only.map((repository) => repository.toLowerCase());
   const owners =
     only.length > 0
@@ -3236,18 +3485,21 @@ export async function listCopies(
   for (const owner of owners) {
     io.err(`copies: listing ${owner}`);
     try {
-      const listed = await github.json(
-        [
-          "repo",
-          "list",
-          owner,
-          "--limit",
-          "2000",
-          "--json",
-          "nameWithOwner,isFork,isArchived,defaultBranchRef,parent",
-        ],
-        Listing
-      );
+      const listed =
+        cache.get("listing", owner, Listing) ??
+        (await github.json(
+          [
+            "repo",
+            "list",
+            owner,
+            "--limit",
+            "2000",
+            "--json",
+            "nameWithOwner,isFork,isArchived,defaultBranchRef,parent",
+          ],
+          Listing
+        ));
+      cache.put("listing", owner, listed);
       for (const entry of listed) {
         repositories.push({
           repository: entry.nameWithOwner,
@@ -3276,26 +3528,73 @@ export async function listCopies(
   }
   repositories.sort((a, b) => a.repository.localeCompare(b.repository));
   io.err(`copies: reading ${repositories.length} repositories at ${options.at}`);
-  await mapLimit(repositories, REST_JOBS, (repo) => readRepository(github, repo, options.at));
+  // Each repository whole, read or taken from the cache: its commit at --at and kept tree
+  // entries, then every SKILL.md, manifest and fork-scan blob it holds, written to the cache the
+  // moment it is done. The cache key is the repository, its default branch and --at, which name
+  // one commit, so a cached repository costs no GitHub read at all.
+  let done = 0;
+  await mapLimit(repositories, REST_JOBS, async (repo) => {
+    const started = io.now();
+    const key = `${repo.repository}\0${repo.branch}\0${options.at}`;
+    const cached = cache.get("repository", key, CachedRepository);
+    let calls = 0;
+    if (cached !== undefined) {
+      repo.commit = cached.commit;
+      repo.tree = cached.tree;
+      repo.treeEntries = cached.treeEntries;
+      repo.treeRead = cached.treeRead;
+      for (const [sha, text] of Object.entries(cached.blobs)) github.seedBlob(sha, text);
+    } else {
+      calls = await readRepository(github, repo, options.at);
+      if (repo.error === "") {
+        const reads = repositoryReads(repo, config.excludePaths);
+        const wanted = [
+          ...reads.skillFiles,
+          ...reads.manifests.map(({ entry }) => entry),
+          ...reads.forkFiles.filter((entry) => (entry.size ?? 0) <= FORK_SCAN_MAX_BYTES),
+        ];
+        await github.prefetch(repo.repository, wanted);
+        const blobs: Record<string, string> = {};
+        for (const entry of wanted) {
+          try {
+            blobs[entry.sha] = await github.blob(repo.repository, entry.sha);
+          } catch (error) {
+            // A blob that fails is read again, and its failure recorded, where it is used.
+            rethrowStop(error);
+          }
+        }
+        cache.put("repository", key, {
+          commit: repo.commit,
+          treeEntries: repo.treeEntries,
+          treeRead: repo.treeRead,
+          treeCalls: calls,
+          tree: repo.tree,
+          blobs,
+        });
+      }
+    }
+    done++;
+    const seconds = Math.round((io.now() - started) / 1000);
+    io.err(
+      repo.error === ""
+        ? `copies: tree ${done}/${repositories.length} ${repo.repository}: ${repo.treeEntries} entries, ${calls} tree reads, ${seconds} s, ${cached === undefined ? "read" : "cached"}`
+        : `copies: tree ${done}/${repositories.length} ${repo.repository}: failed (${repo.error}), ${seconds} s`
+    );
+  });
 
   // 2. Skills.
+  const plans = new Map(
+    repositories.map((repo) => [repo, repositoryReads(repo, config.excludePaths)])
+  );
   const excluded: { repository: string; file: string }[] = [];
   const skillFiles: { repo: Repository; entry: TreeEntry }[] = [];
-  for (const repo of repositories) {
-    for (const entry of repo.tree) {
-      if (entry.type !== "blob" || path.posix.basename(entry.path) !== "SKILL.md") continue;
-      const left = config.excludePaths.some(
-        (exclude) =>
-          exclude.repo.toLowerCase() === repo.repository.toLowerCase() &&
-          entry.path.startsWith(exclude.prefix)
-      );
-      if (left) excluded.push({ repository: repo.repository, file: entry.path });
-      else skillFiles.push({ repo, entry });
-    }
+  for (const [repo, reads] of plans) {
+    for (const entry of reads.excluded)
+      excluded.push({ repository: repo.repository, file: entry.path });
+    for (const entry of reads.skillFiles) skillFiles.push({ repo, entry });
   }
   github.checkMemory();
   io.err(`copies: reading ${skillFiles.length} SKILL.md files`);
-  await prefetch(skillFiles.map(({ repo, entry }) => ({ repository: repo.repository, entry })));
   const copies = await mapLimit(
     skillFiles,
     REST_JOBS,
@@ -3340,32 +3639,17 @@ export async function listCopies(
     ]);
   const copiesIn = (repository: string) => copiesByRepository.get(repository) ?? [];
   const withSkill = new Set(
-    repositories
-      .filter((repo) => repo.tree.some((entry) => path.posix.basename(entry.path) === "SKILL.md"))
-      .map((repo) => repo.repository)
+    [...plans]
+      .filter(([, reads]) => reads.skillFiles.length + reads.excluded.length > 0)
+      .map(([repo]) => repo.repository)
   );
 
   // 4. Manifests.
-  const candidates: { repo: Repository; entry: TreeEntry; kind: ManifestKind }[] = [];
-  for (const repo of repositories) {
-    // An extension is read only where a skills-sources.json is, which it may read.
-    const sources = repo.tree.some((entry) => path.posix.basename(entry.path) === SKILL_SOURCES);
-    for (const entry of repo.tree) {
-      const kind = manifestKind(entry);
-      if (
-        kind === undefined ||
-        (kind === "omp-package" && !withSkill.has(repo.repository)) ||
-        (kind === "omp-extension" && !sources)
-      )
-        continue;
-      if (kind !== "skill-link" && insideSkill(copiesIn(repo.repository), entry.path) !== undefined)
-        continue;
-      candidates.push({ repo, entry, kind });
-    }
-  }
+  const candidates = [...plans].flatMap(([repo, reads]) =>
+    reads.manifests.map(({ entry, kind }) => ({ repo, entry, kind }))
+  );
   github.checkMemory();
   io.err(`copies: reading ${candidates.length} manifest files`);
-  await prefetch(candidates.map(({ repo, entry }) => ({ repository: repo.repository, entry })));
   const read = await mapLimit(
     candidates,
     REST_JOBS,
@@ -3414,7 +3698,7 @@ export async function listCopies(
       if (!known.includes(plugin)) pluginsOf.set(member.copy.name, [...known, plugin].sort());
     }
   }
-  const search = new CodeSearch(github, options.maxSearchCalls);
+  const search = new CodeSearch(github, options.maxSearchCalls, cache);
   const scopes: { scope: string; owner: string; reason: string }[] = [];
   if (only.length > 0) {
     for (const repo of repositories) {
@@ -3430,8 +3714,11 @@ export async function listCopies(
     for (const owner of listed) {
       let qualifier = "user";
       try {
-        if ((await github.api(`users/${owner}`, GithubUser)).type === "Organization")
-          qualifier = "org";
+        const type =
+          cache.get("owner-type", owner, z.string()) ??
+          (await github.api(`users/${owner}`, GithubUser)).type;
+        cache.put("owner-type", owner, type);
+        if (type === "Organization") qualifier = "org";
       } catch (error) {
         rethrowStop(error);
         failures.push(`users/${owner}: ${(error as Error).message}; searched as user:${owner}`);
@@ -3694,14 +3981,15 @@ export async function listCopies(
     forkScans,
     forksNotScanned,
     failures,
-    searchCalls: search.calls,
+    // Each search's calls, those an earlier run made for a cached search included.
+    searchCalls: records.reduce((sum, record) => sum + record.calls, 0),
     peakBytes: github.readPeak(),
     budget: options.maxSearchCalls,
   };
 }
 
 const USAGE =
-  "usage: copies.ts --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>]";
+  "usage: copies.ts --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]";
 
 /** The command. Returns the exit status: 0 (the list is written), 1 (the run failed), 2 (refused),
  *  3 (stopped: the peak resident memory passed MEMORY_LIMIT_BYTES; nothing is written). */
@@ -3716,6 +4004,7 @@ export async function main(argv: readonly string[], io: CopiesIo): Promise<numbe
     out?: string;
     only?: string[];
     "max-search-calls"?: string;
+    "cache-dir"?: string;
   };
   try {
     ({ values } = parseArgs({
@@ -3726,6 +4015,7 @@ export async function main(argv: readonly string[], io: CopiesIo): Promise<numbe
         out: { type: "string" },
         only: { type: "string", multiple: true },
         "max-search-calls": { type: "string" },
+        "cache-dir": { type: "string" },
       },
       strict: true,
       allowPositionals: false,
@@ -3764,6 +4054,7 @@ export async function main(argv: readonly string[], io: CopiesIo): Promise<numbe
         at: values.at,
         only,
         maxSearchCalls: budget === undefined ? Number.POSITIVE_INFINITY : Number(budget),
+        cacheDir: values["cache-dir"],
       },
       io
     );

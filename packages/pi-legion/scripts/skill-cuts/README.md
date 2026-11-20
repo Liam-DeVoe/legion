@@ -164,7 +164,7 @@ from what was saved.
 
 ```
 bun scripts/skill-cuts/cli.ts copies --config <skill-cuts.json> --at <ISO instant> --out <dir> \
-  [--only <owner/repo>]... [--max-search-calls <n>]
+  [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
 ```
 
 The list of copies and loaders (`copies.ts`): every repository of the configured owners at its
@@ -172,6 +172,14 @@ default branch's commit at `--at`, each `SKILL.md` outside the configured `exclu
 names in two or more repositories, the manifests and installers that install each skill, the
 files outside a skill that name one (found by code search, paced under its limit), and the
 copy-prefix table the read count is attributed by. Its files are listed in `copies.ts`'s header.
+With `--cache-dir`, each owner's listing, each repository's read (its commit, the tree entries it
+keeps and every blob it read) and each finished code search is saved there the moment it ends,
+under a temporary name renamed into place, so a run stopped at any moment and started again with
+the same arguments reads nothing twice; the hit files the searches find are read again. A truncated
+tree is walked a level at a time in GraphQL batches of up to 50 subtrees, at most 4 reads in flight
+for one repository and 8 in all. It prints one line per repository read (`copies: tree <n>/<total>
+<owner/repo>: <entries> entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25
+searches, so the log gives the rate.
 
 ### `attribute`
 
@@ -199,7 +207,8 @@ sessions whose file's head names no model; `notQueried`, those no models query h
 ```
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> \
   --skill <name> --old <skill dir at the cut's base> --sessions <sessions.jsonl> --seed <n> \
-  --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
+  --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] \
+  [--concurrency <n>]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
@@ -243,6 +252,33 @@ keeps the case (else `audit-breaks`, `audit-not-governed`), and its answer and r
 case's evidence. The summary records, per session, the check's messages read beside those it must
 read, its windows, and the audit. `--budget-usd` stops the build once its readers cost that much at
 list price (exit 3). The case file holds real session text, so it stays outside the repository.
+
+`--concurrency <n>` (4 unless given) lets `build-cases` read up to n sessions at once; the store is
+still read one query at a time, and the gateway takes n calls at once. Each session's outcome is
+decided and written in the seeded order, a session that finished first waiting for those before
+it, so the cases kept are the first `--max` cases of that order, as one session at a time would
+keep them. At most n sessions are open (being read, or read and waiting), so no more than n
+sessions' text is held at once. When the build ends, each session still open is stopped before
+its next reader call and recorded with what it spent, as `not-needed` (or, at the budget, as
+stopped by it).
+
+A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
+skill, the seed, and the SHA-256 of `--old`'s files, the sessions file, the copies files read and
+the count's query outputs. Run again with the same `--out` and the same inputs, `build-cases` keeps
+every session already decided (dropped, or a case the cases file holds), with no pull and no
+reader call, and goes on in the same order from the first session not decided, until `--max`
+cases in all; the budget counts the dollars already spent, and the summary's spend adds the runs.
+A session `not-needed` or stopped by the budget is not decided, so it is read again when it is
+needed. It refuses (exit 2, files left as they were) other inputs, naming each difference; a
+cases file with no summary; and a summary that records no inputs (one an older `build-cases`
+wrote). A kill at any moment leaves both files readable: each case is appended as one whole line,
+then the summary is written to a temporary name and renamed; a case line the summary does not
+record (a kill between the two) is left out when the build goes on, and its session is read
+again. `build-tasks` goes on the same way: its queries, one per store and day, take an hour and
+more on the real stores, so the summary records the terms and each query as it ends, and
+`<out>.found.jsonl` the messages each found (path hashes and texts; removed once the tasks are
+written); a run of the same skill text, stores and window makes no terms call and repeats no
+recorded query, and a finished build is left as it is.
 
 ## The request log
 
