@@ -57,6 +57,7 @@ func TestBodiesAreBoundedOnEveryWriteRoute(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "CAP", "Body bounds", "before")
 	edited := createThreadComment(t, handler, issue.Key, map[string]any{"body": "before the edit"}, "alice")
 	accepted := paragraphBody(2, 20_000)
+	atCap := atCapCases(contracts.DispatchBlockUnits)
 	overCap := overCapCases(contracts.DispatchBlockUnits)
 	tooManyBlocks := paragraphBody(contracts.DispatchItemBlocks+1, 1)
 
@@ -99,6 +100,17 @@ func TestBodiesAreBoundedOnEveryWriteRoute(t *testing.T) {
 			}
 			if route.settle != nil {
 				route.settle(t, sent)
+			}
+			for shape, body := range atCap {
+				t.Run("exact block cap "+shape, func(t *testing.T) {
+					sent := route.send(body)
+					if sent.Code != route.accepted {
+						t.Fatalf("a body of %d UTF-16 units: status=%d body=%.300s, want %d", contracts.DispatchBlockUnits, sent.Code, sent.Body.String(), route.accepted)
+					}
+					if route.settle != nil {
+						route.settle(t, sent)
+					}
+				})
 			}
 			for caseName, test := range overCap {
 				t.Run(caseName, func(t *testing.T) {

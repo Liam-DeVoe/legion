@@ -11,8 +11,9 @@ import (
 
 // CapExceeded is one block of a body over contracts.DispatchBlockUnits. Field is the field the
 // body arrived in, Position the block's place in the body counted from 1, Type the block's Proof
-// node type, Units its length in UTF-16 code units and Limit the bound it passed. The refusal's
-// wording lives in Error() and nowhere else; a caller adds only the HTTP status and the code.
+// node type, Units its length in UTF-16 code units and Limit the bound it passed. Error names the
+// number of UTF-16 code units a caller must trim, before it gives the measured length and cap; a
+// caller adds only the HTTP status and the code.
 type CapExceeded struct {
 	Field    string
 	Position int
@@ -22,12 +23,13 @@ type CapExceeded struct {
 }
 
 func (e *CapExceeded) Error() string {
-	return fmt.Sprintf("%s block %d (%s): %d of at most %d", e.Field, e.Position, e.Type, e.Units, e.Limit)
+	return fmt.Sprintf("%s block %d (%s): trim %d UTF-16 code units (%d/%d)",
+		e.Field, e.Position, e.Type, e.Units-e.Limit, e.Units, e.Limit)
 }
 
 // CountExceeded is a body holding more blocks than contracts.DispatchItemBlocks. Field is the
-// field the body arrived in, Blocks how many blocks it holds and Limit the bound it passed. The
-// refusal's wording lives in Error() and nowhere else, as CapExceeded's does.
+// field the body arrived in, Blocks how many blocks it holds and Limit the bound it passed. Error
+// names the number of blocks a caller must trim, before it gives the measured count and cap.
 type CountExceeded struct {
 	Field  string
 	Blocks int
@@ -35,8 +37,8 @@ type CountExceeded struct {
 }
 
 func (e *CountExceeded) Error() string {
-	return fmt.Sprintf("%s is %d blocks over the %d-block limit (%d/%d)",
-		e.Field, e.Blocks-e.Limit, e.Limit, e.Blocks, e.Limit)
+	return fmt.Sprintf("%s: trim %d blocks (%d/%d)",
+		e.Field, e.Blocks-e.Limit, e.Blocks, e.Limit)
 }
 
 // DecisionBlock is a body holding a decision block: an `ask` node, which the reader draws a

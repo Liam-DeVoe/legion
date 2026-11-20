@@ -91,12 +91,12 @@ func TestCheckPassesABodyInsideBothBounds(t *testing.T) {
 	requirePasses(t, "the most blocks a body may hold", paragraphBody(contracts.DispatchItemBlocks, 1))
 }
 
-// A block over the block bound is refused, naming the field, the block's place in the body, its
-// type, how far over it is and the bound.
+// A block over the block bound is refused, naming the field, the block's place and type, the
+// number of UTF-16 code units to trim and the measured length and bound.
 func TestCheckRefusesABlockOverTheBlockBound(t *testing.T) {
 	body := "a\n\n" + strings.Repeat("x", contracts.DispatchBlockUnits+1)
 	err := requireRefusal(t, "a second paragraph one unit over", body,
-		"body block 2 (paragraph): 32001 of at most 32000")
+		"body block 2 (paragraph): trim 1 UTF-16 code units (32001/32000)")
 	var capExceeded *CapExceeded
 	if !errors.As(err, &capExceeded) {
 		t.Fatalf("Check returned %T, want *CapExceeded", err)
@@ -104,11 +104,11 @@ func TestCheckRefusesABlockOverTheBlockBound(t *testing.T) {
 }
 
 // A body holding one block more than it may is refused for its block count, before any block's
-// length is measured: a body built to break the indexer is refused for how many blocks it holds.
+// length is measured, naming the one block to trim.
 func TestCheckRefusesABodyOverTheBlockCount(t *testing.T) {
 	body := paragraphBody(contracts.DispatchItemBlocks+1, 1)
 	err := requireRefusal(t, "one block over the count", body,
-		"body is 1 blocks over the 32768-block limit (32769/32768)")
+		"body: trim 1 blocks (32769/32768)")
 	var countExceeded *CountExceeded
 	if !errors.As(err, &countExceeded) {
 		t.Fatalf("Check returned %T, want *CountExceeded", err)
@@ -119,7 +119,7 @@ func TestCheckRefusesABodyOverTheBlockCount(t *testing.T) {
 // half as many of them fit one block as characters of the plane do.
 func TestCheckCountsARuneOutsideTheBasicPlaneAsTwoUnits(t *testing.T) {
 	requireRefusal(t, "16,001 astral runes", strings.Repeat("🙂", 16_001),
-		"body block 1 (paragraph): 32002 of at most 32000")
+		"body block 1 (paragraph): trim 2 UTF-16 code units (32002/32000)")
 	requirePasses(t, "16,000 astral runes", strings.Repeat("🙂", 16_000))
 }
 

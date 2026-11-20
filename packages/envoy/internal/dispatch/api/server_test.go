@@ -542,8 +542,8 @@ func decodeBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 	return value
 }
 
-// overCapCases are texts just past a cap of limit UTF-16 units, the one-letter-over case and
-// one counted in UTF-16 units, each with the length the refusal names.
+// overCapCases are texts just past a cap of limit UTF-16 units, each with the length the refusal
+// names: ASCII and é each spend one unit, and an emoji spends two.
 func overCapCases(limit int) map[string]struct {
 	text   string
 	length int
@@ -552,9 +552,19 @@ func overCapCases(limit int) map[string]struct {
 		text   string
 		length int
 	}{
-		"one letter over": {strings.Repeat("a", limit+1), limit + 1},
-		// 501 characters outside the Basic Multilingual Plane are 1,002 UTF-16 units.
-		"counted in UTF-16 units": {strings.Repeat("😀", limit/2+1), limit + 2},
+		"one ASCII a over":         {strings.Repeat("a", limit+1), limit + 1},
+		"one accented e over":      {strings.Repeat("é", limit+1), limit + 1},
+		"one emoji unit pair over": {strings.Repeat("😀", limit/2+1), limit + 2},
+	}
+}
+
+// atCapCases are bodies the server must accept at the exact UTF-16 unit cap, in the same three
+// character shapes an over-cap refusal holds.
+func atCapCases(limit int) map[string]string {
+	return map[string]string{
+		"ASCII a":    strings.Repeat("a", limit),
+		"accented e": strings.Repeat("é", limit),
+		"emoji":      strings.Repeat("😀", limit/2),
 	}
 }
 
@@ -570,21 +580,22 @@ func assertCapExceeded(t *testing.T, request string, response *httptest.Response
 }
 
 // assertBlockCapExceeded requires response to be the 400 CAP_EXCEEDED a body whose block at
-// position (counted from 1) holds units UTF-16 units is refused with, the block being of
-// blockType.
+// position (counted from 1) holds units UTF-16 units is refused with. The trim amount is the
+// difference in the same unit: an agent can act on it without re-counting the body.
 func assertBlockCapExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, position int, blockType string, units int) {
 	t.Helper()
 	limit := contracts.DispatchBlockUnits
-	want := fmt.Sprintf("%s block %d (%s): %d of at most %d", field, position, blockType, units, limit)
+	trim := units - limit
+	want := fmt.Sprintf("%s block %d (%s): trim %d UTF-16 code units (%d/%d)", field, position, blockType, trim, units, limit)
 	assertRefusalMessage(t, request, response, want)
 }
 
 // assertBlockCountExceeded requires response to be the 400 CAP_EXCEEDED a body of blocks blocks
-// is refused with.
+// is refused with. The trim amount is in blocks, the unit its cap counts.
 func assertBlockCountExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, blocks int) {
 	t.Helper()
 	limit := contracts.DispatchItemBlocks
-	want := fmt.Sprintf("%s is %d blocks over the %d-block limit (%d/%d)", field, blocks-limit, limit, blocks, limit)
+	want := fmt.Sprintf("%s: trim %d blocks (%d/%d)", field, blocks-limit, blocks, limit)
 	assertRefusalMessage(t, request, response, want)
 }
 

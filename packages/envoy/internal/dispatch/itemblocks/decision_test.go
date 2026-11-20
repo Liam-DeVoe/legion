@@ -141,7 +141,7 @@ func TestCheckStoresABodyTheReaderDrawsNoCardFor(t *testing.T) {
 func TestCheckRefusesABodyOverABoundForTheBound(t *testing.T) {
 	overTheBlock := theAsk + "\n\n" + strings.Repeat("x", contracts.DispatchBlockUnits+1)
 	err := requireRefusal(t, "a decision block beside a block one unit over", overTheBlock,
-		"body block 2 (paragraph): 32001 of at most 32000")
+		"body block 2 (paragraph): trim 1 UTF-16 code units (32001/32000)")
 	var capExceeded *CapExceeded
 	if !errors.As(err, &capExceeded) {
 		t.Fatalf("Check returned %T, want *CapExceeded", err)
@@ -158,7 +158,7 @@ func TestCheckRefusesABodyOverABoundForTheBound(t *testing.T) {
 	overTheCount := ":::ask{urgency=\"med\"}\nWhich transport should we expose?\n:::\n\n" +
 		paragraphBody(contracts.DispatchItemBlocks, 1)
 	err = requireRefusal(t, "a decision block beside one block too many", overTheCount,
-		"body is 1 blocks over the 32768-block limit (32769/32768)")
+		"body: trim 1 blocks (32769/32768)")
 	var countExceeded *CountExceeded
 	if !errors.As(err, &countExceeded) {
 		t.Fatalf("Check returned %T, want *CountExceeded", err)
