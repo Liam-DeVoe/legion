@@ -194,6 +194,27 @@ func TestNoAnswerCreatesOrChangesAStream(t *testing.T) {
 	require.Empty(t, offenders, "an answer of the auth service may make, change or remove a stream")
 }
 
+// The operator is the one service whose answer keeps its stream calls: its entry is answered with
+// natsgrant.Operator of the hold's phase whole, the create of ENVOY_MEASURE among them, while a
+// listener listed beside it is answered without any (TestNoAnswerCreatesOrChangesAStream).
+func TestOnlyTheOperatorsAnswerKeepsItsStreamCalls(t *testing.T) {
+	const operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
+	now := time.Now()
+	services := append(slices.Clone(exampleServices), ServiceEntry{Kind: KindOperator, Account: operatorAccount, AllProjects: true})
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"operator-token": {account: operatorAccount, issued: now, expiry: now.Add(10 * time.Minute)},
+		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(10 * time.Minute)},
+	})}
+	operator, err := Decide(t.Context(), deps, services, serviceRequest("operator-token"))
+	require.NoError(t, err)
+	require.Equal(t, "operator/"+operatorAccount, operator.Name)
+	require.Equal(t, natsgrant.Operator(natsgrant.OperatorPhaseReleased), operator.Grant, "the operator's answer was narrowed")
+	require.Contains(t, operator.Grant.Publish, "$JS.API.STREAM.CREATE.ENVOY_MEASURE")
+	listener, err := Decide(t.Context(), deps, services, serviceRequest("listener-token"))
+	require.NoError(t, err)
+	require.Equal(t, natsgrant.ForCallout(natsgrant.Listener("example-hub")), listener.Grant)
+}
+
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under
 // its own fixed label, the decision counter's reason. A row whose ctx is set decides under that
 // context instead of the test's: a spent one is a decision past its budget.
