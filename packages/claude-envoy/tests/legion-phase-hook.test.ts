@@ -12,6 +12,7 @@ import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { OWED_READ_BOUND_MS } from "@legion/pi-shared/phase-reminder"
 import { owedReminder } from "@legion/pi-shared/phase-stall"
 import { ACTIVITY_REPORT_BOUND_MS } from "@legion/pi-shared/session-activity"
+import { answersNever } from "@legion/pi-shared/test/daemon-state"
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -43,21 +44,6 @@ const REMINDER = owedReminder(WORK)
 /** The stand-in daemon's answers to `POST /legion/v1/claims/owed`. */
 const owesWork = () => Response.json({ owes: true, work: WORK })
 const owesNothing = () => Response.json({ owes: false, work: "" })
-
-/** A route of the stand-in daemon that takes each request and never answers it. The request stays
- * open until its caller aborts it, and then fails as `fetch` does. `signals` holds the signal each
- * request carried, so a case reads whether its caller aborted it. */
-function answersNever() {
-  const signals: (AbortSignal | undefined)[] = []
-  const route = (init: RequestInit | undefined): Promise<Response> => {
-    const signal = init?.signal ?? undefined
-    signals.push(signal)
-    const open = Promise.withResolvers<Response>()
-    signal?.addEventListener("abort", () => open.reject(signal.reason), { once: true })
-    return open.promise
-  }
-  return { route, signals }
-}
 
 /**
  * The four numbers every case runs on, through the environment the endpoint is given: no test

@@ -718,8 +718,7 @@ func silenceSpent(t *testing.T, pool *pgxpool.Pool, id string) bool {
 // `worker_silence_minutes`, and a wait notice applied after that writes nothing.
 //
 // The control is the same worker of an issue with no mark, which gets the start row and the
-// notice at the configured bound. At #3712's head the first application past the configured bound
-// writes the start row and the notice, and no wait notice fact exists.
+// notice at the configured bound.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherGetsNothingUntilADayOrTheWaitsEnd(t *testing.T) {
 	quietPastADay := silenceStep().Add(WaitSilenceBound + time.Hour)
 	// nothingWritten fails the test unless the record holds no supervise row and no notice.

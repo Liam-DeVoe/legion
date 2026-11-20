@@ -6,6 +6,7 @@
 // together as one Legion pane against a stand-in daemon and listener. The profile format, the
 // flags and the RPC stream are the Oh My Pi pin's (the repository's .omp-pin), so a pin bump that
 // changes one is fixed here once.
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -118,7 +119,11 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
+/**
+ * What a relay frame needs of a NATS connection. `nats`'s `NatsConnection` does this at run time,
+ * but its `request` types its headers as the whole `MsgHdrs`, which `RelayFrameHeaders` is not, so a
+ * type-checked caller wraps it (`legion-phase-stall-omp.test.ts` in pi-legion).
+ */
 export interface RelayConnection {
   request(
     subject: string,
@@ -269,6 +274,24 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
     }
     return answered;
   }
+}
+
+/** A message published to the role topic `topic`, as the listener's role lane forwards it to the
+ * holder's own subject: the envelope keeps the role topic, and its key is minted from `label` as
+ * the lane mints one. It is the payload a case hands `sendRelayFrame` for a role message
+ * (extensions/card-delivery-omp.test.ts in packages/pi-envoy builds the same). */
+export function roleLaneEnvelope(topic: string, summary: string, label: string): string {
+  const minted = createHash("sha256").update(label).digest("hex").slice(0, 32);
+  return JSON.stringify({
+    event_id: `evt-${label}`,
+    source: "envoy",
+    source_event_id: `source-${label}`,
+    topic,
+    dedupe_key: `envoy.role.forward.publish.${minted}`,
+    issued_at: Date.now(),
+    payload_summary: summary,
+    trace_id: `trace-${label}`,
+  });
 }
 
 /** One provider the stand-in serves and the models it offers under it. Every provider is the same

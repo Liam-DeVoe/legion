@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { roleTopic } from "@legion/contracts";
@@ -16,6 +16,7 @@ import {
   type RelayConnection,
   type Reply,
   type Request,
+  roleLaneEnvelope,
   runLegionPane,
   sendRelayFrame,
 } from "@legion/pi-shared/test/omp-harness";
@@ -305,23 +306,6 @@ function sessionOf(requests: readonly Request[]): string {
   return named;
 }
 
-/** A message published to the role topic `topic`, as the listener's role lane forwards it to the
- * holder's own subject: the envelope keeps the role topic, and its key is minted from `label` as
- * the lane mints one (extensions/card-delivery-omp.test.ts in packages/pi-envoy builds the same). */
-function roleLaneEnvelope(topic: string, summary: string, label: string): string {
-  const minted = createHash("sha256").update(label).digest("hex").slice(0, 32);
-  return JSON.stringify({
-    event_id: `evt-${label}`,
-    source: "envoy",
-    source_event_id: `source-${label}`,
-    topic,
-    dedupe_key: `envoy.role.forward.publish.${minted}`,
-    issued_at: Date.now(),
-    payload_summary: summary,
-    trace_id: `trace-${label}`,
-  });
-}
-
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
@@ -423,6 +407,38 @@ async function stallPane(
   let relayed = 0;
   /** The claim's role topic: the harness names the claim `legion-<name>-<issue>-<role>`. */
   const topic = roleTopic(`legion-stall-stall-2-${role}`);
+  /** Sends the session one message published to its claim's role topic
+   * (`StallScene.roleMessage`), relayed on the connection the first of them opens. `requests`
+   * are the pane's requests so far, which name the session the listener relays to. */
+  const roleMessage = async (requests: readonly Request[], summary: string): Promise<void> => {
+    if (connection === undefined) {
+      const opened = await connect({ servers: run.nats });
+      cleanup.push(() => opened.close());
+      // `nats` types a request's headers as its full `MsgHdrs`, which the harness's
+      // `RelayFrameHeaders` is not, so the connection is not a `RelayConnection` as it stands.
+      // The header set the relay hands back is the one `newHeaders` made, `nats`'s own
+      // `headers()`, so the cast holds.
+      connection = {
+        request: (subject, payload, options) =>
+          opened.request(subject, payload, {
+            timeout: options.timeout,
+            headers: options.headers as MsgHdrs,
+          }),
+      };
+    }
+    relayed += 1;
+    const sessionID = sessionOf(requests);
+    await sendRelayFrame({
+      connection,
+      newHeaders: headers,
+      sessionID,
+      subject: `notifications.agent.${sessionID}`,
+      seq: relayed,
+      payload: StringCodec().encode(
+        roleLaneEnvelope(topic, summary, `stall-${relayed}-${randomUUID()}`)
+      ),
+    });
+  };
   const stepsOf = (
     prompt: string | readonly (string | StallStep)[]
   ): string | readonly (string | PaneStep)[] =>
@@ -432,37 +448,7 @@ async function stallPane(
           typeof step === "string"
             ? step
             : (requests) =>
-                step({
-                  record,
-                  origin,
-                  roleMessage: async (summary) => {
-                    if (connection === undefined) {
-                      const opened = await connect({ servers: run.nats });
-                      cleanup.push(() => opened.close());
-                      connection = {
-                        // The header set the relay hands back is the one `newHeaders` made,
-                        // `nats`'s own `headers()`.
-                        request: (subject, payload, options) =>
-                          opened.request(subject, payload, {
-                            timeout: options.timeout,
-                            headers: options.headers as MsgHdrs,
-                          }),
-                      };
-                    }
-                    relayed += 1;
-                    const sessionID = sessionOf(requests);
-                    await sendRelayFrame({
-                      connection,
-                      newHeaders: headers,
-                      sessionID,
-                      subject: `notifications.agent.${sessionID}`,
-                      seq: relayed,
-                      payload: StringCodec().encode(
-                        roleLaneEnvelope(topic, summary, `stall-${relayed}-${randomUUID()}`)
-                      ),
-                    });
-                  },
-                })
+                step({ record, origin, roleMessage: (summary) => roleMessage(requests, summary) })
         );
   const pane = await runLegionPane(
     run.binary,

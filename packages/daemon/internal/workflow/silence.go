@@ -224,37 +224,19 @@ func workerSilentDid(behind bool, entry, given int64) string {
 	return did + ". A suspension an operator holds over the claim refuses that start when the outbox runs it"
 }
 
-// noticedBound is the bound a `worker-silent` notice says the silence passed, as the notice names
-// it: who gives that bound and to which worker (gives), the setting or the constant that holds it
-// (name), and how long it is (length). A zero length is named by its setting alone, which is how
-// the repair's notice names `worker_silence_minutes`: its text stays the one it had before
-// WaitSilenceBound, word for word.
-type noticedBound struct {
-	gives  string
-	name   string
-	length time.Duration
-}
+// configuredSilence is the bound the repair's notice says the silence passed: this deployment's
+// `worker_silence_minutes`, named by its setting alone.
+const configuredSilence = "this deployment gives a phase worker (worker_silence_minutes)"
 
-// configuredSilence is the repair's bound, this deployment's `worker_silence_minutes`.
-var configuredSilence = noticedBound{gives: "this deployment gives a phase worker", name: "worker_silence_minutes"}
-
-// waitSilence is the wait notice's bound, WaitSilenceBound, which a worker of an issue the daemon
-// records as waiting on another issue is judged by (SilenceBound).
-var waitSilence = noticedBound{gives: "the daemon gives a phase worker of an issue it records as waiting on another issue",
-	name: "WaitSilenceBound", length: WaitSilenceBound}
-
-// String is the bound as the notice reads it: who gives it, then its name and, where it has one,
-// its length in hours.
-func (b noticedBound) String() string {
-	if b.length == 0 {
-		return fmt.Sprintf("%s (%s)", b.gives, b.name)
-	}
-	return fmt.Sprintf("%s (%s, %d hours)", b.gives, b.name, int(b.length.Hours()))
-}
+// waitSilence is the bound the wait notice says the silence passed: WaitSilenceBound, which a
+// worker of an issue the daemon records as waiting on another issue is judged by (SilenceBound),
+// named with its length in hours.
+var waitSilence = fmt.Sprintf("the daemon gives a phase worker of an issue it records as waiting on another issue (WaitSilenceBound, %d hours)",
+	int(WaitSilenceBound.Hours()))
 
 // workerSilentRecord is the notice's and the log line's text: what the daemon read, the bound the
 // silence passed, then what the daemon did, which workerSilentDid or workerSilentWaitDid composes.
-func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time, silent time.Duration, bound noticedBound, did string) string {
+func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time, silent time.Duration, bound, did string) string {
 	return fmt.Sprintf("%s's %s is a phase worker nothing will prompt: its process is up and between turns, it holds no task of %s, and its agent last stepped at %s, %s ago, past the bound %s, so %s.",
 		issue.Key, role, issue.Phase, lastStep.UTC().Format(time.RFC3339), silent.Round(time.Minute), bound, did)
 }

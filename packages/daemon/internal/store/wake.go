@@ -270,33 +270,38 @@ func (s *Store) DuePodBackstops(ctx context.Context, project string, now time.Ti
 	return out, rows.Err()
 }
 
-// IssuesReleasedForWait is the set of project's issues the daemon records as waiting on another
-// issue: the mark admission writes when it takes a started issue's admission slot back for that
-// wait, and clears when it gives the issue a slot again (issues.released_for_wait_at,
-// record.Store.ReleaseSlotForWait and ClearReleasedForWait). project is the Dispatch key the
-// issues table holds.
+// IssuesReleasedForWait is the set of those of keys whose issue the daemon records as waiting on
+// another issue: the mark admission writes when it takes a started issue's admission slot back
+// for that wait, and clears when it gives the issue a slot again (issues.released_for_wait_at,
+// record.Store.ReleaseSlotForWait and ClearReleasedForWait). keys are Dispatch issue keys, the
+// issues table's primary key, which is unique across projects: so the read names no project, and
+// the primary key's index serves it however many issues the table holds. No keys make no query.
 //
-// Two passes read it, once each and only when they have a claim or a row to judge: the silence
-// sweep (internal/daemon's tellSilentPhaseWorkers) and the wake tick (fireDueBackstops). Each
-// passes over a quiet worker or a backstop of such an issue inside workflow.WaitSilenceBound, so
-// a worker that waits costs neither pass a fact transaction a minute. The handlers stay the rule:
-// each reads the mark again inside its fact's own transaction (workflow.SilenceBound).
-func (s *Store) IssuesReleasedForWait(ctx context.Context, project string) (map[string]bool, error) {
-	rows, err := s.pool.Query(ctx, `select key from issues where project = $1 and released_for_wait_at is not null`, project)
+// Two passes read it, once each, for the issues they judge: the silence sweep passes the issues of
+// its silent claims (internal/daemon's tellSilentPhaseWorkers) and the wake tick the issues of its
+// due rows (fireDueBackstops). Each passes over a quiet worker or a backstop of such an issue
+// inside workflow.WaitSilenceBound, so a worker that waits costs neither pass a fact transaction a
+// minute. The handlers stay the rule: each reads the mark again inside its fact's own transaction
+// (workflow.SilenceBound).
+func (s *Store) IssuesReleasedForWait(ctx context.Context, keys []string) (map[string]bool, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `select key from issues where key = any($1) and released_for_wait_at is not null`, keys)
 	if err != nil {
-		return nil, fmt.Errorf("read the issues of %s waiting on another issue: %w", project, err)
+		return nil, fmt.Errorf("read which of %d issues wait on another issue: %w", len(keys), err)
 	}
 	defer rows.Close()
 	waiting := map[string]bool{}
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("read the issues of %s waiting on another issue: %w", project, err)
+			return nil, fmt.Errorf("read which of %d issues wait on another issue: %w", len(keys), err)
 		}
 		waiting[key] = true
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the issues of %s waiting on another issue: %w", project, err)
+		return nil, fmt.Errorf("read which of %d issues wait on another issue: %w", len(keys), err)
 	}
 	return waiting, nil
 }

@@ -99,8 +99,7 @@ interface Rig {
   readonly sent: string[];
   readonly entries: PhaseStallEntry[];
   readonly published: PublishInput[];
-  readonly warned: string[];
-  /** The same lines as `warned`, each with its context. */
+  /** Every warn line the runner wrote, with its context, in order. */
   readonly warnings: WarnLine[];
   /** How many times the daemon was asked what the claim owes. */
   readonly asked: () => number;
@@ -131,7 +130,6 @@ function rig(options: {
   const sent: string[] = [];
   const entries: PhaseStallEntry[] = [];
   const published: PublishInput[] = [];
-  const warned: string[] = [];
   const warnings: WarnLine[] = [];
   let asked = 0;
   let wakesChanged = 0;
@@ -158,7 +156,6 @@ function rig(options: {
     log: {
       debug: () => {},
       warn: (message, context) => {
-        warned.push(message);
         warnings.push({ message, context });
       },
     },
@@ -175,7 +172,6 @@ function rig(options: {
     sent,
     entries,
     published,
-    warned,
     warnings,
     asked: () => asked,
     wakesChanged: () => wakesChanged,
@@ -840,8 +836,7 @@ test("a tester not moved out of its phase is still reminded when its turn ends w
 // phase fires after the daemon moved the issue out of that phase. Its check reads the answer of
 // the moment it fires, which is that the tester owes nothing: it sends nothing, arms nothing, and
 // clears the wake it was armed with, and it asks the host to report that. A wake left live past
-// its due time holds the issue's pod from its idle release; at #3712's head the check returned
-// and left that wake live.
+// its due time holds the issue's pod from its idle release.
 test("a reminder timer armed before the daemon moved the issue out of its phase fires after the move, sends no reminder and clears its wake", async () => {
   const daemon = standInDaemon({ owes: true, work: TESTING });
   const run = rig({ claim: tester, owed: daemon.owed });
@@ -1008,7 +1003,7 @@ test("a notice accepted after its run ended acknowledges nothing of the next run
 // reminder of the run publishes the same notice again, under the same key, until one is accepted.
 test("a notice the listener failed is published again by the run's next reminder, under the same key", async () => {
   let attempt = 0;
-  const { reminder, timers, entries, published, warned } = rig({
+  const { reminder, timers, entries, published, warnings } = rig({
     publish: async () => {
       attempt += 1;
       if (attempt > 1) return {};
@@ -1025,7 +1020,9 @@ test("a notice the listener failed is published again by the run's next reminder
   expect(await reminder.settle(said("Still here."))).toBeUndefined();
   await fireLast(timers);
   expect(published).toHaveLength(1);
-  expect(warned).toEqual(["legion: the architect was not told its worker is stalled"]);
+  expect(warnings).toMatchObject([
+    { message: "legion: the architect was not told its worker is stalled" },
+  ]);
   const failed = entries.at(-1);
   expect(failed).toMatchObject({ count: 2, reported: false });
   expect(failed?.reportKey).toBe(published[0]?.idempotencyKey);
@@ -1082,7 +1079,7 @@ test("the owner notice is kept", async () => {
       );
     },
   });
-  const { reminder, timers, entries, published, warned } = rig({
+  const { reminder, timers, entries, published, warnings } = rig({
     publish: (input) => client.publish(input),
   });
 
@@ -1095,7 +1092,7 @@ test("the owner notice is kept", async () => {
   expect(published[0]).not.toHaveProperty("keep");
   expect(requests[0]).not.toHaveProperty("keep");
   // Nobody was told, and that is not this worker's doing: no warning, and the notice stands.
-  expect(warned).toEqual([]);
+  expect(warnings).toEqual([]);
   const kept = entries.at(-1);
   expect(kept).toMatchObject({ count: 2, reported: false });
   expect(kept?.reportKey).toBe(published[0]?.idempotencyKey);
@@ -1121,7 +1118,7 @@ test("the owner notice is kept", async () => {
     reported: false,
     reportKey: published[2]?.idempotencyKey,
   });
-  expect(warned).toEqual([]);
+  expect(warnings).toEqual([]);
 });
 
 // A listener answers 404 with nothing kept when its keep failed, and a listener of an earlier
@@ -1131,7 +1128,7 @@ test("the owner notice is kept", async () => {
 // doing.
 test("a notice no session held the architect role for is published again by the run's next reminder, under the same key", async () => {
   let attempt = 0;
-  const { reminder, timers, entries, published, warned } = rig({
+  const { reminder, timers, entries, published, warnings } = rig({
     publish: async () => {
       attempt += 1;
       if (attempt > 1) return {};
@@ -1151,7 +1148,7 @@ test("a notice no session held the architect role for is published again by the 
   expect(await reminder.settle(said("Still here."))).toBeUndefined();
   await fireLast(timers);
   expect(published).toHaveLength(1);
-  expect(warned).toEqual([]);
+  expect(warnings).toEqual([]);
   const refused = entries.at(-1);
   expect(refused).toMatchObject({ count: 2, reported: false });
 
@@ -1166,7 +1163,7 @@ test("a notice no session held the architect role for is published again by the 
 // one: the runner uncounts it and arms the next itself, and the reminding goes on.
 test("a reminder the host failed to deliver is not counted, and the next is armed", async () => {
   let deliveries = 0;
-  const { reminder, timers, sent, entries, published, warned } = rig({
+  const { reminder, timers, sent, entries, published, warnings } = rig({
     sendReminder: async () => {
       deliveries += 1;
       if (deliveries === 1) throw new Error("the bridge closed the socket");
@@ -1178,8 +1175,8 @@ test("a reminder the host failed to deliver is not counted, and the next is arme
   expect(timers).toHaveLength(1);
   await fireLast(timers);
 
-  expect(warned).toEqual([
-    "legion: a phase reminder did not reach this worker; it comes again later",
+  expect(warnings).toMatchObject([
+    { message: "legion: a phase reminder did not reach this worker; it comes again later" },
   ]);
   // Still at the continuation's count: the failed one counted for nothing, so it told no one.
   expect(entries.at(-1)).toMatchObject({ state: "active", count: 1 });

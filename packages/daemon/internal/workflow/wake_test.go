@@ -527,8 +527,7 @@ func backstopFired(t *testing.T, pool *pgxpool.Pool, id int64) bool {
 // is not spent, so the next wake tick reads the row again. Armed more than a day ago, it wakes
 // the pod. With the mark cleared, as admission clears it when the issue takes a slot again, it
 // wakes the pod at the next application. The control, an issue with no mark, wakes at its due
-// time, from a row inserted with no armed_at, which takes the column's default. At #3712's head
-// the first application wakes the pod whatever the mark.
+// time, from a row inserted with no armed_at, which takes the column's default.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherGetsNoBackstopWakeUnderADay(t *testing.T) {
 	fact := func(id int64) intake.PodBackstopDue {
 		return intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer}

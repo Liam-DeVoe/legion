@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -857,35 +856,14 @@ func (r *idleWakeRig) newestReleaseAt(issue idleRigIssue) time.Time {
 	return at.UTC()
 }
 
-// waitsOnAnother records the issue as an issue the daemon started that waits on blocker, as
-// seedStartedWaiter (controller_tick_foreign_blocker_test.go) records one of its own: Dispatch
-// shows blocker in progress, the issue's mirror row names it as what the issue waits on, and
-// admission's release for that wait takes the issue's slot back and marks it, in one statement
-// (record.Store.ReleaseSlotForWait). Without the unfinished blocker, an admission pass of the
-// booted daemon gives the issue its slot back and clears the mark (admit's promoteHolds) before
-// any wake tick reads it.
+// waitsOnAnother records the issue as an issue the daemon started that waits on blocker
+// (recordWaitingOn), with Dispatch showing blocker in progress. Without the unfinished blocker,
+// an admission pass of the booted daemon gives the issue its slot back and clears the mark
+// (admit's promoteHolds) before any wake tick reads it.
 func (r *idleWakeRig) waitsOnAnother(issue idleRigIssue, blocker string) {
 	r.t.Helper()
 	r.board.place(blocker, "in_progress", "", false)
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var seq int64
-		if err := tx.QueryRow(ctx, `select coalesce(max(dispatch_seq), 0) from dispatch_issues where key = $1`,
-			issue.key).Scan(&seq); err != nil {
-			return err
-		}
-		for _, row := range []record.DispatchIssueRow{
-			{Key: issue.key, Project: r.cfg.Project, Status: "in_progress", Blockers: []string{blocker}, Seq: seq + 1},
-			{Key: blocker, Project: r.cfg.Project, Status: "in_progress", Seq: 1},
-		} {
-			if err := r.records.PutDispatchIssue(ctx, tx, row); err != nil {
-				return err
-			}
-		}
-		return r.records.ReleaseSlotForWait(ctx, tx, issue.key, time.Now().UTC())
-	}); err != nil {
-		r.t.Fatalf("record %s as waiting on %s: %v", issue.key, blocker, err)
-	}
+	recordWaitingOn(context.Background(), r.t, r.pool, r.cfg.Project, issue.key, blocker, time.Now().UTC())
 }
 
 // ageResume moves the issue's recorded wakes into the past. The stuck pass reads the wake's own
@@ -915,8 +893,7 @@ const idleRigWaitsOnAnother = "waits-on-another"
 // and the woken role's task names the backstop.
 //
 // INFRA-2753 is the case: its released pod was woken by the backstop seven times in a night while
-// it waited on LINUX-1478. At #3712's head the first tick after the backstop comes due wakes the
-// pod.
+// it waited on LINUX-1478.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsNotWokenByItsBackstopUnderADay(t *testing.T) {
 	rig := newIdleWakeRig(t, nil, idleRigWaitsOnAnother)
 	issue := rig.issue(idleRigWaitsOnAnother)

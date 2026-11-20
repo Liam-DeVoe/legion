@@ -350,8 +350,7 @@ func finishControllerNotices(t *testing.T, pool *pgxpool.Pool) {
 // workflow.WaitSilenceBound in place of `worker_silence_minutes` (workflow.SilenceBound), as the
 // silence handler judges it: the tick's silent list leaves it out while its quiet is under a day
 // and names it past the day. The control is a worker of an issue that waits on nothing, quiet as
-// long, which the list names at the configured bound in both ticks. At #3712's head the first
-// tick names both.
+// long, which the list names at the configured bound in both ticks.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsOutOfTheTickListUnderADay(t *testing.T) {
 	const (
 		waiter  = "LEGION-60"
@@ -409,8 +408,7 @@ func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsOutOfTheTickListUnderADay(t
 // gives its slot back, and the silence fact of its quiet worker writes nothing while it waits,
 // leaving the fact unspent. The blocker's event to done is the admission pass that gives the
 // issue its slot back and clears the mark, and the first application of the same fact after it
-// writes the start row and the architect's notice. At #3712's head the first application, while
-// the issue still waits, writes both.
+// writes the start row and the architect's notice.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsSentItsTaskOnceItsBlockerIsDone(t *testing.T) {
 	const (
 		waiter  = "LEGION-70"

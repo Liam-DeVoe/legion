@@ -63,11 +63,17 @@ func (c liveClaim) owesNothing(t *testing.T) {
 // route read (authenticated, supervise.Machine.Claim).
 func (c liveClaim) claimNow(t *testing.T) supervise.Claim {
 	t.Helper()
+	return machineOf(t, c).Claim()
+}
+
+// machineOf is the machine the daemon supervises c's claim with.
+func machineOf(t *testing.T, c liveClaim) *supervise.Machine {
+	t.Helper()
 	machine, ok := c.h.supervisor.Machine(c.token)
 	if !ok {
 		t.Fatalf("no machine for %s", c.token)
 	}
-	return machine.Claim()
+	return machine
 }
 
 // The defect this route cures (dispatch://INFRA-2746): a reminder state kept per process nagged
@@ -407,8 +413,8 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 		tester := newLiveClaimIn(t, h, parent, "LEGION-209", claim.RoleTester)
 		tester.owes(t, "the testing phase of LEGION-209")
 		applyEntryFact(t, h, engine, "parked", intake.DispatchIssue{Key: "LEGION-209", Status: "backlog", Title: "LEGION-209", Parent: parent, ResolvedRepo: "acme/widgets"})
-		if at := recordedIssue(t, h, "LEGION-209").Phase; at != phase.Done {
-			t.Fatalf("the parked child is in %s, want done: the case's own premise", at)
+		if child := readIssue(t, h, "LEGION-209"); child == nil || child.Phase != phase.Done {
+			t.Fatalf("the parked child = %+v, want it in done: the case's own premise", child)
 		}
 		tester.owesNothing(t)
 		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
@@ -421,7 +427,7 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 		owedIssue(t, h)
 		_, tester := implemented(t, h)
 		applyEntryFact(t, h, engine, "closed", intake.DispatchIssue{Key: "LEGION-208", Status: "done", Title: "LEGION-208", ResolvedRepo: "acme/widgets"})
-		if root := recordedIssue(t, h, "LEGION-208"); !root.Lingers() {
+		if root := readIssue(t, h, "LEGION-208"); root == nil || !root.Lingers() {
 			t.Fatalf("the closed root = %+v, want its tree lingering: the case's own premise", root)
 		}
 		tester.owesNothing(t)
@@ -513,10 +519,7 @@ func planned(t *testing.T, h *harness) liveClaim {
 // daemon's backs, as an Envoy message to c's session starts one.
 func turnOfItsOwn(t *testing.T, c liveClaim) {
 	t.Helper()
-	machine, ok := c.h.supervisor.Machine(c.token)
-	if !ok {
-		t.Fatalf("no machine for %s", c.token)
-	}
+	machine := machineOf(t, c)
 	ctx := context.Background()
 	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: c.token}); err != nil {
 		t.Fatalf("end the turn of %s: %v", c.token, err)
@@ -589,15 +592,7 @@ func mergeForwardLands(t *testing.T, h *harness, engine *workflow.Engine) {
 // nil while none stands.
 func recordedMergeForward(t *testing.T, h *harness) *record.MergeForward {
 	t.Helper()
-	ctx := context.Background()
-	var pr *record.PullRequest
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
-		var err error
-		pr, err = record.NewStore().PullRequest(ctx, tx, "LEGION-208")
-		return err
-	}); err != nil {
-		t.Fatalf("read the pull request of LEGION-208: %v", err)
-	}
+	_, _, pr := handoffRecord(t, h, "LEGION-208")
 	if pr == nil {
 		t.Fatal("the record holds no pull request for LEGION-208")
 	}
@@ -615,24 +610,6 @@ func queuedMergeForward(t *testing.T, h *harness, role claim.Role, step record.M
 		t.Fatalf("count the merge-forward messages of step %s to the %s: %v", step, role, err)
 	}
 	return queued > 0
-}
-
-// recordedIssue is key's issue record as the record holds it now.
-func recordedIssue(t *testing.T, h *harness, key string) record.Issue {
-	t.Helper()
-	ctx := context.Background()
-	var issue *record.Issue
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
-		var err error
-		issue, err = record.NewStore().Issue(ctx, tx, key)
-		return err
-	}); err != nil {
-		t.Fatalf("read the record of %s: %v", key, err)
-	}
-	if issue == nil {
-		t.Fatalf("the record holds no issue %s", key)
-	}
-	return *issue
 }
 
 // A claim of a role whose phase another role works, or whose issue stands where no role works,

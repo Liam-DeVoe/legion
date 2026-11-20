@@ -152,8 +152,8 @@ export function sessionActivityRequest(input: {
  * (`packages/claude-envoy/src/legion-phase-hook.ts`) waits on `reminder.settle`, the same owed
  * check, and on `sendActivity`, bounded here. So when the daemon does not answer, each handler
  * returns within about 6 s. That is well inside the 30 s Oh My Pi gives a handler, and the 30 s
- * Claude Code gives the `Stop` hook (`packages/claude-envoy/scripts/build.ts`). Before this bound
- * the report waited for as long as the daemon did: INFRA's daemon log of 2026-11-13 holds 249
+ * Claude Code gives the `Stop` hook (`packages/claude-envoy/scripts/build.ts`). A report with no
+ * bound waits for as long as the daemon does: INFRA's daemon log of 2026-11-13 holds 249
  * `session_stop` handler timeouts (`handler timed out after 30000ms`), and a 250th line that
  * quotes one of them. pi-envoy's own `session_stop` handlers are another extension, with a limit
  * of their own.

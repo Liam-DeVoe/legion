@@ -195,13 +195,14 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //     (awaiting_person, done, held), or its tree closed. A merger in merging whose pull request is
 //     not merged owes the merge, since the merger merges.
 //   - The claim is neither behind nor above the entry its role's phases row stands on
-//     (record.PhaseRow.Entry), where both are set; where either is 0 nothing is compared, as the
-//     route's entry fence compares nothing (entryFence). A claim behind its entry owes nothing: the
-//     route refuses its completion HANDOFF_STALE_ENTRY wherever behindEntryClause gives a clause,
-//     and the daemon sends that entry's task itself (the delivery it already queued, the owed-entry
-//     repair, the silence sweep), so the claim stands level once a turn confirms that task. The
-//     entry read is the one the claim serves, not the one it was given (supervise.Claim.GivenEntry):
-//     a task queued and not yet confirmed leaves the claim behind for the route.
+//     (record.PhaseRow.Entry), where both are set; where either is 0 nothing is compared. The
+//     route's entry fence (entryFence) reads the same predicate (entriesDiffer). A claim behind
+//     its entry owes nothing: the route refuses its completion HANDOFF_STALE_ENTRY wherever
+//     behindEntryClause gives a clause, and the daemon sends that entry's task itself (the
+//     delivery it already queued, the owed-entry repair, the silence sweep), so the claim stands
+//     level once a turn confirms that task. The entry read is the one the claim serves, not the
+//     one it was given (supervise.Claim.GivenEntry): a task queued and not yet confirmed leaves
+//     the claim behind for the route.
 //   - The row does not record the claim's completion of that entry (record.PhaseRow.Completed). A
 //     reviewer whose round waits for a review, or a merger whose completion the workflow recorded
 //     without moving the issue, owes nothing, and the daemon sends a level claim no entry's work.
@@ -237,7 +238,7 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 	if serving == 0 || serving != issue.Generation {
 		return nothing
 	}
-	if entry != 0 && position.entry != 0 && entry != position.entry {
+	if entriesDiffer(entry, position.entry) {
 		return nothing
 	}
 	if position.completed || record.MergeForwardHolds(position.pullRequest, issue.Phase, c.Role) {

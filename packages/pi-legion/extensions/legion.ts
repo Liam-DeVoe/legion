@@ -332,9 +332,20 @@ export default function legionExtension(pi: PiApi): void {
    * Every report is sent under `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`), because
    * `session_stop` awaits it: a daemon that does not answer holds the turn end here for at most
    * 3 s, so the handler stays inside Oh My Pi's 30 s limit. A report the bound cuts off is a
-   * failed report like any other.
+   * failed report like any other, and a failed report is sent again at the next reading.
    */
   const SESSION_ACTIVITY_PERIOD_MS = 5_000;
+  /**
+   * How long this pane writes no second warn line about the failed activity reports of one claim,
+   * counted from the line it wrote, as the owed check does for its failed reads (`logUnread` in
+   * `packages/pi-shared/src/phase-reminder.ts`). A daemon slower than the 3 s bound fails the
+   * report that the next reading sends again, every 5 s: one line per failure would be about 720
+   * lines an hour, and one line an hour names the cause. The count is this process's own: a
+   * process the daemon starts again logs at its first failed report.
+   */
+  const ACTIVITY_WARN_INTERVAL_MS = 60 * 60 * 1000;
+  /** When a failed activity report was last logged, by the claim token it was about. */
+  const activityWarned = new Map<string, number>();
   let lastActivity: SessionActivityReport | undefined;
   const reportActivity = async (
     context: SessionContext,
@@ -371,6 +382,10 @@ export default function legionExtension(pi: PiApi): void {
       // The daemon did not take it, so it is not what the daemon holds: the next reading sends
       // again whether or not its content moved.
       lastActivity = undefined;
+      const at = Date.now();
+      const warned = activityWarned.get(claim.claimToken);
+      if (warned !== undefined && at - warned < ACTIVITY_WARN_INTERVAL_MS) return;
+      activityWarned.set(claim.claimToken, at);
       logger.warn("legion: this session's activity report did not reach the daemon", {
         issue: claim.issue,
         error: messageFor(error),

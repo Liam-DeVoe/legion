@@ -241,10 +241,10 @@ test("a settle in a quiet wait earns none, and the wait ends on a reminder", () 
 // dispatch://INFRA-2746 R4: the reminder goes only to a role the daemon answers owes work, the
 // work of a phase or of a production check, so every sentence of it holds for both. A role whose
 // completion or report the daemon refuses as not current, already received, or of a check or look
-// that has ended is told to do nothing more for that work. #3712's text said nothing of a refusal.
-// The opening and the last sentence are #3712's: the last is the needle of the live proofs
-// (scripts/e2e/lib/claude-transcript.sh). The WAITING sentence is #3712's as well, and
-// dispatch://INFRA-2040's to change.
+// that has ended is told to do nothing more for that work. The opening and the last sentence are
+// the live proofs' needles: scripts/e2e/lib/claude-transcript.sh reads the last, and the real Oh
+// My Pi's case (packages/pi-legion/extensions/legion-phase-stall-omp.test.ts) reads the opening.
+// The WAITING sentence is dispatch://INFRA-2040's to change.
 test("the reminder text says what to do when handoff_complete is refused HANDOFF_NOT_CURRENT_PHASE", () => {
   const waiting =
     "If you are waiting on something (CI, a review, a person), reply with a line starting " +

@@ -1234,26 +1234,40 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 // event of these cases finishes until the case ends the wait itself.
 const silenceBlocker = "LEGION-485"
 
-// waitsOn records the rig's issue as an issue the daemon started that waits on blocker, as
-// seedStartedWaiter (controller_tick_foreign_blocker_test.go) records one of its own: Dispatch's
-// mirror names blocker, not done, as what the issue waits on, and admission's release for that
-// wait takes the issue's slot back and marks it, in one statement (record.Store.ReleaseSlotForWait).
-// The rig runs no admission pass, and a daemon's would clear no mark while the blocker stands
-// unfinished (admit's promoteHolds).
+// waitsOn records the rig's issue as an issue the daemon started that waits on blocker, at the
+// rig's clock (recordWaitingOn). The rig runs no admission pass, and a daemon's would clear no
+// mark while the blocker stands unfinished (admit's promoteHolds).
 func (r *podUpdateRig) waitsOn(blocker string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	recordWaitingOn(r.ctx, r.t, r.pool, "LEGION", podUpdateIssue, blocker, r.clock.Now())
+}
+
+// recordWaitingOn records issue of project as an issue the daemon started that waits on blocker,
+// as seedStartedWaiter (controller_tick_foreign_blocker_test.go) records one of its own:
+// Dispatch's mirror names blocker, not done, as what the issue waits on, and admission's release
+// for that wait takes the issue's slot back and marks it at at, in one statement
+// (record.Store.ReleaseSlotForWait). The issue's mirror row is written one sequence past the one
+// the mirror holds, so it replaces a row the rig wrote before.
+func recordWaitingOn(ctx context.Context, t *testing.T, pool *store.Pool, project, issue, blocker string, at time.Time) {
+	t.Helper()
+	records := record.NewStore()
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var seq int64
+		if err := tx.QueryRow(ctx, `select coalesce(max(dispatch_seq), 0) from dispatch_issues where key = $1`,
+			issue).Scan(&seq); err != nil {
+			return err
+		}
 		for _, row := range []record.DispatchIssueRow{
-			{Key: podUpdateIssue, Project: "LEGION", Status: "in_progress", Blockers: []string{blocker}, Seq: 1},
-			{Key: blocker, Project: "LEGION", Status: "in_progress", Seq: 1},
+			{Key: issue, Project: project, Status: "in_progress", Blockers: []string{blocker}, Seq: seq + 1},
+			{Key: blocker, Project: project, Status: "in_progress", Seq: 1},
 		} {
-			if err := r.records.PutDispatchIssue(r.ctx, tx, row); err != nil {
+			if err := records.PutDispatchIssue(ctx, tx, row); err != nil {
 				return err
 			}
 		}
-		return r.records.ReleaseSlotForWait(r.ctx, tx, podUpdateIssue, r.clock.Now())
+		return records.ReleaseSlotForWait(ctx, tx, issue, at)
 	}); err != nil {
-		r.t.Fatalf("record %s as waiting on %s: %v", podUpdateIssue, blocker, err)
+		t.Fatalf("record %s as waiting on %s: %v", issue, blocker, err)
 	}
 }
 
@@ -1286,8 +1300,7 @@ func (r *podUpdateRig) waitEnds(blocker string) {
 // next sweep writes the start row, and the worker is prompted with its phase's task.
 //
 // INFRA-2753 is the case: its daemon wrote the start row and published the notice while the
-// issue waited on LINUX-1478, holding no slot. At #3712's head the first sweep past the bound
-// writes both.
+// issue waited on LINUX-1478, holding no slot.
 func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherGetsItsTaskOnceTheWaitEnds(t *testing.T) {
 	rig := aSilentPhaseWorker(t)
 	worker := claim.RoleImplementer

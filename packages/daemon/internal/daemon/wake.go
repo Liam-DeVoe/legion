@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -18,7 +19,8 @@ import (
 const (
 	// wakeTickInterval is how often the daemon fires the backstops that came due and warns about
 	// the resumes that are stuck. Both are measured in minutes, so a minute is often enough to
-	// act within a tick of a due time and rare enough to cost two small queries a minute.
+	// act within a tick of a due time and rare enough to cost two small queries a minute, and a
+	// third, by primary key, in a minute that has a due backstop (fireDueBackstops).
 	wakeTickInterval = time.Minute
 	// listenerReadyWindow is how fresh the Envoy listener's own `listener_ready` report must be
 	// for the daemon to release anything. The listener publishes one at its start and every five
@@ -101,11 +103,11 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 //
 // A row of an issue the daemon records as waiting on another issue is passed over while it was
 // armed less than workflow.WaitSilenceBound ago, so such a pod is woken a day after its release
-// rather than backstop_minutes after it, and costs no fact transaction a tick meanwhile. Those
-// issues are read once a pass, and only for a pass that has a due row
-// (store.Store.IssuesReleasedForWait). The backstop's handler reads the mark again inside its own
-// transaction and is the rule (workflow's podBackstopDue), so a failed read here is logged and
-// every due row is applied.
+// rather than backstop_minutes after it, and costs no fact transaction a tick meanwhile. The mark
+// is read once a pass, for the distinct issues of the due rows, and not at all for a pass with no
+// due row (store.Store.IssuesReleasedForWait). The backstop's handler reads the mark again inside
+// its own transaction and is the rule (workflow's podBackstopDue), so a failed read here is
+// logged and every due row is applied.
 func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	due, err := w.idleStore.DuePodBackstops(ctx, w.projectID, now)
 	if err != nil {
@@ -115,7 +117,12 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	if len(due) == 0 {
 		return
 	}
-	waiting, err := w.idleStore.IssuesReleasedForWait(ctx, w.dispatchProject)
+	issues := make([]string, 0, len(due))
+	for i := range due {
+		issues = append(issues, due[i].Issue)
+	}
+	slices.Sort(issues)
+	waiting, err := w.idleStore.IssuesReleasedForWait(ctx, slices.Compact(issues))
 	if err != nil {
 		w.log.Warn("wake: could not read the issues waiting on another issue; every due backstop is applied", "error", err)
 	}

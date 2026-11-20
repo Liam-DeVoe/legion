@@ -58,6 +58,7 @@ import {
   type StallProcessTree,
   type StallWatchdogProcesses,
 } from "@legion/pi-shared/stall-watchdog";
+import { answersNever } from "@legion/pi-shared/test/daemon-state";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
@@ -1940,20 +1941,6 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     /** The stand-in daemon's two answers to `POST /legion/v1/claims/owed`. */
     const owesWork = () => Response.json({ owes: true, work: STALL_WORK });
     const owesNothing = () => Response.json({ owes: false, work: "" });
-    /** A route of the stand-in daemon that takes each request and never answers it. The request
-     * stays open until its caller aborts it, and then fails as `fetch` does. `signals` holds the
-     * signal each request carried, so a case reads whether its caller aborted it. */
-    const answersNever = () => {
-      const signals: (AbortSignal | undefined)[] = [];
-      const route = (init: RequestInit | undefined): Promise<Response> => {
-        const signal = init?.signal ?? undefined;
-        signals.push(signal);
-        const open = Promise.withResolvers<Response>();
-        signal?.addEventListener("abort", () => open.reject(signal.reason), { once: true });
-        return open.promise;
-      };
-      return { route, signals };
-    };
     const bootStalling = async (options: {
       readonly role?: LegionRole;
       readonly issue?: IssueKey;
@@ -2637,6 +2624,32 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       },
       OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 10_000
     );
+
+    // A failed activity report is sent again at the next reading, so a daemon slower than the
+    // report's bound fails a report every 5 s. The pane writes the warn line of a failed report
+    // once per claim per hour, counted from the line it wrote, as the owed check does for a failed
+    // read; the clock is moved rather than waited on, and handed back after.
+    test("a phase worker's failed activity reports write one warn line per claim per hour", async () => {
+      const worker = await bootStalling({ activity: () => new Response("down", { status: 503 }) });
+      await worker.arrives(assignment);
+      const failedReports = async (): Promise<number> => {
+        const { warnings } = await loggedWarnings(async () => worker.settles("Pushed."));
+        return warnings.filter(
+          (warning) =>
+            warning.message === "legion: this session's activity report did not reach the daemon"
+        ).length;
+      };
+      try {
+        expect(await failedReports()).toBe(1);
+        expect(await failedReports()).toBe(0);
+        setSystemTime(new Date(Date.now() + 59 * 60_000));
+        expect(await failedReports()).toBe(0);
+        setSystemTime(new Date(Date.now() + 2 * 60_000));
+        expect(await failedReports()).toBe(1);
+      } finally {
+        setSystemTime();
+      }
+    });
 
     test("a request_backward_move closes nothing of its own: the daemon's answer after it decides the next settle", async () => {
       const worker = await bootStalling({});
