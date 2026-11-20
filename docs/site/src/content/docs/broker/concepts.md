@@ -57,13 +57,47 @@ pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` 
 and the one Dispatch project it may write, or no project for an entry that names none
 (`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
 service and a fixed session instead, and no person and no project: the token holds the OAuth scope
-`read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
-service refuses a connection that presents it as `not_a_session`
-([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
-`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
-source, each component, and every issue of the project, closed and iceboxed ones included. No
-setting holds a read entry to some projects.
+`read` alone. Dispatch serves such a token on the GET routes it classes as reads, and refuses it on
+every other route with `403 READ_ONLY_TOKEN`. The Envoy listener refuses it with `401`, and the
+NATS auth service refuses a connection that presents it as `not_a_session`
+([Operate](/legion/broker/operate/#what-to-run)). That token reads every read of Dispatch that
+needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its
+documents, comments and asks. No setting holds a read entry to some projects.
+
+Any trade may also ask for the OAuth scope `read` (`scope=read`), whatever its subject. That
+includes a pod's token under any entry, a workflow run's token, a machine's Google identity, a
+person's sign-in and a machine login. The token keeps the session, the person or the service, and
+the projects that the same trade would have named, and it writes nothing. Its project scope is
+the narrowed word of the one it would have had: `read-named`, `read-person` or `read-none`. It
+holds `read`, and `person` beside it when it acts for a person, never `approve`. The trade may
+also name a cut (`as_of`), the past time the token reads at: an RFC 3339 time no later than the
+trade. Until Dispatch serves reads at a past time, it refuses a token with a cut on every read but
+`GET /api/v1/whoami`, with `403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for no scope gets the
+token it always got (`packages/envoy/internal/broker/oauth/exchange.go`, `decide`).
+
+A read trade makes, moves and extends no launcher credential, and its answer names none. A
+person's read trade still proves the sign-in with the box key. Its token names the launcher
+credential the sign-in already holds, so a revoke of the sign-in ends the token. A sign-in that
+holds no credential yet is refused `invalid_grant`, which names `agent-secrets login`. A read
+trade does not renew the sign-in's credential either. Once that credential lapses, read trades
+are refused `invalid_grant` until one ordinary trade of the sign-in renews it, as `agent-secrets`
+makes, and the read tokens that named it end with it. A narrowed token lives no longer than its
+subject token or the credential it names, and a revoke of either ends it. A token that
+holds `read`, a read entry's included, is never the subject of a trade.
+
+No key is both a read token's key and a launcher credential's key. A launcher credential's key
+signs launcher proofs, which enrol sessions and revoke a person's machines and grants, and a read
+token is meant for a holder that only reads. So the broker refuses to bind a read token to a key
+that a live launcher credential is bound to, with `invalid_request` that names the cure. It also
+refuses to mint or move a launcher credential onto a key that a live read token is bound to, as it
+refuses a key that another live credential holds. A launcher proof signed with a read token's key
+is refused `401 LAUNCHER_INVALID`. A read trade whose DPoP proof is signed with a launcher
+credential's key, such as a person's box key or the key in a machine login's `machine.json`, sends
+a second proof of the same request in the `DPoP-Holder` header. That proof is signed with a key
+made for the token's holder, and the broker binds the token to that key. A person's read trade
+must always send one. This departs from RFC 9449, which binds a token to the key of the request's
+DPoP proof (`packages/envoy/internal/broker/oauthstore/store.go`, `CreateAccessTokenSession` and
+`KeyHoldsReadToken`).
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
@@ -136,9 +170,11 @@ grant no enrollment comes back for.
 
 Every `session` enrollment records an **operator**: the person whose machine it runs on. The
 operator is the person who approved the machine login that enrolled it, never a value the launcher
-chooses. A `pod` enrollment records none, since the Legion daemon logs in as a service with its own
-Kubernetes token rather than as a person; it records the service account the pod's projected token
-proved instead.
+chooses. A `pod` enrollment records the service account the pod's projected token proved. It
+records no operator when a service's login enrolled it, since the Legion daemon logs in as a
+service with its own Kubernetes token rather than as a person. A pod whose account
+`BROKER_POD_OPERATORS` maps to a person records that person as its operator as well
+([a person's pod](#a-persons-pod)).
 
 ### When no broker is serving
 
@@ -330,14 +366,16 @@ approved a person's machine login is its operator. A lapsed or revoked login mea
 machine in again. A machine login nobody decides expires after 15 minutes, a fixed time rather than
 a setting (`machineLoginPendingTTL` in `packages/envoy/cmd/broker/main.go`). A person's machine
 logs in through the device grant alone: the earlier `POST /v1/launcher-credentials` login answers
-`405 Method Not Allowed` and its poll `GET /v1/launcher-credentials/{pending}` `404`. A service's login has no
-operator, so the machine-login page lists it for everyone signed in, and anyone may revoke it, which
-ends every pod it enrolled at once: a service login a person approved through a code before
-services logged in with their tokens, until it expires, and a service's token login, which names no
-approver. A service whose token login was revoked logs in again with its token at its next call,
-under a new credential, which enrolls the pods it launches next; a pod the revoke ended stays
-without secrets until it is replaced. To stop it logging in, remove its account from
-`BROKER_SERVICE_LOGINS` and redeploy the broker.
+`405 Method Not Allowed` and its poll `GET /v1/launcher-credentials/{pending}` `404`. A service's
+login has no operator. The machine-login page lists it for everyone signed in, and anyone may
+revoke it, which ends every pod it enrolled at once: a service login a person approved through a
+code before services logged in with their tokens, until it expires, and a service's token login,
+which names no approver. A service whose token login was revoked logs in again with its token at
+its next call, under a new credential, which enrolls the pods it launches next; a pod the revoke
+ended stays without secrets until it is replaced. To stop it logging in, remove its account from
+`BROKER_SERVICE_LOGINS` and redeploy the broker. A token login of an account that
+`BROKER_POD_OPERATORS` maps to a person is that person's own and no service's: the page lists it
+to that person alone, and only that person may revoke it ([a person's pod](#a-persons-pod)).
 
 A credential enrolls sessions only for its own operator: an enrollment naming anyone else is refused
 `OPERATOR_MISMATCH`. The broker's rate limiter caps how often anyone can start a machine login, per
@@ -447,9 +485,11 @@ A `requesters` list is read before owner and tier. Where a secret carries one, a
 person it does not name, and a pod whose service it does not name, is denied
 `requester-not-listed`, whatever the table below would have given it. An entry holding an `@` is a
 person and is matched against the session's person alone; one holding none is a service and is
-matched against the service the broker verified alone. A pod has no person and a session has no
-service, so each is matched only by an entry of its own sort, and a person whose login reads like
-a service name matches no service entry. A secret with no list is every session's to ask for.
+matched against the service the broker verified alone. A pod acts for no person unless
+`BROKER_POD_OPERATORS` maps its account to one, and then it has no service
+([a person's pod](#a-persons-pod)). A session has no service. So each is matched only by an entry
+of its own sort, and a person whose login reads like a service name matches no service entry. A
+secret with no list is every session's to ask for.
 
 Who gets it then follows from those two tags alone:
 
@@ -461,9 +501,11 @@ Who gets it then follows from those two tags alone:
 | `owner=shared`, `tier=human` | Approved by anyone who signs in to the broker. | Approved by anyone who signs in to the broker. |
 | A service's, `tier=agent` | Granted at once. | Denied; no one can approve it. |
 
-A session is its owner's own when its operator is the owner: the owner approved the machine login
-it enrolled under. A pod has no operator, so a pod asking for a person's agent-tier secret sends it
-to that person for approval.
+A session is its owner's own when its operator is the owner and one of two things holds: the owner
+approved the machine login it enrolled under, or it is a pod whose account `BROKER_POD_OPERATORS`
+maps to the owner ([a person's pod](#a-persons-pod)). Any other pod is not the owner's own, whether
+it acts for no person or for the person its account is mapped to, so its request for the owner's
+agent-tier secret goes to the owner for approval.
 
 Every row that sends a secret for approval needs the request to carry a reason: a request with
 none is denied instead of being put to a person
@@ -568,6 +610,41 @@ grant, `requesters` list, `scopes` list and `admin` mark, recorded on every requ
 secret's source names its type, so a type change moves the version too, and so does any change to
 a list. A secret with no list writes the same bytes into the digest that it always did.
 
+### A person's pod
+
+A deployment can let a Kubernetes pod work for one person on the terms of that person's dev box:
+`BROKER_POD_OPERATORS` maps the pod's ServiceAccount to the person
+([Operate](/legion/broker/operate/#what-to-run)). Each such account logs in under a login service
+of its own, which `BROKER_SERVICE_LOGINS` names and no `BROKER_SERVICES` or `BROKER_VM_SERVICES`
+entry names. The pod enrolls itself with `agent-secrets enroll --pod --service <its login service>`.
+The login it makes with its own projected token carries the person as its operator, and so does
+its enrollment (`machine.Service.TokenLogin`, `enroll.PersonPodLogin`). A token of the account
+that is bound to no pod, such as one `kubectl create token` mints, logs in for no person and
+enrolls nothing.
+
+Such a pod is its person's own session in the table above. The person's agent-tier secrets are
+granted to it at once, the person's human-tier secrets go to the person for approval, and another
+person's secrets go to their owner. A `requesters` list that names the person admits the pod too.
+Its request for a shared human-tier secret waits in the person's Inbox, as a request of the
+person's box does. No service entry admits it, since its login service is no service the
+deployment registers, and it gets no service's secret.
+
+The pod's login enrolls that pod alone and names no session, so it never takes over a session of
+the person's box. The routes that list and revoke the person's machine logins and grants refuse the
+login `PERSON_POD_LOGIN`, so the pod lists and revokes none of them. The routes a service calls as
+itself refuse the pod's account `PERSON_ACCOUNT`. Dispatch's machine-login page lists the login to
+the person alone, and only that person may revoke it. The pod logs in again with its own token
+under a new credential, so a revoke ends what the login enrolled and does not keep the pod out.
+
+The broker reads the setting at each decision about the pod, not only when the pod enrolled
+(`requests.Machine.requester`). When the deployment takes the account out of the setting, or maps
+it to another person, the pod's enrollment acts for no person from its next call. A grant the pod
+got at once because it was the person stops releasing and is not reused, a grant a person approved
+still releases, and a grant of a secret whose `requesters` names the person ends for good. The
+enrollment's own record keeps the person it was made for, so the grant log and that person's
+**Live grants** still name them. [Operate](/legion/broker/operate/#what-to-run) says what else a
+removal or a move does.
+
 ## Requests and grants
 
 A session asks for one or more secrets by name in a **request**, signed with its key and carrying a
@@ -604,8 +681,9 @@ The broker evaluates every name
   account its `github-owners` tag lists. A release can narrow that token, with the `github_app`
   body of `POST /v1/grants/{id}/values` or the exec form's `--github-owner`, `--github-repo` and
   `--github-read-only`: the token of one listed account alone, limited to named repositories of
-  that account, to `contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`,
-  or to both. An App whose installation has not been granted Actions gets the other three. A token limited to
+  that account, to `contents: read`, `metadata: read`, `pull_requests: read`, `actions: read`,
+  `checks: read` and `statuses: read`, or to both. An App whose installation has not been granted
+  Actions, checks or commit statuses gets the others. A token limited to
   repositories alone keeps every permission the App holds, its organization permissions among
   them, so a token for a machine that must only read is limited to read access too. A narrowing
   to an account the tag does not list is refused `NARROWING_OWNER_NOT_LISTED`, and one GitHub
@@ -846,11 +924,18 @@ A pod that states no claim is its own pod's, and each slot of it, one role proce
 is its own slot's, so the roles of one pod read none of each other's requests.
 Any enrollment of the same owner reads the request (`agent-secrets status`) and cancels it
 (`agent-secrets cancel`), and every other one is refused `NOT_YOURS`
-(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerAndState`): a person reads their
-request from another box, the next pod of a claim cancels what the pod before it asked for, and a
-second machine of the same fleet, or another role of the same issue, reads neither.
+(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerAndState` and `Machine.owner`):
+a person reads their request from another box, the next pod of a claim cancels what the pod before
+it asked for, and a second machine of the same fleet, or another role of the same issue, reads
+neither.
 An enrollment that records no owner, every one made before the broker recorded owners, reads and
 cancels its own requests alone.
+A pod that `BROKER_POD_OPERATORS` maps to a person records that person as its owner, as the
+person's box does ([a person's pod](#a-persons-pod)).
+The broker reads the setting each time it compares owners, and the pod keeps that owner only while
+the setting maps its account to that person.
+After the deployment takes the account out of the setting, or maps it to another person, the pod
+reads and cancels its own requests alone, and the person's sessions read and cancel none of them.
 
 Reading and cancelling is all the owner adds for a person and for a machine: their grants still
 follow the session that asked, so a person's other session sees the request but never takes its
@@ -1119,14 +1204,17 @@ human-tier secret, or for a shared agent-tier secret its session's operator with
 names the approver `anyone`: anyone who signs in to the broker may decide it, and the
 broker records the email of whoever did. It waits in the Inbox of the person responsible for the
 agent that asked, which the broker records when the request is made, in this order: the session's
-operator (the person of an `agent-secrets login` sign-in, or the person who approved its machine
-login); for a fleet machine's own session, the person its `BROKER_VM_EXCHANGE_ACCOUNTS` entry
-names; for a Legion worker pod, the assignee of the Dispatch issue its claim names, which the broker
-reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for after three seconds. Where none of these
-names a person — a pod with no claim, a broker with no judge settings, a Dispatch that did not
-answer in time, an issue nobody is assigned to, a machine whose fleet names nobody — it waits in
-every person's Inbox, so no request waits where nobody sees it. A Dispatch read that failed or ran
-out of its three seconds is logged at WARN, naming the issue
+operator (the person of an `agent-secrets login` sign-in, the person who approved its machine
+login, or, for [a person's pod](#a-persons-pod), its person while `BROKER_POD_OPERATORS` still maps
+the pod's account to that person); for a fleet machine's own session, the person its
+`BROKER_VM_EXCHANGE_ACCOUNTS` entry names; for a Legion worker pod, the assignee of the Dispatch
+issue its claim names, which the broker reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for
+after three seconds. Where none of these names a person — a pod with no claim that acts for no
+person (a person's pod too, once the setting drops its account or maps it to another person), a
+broker with no judge settings, a Dispatch that did not answer in time, an issue nobody is assigned
+to, a machine whose fleet names nobody — it waits in every person's Inbox, so no request waits
+where nobody sees it. A Dispatch read that failed or ran out of its three seconds is logged at
+WARN, naming the issue
 ([Health and logs](/legion/broker/operate/#health-and-logs)), so a broker that cannot read Dispatch
 is seen to list those requests for everyone. Who is asked changes nobody's right
 to decide: anyone signed in still decides it from its page. That is also why the broker takes the

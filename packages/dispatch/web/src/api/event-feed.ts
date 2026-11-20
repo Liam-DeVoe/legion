@@ -7,6 +7,7 @@ import {
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
 
+import { markCorrectedPost } from "./corrected-post";
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
@@ -337,6 +338,9 @@ export function useEventFeed({
         const event = raw as DispatchEvent;
         try {
           prependEventToLog(queryClient, event);
+          // Written now, ahead of the batch's refresh, whose stale mark a write would clear: a
+          // read of the post whose refetch fails keeps the answer this marks.
+          markCorrectedPost(queryClient, event);
           const targets = eventRefreshTargets(
             event,
             queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login

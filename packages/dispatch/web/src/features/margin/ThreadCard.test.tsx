@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, useState } from "react";
@@ -9,12 +9,18 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
+import { ApiError, api } from "../../api/client";
 import type { Comment } from "../../api/types";
+import { heldSends } from "../conversation/held-sends";
+import { unsentDraftsOf } from "../conversation/unsent-drafts";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
+import { SendStoppedError } from "../writes/keyed-write";
+import { marginReplySendKey } from "./margin-context";
 import { ThreadCard } from "./ThreadCard";
 import type { Thread } from "./useMarginItems";
 
@@ -406,6 +412,117 @@ test("Escape with an empty inline reply collapses the thread", async () => {
   }
 });
 
+/** A card its host opens and closes as the margin's list does: its toggle flips `expanded`. */
+function ToggledCard(props: Omit<EditableCardProps, "expanded" | "onToggle">) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <EditableCard {...props} expanded={expanded} onToggle={() => setExpanded((open) => !open)} />
+  );
+}
+
+/** The thread's reply send name, as the margin names it. */
+const replyKey = marginReplySendKey(root.id);
+
+/** What a refusal Dispatch gave says in the reply composer. */
+const refusedText = "Couldn't send — the server is down";
+
+/** What a send the reader stopped says in its composer at its own address: Dispatch has not
+ *  confirmed it, and its Retry asks again under its own key. */
+const stoppedText = new SendStoppedError().message;
+
+/** The thread's reply, as a stopped send answers it (`stopReplySend`). */
+const rootReply = { actor: root.author, excerpt: "", id: root.id, parentKind: "comment" } as const;
+
+// Cancel reply is the reader's own move, and a margin thread has no other composer to take the
+// reply to: the reply is kept under its own send name, the card says so until the reader goes on
+// with it, and the card's Reply puts it back in the field - its text, a refusal's note, and a
+// stopped send's note that it may have been delivered. Nothing is sent until the reader presses:
+// a refusal's Retry then goes under a key of its own, and a stopped send's under the key it went
+// out under, at the address it went to.
+for (const kept of ["typed", "refused", "stopped"] as const) {
+  test(`Cancel reply keeps a margin reply ${heldDraftWords[kept]}, the card says so, and its Reply brings it back`, async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const createComment = spyOn(api, "createComment");
+    const body = `Reply ${heldDraftWords[kept]}, then Cancel reply`;
+    if (kept === "stopped") {
+      await stopReplySend(queryClient, createComment, replyKey, body, rootReply);
+    }
+    createComment.mockResolvedValue({ ...reply, body, id: "reply-2" });
+    if (kept === "refused") {
+      createComment.mockRejectedValueOnce(
+        new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+      );
+    }
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <ToggledCard
+            actionFailure={undefined}
+            artifactSlug="spec"
+            hovered={false}
+            isClosed={false}
+            onAction={() => {}}
+            onEdit={async () => undefined}
+            onRetryAction={() => {}}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            pendingAction={false}
+            replyMutationKey={replyKey}
+            thread={thread()}
+            viewerLogin="alice"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+
+    try {
+      if (kept === "stopped") {
+        expect(within(card).getByText(stoppedText)).toBeTruthy();
+      } else {
+        await user.click(within(card).getByRole("textbox", { name: "Reply" }));
+        await user.paste(body);
+        if (kept === "refused") {
+          await user.click(within(card).getByRole("button", { name: "Send" }));
+          await within(card).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+
+      await user.click(within(card).getByRole("button", { name: "Cancel reply" }));
+      expect(card).toHaveAttribute("aria-expanded", "false");
+      expect(within(card).queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+      expect(within(card).getByRole("status").textContent).toBe(
+        "Your reply to the comment by alice is kept. Press Reply to go on with it."
+      );
+      expect(createComment).toHaveBeenCalledTimes(sent);
+
+      await user.click(within(card).getByRole("button", { name: "Reply" }));
+      expect(card).toHaveAttribute("aria-expanded", "true");
+      // The text and the note in one comparison, so a row that fails says which of them is gone.
+      expect({
+        refusal: within(card).queryByText(refusedText) !== null,
+        stopped: within(card).queryByText(stoppedText) !== null,
+        text: within(card).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value,
+      }).toEqual({ refusal: kept === "refused", stopped: kept === "stopped", text: body });
+      expect(within(card).queryByText(/is kept/)).not.toBeInTheDocument();
+      expect(createComment).toHaveBeenCalledTimes(sent);
+
+      if (kept === "typed") return;
+      await user.click(within(card).getByRole("button", { name: "Retry" }));
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(sent + 1));
+      const keys = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+      if (kept === "refused") expect(keys[1]).not.toBe(keys[0]);
+      if (kept === "stopped") expect(keys.at(-1)).toBe("stopped-send");
+    } finally {
+      view.unmount();
+      createComment.mockRestore();
+    }
+  });
+}
+
 test("a terminal suggestion shows its disposition and has no Reopen control", () => {
   const accepted = comment("root-1", "Suggested replacement.", "2026-09-10T00:00:00Z", {
     resolved: true,
@@ -679,7 +796,7 @@ test("an expanded thread is marked read once its newest reply has been on screen
     const newest = (await card.view.findByText("First reply")).closest("li");
     if (newest === null) throw new Error("expected the newest reply's item");
     // The watched element is the newest reply's own, not the card around the whole thread.
-    expect(card.screen.observed()).toEqual([newest]);
+    expectSameElements(card.screen.observed(), [newest]);
     await dwellOn(card.screen, newest);
     expect(card.mark.mock.calls).toEqual([
       [root.id, { read_through: reply.created_at }, keyedAttempt],
@@ -692,7 +809,7 @@ test("an expanded thread is marked read once its newest reply has been on screen
 test("a collapsed thread shows no reply and marks nothing", async () => {
   const card = await renderUnreadCard(false);
   try {
-    expect(card.screen.observed()).toEqual([]);
+    expect(card.screen.observed().length).toBe(0);
     await dwellOn(card.screen, screen.getByTestId(`margin-comment-${root.id}`));
     expect(card.mark).not.toHaveBeenCalled();
   } finally {
@@ -828,6 +945,213 @@ test("a deleted comment offers no Edit and no reply, and its live reply keeps Ed
     deletedReply.unmount();
   }
 });
+
+/** `root` as its author left it once they deleted it: the body cleared, the marks set. */
+const deletedRoot = comment("root-1", "", root.created_at, {
+  deleted_at: "2026-09-10T00:05:00Z",
+  deleted_by: { id: "alice", kind: "user" },
+});
+
+/** The words every role="status" region of `card` holds, in order. */
+function statusLines(card: HTMLElement): string[] {
+  return within(card)
+    .queryAllByRole("status")
+    .map((status) => status.textContent ?? "");
+}
+
+// A root its author deleted takes no reply (the server refuses one, 409), so the card draws no
+// reply composer under it, and the Reply its kept line names would open nothing. A reply the
+// reader kept for the thread - typed, refused or stopped - is drawn itself instead, closed and
+// open, saying the comment was deleted and giving no word of it, with no Reply, and Discard my
+// draft drops it where it is kept. Nothing is sent.
+for (const kept of ["typed", "refused", "stopped"] as const) {
+  test(`a margin reply ${heldDraftWords[kept]} under a root deleted since is drawn itself, with no Reply to go on with it`, async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const createComment = spyOn(api, "createComment");
+    const body = `Reply ${heldDraftWords[kept]}, then the root's delete`;
+    if (kept === "stopped") {
+      await stopReplySend(queryClient, createComment, replyKey, body, rootReply);
+    }
+    createComment.mockResolvedValue({ ...reply, body, id: "reply-2" });
+    if (kept === "refused") {
+      createComment.mockRejectedValueOnce(
+        new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+      );
+    }
+    const tree = (current: Thread) => (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <ToggledCard
+            actionFailure={undefined}
+            artifactSlug="spec"
+            hovered={false}
+            isClosed={false}
+            onAction={() => {}}
+            onEdit={async () => undefined}
+            onRetryAction={() => {}}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            pendingAction={false}
+            replyMutationKey={replyKey}
+            thread={current}
+            viewerLogin="alice"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const view = render(tree(thread()));
+    const card = () => screen.getByTestId(`margin-comment-${root.id}`);
+    const gone =
+      "The comment by alice that your reply answered was deleted, so it takes no reply. " +
+      `Your reply is kept here:${body}` +
+      (kept === "stopped"
+        ? "Dispatch has not confirmed this reply: it may have been posted, and if it was, it is listed in this thread."
+        : "");
+
+    try {
+      if (kept !== "stopped") {
+        await user.click(within(card()).getByRole("textbox", { name: "Reply" }));
+        await user.paste(body);
+        if (kept === "refused") {
+          await user.click(within(card()).getByRole("button", { name: "Send" }));
+          await within(card()).findByText(refusedText);
+        }
+      }
+      await user.click(within(card()).getByRole("button", { name: "Cancel reply" }));
+      const sent = createComment.mock.calls.length;
+
+      view.rerender(tree(thread({ root: { comment: deletedRoot, kind: "comment" } })));
+      const closed = {
+        lines: statusLines(card()),
+        reply: within(card()).queryByRole("button", { name: "Reply" }) !== null,
+      };
+      await user.click(within(card()).getByRole("button", { expanded: false }));
+      const open = {
+        composer: within(card()).queryByRole("form", { name: "Comment composer" }) !== null,
+        expanded: card().getAttribute("aria-expanded"),
+        lines: statusLines(card()),
+      };
+      // Pressed where it is drawn, so a card that draws none fails in the comparison below, which
+      // says what the card drew instead.
+      const discard = within(card()).queryByRole("button", { name: "Discard my draft" });
+      if (discard !== null) await user.click(discard);
+
+      expect({
+        closed,
+        discarded: {
+          held: heldSends(queryClient).get(replyKey) !== undefined,
+          lines: statusLines(card()),
+          typed: unsentDraftsOf(queryClient).read(hashKey(replyKey)) !== undefined,
+        },
+        open,
+        sent: createComment.mock.calls.length - sent,
+      }).toEqual({
+        closed: { lines: [gone], reply: false },
+        discarded: { held: false, lines: [], typed: false },
+        open: { composer: false, expanded: "true", lines: [gone] },
+        sent: 0,
+      });
+      expect(card()).not.toHaveTextContent("Root comment");
+    } finally {
+      view.unmount();
+      createComment.mockRestore();
+    }
+  });
+}
+
+// Dispatch saves no edit of a deleted comment (409 POST_DELETED). An editor open over a comment
+// its author then deletes - holding words of the reader's own, or a save Dispatch refused - is
+// not left open on an empty body: the comment reads as deleted where its body was, and the edit
+// waits under it as the reader's own, never as the comment's text, until Discard my edit drops it
+// where it is kept.
+for (const kept of ["typed", "refused"] as const) {
+  test(`an edit ${heldDraftWords[kept]} over a comment deleted since closes, and waits under the deleted line until discarded`, async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    // This comment is not indexed, so the save carries no block ids.
+    const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
+      blocks: [],
+      indexed: false,
+      item: graphNode({ id: root.id, issue_key: "CORE-1", kind: "comment" }),
+    });
+    const onEdit = async () => {
+      throw new ApiError(409, { code: "POST_DELETED", error: "the comment was deleted" });
+    };
+    const tree = (current: Thread) => (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <EditableCard
+            actionFailure={undefined}
+            artifactSlug="spec"
+            expanded
+            hovered={false}
+            isClosed={false}
+            onAction={() => {}}
+            onEdit={onEdit}
+            onRetryAction={() => {}}
+            onToggle={() => {}}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            pendingAction={false}
+            thread={current}
+            viewerLogin="alice"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const view = render(tree(thread()));
+    const card = () => screen.getByTestId(`margin-comment-${root.id}`);
+    const editKey = ["comment-edit", root.id];
+    const edit = `An edit ${heldDraftWords[kept]}`;
+
+    try {
+      const [rootEdit] = within(card()).getAllByRole("button", { name: "Edit" });
+      if (rootEdit === undefined) throw new Error("The root comment has no Edit button.");
+      await user.click(rootEdit);
+      await user.click(screen.getByLabelText("Edit comment"));
+      await user.keyboard("{Control>}a{/Control}");
+      await user.paste(edit);
+      if (kept === "refused") {
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(heldSends(queryClient).get(editKey)?.status).toBe("refused"));
+      }
+
+      view.rerender(tree(thread({ root: { comment: deletedRoot, kind: "comment" } })));
+      await within(card()).findByRole("button", { name: "Discard my edit" });
+      const offered = {
+        deleted: card().textContent?.includes("Deleted by alice"),
+        field: screen.queryByLabelText("Edit comment") !== null,
+        lines: statusLines(card()),
+      };
+      await user.click(within(card()).getByRole("button", { name: "Discard my edit" }));
+
+      expect({
+        discarded: {
+          held: heldSends(queryClient).get(editKey) !== undefined,
+          kept: unsentDraftsOf(queryClient).readAway(hashKey(editKey), null) !== undefined,
+          lines: statusLines(card()),
+        },
+        offered,
+      }).toEqual({
+        discarded: { held: false, kept: false, lines: [] },
+        offered: {
+          deleted: true,
+          field: false,
+          lines: [
+            `This comment was deleted, and Dispatch saves no edit of a deleted comment. Your edit is kept here:${edit}`,
+          ],
+        },
+      });
+      expect(card()).not.toHaveTextContent("Root comment");
+    } finally {
+      view.unmount();
+      commentBlocks.mockRestore();
+    }
+  });
+}
 
 // The card's reply box quotes the thread's root, so the root's edit is marked in that quote as on
 // the root's own byline, as the Inbox's box quoting the same thread marks it: a quote of an

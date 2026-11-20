@@ -144,9 +144,10 @@ export const WrittenReplyBlockSchema = z
   .readonly();
 
 /** The block a reply answers, as a comment or message event payload carries it (`ReplyBlock`).
- *  An event recorded before the field, or by a Dispatch older than it, carries none. A bus frame
- *  may carry a field this release does not know, so the inbound reading strips rather than
- *  refuses. */
+ *  An event recorded before the field, or by a Dispatch older than it, carries none. A reply's
+ *  delete event (`comment.deleted`, `message.deleted`) carries it with every field but `text`,
+ *  which is empty: a delete event carries no text of another post. A bus frame may carry a field
+ *  this release does not know, so the inbound reading strips rather than refuses. */
 export const ReplyBlockSchema = z.object({
   ...replyBlockFields,
   deleted_by: DocumentActorSchema.optional(),

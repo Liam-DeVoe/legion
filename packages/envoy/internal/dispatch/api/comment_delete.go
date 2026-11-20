@@ -2,11 +2,14 @@
 // row and its place in the thread stay; the body goes, and with it every copy a read serves as
 // the comment's own text that does not follow the cleared column — the block index, each
 // block's stored excerpt, the text each revision recorded of a block, the document margin mark,
-// and the name of the document version an accepted suggestion made — each rewritten in the one
-// transaction that clears it. The event log's payloads stay as written and are masked at each
-// read (attachPostMarks), and a reply's own events keep the preview they froze. A pending
-// suggestion's proof is in the document itself, so the same transaction rejects it before the
-// clear.
+// the quote of a pending insert suggestion's anchor, and the name of the document version an
+// accepted suggestion made — each rewritten in the one transaction that clears it. The event
+// log's payloads stay as written and are masked at each read (attachPostMarks), and a reply's
+// events that quote the comment - its creation, and each later event of the reply but its own
+// delete, written before this one - keep the preview they froze. The delete's own
+// comment.deleted, of a comment that is itself a reply, carries no text of the post it answers
+// (commentCorrectionPayload). A pending suggestion's proof is in the document itself, so the same
+// transaction rejects it before the clear.
 package api
 
 import (
@@ -74,11 +77,19 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// An orphaned mark is already out of the document: the delete records that on the anchor and
 	// stands, where an accept and a reject answer 409.
 	//
+	// An insert suggestion's mark wraps the text it inserted, so its anchor's quote is that text
+	// (resolveAnchor), the comment's own words; a replace's and a delete's wrap document text,
+	// which stays in the document (docs.RejectDeletedCommentSuggestion). So the clear below
+	// empties an insert's quote with its suggestion, and the anchor keeps its document, its block
+	// and its mark id. An orphaned mark answers no kind, and its quote stays as it was stored.
+	//
 	// Everything up to Commit is the read phase (Docs.Join): this route and the document
 	// operations queue their writes on the ledger, in the order made, and Commit sends them as
 	// one batch.
+	quoteIsBody := false
 	if comment.Suggestion != nil && comment.Suggestion.Accepted == nil && comment.Anchor != nil {
-		if err := s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor); err != nil {
+		kind, err := s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
+		if err != nil {
 			if !errors.Is(err, docs.ErrAnchorOrphaned) {
 				s.writeHandlerError(w, err)
 				return
@@ -88,6 +99,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		quoteIsBody = kind == "insert"
 	}
 	// An accepted suggestion's proof is a version of the document, which the accept named
 	// after the comment's body (acceptedVersionName); every read of the document's versions
@@ -108,7 +120,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 	deletedAt = deletedAt.UTC()
 	referenceChanges, clear, err := s.clearDeletedPostBody(
-		ledger.ReadContext(r.Context()), tx, refs.ItemComment, comment.ID, comment.Body, actor, deletedAt)
+		ledger.ReadContext(r.Context()), tx, refs.ItemComment, comment.ID, comment.Body, quoteIsBody, actor, deletedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -119,6 +131,9 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 	comment.Body = ""
 	comment.Suggestion = nil
+	if quoteIsBody {
+		comment.Anchor.Quote = ""
+	}
 	comment.DeletedAt = &deletedAt
 	comment.DeletedBy = &actor
 	if err := s.projectThreadMark(documentCtx, tx, ledger, comment, actor); err != nil {

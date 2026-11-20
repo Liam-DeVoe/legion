@@ -48,12 +48,13 @@ import {
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { AgentMessageComposer, agentSendKey } from "../agents/AgentMessageComposer";
+import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
+import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
@@ -233,8 +234,10 @@ function ThreadTurns({
 type ThreadOwner = Extract<ComposerOwner, { kind: "issue" } | { kind: "artifact" }>;
 
 /** The name the thread's reply is sent under: one per thread, so a reply still out or refused is
- *  shown by whichever surface mounts the composer again (`held-sends.ts`). */
-function threadSendKey(threadId: string): readonly unknown[] {
+ *  shown by whichever surface mounts the composer again (`held-sends.ts`), and by no box drawn for
+ *  another thread - an Agent row's thread too, though its session has threads besides. The draft
+ *  matrix's Inbox files seed a stopped reply under it. */
+export function threadSendKey(threadId: string): readonly unknown[] {
   return ["inbox-thread-reply", threadId];
 }
 
@@ -335,12 +338,29 @@ function CommentThreadBody({
   return (
     <ThreadTurns
       composer={
-        root === undefined ? null : (
+        root === undefined ? null : postDeletion(root) !== null ? (
+          // A root its author deleted takes no reply (`409 POST_DELETED`), so the thread draws no
+          // box under it, as the margin's card draws no reply composer there: a reply the reader
+          // kept for it is drawn itself, with Discard my draft (`KeptReplyToDeleted`).
+          <KeptReplyToDeleted
+            actor={root.author}
+            mutationKey={threadSendKey(thread.thread_id)}
+            parentKind="comment"
+          />
+        ) : (
+          // Keyed by the thread its send is named for (`threadSendKey`): the column draws this
+          // body for one thread after another, and the composer holds the uploads made in it -
+          // an upload's refusal and its Retry with them - so the next thread is drawn with a
+          // composer of its own, never under this one's refusal. What the reader typed and did
+          // not send waits under the same name (`standing`), for the box drawn when the column
+          // comes back to this thread. The key names the composer too: the thread's root is
+          // drawn beside it under the thread's id, and siblings are told apart by their keys.
           <MentionComposer
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
             kind="comment"
+            key={`composer:${thread.thread_id}`}
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
@@ -424,11 +444,20 @@ function MessageThreadBody({
   return (
     <ThreadTurns
       composer={
-        root === undefined ? null : (
+        root === undefined ? null : postDeletion(root) !== null ? (
+          // A deleted root takes no reply, as a comment thread's does (`CommentThreadBody`).
+          <KeptReplyToDeleted
+            actor={root.author}
+            mutationKey={threadSendKey(thread.thread_id)}
+            parentKind="message"
+          />
+        ) : (
+          // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
           <MentionComposer
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
+            key={`composer:${thread.thread_id}`}
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
@@ -489,9 +518,14 @@ function AskThreadBody({
   }
   return (
     <div className="mt-2" data-inbox-thread={thread.thread_id} ref={markNewest}>
+      {/* Keyed by the ask: the column draws this body for one ask's thread after another, and
+          the card holds the writes it made - an answer, a question back, a reply, a decline, a
+          hand-on, an upload, an unfollow, an unsubscribe - each with its refusal and its Retry,
+          so the next ask is drawn with a card of its own, never under this one's refusal. */}
       <AskCard
         ask={read.data.ask}
         initialThread={read.data}
+        key={read.data.ask.id}
         owner={thread.document}
         thread="inline"
         unread={unreadWrites(thread, read.data.replies ?? [])}
@@ -520,8 +554,9 @@ function AcceptedAsTurn({ sessionId }: { sessionId: string }): ReactNode {
 /**
  * A one-off message the reader sent an agent session, with every message under it: the reader's
  * own follow-ups included, and a reply the session took as a turn of its live conversation saying
- * so. The composer replies under the thread's newest message, in the mode the Agents page uses for
- * a reply in that thread (`exchangeDelivery`), so a reply sent here behaves as one sent there.
+ * so. The composer replies under the thread's newest message that still stands, in the mode the
+ * Agents page uses for a reply in that thread (`exchangeDelivery`), so a reply sent here behaves
+ * as one sent there.
  */
 function AgentThreadBody({
   openAtFirstUnread,
@@ -534,7 +569,7 @@ function AgentThreadBody({
   const messages = useQuery(agentMessagesQuery(sessionId));
   const live = useQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
-  const sendKey = agentSendKey(sessionId);
+  const sendKey = threadSendKey(thread.thread_id);
   const hold = useSending(sendKey);
   // Read before the loading branches, because the mark below is a hook: the thread's own
   // conversation among the session's, which is undefined until the read lands.
@@ -546,7 +581,11 @@ function AgentThreadBody({
   if (messages.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
-  const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);
+  // The thread's messages, root first. The box answers the newest that still stands: a message
+  // its author deleted takes no reply (`409 POST_DELETED`), so a delete moves the box back onto
+  // the newest message left standing, as a newer message moves it on.
+  const posts = read === undefined ? [] : [read.message, ...(read.replies ?? [])];
+  const newest = posts.filter((message) => postDeletion(message) === null).at(-1);
   const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
@@ -554,7 +593,7 @@ function AgentThreadBody({
         <AcceptedAsTurn sessionId={sessionId} />
       ) : undefined
     );
-  const turns = read === undefined ? [] : [read.message, ...(read.replies ?? [])].map(turn);
+  const turns = posts.map(turn);
   // The warning of a session whose capabilities hold no delivery mode; undefined for one that
   // takes a mode.
   const noDelivery = noDeliveryLine(agent?.capabilities ?? []);
@@ -562,7 +601,16 @@ function AgentThreadBody({
     <>
       <ThreadTurns
         composer={
-          agent === undefined || read === undefined || newest === undefined ? null : (
+          agent === undefined || read === undefined ? null : newest === undefined ? (
+            // No message of the thread stands, so the thread draws no box, as a comment thread
+            // draws none under a deleted root (`CommentThreadBody`): a reply the reader kept for
+            // it is drawn itself, with Discard my draft, naming the thread's newest message.
+            <KeptReplyToDeleted
+              actor={((read.replies ?? []).at(-1) ?? read.message).author}
+              mutationKey={sendKey}
+              parentKind="message"
+            />
+          ) : (
             <div data-inbox-agent-composer="">
               {noDelivery !== undefined ? (
                 <>
@@ -572,15 +620,21 @@ function AgentThreadBody({
                   </p>
                 </>
               ) : null}
+              {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`), and
+                  its send named by it (`threadSendKey`): the draft, its uploads and its reply out
+                  or refused are this thread's, and the session's other sends it shows are the
+                  ones answering this thread. */}
               <AgentMessageComposer
                 agent={agent}
                 hold={hold}
+                key={`composer:${thread.thread_id}`}
                 onCancelReply={noReturn}
                 onClose={noReturn}
                 replyParent={newest}
                 replyTo={agentReplyTo(agent, read, newest)}
                 sendKey={sendKey}
                 standing
+                thread={new Set(turns.map((shown) => shown.id))}
               />
             </div>
           )

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -449,6 +450,273 @@ func TestDeleteCommentRejectsItsPendingSuggestion(t *testing.T) {
 				t.Fatalf("the document after the delete = %q (%v), want %q", markdown, err, test.want)
 			}
 		})
+	}
+}
+
+// storedCommentEvent is one event the events table stores about a comment: its type, its payload
+// as stored, and that payload decoded.
+type storedCommentEvent struct {
+	eventType string
+	raw       string
+	payload   map[string]any
+}
+
+// storedCommentEvents is every event stored about comment commentID after the event afterID,
+// oldest first, read from the events table rather than through a read that masks it.
+func storedCommentEvents(t *testing.T, database *store.Store, commentID string, afterID int64) []storedCommentEvent {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select type, payload::text from events where payload->>'id' = $1 and id > $2 order by id
+	`, commentID, afterID)
+	if err != nil {
+		t.Fatalf("read the stored events of %s: %v", commentID, err)
+	}
+	defer rows.Close()
+	var stored []storedCommentEvent
+	for rows.Next() {
+		var event storedCommentEvent
+		if err := rows.Scan(&event.eventType, &event.raw); err != nil {
+			t.Fatalf("scan a stored event of %s: %v", commentID, err)
+		}
+		if err := json.Unmarshal([]byte(event.raw), &event.payload); err != nil {
+			t.Fatalf("decode the stored %s of %s: %v", event.eventType, commentID, err)
+		}
+		stored = append(stored, event)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the stored events of %s: %v", commentID, err)
+	}
+	return stored
+}
+
+// payloadAnchorQuote is the quote of the anchor an event payload carries, and whether it carries
+// one.
+func payloadAnchorQuote(payload map[string]any) (string, bool) {
+	anchor, ok := payload["anchor"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	quote, ok := anchor["quote"].(string)
+	return quote, ok
+}
+
+// R3 of dispatch://INFRA-1523: an insert suggestion's mark wraps the text it inserted, so a
+// comment anchored on that mark quotes its own suggested words (resolveAnchor). The delete
+// rejects the suggestion, which takes those words out of the document, and empties the quote with
+// the suggestion (clearDeletedPostBody). So the delete's answer, the comment's read, the
+// comment.deleted event as stored, every event the delete stores, and every event of the comment
+// the event log reads give the empty quote and none of the words, while the anchor keeps its
+// document, its block and its mark id. A replace suggestion's quote and a plain comment's quote
+// are document text, which stays in the document, and each keeps its quote everywhere: those
+// are the controls.
+//
+// Where the comment sits does not move with the quote. The anchor keeps its block, and the read
+// keeps its anchor_block, through a document edit after the delete, whose anchor refresh a
+// standing comment's comment.anchor_refreshed proves ran. A deleted suggestion's anchor reads
+// orphaned whether its quote was cleared or not: the reject takes the suggestion's mark out of
+// the document - an insert's with the text under it (docs/reject.go:23-56), a replace's by
+// unmarking it - and a refresh finds an anchor by its mark alone, never by its quote
+// (docs/anchor_refresh.go:175-187), so the delete's own margin write already finds no mark. A
+// plain comment's mark stays in the document, so it reads anchored.
+func TestDeletingAPendingInsertSuggestionClearsTheQuoteOfItsWords(t *testing.T) {
+	const words = "zarquoninserted"
+	for _, test := range []struct {
+		name               string
+		insert, suggestion bool
+		quoteBefore, quote string
+		orphaned           bool
+	}{
+		{name: "a pending insert suggestion", insert: true, suggestion: true, quoteBefore: words + " ", quote: "", orphaned: true},
+		{name: "a pending replace suggestion", suggestion: true, quoteBefore: words, quote: words, orphaned: true},
+		{name: "a comment with no suggestion", quoteBefore: words, quote: words},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			documentService, handler, database := browserDocumentService(t)
+			issue := createInteractionIssue(t, handler, "TEST", "Delete "+test.name, "The "+words+" brown fox")
+			input := map[string]any{"body": "Say this instead.", "anchor": map[string]any{"artifact": "spec", "quote": words}}
+			if test.suggestion {
+				input["suggestion"] = map[string]string{"replace_with": "slow"}
+			}
+			if test.insert {
+				writeBrowserMark(t, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{
+					Kind:  docs.MarkSuggestion,
+					ID:    "m-insert",
+					Attrs: pmdoc.Attrs{"id": "m-insert", "by": "user:alice", "kind": "insert"},
+				}, words+" ")
+				input["anchor"] = map[string]any{"artifact": "spec", "mark_id": "m-insert"}
+				input["suggestion"] = map[string]string{"replace_with": words + " "}
+			}
+			comment := createThreadComment(t, handler, issue.Key, input, "alice")
+			// A standing comment whose anchor the edit after the delete moves: its refresh event
+			// is what shows that the edit refreshed the document's anchors.
+			witness := createThreadComment(t, handler, issue.Key, map[string]any{
+				"body": "Is it a fox?", "anchor": map[string]any{"artifact": "spec", "quote": "fox"},
+			}, "alice")
+			// The positive control: before the delete the read quotes the words, so each check of
+			// the quote below can fail.
+			before := readThreadComment(t, handler, comment.ID)
+			if before.Anchor == nil || before.Anchor.Quote != test.quoteBefore || before.Anchor.Orphaned ||
+				before.Anchor.BlockID == nil || before.AnchorBlock == nil {
+				t.Fatalf("the comment before the delete = %#v (anchor_block %#v), want the quote %q on a placed block",
+					before.Anchor, before.AnchorBlock, test.quoteBefore)
+			}
+			// requireKept fails t unless anchor is the one the comment had before the delete, on
+			// the same document, mark and block, with the quote the delete leaves.
+			requireKept := func(what string, anchor *model.Anchor) {
+				t.Helper()
+				if anchor == nil {
+					t.Errorf("%s carries no anchor, want the one the comment had", what)
+					return
+				}
+				if anchor.ArtifactID != before.Anchor.ArtifactID || anchor.MarkID != before.Anchor.MarkID ||
+					anchor.BlockID == nil || *anchor.BlockID != *before.Anchor.BlockID {
+					t.Errorf("%s anchor = %#v, want the document, mark and block of %#v", what, anchor, before.Anchor)
+				}
+				if anchor.Quote != test.quote {
+					t.Errorf("%s anchor quote = %q, want %q", what, anchor.Quote, test.quote)
+				}
+			}
+			// requireRead fails t unless a read of the deleted comment gives the anchor it had
+			// (requireKept), with the orphaned flag the delete leaves, and places it where it stood
+			// before.
+			requireRead := func(what string, read model.Comment) {
+				t.Helper()
+				requireKept(what, read.Anchor)
+				if read.Anchor != nil && read.Anchor.Orphaned != test.orphaned {
+					t.Errorf("%s anchor orphaned = %t, want %t", what, read.Anchor.Orphaned, test.orphaned)
+				}
+				if read.AnchorBlock == nil || !reflect.DeepEqual(read.AnchorBlock, before.AnchorBlock) {
+					t.Errorf("%s anchor_block = %#v, want %#v", what, read.AnchorBlock, before.AnchorBlock)
+				}
+			}
+			// requireNoWords fails t when an insert's own words are in text.
+			requireNoWords := func(what, text string) {
+				t.Helper()
+				if test.insert && strings.Contains(text, words) {
+					t.Errorf("%s gives the deleted insert suggestion's words %q: %s", what, words, text)
+				}
+			}
+			readRaw := func() string {
+				t.Helper()
+				response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/"+comment.ID, nil, "alice")
+				if response.Code != http.StatusOK {
+					t.Fatalf("read comment: status=%d body=%s", response.Code, response.Body.String())
+				}
+				return response.Body.String()
+			}
+
+			beforeDelete := lastEventID(t, database)
+			requireKept("the delete's answer", deleteThreadComment(t, handler, comment.ID, "alice").Anchor)
+			requireRead("the read after the delete", readThreadComment(t, handler, comment.ID))
+			requireNoWords("the read after the delete", readRaw())
+
+			stored := storedCommentEvents(t, database, comment.ID, beforeDelete)
+			deletes := 0
+			for _, event := range stored {
+				requireNoWords("the stored "+event.eventType+" the delete wrote", event.raw)
+				if event.eventType != "comment.deleted" {
+					continue
+				}
+				deletes++
+				if quote, ok := payloadAnchorQuote(event.payload); !ok || quote != test.quote {
+					t.Errorf("the stored comment.deleted anchor quote = %q (carried %t), want %q", quote, ok, test.quote)
+				}
+			}
+			if deletes != 1 {
+				t.Errorf("the delete stored %d comment.deleted events, want one", deletes)
+			}
+			// The event log's read of every event of the comment, its creation's among them. The
+			// creation's stored payload still holds the quote it was written with, as no delete
+			// rewrites a stored event, so for the insert it holds the words and the read is what
+			// takes them out (attachPostMarks).
+			for _, event := range storedCommentEvents(t, database, comment.ID, 0) {
+				if event.eventType != "comment.created" {
+					continue
+				}
+				if quote, _ := payloadAnchorQuote(event.payload); quote != test.quoteBefore {
+					t.Fatalf("the stored comment.created anchor quote = %q, want the %q it was written with", quote, test.quoteBefore)
+				}
+			}
+			read := 0
+			for _, event := range decodedIssueEvents(t, handler, issue.Key) {
+				if event.Payload["id"] != comment.ID {
+					continue
+				}
+				quote, ok := payloadAnchorQuote(event.Payload)
+				if !ok {
+					continue
+				}
+				read++
+				if quote != test.quote {
+					t.Errorf("the event log's %s anchor quote = %q, want %q", event.Type, quote, test.quote)
+				}
+				encoded, err := json.Marshal(event.Payload)
+				if err != nil {
+					t.Fatalf("encode the event log's %s: %v", event.Type, err)
+				}
+				requireNoWords("the event log's "+event.Type, string(encoded))
+			}
+			if read < 2 {
+				t.Errorf("the event log reads %d anchored events of the comment, want its creation and its delete", read)
+			}
+
+			// A document edit after the delete, away from every quote of the comment, refreshes
+			// every open anchor of the document.
+			beforeEdit := lastEventID(t, database)
+			if response := editDocument(t, handler, issue.PrimaryArtifactID, map[string]any{
+				"ops": []map[string]any{{"op": "replace", "find": "fox", "with": "dog"}},
+			}); response.Code != http.StatusOK {
+				t.Fatalf("edit the document after the delete: status=%d body=%s", response.Code, response.Body.String())
+			}
+			refreshed := 0
+			for _, event := range storedCommentEvents(t, database, witness.ID, beforeEdit) {
+				if event.eventType == "comment.anchor_refreshed" {
+					refreshed++
+				}
+			}
+			if refreshed != 1 {
+				t.Fatalf("the edit stored %d comment.anchor_refreshed events of the standing comment, want one: no refresh ran", refreshed)
+			}
+			requireRead("the read after the refresh", readThreadComment(t, handler, comment.ID))
+			requireNoWords("the read after the refresh", readRaw())
+			for _, event := range storedCommentEvents(t, database, comment.ID, beforeEdit) {
+				requireNoWords("the stored "+event.eventType+" the refresh wrote", event.raw)
+			}
+		})
+	}
+}
+
+// An anchor refresh written after a comment's delete is built from the stored row, and the
+// events table keeps it as built, where a read of the log masks it. It carries the comment's
+// delete mark, as every read of the comment does, so its stored payload never reads as a comment
+// that stands with an empty body.
+func TestAnAnchorRefreshAfterTheDeleteStoresTheDeleteMark(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Refresh a deleted comment", "The quick brown fox")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "On the fox.", "anchor": map[string]any{"artifact": "spec", "quote": "fox"},
+	}, "alice")
+	deleteThreadComment(t, handler, comment.ID, "alice")
+
+	beforeEdit := lastEventID(t, database)
+	if response := editDocument(t, handler, issue.PrimaryArtifactID, map[string]any{
+		"ops": []map[string]any{{"op": "replace", "find": "fox", "with": "dog"}},
+	}); response.Code != http.StatusOK {
+		t.Fatalf("edit the document after the delete: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var refreshes []storedCommentEvent
+	for _, event := range storedCommentEvents(t, database, comment.ID, beforeEdit) {
+		if event.eventType == "comment.anchor_refreshed" {
+			refreshes = append(refreshes, event)
+		}
+	}
+	if len(refreshes) != 1 {
+		t.Fatalf("the edit stored %d comment.anchor_refreshed events of the deleted comment, want one", len(refreshes))
+	}
+	payload := refreshes[0].payload
+	deletedBy, _ := payload["deleted_by"].(map[string]any)
+	if payload["deleted_at"] == nil || deletedBy == nil || deletedBy["id"] != "alice" || payload["body"] != "" {
+		t.Fatalf("the stored comment.anchor_refreshed of the deleted comment = %s, want an empty body with the delete mark", refreshes[0].raw)
 	}
 }
 

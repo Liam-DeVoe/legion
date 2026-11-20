@@ -83,8 +83,10 @@ export function ReplyTurn({
   body: ReactNode;
   current?: boolean;
   /** The reply's deletion, where its author deleted it: it keeps ` · edited` off the byline,
-   *  since the deleted line in `body` already says what became of the text, and the retry row
-   *  off a delivered reply, which is sent again in no mode (`resendable`). */
+   *  since the deleted line in `body` already says what became of the text, the retry row off a
+   *  delivered reply, which is sent again in no mode (`resendable`), and its Reply: a post its
+   *  author deleted takes no reply (`409 POST_DELETED`), as the margin's card offers no reply
+   *  composer under a deleted root. */
   deleted?: PostDeletion | null;
   delivery?: ReplyDelivery;
   /** When the reply's author last replaced its body; null or absent on one nobody edited. */
@@ -171,7 +173,9 @@ export function ReplyTurn({
       </div>
       <TurnActions>
         {actions}
-        {onReply === undefined ? null : <ReplyButton disabled={replyDisabled} onClick={onReply} />}
+        {onReply === undefined || (deleted ?? null) !== null ? null : (
+          <ReplyButton disabled={replyDisabled} onClick={onReply} />
+        )}
       </TurnActions>
     </li>
   );

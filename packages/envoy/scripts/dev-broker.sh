@@ -63,9 +63,9 @@
 # READ_ACCOUNT is a read entry (BROKER_EXCHANGE_READ_ACCOUNTS) beside the one example entry
 # (BROKER_EXCHANGE_ACCOUNTS). The token its pod exchanges for holds the scope read alone, the
 # project scope none, the service READ_SERVICE and the session READ_SESSION, and names no person
-# and no project. Dispatch serves such a token on the routes its read list names (today GET
-# /api/v1/projects/{key}/architecture alone) and answers it 403 READ_ONLY_TOKEN on every other
-# route, which packages/dispatch/e2e/read-token-live.ts drives against this stack and a
+# and no project. Dispatch serves such a token on every GET route it classes as a read and
+# answers it 403 READ_ONLY_TOKEN on every other route, which
+# packages/dispatch/e2e/read-token-live.ts drives against this stack and a
 # `bun run dispatch:local` Dispatch. A read entry fixes its session, so its pod needs no
 # registration below, and the broker refuses one with 409 SESSION_FIXED.
 #

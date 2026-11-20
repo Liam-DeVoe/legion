@@ -5,6 +5,7 @@ import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -28,6 +29,9 @@ let triage = false;
 let replyLength = 1;
 const LONG_THREAD = "11111111-1111-4111-8111-111111111111";
 const human = { kind: "human", id: "h" };
+/** The line the fake Dispatch answers a result's dry run with. */
+const RESULT_DRY_RUN_LINE =
+  "- Check k1 (before_merge): pass at 1111111111111111111111111111111111111111, recorded by implementer. open-items v14 lists every row.";
 
 /** How the Dispatch server refuses a body whose block `block`, a paragraph, is `units` UTF-16
  *  units long, past the bound it holds each block to, worded as `itemblocks.CapExceeded` words
@@ -363,6 +367,9 @@ const server = Bun.serve({
         },
       });
     }
+    if (pathname === "/api/v1/issues/DSP-1/results/dry-run" && request.method === "POST") {
+      return Response.json({ line: RESULT_DRY_RUN_LINE });
+    }
     if (pathname === "/api/v1/issues/DSP-1/comments" && request.method === "POST") {
       const refusal = bodyRefusal(body.body as string);
       if (refusal !== undefined) return Response.json(refusal, { status: 400 });
@@ -623,6 +630,19 @@ function ledger(sessionId: string): { tool: string; error?: string }[] {
 
 const omp = { DISPATCH_HOST: "omp", DISPATCH_SESSION_ID: "ses-1" };
 
+/** A `dispatch result` record of check k1 of DSP-1, its arguments as the command parses them. */
+const RESULT_ARGS = {
+  issue: "DSP-1",
+  check: "k1",
+  role: "implementer",
+  verdict: "pass",
+  commit: "1111111111111111111111111111111111111111",
+};
+const RESULT_ARGV = [
+  "result",
+  ...Object.entries(RESULT_ARGS).flatMap(([field, value]) => [`--${field}`, value]),
+];
+
 describe("the dispatch CLI", () => {
   test("refuses without DISPATCH_HOST, naming it, and sends nothing", async () => {
     const { code, stdout } = await run(["message", "--issue", "DSP-1", "--body", "x"], {
@@ -864,6 +884,48 @@ describe("the dispatch CLI", () => {
         rule,
       ]);
     }
+    expect(requests).toEqual([]);
+  });
+
+  // A record's dry run asks Dispatch, on a path of its own, for the pull-request body line the
+  // record would print, and prints it after the arguments: the line is Dispatch's to write, so
+  // the CLI prints the one Dispatch answered and builds none. Nothing is recorded, and this
+  // session's ledger keeps no entry, as for every dry run that passed.
+  test("dispatch result --dry-run prints the pull-request body line Dispatch answers and records nothing", async () => {
+    const observed = "DSP-1's open-items v14 lists every row.";
+    const { code, stdout } = await run([...RESULT_ARGV, "--observed", observed, "--dry-run"], omp);
+    expect(code, stdout).toBe(0);
+    const args = { ...RESULT_ARGS, observed };
+    expect(stdout).toBe(
+      `${JSON.stringify(args, null, 2)}\n\nNothing was recorded: this is a dry run.\n\nPull request body line:\n${RESULT_DRY_RUN_LINE}\n`
+    );
+    expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+      "POST /api/v1/issues/DSP-1/results/dry-run",
+    ]);
+    const { issue: _, ...body } = args;
+    expect(requests[0]?.body).toMatchObject(body);
+    expect(existsSync(join(stateDir, "sessions", "ses-1", "results.jsonl"))).toBe(false);
+  });
+
+  // The dry run needs Dispatch as the record does, so with Dispatch off it is refused in the
+  // record's own words and exit code, and sends nothing.
+  test("dispatch result --dry-run with Dispatch off is refused as the record is", async () => {
+    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
+    const record = await run(RESULT_ARGV, off);
+    const dry = await run([...RESULT_ARGV, "--dry-run"], off);
+    expect(record.code).toBe(2);
+    expect(record.stdout).toStartWith("dispatch: ");
+    expect(dry).toEqual(record);
+    expect(requests).toEqual([]);
+  });
+
+  test("dispatch result --retract --dry-run prints the arguments and sends nothing", async () => {
+    const { code, stdout } = await run(
+      ["result", "--retract", "res-2", "--reason", "The run was wrong.", "--dry-run"],
+      omp
+    );
+    expect(code, stdout).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ retract: "res-2", reason: "The run was wrong." });
     expect(requests).toEqual([]);
   });
 
@@ -1620,6 +1682,73 @@ describe("the dispatch CLI", () => {
     expect(code).toBe(0);
     expect(stdout).toBe("CORE Core\nSMOKE684 Smoke\n");
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
+  });
+
+  // Dispatch refuses a read-only token's write with READ_ONLY_TOKEN before anything runs. The
+  // command prints that refusal code first, as Dispatch wrote it, and exits 1, as for every write
+  // Dispatch refused. The credential is the read trade DISPATCH_TOKEN_BROKER_READ asks for, over
+  // the DISPATCH_TOKEN the shell also holds.
+  test("a write command under a read-only token prints Dispatch's READ_ONLY_TOKEN refusal and exits 1", async () => {
+    const readToken = fixtureSecret("read");
+    const trades: URLSearchParams[] = [];
+    const broker = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        trades.push(new URLSearchParams(await request.text()));
+        return Response.json({
+          access_token: readToken,
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "DPoP",
+          expires_in: 600,
+          scope: "read",
+        });
+      },
+    });
+    const projected = join(stateDir, "projected-token");
+    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
+    const refusal =
+      "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran";
+    const sent: { method: string; path: string; authorization: string }[] = [];
+    // The stand-in Dispatch: the test server answers every read, and every write is refused as
+    // Dispatch refuses a read-only token's.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push({
+        method: request.method,
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("Authorization") ?? "",
+      });
+      if (request.method === "GET") return await fetch(request);
+      return Response.json({ code: "READ_ONLY_TOKEN", error: refusal }, { status: 403 });
+    }) as typeof fetch;
+    let ran: { code: number; stdout: string };
+    try {
+      ran = await run(
+        ["message", "--issue", "DSP-1", "--body", "hello"],
+        {
+          ...omp,
+          DISPATCH_TOKEN_BROKER_READ: "1",
+          AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+          AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+          AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+        },
+        "",
+        fetchImpl
+      );
+    } finally {
+      forgetBrokerClients();
+      broker.stop(true);
+    }
+
+    expect(ran.stdout).toContain(`READ_ONLY_TOKEN: ${refusal}`);
+    expect(ran.code).toBe(1);
+    expect(trades.map((form) => form.get("scope"))).toEqual(["read"]);
+    expect(sent.filter((one) => one.method !== "GET").map((one) => one.path)).toEqual([
+      "/api/v1/issues/DSP-1/messages",
+    ]);
+    // Every request presented the read-only token, never the bearer the shell holds.
+    expect(sent.map((one) => one.authorization)).toEqual(sent.map(() => `DPoP ${readToken}`));
   });
 });
 

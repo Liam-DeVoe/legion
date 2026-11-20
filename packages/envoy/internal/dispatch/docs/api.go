@@ -17,7 +17,7 @@ import (
 // API is the live document operation surface used by Dispatch's HTTP handlers.
 type API interface {
 	SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
-	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
+	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error)
 	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error)
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
@@ -45,7 +45,7 @@ type API interface {
 	SuggestionKind(ctx context.Context, artifactID, id string) (string, error)
 	AcceptSuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor) error
 	RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error
-	RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error
+	RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, error)
 	ProjectMark(ctx context.Context, artifactID, markID string, record MarkRecord, actor model.Actor) error
 	Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger)
 	JoinWrite(ctx context.Context, artifactID string) error

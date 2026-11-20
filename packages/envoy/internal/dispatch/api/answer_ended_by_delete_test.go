@@ -170,14 +170,14 @@ func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testin
 			name := "uploaded-" + letter + ".md"
 			document := uploadIssueDocument(t, handler, holder.Key, name, "alpha bravo charlie")
 			comment := acceptSuggestion(t, handler, "/api/v1/issues/"+holder.Key+"/comments", document.Slug, "Say this instead, "+phrase+".", "alpha", "omega")
-			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues/"+holder.Key+"/artifacts", map[string]any{"name": name, "content": "alpha bravo charlie delta"}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues/"+holder.Key+"/artifacts", map[string]any{"name": name, "content": "alpha bravo charlie delta", "precondition": uploadBase(t, handler, document.ID)}),
 				func(*httptest.ResponseRecorder) { deleteThreadComment(t, handler, comment, "alice") }
 		}},
 		{route: "POST /api/v1/projects/{key}/artifacts, to an existing document", write: func(t *testing.T, letter, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			name := "Ledger " + letter
 			document := createProjectDocument(t, handler, "TEST", name, "# Ledger\n\nkilo lima mike\n")
 			comment := acceptSuggestion(t, handler, "/api/v1/artifacts/"+document.ID+"/comments", document.Slug, "Say this instead, "+phrase+".", "kilo", "november")
-			return keyedSend(t, handler, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{"name": name, "content": "# Ledger\n\nkilo lima mike oscar\n"}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{"name": name, "content": "# Ledger\n\nkilo lima mike oscar\n", "precondition": uploadBase(t, handler, document.ID)}),
 				func(*httptest.ResponseRecorder) { deleteThreadComment(t, handler, comment, "alice") }
 		}},
 		{route: "POST /api/v1/issues/{key}/comments", recovered: true, carries: true, write: func(t *testing.T, _, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {

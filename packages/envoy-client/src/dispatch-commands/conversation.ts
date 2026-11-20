@@ -178,20 +178,23 @@ export async function editCommentCommand(context: CommandContext): Promise<Dispa
 }
 
 /** What each delete command says the delete leaves readable: no read of the post gives its body
- *  again, and the event log keeps what its events already wrote. Every event of a reply written
- *  before the delete - its post, its edits and its own delete - keeps the preview of the post it
- *  froze when it was written (`reply_block.text` of a reply naming a block, `reply_body` of a
- *  message reply, which holds one whether or not the reply named a block). Of a comment, the
- *  document's events written before the delete also keep the name an accepted suggestion gave
- *  its version, which was the comment's body: the accept's `artifact.version`, and an
- *  `artifact.renamed`, which carries every version. The version itself is renamed by the
- *  delete. */
+ *  again, and the event log keeps what its events already wrote. The events of a reply that
+ *  quote the post - the reply's creation, and each edit of the reply written before the delete -
+ *  keep the preview of it they carried (`reply_block.text` of a reply naming a block,
+ *  `reply_body` of a message reply, which holds one whether or not the reply named a block): the
+ *  creation's is the post as it read when the reply was written, and an edit's the post as it
+ *  read when the edit was written. A reply's own delete event carries no text of the post it
+ *  answers, so it keeps none. Of a comment, the document's events written before the delete also
+ *  keep the name an accepted suggestion gave its version, which was the comment's body: the
+ *  accept's `artifact.version`, and an `artifact.renamed`, which carries every version. The
+ *  version itself is renamed by the delete. */
 const DELETED_MESSAGE_READS =
-  "No read of it gives its body again; a reply's own events keep the preview of it the reply froze.";
+  "No read of it gives its body again; the events of a reply's creation and of each edit of the " +
+  "reply written before the delete keep the preview of it they carried.";
 const DELETED_COMMENT_READS =
-  "No read of it gives its body again; a reply's own events keep the preview of it the reply " +
-  "froze, and the document's events written before the delete keep the name an accepted " +
-  "suggestion gave its version.";
+  "No read of it gives its body again; the events of a reply's creation and of each edit of the " +
+  "reply written before the delete keep the preview of it they carried, and the document's " +
+  "events written before the delete keep the name an accepted suggestion gave its version.";
 
 /**
  * The delete `call` makes of `post`, through `throughPostCorrections`, with Dispatch's

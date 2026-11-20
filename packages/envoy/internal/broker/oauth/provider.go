@@ -29,6 +29,7 @@ import (
 
 	"authelia.com/provider/oauth2"
 	"authelia.com/provider/oauth2/compose"
+	"authelia.com/provider/oauth2/handler/rfc9449"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
@@ -87,6 +88,13 @@ type Provider struct {
 	// reservations are the session names the exchange's entries fix, each mapped to the
 	// principal it belongs to, which reserveSessions holds before this provider's first exchange.
 	reservations map[string]string
+	// holderProofs checks a read trade's DPoP-Holder proof (oauthwire.HeaderDPoPHolder) with the
+	// library's own DPoP strategy on the provider's configuration and store: the DPoP skew and
+	// lifespan the token endpoint's own proof check uses, and the same replay table
+	// (oauth_dpop_proofs). holderNonce is whether that configuration asks a proof for the
+	// server's nonce.
+	holderProofs *rfc9449.DefaultStrategy
+	holderNonce  bool
 	// reserved says reserveSessions has held them; reserving serializes the first exchanges
 	// while it does.
 	reserved  atomic.Bool
@@ -269,6 +277,8 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		// configuration ignores the context this lookup takes.
 		dpopAlgorithms: cfg.GetDPoPAllowedJWSAlgorithms(context.Background()),
 		reservations:   reservations,
+		holderProofs:   rfc9449.NewDefaultStrategy(cfg, store),
+		holderNonce:    cfg.GetDPoPNonceRequired(context.Background()),
 	}
 	// A provider built with no store serves no request at all and is only ever inspected, as the
 	// broker's route wiring test inspects it, so there is nothing there to give the decision or the

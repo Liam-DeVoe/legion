@@ -475,7 +475,7 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 // ids restart at 1, below the cursor the relay has published through, and `id > cursor` matches
 // nothing. A relay that only ever published forward would fall silent there for good: every live
 // update of every later scenario would be lost, with no error anywhere. The relay reads the reset
-// through eventCursorCheck and ends its generation with every subscription it holds -- the
+// through events.EventCursorCheck and ends its generation with every subscription it holds -- the
 // stream's answer to a reader it can no longer serve in order, which ends each open events
 // subscription with an ended frame (behind) and sends its page through a resubscribe
 // (TestTheEventFeedResumesAfterTheEventLogIsResetBeneathTheReader) -- and the next subscription
@@ -699,15 +699,15 @@ func seedLiveEvents(t *testing.T, database *store.Store, seeds []liveEventSeed) 
 // liveUser is the actor of the events a test writes.
 const liveUser = `{"kind":"user","id":"alice"}`
 
-// eventCursorCheck reads the newest event's id and the time of the event at the cursor; once the
-// cursor's row is gone (a reset of the log), cursorAt is nil.
+// events.EventCursorCheck reads the newest event's id and the time of the event at the cursor;
+// once the cursor's row is gone (a reset of the log), cursorAt is nil.
 func TestEventCursorCheckReadsTheNewestEventAndTheCursorsRow(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 
-	maxID, cursorAt, err := eventCursorCheck(ctx, database.Pool, 0)
+	maxID, cursorAt, err := events.EventCursorCheck(ctx, database.Pool, 0)
 	if err != nil {
-		t.Fatalf("eventCursorCheck on an empty log: %v", err)
+		t.Fatalf("EventCursorCheck on an empty log: %v", err)
 	}
 	if maxID != 0 || cursorAt != nil {
 		t.Fatalf("an empty log = %d, %v; want 0, nil", maxID, cursorAt)
@@ -719,9 +719,9 @@ func TestEventCursorCheckReadsTheNewestEventAndTheCursorsRow(t *testing.T) {
 		{kind: "artifact.version", actor: liveUser, payload: `{}`, at: base.Add(time.Minute)},
 		{kind: "issue.updated", actor: liveUser, payload: `{}`, at: base.Add(2 * time.Minute)},
 	})
-	maxID, cursorAt, err = eventCursorCheck(ctx, database.Pool, ids[1])
+	maxID, cursorAt, err = events.EventCursorCheck(ctx, database.Pool, ids[1])
 	if err != nil {
-		t.Fatalf("eventCursorCheck: %v", err)
+		t.Fatalf("EventCursorCheck: %v", err)
 	}
 	if maxID != ids[2] {
 		t.Fatalf("newest event = %d, want %d", maxID, ids[2])
@@ -733,9 +733,9 @@ func TestEventCursorCheckReadsTheNewestEventAndTheCursorsRow(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `delete from events where id = $1`, ids[1]); err != nil {
 		t.Fatalf("delete the cursor's row: %v", err)
 	}
-	maxID, cursorAt, err = eventCursorCheck(ctx, database.Pool, ids[1])
+	maxID, cursorAt, err = events.EventCursorCheck(ctx, database.Pool, ids[1])
 	if err != nil {
-		t.Fatalf("eventCursorCheck once the cursor's row is gone: %v", err)
+		t.Fatalf("EventCursorCheck once the cursor's row is gone: %v", err)
 	}
 	if maxID != ids[2] || cursorAt != nil {
 		t.Fatalf("with the cursor's row gone = %d, %v; want %d, nil", maxID, cursorAt, ids[2])
@@ -745,16 +745,16 @@ func TestEventCursorCheckReadsTheNewestEventAndTheCursorsRow(t *testing.T) {
 		t.Fatalf("reset the event log: %v", err)
 	}
 	reset := seedLiveEvents(t, database, []liveEventSeed{{kind: "issue.created", actor: liveUser, payload: `{}`, at: base.Add(time.Hour)}})
-	maxID, cursorAt, err = eventCursorCheck(ctx, database.Pool, ids[2])
+	maxID, cursorAt, err = events.EventCursorCheck(ctx, database.Pool, ids[2])
 	if err != nil {
-		t.Fatalf("eventCursorCheck after a reset: %v", err)
+		t.Fatalf("EventCursorCheck after a reset: %v", err)
 	}
 	if maxID != reset[0] || maxID >= ids[2] || cursorAt != nil {
 		t.Fatalf("after a reset = %d, %v; want the new newest id %d below the cursor %d, and nil", maxID, cursorAt, reset[0], ids[2])
 	}
 }
 
-// cursorCheck is one answer of eventCursorCheck.
+// cursorCheck is one answer of events.EventCursorCheck.
 type cursorCheck struct {
 	maxID    int64
 	cursorAt *time.Time
@@ -809,10 +809,10 @@ func (r scanThen) Scan(dest ...any) error {
 }
 
 // A reset of the event log (e2e/seed.ts's `truncate events restart identity` and its refill) that
-// commits while eventCursorCheck is reading must leave the answer describing one log, the old one
-// or the new one. A mixed answer - the old log's newest id with no row at the cursor in the new
-// one - is one the relay would take for a reset to the old log's head: it would move its cursor
-// there, and the new log's lower ids would then read as a second reset that closed the
+// commits while events.EventCursorCheck is reading must leave the answer describing one log, the
+// old one or the new one. A mixed answer - the old log's newest id with no row at the cursor in
+// the new one - is one the relay would take for a reset to the old log's head: it would move its
+// cursor there, and the new log's lower ids would then read as a second reset that closed the
 // subscription opened after the first (TestEventStreamRelayRecoversWhenTheEventLogIsReset).
 func TestEventCursorCheckReadsOneLogWhenTheLogIsResetMidCheck(t *testing.T) {
 	database := storetest.Open(t)
@@ -826,9 +826,9 @@ func TestEventCursorCheckReadsOneLogWhenTheLogIsResetMidCheck(t *testing.T) {
 	cursor := ids[1]
 	check := func(q queryer) cursorCheck {
 		t.Helper()
-		maxID, cursorAt, err := eventCursorCheck(ctx, q, cursor)
+		maxID, cursorAt, err := events.EventCursorCheck(ctx, q, cursor)
 		if err != nil {
-			t.Fatalf("eventCursorCheck: %v", err)
+			t.Fatalf("EventCursorCheck: %v", err)
 		}
 		return cursorCheck{maxID: maxID, cursorAt: cursorAt}
 	}

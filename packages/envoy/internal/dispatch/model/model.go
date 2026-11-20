@@ -2966,7 +2966,8 @@ type Comment struct {
 // its blocks stored (refs.TombstoneItem), so the block reads removed with no text, and the mark
 // is what says the post itself is gone rather than the one block. All three are absent on a part
 // of an ask, which no correction marks. An event's reply_block keeps the marks the write that
-// appended it read.
+// appended it read. A reply's delete event (comment.deleted, message.deleted) carries the block
+// with every field but its text, which is empty: a delete event carries no text of another post.
 type ReplyBlock struct {
 	Node      string     `json:"node"`
 	Ref       string     `json:"ref,omitempty"`
@@ -3309,7 +3310,9 @@ func ConnectedOnlyColumn(connectedOnly bool) *string {
 
 // MessageEventPayload wraps a Message with the reply target's body preview (first 160
 // characters, ReplyBody), or the preview of the block it names (ReplyBlock), so a reply can
-// render "re: <preview>" without a second lookup.
+// render "re: <preview>" without a second lookup. A reply's message.deleted carries neither
+// preview: no ReplyBody, and the ReplyBlock with its routing fields and no text, since a delete
+// event carries no text of another post.
 type MessageEventPayload struct {
 	Message
 	// BodyTruncated is that Body is the first part of the message's body and not all of it

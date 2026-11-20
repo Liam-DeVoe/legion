@@ -157,7 +157,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // never comes back with the key (migration 20261106020619); the feed's column does come back, so
 // the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
 // tells the event relay an event log that was reset under its cursor from one that merely went
-// quiet (eventLogWasReset).
+// quiet (events.EventLogWasReset).
 func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
@@ -435,12 +435,22 @@ func (s *server) readEventRows(ctx context.Context, query string, arguments ...a
 	return events, nil
 }
 
+// askEventKinds are the kinds of event whose payload is an ask, to which a read adds the ask's
+// fields (attachAskEventFields).
+var askEventKinds = map[string]bool{
+	"ask.opened": true, "ask.anchor_refreshed": true, "ask.answered": true, "ask.resolved": true,
+	"ask.edited": true, "ask.handed_back": true, "ask.asked_of": true,
+}
+
 // postBodyEventKinds is the kind of post each event kind's payload is about: the kind whose
 // table the payload's `id` names, and whose own body the payload carries under `body`. They are
-// what attachPostMarks marks: every other kind of either post either carries no body
-// (comment.delivery, message.delivery, message.accepted, whose payload names the message under
-// message_id and holds no text of it) or carries the body of another post, which the event log
-// keeps (a reply's reply_body and reply_block.text).
+// what attachPostMarks marks: every other kind of either post carries no body of its own. The
+// receipts carry no text of the post at all (comment.delivery, message.delivery, message.accepted,
+// whose payload names the message under message_id and holds no text of it), and a delete event
+// (comment.deleted, message.deleted) is built from the post with its body cleared and carries no
+// text of the post a reply answers either (deleteEventReplyBlock). The other events of a reply
+// also carry the text of the post it answers, which the event log keeps (reply_body and
+// reply_block.text, below).
 var postBodyEventKinds = map[string]refs.ItemKind{
 	"comment.created":          refs.ItemComment,
 	"comment.edited":           refs.ItemComment,
@@ -462,10 +472,16 @@ var postBodyEventKinds = map[string]refs.ItemKind{
 // on a post nobody edited, and when they deleted it and who they are (deleted_at, deleted_by), as
 // model.DeletedPostMark reads every other read's copy of that mark. deletedBy is nil where the
 // row records no actor, which is the mark an event payload then carries as a null deleted_by.
+// quoteCleared is that the comment's stored anchor quote is empty: the delete of a comment with a
+// pending insert suggestion empties it (clearDeletedPostBody), since that quote is the text the
+// suggestion inserted, and no other write stores an empty quote - an anchor's quote is refused
+// empty (resolveAnchor) and every mark a refresh reads it from covers text. A message carries no
+// anchor, so it is false there.
 type postMarks struct {
-	editedAt  *time.Time
-	deletedAt *time.Time
-	deletedBy *model.Actor
+	editedAt     *time.Time
+	deletedAt    *time.Time
+	deletedBy    *model.Actor
+	quoteCleared bool
 }
 
 // postKey names one post an event page holds: the kind of post it is, which names the table its
@@ -482,11 +498,11 @@ type postKey struct {
 // post's creation, beside the body as it stood then, so without the post's own mark a read of
 // the log would print that body as if nobody had replaced it since. Of a deleted post it also
 // takes the body out of the payload: a read of the post's own events says that it is deleted and
-// gives no part of what it said, while a reply's own events keep the preview they froze of it
-// (below). The stored row is never rewritten - the log is the record of
-// what happened - so the marks are read here, at every read, which is why readEventRows calls it
-// for readEvents and readEventsAfterID alike. The time of each edit stays the created_at of the
-// edit's own event.
+// gives no part of what it said, the anchor quote of a deleted comment's insert suggestion
+// included, while the events of a reply that quote it keep the preview they froze of it (below).
+// The stored row is never rewritten - the log is the record of what happened - so the marks are
+// read here, at every read, which is why readEventRows calls it for readEvents and
+// readEventsAfterID alike. The time of each edit stays the created_at of the edit's own event.
 //
 // It is this file's own way of filling what a payload cannot carry from the write that appended
 // it (attachAskEventFields): the events table holds no comment id and no message id, so there is
@@ -494,14 +510,16 @@ type postKey struct {
 // payload's body anyway.
 //
 // The frozen previews of another post stay, as the delete leaves them: the reply_body and the
-// reply_block.text of a message reply's message.answered and of each later event of that reply
-// written before the delete (its message.edited and message.deleted), and the reply_block.text of
-// a comment reply's comment.created or comment.answered and of each later event of that reply
-// written before the delete. An event of the reply written after the delete carries no text of
-// it. Each is part of an event of the post that quoted it, and only the quoted post's own events
-// are marked here. So are the document events of an accepted suggestion, which are no event of
-// the post: the accept's artifact.version, and an artifact.renamed written before the delete,
-// which carries every version, keep the name the accept gave the version.
+// reply_block.text of a message reply's message.answered and of its message.edited written
+// before the delete, and the reply_block.text of a comment reply's comment.created or
+// comment.answered and of each later event of that reply written before the delete but its
+// comment.deleted. A reply's own delete event, message.deleted or comment.deleted, carries no
+// text of the post it answers whenever it is written (deleteEventReplyBlock), and an event of
+// the reply written after the delete carries no text of it. Each is part of an event of the post
+// that quoted it, and only the quoted post's own events are marked here. So are the document
+// events of an accepted suggestion, which are no event of the post: the accept's
+// artifact.version, and an artifact.renamed written before the delete, which carries every
+// version, keep the name the accept gave the version.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.
@@ -569,6 +587,12 @@ func (s *server) attachPostMarks(ctx context.Context, events []model.Event) erro
 			delete(payload, "body")
 			delete(payload, "body_truncated")
 			delete(payload, "suggestion")
+			// The quote the delete emptied, the text an insert suggestion put in the document,
+			// which every event the comment wrote before its delete carries in its anchor. A
+			// replace's, a delete's and a plain comment's quote is document text and stays.
+			if anchor, ok := payload["anchor"].(map[string]any); ok && post.quoteCleared {
+				anchor["quote"] = ""
+			}
 			payload["deleted_at"] = post.deletedAt
 			payload["deleted_by"] = post.deletedBy
 		}
@@ -584,9 +608,10 @@ func (s *server) attachPostMarks(ctx context.Context, events []model.Event) erro
 // readPostMarks reads the marks of each post of ids that is edited or deleted, in one statement
 // over the table of each kind that has an id to read: the table refs names for the kind, which
 // owns the map of an item kind to its storage (refs.ItemKind.ItemTable), as postHistoryOwner
-// reads it. Each id is matched as text, through the comments_id_text and messages_id_text
-// indexes, so a payload id that is not a uuid cannot fail the read, as it would under a cast of
-// the parameter. Each row names the kind it came from, which the id alone does not say.
+// reads it, with whether a comment's stored anchor quote is empty (postMarks.quoteCleared). Each
+// id is matched as text, through the comments_id_text and messages_id_text indexes, so a payload
+// id that is not a uuid cannot fail the read, as it would under a cast of the parameter. Each row
+// names the kind it came from, which the id alone does not say.
 func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]string) (map[postKey]postMarks, error) {
 	marks := map[postKey]postMarks{}
 	// One select per kind that has an id to read, in a fixed order rather than a map's, each
@@ -600,10 +625,14 @@ func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]stri
 		if err != nil {
 			return nil, err
 		}
+		quoteCleared := "false"
+		if kind == refs.ItemComment {
+			quoteCleared = "coalesce(anchor->>'quote' = '', false)"
+		}
 		arguments = append(arguments, ids[kind])
 		selects = append(selects, fmt.Sprintf(`
-		select '%s'::text, id::text, edited_at, deleted_at, deleted_by from %s
-		where id::text = any($%d::text[]) and (edited_at is not null or deleted_at is not null)`, kind, items, len(arguments)))
+		select '%s'::text, id::text, edited_at, deleted_at, deleted_by, %s from %s
+		where id::text = any($%d::text[]) and (edited_at is not null or deleted_at is not null)`, kind, quoteCleared, items, len(arguments)))
 	}
 	if len(selects) == 0 {
 		return marks, nil
@@ -618,11 +647,12 @@ func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]stri
 		var kind string
 		var editedAt, deletedAt *time.Time
 		var deletedBy []byte
-		if err := rows.Scan(&kind, &key.id, &editedAt, &deletedAt, &deletedBy); err != nil {
+		var quoteCleared bool
+		if err := rows.Scan(&kind, &key.id, &editedAt, &deletedAt, &deletedBy, &quoteCleared); err != nil {
 			return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
 		}
 		key.kind = refs.ItemKind(kind)
-		mark := postMarks{editedAt: editedAt}
+		mark := postMarks{editedAt: editedAt, quoteCleared: quoteCleared}
 		var err error
 		if mark.deletedAt, mark.deletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
 			return nil, fmt.Errorf("post %s: %w", key.id, err)
@@ -633,13 +663,6 @@ func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]stri
 		return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
 	}
 	return marks, nil
-}
-
-// askEventKinds are the kinds of event whose payload is an ask, to which a read adds the ask's
-// fields (attachAskEventFields).
-var askEventKinds = map[string]bool{
-	"ask.opened": true, "ask.anchor_refreshed": true, "ask.answered": true, "ask.resolved": true,
-	"ask.edited": true, "ask.handed_back": true, "ask.asked_of": true,
 }
 
 // decodedAskEventPayload is the ask payload that needs read-time fields added before it is written

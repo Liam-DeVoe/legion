@@ -650,8 +650,8 @@ func movedSinceTheCut(then, present asOfAnswer) bool {
 	if thenErr != nil || presentErr != nil {
 		return !bytes.Equal(then.body, present.body)
 	}
-	dropMember(thenDoc, "took_ms")
-	dropMember(presentDoc, "took_ms")
+	dropTopMember(thenDoc, "took_ms")
+	dropTopMember(presentDoc, "took_ms")
 	return !reflect.DeepEqual(thenDoc, presentDoc)
 }
 
@@ -797,8 +797,8 @@ func (c asOfComparison) problems(then, asOf asOfAnswer) []string {
 	problems = append(problems, c.deletedBodies(asOfDoc)...)
 	problems = append(problems, absentButGiven(asOfDoc, absent)...)
 
-	dropMember(thenDoc, "took_ms")
-	dropMember(asOfDoc, "took_ms")
+	dropTopMember(thenDoc, "took_ms")
+	dropTopMember(asOfDoc, "took_ms")
 	broadenedAtTheCut(thenDoc)
 	if c.world.removed != "" {
 		var held int
@@ -955,8 +955,8 @@ func dropAbsent(then, asOf any, pointers []string) {
 	}
 }
 
-// dropMember takes key out of doc's top object, where doc is one.
-func dropMember(doc any, key string) {
+// dropTopMember takes key out of doc's top object, where doc is one.
+func dropTopMember(doc any, key string) {
 	if object, ok := doc.(map[string]any); ok {
 		delete(object, key)
 	}
@@ -1182,7 +1182,7 @@ func openAsksWindow(cut asof.Cut, then, asOf any) []string {
 		}
 	}
 	for _, doc := range []any{then, asOf} {
-		dropMember(doc, "as_of")
+		dropTopMember(doc, "as_of")
 		eachParent(doc, []string{"asks", "*"}, "", func(_ string, ask map[string]any) { delete(ask, "age_seconds") })
 	}
 	return problems

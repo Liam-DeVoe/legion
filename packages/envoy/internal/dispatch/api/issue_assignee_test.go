@@ -546,9 +546,10 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 // credential's read-only mark and never stored among the scopes it holds, and answers the cut it
 // reads at, null for none: the read entry's token, a token narrowed from each kind of trade the
 // broker narrows (the golden file the broker's own test holds its narrowed answers to), and among
-// them the machine login's narrowed token with a cut. A read-person token that names its person
-// is told person beside read, and no read-only token is told approve. The control is a token
-// that writes, told neither read nor a cut.
+// them the machine login's narrowed token with a cut, and a read-only personal token of each set
+// such a token may hold (readOnlyPersonalTokens). A read-person token that names its person, and a
+// personal token holding person beside read, are told person beside read, and no read-only token
+// is told approve. The control is a token that writes, told neither read nor a cut.
 //
 // The handler is called directly with each token, so the test reads whoami's own answer alone;
 // the read-only walks (read_only_token_test.go) hold the gate in front of it, which lets every
@@ -577,6 +578,9 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	type row struct {
 		name   string
 		answer brokertoken.Introspection
+		// bearer is a personal token, presented as a bearer, and empty for a token the stub
+		// broker answers for with answer.
+		bearer string
 		scopes []string
 		// cut is the cut whoami answers, empty for null.
 		cut string
@@ -595,13 +599,20 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	if !slices.ContainsFunc(rows, func(r row) bool { return r.cut != "" }) {
 		t.Fatal("no row names a cut, and one must")
 	}
+	for index, personal := range readOnlyPersonalTokens(t, rig) {
+		rows = append(rows, row{name: personal.name, bearer: personal.token, scopes: readOnlyPersonalTokenSets[index].whoami})
+	}
 
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
-			rig.broker.Says(token, row.answer)
+			request := brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "Bearer "+row.bearer, "")
+			if row.bearer == "" {
+				token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
+				rig.broker.Says(token, row.answer)
+				request = caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)
+			}
 			response := httptest.NewRecorder()
-			rig.served.whoami(response, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+			rig.served.whoami(response, request)
 			if response.Code != http.StatusOK {
 				t.Fatalf("whoami: status=%d body=%s", response.Code, response.Body.String())
 			}

@@ -15,6 +15,7 @@ import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import {
   duplicateText,
+  endedByDeleteText,
   failureGuidance,
   isSafeRetry,
   MODE_LABELS,
@@ -83,7 +84,7 @@ export function takenAsUserTurn(deliveries: readonly TargetedMessageAttempt[]): 
  *  it failed otherwise. */
 function failedText(attempt: Pick<TargetedMessageAttempt, "error">): string {
   return attempt.error === DELETED_POST_DELIVERY_ERROR
-    ? "Ended by the post's delete"
+    ? endedByDeleteText
     : `Failed: ${attempt.error ?? "delivery failed"}`;
 }
 
@@ -295,7 +296,8 @@ interface TargetedMessageCardProps {
   readonly canSteer: boolean;
   readonly current?: boolean;
   /** The message's deletion, where its author deleted it (`postDeletion`): a deleted message is
-   *  sent again in no mode (`resendable`), so the card keeps no retry row. */
+   *  sent again in no mode (`resendable`), so the card keeps no retry row, and it takes no reply
+   *  (`409 POST_DELETED`), so the card offers no Reply. */
   readonly deleted: PostDeletion | null;
   readonly deliveries: readonly TargetedMessageAttempt[];
   readonly header: ReactNode;
@@ -347,7 +349,7 @@ export function TargetedMessageCard({
       <div className="flex gap-3">
         {header}
         <div className="min-w-0 flex-1">{body}</div>
-        {onReply === undefined ? null : (
+        {onReply === undefined || deleted !== null ? null : (
           <ReplyButton className="self-start" disabled={replyDisabled} onClick={onReply} />
         )}
       </div>

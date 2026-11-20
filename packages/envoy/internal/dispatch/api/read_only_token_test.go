@@ -1,11 +1,12 @@
 // read_only_token_test.go holds Dispatch to its read class: a read-only token — one the secrets
-// broker minted from a read entry, or narrowed to reading because its trade asked for read —
-// reaches the rows readClasses classes as reads and nothing else. Every other row of the table
-// and GET /ws/live answer it 403 READ_ONLY_TOKEN before the route's handler, before the row's
-// scopes and the sign-in check and before its Idempotency-Key is read, and every read but
-// GET /api/v1/whoami answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED
-// (refuseReadOnlyToken). register refuses a table whose GET rows readClasses does not class, and a
-// personal token the gate resolves before the route keeps the answer it had before the gate.
+// broker minted from a read entry, or narrowed to reading because its trade asked for read, or a
+// personal token a person minted holding read — reaches the rows readClasses classes as reads and
+// nothing else. Every other row of the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before
+// the route's handler, before the row's scopes and the sign-in check and before its
+// Idempotency-Key is read, and every read but GET /api/v1/whoami answers one that carries a cut
+// 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken). register refuses a table whose GET rows
+// readClasses does not class, and a personal token the gate resolves before the route keeps the
+// answer it had before the gate.
 //
 // A token that names a service and no person is already refused every write, SIGN_IN_REQUIRED or
 // OAUTH_SCOPE_REQUIRED, so each refusal here is read by its code: a bare 403 would prove nothing.
@@ -48,12 +49,23 @@ func readOnlyProbePath(pattern string) string {
 // that reached its keyed layer would claim it rather than refuse it.
 const readOnlyProbeKey = "read-only-probe"
 
-// presentingProbe is the request a caller sends route when it walks the table: the probe path and
-// body (readOnlyProbePath, routeProbeBody), a valid Idempotency-Key, and token under the DPoP
-// scheme with a fresh proof for that method and target.
-func (c *brokerCaller) presentingProbe(t *testing.T, route apiRoute, token string) *http.Request {
+// presenting is the request token's holder sends Dispatch for method and path: a personal token
+// as a bearer, as its agent presents one, and any other token under the DPoP scheme with a fresh
+// proof of caller's key for that method and target.
+func (token readOnlyWalkToken) presenting(t *testing.T, caller *brokerCaller, method, path string, body any) *http.Request {
 	t.Helper()
-	request := c.presenting(t, route.Method, readOnlyProbePath(route.Pattern), token, json.RawMessage(routeProbeBody(route)))
+	if token.personal {
+		return brokerRequest(t, method, path, body, "Bearer "+token.token, "")
+	}
+	return caller.presenting(t, method, path, token.token, body)
+}
+
+// probe is the request token's holder sends route when it walks the table: the probe path and
+// body (readOnlyProbePath, routeProbeBody) and a valid Idempotency-Key, presented as the token is
+// (presenting).
+func (token readOnlyWalkToken) probe(t *testing.T, caller *brokerCaller, route apiRoute) *http.Request {
+	t.Helper()
+	request := token.presenting(t, caller, route.Method, readOnlyProbePath(route.Pattern), json.RawMessage(routeProbeBody(route)))
 	request.Header.Set(contracts.IdempotencyKeyHeader, readOnlyProbeKey)
 	return request
 }
@@ -101,22 +113,25 @@ func readOnlyTable() []apiRoute {
 }
 
 // readOnlyWalkToken is one read-only token the walks below send: what a failure calls it, the
-// token the stub broker answers for, the cut its answer names (empty for none), and the
-// credential Dispatch makes of it.
+// token, the cut it carries (empty for none), the credential Dispatch makes of it, and whether it
+// is a personal token, which its agent presents as a bearer, rather than one the stub broker
+// answers for, which its holder presents under DPoP (presenting).
 type readOnlyWalkToken struct {
 	name       string
 	token      string
 	cut        string
 	credential *model.Credential
+	personal   bool
 }
 
-// readOnlyWalkTokens is every kind of read-only token the broker mints, each said to the rig's
-// stub broker for caller's key: the read entry's token (the project scope none beside the scope
-// read), a token narrowed from each kind of trade the broker narrows, and among them the machine
-// login's narrowed token with a cut, as the golden file the broker's own test holds its answers
-// to (narrowedAnswers). Each is held to be a credential Dispatch reads as read-only, with the cut
-// its answer names, and at least one to carry a cut, so a walk over them cannot pass for want of
-// either.
+// readOnlyWalkTokens is every kind of read-only token Dispatch serves. The broker's, each said to
+// the rig's stub broker for caller's key: the read entry's token (the project scope none beside
+// the scope read), a token narrowed from each kind of trade the broker narrows, and among them the
+// machine login's narrowed token with a cut, as the golden file the broker's own test holds its
+// answers to (narrowedAnswers). And a person's, minted on the rig's own store: a read-only
+// personal token of each set such a token may hold (readOnlyPersonalTokens). Each is held to be a
+// credential Dispatch reads as read-only, with the cut its answer names, and at least one to carry
+// a cut, so a walk over them cannot pass for want of either.
 func readOnlyWalkTokens(t *testing.T, rig *brokerTokenRig, caller *brokerCaller) []readOnlyWalkToken {
 	t.Helper()
 	answers := map[string]brokertoken.Introspection{"the read entry's token": readOnlyToken(caller.jkt)}
@@ -143,6 +158,43 @@ func readOnlyWalkTokens(t *testing.T, rig *brokerTokenRig, caller *brokerCaller)
 	}
 	if cuts == 0 {
 		t.Fatal("no token the walk sends carries a cut, and one must")
+	}
+	return append(tokens, readOnlyPersonalTokens(t, rig)...)
+}
+
+// readOnlyPersonalTokenSets is every set of scopes a read-only personal token may hold, read alone
+// and read beside person (agent_read_tokens' own check), each with what a failure calls its token
+// and the scopes whoami names for it.
+var readOnlyPersonalTokenSets = []struct {
+	name           string
+	scopes, whoami []string
+}{
+	{"the read-only personal token holding read", []string{model.ScopeRead}, []string{model.ScopeRead}},
+	{"the read-only personal token holding read and person", []string{model.ScopeRead, model.ScopePerson}, []string{model.ScopePerson, model.ScopeRead}},
+}
+
+// readOnlyPersonalTokens mints one read-only personal token of brokerTestPerson's for each set of
+// readOnlyPersonalTokenSets, in that order, through the route a person mints one on, and holds
+// each to be a credential Dispatch reads as read-only (personalTokenActor): no cut, the person
+// scope exactly where the set holds it, and never read among its scopes, since read marks the
+// credential and is no scope a route can require.
+func readOnlyPersonalTokens(t *testing.T, rig *brokerTokenRig) []readOnlyWalkToken {
+	t.Helper()
+	tokens := make([]readOnlyWalkToken, 0, len(readOnlyPersonalTokenSets))
+	for _, set := range readOnlyPersonalTokenSets {
+		minted := rig.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": set.name, "scopes": set.scopes})
+		if minted.Code != http.StatusCreated {
+			t.Fatalf("mint %s: status=%d body=%s", set.name, minted.Code, minted.Body.String())
+		}
+		token := decodeBody[agentTokenResponse](t, minted).Token
+		actor, _, err := rig.served.optionalActor(brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "Bearer "+token, ""))
+		if credential := actor.Credential; err != nil || credential == nil || !credential.ReadOnly || !credential.Cut.IsZero() ||
+			slices.Contains(credential.Scopes, model.ScopeRead) ||
+			credential.Holds(model.ScopePerson) != slices.Contains(set.scopes, model.ScopePerson) {
+			t.Fatalf("%s: Dispatch's credential is %+v (%v), want a read-only one with no cut, holding person exactly where the token does and never read",
+				set.name, credential, err)
+		}
+		tokens = append(tokens, readOnlyWalkToken{name: set.name, token: token, credential: actor.Credential, personal: true})
 	}
 	return tokens
 }
@@ -219,7 +271,7 @@ func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			}
 			response := httptest.NewRecorder()
-			rig.served.routeHandler(route, replays[name]).ServeHTTP(response, caller.presentingProbe(t, route, token.token))
+			rig.served.routeHandler(route, replays[name]).ServeHTTP(response, token.probe(t, caller, route))
 			want := readOnlyAnswer(route, token)
 			switch want {
 			case "":
@@ -246,7 +298,7 @@ func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 		socketOpened := 0
 		live := rig.served.liveSocketHandler(func(http.ResponseWriter, *http.Request) { socketOpened++ })
 		response := httptest.NewRecorder()
-		live.ServeHTTP(response, caller.presenting(t, http.MethodGet, liveSocketPattern, token.token, nil))
+		live.ServeHTTP(response, token.presenting(t, caller, http.MethodGet, liveSocketPattern, nil))
 		if socketOpened != 0 {
 			t.Errorf("%s: GET %s opened the socket %d times, want none", token.name, liveSocketPattern, socketOpened)
 		}
@@ -284,7 +336,7 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 		var tally readOnlyTally
 		for _, route := range table {
 			name := route.Method + " " + route.Pattern
-			response := rig.serve(caller.presentingProbe(t, route, token.token))
+			response := rig.serve(token.probe(t, caller, route))
 			want := readOnlyAnswer(route, token)
 			switch want {
 			case "":
@@ -316,12 +368,12 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 			tally.count(want)
 		}
 
-		live := rig.serve(caller.presenting(t, http.MethodGet, liveSocketPattern, token.token, nil))
+		live := rig.serve(token.presenting(t, caller, http.MethodGet, liveSocketPattern, nil))
 		if why := notTheGatesRefusal(live, contracts.DispatchReadOnlyToken, token.cut); why != "" {
 			t.Errorf("%s: GET %s %s, want 403 %s", token.name, liveSocketPattern, why, contracts.DispatchReadOnlyToken)
 		}
 		room := "/ws/doc/00000000-0000-0000-0000-000000000001"
-		if document := rig.serve(caller.presenting(t, http.MethodGet, room, token.token, nil)); document.Code != http.StatusUnauthorized {
+		if document := rig.serve(token.presenting(t, caller, http.MethodGet, room, nil)); document.Code != http.StatusUnauthorized {
 			t.Errorf("%s: GET %s answered %d %s, want 401: the document socket takes a cookie alone", token.name, room, document.Code, document.Body.String())
 		}
 
@@ -333,6 +385,47 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 			tally.cut, contracts.DispatchAsOfTokenNotServed, tally.scopes, tally.served)
 	}
 	t.Logf("walked the mounted table's %d rows, GET %s and GET /ws/doc/{room} with each of %d read-only tokens", mounted, liveSocketPattern, len(tokens))
+}
+
+// TestTheLiveSocketRefusesAReadOnlyPersonalToken: GET /ws/live under a read-only personal token,
+// holding read alone or beside person, is 403 READ_ONLY_TOKEN and no socket opens, since a socket
+// delivers whatever its views carry and so is no read. Each token is sent through the socket's own
+// chain (liveSocketHandler) with the socket replaced by a counter, which shows the socket never
+// opens, and through the mounted server, which shows the refusal is what a client is answered.
+// The control is a personal token that writes, holding the person scope too: the same chain opens
+// the socket for it, so the refusals are the read-only mark's and not the chain's.
+func TestTheLiveSocketRefusesAReadOnlyPersonalToken(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	opened := 0
+	live := rig.served.liveSocketHandler(func(w http.ResponseWriter, _ *http.Request) {
+		opened++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	for _, token := range readOnlyPersonalTokens(t, rig) {
+		response := httptest.NewRecorder()
+		live.ServeHTTP(response, token.presenting(t, caller, http.MethodGet, liveSocketPattern, nil))
+		if opened != 0 {
+			t.Fatalf("%s: GET %s opened the socket %d times, want none", token.name, liveSocketPattern, opened)
+		}
+		if why := notTheGatesRefusal(response, contracts.DispatchReadOnlyToken, ""); why != "" {
+			t.Errorf("%s: GET %s %s, want 403 %s", token.name, liveSocketPattern, why, contracts.DispatchReadOnlyToken)
+		}
+		if why := notTheGatesRefusal(rig.serve(token.presenting(t, caller, http.MethodGet, liveSocketPattern, nil)), contracts.DispatchReadOnlyToken, ""); why != "" {
+			t.Errorf("%s: GET %s on the mounted server %s, want 403 %s", token.name, liveSocketPattern, why, contracts.DispatchReadOnlyToken)
+		}
+	}
+
+	minted := rig.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "a writer", "scopes": []string{model.ScopePerson}})
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("mint a personal token that writes: status=%d body=%s", minted.Code, minted.Body.String())
+	}
+	response := httptest.NewRecorder()
+	live.ServeHTTP(response, brokerRequest(t, http.MethodGet, liveSocketPattern, nil, "Bearer "+decodeBody[agentTokenResponse](t, minted).Token, ""))
+	if opened != 1 {
+		t.Fatalf("GET %s under a personal token that writes opened the socket %d times (status=%d body=%s), want once: the chain admits a token that writes",
+			liveSocketPattern, opened, response.Code, response.Body.String())
+	}
 }
 
 // registerRefusal is the refusal Register panics with on the table as it stands, and empty when
@@ -407,12 +500,13 @@ func TestRegisterRefusesAGETRowWithNoReadClass(t *testing.T) {
 }
 
 // TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey: a POST to a keyed write under every kind of
-// read-only token (readOnlyWalkTokens) is refused READ_ONLY_TOKEN under a well-formed
-// Idempotency-Key and claims no key, and under a malformed one is still refused READ_ONLY_TOKEN
-// rather than the key layer's 400, so the key layer never read the header. A named-project
-// token's POST under the same key then runs its write. That second write is no proof on its own -
-// a key belongs to its caller (requestKeyLogin), so the named token's key would be free whatever
-// the first requests did - which is why the key table is read as well.
+// read-only token (readOnlyWalkTokens, the read-only personal tokens among them) is refused
+// READ_ONLY_TOKEN under a well-formed Idempotency-Key and claims no key, and under a malformed one
+// is still refused READ_ONLY_TOKEN rather than the key layer's 400, so the key layer never read
+// the header. A named-project token's POST under the same key then runs its write. That second
+// write is no proof on its own - a key belongs to its caller (requestKeyLogin), so the named
+// token's key would be free whatever the first requests did - which is why the key table is read
+// as well.
 func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -426,21 +520,21 @@ func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
 
 	path := "/api/v1/issues/" + own.issue + "/comments"
 	const key, body = "read-only-comment-press-1", "Written under the key a read-only token was refused under."
-	post := func(token, key string) *httptest.ResponseRecorder {
+	comment := map[string]any{"body": body}
+	post := func(request *http.Request, key string) *httptest.ResponseRecorder {
 		t.Helper()
-		request := caller.presenting(t, http.MethodPost, path, token, map[string]any{"body": body})
 		request.Header.Set(contracts.IdempotencyKeyHeader, key)
 		return rig.serve(request)
 	}
 
 	for _, token := range tokens {
-		if why := notTheGatesRefusal(post(token.token, key), contracts.DispatchReadOnlyToken, token.cut); why != "" {
+		if why := notTheGatesRefusal(post(token.presenting(t, caller, http.MethodPost, path, comment), key), contracts.DispatchReadOnlyToken, token.cut); why != "" {
 			t.Fatalf("%s: a comment under a key %s, want 403 %s", token.name, why, contracts.DispatchReadOnlyToken)
 		}
 		if held := countRequestKeys(t, rig.database); held != 0 {
 			t.Fatalf("%s: the refused request left %d request keys, want none", token.name, held)
 		}
-		if why := notTheGatesRefusal(post(token.token, "not a key"), contracts.DispatchReadOnlyToken, token.cut); why != "" {
+		if why := notTheGatesRefusal(post(token.presenting(t, caller, http.MethodPost, path, comment), "not a key"), contracts.DispatchReadOnlyToken, token.cut); why != "" {
 			t.Fatalf("%s: a comment under a malformed key %s, want 403 %s and not the key layer's %s",
 				token.name, why, contracts.DispatchReadOnlyToken, contracts.IdempotencyKeyInvalid)
 		}
@@ -449,7 +543,7 @@ func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
 		}
 	}
 
-	written := post(named, key)
+	written := post(caller.presenting(t, http.MethodPost, path, named, comment), key)
 	if written.Code != http.StatusCreated {
 		t.Fatalf("the named token's comment under the same key: status=%d body=%s, want 201", written.Code, written.Body.String())
 	}
@@ -467,19 +561,21 @@ func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
 	t.Logf("%d read-only tokens were refused a keyed comment under a sound key and a malformed one, and claimed no key", len(tokens))
 }
 
-// agentTokenLookup is personalTokenActor's one read of a bearer's row.
-var agentTokenLookup = regexp.MustCompile(`(?is)\bfrom\s+agent_tokens\s+where\s+token_hash\b`)
+// agentTokenLookup is personalTokenActor's one read of a bearer's row: one statement that looks
+// the hash up in agent_tokens and agent_read_tokens alike, so a lookup split into one statement a
+// table counts twice.
+var agentTokenLookup = regexp.MustCompile(`(?is)\bfrom\s+agent_(read_)?tokens\s+where\s+token_hash\b`)
 
 // TestAnUnresolvedBearerKeepsTheAnswerItHadBeforeTheGate: the read-only gate resolves a personal
 // token before the route does, and a token that does not resolve is answered as it was before the
-// gate, by the layer that answered it then. An unknown dsp_ bearer and a revoked one are each
-// sent to the two rows that take no credential (GET /api/v1 and GET /api/v1/schema/blocks), which
-// answer 200, and to GET /api/v1/limits, GET /api/v1/issues/{key} and a keyed POST
-// /api/v1/issues, which answer the refusal optionalActor gives each: 401 UNAUTHORIZED "invalid
-// bearer token" for the unknown one, 401 TOKEN_REVOKED for the revoked one. Every statement each
-// request ran, its handler's and the work it detached, is read through a tracer on the server's
-// pool: none writes, and exactly one looks the token up, so the gate resolved it once and every
-// later layer read the refusal it carried.
+// gate, by the layer that answered it then. An unknown dsp_ bearer, a revoked one and a revoked
+// read-only one are each sent to the two rows that take no credential (GET /api/v1 and GET
+// /api/v1/schema/blocks), which answer 200, and to GET /api/v1/limits, GET /api/v1/issues/{key}
+// and a keyed POST /api/v1/issues, which answer the refusal optionalActor gives each: 401
+// UNAUTHORIZED "invalid bearer token" for the unknown one, 401 TOKEN_REVOKED for the revoked ones.
+// Every statement each request ran, its handler's and the work it detached, is read through a
+// tracer on the server's pool: none writes, and exactly one looks the token up, so the gate
+// resolved it once and every later layer read the refusal it carried.
 func TestAnUnresolvedBearerKeepsTheAnswerItHadBeforeTheGate(t *testing.T) {
 	database := storetest.Open(t)
 	marked := &markedStatements{}
@@ -507,6 +603,10 @@ func TestAnUnresolvedBearerKeepsTheAnswerItHadBeforeTheGate(t *testing.T) {
 	if response := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/me/agent-tokens/"+revoked.ID, nil, "alice"); response.Code != http.StatusNoContent {
 		t.Fatalf("revoke agent token: status=%d body=%s", response.Code, response.Body.String())
 	}
+	revokedReader := mintPersonalToken(t, handler, "alice", "revoked-reader", []string{model.ScopeRead, model.ScopePerson})
+	if response := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/me/agent-tokens/"+revokedReader.ID, nil, "alice"); response.Code != http.StatusNoContent {
+		t.Fatalf("revoke the read-only agent token: status=%d body=%s", response.Code, response.Body.String())
+	}
 	unknown, _, err := newAgentToken()
 	if err != nil {
 		t.Fatalf("make an unknown token: %v", err)
@@ -528,6 +628,7 @@ func TestAnUnresolvedBearerKeepsTheAnswerItHadBeforeTheGate(t *testing.T) {
 	}{
 		{"an unknown dsp_ bearer", unknown, "UNAUTHORIZED", "invalid bearer token"},
 		{"a revoked dsp_ bearer", revoked.Token, "TOKEN_REVOKED", "agent token has been revoked"},
+		{"a revoked read-only dsp_ bearer", revokedReader.Token, "TOKEN_REVOKED", "agent token has been revoked"},
 	}
 	for _, bearer := range bearers {
 		for _, row := range rows {

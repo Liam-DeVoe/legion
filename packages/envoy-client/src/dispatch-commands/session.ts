@@ -49,7 +49,9 @@ function whoamiPerson(identity: WhoamiResponse): string | null {
 
 /**
  * `dispatch whoami`: the identity Dispatch records this session's writes as. It names no owner,
- * so it runs on the session's context alone.
+ * so it runs on the session's context alone. A read-only credential, which Dispatch names by
+ * `read` among its scopes, is told it may only read, with its cut where it has one, in place of
+ * the sentences about the issues it would create.
  */
 export async function whoamiCommand(context: SessionContext): Promise<DispatchToolResult> {
   const { input, newClient: dispatchClient } = context;
@@ -64,6 +66,10 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+  // A Dispatch that predates read-only tokens names no `read` and no cut, and has no read-only
+  // credential to name.
+  const readOnly = identity.scopes?.includes("read") === true;
+  const cut = identity.kind === "agent" ? (identity.cut ?? null) : null;
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
@@ -75,8 +81,17 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // the command that gets them a write. A verified service-account token names a service and
   // proves no session; it writes as before, and keeps the sentence it had.
   const signInNeeded = owner === null && service !== null && proved !== null;
-  const acting =
+  // Dispatch refuses every write of a read-only credential with READ_ONLY_TOKEN, before any other
+  // check, so neither the issues it would create nor a sign-in it would need are its sentence.
+  const reader =
     owner !== null
+      ? `acts for ${owner}`
+      : service !== null
+        ? `runs as service ${serviceSubjectLabel(service)}`
+        : "runs";
+  const acting = readOnly
+    ? `Session ${session} ${reader} with a read-only credential: it may read, and Dispatch refuses every write it makes.${cut === null ? "" : ` Its cut is ${cut}, the past time it reads Dispatch at.`}`
+    : owner !== null
       ? `Session ${session} acts for ${owner}: issues you create without an assignee are assigned to ${owner}.`
       : service !== null
         ? // The text names the identity the way every other surface does; details
@@ -87,9 +102,12 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
         : `Session ${session} runs under the shared token: ${unowned}`;
   const elsewhere =
     proved !== null && proved !== sessionId
-      ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
+      ? readOnly
+        ? ` Your credential names session ${proved}, which is not this host session (${sessionId}).`
+        : ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
       : "";
-  const writable = project !== null ? ` It may write project ${project} and no other.` : "";
+  const writable =
+    project !== null && !readOnly ? ` It may write project ${project} and no other.` : "";
   return {
     text: acting + elsewhere + writable,
     details: { session, owner, service, project },
