@@ -48,6 +48,9 @@ func subjectsWithout(t *testing.T, subject string) []string {
 //     lane, over a stream that dropped that lane: not the 404 of a role nothing was kept for,
 //     since the keep failed for want of the subject and the sender learns that nothing stored the
 //     message and why;
+//   - the send route's send marked with a role whose claim names another session than the
+//     target, or none (answerRoleSend), which keeps the message on the role's kept lane over a
+//     stream that dropped that lane, for the same reason;
 //   - the publish route's topic publish, whose topic the stream leaves out: refused 400 before
 //     anything is published (ReachesNoSession), as it was, since no session's consumer would hold
 //     it.
@@ -176,6 +179,28 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 		lacks(t, a, subject)
 		if got := forwards.Load(); got != 0 {
 			t.Errorf("the send made %d forwards to a role nobody claims, want none", got)
+		}
+		if stored := storedOnStream(t, client, bus.Stream, subject); stored != 0 {
+			t.Errorf("the stream holds %d copies on %s, want none", stored, subject)
+		}
+	})
+
+	t.Run("the send route's role-marked send kept for a role nobody claims", func(t *testing.T) {
+		const (
+			role      = "lacks-route-marked-keep"
+			target    = "ses_lacks_route_marked_target"
+			principal = "dispatch@lacks-route.example"
+		)
+		subject := bus.KeptRoleSubject(role)
+		client, _ := connect(t, subjectsWithout(t, subject))
+		deps, _, forwards := publishRig(t, client)
+		deps.dispatchPrincipal = principal
+		request := postJSON("/v1/messages/send", fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"a role event","role":%q}`, target, role))
+		request = request.WithContext(withVerifiedPrincipal(request.Context(), principal))
+		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return sendHandler(deps, logger) }, request)
+		lacks(t, a, subject)
+		if got := forwards.Load(); got != 0 {
+			t.Errorf("the send made %d forwards for a role nobody claims, want none", got)
 		}
 		if stored := storedOnStream(t, client, bus.Stream, subject); stored != 0 {
 			t.Errorf("the stream holds %d copies on %s, want none", stored, subject)
