@@ -1,4 +1,4 @@
-import { hashKey, type MutationKey } from "@tanstack/react-query";
+import type { MutationKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import type { Actor } from "../../api/types";
@@ -16,7 +16,12 @@ import { useHeldSend, useHeldSends } from "./held-sends";
 import { GoneReply } from "./KeptReply";
 import type { SentDraft } from "./send-request";
 import { useUnsentDrafts } from "./unsent-drafts";
-import type { GoneReplyDraft, KeptDrafts, OfferedDraft } from "./useKeptDrafts";
+import {
+  composerNameOf,
+  type GoneReplyDraft,
+  type KeptDrafts,
+  type OfferedDraft,
+} from "./useKeptDrafts";
 
 /** Each kind as a kept draft names the one it was written as, beside a compose of another
  *  (`KeptDraftOffers`) or in the margin's list of what its compose kept (`MarginKeptDrafts`). */
@@ -120,11 +125,11 @@ export function KeptReplyToDeleted({
 }): ReactNode {
   const store = useHeldSends();
   const unsent = useUnsentDrafts();
-  const name = hashKey(mutationKey);
+  const name = composerNameOf(mutationKey);
   const held = useHeldSend(mutationKey);
-  const typed = unsent.useKept(name);
+  const typed = unsent.useUnsent(name);
   const refused = held?.status === "refused" ? held : undefined;
-  const draft = refused?.draft.draft ?? (typed ? unsent.read(name) : undefined);
+  const draft = refused?.draft.draft ?? typed;
   if (draft === undefined) return null;
   return (
     <div className="mt-2">

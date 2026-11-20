@@ -1,5 +1,5 @@
 import { hashKey, type MutationKey } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
@@ -36,6 +36,7 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
+import { composerNameOf } from "../conversation/useKeptDrafts";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { EditedMark, PostBody, PostPreview } from "../refs/PostBody";
@@ -285,11 +286,11 @@ function CommentBody({
  * is saved meanwhile, and a save still out draws nothing until Dispatch answers it.
  */
 function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
-  const mutationKey = useMemo(() => [...COMMENT_EDIT_SEND_KEY, commentId], [commentId]);
+  const mutationKey = [...COMMENT_EDIT_SEND_KEY, commentId];
   const store = useHeldSends();
   const held = useHeldSend(mutationKey);
   const unsent = useUnsentDrafts();
-  const name = hashKey(mutationKey);
+  const name = composerNameOf(mutationKey);
   // An edit's address is the comment its send name names, so its draft is kept for no reply and
   // no words of a document.
   const kept = unsent
@@ -463,15 +464,7 @@ export function ThreadCard({
     replyMutationKey === undefined ? "" : hashKey(replyMutationKey)
   );
   const keptReply =
-    rootDeleted !== null ? (
-      replyMutationKey === undefined ? null : (
-        <KeptReplyToDeleted
-          actor={root.author}
-          mutationKey={replyMutationKey}
-          parentKind="comment"
-        />
-      )
-    ) : !expanded && (heldReply?.status === "refused" || unsentReply) ? (
+    rootDeleted === null && !expanded && (heldReply?.status === "refused" || unsentReply) ? (
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
           <KeptReply actor={root.author} press={reopenControl ?? "Reply"} />
@@ -487,6 +480,10 @@ export function ThreadCard({
         ) : null}
       </div>
     ) : null;
+  const keptReplyToDeleted =
+    rootDeleted === null || replyMutationKey === undefined ? null : (
+      <KeptReplyToDeleted actor={root.author} mutationKey={replyMutationKey} parentKind="comment" />
+    );
 
   return (
     <>
@@ -729,6 +726,7 @@ export function ThreadCard({
           </button>
         )}
         {keptReply}
+        {keptReplyToDeleted}
         {composerFirst ? null : replyComposer}
         {expanded ? null : renderDeliveries?.(root)}
         {actionFailure === undefined ? null : (

@@ -248,10 +248,7 @@ function AgentExchangeReply({
       }
       deleted={postDeletion(reply)}
       edited={reply.edited_at}
-      // A post its author deleted takes no reply (`409 POST_DELETED`), so it offers no Reply.
-      onReply={
-        postDeletion(reply) === null ? () => onReply(agentReplyTo(agent, read, reply)) : undefined
-      }
+      onReply={() => onReply(agentReplyTo(agent, read, reply))}
       quote={
         parent === undefined
           ? undefined
@@ -329,11 +326,7 @@ function AgentTargetedMessage({
       deleted={postDeletion(read.message)}
       deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
       header={null}
-      onReply={
-        postDeletion(read.message) === null
-          ? () => onReply(agentReplyTo(agent, read, read.message))
-          : undefined
-      }
+      onReply={() => onReply(agentReplyTo(agent, read, read.message))}
       onRetry={retry.mutate}
       replyDisabled={replyDisabled}
       retrying={retry.isPending}

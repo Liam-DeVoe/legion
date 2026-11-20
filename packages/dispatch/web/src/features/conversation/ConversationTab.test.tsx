@@ -15,6 +15,7 @@ import {
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { ownReplies } from "../../__tests__/own-replies";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { wholeText } from "../../__tests__/whole-text";
@@ -2904,14 +2905,6 @@ test("the composer's quote of a message deleted while the draft is open reads as
     stub.restore();
   }
 });
-
-/** The Reply buttons `turn` draws for its own post, and not for a reply drawn inside it. */
-function ownReplies(turn: Element | null): number | undefined {
-  if (!(turn instanceof HTMLElement)) return undefined;
-  return within(turn)
-    .queryAllByRole("button", { name: "Reply" })
-    .filter((button) => button.closest("[data-turn]") === turn).length;
-}
 
 // A post its author deleted takes no reply (409 POST_DELETED), so the Conversation offers no
 // Reply on one - a message, a reply to one, a comment - as the margin's card draws no reply

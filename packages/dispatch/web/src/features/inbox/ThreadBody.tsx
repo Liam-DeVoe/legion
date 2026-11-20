@@ -554,8 +554,9 @@ function AcceptedAsTurn({ sessionId }: { sessionId: string }): ReactNode {
 /**
  * A one-off message the reader sent an agent session, with every message under it: the reader's
  * own follow-ups included, and a reply the session took as a turn of its live conversation saying
- * so. The composer replies under the thread's newest message, in the mode the Agents page uses for
- * a reply in that thread (`exchangeDelivery`), so a reply sent here behaves as one sent there.
+ * so. The composer replies under the thread's newest message that still stands, in the mode the
+ * Agents page uses for a reply in that thread (`exchangeDelivery`), so a reply sent here behaves
+ * as one sent there.
  */
 function AgentThreadBody({
   openAtFirstUnread,
@@ -580,7 +581,11 @@ function AgentThreadBody({
   if (messages.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
-  const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);
+  // The thread's messages, root first. The box answers the newest that still stands: a message
+  // its author deleted takes no reply (`409 POST_DELETED`), so a delete moves the box back onto
+  // the newest message left standing, as a newer message moves it on.
+  const posts = read === undefined ? [] : [read.message, ...(read.replies ?? [])];
+  const newest = posts.filter((message) => postDeletion(message) === null).at(-1);
   const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
@@ -588,7 +593,7 @@ function AgentThreadBody({
         <AcceptedAsTurn sessionId={sessionId} />
       ) : undefined
     );
-  const turns = read === undefined ? [] : [read.message, ...(read.replies ?? [])].map(turn);
+  const turns = posts.map(turn);
   // The warning of a session whose capabilities hold no delivery mode; undefined for one that
   // takes a mode.
   const noDelivery = noDeliveryLine(agent?.capabilities ?? []);
@@ -596,7 +601,16 @@ function AgentThreadBody({
     <>
       <ThreadTurns
         composer={
-          agent === undefined || read === undefined || newest === undefined ? null : (
+          agent === undefined || read === undefined ? null : newest === undefined ? (
+            // No message of the thread stands, so the thread draws no box, as a comment thread
+            // draws none under a deleted root (`CommentThreadBody`): a reply the reader kept for
+            // it is drawn itself, with Discard my draft, naming the thread's newest message.
+            <KeptReplyToDeleted
+              actor={((read.replies ?? []).at(-1) ?? read.message).author}
+              mutationKey={sendKey}
+              parentKind="message"
+            />
+          ) : (
             <div data-inbox-agent-composer="">
               {noDelivery !== undefined ? (
                 <>

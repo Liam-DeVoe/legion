@@ -486,8 +486,12 @@ export function useKeptDrafts({
   const keptAway: AwayDraft[] = [];
   for (const away of keptByAddress) {
     if (sameReply(away.replyTo, replyTo)) continue;
-    const listing = away.replyTo === null ? "standing" : listingOf(away.replyTo);
-    if (away.replyTo === null || listing === "standing") keptAway.push(away);
+    if (away.replyTo === null) {
+      keptAway.push(away);
+      continue;
+    }
+    const listing = listingOf(away.replyTo);
+    if (listing === "standing") keptAway.push(away);
     else goneAway.push({ ...away, listing, replyTo: away.replyTo });
   }
   // Only a composer with an anchor keeps drafts by it, so only a margin compose offers one: the

@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -1483,21 +1484,15 @@ test("the next ask's card shows no answer refused on the ask before it, and its 
 /** A thread's root comment on `issueKey`, as the issue's comments read answers it. */
 function rootComment(id: string, issueKey: string): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
-    answers: null,
-    artifact_id: null,
     ask_id: null,
     author: { id: "bob", kind: "user" },
     body: "The retry budget is too small.",
     created_at: "2026-10-12T00:00:00Z",
-    deleted_at: null,
-    deleted_by: null,
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: issueKey,
-    mentions: [],
-    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,

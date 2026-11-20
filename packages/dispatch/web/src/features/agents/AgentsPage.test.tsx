@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { ownReplies } from "../../__tests__/own-replies";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -5075,18 +5076,11 @@ test("the Agents page offers no Reply on a deleted message, and a standing one k
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     await within(planner).findByText("Yes, it can.");
-    // The Reply buttons a turn draws for its own message, and not for a reply drawn inside it.
-    const ownReplies = (id: string) => {
-      const turn = planner.querySelector(`[data-turn="message:${id}"]`);
-      if (!(turn instanceof HTMLElement)) return undefined;
-      return within(turn)
-        .queryAllByRole("button", { name: "Reply" })
-        .filter((button) => button.closest("[data-turn]") === turn).length;
-    };
+    const turn = (id: string) => planner.querySelector(`[data-turn="message:${id}"]`);
     expect({
-      answer: ownReplies("reply-1"),
-      exchange: ownReplies("message-1"),
-      thanks: ownReplies("reply-2"),
+      answer: ownReplies(turn("reply-1")),
+      exchange: ownReplies(turn("message-1")),
+      thanks: ownReplies(turn("reply-2")),
     }).toEqual({ answer: 1, exchange: 0, thanks: 0 });
   } finally {
     page.view.unmount();

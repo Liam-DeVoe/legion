@@ -267,13 +267,7 @@ function ConversationReply({
               targetName,
             }
       }
-      // A post its author deleted takes no reply (`409 POST_DELETED`), so it offers no Reply, as
-      // the margin's card offers no reply composer under a deleted root.
-      onReply={
-        postDeletion(reply) === null
-          ? () => onReply(replyTargetFor(reply, root, issueKey))
-          : undefined
-      }
+      onReply={() => onReply(replyTargetFor(reply, root, issueKey))}
       quote={{
         author: parent?.author,
         block: reply.reply_block,
@@ -940,11 +934,7 @@ function TargetedMessageTurn({
       deleted={postDeletion(item.root)}
       deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
       header={<Avatar actor={asker} />}
-      onReply={
-        postDeletion(item.root) === null
-          ? () => onReply(replyTargetFor(item.root, item, issueKey))
-          : undefined
-      }
+      onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}
       register={register}
       replyDisabled={replyDisabled}

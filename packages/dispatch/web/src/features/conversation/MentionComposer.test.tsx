@@ -388,13 +388,10 @@ test("reopening the same reply restores its canonical prefills after cancel", as
   }
 });
 
-// A draft the composer keeps for another reply draws the line naming that reply's Reply while the
-// host lists the reply. Once the host lists it no longer, that Reply is gone, so the draft is
-// drawn itself, with Discard my draft and, on the issue's own address, Use it here, which never
-// writes over words of the reader's own in the field: it shows once the field is empty, as the
-// line says.
-test("a reply kept for a message its host no longer lists waits for an empty field before Use it here", async () => {
-  const user = userEvent.setup();
+/** A composer at the issue's own address that keeps a reply for Planner's message `message-1`
+ *  (`answered`), drawn while its host lists that message standing: `composer` draws it under
+ *  another listing, `lines` reads its status lines and `offersUse` whether it offers Use it here. */
+function renderKeptReply() {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -428,6 +425,17 @@ test("a reply kept for a message its host no longer lists waits for an empty fie
   const lines = () => screen.queryAllByRole("status").map((status) => status.textContent ?? "");
   const offersUse = () => screen.queryByRole("button", { name: "Use it here" }) !== null;
   const view = render(composer(new Map<string, ListedReply>([[answered.id, "standing"]])));
+  return { answered, composer, kept, lines, offersUse, view };
+}
+
+// A draft the composer keeps for another reply draws the line naming that reply's Reply while the
+// host lists the reply. Once the host lists it no longer, that Reply is gone, so the draft is
+// drawn itself, with Discard my draft and, on the issue's own address, Use it here, which never
+// writes over words of the reader's own in the field: it shows once the field is empty, as the
+// line says.
+test("a reply kept for a message its host no longer lists waits for an empty field before Use it here", async () => {
+  const user = userEvent.setup();
+  const { composer, kept, lines, offersUse, view } = renderKeptReply();
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
@@ -478,39 +486,7 @@ test("a reply kept for a message its host no longer lists waits for an empty fie
 // message that answers none.
 test("a reply kept for a message its host lists deleted is drawn itself, saying the message was deleted", async () => {
   const user = userEvent.setup();
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const sendKey: MutationKey = ["conversation-composer", "CORE-1"];
-  const owner: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
-  const answered: ReplyTarget = {
-    actor: plannerAuthor,
-    excerpt: "Status?",
-    id: "message-1",
-    parentKind: "message",
-  };
-  const kept = "Reply to the status";
-  unsentDraftsOf(queryClient).keepAway(composerNameOf(sendKey), {
-    draft: { body: kept, mentions: [], replacement: "" },
-    owner,
-    replyTo: answered,
-  });
-  const composer = (listed: ListedReplies) => (
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={queryClient}>
-        <MentionComposer
-          listed={listed}
-          mutationKey={sendKey}
-          onClose={() => {}}
-          onSent={() => {}}
-          owner={owner}
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  const lines = () => screen.queryAllByRole("status").map((status) => status.textContent ?? "");
-  const offersUse = () => screen.queryByRole("button", { name: "Use it here" }) !== null;
-  const view = render(composer(new Map<string, ListedReply>([[answered.id, "standing"]])));
+  const { answered, composer, kept, lines, offersUse, view } = renderKeptReply();
 
   try {
     const whileStanding = { lines: lines(), use: offersUse() };
