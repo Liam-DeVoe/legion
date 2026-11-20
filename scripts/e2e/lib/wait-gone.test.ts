@@ -171,6 +171,8 @@ until [ -s "$member" ]; do sleep 0.05; done
 m=$(<"$member"); started+=("$m")
 echo "group_of_member=$(awk '{print $5}' "/proc/$m/stat")"; echo "group=$g"
 kill -STOP "$parent"
+# Stopped before the kill: a parent the stop has not reached yet would reap the member at once.
+until [ "$(awk '{print $3}' "/proc/$parent/stat")" = T ]; do sleep 0.01; done
 start=$(now_ms)
 kill_gone TERM "$END" "-$g"; echo "rc=$?"
 echo "ms=$(($(now_ms) - start))"

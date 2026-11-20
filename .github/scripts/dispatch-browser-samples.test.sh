@@ -241,10 +241,10 @@ done
 
 echo "case: each browser step's stop leaves neither the sampler nor a command it started running"
 # The reading after the stop reads the two files the sampler writes, so the stop waits for the
-# sampler (`wait "$sampler"`), and the sampler ends on SIGTERM only between its commands (its `trap
-# 'exit 0' TERM`): one killed in the middle of its 5 s sleep, its ps or its awk would leave that
-# command running, and writing, after the step's wait has returned. Each step's stop line, cut from
-# its script as above, runs against a real sampler caught in its sleep.
+# sampler (`wait "$sampler"`), and the sampler's SIGTERM trap ends the command under way (its 5 s
+# sleep, or its tick's ps and awk) and waits for it before the sampler exits: one left running would
+# go on writing after the step's wait has returned. Each step's stop line, cut from its script as
+# above, runs against a real sampler caught in its sleep.
 for i in 0 1; do
   dir=$(fixture "stop-$i")
   "$samples_script" sample "$dir" &
@@ -259,14 +259,14 @@ for i in 0 1; do
   check "and no sleep the sampler had started" "$(is "${state:-gone}" gone)"
 done
 
-echo "case: a tick whose process walk never ends is cut at the tick's 5 s, and holds neither the sampler nor its stop"
+echo "case: a tick whose process walk never ends is cut at its 20 s, and holds neither the sampler nor its stop"
 # The CPU reading walks every process of the machine (ps -eo), which a loaded machine can hold for
-# longer than a tick. A ps that does not end for 60 s stands in for one here, first on PATH, writing
-# its own pid before it sleeps. The sampler must go on to its next tick, write no CPU line for the
-# tick it cut, name the cut, and end within moments of the stop's SIGTERM, the stand-in gone.
+# long. A ps that does not end for 120 s stands in for one here, first on PATH, writing its own pid
+# before it sleeps. The sampler must go on to its next tick, write no CPU line for the tick it cut,
+# name the cut, and end within moments of the stop's SIGTERM, the stand-in gone.
 dir=$(fixture slow-walk)
 mkdir -p "$dir/bin"
-printf '#!/bin/sh\necho "$$" >>"%s/ps-pids"\nexec sleep 60\n' "$dir" >"$dir/bin/ps"
+printf '#!/bin/sh\necho "$$" >>"%s/ps-pids"\nexec sleep 120\n' "$dir" >"$dir/bin/ps"
 chmod +x "$dir/bin/ps"
 # Both files exist before the sampler starts, so no read below fails before it truncates its own.
 : >"$dir/memory-samples.txt"
@@ -274,21 +274,22 @@ chmod +x "$dir/bin/ps"
 PATH="$dir/bin:$PATH" "$samples_script" sample "$dir" 2>"$dir/stderr" &
 sampler=$!
 # The second memory sample is written only once the first tick's CPU reading has ended: at its cut
-# after 5 s, or after the stand-in's 60 s with no cut. Read with builtins, for up to 30 s.
+# after 20 s, or after the stand-in's 120 s with no cut. Read with builtins, for up to 60 s.
 lines=()
-for ((i = 0; i < 300; i++)); do
+for ((i = 0; i < 600; i++)); do
   mapfile -t lines <"$dir/memory-samples.txt"
   [ "${#lines[@]}" -lt 2 ] || break
   sleep 0.1
 done
-check "the sampler went on to its next tick within 30 s" "$(is "$((${#lines[@]} >= 2))" 1)"
+check "the sampler went on to its next tick within 60 s" "$(is "$((${#lines[@]} >= 2))" 1)"
 check "the cut tick wrote no CPU line" "$(is "$(wc -l <"$dir/cpu-samples.txt")" 0)"
-check "and the cut is named" "$(contains "$(<"$dir/stderr")" "had not ended within the tick's 5 s")"
+check "and the cut is named" "$(contains "$(<"$dir/stderr")" "had not ended within its 20 s")"
+# The stop lands in the second tick's reading, the stand-in again: the trap ends it at once.
 began=$EPOCHREALTIME
 kill "$sampler" 2>/dev/null || true
 wait "$sampler" 2>/dev/null || true
 took=$(awk -v a="$began" -v b="$EPOCHREALTIME" 'BEGIN { printf "%d", b - a }')
-check "the stop ends within the tick's bound, 8 s (it took ${took} s)" "$(is "$((took <= 8))" 1)"
+check "the stop ends within 5 s, not at the reading's end (it took ${took} s)" "$(is "$((took <= 5))" 1)"
 left=
 while read -r pid; do
   # A zombie runs nothing: gone.
