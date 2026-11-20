@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -292,12 +293,14 @@ func (s *server) v2ProjectRows() []routeRow {
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/repositories/{owner}/{repo}", Auth: authAny, Versions: onlyV2,
-			Description: "Remove a repository's mapping to its project, a bearer naming its session in actor, and append " +
-				"settings.repo_project.updated with deleted true on the project. An issue's own repository needs no " +
-				"mapping, so an issue that names the repository keeps it; one that resolved to the mapping as its " +
-				"project's default resolves to no repository until the project has another default. A credential scoped " +
-				"to one project is refused, since a mapping belongs to the deployment. 204. 404 REPOSITORY_NOT_FOUND for a " +
-				"repository no mapping names, a value that is no owner/name among them.",
+			Description: "Remove the mapping stored under the path's own spelling, a bearer naming its session in actor, and " +
+				"append settings.repo_project.updated with deleted true on the project. The path's two segments, as " +
+				"unescaped, are compared byte for byte with the stored name: acme/x removes acme/x, and acme/x.git removes " +
+				"a mapping stored as acme/x.git and never acme/x, so the same DELETE sent again finds nothing. An issue's " +
+				"own repository needs no mapping, so an issue that names the repository keeps it; one that resolved to the " +
+				"mapping as its project's default resolves to no repository until the project has another default. A " +
+				"credential scoped to one project is refused, since a mapping belongs to the deployment. 204. 404 " +
+				"REPOSITORY_NOT_FOUND for a spelling no mapping is stored under, a value that is no owner/name among them.",
 			Handler:  s.deleteRepositoryV2,
 			Resource: "repositories", Kind: kindItem, Key: "{owner}/{repo}",
 			Body:     requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
@@ -308,12 +311,15 @@ func (s *server) v2ProjectRows() []routeRow {
 		{
 			Method: http.MethodPut, Pattern: "/repositories/{owner}/{repo}", Auth: authAny, Versions: onlyV2,
 			Description: "Map a GitHub repository to a project {project, default?, renamed_to?}, a bearer naming its " +
-				"session in actor; the repository is read lowercase with .git trimmed. default true makes it the project's " +
+				"session in actor; the repository is read lowercase with one trailing .git trimmed, and its owner and name " +
+				"are held to the characters GitHub allows: a name that is . or .. or empty or longer than 100 characters, " +
+				"so read, is 400 INVALID_REPO_PROJECT. default true makes it the project's " +
 				"one default, demoting the one before, and absent keeps the mapping's own while its project is unchanged. " +
 				"renamed_to is the owner/name this repository is called today, which every comparison of a repository " +
-				"canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair naming this " +
-				"repository, one naming a repository that is itself renamed, or one on a repository another mapping is " +
-				"already renamed to is 400 INVALID_REPO_PROJECT, as a project that is not a key is. A mapping issues name " +
+				"canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair the path's " +
+				"rule refuses, a pair naming this repository, one naming a repository that is itself renamed, or one on a " +
+				"repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT, as a project that is not a " +
+				"key is. A mapping issues name " +
 				"as their repository moves like any other, since an issue's own repository needs no mapping; 404 NOT_FOUND " +
 				"for a project that does not exist. Each mapping the write changes appends settings.repo_project.updated on " +
 				"its project, and a moved one deleted true on the project it left. A mapping records no setter, so a PUT " +
@@ -330,8 +336,10 @@ func (s *server) v2ProjectRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/repositories/{owner}/{repo}/app-installation", Auth: authAny, Versions: onlyV2,
 			Description: "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is " +
 				"installed on the repository, read from GitHub on every call: {installed}, false when GitHub answers 404, " +
-				"for a repository no mapping names too. 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 " +
-				"GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure.",
+				"for a repository no mapping names too. 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when " +
+				"the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer " +
+				"than 100 characters (a trailing .git trimmed). 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App " +
+				"key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure.",
 			Handler:  s.getAppInstallation,
 			Resource: "app-installation", Kind: kindSingleton,
 			Shape:    routeShape{Status: http.StatusOK, Response: appInstallationResponse{}},
@@ -1010,17 +1018,20 @@ func (s *server) listRepositoriesV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteRepositoryV2 answers DELETE /api/v2/repositories/{owner}/{repo}: the removal DELETE
-// /api/v1/settings/repo-projects/{owner}/{repo} makes (deleteRepoProjectAs), the mapping held to
-// exist first, where /api/v1 answers 204 for one that does not (dispatch://INFRA-4071/spec R7): a
-// value that is no owner/name names no mapping either.
+// /api/v1/settings/repo-projects/{owner}/{repo} makes (deleteRepoProjectAs) of the mapping stored
+// under the path's own spelling (deletedRepoProjectSpelling), the mapping held to exist first,
+// where /api/v1 answers 204 for one that does not, or 400 INVALID_ISSUE_REF for a spelling no
+// issue reference takes (dispatch://INFRA-4071/spec R7): a spelling no mapping is stored under,
+// such as acme/x.git where acme/x is, names no mapping. A spelling the database cannot hold, one
+// with a NUL or a byte that is no UTF-8, is no stored mapping's either, so it is not asked about.
 func (s *server) deleteRepositoryV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
+	spelled := deletedRepoProjectSpelling(r)
 	held := false
-	repo, err := repoProjectPath(r)
-	if err == nil {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from repo_projects where repo = $1)`, repo).Scan(&held); err != nil {
+	if text.Storable(spelled) {
+		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from repo_projects where repo = $1)`, spelled).Scan(&held); err != nil {
 			s.writeHandlerError(w, r, fmt.Errorf("read whether the repository is mapped: %w", err))
 			return
 		}
@@ -1034,7 +1045,7 @@ func (s *server) deleteRepositoryV2(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.deleteRepoProjectAs(w, r, actor, repo)
+	s.deleteRepoProjectAs(w, r, actor, spelled, nil)
 }
 
 // putRepositoryV2 answers PUT /api/v2/repositories/{owner}/{repo}: the mapping PUT
@@ -1044,12 +1055,12 @@ func (s *server) putRepositoryV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	repo, err := repoProjectPath(r)
+	owner, name, err := repoProjectPath(r)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.putRepoProjectFrom(w, r, repo, v2Body[putRepoProjectInput](r), true)
+	s.putRepoProjectFrom(w, r, owner+"/"+name, v2Body[putRepoProjectInput](r), true)
 }
 
 // prioritiesV2Query is GET /api/v2/priorities's query.

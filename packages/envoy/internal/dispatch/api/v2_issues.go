@@ -337,14 +337,23 @@ func (s *server) v2IssueRows() []routeRow {
 				"its words last changed in and their digest, and results, every result recorded against it from any issue, " +
 				"newest first by when the recording transaction began. Each check carries compared_with, the commits and " +
 				"branches its results are compared with: for a before_merge check every pull request head Dispatch holds " +
-				"for the check's issue, {kind: pull_request, commit, pull_request, learned_at}; for an after_merge check " +
+				"for the check's issue, {kind: pull_request, commit, pull_request, learned_at, repo?}: the open and merged " +
+				"pull requests attributed to the issue, and those its external links name " +
+				"(https://github.com/<owner>/<repo>/pull/<n>) in a repository it does not resolve to, a linked one's head " +
+				"carrying that repository as repo (owner/name); for an after_merge check " +
 				"{kind: branch, branch} for the branch that issue's pull request merged into and the repository's default " +
 				"branch; for a default_branch check the default branch alone. Where that list is empty the check carries " +
 				"compared_nothing: no_pull_request (the check's issue holds no pull request), no_repository (the issue " +
 				"resolves to no repository), repository_unreadable (Dispatch's GitHub App cannot read the repository) or " +
 				"read_failed (a read Dispatch makes did not answer). Each check carries pass_stands {answer, roles}, yes " +
-				"with the roles whose passes stand, no, or unknown, and each result commit_stands {answer, basis, reason} " +
-				"(at_basis, other_commit, or unknown), check_words_moved, and retracted {reason, actor, created_at} where a " +
+				"with the roles whose passes stand, no, or unknown, and each result commit_stands {answer, basis, reason, " +
+				"repo} (at_basis, other_commit, or unknown). A result whose commit the record took to be of a linked " +
+				"repository is decided by that repository: a before_merge one by the pull request heads compared with, and " +
+				"an after_merge or default_branch one by that repository's branches (for after_merge the branch its merged " +
+				"linked pull request merged into, then its default branch). A basis in a linked repository carries it as " +
+				"repo, and an other_commit or unknown answer that repository decided names it as repo, so a reader can " +
+				"tell it from the issue's own repository, which carries none. Each result also carries check_words_moved, " +
+				"and retracted {reason, actor, created_at} where a " +
 				"retraction stands against it, which makes it no evidence. A check CI proves carries ci {run, state, case, " +
 				"detail, line}, and its one result is derived from that check run on every read. at=<commit> compares every " +
 				"check with that one commit, {kind: named, commit}, 40 lowercase hex characters (400 INVALID_QUERY " +
@@ -368,8 +377,18 @@ func (s *server) v2IssueRows() []routeRow {
 				"reference (409 CHECK_AMBIGUOUS); any other is 400 UNKNOWN_CHECK, and a check CI proves 409 " +
 				"CHECK_PROVED_BY_CI. role is at most 32 characters of a-z and -, verdict pass or fail, commit 40 lowercase " +
 				"hex (400 RESULT_INPUT otherwise), and the counts default to 0; a pass counting any failed, skipped or " +
-				"excluded case is 400 RESULT_CONTRADICTS. A commit the repository of the check's issue does not hold is " +
-				"400 RESULT_COMMIT_UNKNOWN. A closed issue takes a result only for an after_merge or default_branch check " +
+				"excluded case is 400 RESULT_CONTRADICTS. The commit must be held by the repository the check's issue " +
+				"resolves to, or by one in which the issue's external links name an open or merged GitHub pull request " +
+				"(https://github.com/<owner>/<repo>/pull/<n>) and that Dispatch's GitHub App is installed on and can read; " +
+				"a record reads at most 10 linked pull requests. A commit no such repository holds is 400 " +
+				"RESULT_COMMIT_UNKNOWN, naming the commit, each repository asked and each linked pull request Dispatch " +
+				"could not read or set aside. A read of a linked pull request or a linked repository that did not answer " +
+				"(a rate limit, a 5xx, a transport failure), where no repository is shown to hold the commit, is 502 " +
+				"GITHUB_UNREADABLE naming that repository, and records nothing: record the result again, after the " +
+				"Retry-After a rate limit carries. An issue that resolves to no repository takes any commit, and one " +
+				"whose repository Dispatch cannot read takes it unless such a linked read did not answer. A result at a " +
+				"linked repository's commit keeps that repository, which GET /api/v2/issues/{key}/checks compares it in. " +
+				"A closed issue takes a result only for an after_merge or default_branch check " +
 				"(409 ISSUE_CLOSED). A check reworded by a document version at each of the two attempts this write makes " +
 				"is 409 CHECK_CONTENDED with Retry-After: 1, and nothing recorded: read the check and retry. Answers 201 " +
 				"{result, line}, line the pull-request body line the result implies, and appends result.recorded on the " +
@@ -385,7 +404,8 @@ func (s *server) v2IssueRows() []routeRow {
 			Method: http.MethodPost, Pattern: "/issues/{key}/results/dry-run", Auth: authAny, Versions: onlyV2,
 			Description: "The dry run of a result's record: the body POST /api/v2/issues/{key}/results takes, refused as " +
 				"the record refuses it before it writes (400 RESULT_INPUT, 400 RESULT_CONTRADICTS, 400 UNKNOWN_CHECK, 409 " +
-				"CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN), and otherwise answered 200 {line}, " +
+				"CHECK_AMBIGUOUS, 409 CHECK_PROVED_BY_CI, 400 RESULT_COMMIT_UNKNOWN, 502 GITHUB_UNREADABLE), and otherwise " +
+				"answered 200 {line}, " +
 				"the pull-request body line the record would answer, with nothing recorded and no event appended. A closed " +
 				"issue, a screenshot and a check reworded while the record writes are refused by the record alone. 404 " +
 				"ISSUE_NOT_FOUND.",
