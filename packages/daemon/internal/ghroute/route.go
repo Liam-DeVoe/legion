@@ -2,8 +2,9 @@
 // routes them to the one gh directory of a Legion credential bundle that answers for them all
 // (DirFor), so the caller runs gh with that directory and no other: `legion gh`, the gh every
 // pane and pod runs, and the daemon's own gh tool for an agent that is not running. DirFor is
-// also the pick `legion git-credential` answers git with. The package also says whether the
-// command writes nothing, by a rule proven against the shared leak check the worker image pins
+// also the pick `legion git-credential` answers git with, and ForkDir its pick for a fork whose
+// owner the bundle holds no directory for. The package also says whether the command writes
+// nothing, by a rule proven against the shared leak check the worker image pins
 // (Target.WritesNothing, ReadsProvenCheckSHA256).
 package ghroute
 
