@@ -1624,10 +1624,13 @@ func (s *Service) rearmSettle(room string) {
 	s.scheduleSettleLocked(room, state)
 }
 
-// settleAfter arms the document's settlement to run after delay, replacing the timer armed for it,
+// SettleAfter arms the document's settlement to run after delay, replacing the timer armed for it,
 // unless the service or the room is shutting down. It arms the timer whatever the room's appends
 // are doing: a settlement that finds them in flight waits for them itself (settleRoomWithin).
-func (s *Service) settleAfter(artifactID string, delay time.Duration) {
+// Nothing in production calls it but SettleNow. The API tests of a wait for the service's
+// background writes (database_fingerprint_wait_test.go) arm a settlement a short span ahead with
+// it, so that a wait which did not wait for that settlement is already reading when it writes.
+func (s *Service) SettleAfter(artifactID string, delay time.Duration) {
 	if s.stopping.Load() || s.shuttingDown(artifactID) {
 		return
 	}
@@ -2360,21 +2363,13 @@ func (s *Service) ScheduleSettlement(artifactID string) {
 }
 
 // SettleNow arms the document's settlement to run at once rather than at the end of the settle
-// window (settleAfter with no delay): it replaces the timer a write armed, and a settlement with
+// window (SettleAfter with no delay): it replaces the timer a write armed, and a settlement with
 // nothing owed writes nothing. A settlement armed this way waits for the room's appends as any
 // other does (settleRoomWithin). Nothing in production calls it. It exists for tests that hold a
 // write unsettled across a window wide enough to land another write in it: once that write has
 // landed, the test settles the document now instead of waiting the window out.
 func (s *Service) SettleNow(artifactID string) {
-	s.settleAfter(artifactID, 0)
-}
-
-// SettleAfter arms the document's settlement to run delay from now, as SettleNow arms it at once.
-// Nothing in production calls it. The API tests of a wait for the service's background writes
-// (database_fingerprint_wait_test.go) arm a settlement a short span ahead with it, so that a wait
-// which did not wait for that settlement is already reading when it writes.
-func (s *Service) SettleAfter(artifactID string, delay time.Duration) {
-	s.settleAfter(artifactID, delay)
+	s.SettleAfter(artifactID, 0)
 }
 
 type BlockIDBackfill struct {

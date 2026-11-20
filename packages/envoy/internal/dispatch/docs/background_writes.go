@@ -50,8 +50,10 @@ const backgroundPoll = 10 * time.Millisecond
 //     oldest such row leaves compactTail, read by the queue's own check (checkCompaction,
 //     compactionCheck.untilAged), which no path can fold before. A document whose rows a
 //     compaction may fold already it compacts itself, under the tail rule and waiting for the
-//     document's lock, once, so no path is left anything to fold until another row comes of age;
-//     one whose rows would not fold it answers as a compaction that may run now.
+//     document's lock, once, so no path is left anything to fold until another row comes of age.
+//     A document whose rows do not fold (compactUnfoldable) it fails on, naming the document and
+//     why: the rows stay as stored and aged, so the next compaction at a later fold point may
+//     fold them, at a moment the queue's check cannot answer.
 //
 // One of them can arm another - a settlement retries, a stored update arms a settlement - so it
 // looks again until one look finds none (runningBackgroundWrite), and then once more, for a writer
@@ -92,8 +94,16 @@ func (s *Service) AwaitBackgroundWrites(ctx context.Context, soon time.Time) (Ba
 		}
 		compacted[room] = true
 		quiet.Waited = true
-		if _, err := s.persistence.compactRoom(ctx, room, tailRule, true); err != nil {
+		result, err := s.persistence.compactRoom(ctx, room, tailRule, true)
+		if err != nil {
 			return quiet, fmt.Errorf("compact document %s, whose rows a background compaction may fold now: %w", room, err)
+		}
+		if result.outcome == compactUnfoldable {
+			why := "an earlier compaction of the same fold point found that they do not fold into a state that reads back as them"
+			if result.misread != nil {
+				why = "they do not fold into a state that reads back as them: " + result.misread.Error()
+			}
+			return quiet, fmt.Errorf("document %s has rows older than %s that its compaction leaves as stored (%s), and a compaction at a later fold point may fold them at a moment this wait cannot answer", room, compactTail, why)
 		}
 	}
 }

@@ -136,6 +136,16 @@ func TestTheBackgroundWaitSeesAWriterThatMovesBetweenItsReads(t *testing.T) {
 				service.unlockState(room, state)
 			}
 		}},
+		{"parked bytes a drain leaves for a store", func(service *Service, room string) func() {
+			state := service.lockState(room)
+			state.parked = append(state.parked, parkedBytes{update: []byte{0}})
+			service.unlockState(room, state)
+			return func() {
+				state := service.lockState(room)
+				state.parked = nil
+				service.unlockState(room, state)
+			}
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
@@ -167,6 +177,64 @@ func TestTheBackgroundWaitSeesAWriterThatMovesBetweenItsReads(t *testing.T) {
 				t.Fatalf("the wait returned (waited=%v) while the writer that moved between its reads still ran", quiet.Waited)
 			}
 		})
+	}
+}
+
+// One look reads the registers a writer stands in while it is owed before the counts it keeps
+// while it runs (runningBackgroundWrite), so a writer that leaves a register for a count while the
+// look reads is in what the look reads after: here a settlement whose timer fires between the
+// look's reads, dropping its timer as its callback counts itself. The look alone must name it: a
+// wait's second look would hide a look that read the other way round.
+func TestALookForBackgroundWritesReadsTheRegistersBeforeTheCounts(t *testing.T) {
+	service, _ := newTestService(t)
+	timerID := service.nextSettleTimer.Add(1)
+	service.registerSettleTimer(timerID, "between-reads", time.Now())
+	var moved atomic.Bool
+	service.betweenBackgroundReads = func() {
+		if moved.CompareAndSwap(false, true) {
+			service.settleCallbacks.Add(1)
+			service.unregisterSettleTimer(timerID)
+		}
+	}
+	t.Cleanup(func() {
+		if moved.Load() {
+			service.settleCallbacks.Add(-1)
+		} else {
+			service.unregisterSettleTimer(timerID)
+		}
+	})
+	if writer := service.runningBackgroundWrite(time.Now().Add(time.Second)); writer == "" {
+		t.Fatal("a look found no background write while a settlement left its timer for its callback between the look's reads")
+	}
+}
+
+// A document whose aged rows do not fold into a state that reads back as them keeps them as
+// stored (compactUnfoldable), so they stay aged and a compaction at a later fold point may fold
+// them at any moment: the wait fails at once, naming the document and why, rather than compact it
+// again on every pass until its bound.
+func TestTheBackgroundWaitFailsNamingADocumentWhoseAgedRowsDoNotFold(t *testing.T) {
+	service, _ := newTestService(t)
+	versioned := service.persistence.(*PgVersioned)
+	shrinkPendingItems(t, service, versioned)
+	artifactID := createDocument(t, service.store, "unfoldable")
+	rows, _ := unfoldableHistory()
+	for index, row := range rows {
+		if _, err := versioned.AppendUpdate(context.Background(), artifactID, row); err != nil {
+			t.Fatalf("append update %d: %v", index+1, err)
+		}
+	}
+	ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), backgroundWaitBound)
+	defer cancel()
+	if check, err := service.checkCompaction(ctx, artifactID); err != nil || !check.aged {
+		t.Fatalf("UNKNOWN: the check reads %+v (%v), not rows a compaction may fold, so this run shows nothing", check, err)
+	}
+	_, err := service.AwaitBackgroundWrites(ctx, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "document "+artifactID) || !strings.Contains(err.Error(), "do not fold") {
+		t.Fatalf("the wait beside a document whose aged rows do not fold answered %v, want it to fail naming the document and why", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("the wait failed only at its bound (%v), not at once", err)
 	}
 }
 

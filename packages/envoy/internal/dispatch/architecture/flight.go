@@ -16,19 +16,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// syncCount counts the flights running and waits for none to be left. It has
-// the shape of backgroundWork in api/server.go, and for its reason: a
-// sync.WaitGroup is not it, because a flight may start while a wait is
-// already waiting, and Add after Wait began is what a WaitGroup forbids.
-// begin refuses once Close has begun, so a flight whose goroutine starts
-// after Close took its decision does nothing rather than write into a
-// closing pool.
+// syncCount counts the flights running and the calls of Sync waiting on one,
+// each call until the flight it joined has answered whether or not its caller
+// stayed (Syncing), and waits for none to be left. It has the shape of
+// backgroundWork in api/server.go, and for its reason: a sync.WaitGroup is not
+// it, because a flight may start while a wait is already waiting, and Add
+// after Wait began is what a WaitGroup forbids. begin refuses once Close has
+// begun, so a flight whose goroutine starts after Close took its decision does
+// nothing rather than write into a closing pool, and so does a Sync called
+// then.
 type syncCount struct {
 	mu      sync.Mutex
 	closing bool
 	running int
 	// idle is closed when running last fell to zero, and replaced when a
-	// flight starts again.
+	// flight or a call starts again.
 	idle chan struct{}
 }
 

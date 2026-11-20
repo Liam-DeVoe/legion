@@ -123,12 +123,14 @@ func NewImporter(database *store.Store, github *githubapp.Client, broker *events
 	return &Importer{store: database, github: github, events: broker, owner: owner, abandon: abandon}
 }
 
-// Close ends the importer's flights and waits for them: architecture.Run is
-// not among the waits shutdown takes (cmd/dispatch/shutdown.go waits
-// background.Wait and waitIntakes, then waitUntilIdle and pool.Close), and a
-// flight runs on a context the caller's cancellation no longer reaches, so
-// without this a sync still fetching when the process stops would write into
-// a closing pool. It is safe to call twice, and on a nil importer.
+// Close ends the importer's flights and waits for them, and for each call of
+// Sync waiting on one, which ends once the flight it joined has answered:
+// architecture.Run is not among the waits shutdown takes
+// (cmd/dispatch/shutdown.go waits background.Wait and waitIntakes, then
+// waitUntilIdle and pool.Close), and a flight runs on a context the caller's
+// cancellation no longer reaches, so without this a sync still fetching when
+// the process stops would write into a closing pool. It is safe to call twice,
+// and on a nil importer.
 func (i *Importer) Close() {
 	if i == nil {
 		return
@@ -258,16 +260,30 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 	// looked.
 	calledAt := time.Now()
 	key := project + "\x00" + repo
+	// The call counts as a sync running (Syncing) from here until the flight
+	// it joined last has answered, whether or not its caller waits that long:
+	// a flight goes on writing after a caller that left it, and until the
+	// flight's goroutine begins (flight), this count is the only one it has.
+	if !i.running.begin() {
+		return model.ArchitectureSource{}, i.owner.Err()
+	}
 	for {
 		answered := i.syncs.DoChan(key, func() (any, error) { return i.flight(ctx, project, repo) })
 		select {
 		case <-ctx.Done():
+			// singleflight hands every caller's channel the flight's one
+			// answer, so this receive ends once the flight has.
+			go func() {
+				<-answered
+				i.running.done()
+			}()
 			return model.ArchitectureSource{}, ctx.Err()
 		case result := <-answered:
 			flight := result.Val.(*syncFlight)
 			// Not Before rather than After: two readings of the clock that
 			// land on the same instant must end the loop, not spin it.
 			if !flight.servedAt().Before(calledAt) {
+				i.running.done()
 				return flight.source, result.Err
 			}
 			// That flight looked the head up before this caller existed, so
@@ -277,6 +293,21 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 			// or created now necessarily began after calledAt.
 		}
 	}
+}
+
+// Syncing answers whether a sync of the importer runs: a flight, or a call of
+// Sync from its start until the flight it joined has answered, the call of a
+// caller that left first included, since its flight goes on writing the
+// source's rows. Nothing in production calls it: a test that reads the whole
+// database before and after a request (the API tests' databaseFingerprint)
+// waits for it to answer false.
+func (i *Importer) Syncing() bool {
+	if i == nil {
+		return false
+	}
+	i.running.mu.Lock()
+	defer i.running.mu.Unlock()
+	return i.running.running > 0
 }
 
 // syncOnce is one attempt of Sync, from the load of the source row to its write. It stamps the
