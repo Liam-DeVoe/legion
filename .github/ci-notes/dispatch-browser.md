@@ -366,7 +366,7 @@ budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22
 of the shard job's `timeout-minutes`. The browser step's own budget is unchanged, and it still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
-again at this branch's head, the suite holds 1,628 rows in 222 files, which is two
+again at 6fefee10, the suite held 1,628 rows in 222 files, which is two
 listings rather than one: the six `-alone` projects are out of the default selection
 since dispatch://INFRA-1280, so a command that names no project lists 1,569 rows in 215
 files and one that names those six lists 59 more, in 8 files. One file is in both:
@@ -1327,7 +1327,7 @@ jobs (134499880849, 134479592234, 134451447710, 134451520100, 134547177192) spen
 15 s. The image is pulled here rather than the stack started here because the pull is the
 whole of what a cold runner adds: with the image already on the runner, the stack printed
 its first line 1.4 to 1.7 s into the browser step (jobs 134739696645, 134948731616 and
-134757244369). The pull step's 4 minutes are this job's head's derivation from that 205 s
+134757244369). The pull step's 4 minutes are derived from that 205 s
 (.github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets). The
 digest is written three times, here and in the two browser steps (the normal order and
 the reverse), and the three must stay the same: a pull of another digest here leaves the
