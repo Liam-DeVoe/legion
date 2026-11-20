@@ -36,7 +36,7 @@ export const turnFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRi
  *  `dispatch://` reference `y` copies (`data-turn-ref`) where it has one - a handoff, and a
  *  message to a session that names no issue, have none. Outside the tab, nothing. Every turn and
  *  reply is drawn as an `<li>`, a row of the tab's list by its element alone (`row-marker.ts`'s
- *  `ROW_SELECTOR`), so the page's focus rescue lands no loss the reader did not cause in one. */
+ *  `ROW_SELECTOR`), which the page's focus rescue reads for a loss the reader caused. */
 export function turnMarks(
   inTab: boolean,
   route: DispatchReferenceRoute | undefined

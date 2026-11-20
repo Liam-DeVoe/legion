@@ -41,7 +41,6 @@ import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
-import { ROW_MARKER } from "../../components/row-marker";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { useSending } from "../../hooks/useSending";
@@ -635,7 +634,6 @@ function AgentRow({
       data-agent-can-pick-issue={replyTo === null ? "" : undefined}
       hidden={hidden}
       tabIndex={-1}
-      {...ROW_MARKER}
     >
       {/* One line from `md`: with six hundred rows a second line is six hundred lines, and the
           window's saving (R7) is paid back in paint. The name and the directory are what give

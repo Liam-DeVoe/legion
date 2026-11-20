@@ -41,11 +41,12 @@ const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
- *  sessions to add. While any group write is out, every mutating button is held (`heldPress`),
- *  so a second press cannot race the one request that decides the membership. A write of this
- *  card's own that lands keeps them held until the live update carrying it draws the card anew -
- *  it is keyed by `updated_at` - or takes it away (`useHoldUntilDrawn`), so the control the
- *  reader pressed goes as their press's doing; a refusal lets them go at once. */
+ *  sessions to add, drawn as an item of the editor's list of groups. While any group write is
+ *  out, every mutating button is held (`heldPress`), so a second press cannot race the one
+ *  request that decides the membership. A write of this card's own that lands keeps them held
+ *  until the live update carrying it draws the card anew - its item is keyed by `updated_at` - or
+ *  takes it away (`useHoldUntilDrawn`), so the control the reader pressed goes as their press's
+ *  doing; a refusal lets them go at once. */
 function GroupCard({
   group,
   pending,
@@ -346,17 +347,22 @@ export function SessionGroupsEditor({
 
       {groups.length === 0 ? null : (
         <section className="grid gap-2">
-          <h3 className={sectionLabel}>Groups</h3>
-          {groups.map((group) => (
-            <GroupCard
-              group={group}
-              key={`${group.id}:${group.updated_at}`}
-              pending={save.isPending}
-              selected={selected}
-              storedTitle={storedTitle}
-              write={(change, landed) => save.mutate(change, { onSuccess: landed })}
-            />
-          ))}
+          <h3 className={sectionLabel} id={`${id}-groups`}>
+            Groups
+          </h3>
+          <ul aria-labelledby={`${id}-groups`} className="grid gap-2">
+            {groups.map((group) => (
+              <li key={`${group.id}:${group.updated_at}`}>
+                <GroupCard
+                  group={group}
+                  pending={save.isPending}
+                  selected={selected}
+                  storedTitle={storedTitle}
+                  write={(change, landed) => save.mutate(change, { onSuccess: landed })}
+                />
+              </li>
+            ))}
+          </ul>
         </section>
       )}
     </aside>

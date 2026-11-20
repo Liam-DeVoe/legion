@@ -12,7 +12,6 @@ import type {
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
-import { ROW_MARKER } from "../../components/row-marker";
 import { TruncatedText } from "../../components/TruncatedText";
 import {
   badgeHigh,
@@ -615,7 +614,6 @@ function ComponentRow({
         }`}
         data-component-row={component.id}
         tabIndex={-1}
-        {...ROW_MARKER}
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 md:flex-nowrap">
           <div className="flex min-w-0 flex-1 items-center gap-2">

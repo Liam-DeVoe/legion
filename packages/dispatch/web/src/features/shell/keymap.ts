@@ -355,8 +355,8 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
 
 /** Whether `element` takes typed text: a content-editable element, an `<input>` of a text-entry
  *  type (`TEXT_INPUT_TYPES`), or a `<textarea>`. A key pressed on one is the control's own
- *  (`isEditableTarget`), and the page's focus rescue lands no loss the reader did not cause on
- *  one (`focus-place.ts`'s `landQuietly`), since their next key would be typed there. */
+ *  (`isEditableTarget`), and the page's focus rescue reads a character typed in one as no press
+ *  of the reader's (`focus-place.ts`'s `isPress`), since it only edits the field. */
 export function takesText(element: Element): boolean {
   if (element instanceof HTMLElement && element.isContentEditable) {
     return true;
