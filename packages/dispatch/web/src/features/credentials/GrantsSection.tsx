@@ -32,16 +32,17 @@ function grantedBy(grant: ApproverGrantResp): string {
  * Why nobody may revoke this grant, or null where somebody may. This is the broker's `mayRevoke`
  * condition, which is why it reads the two fields that decide it rather than `granted`: the
  * broker allows the grant's approver or the person its session acts for, and refuses a grant that
- * names neither — one the policy gave without asking, on a session nobody operates — to every
+ * names neither — one the policy gave without asking, on a session that acts for nobody — to every
  * signed-in person, `NOT_APPROVER`. Such a grant is listed to everyone so that what a pod took
  * is on somebody's page, and it ends when the service's machine login that enrolled that session
  * is revoked, which ends every session under it, or when it expires.
  *
- * `enrollment.operator` is the enrollment's record, which a person's pod keeps after the broker's
- * `BROKER_POD_OPERATORS` stops mapping its account to that person. The pod then acts for no
- * person, so the broker no longer counts that person as the session's: their row still shows the
- * grant with Revoke, and the broker refuses the click `NOT_APPROVER` unless they approved it or its
- * approver is `anyone`. The page shows that refusal on the row.
+ * `enrollment.operator` is the person the session acts for as the broker decides it
+ * (`operatorOf`), not the enrollment's record. A person's pod that the broker's
+ * `BROKER_POD_OPERATORS` stops mapping to its person acts for nobody, so its grants arrive with an
+ * empty operator, though their former person still finds them on their own list, which the broker
+ * selects by the record. A grant the policy gave such a pod without asking then names nobody, and
+ * reads as one that ends with its machine login, which is how it ends.
  *
  * The wire says "nobody" two ways and both arrive here: an absent approver is `null`
  * (`approverGrantResp.Approver` is a `*string`), and an enrollment with no operator is `""`

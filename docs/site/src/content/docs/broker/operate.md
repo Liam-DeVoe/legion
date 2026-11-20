@@ -655,14 +655,16 @@ another person:
   the second person's access starts only once the old enrollment ends, and a new slot is a new
   enrollment, the second person's. `agent-secrets whoami` reads the enrollment's record, so for the
   old enrollment it still names the first person;
-- the grant log (`GET /v1/grant-log`), the first person's **Live grants** (`GET /v1/grants`) and
-  the record of each request's approval keep naming the first person, since they read the
-  enrollment's record. Their **Live grants** still finds the pod's grants, but the pod no longer
-  acts for them, so a grant does not name them as its operator: they see each one they may see,
-  and end it only if they approved it or its approver is `anyone`, withholding nothing from the
-  pod; a grant of a private project they are not on, which the pod may get through its exchange
-  entry, is hidden from them as from anyone outside the project. Each new request's
-  `request.created` row records, in its own detail, the person the broker decided for: none.
+- the grant log (`GET /v1/grant-log`) and the record of each request's approval keep naming the
+  first person, since they read the enrollment's record. Their **Live grants** (`GET /v1/grants`)
+  still finds the pod's grants, which it selects by that record, but names no operator on them,
+  since the pod no longer acts for them: they see each one they may see, and end it only if they
+  approved it or its approver is `anyone`, withholding nothing from the pod. A grant the policy
+  gave the pod without asking names no approver either, so its row reads **Ends with its machine
+  login**: revoking the pod's login ends it, as its expiry does. A grant of a private project they
+  are not on, which the pod may get through its exchange entry, is hidden from them as from anyone
+  outside the project. Each new request's `request.created` row records, in its own detail, the
+  person the broker decided for: none.
 
 After a move, have the second person revoke the pod's login on Dispatch's machine-login page, which
 ends the old enrollment, or replace the pod.

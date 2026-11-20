@@ -938,7 +938,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List credential grants the caller may revoke (?approver=me only). */
+    /** @description List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a service's pod took without asking, which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. */
     get: operations["getApiV1CredentialGrants"];
     put?: never;
     post?: never;
