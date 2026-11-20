@@ -154,9 +154,10 @@ type workflowRuntime struct {
 	// under it. copyBundler is nil where the runtime implements no runtime.WorkspaceBundler —
 	// `runtime: tmux`, whose processes share the daemon's own disk — and copyStore for a daemon
 	// built with no store, which is every hand-built workflowRuntime in a test; either leaves the
-	// cadence doing nothing. copies is what that cadence holds in memory, one entry per issue it
-	// has copied, and the run's context its copies run under; the outbox's release save is handed
-	// the same one (newOutbox), so the save and a copy share one single flight.
+	// cadence doing nothing. A whole-daemon test may set copyBundler before attach, which then
+	// keeps it (overrides.copyBundler). copies is what that cadence holds in memory, one entry per
+	// issue it has copied, and the run's context its copies run under; the outbox's release save
+	// is handed the same one (newOutbox), so the save and a copy share one single flight.
 	//
 	// copyBudget is the budget one copy is given; zero means the production constant
 	// (runningCopyBudget). A test shortens it, as it shortens the ticks. The period between two
@@ -1428,7 +1429,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // workspace while its pod runs is no part of release (tickWorkspaceCopies). A deployment with
 // `idle_minutes: 0` releases nothing and still has pods the cluster can end under it, so it
 // takes the copies; what leaves the cadence with nothing to do is a runtime that bundles no
-// workspace, which is `runtime: tmux`. The outbox is handed the cadence's memory too, so that a
+// workspace, which is `runtime: tmux`. The bundler is the runtime's unless run set a test's in its
+// place (overrides.copyBundler). The outbox is handed the cadence's memory too, so that a
 // release's save takes the same per-issue mark a copy takes (outbox.bundleIssueWorkspace): both
 // run the shim's bundler in the issue's workspace, and two of them there at once would share the
 // ref prefix `refs/legion-bundle/`.
@@ -1443,8 +1445,10 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	w.copyStore = supervision.supervisor.store
-	if bundler, ok := supervision.supervisor.deps.Runtime.(runtime.WorkspaceBundler); ok {
-		w.copyBundler = bundler
+	if w.copyBundler == nil {
+		w.copyBundler, _ = supervision.supervisor.deps.Runtime.(runtime.WorkspaceBundler)
+	}
+	if w.copyBundler != nil {
 		// A copy owed while a release's save held the issue's place is taken once that save
 		// gives the place back, and the outbox that runs the save starts it through the cadence's
 		// own start (runningCopies.hold).

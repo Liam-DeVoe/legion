@@ -6445,7 +6445,7 @@ Three ends differ in what reaches the issue's next pod, and this is how a reader
 - **an end the cluster made**, the bullet above.
   The disk goes with the pod, as it does at every end.
   What comes back is the newer of the issue's two saved copies, restored before any role starts:
-  outside a pause, the work of the last turn that ended, or of a turn still running up to its last copy, which the cadence bounds at 5 minutes ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+  the work of the last turn that ended, or of a turn still running up to its last copy, which the cadence bounds at 5 minutes ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
   Each role keeps its session, keeps the task it owed and is charged no death and no launch failure, however often such ends come, except for the kubelet's evictions for the pod's own use, which are counted as a stop of each role's process ("An end from outside the pod", above): one for the pod's own disk, and one for its own memory or ephemeral storage over its request.
   What no copy holds goes with the disk:
   the issue's scratch, each role's temporary directory and logs, every ignored file and the workspace's CodeGraph index;
@@ -6606,7 +6606,7 @@ So only a new or replacement pod provisions afresh, and an agent resumed into a 
 it is told so before its next turn, by `LEGION_WORKSPACE_RECREATED` and the message its plugin saves from it ([Selecting the store](#selecting-the-store)).
 An agent's unpushed work is never lost at a role start into a live pod, and at an end of the pod it is kept only in the daemon's own copies of the workspace, which is why a phase pushes what it has done.
 A release keeps it as a bundle in the daemon's database and nowhere else ([Idle release](#idle-release)).
-At every other end that the issue's work outlives, the next pod of the issue restores the running copy the daemon took minutes before, or before the project was paused: an update round's replacement, a launch's replacement, the pod of an issue that comes back from a park and the pod after an end from outside the pod alike, since the restore does not read how the pod before it ended ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+At every other end that the issue's work outlives, the next pod of the issue restores the running copy the daemon took minutes before: an update round's replacement, a launch's replacement, the pod of an issue that comes back from a park and the pod after an end from outside the pod alike, since the restore does not read how the pod before it ended ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
 What such an end loses is the work done since that copy was taken.
 An issue's close as `done` and its tree's close drop both copies, so what no role pushed goes with the pod.
 On a kept volume, a new pod finds the workspace as the last pod left it, unpushed work included, and its agents are told `LEGION_WORKSPACE_RECREATED=false`;
@@ -7081,8 +7081,8 @@ The daemon keeps a copy of each issue workspace's unpushed work outside the pod 
 Three triggers take that copy:
 the end of each turn of the issue, a cadence that takes one every 5 minutes while a turn of that issue runs (`runningCopyPeriod`, `packages/daemon/internal/daemon/workspace_copies.go`), and each push of the issue's branch that the daemon records (`copyWorkspaceAtPush`, the same file).
 The 5 minutes run from the start of the copy before it and not from its end, and no `legion.yaml` key changes them.
-The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, whatever took that copy, so while a turn runs, the project is not paused and that tick comes on time, a cadence copy starts no less than 4 minutes and no more than 5 minutes after the copy before it, whatever took that one.
-That is the bound on a working turn's newest copy outside a pause (below): the next copy of it starts no more than 5 minutes after the last one did.
+The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, whatever took that copy, so while a turn runs and that tick comes on time, a cadence copy starts no less than 4 minutes and no more than 5 minutes after the copy before it, whatever took that one.
+That is the bound on a working turn's newest copy: the next copy of it starts no more than 5 minutes after the last one did.
 Two cadence copies can be further apart than that when a turn's end, a push or an owed copy came between them, since each copy starts the 5 minutes again.
 The copies a turn's end and a push take, and a copy owed behind one in flight, start when they come, whatever the period.
 A copy the shim is still building after 4 minutes is abandoned and logged `budget_spent`, so even a slow copy has ended by the tick that starts the next one, and two copies of one workspace never run at once.
@@ -7131,11 +7131,10 @@ It logs the same `running copy: no copy of the issue workspace was stored` line 
 Stored, such a copy would be the later of the two copies by the clock, the next pod would be sent it in the bundle's place, and the bundle's row would then hold the issue's pod under `bundle_unrestored` until the issue's work is over.
 A copy whose take began before the take of the issue's stored running copy is not stored either, and a workspace that bundled to nothing drops no such copy; each logs the same line at Info with the reason `newer_copy_stands`, the drop with `bytes` 0, which is no fault and is not one of the reasons above: a copy never replaces a stored running copy whose take began later, nor drops one ([The times the restore compares](#the-times-the-restore-compares)).
 
-While the daemon's project is paused, no copy is taken at all, since a pause saves no workspace ([Pausing a project](#pausing-a-project)).
-Each copy that a turn's end, the cadence or a push asks for then logs the same line at Info with the reason `project_paused` and the open pause's id as `pause`, which is no fault and is not one of the reasons above.
-A copy already asking its shim when the pause begins runs to its end, since it read the workspace before the pause.
-A skipped copy owes a retry, because a turn that ended while the project was paused is in no copy: the cadence takes it once the project has resumed and a role of the issue is live again.
-A pod that still ends during the pause loses the work done since its last copy, which is from before the pause: the next pod restores that copy.
+A project's pause stops none of these copies ([Pausing a project](#pausing-a-project)).
+While the project is paused, the cadence still copies each turn that runs, and each turn's end is still copied, as at any other time: a pause stops a role in a turn only when that turn ends, so a pause that took no copy would leave exactly that turn's end in none.
+Each copy is still asked of a live role of its issue with a running process, so a turn's end is in no copy where the pause has stopped every role of the issue before a copy read the workspace, and a copy that comes to nothing so owes a retry, which runs once a role of the issue is live again.
+A pod that ends during the pause, at a close, a park or an end from outside it, loses the work done since its last copy, as at any other time: the next pod restores that copy.
 Only an end from outside the pod leaves a kept volume standing with that work on it; a park or a linger deletes the kept volume too, and a close ends the issue's work.
 
 A copy runs the shim's own `jj` in the workspace a role is working in, and two `jj` commands at once in one workspace can leave a divergent change there, which a role then has to clean up in its own turn.
@@ -7405,7 +7404,8 @@ It writes the claim and the stop's record, and with them:
 Every other stopped role stays stopped until its next wake, as the role of an idle-released pod does.
 
 **The pods.**
-The pause deletes no pod and saves no workspace: the idle release saves none, and no running copy of a workspace is started while the project is paused ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+The pause deletes no pod and saves no bundle: while the project is paused, no idle release saves a bundle of a workspace or deletes a pod, except one that had saved its bundle before the pause (below).
+The running copies of the turns that still run, and of their ends, are taken during the pause as at any time, since a running copy deletes nothing ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
 From the moment the pause stops one role of a pod, it holds that pod (`project_pause_pod_holds`), although another role of the pod may still run its turn.
 A held pod keeps its disk, with the work that its roles did not push.
 These rules pass over it:

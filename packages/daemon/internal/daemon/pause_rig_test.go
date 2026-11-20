@@ -183,7 +183,7 @@ func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize fun
 }
 
 // podReads is what the runtime was asked to do to the pods: the issues whose pod a teardown
-// deleted and the issues a release or a running copy (R1 of dispatch://INFRA-1117) asked to bundle.
+// deleted and the issues a release asked for a bundle of.
 func (r *pauseRuntime) podReads() (deleted, bundled []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -372,7 +372,7 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	t.Cleanup(st.Close)
 	r := &pauseDaemonRig{t: t, ctx: ctx, cfg: cfg, pool: pool, st: st, records: record.NewStore(), clock: clock,
 		rt: newPauseRuntime(clock), envoy: envoy, board: board, logs: &syncBuffer{}, project: project, built: &built{}}
-	r.o = fakeRuntime(r.rt, r.built)
+	r.o = pauseOverrides(r.rt, r.built)
 	r.o.clock = clock
 	r.o.idleTick = pauseRigTick
 	r.o.orphanSweep = time.Hour
