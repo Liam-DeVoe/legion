@@ -17,6 +17,7 @@ import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
 import { sendable } from "./secret-file";
+import { ignoredAtStart } from "./signal-ignores";
 
 /** Where a caller runs: one of the three plugin hosts (and the `dispatch` command, which takes its
  * host plugin's rule), or a script outside any of them (`command`). */
@@ -370,10 +371,21 @@ const stopWatchGlobal = globalThis as typeof globalThis & { [STOP_WATCH]?: true 
  * of the command's group that follows the wait. With a listener the signal waits until the wait is
  * over: the command has then exited or been killed at COMMAND_TIMEOUT_MS, its group has been
  * killed, and the listener ends this process with the signal's own default action, sent again once
- * the listener is off. A repeat in that time is held the same way and changes nothing. Where another
- * listener of this process answers the same signal, such as a host's own, this one leaves the
- * signal to it. Outside a command the listener ends the process as the default action would have,
- * one turn of the event loop later. */
+ * the listener is off. A repeat in that time is held the same way and changes nothing.
+ *
+ * Where another listener of this process answers the same signal, such as a host's own, this one
+ * leaves the signal to it. It is armed ahead of every other listener (`prependListener`), so it
+ * runs first and counts a host's listener whenever the host armed it: a `process.once` listener
+ * takes itself off just before it runs, so one armed ahead of this would already be gone by the
+ * time this counted, and this would end the process under the host's own stop. Outside a command
+ * the listener ends the process as the default action would have, one turn of the event loop
+ * later.
+ *
+ * A signal this process was started with ignored gets no listener (`ignoredAtStart`): a listener
+ * would end a reader started under `nohup`, or as a script's `&` job, on the signal it was started
+ * to ignore, since taking it off brings back the default action, not the ignore. Such a signal
+ * leaves this process running, and the command, in a session of its own, does not get it, so there
+ * is nothing to hold. */
 function watchStopSignals(): void {
   if (stopWatchGlobal[STOP_WATCH]) return;
   stopWatchGlobal[STOP_WATCH] = true;
@@ -382,7 +394,9 @@ function watchStopSignals(): void {
     process.off(signal, onStopSignal);
     process.kill(process.pid, signal);
   };
-  for (const signal of stopSignals) process.on(signal, onStopSignal);
+  for (const signal of stopSignals) {
+    if (!ignoredAtStart(signal)) process.prependListener(signal, onStopSignal);
+  }
 }
 
 function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): CommandOutcome {

@@ -14,6 +14,7 @@ import {
 import { constants as osConstants, tmpdir } from "node:os";
 import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { sleepRuns, until } from "@legion/test-fixtures/held-process";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type ActiveDispatchConfig,
@@ -1349,24 +1350,6 @@ describe("a ! command in envoy.json", () => {
 // to 0, so a SIGQUIT that met its default action would write no core into the tree.
 describe("a ! command in envoy.json on a signal", () => {
   const seconds = "279";
-  const sleepRuns = (pid: number) => {
-    try {
-      return (
-        readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ") ===
-        `sleep ${seconds}`
-      );
-    } catch {
-      return false;
-    }
-  };
-  /** Reads `holds` every 50 ms until it answers true, up to `ms`: a state another process reaches
-   * raises no event this row can await. */
-  const until = async (holds: () => boolean, ms: number) => {
-    for (const deadline = performance.now() + ms; !holds(); await Bun.sleep(50)) {
-      if (performance.now() > deadline) return false;
-    }
-    return true;
-  };
   for (const signals of [
     ["SIGINT"],
     ["SIGTERM"],
@@ -1400,13 +1383,13 @@ dispatchSettings(env, readEnvoyConfig(${JSON.stringify(file)}, env, { cwd: ${JSO
       try {
         const ran = () => {
           pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
-          return sleepRuns(pid);
+          return sleepRuns(pid, seconds);
         };
         expect(await until(ran, 10_000), "the ! command never ran").toBe(true);
         for (const signal of signals) run.kill(signal);
         const [stderr, code] = await Promise.all([new Response(run.stderr).text(), run.exited]);
         expect(
-          await until(() => !sleepRuns(pid), 5_000),
+          await until(() => !sleepRuns(pid, seconds), 5_000),
           `the command's sleep (pid ${pid}) still runs after the reader ended (exit ${code}, signal ${run.signalCode}): ${stderr}`
         ).toBe(true);
         expect(
@@ -1414,7 +1397,147 @@ dispatchSettings(env, readEnvoyConfig(${JSON.stringify(file)}, env, { cwd: ${JSO
           `the reader ended with ${code}, by no signal it was sent: ${stderr}`
         ).toContain(code);
       } finally {
-        if (pid !== 0 && sleepRuns(pid)) process.kill(pid, "SIGKILL");
+        if (pid !== 0 && sleepRuns(pid, seconds)) process.kill(pid, "SIGKILL");
+        if (run.exitCode === null) run.kill("SIGKILL");
+      }
+    }, 30_000);
+  }
+});
+
+// A host that answers a stop signal itself, with a `process.once` listener, armed before its first
+// `!` command, as the codex server arms its stop (packages/claude-envoy/src/codex/codex-server.ts),
+// or after it. The signal comes once the read is over. The host's stop prints "stop begun", waits
+// 1 s on a real clock, since the claim is about a real signal to another process, which no fake
+// clock here reaches, prints "stopped" and exits 0. The watch leaves the signal to the host's
+// listener either way, so the stop runs to its end: a watch that ran after a `once` listener had
+// taken itself off would count no other listener, send the signal again and end the host half-way
+// through its stop. A reader with no listener of its own still ends by the signal (the rows above).
+describe("a host's own listener for a stop signal beside the ! command watch", () => {
+  for (const row of [
+    { signal: "SIGTERM", armed: "before" },
+    { signal: "SIGINT", armed: "before" },
+    { signal: "SIGHUP", armed: "before" },
+    { signal: "SIGTERM", armed: "after" },
+  ] as const) {
+    test(`a ${row.signal} to a host whose once listener is armed ${row.armed} its first ! command runs the host's stop to its end`, async () => {
+      const home = tempDir();
+      const file = writeFile(path.join(home, "envoy.json"), {
+        dispatch: { ...dispatchOn, token: `!echo ${fixtureSecret("oncehost")}` },
+      });
+      const arm = `const stop = async (signal: string) => {
+  console.log("stop begun on " + signal);
+  await Bun.sleep(1000);
+  console.log("stopped");
+  process.exit(0);
+};
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => void stop(signal));
+`;
+      const read = `dispatchSettings(env, readEnvoyConfig(${JSON.stringify(file)}, env, { cwd: ${JSON.stringify(home)} }));
+`;
+      const host = writeFile(
+        path.join(home, "host.ts"),
+        `import { dispatchSettings } from ${JSON.stringify(path.join(import.meta.dir, "../dispatch-config"))};
+import { readEnvoyConfig } from ${JSON.stringify(path.join(import.meta.dir, "../envoy-config"))};
+const env = { HOME: process.env.HOME, PATH: process.env.PATH };
+${row.armed === "before" ? arm + read : read + arm}setInterval(() => {}, 1000);
+console.log("ready");
+`
+      );
+      const run = Bun.spawn(
+        ["/bin/sh", "-c", 'ulimit -c 0 && exec "$@"', "sh", process.execPath, host],
+        { env: commandEnvironment(home), stdout: "pipe", stderr: "pipe" }
+      );
+      try {
+        const reader = run.stdout.getReader();
+        const decoder = new TextDecoder();
+        let said = "";
+        while (!said.includes("ready\n")) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          said += decoder.decode(value);
+        }
+        expect(said, "the host never read envoy.json").toContain("ready\n");
+        run.kill(row.signal);
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          said += decoder.decode(value);
+        }
+        const [stderr, code] = await Promise.all([new Response(run.stderr).text(), run.exited]);
+        expect(
+          said,
+          `the host's own stop did not finish; it ended ${code} (signal ${run.signalCode}): ${stderr}`
+        ).toContain(`stop begun on ${row.signal}\nstopped\n`);
+        expect(code).toBe(0);
+      } finally {
+        if (run.exitCode === null) run.kill("SIGKILL");
+      }
+    }, 30_000);
+  }
+});
+
+// A reader started with a signal ignored - `nohup` ignores SIGHUP, and a non-interactive shell's `&`
+// starts its job with SIGINT and SIGQUIT ignored - gets that signal while its `!` command runs. It
+// runs on to its end, as the ignore asks, and prints "reader finished" 3 s after its read: the
+// watch arms no listener for a signal the process was started with ignored (ignoredAtStart), where
+// one would end the reader on it from then on, since taking a listener off brings back the default
+// action, not the ignore. The control sends the same SIGHUP to a reader that did not inherit it
+// ignored, which the reader holds until the command has ended and then ends by.
+describe("a ! command in envoy.json on a signal the reader was started ignoring", () => {
+  for (const row of [
+    { signal: "SIGHUP", ignored: true },
+    { signal: "SIGINT", ignored: true },
+    { signal: "SIGQUIT", ignored: true },
+    { signal: "SIGHUP", ignored: false },
+  ] as const) {
+    test(`a ${row.signal} ${row.ignored ? "the reader was started ignoring leaves it running to its end" : "the reader was not started ignoring ends it"}`, async () => {
+      const home = tempDir();
+      const started = path.join(home, "started");
+      const file = writeFile(path.join(home, "envoy.json"), {
+        dispatch: {
+          ...dispatchOn,
+          token: `!echo started > ${started}; sleep 2; echo ${fixtureSecret("ignored")}`,
+        },
+      });
+      // The reader stays up 3 s after its read on a real clock: it is another process, and the
+      // claim is that a real signal leaves it running, which no fake clock here reaches.
+      const reader = writeFile(
+        path.join(home, "reader.ts"),
+        `import { dispatchSettings } from ${JSON.stringify(path.join(import.meta.dir, "../dispatch-config"))};
+import { readEnvoyConfig } from ${JSON.stringify(path.join(import.meta.dir, "../envoy-config"))};
+const env = { HOME: process.env.HOME, PATH: process.env.PATH };
+dispatchSettings(env, readEnvoyConfig(${JSON.stringify(file)}, env, { cwd: ${JSON.stringify(home)} }));
+await Bun.sleep(3000);
+console.log("reader finished");
+`
+      );
+      const ignore = row.ignored ? `trap '' ${row.signal.slice(3)}; ` : "";
+      const run = Bun.spawn(
+        ["/bin/sh", "-c", `${ignore}ulimit -c 0 && exec "$@"`, "sh", process.execPath, reader],
+        { env: commandEnvironment(home), stdout: "pipe", stderr: "pipe" }
+      );
+      try {
+        expect(await until(() => existsSync(started), 10_000), "the ! command never ran").toBe(
+          true
+        );
+        run.kill(row.signal);
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(run.stdout).text(),
+          new Response(run.stderr).text(),
+          run.exited,
+        ]);
+        if (row.ignored) {
+          expect(
+            stdout,
+            `the reader, started with ${row.signal} ignored, ended ${code} (signal ${run.signalCode}) on that ${row.signal}: ${stderr}`
+          ).toContain("reader finished");
+          expect(code).toBe(0);
+        } else {
+          expect(code, `the reader ended ${code} on a ${row.signal}: ${stderr}`).toBe(
+            128 + osConstants.signals[row.signal]
+          );
+        }
+      } finally {
         if (run.exitCode === null) run.kill("SIGKILL");
       }
     }, 30_000);

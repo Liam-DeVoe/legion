@@ -6,7 +6,8 @@ body: |-
   and the process waited for it synchronously. Now the signal waits until the command has exited,
   or been killed at its 10 s limit, and every process it started has been killed with its group.
   The process then ends by the signal, unless another listener of its own, such as its host's,
-  answers that signal.
+  answers that signal, whether the host armed it before or after its first `!` command. A signal
+  the process was started with ignored, as `nohup` ignores SIGHUP, stays ignored.
 time: 2026-11-20T10:31:32Z
 custom:
     Issue: pr4588
