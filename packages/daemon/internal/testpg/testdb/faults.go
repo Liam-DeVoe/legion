@@ -5,12 +5,10 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // RefusedAddress is a TCP address on 127.0.0.1 nothing listens on any more, so a dial of it is
@@ -28,21 +26,54 @@ func RefusedAddress(t testing.TB) string {
 	return address
 }
 
+// RefusedDial is the error a real dial of RefusedAddress gives, for a stand-in dialer that answers
+// as a connector does for a database whose host refuses it.
+func RefusedDial(t testing.TB) error {
+	t.Helper()
+	conn, err := net.Dial("tcp", RefusedAddress(t))
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("a dial of an address nothing listens on was answered")
+	}
+	return err
+}
+
 // Refusing is the address of a stand-in for a Postgres server that answers every connection's
 // startup with a FATAL ErrorResponse of SQLSTATE code and message, then closes it, as a real server
 // refuses a connection it cannot take: one starting up or shutting down (57P03), one with no client
-// slot left (53300), or a login it does not take (28P01). An SSL or GSS encryption request before
-// the startup is declined, as a server without TLS declines it. It speaks nothing of the protocol
-// past that first answer, and its listener closes when the test ends.
+// slot left (53300), or a login it does not take (28P01). It speaks nothing of the protocol past
+// that first answer (startupStandIn).
 func Refusing(t testing.TB, code, message string) string {
+	t.Helper()
+	fields := []byte("SFATAL\x00VFATAL\x00C" + code + "\x00M" + message + "\x00\x00")
+	answer := binary.BigEndian.AppendUint32([]byte{'E'}, uint32(4+len(fields)))
+	answer = append(answer, fields...)
+	return startupStandIn(t, func(conn net.Conn) { _, _ = conn.Write(answer) })
+}
+
+// Ending is the address of a stand-in for a Postgres server that ends every connection once it has
+// read its startup, before any answer: with reset, by a reset (RST), as a server that crashes or
+// restarts, or a TCP balancer in front of a store that is down, ends it; otherwise by a close (an
+// end of file), as a server that hangs up ends it (startupStandIn).
+func Ending(t testing.TB, reset bool) string {
+	t.Helper()
+	return startupStandIn(t, func(conn net.Conn) {
+		if tcp, ok := conn.(*net.TCPConn); ok && reset {
+			_ = tcp.SetLinger(0)
+		}
+	})
+}
+
+// startupStandIn is the address of a stand-in for a Postgres server on 127.0.0.1 that reads each
+// connection's startup message, declining an SSL or GSS encryption request before it as a server
+// without TLS declines it, then does end to the connection and closes it. Its listener closes when
+// the test ends.
+func startupStandIn(t testing.TB, end func(conn net.Conn)) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fields := []byte("SFATAL\x00VFATAL\x00C" + code + "\x00M" + message + "\x00\x00")
-	answer := binary.BigEndian.AppendUint32([]byte{'E'}, uint32(4+len(fields)))
-	answer = append(answer, fields...)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -74,7 +105,7 @@ func Refusing(t testing.TB, code, message string) string {
 						}
 						continue
 					}
-					_, _ = conn.Write(answer)
+					end(conn)
 					return
 				}
 			}()
@@ -98,85 +129,26 @@ func Refusing(t testing.TB, code, message string) string {
 // gives.
 func Breaking(t testing.TB, dsn, marker string, reset bool) string {
 	t.Helper()
-	const named = "the database URL to break"
-	target, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("pgx refuses %s", named)
-	}
-	upstream := net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port)))
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the breaking Postgres proxy: %v", err)
-	}
-	address := listener.Addr().(*net.TCPAddr)
-	through, err := rewriteDSN(named, dsn, rewrite{host: address.IP.String(), port: uint16(address.Port)})
-	if err != nil {
-		_ = listener.Close()
-		t.Fatal(err)
-	}
-	proxy := &breakingProxy{listener: listener, upstream: upstream, marker: []byte(marker), reset: reset, conns: map[net.Conn]struct{}{}}
-	proxy.wg.Add(1)
-	go proxy.serve()
-	t.Cleanup(proxy.close)
-	return through
+	through, upstream := relayFor(t, "the database URL to break", dsn)
+	var broken atomic.Bool
+	startRelay(t, through, func() string { return upstream }, func(client, server net.Conn) {
+		relayUntil(client, server, []byte(marker), reset, &broken)
+	})
+	return through.url
 }
 
-// breakingProxy is Breaking's proxy: broken is whether it has ended its one connection, and conns
-// are the client and server connections open through it, closed with it.
-type breakingProxy struct {
-	listener net.Listener
-	upstream string
-	marker   []byte
-	reset    bool
-
-	mu     sync.Mutex
-	closed bool
-	broken bool
-	conns  map[net.Conn]struct{}
-	wg     sync.WaitGroup
-}
-
-func (p *breakingProxy) serve() {
-	defer p.wg.Done()
-	for {
-		client, err := p.listener.Accept()
-		if err != nil {
-			return
-		}
-		server, err := net.Dial("tcp", p.upstream)
-		if err != nil {
-			_ = client.Close()
-			continue
-		}
-		if !p.track(client, server) {
-			return
-		}
-		p.wg.Add(2)
-		go func() {
-			defer p.wg.Done()
-			_, _ = io.Copy(client, server)
-			p.untrack(client, server)
-		}()
-		go func() {
-			defer p.wg.Done()
-			p.relay(client, server)
-			p.untrack(client, server)
-		}()
-	}
-}
-
-// relay copies client to server until the client sends marker on the first connection to send it,
-// which ends that pair instead. A marker split between two reads is still seen: each read is
-// searched together with the end of the one before it.
-func (p *breakingProxy) relay(client, server net.Conn) {
+// relayUntil copies client to server until the client sends marker on the first connection to send
+// it, which broken marks, and ends that connection there instead. A marker split between two reads
+// is still seen: each read is searched together with the end of the one before it.
+func relayUntil(client, server net.Conn, marker []byte, reset bool, broken *atomic.Bool) {
 	buffer := make([]byte, 64<<10)
 	var tail []byte
 	for {
 		n, err := client.Read(buffer)
 		if n > 0 {
 			seen := append(tail, buffer[:n]...)
-			if bytes.Contains(seen, p.marker) && p.breakOnce() {
-				if tcp, ok := client.(*net.TCPConn); ok && p.reset {
+			if bytes.Contains(seen, marker) && broken.CompareAndSwap(false, true) {
+				if tcp, ok := client.(*net.TCPConn); ok && reset {
 					_ = tcp.SetLinger(0)
 				}
 				return
@@ -184,7 +156,7 @@ func (p *breakingProxy) relay(client, server net.Conn) {
 			if _, err := server.Write(buffer[:n]); err != nil {
 				return
 			}
-			tail = bytes.Clone(seen[max(0, len(seen)-len(p.marker)+1):])
+			tail = bytes.Clone(seen[max(0, len(seen)-len(marker)+1):])
 		}
 		if err != nil {
 			return
@@ -192,48 +164,34 @@ func (p *breakingProxy) relay(client, server net.Conn) {
 	}
 }
 
-// breakOnce reports whether this is the first connection to send the marker, and marks it so.
-func (p *breakingProxy) breakOnce() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.broken {
-		return false
-	}
-	p.broken = true
-	return true
+// Flapping is a session store that goes down and comes back while a test runs: the database at a
+// DSN reached through a TCP proxy on 127.0.0.1 (NewFlapping) that sends every connection it accepts
+// while Down is set to a stand-in that answers it is starting up (57P03, Refusing), as a store does
+// while it restarts, and counts it in Refused; every other connection reaches the database and is
+// counted in Passed. Whether a connection is refused is decided as it is accepted, so a connection
+// counted in Passed is served by the database however Down changes after.
+type Flapping struct {
+	// URL is the DSN that reaches the database through the proxy: rewriteDSN's, as Delayed's is.
+	URL             string
+	Down            atomic.Bool
+	Refused, Passed atomic.Int32
 }
 
-// track records a pair of connections, and closes them instead when the proxy is already closed.
-func (p *breakingProxy) track(client, server net.Conn) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		_ = client.Close()
-		_ = server.Close()
-		return false
-	}
-	p.conns[client], p.conns[server] = struct{}{}, struct{}{}
-	return true
-}
-
-// untrack closes a pair of connections, once either direction ends.
-func (p *breakingProxy) untrack(client, server net.Conn) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.conns, client)
-	delete(p.conns, server)
-	_ = client.Close()
-	_ = server.Close()
-}
-
-func (p *breakingProxy) close() {
-	p.mu.Lock()
-	p.closed = true
-	_ = p.listener.Close()
-	for conn := range p.conns {
-		_ = conn.Close()
-	}
-	clear(p.conns)
-	p.mu.Unlock()
-	p.wg.Wait()
+// NewFlapping is dsn's database behind a Flapping proxy, down from the start when down is set. The
+// proxy and every connection through it close when the test ends, as Delayed's do.
+func NewFlapping(t testing.TB, dsn string, down bool) *Flapping {
+	t.Helper()
+	through, database := relayFor(t, "the database URL to flap", dsn)
+	starting := Refusing(t, "57P03", "the database system is starting up")
+	s := &Flapping{URL: through.url}
+	s.Down.Store(down)
+	startRelay(t, through, func() string {
+		if s.Down.Load() {
+			s.Refused.Add(1)
+			return starting
+		}
+		s.Passed.Add(1)
+		return database
+	}, relayPlain)
+	return s
 }

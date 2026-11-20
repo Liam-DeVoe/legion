@@ -2,9 +2,10 @@
 // LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows, and a way
 // to reach it across a network's delay (Delayed). A test is skipped without it: there is nothing
 // to run against. It also gives a database's faults: an address that refuses the dial
-// (RefusedAddress) and a server that refuses every connection with an answer of its own
-// (Refusing), which need no database, and a proxy to one that ends a connection it holds
-// (Breaking).
+// (RefusedAddress), a server that refuses every connection with an answer of its own (Refusing),
+// and one that ends every connection before it answers (Ending), which need no database, a proxy
+// to one that ends a connection it holds (Breaking), and one to a store that goes down and comes
+// back (Flapping). Delayed, Breaking and Flapping share one proxy's lifecycle (relayProxy).
 //
 // Database is an empty database. A test that needs the daemon's schema takes internal/testpg's
 // Clone or CloneStore instead, which copy a template that package migrated once.
