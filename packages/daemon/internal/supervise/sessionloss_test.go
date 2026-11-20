@@ -199,10 +199,11 @@ func TestAProcessThatExitedOnAStoreThatStoppedAnsweringIsWaitedOutUncharged(t *t
 	}
 }
 
-// An outage that ends, the store answering a start that launches, and returns ten minutes later is
-// an outage of its own: the issue and the controller are told of it at once, not an hour after the
-// first report. The hourly rule holds while one outage lasts
-// (TestAStartTheSessionStoreCannotAnswerWaitsAndIsReportedHourly).
+// An outage that ends, an agent registering once its process opened its session, and returns ten
+// minutes later is an outage of its own: the issue and the controller are told of it at once, not
+// an hour after the first report. The hourly rule holds while one outage lasts
+// (TestAStartTheSessionStoreCannotAnswerWaitsAndIsReportedHourly,
+// TestOneOutageWhoseTriesLaunchIsToldOnceUntilAnAgentRegisters).
 func TestAStoreFaultAfterTheStoreAnsweredAStartIsToldAtOnce(t *testing.T) {
 	h := newBareHarness(t)
 	var faults []string
@@ -219,7 +220,7 @@ func TestAStoreFaultAfterTheStoreAnsweredAStartIsToldAtOnce(t *testing.T) {
 	if len(faults) != 1 {
 		t.Fatalf("the first outage was told %d times, want once", len(faults))
 	}
-	// The minute's try finds the store answering, and the same session launches.
+	// The minute's try finds the store answering: the same session launches and its agent registers.
 	h.advance(sessionStoreRetry)
 	h.wantState(StateLaunching)
 	h.reach(StateReady)
@@ -228,6 +229,53 @@ func TestAStoreFaultAfterTheStoreAnsweredAStartIsToldAtOnce(t *testing.T) {
 	diesOnTheStore()
 	if len(faults) != 2 {
 		t.Fatalf("an outage ten minutes after the store answered a start was told %d times in all, want twice: at once", len(faults))
+	}
+}
+
+// One outage in which each minute's try launches and its process dies on the store before its
+// agent registers is one outage, told at once and then hourly: a fresh Oh My Pi start asks the
+// store nothing before its child does, so a start that launches says nothing of the store, and a
+// store that answers each start's lookup and fails each child's own open is down all the same. An
+// agent that registers has opened its session, which the store answered: that ends the outage, so
+// the next store fault is told at once.
+func TestOneOutageWhoseTriesLaunchIsToldOnceUntilAnAgentRegisters(t *testing.T) {
+	for name, tc := range map[string]struct{ first, each ClaimState }{
+		"each try's process dies once its shim connected":                              {first: StateShimConnected, each: StateShimConnected},
+		"the first process ran, then each try's process dies before its shim connects": {first: StateIdle, each: StateLaunching},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newBareHarness(t)
+			var faults []string
+			h.deps.SessionStoreFault = func(_ Claim, detail string) { faults = append(faults, detail) }
+			h.store.PutClaim(h.ctx, queuedClaim())
+			h.start(queuedClaim())
+			h.reach(tc.first)
+			diesOnTheStore := func() {
+				h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+					Detail: "role tester reports generation exited (code 1, signal )", StoreFault: true}})
+				h.wantState(StateLaunching)
+				h.wantBudgets(Budgets{})
+			}
+
+			diesOnTheStore()
+			for range 5 {
+				h.advance(sessionStoreRetry)
+				h.wantState(StateLaunching)
+				h.reach(tc.each)
+				diesOnTheStore()
+			}
+			if len(faults) != 1 {
+				t.Fatalf("one outage of six tries over five minutes, each try launched and each process died on the store before its agent registered, was told %d times, want once", len(faults))
+			}
+
+			h.advance(sessionStoreRetry)
+			h.wantState(StateLaunching)
+			h.reach(StateRegistered)
+			diesOnTheStore()
+			if len(faults) != 2 {
+				t.Fatalf("a store fault after an agent registered was told %d times in all, want twice: at once", len(faults))
+			}
+		})
 	}
 }
 

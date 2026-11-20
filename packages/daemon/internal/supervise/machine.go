@@ -1466,7 +1466,7 @@ type Machine struct {
 	// while the decision that started the launch holds mu for minutes (stopStart, startable).
 	// storeFaultTold is when the issue and the controller were last told the session store could
 	// not answer, so a start that retries every minute reports once an hour (startWaitsForStore),
-	// and zero once a start the store answered launched (launchNow).
+	// and zero once an agent registered, the store having answered its process (register).
 	startMu        sync.Mutex
 	cancelStart    context.CancelFunc
 	startStopped   bool
@@ -2679,9 +2679,6 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			// (start, Resume), so a stop an earlier try of this same launch could not make is no
 			// longer what anyone must be told of.
 			m.stopUnconfirmed = false
-			// The store answered this start, so a store fault after it is a new outage, told at
-			// once (tellStoreFault).
-			m.storeFaultTold = time.Time{}
 			m.claim.Locator = &loc
 			m.leftPodRoundAt(loc)
 			m.armBoot()
@@ -2843,9 +2840,12 @@ func (m *Machine) waitForStore(ctx context.Context, message string, cause, logge
 
 // tellStoreFault reports the session store fault to the issue and the controller, at the first
 // start that met it and at most once an hour after that while it lasts (Deps.SessionStoreFault).
-// The hour is counted from the last report rather than from the first fault, and a start the store
-// answers ends the outage (launchNow), so an outage that ends and returns is reported again at
-// once, however soon it returns.
+// The hour is counted from the last report rather than from the first fault, and the outage ends
+// when an agent registers (register): its process opened its session, so its store answered it. A
+// start that launches does not end it, since a fresh start asks the store nothing before its child
+// does: one outage in which each minute's process dies on the store before it registers is told
+// once an hour, and an outage that returns after an agent registered is told again at once,
+// however soon it returns.
 func (m *Machine) tellStoreFault(cause error) {
 	if m.deps.SessionStoreFault == nil {
 		return
