@@ -147,7 +147,7 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 // installAnswersLeakCheck is the shared public leak check a Kubernetes daemon's gh tool runs before
 // every call: the copy reader serves at tag, the pin boot read (answersLeakCheck), from the
 // repository setting names (leakguard.Setting.Repository), held to setting's manifest digest and
-// installed under stateDir (ghtool.InstallLeakCheck). reader is the Sandbox runtime's own
+// installed under stateDir (ghtool.LeakCheck.Install). reader is the Sandbox runtime's own
 // (sandbox.Runtime.LeakCheck), the one reader of setting every pod's launcher is pushed the check
 // through (leakCheckSource), so the daemon reads a tag once for both. nil is a daemon with no
 // GitHub App to read the check with, refused as the runtime refuses the start of such a daemon's

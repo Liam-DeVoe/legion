@@ -539,12 +539,12 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // A resume finds the file it continues before the pane's home and files are written: the recorded
 // file where the spec names one (ResumeSessionFile, sessionFileOf), and where it names the session
 // by its id alone (ResumeSession), the newest file of that id one folder below the pane's sessions
-// directory (Launcher.SessionsDir, sessionFileByID), searched on the daemon's own host; it never
+// directory (Launcher.SessionsDir, sessionOfID), searched on the daemon's own host; it never
 // searches by an empty recorded path. The file found by the id becomes the spec's
 // ResumeSessionFile in place of the id, and the launch goes on as the resume of a recorded file.
 // Under a session database an Oh My Pi session is a row of the session table rather than a file
 // (sessionInDatabase), so the table is the whole search: the row at the recorded path
-// (recordedSession), or the newest row under the id (sessionByID), whose path takes the id's
+// (recordedSession), or the newest row under the id (sessionOfID), whose path takes the id's
 // place as a found file's does. A recorded file the table lacks is refused as a launch failure
 // the caller charges, never runtime.ErrSessionFileMissing, so no fresh agent takes its place; an
 // id the table holds no row of is runtime.ErrSessionFileMissing, as a search of the folders that
@@ -620,37 +620,23 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 			spec.ResumeSessionFile = found
 		}
 		r.log.Info("tmux runtime: resuming a recorded "+harness+" session", "claim", spec.Claim, "backend", backend, "session", spec.ResumeSessionFile)
-	case spec.ResumeSession != "" && r.sessionInDatabase(backend):
-		found, err := r.sessionByID(ctx, spec.ResumeSession)
-		switch {
-		case err != nil:
-			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
-		case found == "":
-			return runtime.Locator{}, fmt.Errorf("resume %s: %w: the session table holds no row of %s session %s",
-				spec.Claim, runtime.ErrSessionFileMissing, harness, spec.ResumeSession)
-		}
-		r.log.Info("tmux runtime: resuming a "+harness+" session the claim recorded no file of, from the session table's row found by its id",
-			"claim", spec.Claim, "backend", backend, "session", spec.ResumeSession, "sessionFile", found)
-		// As below, the spec now names the row by the path its file would have had, and no id.
-		spec.ResumeSessionFile, spec.ResumeSession = found, ""
 	case spec.ResumeSession != "":
-		sessions, err := paneSessions()
-		if err != nil {
-			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
-		}
-		found, skipped, err := sessionFileByID(sessions, spec.ResumeSession)
+		found, skipped, err := r.sessionOfID(ctx, spec.ResumeSession, backend, paneSessions)
 		warnSkipped(skipped)
 		switch {
+		case errors.Is(err, runtime.ErrSessionFileMissing):
+			return runtime.Locator{}, fmt.Errorf("resume %s: %w", spec.Claim, err)
 		case err != nil:
 			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
-		case found == "":
-			return runtime.Locator{}, fmt.Errorf("resume %s: %w: no folder of the pane's %s sessions directory %s holds a file of session %s",
-				spec.Claim, runtime.ErrSessionFileMissing, harness, sessions, spec.ResumeSession)
 		}
-		r.log.Info("tmux runtime: resuming a "+harness+" session the claim recorded no file of, from the file found by its id",
+		from := "the file found by its id"
+		if r.sessionInDatabase(backend) {
+			from = "the session table's row found by its id"
+		}
+		r.log.Info("tmux runtime: resuming a "+harness+" session the claim recorded no file of, from "+from,
 			"claim", spec.Claim, "backend", backend, "session", spec.ResumeSession, "sessionFile", found)
 		// From here the spec has the one shape runtime.SpawnSpec gives a resume of a file: the file,
-		// and no id.
+		// or under a session database the row by the path its file would have had, and no id.
 		spec.ResumeSessionFile, spec.ResumeSession = found, ""
 	}
 	if err := makePaneHome(r.stateDir); err != nil {

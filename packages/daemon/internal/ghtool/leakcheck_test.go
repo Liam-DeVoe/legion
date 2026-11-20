@@ -43,7 +43,7 @@ func servedSource(t *testing.T, check map[string]leakguardtest.Member) *standInS
 }
 
 // refusingSource is a reader whose every read fails with err, as GitHub's refusal of the read
-// reaches InstallLeakCheck.
+// reaches installLeakCheck.
 type refusingSource struct{ err error }
 
 func (s refusingSource) Get(context.Context, string) (leakguard.Served, error) {
@@ -91,7 +91,7 @@ func daemonEnviron(t *testing.T, extra ...string) []string {
 }
 
 // A Kubernetes daemon's gh tool runs the check the daemon installed for it, read through the
-// runtime's own reader at the pin and of the deployment's manifest digest (InstallLeakCheck): a
+// runtime's own reader at the pin and of the deployment's manifest digest (installLeakCheck): a
 // call the installed check clears runs gh, with no setup failure, in an environment that holds no
 // check of its own, the guard told that digest and holding the install to it. The install is a
 // pod's launcher's: one `--help` run of the served check, the tag recorded, at
@@ -103,9 +103,9 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 	runs, record := filepath.Join(t.TempDir(), "help-runs"), filepath.Join(t.TempDir(), "leak-check-record")
 	source := servedSource(t, servedCheck(runs, record))
 	stateDir := t.TempDir()
-	check, err := InstallLeakCheck(context.Background(), source, tag, source.manifest, stateDir, slog.New(slog.DiscardHandler))
+	check, err := installLeakCheck(context.Background(), source, tag, source.manifest, stateDir, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("InstallLeakCheck: %v", err)
+		t.Fatalf("installLeakCheck: %v", err)
 	}
 	if want := filepath.Join(stateDir, "leak-check", leakguardtest.CheckName); check != want || !slices.Equal(source.tags, []string{tag}) {
 		t.Fatalf("the install is at %s after reads at %q, want %s from one read at %s", check, source.tags, want, tag)
@@ -148,24 +148,22 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 	})
 }
 
-// A failure of the install itself, after the reader served the check, is an *InstallError: here a
-// served check whose one `--help` run names none of its shapes, which leakguard.InstallServed
-// refuses, in the cause sentence a pod's start is refused with. A read that fails is the reader's
-// own error as it came, and no *InstallError: installing again reads again, where a failed
-// install of a body the reader keeps fails the same way again.
-func TestAFailedInstallIsAnInstallErrorAndAFailedReadIsNot(t *testing.T) {
+// A failure of the install itself, after the reader served the check, is the cause sentence a
+// pod's start is refused with, which names the failure: here a served check whose one `--help`
+// run names none of its shapes, which leakguard.InstallServed refuses. A read that fails is the
+// reader's own error as it came, with no sentence of the install around it.
+func TestAFailedInstallIsItsCauseSentenceAndAFailedReadIsTheReadsOwn(t *testing.T) {
 	const tag = "leak-check-v18"
 	silent := servedSource(t, checkFiles("#!/bin/sh\nexit 2\n"))
-	_, err := InstallLeakCheck(context.Background(), silent, tag, silent.manifest, t.TempDir(), slog.New(slog.DiscardHandler))
-	var install *InstallError
-	if !errors.As(err, &install) || !strings.HasPrefix(err.Error(), leakguard.RefusalPrefix+"the served check") {
-		t.Fatalf("the install of a check whose --help fails = %v, want an *InstallError in the cause sentence %q…", err, leakguard.RefusalPrefix+"the served check")
+	_, err := installLeakCheck(context.Background(), silent, tag, silent.manifest, t.TempDir(), slog.New(slog.DiscardHandler))
+	if want := leakguard.RefusalPrefix + "the served check did not answer: its --help names no check-public-text shape"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("the install of a check whose --help fails = %v, want the cause sentence %q…", err, want)
 	}
 
 	read := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of example-org/deployment at " + tag + " with HTTP 502")
-	_, err = InstallLeakCheck(context.Background(), refusingSource{err: read}, tag, silent.manifest, t.TempDir(), slog.New(slog.DiscardHandler))
-	if !errors.Is(err, read) || errors.As(err, &install) {
-		t.Fatalf("an install whose read failed = %v, want the read's own error and no *InstallError", err)
+	_, err = installLeakCheck(context.Background(), refusingSource{err: read}, tag, silent.manifest, t.TempDir(), slog.New(slog.DiscardHandler))
+	if !errors.Is(err, read) || err.Error() != read.Error() {
+		t.Fatalf("an install whose read failed = %v, want the read's own error %q", err, read)
 	}
 }
 
@@ -242,6 +240,52 @@ func TestACallAfterTheInstallStoppedIsRefusedSayingTheNextBootTriesAgain(t *test
 	}
 	if ran := f.invocations(true); len(ran) != 0 {
 		t.Errorf("gh ran for a call refused after the install stopped: %+v", ran)
+	}
+}
+
+// noCheck is a host's check that answers no path and no error, which no check of the daemon's
+// answers (LeakChecker).
+type noCheck struct{}
+
+func (noCheck) Check() (string, error) { return "", nil }
+
+// A call whose host answers an empty check, and no setup failure, is refused before the guard
+// runs, with the setup failure naming the empty check, recorded and logged as the guard's own
+// refusals are. Handed no check, the guard would resolve one of its own (leakguard's Resolve):
+// here the check the pointer file under the daemon's configuration home names, where the tool
+// runs no check but the one its host answers. gh never runs, and neither does that check.
+func TestACallWhoseHostAnswersAnEmptyCheckIsRefusedBeforeTheGuardRuns(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+	configHome := t.TempDir()
+	pointer := filepath.Join(configHome, "public-leak-check", "path")
+	if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pointer, []byte(f.path+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.answer.host.LeakCheck = noCheck{}
+	f.answer.host.Environ = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + configHome, "XDG_STATE_HOME=" + t.TempDir()}
+	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+
+	got := f.run(1, argv...)
+	const why = "LEAK CHECK SETUP ERROR: the gh call: the daemon handed the guard no shared public leak check for this call, " +
+		"and the gh tool runs no check but the one the daemon hands it: the check's path is empty"
+	if got.Ran || got.Exit != -1 || got.Output != "refused: "+why {
+		t.Fatalf("gh %q under a host that answers an empty check = %+v; want the refusal %q, gh never run", argv, got, "refused: "+why)
+	}
+	if ran := f.invocations(false); len(ran) != 0 {
+		t.Errorf("gh ran for a call whose host answered an empty check: %+v", ran)
+	}
+	if checked := f.checked(); checked != "" {
+		t.Errorf("the check the pointer file names recorded %q, want it never run", checked)
+	}
+	row, recorded := f.calls.row(question, 1)
+	if !recorded || row.Result == nil || *row.Result != got.Output || row.Exit != nil || row.Owner != "" {
+		t.Errorf("the refused call is recorded as %+v (%t); want its refusal, no exit and no owner", row, recorded)
+	}
+	if lines := f.logLines("answers: gh call refused by the leak guard"); len(lines) != 1 || lines[0]["why"] != why {
+		t.Errorf("the refusal logged %v; want one line naming the empty check", lines)
 	}
 }
 
@@ -344,11 +388,11 @@ func TestAnInstallAtANewPinReplacesTheOneBefore(t *testing.T) {
 	stateDir := t.TempDir()
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
-	first, err := InstallLeakCheck(context.Background(), source, "leak-check-v18", source.manifest, stateDir, log)
+	first, err := installLeakCheck(context.Background(), source, "leak-check-v18", source.manifest, stateDir, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := InstallLeakCheck(context.Background(), source, "leak-check-v19", source.manifest, stateDir, log)
+	second, err := installLeakCheck(context.Background(), source, "leak-check-v19", source.manifest, stateDir, log)
 	if err != nil {
 		t.Fatal(err)
 	}

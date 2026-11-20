@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,14 +93,17 @@ func TestAResumeUnderASessionDatabaseIsHeldToTheSessionTable(t *testing.T) {
 // Under runtime.tmux.session_store postgres a claim that records its session's id and no file of
 // it is looked up in the session table, never in the pane's sessions directory. With no row of the
 // id — in a database no Oh My Pi has opened yet, a newer file of the session on this host all the
-// same — the session is found nowhere: runtime.ErrSessionFileMissing naming the id, which the
-// claim's machine answers by forgetting the session once, as it answers a search of the folders
-// that finds no file of it, and no pane opens. With rows of the id the pane's command resumes the
-// newest row's path (ompsessions.FindByID), and the file on this host is still never read.
+// same — the session is found nowhere: runtime.ErrSessionFileMissing in the table's own sentence,
+// naming the id, which the claim's machine answers by forgetting the session once, as it answers a
+// search of the folders that finds no file of it, and no pane opens. With rows of the id the
+// pane's command resumes the newest row's path (ompsessions.FindByID), logged as the row found by
+// its id, and the file on this host is still never read. A table that cannot be asked is a launch
+// failure naming the id, not the session found nowhere, and opens no pane.
 func TestAResumeByIDUnderASessionDatabaseReadsTheSessionTable(t *testing.T) {
 	_, dsnFile := testdb.DSNFile(t, "legion_tmux_sessions_by_id_test")
 	ctx := context.Background()
-	f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {
+	var logs strings.Builder
+	f := newFakeServerRuntimeWith(t, staticCredential, slog.New(slog.NewTextHandler(&logs, nil)), func(o *Options) {
 		o.Environ = append(o.Environ, "HOME="+filepath.Join(o.StateDir, "home"))
 		o.SessionDSNFile = dsnFile
 	})
@@ -111,8 +115,9 @@ func TestAResumeByIDUnderASessionDatabaseReadsTheSessionTable(t *testing.T) {
 	writeSession(t, onHost, written.Add(2*time.Hour))
 
 	_, err := f.Resume(ctx, nil, spec)
-	if !errors.Is(err, runtime.ErrSessionFileMissing) || !strings.Contains(err.Error(), "the session table holds no row of OMP session "+resumeSessionID) {
-		t.Errorf("Resume by the id before any Oh My Pi made the table = %v, want runtime.ErrSessionFileMissing naming the table and the id", err)
+	want := "resume " + string(spec.Claim) + ": the recorded session file is missing: the session table holds no row of OMP session " + resumeSessionID
+	if !errors.Is(err, runtime.ErrSessionFileMissing) || err.Error() != want {
+		t.Errorf("Resume by the id before any Oh My Pi made the table = %v, want runtime.ErrSessionFileMissing: %q", err, want)
 	}
 	if opened(f.argvs) {
 		t.Error("a resume by the id that the table holds no row of opened a pane")
@@ -136,6 +141,31 @@ func TestAResumeByIDUnderASessionDatabaseReadsTheSessionTable(t *testing.T) {
 	if command := openedCommand(f); !strings.Contains(command, "--resume="+newest) || strings.Contains(command, onHost) {
 		t.Errorf("the pane's command = %q, want it to resume the table's newest row %s", command, newest)
 	}
+	resumed := logLines(logs.String(), "tmux runtime: resuming a OMP session the claim recorded no file of, from the session table's row found by its id")
+	if len(resumed) != 1 || !strings.Contains(resumed[0], "sessionFile="+newest) {
+		t.Errorf("the resume logged %q, want one line naming the row found by its id, %s; log: %s", resumed, newest, logs.String())
+	}
+
+	t.Run("a session table that cannot be asked", func(t *testing.T) {
+		unanswered := filepath.Join(t.TempDir(), "OMP_SESSION_SQL_DSN")
+		if err := os.WriteFile(unanswered, []byte("postgres://legion@127.0.0.1:1/legion?connect_timeout=5\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {
+			o.Environ = append(o.Environ, "HOME="+filepath.Join(o.StateDir, "home"))
+			o.SessionDSNFile = unanswered
+		})
+		spec := f.spec(t, claim.RoleTester)
+		spec.ResumeSession = resumeSessionID
+		_, err := f.Resume(ctx, nil, spec)
+		want := "spawn " + string(spec.Claim) + ": resume session " + resumeSessionID + ": "
+		if err == nil || !strings.HasPrefix(err.Error(), want) || errors.Is(err, runtime.ErrSessionFileMissing) {
+			t.Errorf("Resume by the id against a table that does not answer = %v, want a launch failure beginning %q, not runtime.ErrSessionFileMissing", err, want)
+		}
+		if opened(f.argvs) {
+			t.Error("a resume by the id whose table cannot be asked opened a pane")
+		}
+	})
 }
 
 // A resume whose session database does not answer is a launch failure naming the session, not a

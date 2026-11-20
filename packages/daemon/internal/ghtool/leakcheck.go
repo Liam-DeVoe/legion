@@ -2,6 +2,7 @@ package ghtool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -19,11 +20,11 @@ type LeakCheckSource interface {
 	Get(ctx context.Context, tag string) (leakguard.Served, error)
 }
 
-// leakCheckDir is the directory under the daemon's state directory InstallLeakCheck installs the
+// leakCheckDir is the directory under the daemon's state directory installLeakCheck installs the
 // check into, beside the answers' own directories (Host.StateDir).
 const leakCheckDir = "leak-check"
 
-// InstallLeakCheck installs the shared public leak check source serves at tag into
+// installLeakCheck installs the shared public leak check source serves at tag into
 // <stateDir>/leak-check, for the guard of a Kubernetes daemon's own gh tool (LeakCheck.Install),
 // and answers the path of the installed check. Such a daemon's environment holds none of the three
 // places the guard resolves a check from (leakguard's Resolve): the worker image carries the pin,
@@ -43,47 +44,33 @@ const leakCheckDir = "leak-check"
 // install reads back under it as leakguard.CheckerVar, as a role's shim reads its pod's install, so
 // its four files on disk hash to it too.
 //
-// An error is the read's own (source's), or an *InstallError: a served check of another digest,
-// the install's cause sentence, or the setup failure a role's shim would refuse to start with
-// where the install does not read back as tag's and manifest's.
-func InstallLeakCheck(ctx context.Context, source LeakCheckSource, tag, manifest, stateDir string, log *slog.Logger) (string, error) {
+// An error is the read's own (source's), as it came; or the cause sentence a pod's start is
+// refused with (leakguard.Cause), which names the failure: a served check of another digest, or
+// an install of what source served that failed (leakguard.InstallServed); or the setup failure a
+// role's shim would refuse to start with where the install does not read back as tag's and
+// manifest's (leakguard.Installed).
+func installLeakCheck(ctx context.Context, source LeakCheckSource, tag, manifest, stateDir string, log *slog.Logger) (string, error) {
 	served, err := source.Get(ctx, tag)
 	if err != nil {
 		return "", err
 	}
 	if served.ManifestSHA256 != manifest {
-		other := fmt.Errorf("the check the daemon read at %s has the manifest digest %s, not the deployment's %s (%s or leak_check.manifest_sha256)",
-			tag, served.ManifestSHA256, manifest, leakguard.ManifestVar)
-		return "", &InstallError{sentence: leakguard.Cause(other.Error(), nil), err: other}
+		return "", errors.New(leakguard.Cause(fmt.Sprintf("the check the daemon read at %s has the manifest digest %s, not the deployment's %s (%s or leak_check.manifest_sha256)",
+			tag, served.ManifestSHA256, manifest, leakguard.ManifestVar), nil))
 	}
 	dir := filepath.Join(stateDir, leakCheckDir)
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{
 		Dir: dir, Tag: tag, Body: served.Body, Start: procgroup.NoReaper,
 		Log: func(format string, args ...any) { log.Info("answers: " + fmt.Sprintf(format, args...)) },
 	}); err != nil {
-		return "", &InstallError{sentence: leakguard.Cause(err.Error(), nil), err: err}
+		return "", errors.New(leakguard.Cause(err.Error(), nil))
 	}
 	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + tag, leakguard.CheckerVar + "=" + manifest}, dir)
 	if err != nil {
-		return "", &InstallError{sentence: err.Error(), err: err}
+		return "", err
 	}
 	return check, nil
 }
-
-// InstallError is an InstallLeakCheck failure after source served the check: a served check of
-// another manifest digest than the deployment's, the install of what it served
-// (leakguard.InstallServed), or the read back of what was installed (leakguard.Installed).
-// Installing again does not change it, since source keeps a read that succeeded
-// (leakguard.Source) and so serves the next install the same body. Its text is the failure's
-// sentence, and it wraps the failure.
-type InstallError struct {
-	sentence string
-	err      error
-}
-
-func (e *InstallError) Error() string { return e.sentence }
-
-func (e *InstallError) Unwrap() error { return e.err }
 
 // LeakChecker is the shared public leak check a call's guard runs (Host.LeakCheck), asked at every
 // call: Check answers the path of the check the guard is handed (leakguard.Options.Check), so the
@@ -116,11 +103,11 @@ type LeakCheck struct {
 func NewLeakCheck(tag, manifest string) *LeakCheck { return &LeakCheck{tag: tag, manifest: manifest} }
 
 // Install makes one try of the install at the pin: the check source serves at it, held to the
-// deployment's manifest digest and installed under stateDir (InstallLeakCheck). A try that lands
+// deployment's manifest digest and installed under stateDir (installLeakCheck). A try that lands
 // makes the installed check the one every call runs, and logs the tag and the path to log; one
 // that fails makes its error why every call is refused until a try lands, and returns it.
 func (c *LeakCheck) Install(ctx context.Context, source LeakCheckSource, stateDir string, log *slog.Logger) error {
-	check, err := InstallLeakCheck(ctx, source, c.tag, c.manifest, stateDir, log)
+	check, err := installLeakCheck(ctx, source, c.tag, c.manifest, stateDir, log)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {

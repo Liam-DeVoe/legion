@@ -58,7 +58,10 @@ func (a *Answer) toolPath() string {
 // repository whose visibility read GitHub answered 404 — refuses the call with the guard's own
 // message, as `legion gh` refuses it: a check that did not run has cleared nothing, and neither
 // has a visibility read GitHub answered 404. check is the check it runs, the one the host's
-// LeakCheck answered for this call, so the guard resolves none of its own.
+// LeakCheck answered for this call, so the guard resolves none of its own. An empty check is
+// refused before the guard runs, with the setup failure naming it: handed none, the guard would
+// resolve one itself (leakguard's Resolve), and the tool runs no check but the one its host
+// answers.
 //
 // Under the deployment's manifest digest (Host.LeakCheckManifestSHA256) the guard runs a private
 // copy of the check it held to that digest, and makes it in the answer's own 0700 directory
@@ -87,6 +90,13 @@ func (a *Answer) toolPath() string {
 // (Answer.guardEnv), so no call of the model's can be it; and the exact `gh api rate_limit`, which
 // the model can make, is guarded whole here, since nothing of the tool skips the guard for it.
 func (a *Answer) leakGuard(ctx context.Context, check string, argv []string, target ghroute.Target, configDir string) error {
+	if check == "" {
+		return &leakguard.SetupFailure{
+			What: leakguard.WhatGhCall,
+			Why:  "the daemon handed the guard no shared public leak check for this call, and the gh tool runs no check but the one the daemon hands it",
+			Err:  errors.New("the check's path is empty"),
+		}
+	}
 	_, err := leakguard.New(leakguard.Options{Check: check, Env: a.guardEnv(configDir), PrivateCopyBase: a.copies}).GhCall(ctx, leakguard.GhRequest{
 		Args:  argv,
 		Stdin: nil,

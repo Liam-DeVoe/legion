@@ -51,12 +51,22 @@ const (
 	Internal Visibility = "internal"
 )
 
-// Options are the guard's seams, each of them a field a test fills and a call site leaves alone.
-// The engine needs no seam: its rules are embedded in this package and it is linked into this
-// binary, so there is no copy of it for a test to stand in for.
+// Options are what a guard is built with, and a field left empty is the ordinary case, a role's:
+// every call resolves the check for itself (Resolve) in this process's own environment, and makes
+// the private copy of a check under a deployment's digest under this package's PrivateCopyBase or
+// its fallback. A caller sets what it holds of its own: `legion gh` an observer of the visibility
+// answer (OnVisibility), the daemon the environment it resolves the machine's check in (Env), and
+// the answer loop's gh tool, on every call, the check its host answered, the environment the
+// guard's children start from and the directory of the private copy (Check, Env and
+// PrivateCopyBase, internal/ghtool's Answer.leakGuard). Visibility, Clock and Curl are seams a
+// test fills. The engine needs no seam: its rules are embedded in this package and it is linked
+// into this binary, so there is no copy of it for a test to stand in for.
 type Options struct {
-	// Check is the shared public leak check's path. Empty is the ordinary case, where every call
-	// resolves the check for itself (Resolve); a test fills it with a stand-in of its own.
+	// Check is the shared public leak check's path, which stands in front of every place Resolve
+	// reads. Empty, every call resolves the check for itself (Resolve), as a role's `legion gh`
+	// does. The answer loop's gh tool sets it on every call, to the check its host answered for
+	// that call (internal/ghtool's Answer.leakGuard, Host.LeakCheck), so its guard resolves none
+	// of its own; a test fills it with a stand-in.
 	Check string
 	// Visibility is the REST read of what GitHub reports a repository slug ("owner/name"). Nil is
 	// the ordinary case, gh's REST read with headers (Guard.ghVisibility). It replaces that first

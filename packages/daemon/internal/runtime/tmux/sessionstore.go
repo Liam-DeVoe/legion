@@ -70,3 +70,32 @@ func (r *Runtime) recordedSession(ctx context.Context, file string, backend runt
 	}
 	return file, nil, nil, nil
 }
+
+// sessionOfID is where the session a resume names by its id alone is (runtime.SpawnSpec's
+// ResumeSession), with what the search skipped. Under a session database an Oh My Pi session is a
+// row of the session table (sessionInDatabase), so the newest row of the id is the whole search
+// (sessionByID): found is the path its file would have had, and no folder is searched or
+// skipped. Every other session is the newest file of the id one folder below the pane's sessions
+// directory, which sessionsDir resolves (sessionFileByID). A session the store holds nowhere is an
+// error wrapping runtime.ErrSessionFileMissing, in the store's own sentence; any other error is a
+// look-up that could not say, and wraps no runtime.ErrSessionFileMissing.
+func (r *Runtime) sessionOfID(ctx context.Context, id string, backend runtime.Backend, sessionsDir func() (string, error)) (found string, skipped []string, err error) {
+	harness := runtime.Backends[backend].Name
+	if r.sessionInDatabase(backend) {
+		found, err := r.sessionByID(ctx, id)
+		if err == nil && found == "" {
+			err = fmt.Errorf("%w: the session table holds no row of %s session %s", runtime.ErrSessionFileMissing, harness, id)
+		}
+		return found, nil, err
+	}
+	sessions, err := sessionsDir()
+	if err != nil {
+		return "", nil, err
+	}
+	found, skipped, err = sessionFileByID(sessions, id)
+	if err == nil && found == "" {
+		err = fmt.Errorf("%w: no folder of the pane's %s sessions directory %s holds a file of session %s",
+			runtime.ErrSessionFileMissing, harness, sessions, id)
+	}
+	return found, skipped, err
+}

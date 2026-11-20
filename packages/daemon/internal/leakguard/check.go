@@ -64,7 +64,8 @@ const pointerFile = "public-leak-check/path"
 // Resolve is the shared public leak check's path, found the way the check itself says to find
 // it: CheckVar, then public-leak-check.sh on PATH, then the pointer file under the
 // configuration home, whose content is the path of the script. The guard's own Check option
-// stands in front of all three, and is how a test hands the guard a stand-in. Where none of the
+// stands in front of all three: the answer loop's gh tool hands every call the check its runtime
+// answers there (internal/ghtool), and a test hands the guard a stand-in. Where none of the
 // three names a check at all — CheckVar unset, nothing of the check's name on any PATH entry, and
 // no pointer file — the error is a noneNamed, which sharedCheck reads apart from a broken setup
 // (brokenCheck): a check that is named and is no executable file, a file of the check's name on
