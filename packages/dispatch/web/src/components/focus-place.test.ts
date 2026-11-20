@@ -2182,6 +2182,51 @@ test("a date picked in a date box is the reader's press, so the box's removal wa
   }
 });
 
+// (bo) The page drops the date box at its `input`, which React's onChange answers, before any
+// `change` reaches it. INFRA-3135, round 19 (the tester's, builds Job infra-3135-r19dt at
+// 89072a56, a trace of the events in each engine): Firefox fires `input` alone as the digit that
+// completes the date is typed, and Playwright's fill() - a value set without keys, as assistive
+// technology sets it - fires `input`, then `change` on the box the page has already taken away,
+// which no listener of the page hears. The date is the reader's all the same, so the box's
+// removal walks back to the control before it, as in (bk); at 89072a56 the rescue reads it as a
+// loss the reader did not cause and lands on Status.
+test("a date box dropped at its input, before any change, is the reader's press all the same", async () => {
+  for (const typed of [false, true]) {
+    for (const withFocusout of [true, false]) {
+      await withRescue(async () => {
+        mainOf("Search");
+        const panel = document.createElement("div");
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute(PANEL_ATTRIBUTE, "");
+        const status = buttonIn(panel, "Status");
+        const author = document.createElement("input");
+        author.setAttribute("aria-label", "Author");
+        panel.append(author);
+        const since = document.createElement("input");
+        since.type = "date";
+        since.setAttribute("aria-label", "Updated since");
+        panel.append(since);
+        document.body.append(panel);
+        since.focus();
+        // The digit that completes the date as Firefox reports it: its keydown, then `input`.
+        if (typed) {
+          since.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, code: "Digit9", key: "9" })
+          );
+        }
+        since.dispatchEvent(new Event("input", { bubbles: true }));
+        if (withFocusout) lose(since);
+        else since.remove();
+        // The `change` that follows reaches a box no longer in the page.
+        since.dispatchEvent(new Event("change", { bubbles: true }));
+        await settled();
+        expect(author).toHaveFocus();
+        expect(status).not.toHaveFocus();
+      });
+    }
+  }
+});
+
 /** A control of `kind`: a `<select>`, a `<textarea>`, a content-editable `<div>`, else an
  *  `<input>` of that type. */
 function controlOf(kind: string): HTMLElement {
