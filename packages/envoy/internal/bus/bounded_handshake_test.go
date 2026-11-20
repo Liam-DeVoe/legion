@@ -602,3 +602,97 @@ func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
 	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect once the hold was released", conn.IsConnected)
 	confirmed(t, "once the hold was released")
 }
+
+// A window's request whose read of the connection's state, before its send, meets a reconnect's
+// handshake answers at its deadline and sends nothing. The read (observe) takes nats.go's
+// connection lock, which nats.go holds through the handshake, and it was made on the caller's
+// goroutine with no bound: the request answered only when the attempt ended, at the client's
+// connect timeout (connectTimeout, 5 s), whatever its own timeout. Now the read is waited for
+// until the request's deadline (window.observeToSend).
+//
+// The window's pin reads no state of nats.go's, and the inbox's subscribe before the read takes the
+// lock too, so a handshake reaches the read only when it begins between the two. The row holds it
+// there: the window's requestSubscribed seam holds the reconnect's handshake once the inbox is
+// subscribed, and the request, with a timeout of 300 ms, then reads the connection's state. It
+// answers `bus: NATS is reconnecting`, ErrUnavailable with its deadline's error, once its 300 ms
+// have passed and within a margin of 700 ms, during the attempt held when it read; nothing reaches
+// the subject's subscriber, and once the hold is released the inbox the request left is gone.
+//
+// The controls: before the hold, a request of the same window reaches the subscriber; the lock is
+// still held, and no later attempt has reached the hold, when the request answers. The negative
+// control is the read as it was, observe on the caller's goroutine (with the seam kept): the
+// request answers only when the attempt ends.
+func TestAWindowRequestAnswersAtItsDeadlineWhenAHandshakeIsHeldBeforeItsSend(t *testing.T) {
+	client, hold := heldHandshakeClient(t)
+	conn := client.Connection()
+	silent := testnats.Connect(t, testnats.URL(t))
+	subject := fmt.Sprintf("held-handshake.window.%d", time.Now().UnixNano())
+	arrived := make(chan *nats.Msg, 4)
+	if _, err := silent.ChanSubscribe(subject, arrived); err != nil {
+		t.Fatalf("subscribe the silent subscriber: %v", err)
+	}
+	if err := silent.Flush(); err != nil {
+		t.Fatalf("flush the silent subscriber: %v", err)
+	}
+	item := contracts.Envelope{EventID: "evt-held-handshake-window", Topic: subject}
+	w := client.WindowUntil(nil).(*window)
+	before := conn.NumSubscriptions()
+	control, err := w.request(subject, item, RequestOptions{MsgID: "held-handshake-window-control", Timeout: heldBound})
+	if err != nil {
+		t.Fatalf("control: a request before the hold was refused before it was sent: %v", err)
+	}
+	select {
+	case <-arrived:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: a request before the hold did not reach the subscriber within 30 s")
+	}
+	// Nothing acknowledges a request to a subject the stream does not capture, so it ends at its
+	// timeout and its inbox goes.
+	if err := control(); !errors.Is(err, ErrNotAcknowledged) {
+		t.Fatalf("control: a request before the hold answered %v, want ErrNotAcknowledged", err)
+	}
+	inboxesGone := func(when string) {
+		t.Helper()
+		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the requests' inboxes to be gone "+when,
+			func() bool { return conn.NumSubscriptions() == before })
+	}
+	inboxesGone("before the hold")
+
+	var (
+		attempt int64
+		held    time.Time
+	)
+	holdHere := func() {
+		hold.HoldReconnect(t, conn)
+		attempt = hold.Attempts()
+		held = time.Now()
+	}
+	w.requestSubscribed.Store(&holdHere)
+	wait, err := w.request(subject, item, RequestOptions{MsgID: "held-handshake-window", Timeout: heldBound})
+	took := time.Since(held)
+	w.requestSubscribed.Store(nil)
+	if wait != nil {
+		t.Fatal("the request was sent although its read of the connection's state met a held handshake")
+	}
+	if took > heldBound+heldMargin {
+		t.Fatalf("the request answered %s after the handshake was held, want within %s: its read waited for nats.go's lock", took, heldBound+heldMargin)
+	}
+	if took < heldBound {
+		t.Errorf("the request answered %s after the handshake was held, before its deadline of %s", took, heldBound)
+	}
+	if after := hold.Attempts(); after != attempt {
+		t.Fatalf("the request answered only after %d more handshake attempt(s) had reached the hold: it waited out the attempt held when it read", after-attempt)
+	}
+	testnats.RequireLockHeld(t, conn)
+	if !errors.Is(err, ErrReconnecting) || !errors.Is(err, ErrUnavailable) || !errors.Is(err, context.DeadlineExceeded) || err.Error() != "bus: "+ErrReconnecting.Error() {
+		t.Errorf("the request whose read met a held handshake answered %v, want `bus: NATS is reconnecting` wrapping ErrUnavailable and its deadline's error", err)
+	}
+
+	releaseUntilConnected(t, hold, conn)
+	inboxesGone("once the hold was released")
+	select {
+	case msg := <-arrived:
+		t.Fatalf("the request whose read met a held handshake reached the subscriber: %s", msg.Data)
+	case <-time.After(500 * time.Millisecond):
+	}
+}

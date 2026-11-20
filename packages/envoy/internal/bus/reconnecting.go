@@ -352,7 +352,8 @@ func waitWhileConnecting(ctx context.Context, conn *nats.Conn) error {
 //
 // It is the one rule for every read of a connection's state that a caller's ctx bounds: Bounded's
 // (awaitConnected, endedUnsent), the client's wait for a connection (ensureConnWithContext), a
-// core publish's reads before and after its send (publishConfirmed, confirmPublished), and the
+// core publish's reads before and after its send (publishConfirmed, confirmPublished), a window
+// request's read before its send, which its own deadline bounds (window.observeToSend), and the
 // read that names a request's error (namedOn).
 //
 // The wait lasts at least ConnLockWait from the start, whatever ctx does. A read with the lock free
@@ -367,14 +368,15 @@ func waitWhileConnecting(ctx context.Context, conn *nats.Conn) error {
 // which nothing reads then. So the goroutine never blocks on its send, and it writes nothing that
 // its caller reads after readWithin has returned.
 //
-// Some calls that take nats.go's lock stay on the caller's goroutine, with no bound but nats.go's:
+// Some calls that take nats.go's lock stay on the caller's goroutine, with no bound but nats.go's.
+// nats.go takes the lock before it starts any timer of the call's or waits on its context, so a
+// timeout or a nats.Context passed to such a call bounds only what follows the lock:
 //   - the sends themselves: a core publish and its flush (publishConfirmed, confirmFlushed), a
-//     window's request publish (window.request), a JetStream publish (sendStored), and nats.go's
-//     own steps of a legacy JetStream request; a send left running could still go out after its
-//     caller was told it did not;
+//     window's request publish (window.request) and its probe's flush (window.Probe), a JetStream
+//     publish (sendStored), and nats.go's own steps of a legacy JetStream request; a send left
+//     running could still go out after its caller was told it did not;
 //   - the subscribe of a request's reply inbox (requestConfirmedOn, RequestCore, window.request,
-//     StartRequestStoredTo), the unsubscribe of one a reply answered (endReplies), and the
-//     unsubscribe of a window's inbox whose publish nats.go refused (window.request);
+//     StartRequestStoredTo), and the unsubscribe of one a reply answered (endReplies);
 //   - a read of the state for a call that takes no ctx: the name of a legacy JetStream request made
 //     with no nats.Context (namedWith), and Connected, SubOK, CoreSubOK and a recovery's
 //     subscriptionsHealthy, which hold no lock of the client's across it (connOpen).

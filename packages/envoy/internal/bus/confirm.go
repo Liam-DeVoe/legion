@@ -25,15 +25,20 @@ var ErrPublishDenied = errors.New("NATS denied the publish")
 // did not acknowledge, from one that is not known to have reached the server at all.
 var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted")
 
-// publishConfirmed publishes msg on conn with publish, flushes within ctx's deadline, and confirms
-// the server accepted it (confirmPublished). A nil error means the server accepted the publish;
-// otherwise the error is a window already spent (errWindowElapsed), a read of conn's state before
-// the publish that ctx ended (reconnectWaitEnded), nats.go's refusal before sending (refused), a
-// flush that failed or ran out of the window, ErrPublishDenied, or one wrapping
-// ErrPublishUnconfirmed. publish is conn.PublishMsg, bound to the same conn: every caller reads its
-// connection once and passes it and its PublishMsg, so publish publishes on the connection observe
-// and confirmPublished judge. It is a parameter so a test can make the server's answer arrive
-// before publish returns, which is the case the state read before it exists for.
+// publishConfirmed publishes msg on conn with publish, flushes it with what is left of ctx's
+// deadline as the flush's timeout, and confirms the server accepted it (confirmPublished). A nil
+// error means the server accepted the publish; otherwise the error is a window already spent
+// (errWindowElapsed), a read of conn's state before the publish that ctx ended
+// (reconnectWaitEnded), nats.go's refusal before sending (refused), a flush that failed or ran out
+// of the window, ErrPublishDenied, or one wrapping ErrPublishUnconfirmed. publish is
+// conn.PublishMsg, bound to the same conn: every caller reads its connection once and passes it and
+// its PublishMsg, so publish publishes on the connection observe and confirmPublished judge. It is
+// a parameter so a test can make the server's answer arrive before publish returns, which is the
+// case the state read before it exists for.
+//
+// The publish and the flush each take nats.go's connection lock first, and the flush starts its
+// timer only once it holds the lock. So a publish or a flush made while a reconnect's handshake
+// holds that lock waits for the attempt, past ctx; readWithin lists such calls.
 //
 // Both reads of conn's state wait for nats.go's connection lock, which nats.go holds through a
 // reconnect's dial and handshake, so each is made within ctx (observeWithin). A read before the
@@ -83,9 +88,11 @@ func windowSpent(ctx context.Context, deadline time.Time) error {
 	return nil
 }
 
-// confirmFlushed flushes conn within deadline and confirms that the server accepted the core
-// publish to subject made on it after before was observed (confirmPublished), reading conn's state
-// within ctx.
+// confirmFlushed flushes conn with what is left until deadline as the flush's timeout, and confirms
+// that the server accepted the core publish to subject made on it after before was observed
+// (confirmPublished), reading conn's state within ctx. The flush takes nats.go's connection lock
+// before it starts that timeout, so the deadline bounds the wait for the server's answer, not a
+// wait for the lock.
 func confirmFlushed(ctx context.Context, conn *nats.Conn, subject string, before connState, deadline time.Time) error {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {

@@ -1,9 +1,8 @@
 kind: Fixed
 body: |-
   Once a registration is accepted after the session was told "Envoy inbound unavailable", the
-  server says once that the session receives again: a notice "Envoy inbound restored", which says
-  that what the stream stored meanwhile arrives now, and one stderr line. Before this the session
-  never learned that its inbound came back. A removal frame's registry write that the listener's
+  notice "Envoy inbound restored" and its stderr line take their words from the outage that was
+  told: after a bus-outage 503, they say that the listener recorded the registration. A removal frame's registry write that the listener's
   message bus did not answer is reported as that outage, with the words that the registry may
   already be without the topic, where the line said the topic could not be dropped. A removal
   whose first attempt got that answer and whose retry got no answer, or a 5xx that names no

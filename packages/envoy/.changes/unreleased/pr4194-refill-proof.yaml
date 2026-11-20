@@ -1,10 +1,9 @@
 kind: Fixed
 body: |-
-  The refill live proof, `scripts/e2e-refill.sh`, passes against the listener again. Its rig asks
-  for the session's own consumer when it registers a session, since the listener refuses a
-  registration that asks for none. The rig now writes a record's variant in its directory,
-  `/refill/<set>/v<n>`, and the judge reads an interest row's variant from there. The listener
-  keeps that directory on the row, but it drops the variant topic the rig sent before. The
+  The refill live proof, `scripts/e2e-refill.sh`, reads an interest row's variant from its
+  directory: the rig writes each record's directory as `/refill/<set>/v<n>`, which the listener
+  keeps on the row, where it named the variant in a `notifications.team.refill.<set>.v<n>` topic.
+  The
   `recreate-live` scenario runs a shape again, up to three attempts, when the shape missed the
   window it observes (INVALID); a PASS or a FAIL ends it, and its line names each earlier
   attempt. A new CI job, `envoy-refill`, runs every scenario of the script when a change touches

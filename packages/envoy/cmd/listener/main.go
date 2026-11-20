@@ -626,7 +626,13 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
 		defer cancel()
-		if err := d.client.Conn.FlushWithContext(ctx); err != nil {
+		// The flush takes nats.go's connection lock before it waits on ctx, and again to forget its
+		// PING once ctx ends, and nats.go holds that lock through a reconnect's dial and handshake,
+		// up to the client's connect timeout (5 s). Waited for through bus.Bounded, a flush that
+		// meets a handshake answers "nats unavailable" at the budget. The flush left running sends
+		// one PING once nats.go lets the lock go, which changes nothing.
+		conn := d.client.Conn
+		if _, _, err := bus.Bounded(ctx, nil, func() (struct{}, error) { return struct{}{}, conn.FlushWithContext(ctx) }); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "nats unavailable"})
 			return

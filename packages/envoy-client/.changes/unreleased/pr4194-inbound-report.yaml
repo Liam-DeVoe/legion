@@ -7,9 +7,10 @@ body: |-
   `INBOUND_FIRST_OPEN_BOUND_MS` (two minutes) has passed since the first one, so a relay that
   opens on a later try at the pod's start tells nothing. A refusal is told at once, as before,
   and so is a lost relay subject after the first accepted registration. The first registration
-  accepted after a told outage calls the new `restored` option once, which a host words with the
-  new `inboundRestoredNoticeText`: the session receives again, and what the stream stored
-  meanwhile arrives now. Once the new `stopping` option answers true, the report tells the
+  accepted after a told outage calls the `restored` option once, which is now a field of the
+  options object and takes the `why` that was told; `inboundRestoredNoticeText(why)` words it, so
+  after a bus-outage 503 the notice says that the listener recorded the registration. Once the new
+  `stopping` option answers true, the report tells the
   session nothing, since a stopping session closes its own relay and its record is deleted next.
   `inboundUnavailable` takes `{ now, firstOpenBoundMs, restored, stopping }` as its second
   argument.

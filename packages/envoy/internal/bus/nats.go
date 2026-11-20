@@ -1914,10 +1914,13 @@ func (c *Client) Publish(item contracts.Envelope) error {
 	return err
 }
 
-// PublishWithin publishes as Publish does, with ctx as the whole publish's bound - the wait for a
-// reconnect, the flush and the JetStream acknowledgement all end with it - instead of publishBound.
-// The listener's HTTP handlers publish this way, so a bus they cannot reach is answered inside the
-// deadline their own caller gave them.
+// PublishWithin publishes as Publish does, with ctx as its bound instead of publishBound: the wait
+// for a reconnect, the flush and the JetStream acknowledgement each end with it. The send itself,
+// a core publish and its flush or a JetStream publish, takes nats.go's connection lock before it
+// waits on ctx, so a send made while a reconnect's handshake holds that lock waits for that
+// attempt, up to the client's connect timeout (connectTimeout, 5 s), past ctx; readWithin lists
+// such calls. The listener's HTTP handlers publish this way, so a bus they cannot reach is
+// answered inside the deadline their own caller gave them, but for that wait.
 func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) error {
 	_, err := c.PublishReportingDuplicateWithin(ctx, item)
 	return err
@@ -1941,21 +1944,21 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 }
 
 // PublishReportingDuplicateWithin publishes as PublishReportingDuplicate does, reporting the same
-// duplicate verdict over the same two transports, with ctx as the whole publish's bound instead of
-// publishBound. The verdict is PublishAckWithin's Duplicate, a resend's included.
+// duplicate verdict over the same two transports, with ctx as its bound instead of publishBound,
+// as PublishWithin's is. The verdict is PublishAckWithin's Duplicate, a resend's included.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	ack, err := c.PublishAckWithin(ctx, item)
 	return ack.Duplicate, err
 }
 
 // PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over
-// the same two transports and within ctx's bound, and returns the stream's whole acknowledgement
-// rather than its duplicate verdict alone: the sequence, the verdict, and whether the verdict
-// answers a resend (StoredAck.Resent), which can make a duplicate this call's own first copy. A
-// core-transport topic has no acknowledgement, so it answers the zero StoredAck beside
-// PublishCoreContext's error. The listener's send and publish routes publish this way: their
-// sender limit charges nothing for a copy the stream already held, and one for a copy this call
-// may have stored (cmd/listener's senderCharge.published).
+// the same two transports and with ctx as its bound as PublishWithin's is, and returns the
+// stream's whole acknowledgement rather than its duplicate verdict alone: the sequence, the
+// verdict, and whether the verdict answers a resend (StoredAck.Resent), which can make a duplicate
+// this call's own first copy. A core-transport topic has no acknowledgement, so it answers the
+// zero StoredAck beside PublishCoreContext's error. The listener's send and publish routes publish
+// this way: their sender limit charges nothing for a copy the stream already held, and one for a
+// copy this call may have stored (cmd/listener's senderCharge.published).
 func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	if c.UsesCoreTransport(item.Topic) {
 		return StoredAck{}, c.PublishCoreContext(ctx, item.Topic, item)
@@ -1981,15 +1984,15 @@ type StoredAck struct {
 }
 
 // PublishStoredAck publishes item to the notification stream on subject, under Nats-Msg-Id msgID,
-// none when it is empty, within ctx's bound as PublishWithin's, for a caller that names both the
-// subject it is stored on and the stored message itself, and returns the stream's
-// acknowledgement. publishJetStream publishes an envelope on its own topic through it, under the
-// id it derives. It is also how the listener keeps a role message it could not deliver: stored on
-// that role's kept subject (KeptRoleSubject) while the envelope keeps its own topic field, so the
-// holder that later takes the role is handed the message as its sender sent it. Every listener
-// that keeps the same message writes it under one id (KeptMsgID), and the keep reads the
-// acknowledgement to tell a new copy from one the stream already held, and which copy that is
-// (cmd/listener/role_keep.go).
+// none when it is empty, with ctx as its bound as PublishWithin's is (the send's wait for nats.go's
+// connection lock is not bounded by it), for a caller that names both the subject it is stored on
+// and the stored message itself, and returns the stream's acknowledgement. publishJetStream
+// publishes an envelope on its own topic through it, under the id it derives. It is also how the
+// listener keeps a role message it could not deliver: stored on that role's kept subject
+// (KeptRoleSubject) while the envelope keeps its own topic field, so the holder that later takes
+// the role is handed the message as its sender sent it. Every listener that keeps the same message
+// writes it under one id (KeptMsgID), and the keep reads the acknowledgement to tell a new copy
+// from one the stream already held, and which copy that is (cmd/listener/role_keep.go).
 //
 // A duplicate is no error: it comes back Duplicate, with the sequence of the copy the stream
 // holds, and Resent where it answers a resend. Its refusals are those of every stored publish,
@@ -2028,7 +2031,7 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 	return err
 }
 
-// publishJetStream publishes item to the notification stream within ctx's bound, and returns the
+// publishJetStream publishes item to the notification stream with ctx as its bound, and returns the
 // stream's acknowledgement (StoredAck). The MsgId, where the envelope earns one, is the dedupe key
 // and the topic together, because one upstream event can be published on several topics under one
 // key - a GitHub comment that mentions the trigger is published on its mention topic beside its
@@ -2036,7 +2039,10 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
 // deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
 // The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
-// to expire that bound without spending it.
+// to expire that bound without spending it. The bound does not cover the send's wait for nats.go's
+// connection lock: js.Publish takes the lock to send before it waits on ctx, so a publish made
+// while a reconnect's handshake holds that lock waits for the attempt (readWithin lists such
+// calls).
 //
 // A publish the server refuses under the connection's own publish permissions is answered
 // ErrPublishDenied, as a publish window's sends are (window.acknowledged): a denied JetStream
@@ -2225,9 +2231,12 @@ func cursorMoved(err error) error {
 // to have accepted all return an error. The subject can differ from item.Topic when an
 // authoritative router forwards an envelope while retaining its original topic for the recipient.
 //
-// ctx is the whole publish's bound, so it is both what the wait for a reconnect ends with and the
-// window publishConfirmed flushes and confirms within, and a caller answering inside a deadline
-// of its own (the listener's routes: a publish through PublishWithin) is never held past it.
+// ctx is the publish's bound, so it is both what the wait for a reconnect ends with and the window
+// publishConfirmed flushes and confirms within. A caller answering inside a deadline of its own
+// (the listener's routes: a publish through PublishWithin) is held past it only by the publish's
+// and the flush's waits for nats.go's connection lock, which they take before they wait on ctx: a
+// publish made while a reconnect's handshake holds that lock waits for the attempt (readWithin
+// lists such calls).
 // The bound taken below is the earlier of ctx's own deadline and publishBound, since WithTimeout
 // keeps the parent's deadline when that is the earlier one; publishBound is what bounds a caller
 // that passed none.

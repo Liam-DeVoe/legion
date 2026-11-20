@@ -166,6 +166,10 @@ type window struct {
 	// (pinFirst). It is nil outside tests: a row sets it on the window it drives, to see two first
 	// sends wait side by side.
 	connectionWaitEntered atomic.Pointer[func()]
+	// requestSubscribed, when set, runs once a Request's reply inbox is subscribed and before the
+	// request reads the connection's state (observeToSend). It is nil outside tests: a row sets it
+	// to hold a reconnect's handshake at that moment.
+	requestSubscribed atomic.Pointer[func()]
 }
 
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
@@ -390,7 +394,10 @@ const requestReplies = 4
 // carries: an empty one is refused ErrNoForwardMsgID before anything is sent. It is pinned and
 // refused as a send of the window is: a subject NATS would not accept answers
 // ErrRefused, and a window whose connection was lost or reconnected answers ErrUnavailable, both in
-// the channel when Request returns, before anything is sent. Otherwise the channel receives:
+// the channel when Request returns, before anything is sent. So does a read of the connection's
+// state before the send that has not answered by the request's deadline, or by the window's
+// (observeToSend): ErrUnavailable named the ErrReconnecting it is taken for, or ErrWindowDeadline.
+// Otherwise the channel receives:
 //
 //   - nil on the stream's acknowledgement of a copy it holds, at a sequence and without an error,
 //     a duplicate's included (outcome): the request is stored on a subject the stream captures,
@@ -453,8 +460,15 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		Data:    data,
 		Header:  nats.Header{nats.MsgIdHdr: []string{opts.MsgID}},
 	}
+	if subscribed := w.requestSubscribed.Load(); subscribed != nil {
+		(*subscribed)()
+	}
 	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
-	before := observe(w.conn)
+	before, err := w.observeToSend(deadline)
+	if err != nil {
+		endReplies(inboxSub, false)
+		return nil, err
+	}
 	// Read right before the send, so the request takes only a violation the server reported of
 	// its own message and never one an earlier send of the subject earned (deniedPublish); the
 	// refusal signal is taken first, so a violation of this send closes it whenever it is
@@ -462,7 +476,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	signal := w.client.refusalSignal()
 	sentAt := time.Now()
 	if err := w.conn.PublishMsg(msg); err != nil {
-		_ = inboxSub.Unsubscribe()
+		endReplies(inboxSub, false)
 		return nil, w.unsent(err, len(data))
 	}
 	return func() error {
@@ -613,6 +627,32 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 			}
 		}
 	}, nil
+}
+
+// observeToSend reads the window's connection's state before a Request's send (observe), within
+// the earlier of the request's deadline and the window's (readWithin): the read waits for nats.go's
+// connection lock, which a reconnect's handshake and a write to a slow socket hold. A read that has
+// not answered by then sends nothing, and is ErrWindowDeadline once the window's deadline has
+// passed, and otherwise ErrUnavailable named the ErrReconnecting it is taken for, as nats.go's
+// refusal of a send while it reconnects is (unsent). A read that answers once the window's
+// deadline has passed sends nothing either (ErrWindowDeadline), so the deadline is still read last
+// before the send writes, as pinToSend reads it.
+func (w *window) observeToSend(deadline time.Time) (connState, error) {
+	if w.deadline != nil {
+		if windowEnds := w.deadline(); windowEnds.Before(deadline) {
+			deadline = windowEnds
+		}
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	before, answered := observeWithin(ctx, w.conn)
+	if err := w.expired(); err != nil {
+		return connState{}, err
+	}
+	if !answered {
+		return connState{}, reconnectingSend{refusal: fmt.Errorf("bus: %w: %w", ErrUnavailable, ctx.Err())}
+	}
+	return before, nil
 }
 
 // replyAck is a JetStream acknowledgement as it comes back on a Request's reply inbox: the
