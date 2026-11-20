@@ -1301,7 +1301,8 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     const top = freshDir("judge-root");
     const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
     mkdirSync(scripts, { recursive: true });
-    writeFileSync(path.join(scripts, "rig.sh"), readFileSync(path.join(import.meta.dir, "rig.sh")));
+    for (const file of ["rig.sh", "rig-world.json"])
+      writeFileSync(path.join(scripts, file), readFileSync(path.join(import.meta.dir, file)));
     for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
       mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
       writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));

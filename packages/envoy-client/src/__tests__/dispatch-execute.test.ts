@@ -11702,10 +11702,14 @@ describe("executeDispatchTool", () => {
         const preflight = uploadPreflight(url, init);
         if (preflight !== undefined) return preflight;
         requests.push(init ?? {});
-        return response({
-          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md" },
-          version: { number: 2 },
-        });
+        // The route's whole answer, as its neighbours give it: this branch's client reads a write's
+        // 2xx into the route's row (`WRITE_ROWS`), which an answer with no `slug` does not fill.
+        return response(
+          routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+            artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md", slug: "spec-md" },
+            version: { number: 2 },
+          })
+        );
       };
       await executeDispatchTool({
         tool: "dispatch_artifact",

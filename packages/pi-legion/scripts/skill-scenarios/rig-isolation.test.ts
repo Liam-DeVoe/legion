@@ -60,13 +60,18 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+// The checkout: this rig.sh, the world it reads (rig-world.json) and the e2e helpers it sources,
+// with the two Dispatch stand-ins.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
+  copyFileSync(
+    path.join(import.meta.dir, "rig-world.json"),
+    path.join(path.dirname(rig), "rig-world.json")
+  );
   for (const lib of [
     "rig.sh",
     "process-tree.sh",

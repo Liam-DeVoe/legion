@@ -1,7 +1,12 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { fileLimit, ROW_MARGIN_MS } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+
+// Each row starts the real entry once, as results-reading-one-line.test.ts's rows do, whose start
+// took 9.97 s at a load of 568 on 288 CPUs: 60 s for that start, and the row clock's margin.
+setDefaultTimeout(fileLimit(60_000 + ROW_MARGIN_MS));
 
 // What a CI job's `dispatch result --issue` prints goes into its runner's log, which reads a line
 // that starts with `::`, and a `##[` anywhere, as a workflow command. Each line it prints stays one

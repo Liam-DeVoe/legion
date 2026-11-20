@@ -1,7 +1,13 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { fileLimit, ROW_MARGIN_MS } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+
+// Each row starts the real entry once, a start a loaded machine stretches: one took 9.97 s at a
+// load of 568 on 288 CPUs, past Bun's 5 s default. A row gets 60 s for its start, and the margin
+// the row clock keeps before the row's end.
+setDefaultTimeout(fileLimit(60_000 + ROW_MARGIN_MS));
 
 // `dispatch results --issue` is the read the reviewer's gate decides by, under each check's own
 // line saying whether a pass stands (skills/legion-worker/references/merge-gate.md). A CI job's log
