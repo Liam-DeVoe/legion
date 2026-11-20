@@ -6844,7 +6844,7 @@ Read right after the transition a completion caused, a role's handoff is that ph
 implementing moves to testing only on it), `assert_handoff_record ISSUE ROLE PHASE ROUND` (Dispatch's `GET /api/v1/handoffs/<id>` holds the record as the issue's handoff of the role's word
 — `plan`, `implement`, `test`, `review` — at the version named, written by the session the role's claim registered;
 for the implementer, its commit is authored and committed by its own App, read with `workspace_jj`), `assert_review_of_head ISSUE ROUND STATE` (the reviewer's newest review of that state names the pull request's head the daemon records:
-the reviewer pushes nothing), `pull_request_legion_only_commits` (each commit of the proof's pull request that changes only `.legion/`, of which a run makes none) and `retro_reported` (the implementer's completion while the issue is merging or awaiting merge).
+the reviewer pushes nothing above the head it decides on, since a change request comes with no push of its own and its one text commit, pushed when every finding that stands is text, is the head its approval names), `pull_request_legion_only_commits` (each commit of the proof's pull request that changes only `.legion/`, of which a run makes none) and `retro_reported` (the implementer's completion while the issue is merging or awaiting merge).
 
 The production check after the close is no phase, and it is opened only where the project's `production_check` names the role that works it (`off` opens none; `tester` is the key's other word and its default):
 a look's report is that role's `handoff_complete` with a verdict and no commit, moves no phase and writes no handoff, so it is read from `legion state

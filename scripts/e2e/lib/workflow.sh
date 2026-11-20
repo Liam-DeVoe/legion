@@ -582,12 +582,14 @@ reviewer_commented() {
   [ -n "$commented" ]
 }
 # reviewer_completed ISSUE: the daemon recorded the reviewer's completion of the issue's open round,
-# which names the reviewer's Dispatch handoff record (the reviewer pushes nothing).
+# which names the reviewer's Dispatch handoff record (a handoff is never a commit).
 reviewer_completed() { daemon_state | jq -e --arg issue "$1" '(.issues[$issue].workers.reviewer.handoffRecord.id // "") != ""' >/dev/null; }
 # approve_as_reviewer asks the reviewer for the round's last review and waits for it to approve the
-# head on its own: the reviewer approves the code head and pushes nothing above it, its handoff
-# being a record on the Dispatch issue. The merge carries the run's retro learnings onto the smoke
-# main, and clean_smoke_main removes them.
+# pull request's head on its own (reviewer_approved_head): the head the implementer pushed, or,
+# where every finding that stands is text, the one commit of its own the reviewer pushed above it,
+# which it approves, so nothing stands above the head it approves. Its handoff is a record on the
+# Dispatch issue, never a commit. The merge carries the run's retro learnings onto the smoke main,
+# and clean_smoke_main removes them.
 approve_as_reviewer() {
   local issue=$1 app
   app=$(role_app reviewer) || return 1
@@ -1197,8 +1199,10 @@ threads_all_resolved() {
 }
 # assert_review_of_head ISSUE ROUND STATE: the reviewer's newest STATE review (CHANGES_REQUESTED or
 # APPROVED) on the proof's pull request names the head the daemon records for the pull request at
-# the round's end: the reviewer pushes nothing (its handoff is a record on the Dispatch issue), so
-# the head it reviewed is the head its decision ends the round on. The check runs right after the
+# the round's end: the reviewer pushes nothing above the head it decides on (its handoff is a
+# record on the Dispatch issue, a change request comes with no push of its own, and its one text
+# commit, pushed when every finding that stands is text, is the head its approval names), so the
+# head it reviewed is the head its decision ends the round on. The check runs right after the
 # round's transition, before the implementer's next push can move the head.
 assert_review_of_head() {
   local head reviewed app

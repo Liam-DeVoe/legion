@@ -3694,7 +3694,10 @@ reviewRun("reviewer-text-findings-text-only-head-50", {
     },
   ]),
 });
-// A review round pushes nothing at all.
+// head-7: one push onto the issue branch, the push a text-only round makes for the reviewer's text
+// commit under v31, but of a commit no remote of the run holds: the scorer reads that push's diff
+// to score the commit (`changedFiles`), cannot, and makes the run a rig error rather than score a
+// round on a diff nobody read.
 reviewRun("reviewer-text-findings-text-only-head-7", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([submission(approval())]),
@@ -4831,10 +4834,11 @@ reviewRun("reviewer-text-findings-text-only-head-109", {
     )
   ),
 });
-// head-110: the round head-1 passes on, with one push to a ref of the agent's own,
-// `refs/heads/scratch`. Catches: the pushes counted on the issue branch alone. A review round
-// pushes nothing at all, whatever the ref — the branch is the one the reviewer reads and the
-// architect sees, and a ref beside it is still this round spending a push it had no work for.
+// head-110: the round head-1 makes, with one push to a ref of the agent's own,
+// `refs/heads/scratch`, and none to the issue branch. Catches: the pushes counted on the issue
+// branch alone, and a push to another ref taken for the text commit. A text-only round's one push
+// is its text commit, onto the branch the reviewer reads and the architect sees; a push to a ref
+// beside it is counted all the same, and carries no text commit.
 reviewRun("reviewer-text-findings-text-only-head-110", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([submission(approval())]),
@@ -7181,9 +7185,11 @@ test("reviewer-text-findings, text-only: a resolution is reported, another head 
 });
 
 // Catches: the pushes of a review round counted on the issue branch alone. head-110 approved the
-// head and said so, and pushed once to `refs/heads/scratch`: a review round pushes nothing at
-// all, so the ref the push went to is no part of the reading, and head-7's push to the branch
-// is the same failure on the ref the reviewer reads.
+// head and said so, and pushed once to `refs/heads/scratch`: v31's text-only round makes one push,
+// its text commit, onto the issue branch, and the scorer counts every push the run's remote took,
+// whatever ref it moved (`pushes=1`), but takes the text commit only from one push onto that
+// branch, so this push carries none and the round fails. head-7's one push onto the branch is read
+// for its diff, a rig error there (the test above).
 test("reviewer-text-findings, text-only: a push to another ref is a push of the round", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-110\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*pushes=1 /

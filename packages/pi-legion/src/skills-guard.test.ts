@@ -626,6 +626,23 @@ test("one last chance at the reviewer's text commit for each role, in every copy
   );
 });
 
+// R2's route for a thread no text fix closes: the implementer that finds it must change code that
+// runs tells the architect, and the architect moves the issue back, to `implementing`, or to
+// `testing` for a push that has landed and changes code that runs. Each half is pinned in the
+// part that carries it for its role: the implementer's core, which every implementer prompt
+// composes, and the part every architect composes. The reviewer's half, telling the architect of
+// a behavioural finding, is in its last-chance sentence above.
+test("a change to code that runs goes to the architect, which moves the issue back", () => {
+  countedOncePerFile(
+    "a change you find you must make in code that runs is no text fix: tell the architect, which moves the issue back.",
+    [prompt("roles/core/implementer.md")]
+  );
+  countedOncePerFile(
+    "A change the implementer finds it must make in code that runs goes back to `implementing`, and a push that has landed and changes code that runs goes back to `testing`, each by your `request_backward_move`.",
+    [prompt("go/architect-common.md")]
+  );
+});
+
 // R2's carry rule, stated once for the phase workers and once for the architects, and every gate
 // text that a carried result meets pointing at it rather than writing a gate at one head alone. A
 // merge of the base is the one push the rule reads otherwise: its diff holds every file the base
