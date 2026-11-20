@@ -275,7 +275,7 @@ const TAB_STOPS = [
  *  view, and Milkdown moves it into a box of its own inside that element, and back, as it makes
  *  its plugins' views and drops them again, so the editable stands in that element whenever the
  *  bar is made. */
-export const ACTION_BAR = ".dispatch-action-bar";
+const ACTION_BAR = ".dispatch-action-bar";
 
 /** The mark of the button a document draws for each block with comments or asks on it, which
  *  names that block's id (`doc/ProofDocument.tsx`'s "Block references"): the buttons stand in an

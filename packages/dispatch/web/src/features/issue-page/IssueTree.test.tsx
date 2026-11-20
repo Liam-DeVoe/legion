@@ -52,6 +52,7 @@ import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
 import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
@@ -1597,10 +1598,10 @@ test("a press on another row ends the editing, and Escape there leaves the outli
   );
 });
 
-// A press elsewhere left the row edited, and Enter on that row again set the editing it already
-// had: nothing ran again to put the caret in, and the row said nothing. The press ends the
-// editing, and the Enter after it puts the caret in the node's block as the first Enter did.
-test("a press elsewhere, then Enter on the row that was edited, puts the caret in its block again", async () => {
+// A press outside the outline leaves the row edited. Enter on the row being edited set the editing
+// it already had: nothing ran again to put the caret in, and the row said nothing. It puts the
+// caret in the node's block again, as the first Enter did.
+test("a press outside the outline, then Enter on the row being edited, puts the caret in its block again", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const { view } = await caretInStatement(user);
@@ -1615,6 +1616,9 @@ test("a press elsewhere, then Enter on the row that was edited, puts the caret i
     true
   );
   await waitInAct(0);
+  expect(view.edited.at(-1), "the press outside the outline ended the editing").toBe(
+    "artifact-spec"
+  );
   await act(async () => statement.focus());
   await user.keyboard("{Enter}");
   await waitFor(() =>
@@ -1630,17 +1634,17 @@ test("a press elsewhere, then Enter on the row that was edited, puts the caret i
   await waitFor(() =>
     expect(
       document.activeElement === drawn && caretBlock() === "r1",
-      "Enter on the row after a press elsewhere put no caret in its block"
+      "Enter on the row after a press outside the outline put no caret in its block"
     ).toBe(true)
   );
   expect(view.edited.at(-1), "the editing is not on").toBe("artifact-spec");
 });
 
 // A press the editing goes on through is the editor's own: one on a control the editor draws in
-// the box it scrolls in, and one on the action bar it draws for its selection, which the row reads
-// by its class wherever it stands - here, apart from the box. Each leaves the editing on once it
-// is over, with the focus where it put it; a press outside both ends it.
-test("a press on a control in the row's editor box or on its action bar keeps the editing, and a press outside them ends it", async () => {
+// the box it scrolls in, where it draws the action bar for its selection too. It leaves the
+// editing on once it is over, with the focus where it put it; a press on the outline outside that
+// box - here, on the tree's own blank space - ends it.
+test("a press on a control in the row's editor box keeps the editing, and a press on the outline outside that box ends it", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const inBox = "A control the editor draws in its box";
@@ -1661,14 +1665,8 @@ test("a press on a control in the row's editor box or on its action bar keeps th
     { timeout: 10_000 }
   );
   const control = view.getByRole("button", { name: inBox });
-  const comment = render(
-    <div className="dispatch-action-bar">
-      <button type="button">Comment</button>
-    </div>
-  ).getByRole("button", { name: "Comment" });
-  // Something outside the outline that takes no focus.
-  const outside = "Words outside the outline";
-  const plain = render(<p>{outside}</p>).getByText(outside);
+  const tree = view.container.querySelector<HTMLElement>('[role="tree"]');
+  if (tree === null) throw new Error("the outline is not drawn");
   const statement = editable.closest<HTMLElement>("[data-node-row]");
   // The document the row is edited in, and whether the row still holds an editor.
   const editing = () => [
@@ -1684,20 +1682,60 @@ test("a press on a control in the row's editor box or on its action bar keeps th
   ]);
   expect(document.activeElement === control, "the press left the focus off its control").toBe(true);
 
-  await user.click(comment);
-  await waitInAct(0);
-  expect(editing(), "a press on the editor's action bar ended the editing").toEqual([
-    "artifact-spec",
-    true,
-  ]);
-  expect(document.activeElement === comment, "the press left the focus off the bar").toBe(true);
-
-  await user.click(plain);
+  await user.click(tree);
   await waitFor(() =>
     expect(
       editing(),
-      "a press outside the editor's box and its action bar did not end the editing"
+      "a press on the outline outside the editor's box did not end the editing"
     ).toEqual([undefined, false])
+  );
+});
+
+// A press in Details while a row is edited ended the editing once it was over, as any press
+// outside the editor's box did: the margin draws the document's threads, and the composer the
+// reader opened on their selection, only while the page draws the document's editor, so the
+// composer and the thread pressed went off the page under the pointer. A press outside the
+// outline ends nothing, and the focus stays where it put it; a press on another row of the tree
+// still ends the editing once it is over.
+test("a press in Details keeps the row's editing, and a press on another row of the tree still ends it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { view } = await caretInStatement(user);
+  // Details beside the outline, with a card of the margin's in it.
+  const thread = "A thread on the statement";
+  const card = render(
+    <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
+      <button type="button">{thread}</button>
+    </aside>
+  ).getByRole("button", { name: thread });
+  const statement = rowsFor(view.container, "spec#b-r1")[0];
+  const words = rowsFor(view.container, "comment-1")[0]?.querySelector<HTMLElement>(
+    "[data-node-words]"
+  );
+  if (statement === undefined || words === null || words === undefined) {
+    throw new Error("the outline's rows are not drawn");
+  }
+  // The document the row is edited in, and whether the row still holds an editor.
+  const editing = () => [
+    view.edited.at(-1),
+    statement.querySelector('[contenteditable="true"]') !== null,
+  ];
+
+  await user.click(card);
+  // The press is over a task after its click.
+  await waitInAct(0);
+  expect(editing(), "a press in Details ended the editing").toEqual(["artifact-spec", true]);
+  expect(document.activeElement === card, "the press left the focus off the card").toBe(true);
+
+  await user.click(words);
+  await waitFor(() =>
+    expect(editing(), "a press on another row of the tree did not end the editing").toEqual([
+      undefined,
+      false,
+    ])
+  );
+  expect(focusedRow(view.container), "the focus left the row the press put it on").toBe(
+    "comment-1"
   );
 });
 
@@ -1767,30 +1805,68 @@ test("Enter on the row being edited, the focus back on the row, puts the caret i
 });
 
 // The row being edited listens for Escape before its editor does, so the editor cannot cancel
-// it. Read for every Escape in the tree, it took one pressed on another row - the focus put
-// there by a script while the row was edited - for the edited row's, and gave that row the focus
-// back. An Escape on another row is the keymap's, which leaves the outline from it.
+// it. Read for every Escape in the tree, it took one pressed on another row while the row was
+// edited - a press on that row held down, which ends the editing only once it is over - for the
+// edited row's, and gave that row the focus back. An Escape on another row is the keymap's, which
+// leaves the outline from it.
 test("an Escape on another row while a row is edited leaves the outline, and gives the edited row no focus", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const { view } = await caretInStatement(user);
-  const [other] = rowsFor(view.container, "comment-1");
-  if (other === undefined) throw new Error("the comment's row is not drawn");
-  await act(async () => other.focus());
-  expect(view.edited.at(-1), "the focus on another row ended the editing").toBe("artifact-spec");
+  const words = rowsFor(view.container, "comment-1")[0]?.querySelector<HTMLElement>(
+    "[data-node-words]"
+  );
+  if (words === null || words === undefined) throw new Error("the comment's row is not drawn");
+  await user.pointer({ keys: "[MouseLeft>]", target: words });
+  expect(focusedRow(view.container), "the press did not focus the row it went down on").toBe(
+    "comment-1"
+  );
+  expect(view.edited.at(-1), "the press ended the editing while it was held").toBe("artifact-spec");
 
   await user.keyboard("{Escape}");
   expect(
     focusedRow(view.container),
     "Escape on another row left the focus on a row, not off the outline"
   ).toBeUndefined();
+  await user.pointer({ keys: "[/MouseLeft]" });
+});
+
+// A focus that reaches another row of the tree with no press - an address's landing on a node of
+// this issue, which focuses its row by script a frame after a link in the row's editor is
+// followed, or any other script's focus - ends the editing, as a press there does. Left on, the
+// tree held every row the focus came to as the one being edited: a Tab out of the tree kept that
+// row's body and its facts in Details, and the page held the document's editor for a row the
+// reader had left.
+test("a script's focus on another row ends the editing, and a Tab out of the tree lets go of that row", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const last = node({ id: "comment-2", text: "The last words.", type: "comment" });
+  const { view } = await caretInStatement(user, [last]);
+  const { control } = controlOutside();
+  const row = rowsFor(view.container, "comment-2")[0];
+  if (row === undefined) throw new Error("the last comment's row is not drawn");
+
+  await act(async () => row.focus());
+  await user.tab();
+  expect(document.activeElement, "Tab did not leave the outline").toBe(control);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row Tab left kept its body or its focused look").toBe(true)
+  );
+  expect(view.focusedNode(), "the panel still holds the facts of the row Tab left").toBeUndefined();
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the focus on another row left the editing on").toBeUndefined()
+  );
+  expect(
+    document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`),
+    "the editor's box is still drawn"
+  ).toBeNull();
 });
 
 // The keymap's Escape for a row's editor named the row Enter took the caret from until its own
 // run let go of it, which never ran: the row's own listener takes the key first. It was offered
 // from then on in any editable of the page, and an Escape in an editor outside the outline took
-// the focus to that row. It is offered in an editable inside the outline alone, and the row it
-// names is let go of as the editing ends.
+// the focus to that row. It is offered in an editable inside the outline alone, while a row is
+// edited, and the editing's end gives the row its focus back.
 test("Escape in an editor outside the outline, after a row's editing has ended, leaves the focus there", async () => {
   setViewport(1440);
   const user = userEvent.setup();

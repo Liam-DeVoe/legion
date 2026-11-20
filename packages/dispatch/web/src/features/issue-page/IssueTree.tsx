@@ -1402,8 +1402,8 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  * A row the reader is editing in keeps its body (`editing`): the document's editor moves into
  * it, which drops the focus for a frame as it leaves the page, and that is no reader leaving the
  * tree. The editing ending with the focus out of the tree all the same - the reader moved on by
- * Tab, or by a press outside the editor's box once it is over (`useNodeEditing.ts`) - is them
- * gone, and lets go of the row then, as a blur to where the focus is would have.
+ * Tab, or by a press once it is over (`useNodeEditing.ts`) - is them gone, and lets go of the row
+ * then, as a blur to where the focus is would have.
  *
  * The panel goes back to the issue's own facts whenever the focus leaves the tree, except for
  * Details, or the control that opens it: Details is where a reader reads the node's facts, and
