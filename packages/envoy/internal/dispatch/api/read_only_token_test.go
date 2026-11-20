@@ -28,9 +28,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // readOnlyProbePath is routeProbePath with every wildcard it leaves filled too - a test hook's
@@ -128,14 +128,14 @@ type readOnlyWalkToken struct {
 // the rig's stub broker for caller's key: the read entry's token (the project scope none beside
 // the scope read), a token narrowed from each kind of trade the broker narrows, and among them the
 // machine login's narrowed token with a cut, as the golden file the broker's own test holds its
-// answers to (narrowedAnswers). And a person's, minted on the rig's own store: a read-only
-// personal token of each set such a token may hold (readOnlyPersonalTokens). Each is held to be a
-// credential Dispatch reads as read-only, with the cut its answer names, and at least one to carry
-// a cut, so a walk over them cannot pass for want of either.
+// answers to (brokertokentest.NarrowedAnswers). And a person's, minted on the rig's own store: a
+// read-only personal token of each set such a token may hold (readOnlyPersonalTokens). Each is
+// held to be a credential Dispatch reads as read-only, carrying the very cut its answer names,
+// and at least one to carry a cut, so a walk over them cannot pass for want of either.
 func readOnlyWalkTokens(t *testing.T, rig *brokerTokenRig, caller *brokerCaller) []readOnlyWalkToken {
 	t.Helper()
 	answers := map[string]brokertoken.Introspection{"the read entry's token": readOnlyToken(caller.jkt)}
-	for kind, answer := range narrowedAnswers(t, caller.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix()) {
+	for kind, answer := range brokertokentest.NarrowedAnswers(t, caller.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix()) {
 		answers["the token narrowed from a "+kind] = answer
 	}
 	var tokens []readOnlyWalkToken
@@ -148,7 +148,15 @@ func readOnlyWalkTokens(t *testing.T, rig *brokerTokenRig, caller *brokerCaller)
 			t.Fatalf("%s: Dispatch's actor is %+v (%v), want a read-only credential", name, actor, err)
 		}
 		cut := answers[name].AsOf
-		if (cut != "") == actor.Credential.Cut.IsZero() {
+		var want time.Time
+		if cut != "" {
+			parsed, err := time.Parse(time.RFC3339Nano, cut)
+			if err != nil {
+				t.Fatalf("%s: the broker answered the cut %q, which is no RFC 3339 time: %v", name, cut, err)
+			}
+			want = parsed
+		}
+		if !actor.Credential.Cut.Equal(want) {
 			t.Fatalf("%s: the broker answered the cut %q and the credential carries %v", name, cut, actor.Credential.Cut)
 		}
 		if cut != "" {
@@ -458,7 +466,7 @@ func TestRegisterRefusesAGETRowWithNoReadClass(t *testing.T) {
 		t.Fatalf("api.Register refused the read class as it stands: %s", refusal)
 	}
 	const (
-		unclassed = "GET /api/v1/whoami"
+		unclassed = whoamiRow
 		unset     = "GET /api/v1/limits"
 		post      = "POST /api/v1/issues/{key}/comments"
 		nowhere   = "GET /api/v1/no-such-route"
@@ -577,9 +585,8 @@ var agentTokenLookup = regexp.MustCompile(`(?is)\bfrom\s+agent_(read_)?tokens\s+
 // tracer on the server's pool: none writes, and exactly one looks the token up, so the gate
 // resolved it once and every later layer read the refusal it carried.
 func TestAnUnresolvedBearerKeepsTheAnswerItHadBeforeTheGate(t *testing.T) {
-	database := storetest.Open(t)
 	marked := &markedStatements{}
-	handler, _, _ := newTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, marked)})
+	handler, _, _ := newTestServer(t, testServerOptions{tracer: marked})
 
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -707,38 +714,4 @@ func writesOf(statement string) ([]string, bool) {
 		writes = append(writes, verb+" "+table)
 	}
 	return writes, len(writeWord.FindAllString(read, -1)) == len(matches)
-}
-
-// requireOnlyProofAndCaches fails unless every write of statements is to the proof's replay row or
-// a cache Dispatch rebuilds, the proof's insert among them, and handlerRead, the handler's own
-// read, is among them too. It answers whether a tree was stored.
-func requireOnlyProofAndCaches(t *testing.T, statements []string, handlerRead *regexp.Regexp) bool {
-	t.Helper()
-	allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}
-	var proofInserted, treeInserted, readByHandler bool
-	var written []string
-	for _, statement := range statements {
-		writes, readable := writesOf(statement)
-		if !readable {
-			t.Errorf("the request ran a write this test cannot read a table for: %s", statement)
-		}
-		for _, write := range writes {
-			written = append(written, write)
-			verb, table, _ := strings.Cut(write, " ")
-			if !allowed[table] {
-				t.Errorf("the request wrote %s, which is neither its proof's replay row nor a cache Dispatch rebuilds: %s", table, statement)
-			}
-			proofInserted = proofInserted || (verb == "insert" && table == "dpop_proofs")
-			treeInserted = treeInserted || (verb == "insert" && table == "text_trees")
-		}
-		readByHandler = readByHandler || handlerRead.MatchString(statement)
-	}
-	if !proofInserted {
-		t.Errorf("the tracer saw no insert into dpop_proofs among %d statements: it did not see the request's proof spent", len(statements))
-	}
-	if !readByHandler {
-		t.Errorf("the tracer saw no statement matching %s among %d statements: it did not see the handler's reads", handlerRead, len(statements))
-	}
-	t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
-	return treeInserted
 }

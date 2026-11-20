@@ -217,7 +217,9 @@ func New(db *pgxpool.Pool) *Store {
 	return &Store{pool: db}
 }
 
-type querier interface {
+// Querier is a transaction or the pool: what the store's statements run on (Store.db), and what
+// the key rule's checks take (KeyHoldsReadToken).
+type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -246,7 +248,7 @@ func TxFrom(ctx context.Context) (pgx.Tx, bool) {
 	return state.tx, ok
 }
 
-func (s *Store) db(ctx context.Context) querier {
+func (s *Store) db(ctx context.Context) Querier {
 	if state, ok := ctx.Value(txKey{}).(txState); ok {
 		return state.tx
 	}
@@ -577,7 +579,7 @@ func sessionJSON(request oauth2.Requester) ([]byte, *oauth2.DefaultSession, any,
 }
 
 // CreateAccessTokenSession stores an access token's session: a token a trade narrowed to reading
-// (narrowedRequest) in oauth_narrowed_access_tokens, which no broker build before migration 0040
+// (NarrowedRequest) in oauth_narrowed_access_tokens, which no broker build before migration 0040
 // reads, and every other one in oauth_access_tokens.
 //
 // A read token, which is any token granted oauthwire.ScopeRead (a narrowed one, and a read
@@ -621,7 +623,7 @@ func (s *Store) CreateAccessTokenSession(ctx context.Context, signature string, 
 	if err != nil {
 		return fmt.Errorf("store read token: %w", err)
 	}
-	narrowed := narrowedRequest(request)
+	narrowed := NarrowedRequest(request)
 	if held {
 		return launcherKeyRefusal(narrowed)
 	}
@@ -639,11 +641,12 @@ func (s *Store) CreateAccessTokenSession(ctx context.Context, signature string, 
 	return nil
 }
 
-// narrowedRequest reports whether request is a trade narrowed to reading: one that asked for
+// NarrowedRequest reports whether request is a trade narrowed to reading: one that asked for
 // oauthwire.ScopeRead, which the exchange answers with one of the three narrowed project scopes
 // (oauth.Provider.decide). A read entry's trade that asked for no scope is granted read too, and
-// is no narrowed trade: its token is the one it has always been, stored where it always was.
-func narrowedRequest(request oauth2.Requester) bool {
+// is no narrowed trade: its token is the one it has always been, stored where it always was. The
+// exchange decides by the same test which word it writes, so the word and the table agree.
+func NarrowedRequest(request oauth2.Requester) bool {
 	return request.GetRequestedScopes().Has(oauthwire.ScopeRead)
 }
 
@@ -680,16 +683,21 @@ func (s *Store) insertNarrowedToken(ctx context.Context, signature string, reque
 	if err != nil {
 		return err
 	}
+	exchanged, _ := request.GetSession().(*ExchangeSession)
 	var subject any
-	if exchanged, ok := request.GetSession().(*ExchangeSession); ok && exchanged.SubjectSignature != "" {
+	if exchanged != nil && exchanged.SubjectSignature != "" {
 		subject = exchanged.SubjectSignature
 	}
-	if err := s.clampNarrowed(ctx, request, session, credential); err != nil {
+	if err := s.clampNarrowed(ctx, exchanged, session, credential); err != nil {
 		return err
 	}
-	raw, _, named, err := sessionJSON(request)
+	raw, _, _, err := sessionJSON(request)
 	if err != nil {
 		return err
+	}
+	var named any
+	if credential != "" {
+		named = credential
 	}
 	_, err = s.db(ctx).Exec(ctx, `insert into oauth_narrowed_access_tokens
 		(signature, request_id, credential_id, request, expires_at, subject_signature, jwk_thumbprint)
@@ -702,14 +710,15 @@ func (s *Store) insertNarrowedToken(ctx context.Context, signature string, reque
 }
 
 // clampNarrowed brings session's access-token expiry, the access lifetime from now as the library
-// set it, down to the subject's expiry (ExchangeSession.SubjectExpiresAt) and to the expiry of the
-// launcher credential the token names (credential, "" for none) where either is earlier. A read
-// trade extends no credential, so a credential that lapses before the token would otherwise lapse
-// with the token still stored live, and an ordinary trade that renews the credential later would
-// bring the token back; clamped, the token has ended by then.
-func (s *Store) clampNarrowed(ctx context.Context, request oauth2.Requester, session *oauth2.DefaultSession, credential string) error {
+// set it, down to the subject's expiry (exchanged's SubjectExpiresAt, where the request holds an
+// ExchangeSession) and to the expiry of the launcher credential the token names (credential, ""
+// for none) where either is earlier. A read trade extends no credential, so a credential that
+// lapses before the token would otherwise lapse with the token still stored live, and an ordinary
+// trade that renews the credential later would bring the token back; clamped, the token has ended
+// by then.
+func (s *Store) clampNarrowed(ctx context.Context, exchanged *ExchangeSession, session *oauth2.DefaultSession, credential string) error {
 	bounds := []time.Time{}
-	if exchanged, ok := request.GetSession().(*ExchangeSession); ok && !exchanged.SubjectExpiresAt.IsZero() {
+	if exchanged != nil && !exchanged.SubjectExpiresAt.IsZero() {
 		bounds = append(bounds, exchanged.SubjectExpiresAt)
 	}
 	if credential != "" {
@@ -752,31 +761,22 @@ func (s *Store) GetAccessTokenSession(ctx context.Context, signature string, ses
 		select n.request, `+narrowedLive+` from oauth_narrowed_access_tokens n where n.signature = $1`, signature, session)
 }
 
-// DeleteAccessTokenSession removes an access token's session from either table; an unknown
-// signature is no error.
+// DeleteAccessTokenSession removes an access token's session from either table, in one statement;
+// an unknown signature is no error.
 func (s *Store) DeleteAccessTokenSession(ctx context.Context, signature string) error {
-	db := s.db(ctx)
-	for _, statement := range []string{
-		`delete from oauth_access_tokens where signature = $1`,
-		`delete from oauth_narrowed_access_tokens where signature = $1`,
-	} {
-		if _, err := db.Exec(ctx, statement, signature); err != nil {
-			return fmt.Errorf("delete access token: %w", err)
-		}
+	if _, err := s.db(ctx).Exec(ctx, `with plain as (delete from oauth_access_tokens where signature = $1)
+		delete from oauth_narrowed_access_tokens where signature = $1`, signature); err != nil {
+		return fmt.Errorf("delete access token: %w", err)
 	}
 	return nil
 }
 
-// RevokeAccessToken deactivates every access token issued for the request, in either table.
+// RevokeAccessToken deactivates every access token issued for the request, in either table, in one
+// statement.
 func (s *Store) RevokeAccessToken(ctx context.Context, requestID string) error {
-	db := s.db(ctx)
-	for _, statement := range []string{
-		`update oauth_access_tokens set active = false where request_id = $1 and active`,
-		`update oauth_narrowed_access_tokens set active = false where request_id = $1 and active`,
-	} {
-		if _, err := db.Exec(ctx, statement, requestID); err != nil {
-			return fmt.Errorf("revoke access tokens: %w", err)
-		}
+	if _, err := s.db(ctx).Exec(ctx, `with plain as (update oauth_access_tokens set active = false where request_id = $1 and active)
+		update oauth_narrowed_access_tokens set active = false where request_id = $1 and active`, requestID); err != nil {
+		return fmt.Errorf("revoke access tokens: %w", err)
 	}
 	return nil
 }
@@ -966,12 +966,6 @@ func LockHeldCredential(ctx context.Context, subject string) (string, error) {
 	return id, nil
 }
 
-// RowQuerier is a transaction, or the pool, that KeyHoldsReadToken runs its statements on.
-type RowQuerier interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // lockKey takes the transaction-scoped advisory lock on a key's thumbprint, held until the
 // transaction db runs in ends. Both sides of the rule that no key is both a read token's and a
 // launcher credential's take it before they read the other side: CreateAccessTokenSession for a
@@ -980,7 +974,7 @@ type RowQuerier interface {
 // what the first committed in a statement of its own, which under read committed, the broker's
 // isolation, sees that commit. A hash shared by two thumbprints only makes their writers wait for
 // each other.
-func lockKey(ctx context.Context, db RowQuerier, thumbprint string) error {
+func lockKey(ctx context.Context, db Querier, thumbprint string) error {
 	if _, err := db.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('launcher-key ' || $1, 0))`, thumbprint); err != nil {
 		return fmt.Errorf("lock the key %s: %w", thumbprint, err)
 	}
@@ -989,7 +983,7 @@ func lockKey(ctx context.Context, db RowQuerier, thumbprint string) error {
 
 // keyHoldsLauncherCredential takes the key's lock (lockKey) and reports whether a live launcher
 // credential, one neither revoked nor expired, is bound to thumbprint.
-func keyHoldsLauncherCredential(ctx context.Context, db RowQuerier, thumbprint string) (bool, error) {
+func keyHoldsLauncherCredential(ctx context.Context, db Querier, thumbprint string) (bool, error) {
 	if err := lockKey(ctx, db, thumbprint); err != nil {
 		return false, err
 	}
@@ -1015,7 +1009,7 @@ func keyHoldsLauncherCredential(ctx context.Context, db RowQuerier, thumbprint s
 // launcher credential's insert and its token login's upsert, before either writes, so no launcher
 // credential is minted or moved onto a key a live read token is bound to, whichever path reaches
 // them.
-func KeyHoldsReadToken(ctx context.Context, db RowQuerier, thumbprint string) (bool, error) {
+func KeyHoldsReadToken(ctx context.Context, db Querier, thumbprint string) (bool, error) {
 	if err := lockKey(ctx, db, thumbprint); err != nil {
 		return false, err
 	}

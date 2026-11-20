@@ -1482,9 +1482,9 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 	read := entry.Writes == readWritesNothing
 	answersACut := name == whoamiRoute
 	return func(w http.ResponseWriter, r *http.Request) {
-		r = s.resolvePersonalToken(r)
-		caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
-		if !decided || caller.err != nil || caller.actor.Credential == nil || !caller.actor.Credential.ReadOnly {
+		r, caller := s.resolvePersonalToken(r)
+		credential := caller.readOnlyCredential()
+		if credential == nil {
 			next(w, r)
 			return
 		}
@@ -1495,10 +1495,10 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 		// The cut. No read of this build answers at a past time, so every read but whoami runs
 		// nothing for a token that carries a cut, rather than answer it with the present. This
 		// branch is all the gate does with a cut.
-		if cut := caller.actor.Credential.Cut; !cut.IsZero() && !answersACut {
+		if !credential.Cut.IsZero() && !answersACut {
 			writeError(w, contracts.DispatchAsOfTokenNotServed, http.StatusForbidden, fmt.Sprintf(
 				"this request's credential is a read-only token cut at %s, and this build of Dispatch does not answer a read at a past time: nothing ran",
-				cut.UTC().Format(time.RFC3339Nano)))
+				cutText(credential.Cut)))
 			return
 		}
 		next(w, r)
@@ -1514,18 +1514,26 @@ const readOnlyRefusal = "this request's credential is a read-only token, which m
 // credential rather than Dispatch's state, and names the cut it carries (whoami).
 const whoamiRoute = http.MethodGet + " /api/v1/whoami"
 
+// cutText is a cut (model.Credential.Cut) as Dispatch writes it, in whoami's answer and in the
+// refusal of a read at a past time: RFC 3339 in UTC, with every fractional digit it has.
+func cutText(cut time.Time) string {
+	return cut.UTC().Format(time.RFC3339Nano)
+}
+
 // resolvePersonalToken is r with its personal token resolved and carried on its context
 // (resolvedCallerKey), its refusal included, where r presents one and nothing has decided its
-// caller yet; any other r is answered as it is. optionalActor answers a later call with what this
+// caller yet; any other r is answered as it is. It answers the caller r's context then carries,
+// the zero resolvedCaller where none is decided. optionalActor answers a later call with what this
 // carried, so the token is looked up once a request, as a DPoP proof is presented once. A server
 // with no store holds no personal token, so it resolves none here, and a row that takes no
 // credential answers as it did before the gate rather than reach for a store it lacks.
-func (s *server) resolvePersonalToken(r *http.Request) *http.Request {
-	if _, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided || s.deps.Store == nil || !s.presentsPersonalToken(r) {
-		return r
+func (s *server) resolvePersonalToken(r *http.Request) (*http.Request, resolvedCaller) {
+	if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided || s.deps.Store == nil || !s.presentsPersonalToken(r) {
+		return r, caller
 	}
 	actor, human, err := s.optionalActor(r)
-	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human, err: err}))
+	caller := resolvedCaller{actor: actor, human: human, err: err}
+	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, caller)), caller
 }
 
 // presentsPersonalToken answers whether optionalActor resolves r's credential as a personal token

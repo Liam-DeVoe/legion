@@ -95,6 +95,13 @@ import (
 // server.readOnlyCommitPulls).
 type comparisonReader struct {
 	server *server
+	// readOnly is whether the request the reader reads for was made with a read-only credential
+	// (model.Credential.ReadOnly), read once when the reader is made from the caller the read-only
+	// gate put on the request's context (refuseReadOnlyToken): the gate puts every caller that can
+	// be read-only there, a broker-issued token and a personal token alike, and a cookie, the
+	// shared token and a service-account token never are. optionalActor answers the handler the
+	// same caller, and it cannot change within one read.
+	readOnly bool
 	// at is the one commit the reader named, and noCommitNamed where it named none.
 	at           string
 	repos        map[string]repositoryAnswer
@@ -169,9 +176,10 @@ type baseBranchAnswer struct {
 	read   bool
 }
 
-func newComparisonReader(s *server, at string) *comparisonReader {
+func newComparisonReader(ctx context.Context, s *server, at string) *comparisonReader {
+	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
 	return &comparisonReader{
-		server: s, at: at, repos: map[string]repositoryAnswer{},
+		server: s, readOnly: caller.readOnlyCredential() != nil, at: at, repos: map[string]repositoryAnswer{},
 		defaults:     map[string]defaultBranchAnswer{},
 		baseBranches: map[string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},
@@ -730,7 +738,7 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 		return false
 	}
 	now := time.Now()
-	if readOnlyCaller(ctx) {
+	if c.readOnly {
 		return c.learnCommitPulls(ctx, *repo, result.CommitSHA, now)
 	}
 	if !c.server.commitPulls.Claim(*repo, result.CommitSHA, now) {
@@ -954,7 +962,7 @@ func (c *comparisonReader) onBranch(ctx context.Context, repo, branch, sha strin
 		return answer
 	}
 	var answer delivery.BranchAnswer
-	if readOnlyCaller(ctx) {
+	if c.readOnly {
 		answer = c.server.branches.ReadCommitOnBranch(
 			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, c.learned, repo, branch, sha, time.Now())
 	} else {
@@ -963,14 +971,4 @@ func (c *comparisonReader) onBranch(ctx context.Context, repo, branch, sha strin
 	}
 	c.commits[memo] = answer
 	return answer
-}
-
-// readOnlyCaller is whether the request ctx belongs to was made with a read-only credential
-// (model.Credential.ReadOnly). It reads the caller the read-only gate read before the handler ran
-// (refuseReadOnlyToken): the gate puts every caller that can be read-only on the context, a
-// broker-issued token and a personal token alike, and a cookie, the shared token and a
-// service-account token never are. optionalActor answers the handler the same caller.
-func readOnlyCaller(ctx context.Context) bool {
-	caller, decided := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
-	return decided && caller.err == nil && caller.actor.Credential != nil && caller.actor.Credential.ReadOnly
 }

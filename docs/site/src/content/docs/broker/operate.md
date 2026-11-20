@@ -700,8 +700,9 @@ No setting turns on a read trade. Every trade the exchange takes may ask for the
 (`as_of`), an RFC 3339 time with at most six fractional digits, no later than the trade. The broker
 refuses each of these with `400 invalid_request`, naming what is wrong:
 
-- A cut on a trade that does not ask for `read`, a cut later than the trade, and a cut in any other
-  form.
+- A cut on a trade that does not ask for `read`, a cut later than the trade, a cut at the zero
+  time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and a cut in any
+  other form.
 - `launcher_credential=true` on a read trade, which makes, moves and extends no credential.
 - A `DPoP-Holder` header on a trade that does not ask for `read`, a holder proof that does not
   verify, and a holder proof signed with the DPoP proof's own key.

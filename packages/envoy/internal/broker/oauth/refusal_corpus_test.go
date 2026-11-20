@@ -70,6 +70,7 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidRequest, "A read trade makes or moves no launcher credential, so it cannot send %s=true. Trade for read without the parameter.", []any{oauthwire.FormLauncherCredential}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The '%s' parameter names a cut, and only a trade that asks for the scope %s may name one.", []any{oauthwire.FormAsOf, oauthwire.ScopeRead}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The '%s' parameter is not an RFC 3339 time with at most six fractional digits.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The '%s' parameter names the zero time, which is no cut: a trade that reads the present names no cut.", []any{oauthwire.FormAsOf}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The '%s' parameter names a time later than this trade, and a cut is a time that has passed.", []any{oauthwire.FormAsOf}, "exchange.go"},
 	// A read token refused a key a live launcher credential is bound to, as the store refuses it
 	// (oauthstore.Store.CreateAccessTokenSession): a trade that asked for read, and the read

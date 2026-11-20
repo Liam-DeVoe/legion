@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -248,7 +249,7 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"named with two projects", namedTwoProjects, false},
 		{"service with projects", serviceWithProjects, false},
 	}
-	narrowed := narrowedAnswers(t, caller.jkt, "ses_narrowed", time.Now().Add(time.Hour).Unix())
+	narrowed := brokertokentest.NarrowedAnswers(t, caller.jkt, "ses_narrowed", time.Now().Add(time.Hour).Unix())
 	for _, kind := range slices.Sorted(maps.Keys(narrowed)) {
 		rows = append(rows, row{"narrowed from a " + kind, narrowed[kind], false})
 	}

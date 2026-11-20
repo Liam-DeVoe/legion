@@ -6,6 +6,8 @@
 // its own, since what it asserts is the raw shape of a request rather than the behaviour around
 // it.
 
+import { HEADER_DPOP_HOLDER } from "../wire";
+
 /** One trade as the stub saw it: its form, its DPoP proof, and its holder proof (`DPoP-Holder`),
  *  whose parts are empty where the trade sent none. */
 export interface StubTrade {
@@ -45,7 +47,7 @@ export function stubBroker(answer: (trade: StubTrade, count: number) => StubAnsw
             >);
       };
       const proof = request.headers.get("DPoP") ?? "";
-      const holder = request.headers.get("DPoP-Holder") ?? "";
+      const holder = request.headers.get(HEADER_DPOP_HOLDER) ?? "";
       const trade: StubTrade = {
         form: new URLSearchParams(await request.text()),
         proofHeader: read(proof, 0),

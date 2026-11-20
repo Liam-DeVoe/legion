@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -192,7 +191,7 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	}
 	var cut *string
 	if credential := actor.Credential; credential != nil && !credential.Cut.IsZero() {
-		cut = new(credential.Cut.UTC().Format(time.RFC3339Nano))
+		cut = new(cutText(credential.Cut))
 	}
 	WriteJSON(w, http.StatusOK, whoamiAgent{
 		Cut:     cut,

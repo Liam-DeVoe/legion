@@ -270,6 +270,7 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   // with a launcher credential.
   "The 'as_of' parameter names a cut, and only a trade that asks for the scope read may name one\\.",
   "The 'as_of' parameter is not an RFC 3339 time with at most six fractional digits\\.",
+  "The 'as_of' parameter names the zero time, which is no cut: a trade that reads the present names no cut\\.",
   "The 'as_of' parameter names a time later than this trade, and a cut is a time that has passed\\.",
   "A read trade makes or moves no launcher credential, so it cannot send launcher_credential=true\\. Trade for read without the parameter\\.",
   `${PERSON_SLOT}'s sign-in on this machine holds no launcher credential yet, and a read trade makes none\\. Sign in with \`agent-secrets login\` first\\.`,

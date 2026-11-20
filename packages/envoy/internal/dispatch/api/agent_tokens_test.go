@@ -427,8 +427,8 @@ func TestAnExistingTokenCannotBeChangedToRead(t *testing.T) {
 	} {
 		requireRefused(fmt.Sprintf("the read-only token changed to %v", scopes), patch("alice", reader.ID, scopes))
 	}
-	if response := patch("bob", reader.ID, []string{model.ScopePerson}); response.Code != http.StatusNotFound {
-		t.Fatalf("bob changes alice's read-only token: status=%d body=%s, want 404", response.Code, response.Body.String())
+	if response := patch("bob", reader.ID, []string{model.ScopePerson}); response.Code != http.StatusNotFound || decodeBody[refusalAnswer](t, response).Code != "NOT_FOUND" {
+		t.Fatalf("bob changes alice's read-only token: status=%d body=%s, want 404 NOT_FOUND", response.Code, response.Body.String())
 	}
 	want := [][]string{{"reader", model.ScopeRead, model.ScopePerson}, {"writer", model.ScopePerson}}
 	if listed := listedScopes(t, handler, "alice"); !slices.EqualFunc(listed, want, slices.Equal) {

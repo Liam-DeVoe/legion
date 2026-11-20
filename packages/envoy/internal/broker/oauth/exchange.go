@@ -478,7 +478,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subjectTokenType := request.GetRequestForm().Get(FormSubjectTokenType)
-	read := readTrade(request)
+	read := oauthstore.NarrowedRequest(request)
 	if read {
 		// Before anything below can move the session's access-token expiry, which for a machine
 		// login's token as the subject is that token's own, read back from its row.
@@ -600,12 +600,6 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	p.oauth.WriteAccessResponse(ctx, w, request, resp)
 }
 
-// readTrade reports whether request asks for oauthwire.ScopeRead, which narrows the trade to
-// reading whatever its subject (decide, writeProjectScope).
-func readTrade(request oauth2.Requester) bool {
-	return request.GetRequestedScopes().Has(oauthwire.ScopeRead)
-}
-
 // subjectBound writes onto a read trade's session what CreateAccessTokenSession bounds the
 // narrowed token by, so it never outlives the token it was traded from: the subject's expiry, and
 // for a machine login's access token as the subject, that token's signature, which the narrowed
@@ -626,6 +620,10 @@ func (p *Provider) subjectBound(ctx context.Context, request oauth2.Requester, s
 		session.SubjectExpiresAt = expires
 	}
 }
+
+// holderProofRefused is the refusal of a DPoP-Holder header that holds more than one proof, or a
+// proof that does not verify.
+const holderProofRefused = "The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before."
 
 // holderKey reads a trade's holder proof (oauthwire.HeaderDPoPHolder) and answers the thumbprint
 // of the key it proves, or "" for a trade that sends none. The proof is verified with the
@@ -650,14 +648,14 @@ func (p *Provider) holderKey(ctx context.Context, r *http.Request, subjectTokenT
 	case !read:
 		return "", oauth2.ErrInvalidRequest.WithHint("The DPoP-Holder header binds a read token to its holder's key, and this trade does not ask for the scope read. Ask for it, or send no DPoP-Holder header.")
 	case len(proofs) > 1:
-		return "", oauth2.ErrInvalidRequest.WithHint("The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before.")
+		return "", oauth2.ErrInvalidRequest.WithHint(holderProofRefused)
 	}
 	proof, err := p.holderProofs.ValidateDPoPProof(ctx, r.Method, oauth2.RequestURL(r), proofs[0], p.holderNonce)
 	if errors.Is(err, oauth2.ErrServerError) {
 		return "", err
 	}
 	if err != nil {
-		return "", oauth2.ErrInvalidRequest.WithHint("The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before.").WithWrap(err).WithDebugError(err)
+		return "", oauth2.ErrInvalidRequest.WithHint(holderProofRefused).WithWrap(err).WithDebugError(err)
 	}
 	if proof.Thumbprint == session.GetDPoPJWKThumbprint() {
 		return "", oauth2.ErrInvalidRequest.WithHint("The DPoP-Holder proof is signed with the key the DPoP proof is signed with, and the holder's key is a key of its own.")
@@ -734,7 +732,7 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	if err != nil {
 		return "", oauth2.ErrInvalidRequest.WithHintf("The '%s' parameter was refused: %s.", oauthwire.FormProjects, err).WithWrap(err).WithDebugError(err)
 	}
-	read := readTrade(request)
+	read := oauthstore.NarrowedRequest(request)
 	cut, err := readCut(form, read, request.GetRequestedAt())
 	if err != nil {
 		return "", err
@@ -822,11 +820,16 @@ const cutLayout = "2006-01-02T15:04:05.000000Z"
 // rather than cut short.
 var cutForm = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?(Z|[+-][0-9]{2}:[0-9]{2})$`)
 
+// cutFormRefused is the refusal of a cut in any form but cutForm, or one naming no real time; its
+// verb is the parameter's name.
+const cutFormRefused = "The '%s' parameter is not an RFC 3339 time with at most six fractional digits."
+
 // readCut reads the trade's cut (oauthwire.FormAsOf): the zero time when the form names none.
 // Each refusal is invalid_request naming the parameter: a cut on a trade that does not ask for
-// oauthwire.ScopeRead, a cut in any form but cutForm or naming no real time, and a cut later than
-// the trade's own time, now (the library's time for the request, or the clock's when it set
-// none). A narrowed token reads as of a time that has passed.
+// oauthwire.ScopeRead, a cut in any form but cutForm or naming no real time, the zero time, which
+// decide and every reader of the claim take for no cut (brokertoken's cutOf refuses it too), and
+// a cut later than the trade's own time, now (the library's time for the request, or the clock's
+// when it set none). A narrowed token reads as of a time that has passed.
 func readCut(form url.Values, read bool, now time.Time) (time.Time, error) {
 	raw, named := form[oauthwire.FormAsOf]
 	if !named {
@@ -836,11 +839,14 @@ func readCut(form url.Values, read bool, now time.Time) (time.Time, error) {
 		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("The '%s' parameter names a cut, and only a trade that asks for the scope %s may name one.", oauthwire.FormAsOf, oauthwire.ScopeRead)
 	}
 	if len(raw) != 1 || !cutForm.MatchString(raw[0]) {
-		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("The '%s' parameter is not an RFC 3339 time with at most six fractional digits.", oauthwire.FormAsOf)
+		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf(cutFormRefused, oauthwire.FormAsOf)
 	}
 	cut, err := time.Parse(time.RFC3339Nano, raw[0])
 	if err != nil {
-		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("The '%s' parameter is not an RFC 3339 time with at most six fractional digits.", oauthwire.FormAsOf).WithWrap(err).WithDebugError(err)
+		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf(cutFormRefused, oauthwire.FormAsOf).WithWrap(err).WithDebugError(err)
+	}
+	if cut.IsZero() {
+		return time.Time{}, oauth2.ErrInvalidRequest.WithHintf("The '%s' parameter names the zero time, which is no cut: a trade that reads the present names no cut.", oauthwire.FormAsOf)
 	}
 	if now.IsZero() {
 		now = time.Now()

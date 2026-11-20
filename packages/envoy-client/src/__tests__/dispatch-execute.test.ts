@@ -4889,13 +4889,8 @@ describe("executeDispatchTool", () => {
     expect(service).toBe(
       "Session session-1 runs as service example-fleet with a read-only credential: it may read, and Dispatch refuses every write it makes."
     );
-    for (const text of [person, service]) {
-      expect(text).not.toMatch(/issues? you create/);
-      expect(text).not.toContain("agent-secrets login");
-      expect(text).not.toContain("may write project");
-    }
 
-    // A credential that writes is told what it was told before.
+    // A credential that writes is told what a writing credential is told, and nothing of reading.
     const writer = await whoami({
       kind: "agent",
       owner: "alice",

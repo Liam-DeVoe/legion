@@ -76,10 +76,13 @@ func (ts *testServer) launcherState(t *testing.T) string {
 
 // TestALaunchersProofSignedWithAReadTokensKeyIsRefused: a person holds three live launcher
 // credentials, their sign-in's on one box, their second sign-in's on another, and a machine login
-// they approved, and a read token traded with a holder proof is bound to the holder's key. A
-// launcher proof signed with that key and naming each credential's lid is answered 401
-// LAUNCHER_INVALID on POST /v1/enrollments, DELETE /v1/enrollments/{id}, POST
-// /v1/operator/machines/{id}/revoke and POST /v1/operator/grants/{id}/revoke, and changes nothing.
+// they approved, and a read token traded with a holder proof is bound to the holder's key. The
+// key rule keeps that key off every launcher credential: a token login with it is answered 409
+// KEY_HOLDS_LIVE_CREDENTIAL and leaves no credential on the key. So a launcher proof signed with
+// that key and naming each credential's lid is answered 401 LAUNCHER_INVALID on POST
+// /v1/enrollments, DELETE /v1/enrollments/{id}, POST /v1/operator/machines/{id}/revoke and POST
+// /v1/operator/grants/{id}/revoke, and changes nothing: a launcher proof authenticates only with
+// the key its credential is bound to, which the token login shows the read token's key never is.
 // The same proof signed with each credential's own key is answered past 401, so what refused it
 // was the key.
 func TestALaunchersProofSignedWithAReadTokensKeyIsRefused(t *testing.T) {
@@ -109,6 +112,17 @@ func TestALaunchersProofSignedWithAReadTokensKeyIsRefused(t *testing.T) {
 	}
 	if bound != keyThumbprint(t, holder) {
 		t.Fatalf("the read token is bound to %s, want the holder's key %s", bound, keyThumbprint(t, holder))
+	}
+	if status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), ts.daemonRequest(t, holder)); status != http.StatusConflict ||
+		decode[wireError](t, body).Code != "KEY_HOLDS_LIVE_CREDENTIAL" {
+		t.Fatalf("a token login with the read token's key = %d %s, want 409 KEY_HOLDS_LIVE_CREDENTIAL", status, body)
+	}
+	var onHolder int
+	if err := ts.Store.Pool.QueryRow(ctx, `select count(*) from launcher_credentials where key_thumbprint = $1`, keyThumbprint(t, holder)).Scan(&onHolder); err != nil {
+		t.Fatalf("count the credentials on the read token's key: %v", err)
+	}
+	if onHolder != 0 {
+		t.Fatalf("launcher_credentials holds %d rows on the read token's key, want none", onHolder)
 	}
 
 	firstBox, secondBox := newSigningKey(t), newSigningKey(t)

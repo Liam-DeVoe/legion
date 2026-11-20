@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -494,13 +495,14 @@ func newAsOfRig(t *testing.T) *asOfRig {
 
 // callers are the three credentials every row is read with, each said to the stub broker: a
 // read-only token, INFRA-4619's read entry's token (readOnlyToken); a read-only token that holds
-// person, the token narrowed from a machine login's (narrowedAnswers), here alice's; and a caller
-// the read filter at this head holds, a session token that names a service and no person, so the
+// person, the token narrowed from a machine login's (brokertokentest.NarrowedAnswers), here
+// alice's; and a caller the read filter at this head holds, a session token that names a service
+// and no person, so the
 // person scope refuses it on each person route. Each is held to be the credential it is said to
 // be, so a row cannot pass for want of one.
 func (r *asOfRig) callers(t *testing.T) []asOfReader {
 	t.Helper()
-	person := narrowedAnswers(t, r.key.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	person := brokertokentest.NarrowedAnswers(t, r.key.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
 	person.Person = brokerTestPerson
 	answers := []struct {
 		caller   asOfReader

@@ -1451,7 +1451,7 @@ func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
 			JWK:          cred.JWK,
 			Expires:      cred.Expires,
 		})
-		if store.IsUniqueViolation(err) || errors.Is(err, enroll.ErrKeyBindsReadToken) {
+		if enroll.KeyHeld(err) {
 			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
 		}
 		if err != nil {

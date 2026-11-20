@@ -107,16 +107,14 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	insert := `
-		insert into agent_tokens (owner, name, token_hash, prefix, scopes)
-		values ($1, $2, $3, $4, $5)
-		returning ` + agentTokenColumns
+	table := "agent_tokens"
 	if slices.Contains(scopes, model.ScopeRead) {
-		insert = `
-		insert into agent_read_tokens (owner, name, token_hash, prefix, scopes)
+		table = "agent_read_tokens"
+	}
+	insert := `
+		insert into ` + table + ` (owner, name, token_hash, prefix, scopes)
 		values ($1, $2, $3, $4, $5)
 		returning ` + agentTokenColumns
-	}
 
 	plaintext, hash, err := newAgentToken()
 	if err != nil {
@@ -234,7 +232,7 @@ const codeTokenScopesInput = "TOKEN_SCOPES_INPUT"
 
 // tokenWords is every word a personal token's scopes may hold: the scopes a credential acts under
 // (model.Scopes), and read (model.ScopeRead), which marks a token that may only read.
-var tokenWords = []string{model.ScopePerson, model.ScopeApprove, model.ScopeRead}
+var tokenWords = append(slices.Clip(model.Scopes), model.ScopeRead)
 
 // tokenScopes is the set a mint or an edit gives a token: the one the body names, or, where it
 // names none, the set the caller's own credential holds. It writes its own refusal and answers
@@ -362,23 +360,17 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	if revokedAt != nil {
 		return model.Actor{}, errorf(http.StatusUnauthorized, "TOKEN_REVOKED", "agent token has been revoked")
 	}
-	recordUse := `
-		update agent_tokens
-		set last_used_at = now()
-		where token_hash = $1
-		  and revoked_at is null
-		  and (last_used_at is null or last_used_at < now() - interval '1 minute')
-	`
+	table := "agent_tokens"
 	if readOnly {
-		recordUse = `
-		update agent_read_tokens
+		table = "agent_read_tokens"
+	}
+	if _, err := s.deps.Store.Pool.Exec(ctx, `
+		update `+table+`
 		set last_used_at = now()
 		where token_hash = $1
 		  and revoked_at is null
 		  and (last_used_at is null or last_used_at < now() - interval '1 minute')
-	`
-	}
-	if _, err := s.deps.Store.Pool.Exec(ctx, recordUse, hash[:]); err != nil {
+	`, hash[:]); err != nil {
 		return model.Actor{}, fmt.Errorf("record agent token use: %w", err)
 	}
 	// The token's own row says what it may do, and it names the credential that acted: the

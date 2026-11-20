@@ -309,6 +309,14 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): 
   });
 }
 
+/** What one {@link tradedToken} call asks for: the `signal` that ends its wait, whether it waits
+ *  for ready (`waitForReady`, false unless set), and the read trade `read`, where it asks for one. */
+interface TradeOptions {
+  readonly signal?: AbortSignal | undefined;
+  readonly waitForReady?: boolean | undefined;
+  readonly read?: ReadTrade | undefined;
+}
+
 /**
  * The token this process holds, or trades now, for a caller of `env` acting as the session
  * `own`, and the key the broker bound it to, out of the one client {@link clientFor} keeps for
@@ -323,9 +331,7 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): 
 async function tradedToken(
   env: BrokerEnvironment,
   own: string,
-  signal?: AbortSignal,
-  waitForReady = false,
-  read?: ReadTrade | undefined
+  { signal, waitForReady = false, read }: TradeOptions
 ): Promise<TradedToken> {
   const { entry, made } = await untilAborted(clientFor(env, own, read), signal);
   const { client } = made;
@@ -361,7 +367,7 @@ export function brokerTokenFor(
   session: BrokerSessionName | undefined
 ): (signal?: AbortSignal, waitForReady?: boolean) => Promise<TradedToken> {
   // The shared client, which asks for no scope: the NATS auth service refuses a read-only token.
-  return (signal, waitForReady) => tradedToken(env, sessionName(session), signal, waitForReady);
+  return (signal, waitForReady) => tradedToken(env, sessionName(session), { signal, waitForReady });
 }
 
 /** Has the client at `key` drop `token`, or the token it holds where `token` is undefined. Looked
@@ -446,7 +452,7 @@ export function brokerCredential(
       acting?: string,
       signal?: AbortSignal
     ): Promise<Readonly<Record<string, string>>> {
-      const traded = await tradedToken(env, own(acting), signal, false, read);
+      const traded = await tradedToken(env, own(acting), { signal, read });
       const { token, key, identity } = traded;
       presented = token.accessToken;
       const headers = {

@@ -30,9 +30,12 @@ const (
 // slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
-// ScopeRead is the word GET /api/v1/whoami lists among a read-only credential's scopes. No
-// credential holds it as a scope: Credential.ReadOnly marks the credential, Credential.Scopes
-// never carries the word, and no route requires it, so no recorded act names it either.
+// ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
+// a credential's scopes, and a read-only personal token's set holds it: POST
+// /api/v1/me/agent-tokens takes it as a mint word and keeps it in agent_read_tokens.scopes, the
+// token list names it, and PATCH /api/v1/me/agent-tokens/{id} refuses it. No credential holds it
+// as a scope: Credential.ReadOnly marks the credential, Credential.Scopes never carries the word,
+// and no route requires it, so no recorded act names it either.
 const ScopeRead = "read"
 
 // ActorAct names the agent that acted when a credential acted for its person, so a write records

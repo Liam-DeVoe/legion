@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // A read-only personal token writes through neither build. This tree mints one holding read and
@@ -45,20 +46,22 @@ func TestAReadOnlyPersonalTokenWritesThroughNeitherBuild(t *testing.T) {
 	issue, _ := current.createIssueIn(t, project, "An issue a read-only token reads", "A spec to read.")
 
 	var minted struct {
-		Token  string   `json:"token"`
-		Scopes []string `json:"scopes"`
+		Token string `json:"token"`
 	}
 	answer := current.call(t, http.MethodPost, "/api/v1/me/agent-tokens",
-		jsonBody(t, map[string]any{"name": "twobuild-reader", "scopes": []string{"read", "person"}}), http.StatusCreated)
+		jsonBody(t, map[string]any{"name": "twobuild-reader", "scopes": []string{model.ScopeRead, model.ScopePerson}}), http.StatusCreated)
 	if err := json.Unmarshal(answer, &minted); err != nil || minted.Token == "" {
 		t.Fatalf("decode the minted token: %v: %s", err, answer)
 	}
 	bearer := http.Header{"Authorization": {"Bearer " + minted.Token}}
-	var whoami struct {
+	// whoamiScopes is the one member of a whoami answer the row reads. Each build's answer is
+	// decoded into a value of its own, so one build's scopes never stand in for the other's.
+	type whoamiScopes struct {
 		Scopes []string `json:"scopes"`
 	}
+	var ownWhoami whoamiScopes
 	own := current.send(t, http.MethodGet, "/api/v1/whoami", "", bearer)
-	if own.status != http.StatusOK || json.Unmarshal(own.body, &whoami) != nil || !slices.Contains(whoami.Scopes, "read") {
+	if own.status != http.StatusOK || json.Unmarshal(own.body, &ownWhoami) != nil || !slices.Contains(ownWhoami.Scopes, model.ScopeRead) {
 		t.Fatalf("the %s's whoami of its own read-only token: %s, want 200 naming read", builds.currentName(), own)
 	}
 
@@ -83,7 +86,8 @@ func TestAReadOnlyPersonalTokenWritesThroughNeitherBuild(t *testing.T) {
 			}
 		}
 	case http.StatusOK:
-		if json.Unmarshal(asked.body, &whoami) != nil || !slices.Contains(whoami.Scopes, "read") {
+		var previousWhoami whoamiScopes
+		if json.Unmarshal(asked.body, &previousWhoami) != nil || !slices.Contains(previousWhoami.Scopes, model.ScopeRead) {
 			t.Fatalf("the %s answered whoami %s, want it to name read: a build that resolves the token must read it as read-only", builds.previousName(), asked)
 		}
 		t.Logf("the %s answers the read-only token's whoami 200 naming read: it knows read-only tokens, so the write must answer 403 %s",

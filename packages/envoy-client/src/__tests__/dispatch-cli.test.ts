@@ -2,7 +2,12 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import {
+  DISPATCH_BLOCK_UNITS,
+  DISPATCH_READ_ONLY_TOKEN,
+  IDEMPOTENCY_KEY_HEADER,
+  PROJECT_KEY_RULE,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
@@ -1685,9 +1690,9 @@ describe("the dispatch CLI", () => {
   });
 
   // Dispatch refuses a read-only token's write with READ_ONLY_TOKEN before anything runs. The
-  // command prints that refusal code first, as Dispatch wrote it, and exits 1, as for every write
-  // Dispatch refused. The credential is the read trade DISPATCH_TOKEN_BROKER_READ asks for, over
-  // the DISPATCH_TOKEN the shell also holds.
+  // command prints that refusal as a line of its own, its code first and then Dispatch's message,
+  // and exits 1, as for every write Dispatch refused. The credential is the read trade
+  // DISPATCH_TOKEN_BROKER_READ asks for, over the DISPATCH_TOKEN the shell also holds.
   test("a write command under a read-only token prints Dispatch's READ_ONLY_TOKEN refusal and exits 1", async () => {
     const readToken = fixtureSecret("read");
     const trades: URLSearchParams[] = [];
@@ -1720,7 +1725,7 @@ describe("the dispatch CLI", () => {
         authorization: request.headers.get("Authorization") ?? "",
       });
       if (request.method === "GET") return await fetch(request);
-      return Response.json({ code: "READ_ONLY_TOKEN", error: refusal }, { status: 403 });
+      return Response.json({ code: DISPATCH_READ_ONLY_TOKEN, error: refusal }, { status: 403 });
     }) as typeof fetch;
     let ran: { code: number; stdout: string };
     try {
@@ -1741,7 +1746,7 @@ describe("the dispatch CLI", () => {
       broker.stop(true);
     }
 
-    expect(ran.stdout).toContain(`READ_ONLY_TOKEN: ${refusal}`);
+    expect(ran.stdout.split("\n")).toContain(`${DISPATCH_READ_ONLY_TOKEN}: ${refusal}`);
     expect(ran.code).toBe(1);
     expect(trades.map((form) => form.get("scope"))).toEqual(["read"]);
     expect(sent.filter((one) => one.method !== "GET").map((one) => one.path)).toEqual([

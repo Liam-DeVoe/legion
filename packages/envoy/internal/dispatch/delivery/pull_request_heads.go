@@ -1330,7 +1330,7 @@ func asStored(t *time.Time) *time.Time {
 	if t == nil {
 		return nil
 	}
-	stored := time.Unix(t.Unix(), int64(t.Nanosecond())/1000*1000).UTC()
+	stored := t.UTC().Truncate(time.Microsecond)
 	return &stored
 }
 

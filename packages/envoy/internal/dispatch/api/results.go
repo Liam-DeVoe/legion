@@ -569,7 +569,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		// Every head GitHub has to be asked for is learned before the first check is answered, so
 		// two `before_merge` checks of one issue name one list of bases and not two
 		// (comparisonReader.learn).
-		reader := newComparisonReader(s, at)
+		reader := newComparisonReader(r.Context(), s, at)
 		reader.learn(r.Context(), checks)
 		for index := range checks {
 			reader.answer(r.Context(), &checks[index])

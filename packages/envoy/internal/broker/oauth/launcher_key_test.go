@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,7 +78,8 @@ func (f *fixture) readTokensOn(t *testing.T, key *ecdsa.PrivateKey) int {
 }
 
 // endReadTokens ends every read token bound to key, in either table: revoked, as a revocation
-// deactivates one, or expired.
+// deactivates one, or expired. A read token of oauth_access_tokens is a read entry's, whose
+// project scope is none, as readTokensOn counts it.
 func (f *fixture) endReadTokens(t *testing.T, key *ecdsa.PrivateKey, revoked bool) {
 	t.Helper()
 	set := `active = false`
@@ -86,7 +88,7 @@ func (f *fixture) endReadTokens(t *testing.T, key *ecdsa.PrivateKey, revoked boo
 	}
 	for _, statement := range []string{
 		`update oauth_narrowed_access_tokens set ` + set + ` where jwk_thumbprint = $1`,
-		`update oauth_access_tokens set ` + set + ` where request #>> '{session,jwk_thumbprint}' = $1`,
+		`update oauth_access_tokens set ` + set + ` where request #>> '{session,jwk_thumbprint}' = $1 and request #>> '{session,extra,project_scope}' = 'none'`,
 	} {
 		if _, err := f.pool.Exec(context.Background(), statement, thumbprint(t, key)); err != nil {
 			t.Fatalf("end the read tokens of a key: %v", err)
@@ -94,9 +96,14 @@ func (f *fixture) endReadTokens(t *testing.T, key *ecdsa.PrivateKey, revoked boo
 	}
 }
 
+// keyRuleRefusal is what the store's refusal of a read token on a key a live launcher credential
+// is bound to says, in each of its two sentences (oauthstore's launcherKeyRefusal).
+const keyRuleRefusal = "signs launcher proofs"
+
 // launcherPath is one of the paths that write a launcher credential's key, tried with a key: it
-// answers whether a credential was minted, and fails the test unless a refusal is the one the
-// path already gives a key another live credential holds.
+// answers whether a credential was minted, and fails the test unless a refusal is the key rule's.
+// The two enroll writers must refuse with enroll.ErrKeyBindsReadToken (keyTaken), and the two
+// trades with the exchange's refusal of a key another live machine login holds (traded).
 type launcherPath struct {
 	name string
 	mint func(t *testing.T, f *signInFixture, key *ecdsa.PrivateKey) bool
@@ -172,13 +179,15 @@ var launcherPaths = []launcherPath{
 // holder proof, is refused and stores no token: a person's sign-in with its box key, a machine
 // login with machine.json's key, a Google machine with the key its earlier trade put a credential
 // on, a pod whose key holds a token login's credential, and the read entry's pod with such a key,
-// asking for read and asking for no scope. The same trade with a holder proof, or with a key that
-// holds no credential, mints.
+// asking for read and asking for no scope. The person's sign-in is refused for sending no holder
+// proof, which its read trade sends whatever its box key holds; every other trade is refused by the
+// key rule. The same trade with a holder proof, or with a key that holds no credential, mints.
 //
 // With a live read token bound to a key, of either kind, every path that writes a launcher
-// credential's key is refused with the refusal it gives a key another live credential holds, and
-// no credential is bound to the key; once the read token is revoked, and with another key once its
-// read token has expired, each mints.
+// credential's key is refused, and no credential is bound to the key: a device login's approval
+// and a token login by enroll.ErrKeyBindsReadToken, and the two trades by the exchange's refusal
+// of a key another live machine login holds. Once the read token is revoked, and with another key
+// once its read token has expired, each mints.
 //
 // Two transactions run at once, one storing a read token bound to a key and one minting a
 // credential on it, end with exactly one of them committed, fifty times over.
@@ -198,15 +207,19 @@ func TestNoKeyIsBothAReadTokensAndALauncherCredentials(t *testing.T) {
 		// trade is the read trade, proved with a key a live launcher credential is bound to.
 		trade func(t *testing.T) narrowingTrade
 		scope string
+		// says is what the refusal's description holds: the key rule's sentence, but for a
+		// person's sign-in, whose read trade with no holder proof is refused before the key rule
+		// is read (it must send one whatever its box key holds).
+		says string
 	}{
 		{"a person's sign-in, with its box key", func(t *testing.T) narrowingTrade {
 			return narrowingRows["person-sign-in"].trade(t, f)
-		}, oauthwire.ScopeRead},
+		}, oauthwire.ScopeRead, "A person's read trade sends a DPoP-Holder proof"},
 		{"a machine login, with machine.json's key", func(t *testing.T) narrowingTrade {
 			machine := newKey(t)
 			subject := f.devBoxTokenOf(t, machine, person, f.credentialOn(t, machine))
 			return narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeAccessToken, narrowedDevBoxSession), key: machine}
-		}, oauthwire.ScopeRead},
+		}, oauthwire.ScopeRead, keyRuleRefusal},
 		{"a Google machine, with the key its earlier trade put a credential on", func(t *testing.T) narrowingTrade {
 			tr := narrowingRows["google-identity-no-person"].trade(t, f)
 			status, body := f.send(t, tr, "", "")
@@ -215,36 +228,33 @@ func TestNoKeyIsBothAReadTokensAndALauncherCredentials(t *testing.T) {
 			}
 			tr.form = exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, narrowedFleetSession)
 			return tr
-		}, oauthwire.ScopeRead},
+		}, oauthwire.ScopeRead, keyRuleRefusal},
 		{"a pod whose key holds a token login's credential", func(t *testing.T) narrowingTrade {
 			tr := narrowingRows["pod-entry"].trade(t, f)
 			tr.key = withTokenLogin(t)
 			return tr
-		}, oauthwire.ScopeRead},
+		}, oauthwire.ScopeRead, keyRuleRefusal},
 		{"the read entry's pod asking for read, with such a key", func(t *testing.T) narrowingTrade {
 			return narrowingTrade{form: f.readPodForm(t), key: withTokenLogin(t), session: readSession}
-		}, oauthwire.ScopeRead},
+		}, oauthwire.ScopeRead, keyRuleRefusal},
 		{"the read entry's pod asking for no scope, with such a key", func(t *testing.T) narrowingTrade {
 			return narrowingTrade{form: f.readPodForm(t), key: withTokenLogin(t), session: readSession}
-		}, ""},
+		}, "", keyRuleRefusal},
 	} {
 		t.Run("a read trade of "+c.name+" binding that key is refused", func(t *testing.T) {
 			tr := c.trade(t)
 			tr.holder = nil
 			before := f.tokenRows(t)
 			status, body := f.send(t, tr, c.scope, "")
-			if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
-				t.Fatalf("the read trade = %d %v, want 400 invalid_request and no access token", status, body)
-			}
+			refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", c.says)
 			if after := f.tokenRows(t); after != before {
 				t.Errorf("the refused trade left %d access tokens, want the %d there were", after, before)
 			}
 			if bound := f.readTokensOn(t, tr.key); bound != 0 {
 				t.Errorf("%d read tokens are bound to the key a launcher credential holds", bound)
 			}
-			// What refused it is the key: with a holder key, or for the read entry's trade asking
-			// for no scope, which may send no holder proof, with a key that holds no credential,
-			// the same trade mints.
+			// With a holder key, or for the read entry's trade asking for no scope, which may
+			// send no holder proof, with a key that holds no credential, the same trade mints.
 			again := c.trade(t)
 			if c.scope == "" {
 				again.key = newKey(t)
@@ -331,6 +341,10 @@ func TestNoKeyIsBothAReadTokensAndALauncherCredentials(t *testing.T) {
 			tokenStored, credentialStored := answer.status == http.StatusOK, minted == nil
 			if tokenStored == credentialStored {
 				t.Fatalf("round %d: the read trade answered %d %v and the token login %v: want exactly one of them stored", i, answer.status, answer.body, minted)
+			}
+			if description, _ := answer.body["error_description"].(string); !tokenStored &&
+				(answer.status != http.StatusBadRequest || answer.body["error"] != "invalid_request" || !strings.Contains(description, keyRuleRefusal)) {
+				t.Fatalf("round %d: the read trade answered %d %v, want 200 or the key rule's 400 invalid_request", i, answer.status, answer.body)
 			}
 			if got := f.readTokensOn(t, key) + f.credentialsOn(t, key); got != 1 {
 				t.Fatalf("round %d: the key holds %d read tokens and credentials together, want 1", i, got)

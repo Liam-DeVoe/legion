@@ -447,7 +447,7 @@ func recordCredential(ctx context.Context, cred oauth.MachineCredential) (string
 		Subject: cred.Subject, Service: cred.Service, Host: cred.Host, Operator: cred.Operator,
 		TokenExpires: cred.Expires, Thumbprint: cred.Thumbprint, JWK: cred.JWK, Expires: cred.Expires,
 	})
-	if store.IsUniqueViolation(err) || errors.Is(err, enroll.ErrKeyBindsReadToken) {
+	if enroll.KeyHeld(err) {
 		return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
 	}
 	if err != nil {
@@ -517,8 +517,9 @@ func signedProof(t *testing.T, key *ecdsa.PrivateKey, htm, htu string) string {
 // TestAReadTradeBindsItsTokenToTheHoldersKey: a person's read trade proves its sign-in with the
 // box key's DPoP proof and sends a DPoP-Holder proof by a key made for the token's holder; the
 // token it mints is the holder's, in its introspection's jkt and in its stored row, names the
-// person and the sign-in's credential. Each of these is refused invalid_request and mints nothing:
-// no DPoP-Holder; the DPoP proof signed by the holder key and no proof by the box key; a holder
+// person and the sign-in's credential. Each of these is refused and mints nothing, each with its
+// own refusal: no DPoP-Holder; the DPoP proof signed by the holder key and no proof by the box
+// key, which names a sign-in of another key, one that holds no launcher credential; a holder
 // proof signed by the box key; a holder proof of another method, and of another URL; and the
 // holder proof already spent, replayed. A machine login's read trade proved with machine.json's
 // key, which holds a launcher credential, binds a holder key it proves, and without one is
@@ -557,20 +558,27 @@ func TestAReadTradeBindsItsTokenToTheHoldersKey(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		headers http.Header
+		// code and says are the refusal: its error code, and what its description holds.
+		code, says string
 	}{
-		{"with no DPoP-Holder", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}}},
-		{"with its DPoP proof signed by the holder key and no proof by the box key", http.Header{"DPoP": {dpopProof(t, holder, tokenURL)}}},
-		{"with a holder proof signed by the box key", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {dpopProof(t, box, tokenURL)}}},
-		{"with a holder proof of another method", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {signedProof(t, newKey(t), http.MethodGet, tokenURL)}}},
-		{"with a holder proof of another URL", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {signedProof(t, newKey(t), http.MethodPost, f.url+"/other")}}},
-		{"with a holder proof replayed", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {spent}}},
+		{"with no DPoP-Holder", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}},
+			"invalid_request", "A person's read trade sends a DPoP-Holder proof"},
+		{"with its DPoP proof signed by the holder key and no proof by the box key",
+			http.Header{"DPoP": {dpopProof(t, holder, tokenURL)}, oauthwire.HeaderDPoPHolder: {dpopProof(t, newKey(t), tokenURL)}},
+			"invalid_grant", "holds no launcher credential yet"},
+		{"with a holder proof signed by the box key", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {dpopProof(t, box, tokenURL)}},
+			"invalid_request", "The DPoP-Holder proof is signed with the key the DPoP proof is signed with"},
+		{"with a holder proof of another method", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {signedProof(t, newKey(t), http.MethodGet, tokenURL)}},
+			"invalid_request", "The DPoP-Holder proof was refused"},
+		{"with a holder proof of another URL", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {signedProof(t, newKey(t), http.MethodPost, f.url+"/other")}},
+			"invalid_request", "The DPoP-Holder proof was refused"},
+		{"with a holder proof replayed", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {spent}},
+			"invalid_request", "The DPoP-Holder proof was refused"},
 	} {
 		t.Run("a person's read trade "+c.name, func(t *testing.T) {
 			before := f.tokenRows(t)
 			status, body := readTrade(c.headers)
-			if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
-				t.Fatalf("the trade = %d %v, want 400 invalid_request and no access token", status, body)
-			}
+			refusedSaying(t, status, body, http.StatusBadRequest, c.code, c.says)
 			if after := f.tokenRows(t); after != before {
 				t.Errorf("the refused trade left %d access tokens, want the %d there were", after, before)
 			}

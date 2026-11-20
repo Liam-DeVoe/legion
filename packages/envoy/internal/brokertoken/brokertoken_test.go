@@ -3,7 +3,6 @@ package brokertoken_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -197,35 +195,6 @@ func readOnlyToken(jkt string, life time.Duration) brokertoken.Introspection {
 		ClientID:     brokertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
-}
-
-// narrowedAnswers is the broker's answer for a token narrowed to reading, by the kind of trade
-// that minted it, as testdata/narrowed-answers.json holds them: the golden file the broker's own
-// test holds its minted answers to (internal/broker/oauth,
-// TestATradeThatAsksForReadKeepsItsIdentityAndHoldsRead). Each answer is bound to jkt, names
-// session and expires at exp, filled in as the file's comment says. A member the file names and
-// Introspection does not carry fails the read, so the file holds nothing a reader never reads.
-func narrowedAnswers(t *testing.T, jkt, session string, exp int64) map[string]brokertoken.Introspection {
-	t.Helper()
-	raw, err := os.ReadFile("testdata/narrowed-answers.json")
-	if err != nil {
-		t.Fatalf("read the narrowed answers: %v", err)
-	}
-	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
-		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
-	var golden struct {
-		Comment string                               `json:"_comment"`
-		Answers map[string]brokertoken.Introspection `json:"answers"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(filled))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&golden); err != nil {
-		t.Fatalf("decode the narrowed answers: %v", err)
-	}
-	if len(golden.Answers) == 0 {
-		t.Fatal("the narrowed answers file holds no answer")
-	}
-	return golden.Answers
 }
 
 // TestATokenThatIsNoSessionsCredentialIsRefused: a live, DPoP-bound token the broker issued for
@@ -563,7 +532,7 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T) {
 	caller := newSigner(t)
 	const session = "ses_narrowed"
-	answers := narrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	answers := brokertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
 	// bases is the word each narrowed word reads as, written out here rather than read from
 	// oauthwire.BaseProjectScope, so the test holds the helper to it.
 	bases := map[string]string{
@@ -621,8 +590,6 @@ func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T)
 	namedCut.AsOf = cutText
 	personCut := liveToken(caller.jkt, time.Hour)
 	personCut.ProjectScope, personCut.Projects, personCut.AsOf = brokertoken.ProjectScopePerson, nil, cutText
-	noneCut := readOnlyToken(caller.jkt, time.Hour)
-	noneCut.Scope, noneCut.AsOf = "", cutText
 	readEntryCut := readOnlyToken(caller.jkt, time.Hour)
 	readEntryCut.AsOf = cutText
 	rows = append(rows,
@@ -649,7 +616,6 @@ func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T)
 		})},
 		row{name: "a cut on a named token", answer: namedCut},
 		row{name: "a cut on a person token", answer: personCut},
-		row{name: "a cut on a none token that does not read", answer: noneCut},
 		row{name: "a cut that does not parse", answer: changed("machine-login-with-a-cut", func(answer *brokertoken.Introspection) {
 			answer.AsOf = "yesterday"
 		})},

@@ -399,25 +399,24 @@ function brokerRouteForced(env: DispatchEnvironment): boolean | SectionOff {
 /** A cut as the broker takes one (`oauthwire.FormAsOf`, its `cutForm`): an RFC 3339 time with at
  *  most six fractional digits, and `Z` or a numeric offset. */
 const CUT_FORM =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2}):(\d{2}))$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+/** The zero time (Go's `time.Time{}`), which the broker and every reader of a cut take for no cut
+ *  at all, so the broker refuses a cut that names it. */
+const ZERO_TIME = Date.parse("0001-01-01T00:00:00.000Z");
 
 /** Whether `text` is a cut the broker takes: {@link CUT_FORM}, naming a day its month has and a
- *  time of day and an offset that exist. */
+ *  time of day and an offset that exist, and not the zero time under any offset
+ *  ({@link ZERO_TIME}). */
 function isCut(text: string): boolean {
   const parts = CUT_FORM.exec(text);
   if (parts === null) return false;
-  const [
-    year = 0,
-    month = 0,
-    day = 0,
-    hour = 0,
-    minute = 0,
-    second = 0,
-    zoneHour = 0,
-    zoneMinute = 0,
-  ] = parts.slice(1).map((part) => Number(part ?? "0"));
+  const [year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0] = parts
+    .slice(1, 7)
+    .map((part) => Number(part ?? "0"));
+  const [zoneHour = 0, zoneMinute = 0] = parts.slice(9, 11).map((part) => Number(part ?? "0"));
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  return (
+  const exists =
     month >= 1 &&
     month <= 12 &&
     day >= 1 &&
@@ -426,8 +425,15 @@ function isCut(text: string): boolean {
     minute <= 59 &&
     second <= 59 &&
     zoneHour <= 23 &&
-    zoneMinute <= 59
-  );
+    zoneMinute <= 59;
+  if (!exists) return false;
+  // The instant the text names, in UTC: setUTCFullYear takes a year below 100 as written, where
+  // Date.UTC would read it as one of the 1900s.
+  const offset = (parts[8] === "-" ? -1 : 1) * (zoneHour * 60 + zoneMinute);
+  const instant = new Date(0);
+  instant.setUTCFullYear(year, month - 1, day);
+  instant.setUTCHours(hour, minute - offset, second, 0);
+  return Number(parts[7] ?? "0") !== 0 || instant.getTime() !== ZERO_TIME;
 }
 
 /**

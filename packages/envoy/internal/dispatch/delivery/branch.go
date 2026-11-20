@@ -146,6 +146,12 @@ type branchCommitKey struct {
 	sha    string
 }
 
+// branchCommitKeyOf is the key of sha on branch of repoFull, the repository lowercased as
+// branch_commits' lower($1) reads it, so a kept answer and its recall key alike.
+func branchCommitKeyOf(repoFull, branch, sha string) branchCommitKey {
+	return branchCommitKey{repo: strings.ToLower(repoFull), branch: branch, sha: sha}
+}
+
 // compareHold is what the compare reads of one repository-and-branch pair last did: when one
 // was last refused as unseen, which holds the pair for BranchCommitStaleAfter, and when one was
 // last answered, which a hold arriving late loses to.
@@ -334,19 +340,20 @@ func (c *Branches) ReadCommitOnBranch(
 ) BranchAnswer {
 	read := c.readCommitOnBranch(ctx, pool, client, learned, true, repoFull, branch, sha, now)
 	if read.asked {
-		c.readOnly.keep(branchCommitKey{repo: strings.ToLower(repoFull), branch: read.branch, sha: sha},
-			read.onBranch, now.Add(BranchCommitStaleAfter), now)
+		c.readOnly.keep(read.key, read.onBranch, now.Add(BranchCommitStaleAfter), now)
 	}
 	return read.answer
 }
 
 // branchRead is what readCommitOnBranch found: the answer, and where a compare read was answered,
 // the branch it asked about under its resolved name and GitHub's yes or no, which the caller
-// keeps (asked).
+// keeps (asked). key is that commit's key in a read-only read's memory, made for a read-only read
+// alone, which recalls by it and keeps by it.
 type branchRead struct {
 	answer   BranchAnswer
 	asked    bool
 	branch   string
+	key      branchCommitKey
 	onBranch bool
 }
 
@@ -408,8 +415,10 @@ func (c *Branches) readCommitOnBranch(
 	if holdable && c.unseenHeld(pair, now) {
 		return branchRead{answer: BranchUnseen}
 	}
+	var key branchCommitKey
 	if readOnly {
-		if onBranch, kept := c.readOnly.recall(branchCommitKey{repo: strings.ToLower(repoFull), branch: branch, sha: sha}, now); kept {
+		key = branchCommitKeyOf(repoFull, branch, sha)
+		if onBranch, kept := c.readOnly.recall(key, now); kept {
 			return branchRead{answer: branchAnswerOf(onBranch)}
 		}
 	}
@@ -427,7 +436,7 @@ func (c *Branches) readCommitOnBranch(
 	if holdable {
 		c.markSeen(pair, now)
 	}
-	return branchRead{answer: branchAnswerOf(answer), asked: true, branch: branch, onBranch: answer}
+	return branchRead{answer: branchAnswerOf(answer), asked: true, branch: branch, key: key, onBranch: answer}
 }
 
 // branchAnswerOf is GitHub's yes or no about a commit, read or stored, as the answer a caller is
