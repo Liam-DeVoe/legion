@@ -9,11 +9,12 @@ import (
 
 // A person types or pastes an address the renderer cannot write as the email rule reads it, so the
 // room holds the rule's tree until its settlement. An agent then edits other text of the document
-// before that settlement, and the edit route writes its snapshot, which is stored as the settlement
-// would leave the tree (TestAVersionBeforeTheSettlementStoresTheBaseEmailLinksItsTreeCannotBeWrittenAs).
-// A read of the document's text and token a moment later, once the edit's updates are durable,
-// answers a token that an edit can use: a second edit passing it as its document precondition is
-// applied, and it is the token the first edit answered. The tester found at 2d0afd0b that the read answers the snapshot's token
+// before that settlement, and the edit route writes its snapshot, which gives the room the
+// settlement's repair first in its own transaction and stores the tree the room then holds
+// (TestAVersionBeforeTheSettlementGivesTheRoomTheBaseEmailLinks). A read of the document's text and
+// token a moment later, once the edit's updates are durable, answers a token that an edit can use:
+// a second edit passing it as its document precondition is applied, and it is the token the first
+// edit answered. The tester found at 2d0afd0b that the read answers the snapshot's token
 // (TextWithToken serves the latest version while its stamp is the room's head, storedText), the
 // precondition is checked against the room's tree, and the second edit is refused as stale with no
 // write between the read and the edit (INFRA-4224 tester round 9, on real servers and a browser).

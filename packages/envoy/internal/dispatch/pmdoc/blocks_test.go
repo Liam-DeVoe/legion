@@ -288,10 +288,10 @@ func TestMoveBlockOntoAListsOwnBlockTakesTheItemIntoIt(t *testing.T) {
 	assertRenderedMarkdown(t, out, "- a\n  - x\n  - b\n")
 }
 
-// A caller names a list's item by the paragraph a listing shows it as (documentBlocks lists no
-// list_item of its own), so a move written against that paragraph moves the item. An item that
-// holds more than that paragraph is not taken that way: moving it by the paragraph's id would
-// carry the nested list nobody named, so it keeps the document-level move.
+// A caller names a list's item by the paragraph a listing shows it as (RenderWithBlockOffsets
+// lists no list_item of its own), so a move written against that paragraph moves the item. An
+// item that holds more than that paragraph is not taken that way: moving it by the paragraph's id
+// would carry the nested list nobody named, so it keeps the document-level move.
 func TestMoveBlockTakesTheItemAParagraphIsTheWholeOf(t *testing.T) {
 	sequentialBlockIDs(t)
 	// b1 top list, b2 item a, b3 its paragraph, b4 nested list, b5 item x, b6 its paragraph,

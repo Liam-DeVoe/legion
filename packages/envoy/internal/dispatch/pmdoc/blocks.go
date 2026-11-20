@@ -725,12 +725,12 @@ func (d ValidDocument) MoveBlock(blockID string, target Range, after bool) (*Nod
 // empty target, which names a document edge rather than a block: each of those takes the
 // document-level move instead.
 //
-// The block a caller names is the one a listing shows it (documentBlocks), and a list's items are
-// listed by the paragraph each holds rather than by the item itself, so a move of an item is
-// written against that paragraph's id. Such a paragraph is read as its item, but only where it is
-// the item's whole content: an item that also holds a nested list would otherwise carry that list
-// along, which is not what a caller naming one paragraph asked for, and that move keeps the
-// document-level placement it has today.
+// The block a caller names is the one a listing shows it (RenderWithBlockOffsets), and a list's
+// items are listed by the paragraph each holds rather than by the item itself, so a move of an
+// item is written against that paragraph's id. Such a paragraph is read as its item, but only
+// where it is the item's whole content: an item that also holds a nested list would otherwise
+// carry that list along, which is not what a caller naming one paragraph asked for, and that move
+// keeps the document-level placement it has today.
 func moveListItem(doc *Node, path []int, blockID string, target Range, after bool) (*Node, bool, error) {
 	if target.From == target.To {
 		return nil, false, nil

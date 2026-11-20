@@ -1414,7 +1414,9 @@ type readSettlements struct {
 // token the read would answer is one no edit can pass. A person's typing can land a new such
 // address between a settlement and the read again, so it decides on readSettleAttempts
 // settlements at most, read off settled, what the read has spent; past that bound it logs the
-// room and the attempts, and the read answers the document as it stands. A read inside a
+// room and the attempts, and the read answers the document as it stands. An error telling whether
+// the document owes a settlement, reading the stored document or running the fallback is logged
+// with the room too, and the read answers the document as it stands. A read inside a
 // transaction reads its fork, which the transaction's writes repaired (applyLiveWritten): the
 // settlement's own transaction takes the owner lock the caller's may hold, so it decides on none
 // there. It only decides: it takes no database lock and runs no settlement, which its caller
@@ -1438,12 +1440,21 @@ func (s *Service) settleBeforeAnswer(ctx context.Context, room string, tree *pmd
 		// The cold reads' cache answered a rendering with no tree beside it: the stored
 		// document is read for the check, and rendered for it, since the rendering need not be
 		// of the state read now.
-		if tree, err = s.storedTree(ctx, room); err != nil || tree == nil {
+		if tree, err = s.storedTree(ctx, room); err != nil {
+			slog.Warn("dispatch: a read could not read the stored document to tell whether its email links read back", "room", room, "error", err)
+			return false
+		}
+		if tree == nil {
 			return false
 		}
 		rendering = ""
 	}
-	if _, changed, err := fallBackEmailLinks(tree, rendering); err != nil || !changed {
+	_, changed, err := fallBackEmailLinks(tree, rendering)
+	if err != nil {
+		slog.Warn("dispatch: a read could not tell whether its document's email links read back", "room", room, "error", err)
+		return false
+	}
+	if !changed {
 		return false
 	}
 	if settled.attempts == readSettleAttempts {
@@ -1672,17 +1683,6 @@ func (s *Service) TextWithTokenAndBlocks(ctx context.Context, artifactID string)
 	return read.rendered.markdown, read.rendered.token, read.ownBlocks(), nil
 }
 
-// documentBlocks renders tree once into its canonical markdown and the blocks whose byte ranges
-// index into it, each with its token and, for a table, the blocks it holds and its rows. It leaves
-// out the document's token, which none of its callers reads.
-func documentBlocks(tree *pmdoc.Node) (string, []model.ArtifactBlock, error) {
-	rendered, err := renderDocumentTree(tree)
-	if err != nil {
-		return "", nil, err
-	}
-	return rendered.markdown, rendered.blocks, nil
-}
-
 // renderDocumentTree validates tree once, refusing it as pmdoc.TableRows does, and reads it
 // thereafter without validating it again: its markdown, its blocks and its document token come
 // from that one reading.
@@ -1709,8 +1709,10 @@ type renderedDocument struct {
 	tokenErr error
 }
 
-// renderedBlocks is documentBlocks with each table's rows already listed (pmdoc.TableRows), and the
-// document's token, from the same one encoding of the tree as its blocks' tokens (documentTokens).
+// renderedBlocks renders tree once into its canonical markdown and the blocks whose byte ranges
+// index into it, each with its token and, for a table, the blocks it holds and the rows rows lists
+// (pmdoc.TableRows), and the document's token, from the same one encoding of the tree as its
+// blocks' tokens (documentTokens).
 // It reads tree, validated once by its caller, without validating it again: its descendants, its
 // tokens and its rendering (pmdoc.ValidDocument). A table block carries the rows of the table its
 // id addresses: where two tables carry one id, the first in document order, the one an edit naming
