@@ -86,6 +86,14 @@ function assistantReplies(entries: readonly Entry[]): readonly Entry[] {
   return replies;
 }
 
+/** What one run killed in a retry left: the first process's transcript, the resumed process's, and
+ *  the Messages request of the resumed session's turn. */
+interface RetryRun {
+  readonly left: readonly Entry[];
+  readonly resumed: readonly Entry[];
+  readonly resumedTurn: Request | undefined;
+}
+
 /**
  * Runs one Legion-driven session (`../test/legion-managed-session.ts` stands in for the claim) on
  * the real Oh My Pi: its first prompt meets an overloaded provider, and once the host has
@@ -95,14 +103,7 @@ function assistantReplies(entries: readonly Entry[]): readonly Entry[] {
  * worker its task, which the provider now answers. Returns the transcript the first process left,
  * the one the resumed process left, and the Messages request of the resumed session's turn.
  */
-async function killInRetry(
-  binary: string,
-  cancel: boolean
-): Promise<{
-  readonly left: readonly Entry[];
-  readonly resumed: readonly Entry[];
-  readonly resumedTurn: Request | undefined;
-}> {
+async function killInRetry(binary: string, cancel: boolean): Promise<RetryRun> {
   const { home, workspace, sessions } = await ompRoot(binary, "cut-turn-omp-", cleanup);
   let overloaded = true;
   const { requests, base } = serveStandin(cleanup, (url) => {
@@ -197,11 +198,17 @@ async function killInRetry(
   return { left, resumed: (await readTranscript(sessions)).entries, resumedTurn };
 }
 
+/** The one run killed in the backoff that the first two cases read, made once: at the pin each run
+ *  waits out the provider's own ten retries of the overloaded stream (about 50 s) before the host
+ *  announces the retry the kill comes in, and both cases read only what the run returned. */
+let killedInBackoff: Promise<RetryRun> | undefined;
+
 test.skipIf(omp === undefined && !onActions)(
   "a turn killed in a provider retry's backoff gets the note before the resumed session's first turn",
   async () => {
     if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-    const { left, resumedTurn } = await killInRetry(omp, false);
+    killedInBackoff ??= killInRetry(omp, false);
+    const { left, resumedTurn } = await killedInBackoff;
 
     // The process ended in the retry: the newest reply the host wrote is the failed attempt, which
     // alone reads as a turn that ended.
@@ -223,7 +230,8 @@ test.skipIf(omp === undefined && !onActions)(
   "the note is written ahead of the task that starts the resumed session's first turn",
   async () => {
     if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-    const { resumed, resumedTurn } = await killInRetry(omp, false);
+    killedInBackoff ??= killInRetry(omp, false);
+    const { resumed, resumedTurn } = await killedInBackoff;
 
     const lines = resumed.map((entry) => JSON.stringify(entry));
     const note = lines.findIndex((line) => line.includes(NOTE) && line.includes("custom_message"));
