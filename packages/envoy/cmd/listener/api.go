@@ -266,9 +266,9 @@ const streamFullPrefix = "envoy: the message bus refused the message because its
 // carries no subject capturing the message's (bus.ErrStreamLacksSubject: a newer build's stream
 // that dropped a subject this build stores), a role send's forward and keep among them, so one
 // string matches in a test and in a deployed log filter; the webhook routes answer the error
-// itself (internal/webhook's failureOutcome). A keep an earlier send of which went out unanswered
-// is not among them: that send may have stored the copy, so it is the maybe-stored 503
-// (writeBusUnavailable). The
+// itself (internal/webhook's failureOutcome). A keep or a role send's forward an earlier send of
+// which went out unanswered is not among them: that send may have stored the message, so it is the
+// maybe-stored 503 (writeBusUnavailable). The
 // error after it names the subject and the stream's generation. It is deliberately not
 // busUnansweredPrefix: the bus answered, that no copy is kept for that subject, so "the message bus
 // did not answer" would have a monitor count it as an outage and send an operator looking for one

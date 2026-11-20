@@ -317,7 +317,8 @@ func (s *roleSend) unresolved(err error) {
 // subject (bus.ErrStreamLacksSubject), as requestRecord.refuseBusUnavailable maps it: the 413, the
 // 400, the 403, or the 503 of a stream that does not capture the subject. The refused forward
 // stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
-// the message has marked the charge already (sendToRole).
+// the message has marked the charge already (sendToRole), and has made a refusal for want of the
+// subject the maybe-stored 503 instead, since that earlier forward may be on the stream.
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
@@ -404,9 +405,11 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // did not take because, as the listener last read it, the stream captures no subject of the
 // holder's (bus.ErrStreamLacksSubject) ends the send at once with the 503 of that refusal
 // (refused): every attempt would forward to a subject the stream does not capture, so the
-// attempts left would store nothing either. expectsReply is the expects_reply its answers write
-// (expectsReplyAnswer, api.go), the request's own dialect; the envelope this send forwards and
-// keeps carries the envelope's own value.
+// attempts left would store nothing either. After an earlier forward of the send that failed with
+// no refusal, which may have stored the message, that refusal wraps bus.ErrUnacknowledged, so the
+// 503 is the maybe-stored one (writeBusUnavailable) and does not say that nothing stored it.
+// expectsReply is the expects_reply its answers write (expectsReplyAnswer, api.go), the request's
+// own dialect; the envelope this send forwards and keeps carries the envelope's own value.
 func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
 	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
@@ -435,6 +438,9 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded := send.item
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
+	// unanswered is whether an earlier forward of this send failed with no refusal, which may have
+	// stored the message for its holder.
+	unanswered := false
 	for pass := 0; ; pass++ {
 		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
 			resolvedAt = d.delivery.now()
@@ -479,12 +485,16 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				return
 			}
 			if forwardRefused(err) || errors.Is(err, bus.ErrStreamLacksSubject) {
+				if unanswered && errors.Is(err, bus.ErrStreamLacksSubject) {
+					err = fmt.Errorf("%w: an earlier forward of this send went unanswered: %w", bus.ErrUnacknowledged, err)
+				}
 				send.refused(err)
 				return
 			}
 			// A forward that failed with no refusal may have been stored for its holder, so it
 			// costs its sender one whatever this send answers next.
 			send.record.charge.stored()
+			unanswered = true
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.

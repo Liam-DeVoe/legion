@@ -213,8 +213,8 @@ of the same keep went out unanswered and so may have stored the copy. A role sen
 the listener kept answers `202`
 instead, both for a role nobody claims and for a claim whose holder is not live. A
 role topic's send then runs on
-within its own 4 s and answers its 200, 202, 403 `capability`, 504 or the `stream_lacks_subject`
-503 as "Role delivery and exceptions" says.
+within its own 4 s and answers its 200, 202, 403 `capability`, 504 or a 503 for a missing subject
+as "Role delivery and exceptions" says.
 
 A publish the server denies under this listener's own grant (`bus.ErrPublishDenied`) is the
 table's `403` on either route. A publish on either transport can be denied this way: a core
@@ -443,9 +443,10 @@ that failed or ran out of time, a publish or flush to the server that failed or 
 stream did not acknowledge storing the forward,
 `bus.ErrForwardNotStored`). A forward the stream did not take because, as the listener last read
 it, the stream captures no subject of the holder's (`bus.ErrStreamLacksSubject`) ends the send at
-once instead, after that one forward, with the `stream_lacks_subject` 503 of "Send and publish
-answers": every later attempt would meet the same refusal. The route publishes no exception: its
-sender has the answer.
+once instead, after that one forward, with a 503 of "Send and publish answers": every later
+attempt would meet the same refusal. It is the `stream_lacks_subject` one, or the `maybe_stored`
+one when an earlier forward of the same send failed with no refusal and so may have stored the
+message for its holder. The route publishes no exception: its sender has the answer.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of

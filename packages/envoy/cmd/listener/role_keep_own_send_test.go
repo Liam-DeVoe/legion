@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +15,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -60,6 +65,68 @@ func TestAKeepWhoseOwnSendWentUnansweredSaysMaybeStoredHoweverItEnds(t *testing.
 			}
 			if body.Code != listenerwire.CodeMaybeStored {
 				t.Fatalf("after %d sends the keep is answered %d with code %q (%s); want %q", calls, status, body.Code, body.Error, listenerwire.CodeMaybeStored)
+			}
+		})
+	}
+}
+
+// A role send whose earlier forward failed with no refusal may have stored the message for its
+// holder (sendToRole's unanswered), so a later forward the stream refuses for want of the holder's
+// subject is answered with the maybe-stored 503, recorded bus_unavailable, and not with the
+// missing-subject 503 that says nothing stored it: the same rule as the keep's above. The control
+// is the same refusal on the send's first forward, which still answers the missing-subject 503,
+// recorded stream_lacks_subject.
+func TestARoleSendWhoseEarlierForwardWentUnansweredSaysMaybeStoredWhenTheNextLacksTheSubject(t *testing.T) {
+	const holder = "ses_forward_own_send_holder"
+	subject := contracts.LegacyAgentSubject(holder)
+	lacks := fmt.Errorf("%w: %s at generation 1000000 carries no subject capturing %q: %w",
+		bus.ErrStreamLacksSubject, bus.Stream, subject, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, natsgo.ErrNoResponders))
+	for _, row := range []struct {
+		name     string
+		answers  []error // what each forward's wait returns; the last one answers every later forward
+		forwards int32
+		code     string
+		prefix   string
+		outcome  requestOutcome
+	}{
+		{"control: the first forward refused for want of the holder's subject", []error{lacks}, 1, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
+		{"the forward after an unanswered one refused for want of the holder's subject", []error{bus.ErrForwardNotStored, lacks}, 2, listenerwire.CodeMaybeStored, busUnansweredPrefix, outcomeBusUnavailable},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			role := fmt.Sprintf("forward-own-send-%d", len(row.answers))
+			harness := newListenerDeliveryHarness(t)
+			forwards := &atomic.Int32{}
+			config := harness.config
+			config.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+				answer := row.answers[min(int(forwards.Add(1)), len(row.answers))-1]
+				return func() error { return answer }, nil
+			}
+			deps := harness.publishDeps(t)
+			deps.delivery = &config
+			if err := harness.sessions.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+				t.Fatalf("register the holder: %v", err)
+			}
+			claim := httptest.NewRecorder()
+			roleSetHandler(&listenerDeps{registry: harness.registry, sessions: harness.sessions, delivery: &harness.config}, "test-machine", logging.New("test")).ServeHTTP(claim,
+				postJSON("/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, holder, role)))
+			if claim.Code != http.StatusOK {
+				t.Fatalf("claim %s for %s: status %d, body %s", role, holder, claim.Code, claim.Body.String())
+			}
+			recorder, record := serveRecorded(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) },
+				postJSON("/v1/messages/publish", fmt.Sprintf(`{"topic":%q,"message":"role event","source":"agent"}`, contracts.RoleTopicPrefix+role)))
+			var body listenerwire.APIError
+			_ = json.Unmarshal(recorder.Body.Bytes(), &body)
+			retryAfter := recorder.Header().Get("Retry-After")
+			if recorder.Code != http.StatusServiceUnavailable || retryAfter != "1" || body.Code != row.code ||
+				!strings.HasPrefix(body.Error, row.prefix+": ") || !strings.Contains(body.Error, bus.ErrStreamLacksSubject.Error()) {
+				t.Errorf("after %d forwards the send is answered %d, Retry-After %q, code %q: %s; want 503, 1, code %q and words that open with %q and name the missing subject",
+					forwards.Load(), recorder.Code, retryAfter, body.Code, body.Error, row.code, row.prefix)
+			}
+			if record["outcome"] != string(row.outcome) {
+				t.Errorf("the record's outcome is %v, want %s", record["outcome"], row.outcome)
+			}
+			if got := forwards.Load(); got != row.forwards {
+				t.Errorf("the send made %d forwards, want %d", got, row.forwards)
 			}
 		})
 	}
