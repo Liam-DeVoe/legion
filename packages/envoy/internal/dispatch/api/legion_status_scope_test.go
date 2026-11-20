@@ -31,12 +31,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The names of the four credentials of the inventory that a test selects by name.
+// The names of the six credentials of the inventory that a test selects by name.
 const (
-	legionSharedToken       = "the shared token"
-	legionDaemonToken       = "the daemon's broker token"
-	legionBrowserSignIn     = "a browser sign-in"
-	legionPersonScopedToken = "a broker token scoped to a person"
+	legionSharedToken           = "the shared token"
+	legionUnscopedPersonalToken = "a personal token holding no scope"
+	legionProjectBrokerToken    = "a project's broker token"
+	legionDaemonToken           = "the daemon's broker token"
+	legionBrowserSignIn         = "a browser sign-in"
+	legionPersonScopedToken     = "a broker token scoped to a person"
 )
 
 // legionVerdict is what the server does with a credential's write of a Legion issue.
@@ -128,9 +130,9 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 		{name: legionSharedToken, verdict: legionRefused, send: bearer("agent-token", sessionActor())},
 		{name: "the shared token naming the daemon's session", verdict: legionRefused,
 			send: bearer("agent-token", daemonSessionOf(brokerTestProject))},
-		{name: "a personal token holding no scope", verdict: legionRefused,
+		{name: legionUnscopedPersonalToken, verdict: legionRefused,
 			send: bearer(personalTokenHolding(t, rig.database), sessionActor())},
-		{name: "a project's broker token", verdict: legionRefused,
+		{name: legionProjectBrokerToken, verdict: legionRefused,
 			send: broker("a-project-token", liveNamedToken(caller.jkt))},
 		{name: "a pod's Kubernetes token", verdict: legionRefused,
 			send: bearer(issuer.mint(t, serviceTokenAudience), sessionActor())},

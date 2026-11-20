@@ -68,12 +68,16 @@ const legionLabel = "legion"
 // $1: whether that issue, or any issue on its parent chain, carries the legion label. It lives
 // here because it is one more parent-chain walk bounded by parentDepthCap, like the ones above.
 // Labels keep the case they were typed in and are only de-duplicated case-insensitively, so
-// `Legion` is a real stored value and the match is on lower(label). The walk starts at the issue
-// itself, so one query answers both its own labels and its ancestors'. A chain deeper than the
-// cap answers false. A claim never reaches that case - loadIssue refuses such a chain before this
-// runs - but a write's advice does (computeWriteAdvice, write_advice.go), and there it means the
-// issue is treated as one Legion does not run: the "still in triage" line prints. A chain that
-// deep needs a reparent that refuseParentTooDeep would have refused.
+// `Legion` is a real stored value and the match is on lower(label) in the collation "C". In "C",
+// lower() changes only A-Z, which for the six ASCII letters of legion is exactly what
+// strings.EqualFold matches, so the walk and holdsLegionLabel agree on every database. In a glibc
+// collation such as en_US.UTF-8, lower() also changes U+0130 (İ) to i, and the walk would read
+// LEGİON as legion. The walk starts at the issue itself, so one query answers both its own
+// labels and its ancestors'. A chain deeper than the cap answers false. A claim never reaches
+// that case - loadIssue refuses such a chain before this runs - but a write's advice does
+// (computeWriteAdvice, write_advice.go), and there it means the issue is treated as one Legion
+// does not run: the "still in triage" line prints. A chain that deep needs a reparent that
+// refuseParentTooDeep would have refused.
 var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as depth from issues i where i.key = $1`)
 
 // legionManagedStatusOfRowSQL is legionManagedStatusSQL walking from an issue row given rather
@@ -88,18 +92,23 @@ var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, 
 var legionManagedStatusWithLabelsSQL = `select i.labels, (` + legionManagedStatusSQL + `) from issues i where i.key = $1`
 
 // legionWalkSQL is the legion-label walk up the parent chain from the row start selects: its
-// parent_key, its labels and depth 0.
+// parent_key, its labels and depth 0. Both terms of the recursive query name the collation "C"
+// for labels. A recursive query refuses a column whose collation differs between its terms, and
+// start's labels may be a parameter in the database's default collation while the column has
+// another one.
 func legionWalkSQL(start string) string {
 	return `
 	with recursive chain as (
-		` + start + `
+		select s.parent_key, s.labels collate "C" as labels, s.depth from (
+			` + start + `
+		) s
 		union
-		select p.parent_key, p.labels, c.depth + 1
+		select p.parent_key, p.labels collate "C", c.depth + 1
 		from issues p join chain c on p.key = c.parent_key
 		where c.depth < ` + parentDepthCapSQL + `
 	)
 	select exists (
-		select 1 from chain c, unnest(c.labels) as label where lower(label) = '` + legionLabel + `'
+		select 1 from chain c, unnest(c.labels) as label where lower(label collate "C") = '` + legionLabel + `'
 	)`
 }
 
