@@ -790,8 +790,9 @@ type plan struct {
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim's recorded session is in no
-	// session store any more, and that a start could not reach that store at all; nil without a
-	// workflow, where neither is reported to anyone.
+	// session store any more, and that a start could not reach a store it must ask before it starts
+	// anything (the session store, or the saved workspace bundle's); nil without a workflow, where
+	// neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending

@@ -1157,11 +1157,13 @@ type SessionLost struct {
 
 func (f SessionLost) namedIssue() (string, bool) { return f.Issue, true }
 
-// SessionStoreFault is a start that could not reach the session store at all, which is a
-// deployment fault rather than the claim's: nothing of the claim is lost and nothing is charged,
-// and the start is tried again every minute until the store answers (supervise's
-// startWaitsForStore). It is told on the issue and to the controller at the first such start and
-// hourly while it lasts, since no worker of the issue runs meanwhile.
+// SessionStoreFault is a start that could not reach a store it must ask before it starts anything:
+// the session store, or, in the Sandbox runtime, the daemon's store for the pod's saved workspace
+// bundle (runtime.ErrSessionStore). It is a deployment fault rather than the claim's:
+// nothing of the claim is lost and nothing is charged, and the start is tried again every minute
+// until the store answers (supervise's startWaitsForStore). It is told on the issue and to the
+// controller at the first such start and hourly while it lasts, since no worker of the issue runs
+// meanwhile. Detail is the runtime's error, which names the store and what it answered.
 type SessionStoreFault struct {
 	Issue  string
 	Role   claim.Role

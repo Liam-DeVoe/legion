@@ -979,11 +979,12 @@ type Deps struct {
 	// controller each have to know that a worker is continuing work it cannot read, and nothing
 	// else would say so. detail is why, in the runtime's words. Nil tells no one.
 	SessionLost func(c Claim, detail string)
-	// SessionStoreFault is told when a start cannot reach the session store at all, at the first
-	// such start and hourly while it lasts (startWaitsForStore): the claim is not failing and
-	// nothing of it is lost, but no worker of it runs until a person fixes the store. Nil tells no
-	// one. Both are called inside the machine's decision, as TaskConfirmed is, so both return at
-	// once.
+	// SessionStoreFault is told when a start cannot reach a store it must ask before it starts
+	// anything (runtime.ErrSessionStore): the session store, or, in the Sandbox runtime, the
+	// daemon's store for the pod's saved workspace bundle. It is told at the first such start and
+	// hourly while it lasts (startWaitsForStore): the claim is not failing and nothing of it is
+	// lost, but no worker of it runs until a person fixes the store. Nil tells no one. Both are
+	// called inside the machine's decision, as TaskConfirmed is, so both return at once.
 	SessionStoreFault func(c Claim, detail string)
 	// SessionGone is told the Envoy session a claim recorded once no process stands behind it,
 	// once per process end (sessionGone says where and when, and why then). It is the daemon's
@@ -2465,7 +2466,7 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // failure and is tried again after the backoff (backOff), waiting out the same process, until the
 // budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
 // (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
-// nothing, and a start the session store could not answer is charged nothing and tried again
+// nothing, and a start a store it must ask could not answer is charged nothing and tried again
 // (startWaitsForStore). A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
@@ -2723,7 +2724,7 @@ func (m *Machine) stoppedAStart() bool {
 	return stopped
 }
 
-// sessionStoreRetry is how long a start whose session store could not answer waits before trying
+// sessionStoreRetry is how long a start whose store could not answer waits before trying
 // again, and sessionStoreReport how often the issue and the controller are told while that lasts:
 // a store outage is a deployment fault a person fixes, so the claim keeps its session and waits
 // for it rather than spending a launch budget on it, and the people who can fix it hear of it at
@@ -2733,16 +2734,17 @@ const (
 	sessionStoreReport = time.Hour
 )
 
-// startWaitsForStore is a start the session store could not answer: the table is missing, or the
-// store did not reply. That says nothing about the claim's session, so it is neither a lost
-// session nor a launch failure — charging it would fail a claim whose agent is fine for a fault
-// outside it — and the same session is started again every minute (relaunchLater) until the store
-// answers. The issue and the controller are told at once and then hourly, since nothing else says
-// why the worker is not running. The process the launch let go is let go already, so the retry
-// lets none go (noEnd).
+// startWaitsForStore is a start a store it must ask before it starts anything could not answer
+// (runtime.ErrSessionStore): the session store, whose table is missing or which did not reply, or
+// the daemon's store for the pod's saved workspace bundle. That says nothing about the claim or its
+// session, so it is neither a lost session nor a launch failure — charging it would fail a claim
+// whose agent is fine for a fault outside it — and the same session is started again every minute
+// (relaunchLater) until the store answers. The issue and the controller are told at once and then
+// hourly, since nothing else says why the worker is not running. The process the launch let go is
+// let go already, so the retry lets none go (noEnd).
 func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
-	m.log.Error("supervise: the session store could not answer this start; trying it again every minute, charging nothing",
+	m.log.Error("supervise: a store this start must ask could not answer; trying it again every minute, charging nothing",
 		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", err)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })

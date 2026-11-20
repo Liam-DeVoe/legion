@@ -2060,13 +2060,14 @@ func (w *workflowRuntime) sessionLost(c supervise.Claim, detail string) {
 		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a claim's lost session")
 }
 
-// sessionStoreFault applies the fact that a start could not reach the session store at all
+// sessionStoreFault applies the fact that a start could not reach a store it must ask before it
+// starts anything — the session store, or the store of the pod's saved workspace bundle
 // (supervise's Deps.SessionStoreFault): the workflow tells the issue and the controller. The
 // machine decides how often this is called — at the first such start, then hourly — so each call
 // is a report, and the event id names the moment rather than the launch.
 func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-store-fault:%s:%d", c.Token, time.Now().UnixNano()),
-		intake.SessionStoreFault{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a session store fault")
+		intake.SessionStoreFault{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a store fault at a start")
 }
 
 // applySessionFact applies one of the two session facts on a goroutine of its own, bounded by

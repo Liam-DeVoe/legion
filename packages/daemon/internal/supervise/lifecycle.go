@@ -184,7 +184,7 @@ func (m *Machine) watchAgain() {
 // relaunchLater leaves a claim whose process is already let go waiting launching with no process,
 // its task kept, and tries relaunch again after wait (TimerRelaunch, relaunchAgain): a relaunch
 // whose lifecycle check the store did not answer (relaunchRefused), or a launch whose write failed
-// (launchAfter), each at the probe interval, and a start the session store could not answer, at
+// (launchAfter), each at the probe interval, and a start a store it must ask could not answer, at
 // its own minute (startWaitsForStore). Nothing else would relaunch such a claim before a restart,
 // which takes it up from what the store last holds.
 func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Context) error) {

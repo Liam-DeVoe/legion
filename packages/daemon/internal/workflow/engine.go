@@ -1564,21 +1564,23 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 }
 
 // sessionStoreFault tells the issue and the controller that no worker of the issue can start
-// because the session store cannot be asked. It is not the claim's failure and holds no phase: the
-// daemon keeps the session and starts again every minute, and this is how the people who can fix
-// the store learn that they must. The supervisor decides how often it is told — at the first such
-// start, then hourly — so every fact that reaches here is reported.
+// because a store the start must ask before it starts anything cannot answer: the session store,
+// or the daemon's store for the pod's saved workspace bundle (fact.Detail names which). It is not
+// the claim's failure and holds no phase: the daemon keeps the session and starts again every
+// minute, and this is how the people who can fix the store learn that they must. The supervisor
+// decides how often it is told — at the first such start, then hourly — so every fact that reaches
+// here is reported.
 func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.SessionStoreFault) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	told := fmt.Sprintf("The %s of %s cannot be started: the session store could not be asked for its session: %s. Nothing is lost and nothing is charged; the daemon tries again every minute, and no worker of this issue runs until the store answers.",
+	told := fmt.Sprintf("The %s of %s cannot be started: a store the start must ask before it starts anything could not answer: %s. Nothing is lost and nothing is charged; the daemon tries again every minute, and no worker of this issue runs until the store answers.",
 		fact.Role, issue.Key, strconv.Quote(fact.Detail))
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
 		return intake.Result{}, err
 	}
-	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
+	e.warnOnCommit(ctx, "workflow: a store a start must ask could not answer", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
 	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
 		Kind: "session-store-fault", Role: fact.Role, Phase: issue.Phase, Reason: told}))
 }
