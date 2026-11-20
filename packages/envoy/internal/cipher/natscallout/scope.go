@@ -53,14 +53,14 @@ import (
 // Dispatch is never asked inside a decision: a decision reads only the pass the service holds.
 //
 // A daemon entry held this way is narrowed to natsgrant.WithinProjects(natsgrant.Daemon(), scope),
-// whose consumers are the ones the Legion daemon opens after plan C's t-c-10.
-// So no deployment may list a daemon entry with "-" until t-c-10's release gate opens: both
-// `packages/envoy/scripts/daemon-release-gate.sh --listeners <the commit that landed t-c-10>` and
+// whose consumers are the ones a Legion daemon opens once it opens its consumers per project. So
+// no deployment may list a daemon entry with "-" until the release gate for that daemon opens:
+// both `packages/envoy/scripts/daemon-release-gate.sh --listeners <the commit that lands it>` and
 // `daemon-release-gate.sh <that commit>` print GATE OPEN, and the listener leg's GATE OPEN has been
 // read twice, 72 hours apart, because the shared notifications.legion.wake subject keeps other
-// projects' wakes for the stream's 72-hour retention after the last listener moves. Plan E's
-// t-e-23 is the one change that lists daemon entries, and its merge waits on
-// that gate with both readings quoted in its pull request.
+// projects' wakes for the stream's 72-hour retention after the last listener moves. The change
+// that lists daemon entries with "-" waits on that gate, with both readings quoted in its pull
+// request.
 func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
 	switch entry.Kind {
 	case KindDispatch:
