@@ -708,6 +708,9 @@ RULES = {
     f"{ENVOY}/cmd/broker/outage_test.go": [
         run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:323-325 cmdtest.BuildCommand . in ../agent-secrets", mode="build")],
     f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:501-502 countMigrations globs ../../internal/broker/store/migrations/*.up.sql")),
+    f"{ENVOY}/cmd/dispatch/leaver_hold_clients_test.go": [
+        run(ENVOY, ["./cmd/agent-secrets"], "cmd/dispatch/leaver_hold_clients_test.go:70 cmdtest.BuildCommand . in ../agent-secrets", mode="build"),
+        run(ENVOY, ["./cmd/agent-secrets-helper"], "cmd/dispatch/leaver_hold_clients_test.go:71 cmdtest.BuildCommand . in ../agent-secrets-helper", mode="build")],
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
     # :42-46), which loads bin/dispatch.ts and its imports: envoy-client's sources and
