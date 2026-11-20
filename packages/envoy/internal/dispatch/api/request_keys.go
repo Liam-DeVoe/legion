@@ -222,6 +222,17 @@ type resolvedCaller struct {
 	err   error
 }
 
+// readOnlyCredential is c's credential where c resolved and that credential is read-only
+// (model.Credential.ReadOnly), and nil otherwise. The zero resolvedCaller, which a context with no
+// decision on it answers, holds no credential, so it is nil too. The read-only gate
+// (refuseReadOnlyToken) and a results read (comparisonReader.readOnly) both read a caller by it.
+func (c resolvedCaller) readOnlyCredential() *model.Credential {
+	if c.err != nil || c.actor.Credential == nil || !c.actor.Credential.ReadOnly {
+		return nil
+	}
+	return c.actor.Credential
+}
+
 // keyedWrites wraps the handler of a POST or PATCH route, method and pattern, in the keyed path
 // above. replay is the route's keyedReplay, nil for a route that commits no recovery point.
 //

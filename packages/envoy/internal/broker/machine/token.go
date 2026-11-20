@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -184,7 +183,7 @@ func (s *Service) TokenLogin(ctx context.Context, account ServiceAccount, compac
 		login.Operator = account.Person
 	}
 	id, err := s.Enroll.IssueTokenLogin(ctx, login)
-	if store.IsUniqueViolation(err) || errors.Is(err, enroll.ErrKeyBindsReadToken) {
+	if enroll.KeyHeld(err) {
 		return TokenCredential{}, ErrKeyHoldsLiveCredential
 	}
 	if err != nil {

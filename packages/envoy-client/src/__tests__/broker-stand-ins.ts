@@ -15,6 +15,7 @@ import { afterEach } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
+import { HEADER_DPOP_HOLDER } from "@legion/broker-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
@@ -83,7 +84,7 @@ export function brokerStandIns(prefix: string) {
         trades.push({
           form: new URLSearchParams(await request.text()),
           proof: JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")),
-          holder: request.headers.get("DPoP-Holder") ?? "",
+          holder: request.headers.get(HEADER_DPOP_HOLDER) ?? "",
           token,
         });
         return Response.json({

@@ -11,9 +11,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // rowDrive is how a drive sends one GET row of the table on the seeded store (newDriveWorld) and
@@ -21,9 +23,9 @@ import (
 // compared.
 type rowDrive struct {
 	// target is the path and query the drive sends, every wildcard of the row's pattern filled,
-	// each $name standing for a value of the seeded store (driveWorld.fill). The row's own
-	// pattern must match it, filled or not (sendsItsRow), so a drive keyed by one row never
-	// sends another.
+	// each $name standing for a value of the seeded store (driveWorld.fill). The table's GET rows
+	// must route it to the row's own pattern, filled or not (sendsItsRow), so a drive keyed by one
+	// row never sends another.
 	target string
 	// statement is one statement the row's handler must run: a read of the store for a read, the
 	// write its WriteNote names for a GET that writes. Every read-only window of the row must
@@ -233,8 +235,10 @@ var readRowDrives = map[string]rowDrive{
 // as readRowDrives is: the request that makes the write the row's WriteNote names, on the seeded
 // store. Each delivery read is sent at a window holding a deploy run with no production job of
 // its own, the newest run the timeline's and the oldest the pipeline's, and they are sent in the
-// table's order, timeline first, since each read also sees every later run and firstToWarn
-// writes once per process for each run (delivery.go).
+// table's order, the pipeline last: the timeline and the measures each read only the window
+// around their own run, and the pipeline reads seven days, which hold all three, and firstToWarn
+// writes once per process for each run (delivery.go), so a pipeline read sent first would warn
+// of the other two rows' runs before their own reads.
 var getWriteDrives = map[string]rowDrive{
 	"GET /api/v1/delivery/timeline": {
 		target:    "/api/v1/delivery/timeline?from=$timelineFrom&to=$timelineTo",
@@ -262,7 +266,7 @@ var getWriteDrives = map[string]rowDrive{
 // them, approve never.
 func holdsReadAndNotApprove(answer map[string]any) string {
 	scopes, _ := answer["scopes"].([]any)
-	if !slices.Contains(scopes, any("read")) || slices.Contains(scopes, any("approve")) {
+	if !slices.Contains(scopes, any(model.ScopeRead)) || slices.Contains(scopes, any(model.ScopeApprove)) {
 		return fmt.Sprintf("its scopes are %v, want read among them and never approve", scopes)
 	}
 	return ""
@@ -337,16 +341,27 @@ func TestEveryGETRowHasADrive(t *testing.T) {
 	}
 }
 
-// sendsItsRow reports whether a GET of target reaches the row of pattern: a mux that holds that
-// row alone routes the request to it.
+// getRows is a mux holding every GET row of the table with its test hooks in (readOnlyTable),
+// each answering nothing, made once: what a drive's target is routed by, as the server's own mux
+// routes it.
+var getRows = sync.OnceValue(func() *http.ServeMux {
+	mux := http.NewServeMux()
+	for _, route := range readOnlyTable() {
+		if route.Method == http.MethodGet {
+			mux.HandleFunc(route.Method+" "+route.Pattern, func(http.ResponseWriter, *http.Request) {})
+		}
+	}
+	return mux
+})
+
+// sendsItsRow reports whether a GET of target reaches the row of pattern: the table's GET rows
+// (getRows) route the request to that row and to no other.
 func sendsItsRow(pattern, target string) bool {
 	request, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
 		return false
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc(http.MethodGet+" "+pattern, func(http.ResponseWriter, *http.Request) {})
-	_, matched := mux.Handler(request)
+	_, matched := getRows().Handler(request)
 	return matched == http.MethodGet+" "+pattern
 }
 
@@ -355,16 +370,16 @@ func sendsItsRow(pattern, target string) bool {
 // Unset or empty, every read row runs.
 const driveRowsVariable = "DISPATCH_READ_DRIVE_ROWS"
 
-// drivenRows is every GET row of class in the table's order, with its drive, narrowed to the rows
-// driveRowsVariable names when narrow is set and the variable names any. A row's drive is read
-// from either registry, so a row classed otherwise than its drive's registry says is still
-// driven as its class says: that is what a class changed without its drive looks like, and the
-// drive is what catches it. It fails for a row of the class with no drive, and for a name the
-// variable holds that is no row of the class.
-func drivenRows(t *testing.T, class readWrites, narrow bool) ([]string, map[string]rowDrive) {
+// drivenRows is every GET row of class in the table's order, with its drive. For the read rows
+// (readWritesNothing) it is narrowed to the rows driveRowsVariable names, where the variable names
+// any. A row's drive is read from either registry, so a row classed otherwise than its drive's
+// registry says is still driven as its class says: that is what a class changed without its drive
+// looks like, and the drive is what catches it. It fails for a row of the class with no drive, and
+// for a name the variable holds that is no row of the class.
+func drivenRows(t *testing.T, class readWrites) ([]string, map[string]rowDrive) {
 	t.Helper()
 	only := map[string]bool{}
-	if narrow {
+	if class == readWritesNothing {
 		for name := range strings.SplitSeq(os.Getenv(driveRowsVariable), ",") {
 			if name = strings.TrimSpace(name); name != "" {
 				only[name] = true
@@ -458,25 +473,25 @@ type driveTally struct {
 // proofInsert is the insert that spends a broker token's proof.
 var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 
-// TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter is t-read-class step 5 of
-// dispatch://INFRA-4619/artifact/plan-md: every read row of the table (readWritesNothing), sent on
-// one seeded store (newDriveWorld) by two pairs of credentials, each a read-only credential and
-// its writer: the golden file's answer of a machine login's narrowed token (read-person, P,
-// session S) and the same answer with the project scope person and no read; and P's personal
-// token holding read and person, and P's holding person. In each pair the read-only credential is
-// sent first, so nothing its writer writes is what the read-only request read.
+// TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter: every read row of the table
+// (readWritesNothing), sent on one seeded store (newDriveWorld) by two pairs of credentials, each
+// a read-only credential and its writer: the golden file's answer of a machine login's narrowed
+// token (read-person, P, session S) and the same answer with the project scope person and no
+// read; and P's personal token holding read and person, and P's holding person. In each pair the
+// read-only credential is sent first, so nothing its writer writes is what the read-only request
+// read.
 //
 // A tracer on the whole pool the server and the broker-token verifier share records every
-// statement on any context (poolStatements), and each read-only request is sent in a window
-// (D21): it opens before the request and closes no sooner than 2 s after the answer and once the
-// pool has run no write for 500 ms, and a window still open at 20 s fails the row. The window
-// must hold no write D4 does not let a read make, wherever it ran; it must hold the request's
-// own credential check, the insert that spends the broker token's proof or the lookup of the
-// personal token; and it must hold the statement the row's drive names, unless the drive says
-// why the handler reads from memory. Each read-only answer must equal its writer's, status and
-// body, but for the members the row's drive lists as volatile, each with its reason, and but for
-// a row whose answer describes the credential (whoami), whose credential's members are held to
-// the read-only credential's own answer.
+// statement on any context (poolStatements), and each read-only request is sent in a window: it
+// opens before the request and closes no sooner than 2 s after the answer and once the pool has
+// run no write for 500 ms, and a window still open at 20 s fails the row. The window must hold no
+// write a read may not make (readMayWrite), wherever it ran; it must hold the request's own
+// credential check, the insert that spends the broker token's proof or the lookup of the personal
+// token; and it must hold the statement the row's drive names, unless the drive says why the
+// handler reads from memory. Each read-only answer must equal its writer's, status and body, but
+// for the members the row's drive lists as volatile, each with its reason, and but for a row
+// whose answer describes the credential (whoami), whose credential's members are held to the
+// read-only credential's own answer.
 //
 // Before the first row a calibration window, GET /api/v1/limits under the deployment's shared
 // token, which writes nothing, must hold no write at all: no duty of the rig writes while a row
@@ -488,11 +503,10 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 //
 // DISPATCH_READ_DRIVE_ROWS narrows the run to the rows it names, separated by commas (each
 // "GET <pattern>", as readClasses keys it); unset, every read row runs, which takes minutes,
-// about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod
-// (dispatch://INFRA-4619/artifact/plan-md, D21). The calibration and the pre-check run either
-// way.
+// about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
+// and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
-	rows, drives := drivenRows(t, readWritesNothing, true)
+	rows, drives := drivenRows(t, readWritesNothing)
 	world := newDriveWorld(t)
 	world.calibrate(t)
 	world.precheck(t)
@@ -651,16 +665,18 @@ func statementList(statements []drivenStatement) string {
 }
 
 // TestEveryGETThatWritesMakesItsWrite: every GET row of the table that writes (readWritesState),
-// sent on the seeded store (newDriveWorld) with a writing token, the golden machine-login answer
-// with the project scope person and no read, makes the write its WriteNote names: the going
-// stream stores the end frame of a run past its deadline in going_events, and each delivery read
-// inserts delivery_run_warnings for the deploy run with no production job that is its own. Each
-// is sent in a window as the reads are (D21), which must hold that write, and the store must hold
-// none of the row's rows before it and one after. The rows run in the table's order, which is
-// the order getWriteDrives's runs need.
+// sent with a writing token, the golden machine-login answer with the project scope person and no
+// read, makes the write its WriteNote names: the going stream stores the end frame of a run past
+// its deadline in going_events, and each delivery read inserts delivery_run_warnings for the
+// deploy run with no production job that is its own. It runs on the drive rig (newDriveRig) with
+// only the state those writes read (driveWorld.seedWrites), not the whole seeded store. Each is
+// sent in a window as the reads are, which must hold that write, and the store must hold none of
+// the row's rows before it and one after. The rows run in the table's order, which is the order
+// getWriteDrives's runs need.
 func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
-	rows, drives := drivenRows(t, readWritesState, false)
-	world := newDriveWorld(t)
+	rows, drives := drivenRows(t, readWritesState)
+	world := newDriveRig(t)
+	world.seedWrites(t)
 	writer := world.brokerSend("the writing token", world.writer)
 	stored := func(t *testing.T, drive rowDrive) int {
 		t.Helper()

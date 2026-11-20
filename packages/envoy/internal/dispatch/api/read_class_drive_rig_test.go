@@ -1,10 +1,10 @@
 package api
 
 // read_class_drive_rig_test.go holds what the drives of read_class_drive_test.go run on: a tracer
-// on the whole pool the server and the broker-token verifier share, the window D21 of
-// dispatch://INFRA-4619/artifact/plan-md gives each drive, the writes D4 lets a read make, the
-// comparison of a read-only answer with its writer's, and the stand-ins of GitHub and the Envoy
-// listener the seeded store is read through.
+// on the whole pool the server and the broker-token verifier share, the window each drive reads
+// the pool's statements in, the writes a read may make, the comparison of a read-only answer with
+// its writer's, and the stand-ins of GitHub and the Envoy listener the seeded store is read
+// through.
 
 import (
 	"cmp"
@@ -26,13 +26,16 @@ import (
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
-// drivenStatement is one statement the traced pool ran: its SQL, when it started, and whether it
-// ran on a context the test marked (countedRead), which is a request's own context and the work
-// that request detached from it, and never the server's own context.
+// drivenStatement is one statement the traced pool ran: its SQL, the writes it makes as
+// driveWritesOf reads them when it is recorded (writes, and whether every write word in it was
+// read, readable), and whether it ran on a context the test marked (countedRead), which is a
+// request's own context and the work that request detached from it, and never the server's own
+// context.
 type drivenStatement struct {
-	sql    string
-	at     time.Time
-	marked bool
+	sql      string
+	writes   []string
+	readable bool
+	marked   bool
 }
 
 // poolStatements records every statement run on the pool it traces, whatever context it runs on:
@@ -51,7 +54,7 @@ func (p *poolStatements) record(ctx context.Context, sql string) {
 	writes, readable := driveWritesOf(sql)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.statements = append(p.statements, drivenStatement{sql: sql, at: now, marked: ctx.Value(countedRead{}) != nil})
+	p.statements = append(p.statements, drivenStatement{sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil})
 	if len(writes) > 0 || !readable {
 		p.lastWrite = now
 	}
@@ -113,8 +116,9 @@ const (
 
 // window opens a window on the pool, runs send, and closes the window no sooner than
 // driveWindowAfterAnswer after send returned and only once the pool has run no write for
-// driveWindowQuiet (D21). A window still open driveWindowLimit after it opened fails the drive,
-// naming what. It answers every statement the pool ran while it was open.
+// driveWindowQuiet, so work a request starts and does not wait on lands inside it. A window still
+// open driveWindowLimit after it opened fails the drive, naming what. It answers every statement
+// the pool ran while it was open.
 func (p *poolStatements) window(t *testing.T, what string, send func()) []drivenStatement {
 	t.Helper()
 	opened := time.Now()
@@ -174,19 +178,19 @@ func driveWritesOf(statement string) ([]string, bool) {
 	return writesOf(read)
 }
 
-// readMayWrite is D4: whether a read may write table with verb, statement being the whole
-// statement. A read writes nothing but the spec's closed list, wherever the write runs: the
-// insert that spends a broker token's proof, a personal token's last use, the display trees, the
-// route roster, the event horizon, a project's term statistics, GitHub's rate limits, and a
-// compaction's rewrite and delete of a document's updates.
+// readMayWrite is whether a read may write table with verb, statement being the whole statement.
+// A read writes nothing but the spec's closed list, wherever the write runs: the insert that
+// spends a broker token's proof, a personal token's last use, the inserts of the display trees,
+// the route roster and the event horizon (writesOf reads an upsert as the insert it is), a
+// project's term statistics, GitHub's rate limits, and a compaction's rewrite and delete of a
+// document's updates.
 func readMayWrite(verb, table, statement string) bool {
 	switch table {
-	case "dpop_proofs":
+	case "dpop_proofs", "text_trees", "route_roster", "event_horizon":
 		return verb == "insert"
 	case "agent_tokens", "agent_read_tokens":
 		return verb == "update" && lastUsedUpdate.MatchString(statement)
-	case "text_trees", "route_roster", "event_horizon",
-		"search_term_stats", "search_term_totals", "search_term_queue", "github_rate_limits":
+	case "search_term_stats", "search_term_totals", "search_term_queue", "github_rate_limits":
 		return true
 	case "doc_updates":
 		return verb == "update" || verb == "delete"
@@ -200,31 +204,29 @@ func readMayWrite(verb, table, statement string) bool {
 func writesIn(statements []drivenStatement) []string {
 	var written []string
 	for _, statement := range statements {
-		writes, readable := driveWritesOf(statement.sql)
-		if !readable {
+		if !statement.readable {
 			written = append(written, "unreadable: "+oneLine(statement.sql))
 		}
-		written = append(written, writes...)
+		written = append(written, statement.writes...)
 	}
 	return written
 }
 
-// requireReadsWrites fails what for every write of statements D4 does not let a read make, and
-// for every statement holding a write this test cannot read a table for. It answers every write
-// it saw, as "<verb> <table>".
+// requireReadsWrites fails what for every write of statements a read may not make (readMayWrite),
+// and for every statement holding a write this test cannot read a table for. It answers every
+// write it saw, as "<verb> <table>".
 func requireReadsWrites(t *testing.T, what string, statements []drivenStatement) []string {
 	t.Helper()
 	var written []string
 	for _, statement := range statements {
-		writes, readable := driveWritesOf(statement.sql)
-		if !readable {
+		if !statement.readable {
 			t.Errorf("%s: the window holds a write this test cannot read a table for: %s", what, oneLine(statement.sql))
 		}
-		for _, write := range writes {
+		for _, write := range statement.writes {
 			written = append(written, write)
 			verb, table, _ := strings.Cut(write, " ")
 			if !readMayWrite(verb, table, statement.sql) {
-				t.Errorf("%s: the window holds %s %s, which D4 does not let a read write: %s", what, verb, table, oneLine(statement.sql))
+				t.Errorf("%s: the window holds %s %s, which a read may not write: %s", what, verb, table, oneLine(statement.sql))
 			}
 		}
 	}
@@ -289,25 +291,31 @@ func answerDifference(readOnly, writer *httptest.ResponseRecorder, volatile []vo
 		}
 	}
 	paths := make([]string, 0, len(volatile))
+	// set is what is left out of the comparison and why, for a failure to name.
+	set := make([]string, 0, len(volatile)+1)
 	for _, member := range volatile {
 		paths = append(paths, member.path)
+		set = append(set, member.path+" ("+member.reason+")")
 	}
 	if credential != nil {
 		paths = append(paths, credential.members...)
+		set = append(set, strings.Join(credential.members, ", ")+" ("+credential.reason+")")
 	}
 	for _, path := range paths {
 		dropMember(readOnlyBody, strings.Split(path, "."))
 		dropMember(writerBody, strings.Split(path, "."))
 	}
 	if differences := memberDifferences("", readOnlyBody, writerBody, nil); len(differences) > 0 {
-		return fmt.Sprintf("the read-only answer, but for %v, differs from the writer's in %d members:\n  %s",
-			paths, len(differences), strings.Join(differences, "\n  "))
+		return fmt.Sprintf("the read-only answer, but for [%s], differs from the writer's in %d members:\n  %s",
+			strings.Join(set, "; "), len(differences), strings.Join(differences, "\n  "))
 	}
 	return ""
 }
 
 // memberDifferences appends to differences every member at or below path where read-only and
-// writer differ, read-only's value first, and answers them; at most twenty are named.
+// writer differ, read-only's value first, and answers them; at most twenty are named. A member
+// one answer holds and the other does not is a difference, even where the one that holds it holds
+// null.
 func memberDifferences(path string, readOnly, writer any, differences []string) []string {
 	const most = 20
 	if len(differences) >= most {
@@ -328,8 +336,18 @@ func memberDifferences(path string, readOnly, writer any, differences []string) 
 					keys = append(keys, key)
 				}
 			}
+			presence := map[bool]string{true: "present", false: "absent"}
 			for _, key := range keys {
-				differences = memberDifferences(at(key), got[key], want[key], differences)
+				if len(differences) >= most {
+					return differences
+				}
+				gotValue, gotHeld := got[key]
+				wantValue, wantHeld := want[key]
+				if gotHeld != wantHeld {
+					differences = append(differences, fmt.Sprintf("%s: %s in the read-only answer, and %s in the writer's", at(key), presence[gotHeld], presence[wantHeld]))
+					continue
+				}
+				differences = memberDifferences(at(key), gotValue, wantValue, differences)
 			}
 			return differences
 		}
@@ -362,29 +380,27 @@ func dropMember(value any, path []string) {
 	if len(path) == 0 {
 		return
 	}
+	step, rest := path[0], path[1:]
 	switch node := value.(type) {
 	case map[string]any:
-		if len(path) == 1 {
-			if path[0] == "*" {
-				clear(node)
-				return
-			}
-			delete(node, path[0])
-			return
-		}
-		if path[0] == "*" {
+		switch {
+		case len(rest) == 0 && step == "*":
+			clear(node)
+		case len(rest) == 0:
+			delete(node, step)
+		case step == "*":
 			for _, child := range node {
-				dropMember(child, path[1:])
+				dropMember(child, rest)
 			}
-			return
+		default:
+			dropMember(node[step], rest)
 		}
-		dropMember(node[path[0]], path[1:])
 	case []any:
-		if path[0] != "*" {
+		if step != "*" {
 			return
 		}
 		for _, child := range node {
-			dropMember(child, path[1:])
+			dropMember(child, rest)
 		}
 	}
 }

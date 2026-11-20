@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -733,8 +734,9 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 // fresh schema: a pod entry's trade and a read entry's trade that ask for the scope read are each
 // answered a token the listed API account reads back as the same identity under the narrowed word
 // of its project scope, holding read, bound to this test's own key, and the read entry's trade
-// that names a cut reads back with that cut. Each answer is the one the shared verifier, Dispatch,
-// the listener and the NATS auth service are held to (internal/brokertoken's narrowed answers).
+// that names a cut reads back with that cut. Each answer is its kind's in the golden file the
+// shared verifier, Dispatch, the listener and the NATS auth service are held to
+// (brokertokentest.NarrowedAnswers), the read entry's with the cut beside it.
 func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
@@ -755,20 +757,19 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		form url.Values
-		want oauthwire.Introspection
+		// kind is the answer's in the golden file, filled with session; cut is the cut the
+		// trade names, which the golden answer is read back with.
+		kind, session, cut string
 	}{
 		{"a pod entry's trade",
 			with(exchangeForm(mintPodToken(t, cluster, clusterKey, podAccount, exchangeAudience, firstPodUID), heldSession), "scope", oauthwire.ScopeRead),
-			oauthwire.Introspection{Active: true, Session: heldSession, Person: person, ProjectScope: oauthwire.ProjectScopeReadNamed, Projects: []string{project},
-				Scope: oauthwire.ScopeRead, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt}},
+			"pod-entry", heldSession, ""},
 		{"a read entry's trade",
 			with(exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), ""), "scope", oauthwire.ScopeRead),
-			oauthwire.Introspection{Active: true, Session: readerSession, Service: readerService, ProjectScope: oauthwire.ProjectScopeReadNone,
-				Scope: oauthwire.ScopeRead, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt}},
+			"read-entry", readerSession, ""},
 		{"a read entry's trade with a cut",
 			with(with(exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), ""), "scope", oauthwire.ScopeRead), oauthwire.FormAsOf, cut),
-			oauthwire.Introspection{Active: true, Session: readerSession, Service: readerService, ProjectScope: oauthwire.ProjectScopeReadNone,
-				Scope: oauthwire.ScopeRead, AsOf: cut, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt}},
+			"read-entry", readerSession, cut},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			status, body := live.exchange(t, c.form)
@@ -788,9 +789,13 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 			if err := json.Unmarshal(raw, &answer); err != nil {
 				t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
 			}
-			c.want.ExpiresAt = answer.ExpiresAt
-			if !reflect.DeepEqual(answer, c.want) {
-				t.Errorf("introspection answered %+v, want %+v", answer, c.want)
+			want, ok := brokertokentest.NarrowedAnswers(t, jkt, c.session, answer.ExpiresAt)[c.kind]
+			if !ok {
+				t.Fatalf("the narrowed answers hold no answer for %s", c.kind)
+			}
+			want.AsOf = c.cut
+			if !reflect.DeepEqual(answer, want) {
+				t.Errorf("introspection answered %+v, want %+v", answer, want)
 			}
 			if answer.ExpiresAt <= time.Now().Unix() {
 				t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)

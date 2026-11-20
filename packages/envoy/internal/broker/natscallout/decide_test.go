@@ -5,13 +5,10 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -87,27 +85,6 @@ func introspector(sessions ...*session) func(context.Context, string) (oauthwire
 		}
 		return oauthwire.Introspection{}, nil
 	}
-}
-
-// narrowedAnswers is the broker's answer for a token narrowed to reading, by the kind of trade
-// that minted it, as the golden file internal/brokertoken/testdata/narrowed-answers.json holds
-// them: bound to jkt, naming session and expiring at exp, filled in as the file's comment says.
-// The broker's own test holds its minted answers to the same file.
-func narrowedAnswers(t testing.TB, jkt, session string, exp int64) map[string]oauthwire.Introspection {
-	t.Helper()
-	raw, err := os.ReadFile("../../brokertoken/testdata/narrowed-answers.json")
-	require.NoError(t, err)
-	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
-		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
-	var golden struct {
-		Comment string                             `json:"_comment"`
-		Answers map[string]oauthwire.Introspection `json:"answers"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(filled))
-	decoder.DisallowUnknownFields()
-	require.NoError(t, decoder.Decode(&golden))
-	require.NotEmpty(t, golden.Answers)
-	return golden.Answers
 }
 
 // platformToken is a service's platform identity token as the stub ServiceToken reads it: the
@@ -211,11 +188,11 @@ func TestRefusals(t *testing.T) {
 	// answer of the golden file the broker's own test holds its narrowed answers to is no
 	// session's credential to the auth service either: each is a session of its own, presenting
 	// its token with a sound proof.
-	kinds := slices.Sorted(maps.Keys(narrowedAnswers(t, "", "", 0)))
+	kinds := slices.Sorted(maps.Keys(brokertokentest.NarrowedAnswers(t, "", "", 0)))
 	narrowed := make([]*session, 0, len(kinds))
 	for _, kind := range kinds {
 		s := newSession(t, "ses_narrowed_"+strings.ReplaceAll(kind, "-", "_"), 15*time.Minute)
-		s.answer = narrowedAnswers(t, s.answer.Thumbprint, s.id, s.answer.ExpiresAt)[kind]
+		s.answer = brokertokentest.NarrowedAnswers(t, s.answer.Thumbprint, s.id, s.answer.ExpiresAt)[kind]
 		narrowed = append(narrowed, s)
 	}
 	tokens := map[string]platformToken{

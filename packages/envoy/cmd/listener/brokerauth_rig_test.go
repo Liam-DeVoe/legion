@@ -3,14 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -431,7 +429,7 @@ func walkEveryV1Route(t *testing.T, rig *brokerRig, refused []walkToken, control
 	}
 }
 
-// R4 on a real bus, with no change to the listener's own code: a read-only token — the project
+// On a real bus, with no change to the listener's own code: a read-only token — the project
 // scope none beside the one scope read, which a read entry mints for Dispatch's read class — is
 // answered 401 not_a_session on every path registerV1Routes registers (v1Walk), because the
 // verifier brokerTokens.open builds leaves the read-only switch unset
@@ -455,33 +453,6 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 		walkToken{"a named project's token", namedToken, named})
 }
 
-// narrowedAnswers is the broker's answer for a token narrowed to reading, by the kind of trade
-// that minted it, as the golden file internal/brokertoken/testdata/narrowed-answers.json holds
-// them: bound to jkt, naming session and expiring at exp, filled in as the file's comment says.
-// The broker's own test holds its minted answers to the same file.
-func narrowedAnswers(t *testing.T, jkt, session string, exp int64) map[string]brokertoken.Introspection {
-	t.Helper()
-	raw, err := os.ReadFile("../../internal/brokertoken/testdata/narrowed-answers.json")
-	if err != nil {
-		t.Fatalf("read the narrowed answers: %v", err)
-	}
-	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
-		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
-	var golden struct {
-		Comment string                               `json:"_comment"`
-		Answers map[string]brokertoken.Introspection `json:"answers"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(filled))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&golden); err != nil {
-		t.Fatalf("decode the narrowed answers: %v", err)
-	}
-	if len(golden.Answers) == 0 {
-		t.Fatal("the narrowed answers file holds no answer")
-	}
-	return golden.Answers
-}
-
 // A token narrowed to reading, of every kind of trade the broker narrows, is refused on every
 // path registerV1Routes registers (v1Walk) as the read entry's token is: each answer of the
 // golden file the broker's own test holds its narrowed answers to is answered 401 with one
@@ -496,7 +467,7 @@ func TestAPIAuthRefusesANarrowedTokenOfEveryKindOnEveryV1Route(t *testing.T) {
 		named           = "ses_rig_named"
 		namedToken      = "access-token-of-a-named-project"
 	)
-	answers := narrowedAnswers(t, rig.caller.JKT(), narrowedSession, time.Now().Add(time.Hour).Unix())
+	answers := brokertokentest.NarrowedAnswers(t, rig.caller.JKT(), narrowedSession, time.Now().Add(time.Hour).Unix())
 	var refused []walkToken
 	for _, kind := range slices.Sorted(maps.Keys(answers)) {
 		token := "access-token-narrowed-from-a-" + kind

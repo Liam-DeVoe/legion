@@ -3363,13 +3363,12 @@ func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
 	}
 }
 
-// TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter is D5 of dispatch://INFRA-4619: a
-// read-only caller's read of an issue's results reads GitHub as a writer's read does, answers
-// what a writer's read answers on the same stored rows, and stores nothing — no
-// pull_request_heads row, no branch_commits row and no event. GitHub's answer is kept in memory
-// under a claim of the read-only reads' own, so a second read-only read inside the span asks
-// GitHub nothing, and the writers' claim is left alone, so a writer's read after both still asks
-// GitHub and stores exactly what it stores at the base.
+// TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter: a read-only caller's read of an
+// issue's results reads GitHub as a writer's read does, answers what a writer's read answers on
+// the same stored rows, and stores nothing — no pull_request_heads row, no branch_commits row and
+// no event. GitHub's answer is kept in memory under a claim of the read-only reads' own, so a
+// second read-only read inside the span asks GitHub nothing, and the writers' claim is left alone,
+// so a writer's read after both still asks GitHub and stores exactly what it stores at the base.
 //
 // Each row reads one issue three times on one state (readOnlyThenWriter). Since the read-only
 // reads store nothing, the writer's read reads the very state they read, which is what lets its

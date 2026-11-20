@@ -18,8 +18,9 @@ import {
   verify,
   type webcrypto,
 } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { DISPATCH_READ_ONLY_TOKEN } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type FakeDispatchCall, startFakeDispatch } from "../../test/fake-dispatch";
 import { runDispatchCli } from "../dispatch-cli";
@@ -42,7 +43,7 @@ beforeEach(() => {
 
 /** Dispatch's refusal of a write under a read-only token, worded as its gate words it. */
 const READ_ONLY_REFUSAL = {
-  code: "READ_ONLY_TOKEN",
+  code: DISPATCH_READ_ONLY_TOKEN,
   error:
     "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran",
 };
@@ -315,7 +316,7 @@ interface RowScene {
   readonly brokerUrl: string;
 }
 
-/** The inventory: each setting R5 refuses beside the two files, each of the two set alone, and
+/** The inventory: each setting the token files refuse beside them, each of the two set alone, and
  *  DISPATCH_URL unset, with the words the refusal names it in. */
 const REFUSED: readonly {
   readonly row: string;
@@ -412,13 +413,16 @@ function wordsOf(named: string, copy: Copy, cwd: string): string {
 describe("the dispatch command's token files", () => {
   test("the token files refuse every setting beside them", async () => {
     const broker = stubBroker(900);
+    // One stand-in Dispatch and listener for every row: a row sends nothing when neither hears
+    // more than it had heard before the row ran.
+    const dispatch = standInDispatch();
+    const listener = standInListener();
     // Each row's problems, so a failure names every row that fails rather than the first.
     const problems: string[] = [];
     for (const { row, named, change } of REFUSED) {
-      const dispatch = standInDispatch();
-      const listener = standInListener();
       const copy = copyFiles();
       const traded = broker.trades.length;
+      const heard = dispatch.presented.length + listener.presented.length;
       const changed = change({ copy, brokerUrl: broker.url });
       const cwd = changed.cwd ?? copy.dir;
       const env = commandEnvironment(copy, dispatch.url, {
@@ -426,7 +430,7 @@ describe("the dispatch command's token files", () => {
         ...changed.env,
       });
       const { code, stdout } = await run(["projects"], env, cwd);
-      const sent = dispatch.presented.length + listener.presented.length;
+      const sent = dispatch.presented.length + listener.presented.length - heard;
       const wrong = [
         code === 2 ? [] : [`exits ${code}`],
         // The refusal is the token files', and names this row's setting and no other's.
@@ -443,8 +447,10 @@ describe("the dispatch command's token files", () => {
     }
     expect(problems).toEqual([]);
 
-    // Every setting at once (each of the two files alone excludes the other): each is named.
-    const dispatch = standInDispatch();
+    // Every setting at once (each of the two files alone excludes the other): each is named. With
+    // DISPATCH_URL unset among them nothing can reach the stand-in Dispatch, so the rows above,
+    // each refused with DISPATCH_URL set but for its own, are what hold the command to sending
+    // nothing.
     const copy = copyFiles();
     const together = REFUSED.filter(({ row }) => row !== "DISPATCH_BROKER_DPOP_KEY_FILE alone");
     const changes = together.map(({ change }) => change({ copy, brokerUrl: broker.url }));
@@ -457,7 +463,7 @@ describe("the dispatch command's token files", () => {
     const { code, stdout } = await run(["projects"], env, cwd);
     expect(code).toBe(2);
     for (const { named } of together) expect(stdout).toContain(wordsOf(named, copy, cwd));
-    expect([dispatch.presented, broker.trades]).toEqual([[], []]);
+    expect(broker.trades).toEqual([]);
 
     // A checkout's file that cannot be read is refused too: whether it sets dispatch.token
     // cannot be told.
@@ -628,8 +634,9 @@ describe("the dispatch command's token files", () => {
         const sent = dispatch.presented.at(-1);
         if (sent === undefined) throw new Error("the read sent nothing");
         expect([read, carried(sent) >= before]).toEqual([read, true]);
-        // Every tenth read waits for the next rename, so renames land all through the loop.
-        if (read % 10 === 9) await until(() => landed() > before);
+        // Every tenth read but the last waits for the next rename, so renames land all through
+        // the loop.
+        if (read % 10 === 9 && read < 49) await until(() => landed() > before);
       }
     } finally {
       renamer.kill();
@@ -715,7 +722,12 @@ describe("the dispatch command's token files", () => {
       const copy = copyFiles();
       const file = setting === TOKEN_FILE ? copy.tokenFile : copy.keyFile;
       writeFileSync(file, contents);
-      if (unreadable === true) chmodSync(file, 0o000);
+      if (unreadable === true) {
+        // A directory where the file was, which no process reads as a file, root included: a
+        // file's mode does not stop root, so a test run as root would read it.
+        rmSync(file);
+        mkdirSync(file);
+      }
       const { code, stdout, stderr } = await run(
         ["projects"],
         commandEnvironment(copy, dispatch.url),
@@ -738,7 +750,11 @@ describe("the dispatch command's token files", () => {
       ["both files", env, [TOKEN_FILE, KEY_FILE]],
       ["the token file alone", { ...env, [KEY_FILE]: undefined }, [TOKEN_FILE]],
       ["the key file alone", { ...env, [TOKEN_FILE]: undefined }, [KEY_FILE]],
-      ["both files beside DISPATCH_TOKEN", { ...env, DISPATCH_TOKEN: fixtureSecret("dsp") }, []],
+      [
+        "both files beside DISPATCH_TOKEN",
+        { ...env, DISPATCH_TOKEN: fixtureSecret("dsp") },
+        [TOKEN_FILE, KEY_FILE],
+      ],
     ] as const) {
       for (const dispatch of [
         sessionDispatchSettings(chosen, set, { cwd: copy.dir }).dispatch,

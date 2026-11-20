@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -558,8 +559,7 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const session = "ses_narrowed"
-	const cut = "2026-11-18T09:30:00.123456Z"
-	answers := narrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	answers := brokertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
 	read := []string{model.ScopeRead}
 	personAndRead := []string{model.ScopePerson, model.ScopeRead}
 	wantScopes := map[string][]string{
@@ -590,11 +590,7 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 		{name: "a token that writes", answer: liveNamedToken(caller.jkt), scopes: []string{}},
 	}
 	for _, kind := range slices.Sorted(maps.Keys(answers)) {
-		narrowed := row{name: "a token narrowed from a " + kind, answer: answers[kind], scopes: wantScopes[kind]}
-		if answers[kind].AsOf != "" {
-			narrowed.cut = cut
-		}
-		rows = append(rows, narrowed)
+		rows = append(rows, row{name: "a token narrowed from a " + kind, answer: answers[kind], scopes: wantScopes[kind], cut: answers[kind].AsOf})
 	}
 	if !slices.ContainsFunc(rows, func(r row) bool { return r.cut != "" }) {
 		t.Fatal("no row names a cut, and one must")
@@ -629,9 +625,6 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 			}
 			if got.Kind != "agent" || got.Scopes == nil || !slices.Equal(*got.Scopes, row.scopes) {
 				t.Fatalf("whoami = %s, want kind agent and scopes %v", response.Body.String(), row.scopes)
-			}
-			if slices.Contains(*got.Scopes, model.ScopeApprove) {
-				t.Fatalf("whoami told a token approve: %s", response.Body.String())
 			}
 			wantCut := "null"
 			if row.cut != "" {

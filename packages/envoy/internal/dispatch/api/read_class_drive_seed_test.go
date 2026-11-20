@@ -1,9 +1,9 @@
 package api
 
 // read_class_drive_seed_test.go builds the one seeded store the drives of read_class_drive_test.go
-// read (dispatch://INFRA-4619/artifact/plan-md, t-read-class step 5): every kind of state a GET
-// row of the table can read, written through the API's own write routes where it has one and
-// through the package's own fixtures where it has none, so the data is the data the server writes.
+// read: every kind of state a GET row of the table can read, written through the API's own write
+// routes where it has one and through the package's own fixtures where it has none, so the data is
+// the data the server writes.
 
 import (
 	"context"
@@ -23,6 +23,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -81,9 +83,25 @@ func (w *driveWorld) fill(t *testing.T, target string) string {
 	})
 }
 
-// newDriveWorld builds the server on a store of its own, traced whole, with a GitHub, a listener
-// and the test hooks, seeds it, and mints the four tokens.
+// newDriveWorld is the drive rig (newDriveRig) seeded with every kind of state a GET row reads,
+// its documents settled and its rooms closed.
 func newDriveWorld(t *testing.T) *driveWorld {
+	t.Helper()
+	world := newDriveRig(t)
+	world.seed(t)
+	awaitSettledDocuments(t, world.raw)
+	// Every room the seed's writes opened, closed before the drive, once their settlements are
+	// done: the document service evicts an idle room a minute after its last write, on its own
+	// clock, which would change what the resident rooms row answers between a read-only request
+	// and its writer's.
+	world.as(t, "alice", http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil, http.StatusOK)
+	awaitSettledDocuments(t, world.raw)
+	return world
+}
+
+// newDriveRig builds the server on a store of its own, traced whole, with a GitHub, a listener
+// and the test hooks, and mints the four tokens; it seeds nothing else.
+func newDriveRig(t *testing.T) *driveWorld {
 	t.Helper()
 	raw := storetest.Open(t)
 	world := &driveWorld{raw: raw, tracer: &poolStatements{}, github: &driveGitHub{}, values: map[string]string{}}
@@ -105,14 +123,6 @@ func newDriveWorld(t *testing.T) *driveWorld {
 	world.caller = newBrokerCaller(t)
 	seedPeople(t, raw, drivePerson)
 	world.mintTokens(t)
-	world.seed(t)
-	awaitSettledDocuments(t, raw)
-	// Every room the seed's writes opened, closed before the drive, once their settlements are
-	// done: the document service evicts an idle room a minute after its last write, on its own
-	// clock, which would change what the resident rooms row answers between a read-only request
-	// and its writer's.
-	world.as(t, "alice", http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil, http.StatusOK)
-	awaitSettledDocuments(t, raw)
 	return world
 }
 
@@ -121,12 +131,12 @@ func newDriveWorld(t *testing.T) *driveWorld {
 // it must be.
 func (w *driveWorld) mintTokens(t *testing.T) {
 	t.Helper()
-	answer := narrowedAnswers(t, w.caller.jkt, driveSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	answer := brokertokentest.NarrowedAnswers(t, w.caller.jkt, driveSession, time.Now().Add(time.Hour).Unix())["machine-login"]
 	if answer.Person != drivePerson || answer.AsOf != "" {
 		t.Fatalf("the golden machine-login answer names %q with the cut %q, want %s and no cut", answer.Person, answer.AsOf, drivePerson)
 	}
 	writer := answer
-	writer.ProjectScope, writer.Scope = "person", ""
+	writer.ProjectScope, writer.Scope = brokertoken.ProjectScopePerson, ""
 	w.readOnly, w.writer = "the-drive-read-only-token", "the-drive-writer-token"
 	w.rig.broker.Says(w.readOnly, answer)
 	w.rig.broker.Says(w.writer, writer)
@@ -207,7 +217,6 @@ func (w *driveWorld) seed(t *testing.T) {
 	w.values["project"] = driveProject
 	w.values["relatedProject"] = driveRelatedProject
 	w.values["precheckProject"] = precheckRelatedProject
-	w.values["repo"] = driveRepo
 
 	// The projects: the drive project, mapped to its repository, defaulting to P and reading its
 	// architecture from legion/arch; and the two projects with no work and no term statistics.
@@ -375,9 +384,40 @@ func (w *driveWorld) seed(t *testing.T) {
 		return "diverged"
 	})
 
-	// The delivery settings and three deploy runs on main with no job the settings name as
-	// production's, each the unmatched run of one delivery read: the newest the timeline's, the
-	// middle the measures', the oldest the pipeline's (TestEveryGETThatWritesMakesItsWrite).
+	// The delivery and going state the GETs that write read (seedWrites), and the session answers
+	// row's window, which starts at a moment fixed here, before every write the seed made, so two
+	// reads of it answer one since rather than each its own three days back.
+	w.seedWrites(t)
+	w.values["answersSince"] = url.QueryEscape(time.Now().UTC().Truncate(time.Second).Add(-time.Hour).Format(time.RFC3339))
+
+	// A CI reconcile pass, and the near-copy gate's answer to a drive project create.
+	openCIPass(t, w.raw, uuid.NewString(), time.Minute)
+	var nearCopy string
+	if err := w.raw.Pool.QueryRow(context.Background(), `
+		select id::text from near_copy_checks where project_key = $1 order by created_at limit 1
+	`, driveProject).Scan(&nearCopy); err != nil {
+		t.Fatalf("read the near-copy gate's answer to a drive project create: %v", err)
+	}
+	w.values["nearCopy"] = nearCopy
+
+	// The pre-check's prose: a document no other test of this process has shown. A write stores
+	// the tree of every text it writes in the latest mode, and only a read of a version stores a
+	// tree in the version mode, so the pre-check's read of this version is where its tree first
+	// reaches the table.
+	prose := uploadDocument(t, w.rig.handler, owner, "prose.md", "# Prose\n\nProse no other test of this process has shown: "+uuid.NewString()+".\n")
+	w.values["prose"] = prose.Artifact.ID
+
+	// The route roster S is on, stored by one read that needs it.
+	w.as(t, alice, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+}
+
+// seedWrites writes the state the GETs that write read (getWriteDrives): the delivery settings and
+// three deploy runs on main with no job the settings name as production's, each the unmatched run
+// of one delivery read, the newest the timeline's, the middle the measures', the oldest the
+// pipeline's; and a going run past its deadline with no ending stored, asked by the writer's
+// credential.
+func (w *driveWorld) seedWrites(t *testing.T) {
+	t.Helper()
 	settings := pipelineSettings()
 	if _, err := delivery.PutSettings(t.Context(), w.raw.Pool, settings, model.Actor{Kind: "system", ID: "test"}); err != nil {
 		t.Fatalf("seed the delivery settings: %v", err)
@@ -402,11 +442,7 @@ func (w *driveWorld) seed(t *testing.T) {
 	w.values["timelineFrom"], w.values["timelineTo"] = window(runs[2].at)
 	w.values["measuresFrom"], w.values["measuresTo"] = window(runs[1].at)
 	w.values["pipelineAt"] = url.QueryEscape(now.Format(time.RFC3339))
-	// The session answers row's window starts at a moment fixed here, before every write the
-	// seed made, so two reads of it answer one since rather than each its own three days back.
-	w.values["answersSince"] = url.QueryEscape(now.Add(-time.Hour).Format(time.RFC3339))
 
-	// A going run past its deadline with no ending stored, asked by the writer's credential.
 	writerActor, _, err := w.rig.served.brokerTokenActor(w.caller.presenting(t, http.MethodGet, "/api/v1/whoami", w.writer, nil))
 	if err != nil {
 		t.Fatalf("resolve the writer's actor: %v", err)
@@ -424,26 +460,6 @@ func (w *driveWorld) seed(t *testing.T) {
 		t.Fatalf("write a going run past its deadline: %v", err)
 	}
 	w.values["going"] = going
-
-	// A CI reconcile pass, and the near-copy gate's answer to a drive project create.
-	openCIPass(t, w.raw, uuid.NewString(), time.Minute)
-	var nearCopy string
-	if err := w.raw.Pool.QueryRow(context.Background(), `
-		select id::text from near_copy_checks where project_key = $1 order by created_at limit 1
-	`, driveProject).Scan(&nearCopy); err != nil {
-		t.Fatalf("read the near-copy gate's answer to a drive project create: %v", err)
-	}
-	w.values["nearCopy"] = nearCopy
-
-	// The pre-check's prose: a document no other test of this process has shown. A write stores
-	// the tree of every text it writes in the latest mode, and only a read of a version stores a
-	// tree in the version mode, so the pre-check's read of this version is where its tree first
-	// reaches the table.
-	prose := uploadDocument(t, w.rig.handler, owner, "prose.md", "# Prose\n\nProse no other test of this process has shown: "+uuid.NewString()+".\n")
-	w.values["prose"] = prose.Artifact.ID
-
-	// The route roster S is on, stored by one read that needs it.
-	w.as(t, alice, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 }
 
 // staleRoster makes the stored route roster an hour past its expiry, so the next read that needs

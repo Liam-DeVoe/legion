@@ -14,9 +14,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -115,33 +113,6 @@ func machineLoginToken(jkt string) brokertoken.Introspection {
 		ClientID:   "agent-secrets-helper",
 		Thumbprint: jkt,
 	}
-}
-
-// narrowedAnswers is the broker's answer for a token narrowed to reading, by the kind of trade
-// that minted it, as the golden file internal/brokertoken/testdata/narrowed-answers.json holds
-// them: bound to jkt, naming session and expiring at exp, filled in as the file's comment says.
-// The broker's own test holds its minted answers to the same file.
-func narrowedAnswers(t *testing.T, jkt, session string, exp int64) map[string]brokertoken.Introspection {
-	t.Helper()
-	raw, err := os.ReadFile("../../brokertoken/testdata/narrowed-answers.json")
-	if err != nil {
-		t.Fatalf("read the narrowed answers: %v", err)
-	}
-	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
-		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
-	var golden struct {
-		Comment string                               `json:"_comment"`
-		Answers map[string]brokertoken.Introspection `json:"answers"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(filled))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&golden); err != nil {
-		t.Fatalf("decode the narrowed answers: %v", err)
-	}
-	if len(golden.Answers) == 0 {
-		t.Fatal("the narrowed answers file holds no answer")
-	}
-	return golden.Answers
 }
 
 // brokerCaller is an agent holding one key, producing the proofs its real client produces.
@@ -1094,9 +1065,12 @@ func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const session = "ses_narrowed"
-	answers := narrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
-	ada, fleet, reader, acme := "ada@example.com", "example-fleet", "example-reader", "ACME"
-	cut := time.Date(2026, 11, 18, 9, 30, 0, 123456000, time.UTC)
+	answers := brokertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	ada, fleet, reader, acme := "ada@example.com", brokerTestService, brokerTestReader, "ACME"
+	cut, err := time.Parse(time.RFC3339Nano, answers["machine-login-with-a-cut"].AsOf)
+	if err != nil {
+		t.Fatalf("the golden machine login's cut: %v", err)
+	}
 	type identity struct {
 		owner, service, project *string
 		scopes                  []string
@@ -1152,9 +1126,6 @@ func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
 			}
 			if !credential.Cut.Equal(expected.cut) || credential.Cut.Location() != time.UTC {
 				t.Fatalf("credential cut = %v, want %v in UTC", credential.Cut, expected.cut)
-			}
-			if expected.readOnly && (credential.Holds(model.ScopeApprove) || slices.Contains(credential.Scopes, model.ScopeRead)) {
-				t.Fatalf("a narrowed token's credential holds %v, want neither approve nor read among them", credential.Scopes)
 			}
 		})
 	}

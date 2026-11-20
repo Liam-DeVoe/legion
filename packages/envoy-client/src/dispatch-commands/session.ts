@@ -81,31 +81,38 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // the command that gets them a write. A verified service-account token names a service and
   // proves no session; it writes as before, and keeps the sentence it had.
   const signInNeeded = owner === null && service !== null && proved !== null;
-  // Dispatch refuses every write of a read-only credential with READ_ONLY_TOKEN, before any other
-  // check, so neither the issues it would create nor a sign-in it would need are its sentence.
-  const reader =
+  // Who the session is, as each sentence names it: the person it acts for, else the service it
+  // runs as. The text names the identity the way every other surface does; details keeps the
+  // subject whole, because that is the persisted value.
+  const who =
     owner !== null
       ? `acts for ${owner}`
       : service !== null
         ? `runs as service ${serviceSubjectLabel(service)}`
         : "runs";
-  const acting = readOnly
-    ? `Session ${session} ${reader} with a read-only credential: it may read, and Dispatch refuses every write it makes.${cut === null ? "" : ` Its cut is ${cut}, the past time it reads Dispatch at.`}`
-    : owner !== null
-      ? `Session ${session} acts for ${owner}: issues you create without an assignee are assigned to ${owner}.`
-      : service !== null
-        ? // The text names the identity the way every other surface does; details
-          // keeps the subject whole, because that is the persisted value.
-          signInNeeded
-          ? `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`
-          : `Session ${session} runs as service ${serviceSubjectLabel(service)}: ${unowned}`
-        : `Session ${session} runs under the shared token: ${unowned}`;
-  const elsewhere =
+  // The session the credential proved, where it is not this host's.
+  const named =
     proved !== null && proved !== sessionId
-      ? readOnly
-        ? ` Your credential names session ${proved}, which is not this host session (${sessionId}).`
-        : ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
+      ? ` Your credential names session ${proved}, which is not this host session (${sessionId})`
       : "";
+  let acting: string;
+  let elsewhere =
+    named === "" ? "" : `${named}: Dispatch records every write you make as ${proved}.`;
+  if (readOnly) {
+    // Dispatch refuses every write of a read-only credential with READ_ONLY_TOKEN, before any
+    // other check, so neither the issues it would create nor a sign-in it would need are its
+    // sentence, and it records no write as any session.
+    acting = `Session ${session} ${who} with a read-only credential: it may read, and Dispatch refuses every write it makes.${cut === null ? "" : ` Its cut is ${cut}, the past time it reads Dispatch at.`}`;
+    elsewhere = named === "" ? "" : `${named}.`;
+  } else if (owner !== null) {
+    acting = `Session ${session} ${who}: issues you create without an assignee are assigned to ${owner}.`;
+  } else if (signInNeeded) {
+    acting = `Session ${session} ${who} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`;
+  } else if (service !== null) {
+    acting = `Session ${session} ${who}: ${unowned}`;
+  } else {
+    acting = `Session ${session} runs under the shared token: ${unowned}`;
+  }
   const writable =
     project !== null && !readOnly ? ` It may write project ${project} and no other.` : "";
   return {

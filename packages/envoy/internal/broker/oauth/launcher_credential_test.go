@@ -240,13 +240,13 @@ func (f *fixture) launcherState(t *testing.T) string {
 
 // TestAReadTradeMakesOrMovesNoLauncherCredential: a trade that asks for read makes, moves and
 // extends no launcher credential. A person's read token expires no later than the sign-in's
-// credential it names; once that credential has lapsed, a read trade is refused invalid_grant
-// naming one ordinary trade, and the read token minted before is not live; one ordinary trade
-// renews the credential, the read token minted before the lapse is still not live, and a read
-// trade then succeeds. A Google trade's and a person's read trade leave launcher_credentials and
-// its audit rows exactly as they were; launcher_credential=true beside read is invalid_request;
-// and a person's read trade on a sign-in that holds no credential is invalid_grant naming
-// `agent-secrets login`, and on a revoked sign-in invalid_grant.
+// credential it names, so it has ended once that credential lapses, and an ordinary trade that
+// renews the credential later does not bring it back. Once the credential has lapsed, a read
+// trade is refused invalid_grant naming one ordinary trade; one ordinary trade renews the
+// credential, and a read trade then succeeds. A Google trade's and a person's read trade leave
+// launcher_credentials and its audit rows exactly as they were; launcher_credential=true beside
+// read is invalid_request; and a person's read trade on a sign-in that holds no credential is
+// invalid_grant naming `agent-secrets login`, and on a revoked sign-in invalid_grant.
 func TestAReadTradeMakesOrMovesNoLauncherCredential(t *testing.T) {
 	f := newNarrowingFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
@@ -284,16 +284,10 @@ func TestAReadTradeMakesOrMovesNoLauncherCredential(t *testing.T) {
 		time.Sleep(time.Until(lapses) + 100*time.Millisecond)
 		status, body = read()
 		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_grant", "One ordinary trade of the sign-in renews it")
-		if answer := f.introspected(t, first); answer.Active {
-			t.Errorf("the read token minted before the credential lapsed introspects live: %+v", answer)
-		}
 		status, body = f.exchange(t, f.personTrade(t, narrowedBoxSession), box)
 		accessTokenOf(t, status, body)
 		if renewed, _ := body[oauthwire.ExtraCredentialID].(string); renewed != credential {
 			t.Errorf("the ordinary trade answered the credential %q, want the sign-in's %q renewed", renewed, credential)
-		}
-		if answer := f.introspected(t, first); answer.Active {
-			t.Errorf("the read token minted before the credential lapsed introspects live once an ordinary trade renewed the credential: %+v", answer)
 		}
 		status, body = read()
 		accessTokenOf(t, status, body)

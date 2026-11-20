@@ -205,7 +205,7 @@ func issuedClaims(t *testing.T) []string {
 			Session: session,
 		}
 		if subject.cut != "" {
-			// Where the library puts the scopes a request names, which decide reads read from.
+			// Where the library puts the scopes a request names, which is where decide looks for read.
 			request.RequestedScope = oauth2.Arguments{oauthwire.ScopeRead}
 			request.Form.Set(oauthwire.FormAsOf, subject.cut)
 		}

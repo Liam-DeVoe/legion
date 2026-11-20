@@ -109,6 +109,14 @@ var (
 	ErrKeyBindsReadToken = errors.New("a live read token is bound to this key, and a key that signs launcher proofs binds no read token")
 )
 
+// KeyHeld reports whether err refuses a launcher credential's key because something else holds
+// it: another live credential (a unique violation, store.IsUniqueViolation) or a live read token
+// (ErrKeyBindsReadToken). Each caller answers both with the one refusal it gives a key that is
+// taken.
+func KeyHeld(err error) bool {
+	return store.IsUniqueViolation(err) || errors.Is(err, ErrKeyBindsReadToken)
+}
+
 type Credential struct {
 	ID       uuid.UUID
 	Operator *string
@@ -325,7 +333,7 @@ type execer interface {
 // approval commit, so a crash between minting and recording its decision rolls back both together
 // instead of leaving an orphaned, unrecoverable credential — or, for a test fixture, the pool. It
 // refuses a key a live read token is bound to first (keyBindsReadToken).
-func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.RowQuerier, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time) (uuid.UUID, error) {
+func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Querier, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time) (uuid.UUID, error) {
 	if operator != nil {
 		operator = new(record.CanonicalLogin(*operator))
 	}
@@ -353,7 +361,7 @@ func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.RowQ
 // already gives a key another live credential holds: machine.ErrKeyHoldsLiveCredential (409
 // KEY_HOLDS_LIVE_CREDENTIAL) for an approval and a token login, and oauth.ErrMachineKeyTaken
 // (invalid_grant) for a trade.
-func keyBindsReadToken(ctx context.Context, db oauthstore.RowQuerier, thumbprint string) error {
+func keyBindsReadToken(ctx context.Context, db oauthstore.Querier, thumbprint string) error {
 	held, err := oauthstore.KeyHoldsReadToken(ctx, db, thumbprint)
 	if err != nil {
 		return err

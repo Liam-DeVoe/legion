@@ -291,7 +291,7 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		}
 		id, err := s.Enroll.MintLauncherCredentialTx(ctx, tx, login, detail.Identifier, obj.Thumbprint, jwk, recordID,
 			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second))
-		if store.IsUniqueViolation(err) || errors.Is(err, enroll.ErrKeyBindsReadToken) {
+		if enroll.KeyHeld(err) {
 			return "", "", ErrKeyHoldsLiveCredential
 		}
 		if err != nil {

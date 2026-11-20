@@ -993,8 +993,10 @@ had and writes nothing. `DISPATCH_TOKEN_BROKER_AS_OF=<an RFC 3339 time>` beside 
 (`as_of`), the past time the token reads at. Either setting takes the broker route as
 `DISPATCH_TOKEN_BROKER=1` does and reads no bearer, so a shell that also holds `DISPATCH_TOKEN`
 never writes with it. `DISPATCH_TOKEN_BROKER_READ` takes `1` alone. A cut without
-`DISPATCH_TOKEN_BROKER_READ=1`, and a cut that is not an RFC 3339 time with at most six fractional
-digits, turn Dispatch off with an error that names the setting. No such error quotes the value.
+`DISPATCH_TOKEN_BROKER_READ=1`, a cut that is not an RFC 3339 time with at most six fractional
+digits, and a cut at the zero time (`0001-01-01T00:00:00Z`, under any offset), which the broker
+refuses since it would read as no cut, turn Dispatch off with an error that names the setting. No
+such error quotes the value.
 
 The two settings narrow the Dispatch trade alone (`brokerCredential`'s `read`). The Dispatch
 credential gets a broker client of its own, keyed by the session, the broker variables and the two

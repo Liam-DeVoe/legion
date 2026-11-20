@@ -7,12 +7,9 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 )
 
 // tradeKinds is every kind of trade the exchange mints a token for, under the subject token type
@@ -43,12 +41,8 @@ var tradeKinds = map[string][]string{
 	oauthwire.SubjectTokenTypeAccessToken: {"machine-login"},
 }
 
-// narrowingRow is how the narrowing tests trade one kind of tradeKinds: the subject token type
-// its trade presents, and the trade itself.
+// narrowingRow is how the narrowing tests trade one kind of tradeKinds.
 type narrowingRow struct {
-	// subjectTokenType is the subject_token_type the row's trade presents, the type tradeKinds
-	// lists the row's kind under.
-	subjectTokenType string
 	// trade is one trade of the row's kind on a narrowing fixture (newNarrowingFixture), asking
 	// for no scope. Each call mints the trade's subject token and keys afresh, and makes whatever
 	// the trade needs first, so a test calls it once for each trade it sends.
@@ -77,16 +71,15 @@ func (tr narrowingTrade) readKey() *ecdsa.PrivateKey {
 // The session names the narrowing rows trade under, one for each kind, and the pod uid of the pod
 // entry's row.
 const (
-	narrowedPodUID         = "pod-uid-narrowed"
-	narrowedPodSession     = "narrowed-pod"
-	narrowedRunSession     = "ci-narrowed"
-	narrowedFleetSession   = "fleet-narrowed"
-	narrowedPinnedSession  = "pinned-narrowed"
-	narrowedBoxSession     = "ada-box-narrowed"
-	narrowedDevBoxSession  = "ada-devbox-narrowed"
-	narrowedGoldenCut      = "2026-11-18T09:30:00.123456Z"
-	narrowedGoldenCutKey   = "machine-login-with-a-cut"
-	narrowedAnswersFixture = "../../brokertoken/testdata/narrowed-answers.json"
+	narrowedPodUID        = "pod-uid-narrowed"
+	narrowedPodSession    = "narrowed-pod"
+	narrowedRunSession    = "ci-narrowed"
+	narrowedFleetSession  = "fleet-narrowed"
+	narrowedPinnedSession = "pinned-narrowed"
+	narrowedBoxSession    = "ada-box-narrowed"
+	narrowedDevBoxSession = "ada-devbox-narrowed"
+	narrowedGoldenCut     = "2026-11-18T09:30:00.123456Z"
+	narrowedGoldenCutKey  = "machine-login-with-a-cut"
 )
 
 // pinnedMachine is the Google account of a second fleet, whose entry names a person and a
@@ -100,34 +93,34 @@ const (
 // tradeKinds spells it, which is also the key of the kind's answer in
 // internal/brokertoken/testdata/narrowed-answers.json.
 var narrowingRows = map[string]narrowingRow{
-	"pod-entry": {subjectTokenType: oauthwire.SubjectTokenTypeKubernetes, trade: func(t *testing.T, f *signInFixture) narrowingTrade {
+	"pod-entry": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		f.registers(t, account, narrowedPodUID, narrowedPodSession)
 		return narrowingTrade{form: exchangeForm(f.podToken(t, narrowedPodUID, nil), oauthwire.SubjectTokenTypeKubernetes, narrowedPodSession),
 			key: newKey(t), session: narrowedPodSession}
 	}},
-	"read-entry": {subjectTokenType: oauthwire.SubjectTokenTypeKubernetes, trade: func(t *testing.T, f *signInFixture) narrowingTrade {
+	"read-entry": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		return narrowingTrade{form: f.readPodForm(t), key: newKey(t), session: readSession}
 	}},
-	"workflow-entry": {subjectTokenType: oauthwire.SubjectTokenTypeGitHub, trade: func(t *testing.T, f *signInFixture) narrowingTrade {
+	"workflow-entry": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		return narrowingTrade{form: exchangeForm(f.workflowToken(t, uuid.NewString(), nil), oauthwire.SubjectTokenTypeGitHub, narrowedRunSession),
 			key: newKey(t), session: narrowedRunSession}
 	}},
-	"google-identity-no-person": {subjectTokenType: oauthwire.SubjectTokenTypeGoogle, trade: func(t *testing.T, f *signInFixture) narrowingTrade {
+	"google-identity-no-person": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		return narrowingTrade{form: exchangeForm(f.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, narrowedFleetSession),
 			key: newKey(t), session: narrowedFleetSession}
 	}},
-	"google-identity-with-a-person": {subjectTokenType: oauthwire.SubjectTokenTypeGoogle, trade: func(t *testing.T, f *signInFixture) narrowingTrade {
+	"google-identity-with-a-person": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		return narrowingTrade{form: exchangeForm(f.machineToken(t, pinnedMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, narrowedPinnedSession),
 			key: newKey(t), session: narrowedPinnedSession}
 	}},
-	"person-sign-in": {subjectTokenType: oauthwire.SubjectTokenTypePerson, trade: func(t *testing.T, f *signInFixture) narrowingTrade {
+	"person-sign-in": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		// A sign-in's read trade names the credential the sign-in already holds, which an
 		// ordinary trade of the box key mints first.
 		box := newKey(t)
 		f.exchanged(t, f.personTrade(t, narrowedBoxSession), box)
 		return narrowingTrade{form: f.personTrade(t, narrowedBoxSession), key: box, holder: newKey(t), session: narrowedBoxSession}
 	}},
-	"machine-login": {subjectTokenType: oauthwire.SubjectTokenTypeAccessToken, trade: func(t *testing.T, f *signInFixture) narrowingTrade {
+	"machine-login": {trade: func(t *testing.T, f *signInFixture) narrowingTrade {
 		machine := newKey(t)
 		return narrowingTrade{form: exchangeForm(f.devBoxToken(t, machine, person), oauthwire.SubjectTokenTypeAccessToken, narrowedDevBoxSession),
 			key: machine, holder: newKey(t), session: narrowedDevBoxSession}
@@ -215,27 +208,11 @@ func (f *fixture) tokenRows(t *testing.T) int {
 	return f.count(t, "oauth_access_tokens") + f.count(t, "oauth_narrowed_access_tokens")
 }
 
-// narrowedAnswer is the golden answer of kind in internal/brokertoken/testdata/narrowed-answers.json,
-// filled as the file's comment says: bound to jkt, naming session and expiring at exp. A member
-// the file names and oauthwire.Introspection does not carry fails the read.
+// narrowedAnswer is the golden answer of kind (brokertokentest.NarrowedAnswers): bound to jkt,
+// naming session and expiring at exp.
 func narrowedAnswer(t *testing.T, kind, jkt, session string, exp int64) oauthwire.Introspection {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.FromSlash(narrowedAnswersFixture))
-	if err != nil {
-		t.Fatalf("read the narrowed answers: %v", err)
-	}
-	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
-		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
-	var golden struct {
-		Comment string                             `json:"_comment"`
-		Answers map[string]oauthwire.Introspection `json:"answers"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(filled))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&golden); err != nil {
-		t.Fatalf("decode the narrowed answers: %v", err)
-	}
-	answer, ok := golden.Answers[kind]
+	answer, ok := brokertokentest.NarrowedAnswers(t, jkt, session, exp)[kind]
 	if !ok {
 		t.Fatalf("the narrowed answers hold no answer for %s", kind)
 	}
@@ -246,9 +223,9 @@ func narrowedAnswer(t *testing.T, kind, jkt, session string, exp int64) oauthwir
 // mints a token for. The kinds are those of every subject token type the exchange client accepts,
 // read from the client's own registration (oauthstore, GetClient), with the read entry beside the
 // pod entry under the Kubernetes type (tradeKinds). It fails for each accepted type tradeKinds
-// does not list, each type it lists that the client does not accept, each kind with no row, each
-// row that names no kind, and each row whose subject token type is not its kind's. Every problem
-// is collected first and the test fails once, naming each of them.
+// does not list, each type it lists that the client does not accept, each kind with no row, and
+// each row that names no kind. Every problem is collected first and the test fails once, naming
+// each of them.
 func TestEveryTradeKindNarrowsOnRequest(t *testing.T) {
 	// GetClient reads nothing of the store's own state: the two clients are the code's.
 	client, err := (&oauthstore.Store{}).GetClient(context.Background(), oauthwire.ExchangeClientID)
@@ -285,13 +262,9 @@ func TestEveryTradeKindNarrowsOnRequest(t *testing.T) {
 			problems = append(problems, "the kind "+kind+": no row in narrowingRows")
 		}
 	}
-	for kind, row := range narrowingRows {
-		tokenType, known := kindOf[kind]
-		switch {
-		case !known:
+	for kind := range narrowingRows {
+		if _, known := kindOf[kind]; !known {
 			problems = append(problems, "narrowingRows row "+kind+": it names no kind of trade tradeKinds lists under a type the exchange client accepts")
-		case row.subjectTokenType != tokenType:
-			problems = append(problems, "narrowingRows row "+kind+": it presents "+row.subjectTokenType+", and its kind is a trade of "+tokenType)
 		}
 	}
 	sort.Strings(problems)
@@ -366,9 +339,9 @@ func TestATradeThatAsksForReadKeepsItsIdentityAndHoldsRead(t *testing.T) {
 
 // TestATradeThatAsksForReadWithACutCarriesIt: a read trade's cut is in its introspection answer
 // exactly, in UTC to the microsecond whatever offset and digits it was sent with. A cut on a trade
-// that does not ask for read, a cut later than now, one with seven fractional digits and one that
-// is not RFC 3339 are each refused 400 invalid_request naming as_of, and no token is stored in
-// either table.
+// that does not ask for read, a cut later than now, one with seven fractional digits, one that is
+// not RFC 3339, and the zero time, which would read as no cut at all, with or without an offset,
+// are each refused 400 invalid_request naming as_of, and no token is stored in either table.
 func TestATradeThatAsksForReadWithACutCarriesIt(t *testing.T) {
 	f := newNarrowingFixture(t, func(*oauth.Config) {})
 	row := narrowingRows["pod-entry"]
@@ -389,6 +362,8 @@ func TestATradeThatAsksForReadWithACutCarriesIt(t *testing.T) {
 		{"a cut later than now", oauthwire.ScopeRead, time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
 		{"a cut with seven fractional digits", oauthwire.ScopeRead, "2026-11-18T09:30:00.1234567Z"},
 		{"a cut that is not RFC 3339", oauthwire.ScopeRead, "2026-11-18 09:30:00"},
+		{"a cut at the zero time", oauthwire.ScopeRead, "0001-01-01T00:00:00Z"},
+		{"a cut at the zero time with an offset", oauthwire.ScopeRead, "0001-01-01T01:00:00+01:00"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			before := f.tokenRows(t)
@@ -411,7 +386,7 @@ func TestTheMachineLoginTradeMayAskForRead(t *testing.T) {
 		t.Run(scope, func(t *testing.T) {
 			status, body := f.send(t, row.trade(t, f), scope, "")
 			answer := f.introspected(t, accessTokenOf(t, status, body))
-			if answer.ProjectScope != oauthwire.ProjectScopeReadPerson || answer.Scope != "read person" || answer.Person != person {
+			if answer.ProjectScope != oauthwire.ProjectScopeReadPerson || answer.Scope != oauthwire.ScopeRead+" "+oauthwire.ScopePerson || answer.Person != person {
 				t.Errorf("a machine login's trade asking %q introspects as %+v, want %s's read-person token holding read person", scope, answer, person)
 			}
 		})
@@ -450,12 +425,12 @@ func sameAnswer(t *testing.T, plainStatus int, plain map[string]any, readStatus 
 // read-named token stored with no list of projects introspects not live, as a named one does.
 func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 	row := narrowingRows["pod-entry"]
-	both := func(t *testing.T, f *signInFixture, trade func() narrowingTrade) (int, map[string]any, int, map[string]any) {
+	both := func(t *testing.T, f *signInFixture, trade func() narrowingTrade) (map[string]any, int, map[string]any) {
 		t.Helper()
 		plainStatus, plain := f.send(t, trade(), "", "")
 		readStatus, read := f.send(t, trade(), oauthwire.ScopeRead, "")
 		sameAnswer(t, plainStatus, plain, readStatus, read)
-		return plainStatus, plain, readStatus, read
+		return plain, readStatus, read
 	}
 	t.Run("an entry naming a project mints with no check and with one that sees it", func(t *testing.T) {
 		for _, access := range []*fakeAccess{nil, newFakeAccess()} {
@@ -464,7 +439,7 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 					c.Exchange.Projects = access
 				}
 			})
-			_, _, status, body := both(t, f, func() narrowingTrade { return row.trade(t, f) })
+			_, status, body := both(t, f, func() narrowingTrade { return row.trade(t, f) })
 			f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopeReadNamed, []string{project})
 		}
 	})
@@ -472,7 +447,7 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 		access := newFakeAccess()
 		access.sees[person] = []string{"PRIV"}
 		f := newNarrowingFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
-		_, _, status, body := both(t, f, func() narrowingTrade { return row.trade(t, f) })
+		_, status, body := both(t, f, func() narrowingTrade { return row.trade(t, f) })
 		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "its entry names the project "+project+", which its person "+person+" cannot see")
 	})
 	t.Run("an entry naming no project mints unchecked while Dispatch cannot be asked", func(t *testing.T) {
@@ -485,7 +460,7 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 			c.Exchange.Projects = down
 		})
 		f.registers(t, account, "pod-uid-public", "public-session-1")
-		_, _, status, body := both(t, f, func() narrowingTrade {
+		_, status, body := both(t, f, func() narrowingTrade {
 			return narrowingTrade{form: exchangeForm(f.podToken(t, "pod-uid-public", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key: newKey(t)}
 		})
 		f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopeReadNamed, nil)
@@ -495,7 +470,7 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 	})
 	t.Run("a person's trade naming a project with no check is refused naming the setting", func(t *testing.T) {
 		f := newNarrowingFixture(t, func(*oauth.Config) {})
-		_, _, status, body := both(t, f, func() narrowingTrade {
+		_, status, body := both(t, f, func() narrowingTrade {
 			tr := narrowingRows["machine-login"].trade(t, f)
 			tr.form = withProjects(tr.form, "PRIV")
 			return tr
@@ -504,7 +479,7 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 	})
 	t.Run("a narrowed named token stored with no list of projects is not live", func(t *testing.T) {
 		f := newNarrowingFixture(t, func(*oauth.Config) {})
-		_, plain, _, read := both(t, f, func() narrowingTrade { return row.trade(t, f) })
+		plain, _, read := both(t, f, func() narrowingTrade { return row.trade(t, f) })
 		for _, table := range []string{"oauth_access_tokens", "oauth_narrowed_access_tokens"} {
 			tag, err := f.pool.Exec(context.Background(), `update `+table+` set request = request #- '{session,extra,projects}'
 				where request #>> '{session,extra,session}' = $1`, narrowedPodSession)

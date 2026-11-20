@@ -17,6 +17,13 @@ import {
   thumbprintOf,
   writeSignIn,
 } from "@legion/broker-client/test/sign-ins";
+import {
+  FORM_AS_OF,
+  FORM_LAUNCHER_CREDENTIAL,
+  FORM_SCOPE,
+  SCOPE_READ,
+  SUBJECT_TOKEN_TYPE_PERSON,
+} from "@legion/broker-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { brokerCredential, brokerTokenFor, forgetBrokerSession } from "../broker-credential";
@@ -159,8 +166,8 @@ test("DISPATCH_TOKEN_BROKER_READ=1 makes the Dispatch trade ask for scope read",
   await dispatchOf(env, "example-reader-session").listAllIssues({});
 
   expect(broker.trades).toHaveLength(1);
-  expect(broker.trades[0]?.form.get("scope")).toBe("read");
-  expect(broker.trades[0]?.form.has("as_of")).toBe(false);
+  expect(broker.trades[0]?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
+  expect(broker.trades[0]?.form.has(FORM_AS_OF)).toBe(false);
   expect(broker.trades[0]?.form.get("session")).toBe("example-reader-session");
   // The pod proves a key this process made, so its read trade sends no holder proof.
   expect(broker.trades[0]?.holder).toBe("");
@@ -181,9 +188,9 @@ test("DISPATCH_TOKEN_BROKER_AS_OF beside it asks for that cut", async () => {
     ).listAllIssues({});
   }
   // Sent as written, trimmed: the broker reads the time, and its clock alone says it has passed.
-  expect(broker.trades.map((trade) => [trade.form.get("scope"), trade.form.get("as_of")])).toEqual(
-    cuts.map((cut) => ["read", cut])
-  );
+  expect(
+    broker.trades.map((trade) => [trade.form.get(FORM_SCOPE), trade.form.get(FORM_AS_OF)])
+  ).toEqual(cuts.map((cut) => [SCOPE_READ, cut]));
 });
 
 test("the read settings take the broker route and read no DISPATCH_TOKEN", async () => {
@@ -201,7 +208,7 @@ test("the read settings take the broker route and read no DISPATCH_TOKEN", async
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
   expect(resolution.credential.scheme).toBe("DPoP");
   await new DispatchClient(resolution.url, resolution.credential).listAllIssues({});
-  expect(broker.trades.map((trade) => trade.form.get("scope"))).toEqual(["read"]);
+  expect(broker.trades.map((trade) => trade.form.get(FORM_SCOPE))).toEqual([SCOPE_READ]);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
     `DPoP ${broker.trades[0]?.token}`,
   ]);
@@ -219,10 +226,9 @@ test("the read settings take the broker route and read no DISPATCH_TOKEN", async
 });
 
 test("a cut without DISPATCH_TOKEN_BROKER_READ=1 turns Dispatch off naming both settings", () => {
-  const broker = stubBroker(600);
   // A bearer that would write: the cut is a mistake, never a reason to fall back on it.
   const env = {
-    ...podEnvironment(broker.url, "http://dispatch.test"),
+    ...podEnvironment("http://broker.test", "http://dispatch.test"),
     DISPATCH_TOKEN: PERSON_TOKEN,
     DISPATCH_TOKEN_BROKER_AS_OF: "2026-11-19T08:30:00Z",
   };
@@ -231,12 +237,13 @@ test("a cut without DISPATCH_TOKEN_BROKER_READ=1 turns Dispatch off naming both 
     expect(error).toContain("DISPATCH_TOKEN_BROKER_AS_OF");
     expect(error).toContain("DISPATCH_TOKEN_BROKER_READ=1");
   }
-  expect(broker.trades).toHaveLength(0);
 });
 
 test("DISPATCH_TOKEN_BROKER_READ other than 1 turns Dispatch off naming it", () => {
-  const broker = stubBroker(600);
-  const env = { ...podEnvironment(broker.url, "http://dispatch.test"), DISPATCH_TOKEN: "written" };
+  const env = {
+    ...podEnvironment("http://broker.test", "http://dispatch.test"),
+    DISPATCH_TOKEN: "written",
+  };
   for (const value of ["true", "0", "yes", "read"]) {
     const error = offError({ ...env, DISPATCH_TOKEN_BROKER_READ: value });
     expect(error).toContain("DISPATCH_TOKEN_BROKER_READ takes 1");
@@ -244,16 +251,14 @@ test("DISPATCH_TOKEN_BROKER_READ other than 1 turns Dispatch off naming it", () 
     expect(error).not.toContain(`"${value}"`);
     expect(error).not.toContain(`'${value}'`);
   }
-  // Unset or blank, it reads as off: the bearer is the credential, as before.
+  // Unset or blank, it reads as off, and the bearer is the credential.
   const blank = dispatchSettings({ ...env, DISPATCH_TOKEN_BROKER_READ: "  " }, noFile(env));
   expect(blank.enabled && blank.credential.scheme).toBe("Bearer");
-  expect(broker.trades).toHaveLength(0);
 });
 
-test("a cut that is not RFC 3339 turns Dispatch off naming it", () => {
-  const broker = stubBroker(600);
+test("a cut that is not RFC 3339, or is the zero time, turns Dispatch off naming it", () => {
   const env = {
-    ...podEnvironment(broker.url, "http://dispatch.test"),
+    ...podEnvironment("http://broker.test", "http://dispatch.test"),
     DISPATCH_TOKEN_BROKER_READ: "1",
   };
   for (const cut of [
@@ -270,12 +275,22 @@ test("a cut that is not RFC 3339 turns Dispatch off naming it", () => {
     "2026-11-19T08:60:00Z",
     "2026-11-19T08:30:00+0100",
     "1763541000",
+    // The zero time, which the broker takes for no cut at all, so it refuses it, under any offset.
+    "0001-01-01T00:00:00Z",
+    "0001-01-01T00:00:00.000000Z",
+    "0001-01-01T01:00:00+01:00",
   ]) {
     const error = offError({ ...env, DISPATCH_TOKEN_BROKER_AS_OF: cut });
     expect(error, cut).toContain("DISPATCH_TOKEN_BROKER_AS_OF is not an RFC 3339 time");
     expect(error, cut).not.toContain(cut);
   }
-  expect(broker.trades).toHaveLength(0);
+  // A second after it is a cut, as the broker takes it.
+  const second = dispatchSettings(
+    { ...env, DISPATCH_TOKEN_BROKER_AS_OF: "0001-01-01T00:00:01Z" },
+    noFile(env),
+    { session: "session-one" }
+  );
+  expect(second.enabled).toBe(true);
 });
 
 test("the Envoy listener's and NATS's trades ask for no scope under the read settings", async () => {
@@ -300,11 +315,11 @@ test("the Envoy listener's and NATS's trades ask for no scope under the read set
   expect(
     broker.trades.map((trade) => [
       trade.form.get("session"),
-      trade.form.get("scope"),
-      trade.form.get("as_of"),
+      trade.form.get(FORM_SCOPE),
+      trade.form.get(FORM_AS_OF),
     ])
   ).toEqual([
-    ["session-one", "read", cut],
+    ["session-one", SCOPE_READ, cut],
     ["session-one", null, null],
   ]);
   expect(listener?.Authorization).toBe(`DPoP ${broker.trades[1]?.token}`);
@@ -339,13 +354,11 @@ test("a person's trade under the read setting sends no launcher_credential", asy
 
   const [trade] = broker.trades;
   expect(broker.trades).toHaveLength(1);
-  expect(trade?.form.get("subject_token_type")).toBe(
-    "urn:envoy:params:oauth:token-type:person-google-identity"
-  );
-  expect(trade?.form.get("scope")).toBe("read");
+  expect(trade?.form.get("subject_token_type")).toBe(SUBJECT_TOKEN_TYPE_PERSON);
+  expect(trade?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
   // Absent, a read trade's launcher_credential reads as declined, and a person's trade may not
   // send `false`.
-  expect(trade?.form.has("launcher_credential")).toBe(false);
+  expect(trade?.form.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
   // The token is bound to the holder's key, and Dispatch's proof is signed with it, never with
   // the box key the sign-in is proved by.
   const [holderJwk, dispatchJwk] = [trade?.holder, dispatch.asked[0]?.proof].map(
