@@ -136,7 +136,17 @@ const CRITERION = {
 };
 const caseInput = {
   skill: "alpha",
-  files: [{ path: "SKILL.md", text: SKILL_MD }],
+  // The lines of SKILL.md the session's read held, each with its number in the file.
+  files: [
+    {
+      path: "SKILL.md",
+      lines: [
+        { number: 6, text: "# Alpha" },
+        { number: 8, text: "1. Read `references/x.md` before the first step." },
+        { number: 9, text: "2. Write each step's result on one line." },
+      ],
+    },
+  ],
   messages: [
     {
       index: 2,
@@ -706,6 +716,28 @@ test("a reader makes one call per batch, and asks again while the answer is refu
     runReader("same-job", { skills: [skillsInput.skills[0], skillsInput.skills[0]] }, none.gateway)
   ).rejects.toThrow("gives the id s1 twice");
   expect(none.bodies).toHaveLength(0);
+});
+
+test("the case reader's request shows only the offered lines, each with its number in the file, and says a line not shown cannot be a case's line; its input refuses a file with no line and a blank line", () => {
+  const [user] = UserMessage.parse(readerBody("case", caseInput).messages);
+  const text = user.content.map((part) => part.text).join("\n\n");
+  expect(text).toStartWith('<skill name="alpha">\nOnly the lines a case may name are shown');
+  expect(text).toContain("A line not shown cannot be a case's line");
+  expect(text).toContain(
+    '<file path="SKILL.md">\n6: # Alpha\n8: 1. Read `references/x.md` before the first step.\n9: 2. Write each step\'s result on one line.\n</file>\n</skill>'
+  );
+  expect(text).not.toContain("3. Run the tests where needed.");
+  const file = caseInput.files[0];
+  expect(READERS.case.input.safeParse({ ...caseInput, files: [] }).success).toBe(false);
+  expect(
+    READERS.case.input.safeParse({ ...caseInput, files: [{ ...file, lines: [] }] }).success
+  ).toBe(false);
+  expect(
+    READERS.case.input.safeParse({
+      ...caseInput,
+      files: [{ ...file, lines: [{ number: 7, text: " " }] }],
+    }).success
+  ).toBe(false);
 });
 
 test("the audit's request holds the line, the messages before the step and the step, and its input refuses a criterion; the restatement check's holds the line and its window", () => {

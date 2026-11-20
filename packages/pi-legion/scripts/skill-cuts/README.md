@@ -32,7 +32,11 @@ skill's cases (`cases.ts`), one JSON object per line.
   `violatingStep`, a step that breaks the line, must fail; "I will continue." must fail; a case
   that fails any is dropped, naming the control), then a capture of each arm (old, new, none), 10
   replays of each, each reply judged blind with all arms shuffled, and runs made again for the runs
-  with no verdict, at most 5 more per arm. It stops at 6 informative or 15 screened cases.
+  with no verdict, at most 5 more per arm. It stops at 6 informative or 15 screened cases. A case
+  whose model the gateway does not serve (none of the configuration's `servedModels` has its id,
+  the text after its last `/`) is dropped before any call as `model-not-served`; a case on a
+  served model runs as that served `provider/model`, so an Anthropic model behind another
+  gateway prefix runs as `anthropic/<id>`.
 - `confirm`: 40 fresh runs of old and new for each flagged case.
 - `control`: 40 runs of `minus` (old without the case's line, or without `--planted-line`) and 40
   fresh runs of old, on the skill's control case.
@@ -52,6 +56,25 @@ Pi and needs `--models`: `--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PAT
 absolute path; a command given `--models` when none of them names one is refused (exit 2), and
 `load` reads Oh My Pi the same way. The run stops above 1 GiB of peak resident memory, and no new
 model call starts once the replies cost `--budget-usd` at list price.
+
+The gateway serves two routes, and each case runs on its own model's: the Anthropic Messages
+route (`/v1/messages`, `anthropic/<id>`) and the OpenAI Responses route (`/v1/responses`,
+`openai/<id>`, today `openai/gpt-6.1-sol`). `--models` names both providers as the pod's
+`models.yml` does (`openai` is Oh My Pi's built-in provider at the gateway's `/v1`, with its
+models under `modelOverrides`); Oh My Pi 18.18.6 sends an OpenAI model's turn as a Responses body
+(its system prompt as `instructions`, its history as `input` items; testdata F8), and the capture
+keeps it as it does a Messages body. Hints are written by the hint model, which must be on the
+Messages route: an OpenAI case needs `--hint-model anthropic/<id>`. `gateway.ts` sends each body
+to its API's route (the key as `x-api-key`, or as `authorization: Bearer` on the Responses route),
+reads the stream whole, and prices each reply at its model's list price (`PRICES`, from
+Anthropic's and OpenAI's pricing pages; gpt-6.1-sol at $2 input, $10 output, $0.10 a cache read
+and $2.50 a 30-minute cache write per million tokens, more above 272,000 input tokens), counting a
+Responses reply's cached input and reasoning tokens too. A replay answers a reply whose every tool
+call reads a skill file from the arm, in the body's API (`function_call_output` items on the
+Responses route), at most three rounds. A Messages body gets a cache breakpoint on its last
+message; a Responses body gets none, since that route caches the shared prefix by itself. The
+judge stays `claude-opus-5-5` on the Messages route and reads a Responses reply's text and tool
+calls as it reads a Messages reply's, so its request names no model, route or arm.
 
 ### `read`
 
@@ -86,7 +109,7 @@ bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> 
 
 Prints `count.sql` filled for one store and one UTC day (or hour), the same as
 `bun scripts/skill-cuts/countsql.ts`. `--query models` prints `models.sql` instead: each session
-file's model, read from the file's first part only, as one row per file hash.
+file's model, read from the first 256 KiB of the file, as one row per file hash.
 
 ### `load`
 
@@ -113,12 +136,14 @@ directory's name change in a scratch copy, and nothing else that names the skill
 Per task, the host's first request is captured once against a recorder (Oh My Pi through
 `capture.ts`, which lists the skill under the hint Oh My Pi has a model write; Claude Code with a
 scratch `CLAUDE_CONFIG_DIR` that installs the skills as local plugins), then sent `--runs` times.
-A run loads the skill when the first assistant message reads it (Oh My Pi: `read` of
-`skill://<name>` or its `SKILL.md`; Claude Code: `Skill` naming `<name>` or `<plugin>:<name>`, or
-`Read` of its `SKILL.md`), and never goes past that message. It prints each task's loads and
-verdict and the skill's verdict (`score.ts`), and writes `<out>/runs/<task>.jsonl` (one line per
-run), `<out>/captures/` and `<out>/summary.json`. A task whose run file is complete is skipped, so
-a run started again goes on from what was saved.
+An `openai/<id>` model runs on Oh My Pi only, on the Responses route, with an Anthropic
+`--hint-model`. A run loads the skill when the first assistant message reads it (Oh My Pi: `read`
+of `skill://<name>` or its `SKILL.md`, a `tool_use` block or a Responses `function_call` item;
+Claude Code: `Skill` naming `<name>` or `<plugin>:<name>`, or `Read` of its `SKILL.md`), and never
+goes past that message. It prints each task's loads and verdict and the skill's verdict
+(`score.ts`), and writes `<out>/runs/<task>.jsonl` (one line per run), `<out>/captures/` and
+`<out>/summary.json`. A task whose run file is complete is skipped, so a run started again goes on
+from what was saved.
 
 ### `copies`
 
@@ -163,7 +188,12 @@ bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file 
 the `case` reader propose the step the skill governs, reading the session from the skill's read
 on in windows of at most 40 messages, at most 6 windows a session, and writes the cases
 `loadCases` reads, each with the evidence for its rebuilt context; `build-tasks` writes the need
-and near-miss tasks of a load test from the first requests of real sessions. A Legion session's
+and near-miss tasks of a load test from the first requests of real sessions. A session is a
+candidate only on a model the gateway serves (`servedModels`: its id after the last `/`, so a
+`claude-*` model behind any gateway's prefix counts); a session on any other model is counted as
+`model-not-served` and never run on another model. The `case` reader is offered only the base
+text's lines that the session's own read of that file held (a session whose reads hold none is
+`no-common-line`, before any reader call). A Legion session's
 role comes from the daemon's first message to it, its catch-up notice, or the claim it holds
 beside its workspace; a subagent's session (`subagent:<agent>`) keeps the system prompt and tools
 its `session_init` line recorded, and its capture sends that prompt with only the skill's
@@ -184,9 +214,9 @@ list price (exit 3). The case file holds real session text, so it stays outside 
 
 Each model request of `behaviour`, `read`, `control` and `load` adds one JSON line to the request
 log (`<out>/requests.jsonl` for `behaviour` and `load`, `<out file>.requests.jsonl` otherwise):
-what the call was for, the model, the thinking type and budget, `max_tokens`, the temperature, the
-effort, and the reply's usage and dollars at list price. It never holds the key or a message's
-text.
+what the call was for, the model, the thinking type and budget, `max_tokens` (a Responses body's
+`max_output_tokens`), the temperature, the effort (a Responses body's `reasoning.effort`), and the
+reply's usage and dollars at list price. It never holds the key or a message's text.
 
 ## Exit status
 

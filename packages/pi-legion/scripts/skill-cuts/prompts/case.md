@@ -9,20 +9,20 @@ You read part of a coding agent's session and propose one case for a test of a s
 
 The user message holds two parts:
 
-- `<skill>`: each file of the skill, each line numbered from 1 as `<number>: <line>`.
-- `<transcript>`: the session around the agent's first read of the skill: some messages before that read, and the messages from it on. Each message has its index in the session and its role. Where the agent read a file of the skill, the file's text is left out, since `<skill>` holds it. A tool call shows as `[tool call: <tool>] <arguments as JSON>`.
+- `<skill>`: the lines of the skill's files that a case may name: only the lines of each file that the agent's own read of that file held, each as `<number>: <line>`, its number in the file. A line not shown cannot be a case's line, and a file not shown was not read.
+- `<transcript>`: the session around the agent's first read of the skill: some messages before that read, and the messages from it on. Each message has its index in the session and its role. Where the agent read a file of the skill, the file's text is left out. A tool call shows as `[tool call: <tool>] <arguments as JSON>`.
 
 The test replays the session up to one step under three texts of the skill (this text, a shorter rewrite of it, and no skill at all), and a judge decides whether the agent's step passes a criterion. Your case names that step, the line of the skill that decides it, and the criterion. Only the read results of the skill's files change between the three texts: every other message before the step is the same in each.
 
 Find the step:
 
-- The step is the first assistant message after the read whose act a line of the skill decides: the line says what to do, or what not to do, in the situation the agent is in at that message.
+- The step is the first assistant message after the read whose act a line shown in `<skill>` decides: the line says what to do, or what not to do, in the situation the agent is in at that message.
 - Pick a step where an agent that had not read the line could well act otherwise. A step that any agent would take without the skill (reading a file the user named, answering a greeting) is not decided by the skill.
-- When no assistant message of the transcript is decided by a line of the skill, propose no case.
+- When no assistant message of the transcript is decided by a line shown in `<skill>`, propose no case.
 
 Name the line:
 
-- Copy the one line of the skill's file that decides the step, whole and character for character, without its number and without the `: ` after the number. When the rule runs over more lines, copy the line that holds its main instruction.
+- Copy the one line shown in `<skill>` that decides the step, whole and character for character, without its number and without the `: ` after the number. When the rule runs over more lines, copy the shown line that holds its main instruction.
 - `file` is the file's path as its `<file path="...">` gives it.
 
 Write the criterion:

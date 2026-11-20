@@ -152,6 +152,20 @@ const SESSIONS: Record<
     store: "store_a",
     change: (lines) => setText(lines, 2, (text) => text.replace(`${LINE}\n`, "")),
   },
+  // The x.md read reads another path, so the session reads only SKILL.md of the skill.
+  "skill-md-only": {
+    store: "store_a",
+    change: (lines) => setReadTarget(lines, 3, "/tmp/notes.md"),
+  },
+  // The skill's text changed after the session read it: no line of its reads is in the base.
+  "no-common": {
+    store: "store_a",
+    change: (lines) => {
+      for (const index of [2, 4]) {
+        setText(lines, index, (text) => `${text.split("\n")[0]}\nAn older text of the file.`);
+      }
+    },
+  },
   compacted: {
     store: "store_a",
     change: (lines) => {
@@ -896,6 +910,7 @@ describe("build-cases over every made-up session", () => {
         "third-window",
         "openai",
         "gateway-model",
+        "skill-md-only",
       ]
         .map((name) => pathHash(sessionPath(name)))
         .sort()
@@ -1168,6 +1183,65 @@ describe("build-cases over every made-up session", () => {
     expect(c?.messages[0]?.content?.[0]?.text).toContain(`Bearer ${SECRET_REMOVED}`);
   });
 
+  test("the case reader is offered only the base text's lines the session's own reads hold, each with its number in the file, and no file the session did not read", () => {
+    /** The `<skill>` part of the case reader's first request for session `name`. */
+    const offered = (name: string) => {
+      const request = requests.find(
+        (each) => each.body.includes("propose one case") && each.body.includes(`(case ${name})`)
+      );
+      const body = JSON.parse(request?.body ?? "{}") as {
+        messages?: { content?: { text?: string }[] }[];
+      };
+      const text = (body.messages?.[0]?.content ?? []).map((part) => part.text ?? "").join("\n");
+      return /<skill name="alpha">[\s\S]*?<\/skill>/.exec(text)?.[0] ?? "";
+    };
+    const base = {
+      "SKILL.md": readFileSync(path.join(old, "SKILL.md"), "utf8").split("\n"),
+      "references/x.md": readFileSync(path.join(old, "references", "x.md"), "utf8").split("\n"),
+    };
+    /** Each `<number>: <line>` of a `<skill>` part's files, by file. */
+    const shownLines = (skill: string) =>
+      [...skill.matchAll(/<file path="([^"]+)">\n([\s\S]*?)\n<\/file>/g)].map((match) => ({
+        file: match[1] ?? "",
+        lines: (match[2] ?? "").split("\n").map((line) => {
+          const [, number, text] = /^(\d+): (.*)$/.exec(line) ?? [];
+          return { number: Number(number), text };
+        }),
+      }));
+    const lineNumber = base["SKILL.md"].indexOf(LINE) + 1;
+
+    const good = offered("good");
+    expect(good).toContain(`\n${lineNumber}: ${LINE}\n`);
+    expect(shownLines(good).map((each) => each.file)).toEqual(["SKILL.md", "references/x.md"]);
+    // Every line shown is the base file's line at its number.
+    for (const name of ["good", "read-lacks-line", "skill-md-only"]) {
+      for (const { file, lines } of shownLines(offered(name))) {
+        for (const { number, text } of lines) {
+          expect(base[file as keyof typeof base][number - 1]).toBe(text);
+        }
+      }
+    }
+    // The read lacks the line, so it is not offered; the reader's proposal of it still drops.
+    const lacking = offered("read-lacks-line");
+    expect(lacking).not.toBe("");
+    expect(lacking).not.toContain(LINE);
+    expect(shownLines(offered("skill-md-only")).map((each) => each.file)).toEqual(["SKILL.md"]);
+  });
+
+  test("a session whose reads hold no line of the base text is dropped as no-common-line, with no reader call", () => {
+    const record = summaryOf(out).sessions.find(
+      (each) => each.hash === fileHash(sessionPath("no-common"))
+    );
+    expect(record).toMatchObject({
+      reason: "no-common-line",
+      detail:
+        "the session's successful reads of SKILL.md, references/x.md hold no whole line of the base text",
+      readerUsd: 0,
+    });
+    expect(record?.windows).toBeUndefined();
+    expect(requests.some((each) => each.body.includes("(case no-common)"))).toBe(false);
+  });
+
   test("a session whose model id the gateway serves is kept on its own model, whatever its prefix, and one on a model no route serves is dropped, before any reader when none of its models is served", () => {
     expect(byName("openai")?.model).toBe("openai/gpt-6.1-sol");
     expect(byName("gateway-model")?.model).toBe("ossv-gateway/claude-opus-5-5");
@@ -1222,6 +1296,7 @@ describe("build-cases over every made-up session", () => {
       "read-by-path": 1,
       "no-read": 1,
       "no-step": 1,
+      "no-common-line": 1,
       "not-cut-copy": 1,
       "no-role": 1,
       "bad-session-init": 1,
@@ -1230,7 +1305,7 @@ describe("build-cases over every made-up session", () => {
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
     expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length + 1);
-    expect(summary.casesBuilt).toBe(11);
+    expect(summary.casesBuilt).toBe(12);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");
@@ -1244,6 +1319,8 @@ describe("build-cases over every made-up session", () => {
     expect(reasonOf("bad-init")).toBe("bad-session-init");
     expect(reasonOf("not-served")).toBe("model-not-served");
     expect(reasonOf("switched-model")).toBe("model-not-served");
+    expect(reasonOf("read-lacks-line")).toBe("line-not-in-read");
+    expect(reasonOf("no-common")).toBe("no-common-line");
     // Every reader call is counted: one case reader call a window of each session the reader
     // reached, one restatement call a window of each case checked (READER_TRIES for the window
     // whose answer was refused, none for the case with too many windows, up to the window of a

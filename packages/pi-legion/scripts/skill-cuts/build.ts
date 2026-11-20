@@ -32,19 +32,25 @@
  * 3. The first successful read of a file of the skill (`read` of a `skill://<skill>` URL, as
  *    cases.ts's `skillReadFile` reads one) is found, and the copy its `[Skill file: <path>]` line
  *    names must map, by the prefix table of `--copies`, to the cut repository's copy of the skill.
- * 4. The case reader (`skill-cuts read --prompt case`) reads the skill's base text (`--old`) and the
- *    session's messages window by window, one call a window, from the read's call on: each window
- *    at most READER_MESSAGES messages and READER_CHARS characters, and before it, nearest first,
- *    at most READER_EARLIER_MESSAGES messages and READER_EARLIER_CHARS characters of those after
- *    the last compaction or context reset before the window. The next window starts after the last
- *    message of the one before, until the reader proposes a step, READER_WINDOWS windows are read
- *    (at most READER_WINDOWS × READER_MESSAGES messages after the read), or the messages end. No
- *    window reads past the first compaction or context reset after the skill's read: a step after
- *    it would follow a compaction that follows the read, which drops it, so a session whose
- *    windows reach it with no step is dropped for that (`read-before-compaction`). Each
- *    message is cut to MESSAGE_CHARS (its start and its end kept), and each read result of the
- *    skill's files is left out with a note. The reader proposes the first step the skill governs,
- *    its message index, the line it exercises, the criterion, a violating step (a plausible next
+ * 4. The case reader (`skill-cuts read --prompt case`) is offered only the lines of the skill's base
+ *    text (`--old`) that a case may name: those of each file that the session's own successful
+ *    reads of that file hold whole (the text after its `[Skill file: …]` line, each line trimmed,
+ *    among the messages the reader reads), each with its number in the base file. A file the
+ *    session did not read is not offered, and a session whose reads hold no line of the base text
+ *    is dropped before any reader call (`no-common-line`), since the skill's text may have changed
+ *    after the session read it. It reads them and the session's messages window by window, one
+ *    call a window, from the read's call on: each window at most READER_MESSAGES messages and
+ *    READER_CHARS characters, and before it, nearest first, at most READER_EARLIER_MESSAGES
+ *    messages and READER_EARLIER_CHARS characters of those after the last compaction or context
+ *    reset before the window. The next window starts after the last message of the one before,
+ *    until the reader proposes a step, READER_WINDOWS windows are read (at most READER_WINDOWS ×
+ *    READER_MESSAGES messages after the read), or the messages end. No window reads past the
+ *    first compaction or context reset after the skill's read: a step after it would follow a
+ *    compaction that follows the read, which drops it, so a session whose windows reach it with no
+ *    step is dropped for that (`read-before-compaction`). Each message is cut to MESSAGE_CHARS
+ *    (its start and its end kept), and each read result of the skill's files is left out with a
+ *    note. The reader proposes the first step the skill governs, its message index, the line it
+ *    exercises (one of those offered), the criterion, a violating step (a plausible next
  *    step that breaks the line and otherwise looks valid), and each message before the step that
  *    states the line's instruction in any wording; or no step. The session's record in the summary
  *    says how many windows the reader read (`windows`).
@@ -84,11 +90,12 @@
  * no file of its hash; the pull fails or returns nothing; a line is not an entry; it has no
  * header; no read of a skill file succeeded; the first read is not the cut repository's copy; a
  * subagent's `session_init` line is not whole; no form below names a Legion session's role; the
- * reader's every reply is refused, its call fails, or it finds no step in the windows it reads (or
- * a step at or before the read); the line is not a whole line of the base text, or no successful
- * read result of its file before the step holds it; a skill read precedes a compaction (or a
- * context reset) that precedes the step, or the compaction is of a kind this file does not rebuild
- * (one that keeps data for the provider, or keeps no entry of the branch); an assistant message
+ * session's reads of the skill hold no whole line of the base text; the reader's every reply is
+ * refused, its call fails, or it finds no step in the windows it reads (or a step at or before
+ * the read); the line is not a whole line of the base text, or no successful read result of its
+ * file before the step holds it; a skill read precedes a compaction (or a context reset) that
+ * precedes the step, or the compaction is of a kind this file does not rebuild (one that keeps
+ * data for the provider, or keeps no entry of the branch); an assistant message
  * before the step quotes the line (less a leading list, heading or quote mark); the case reader or
  * the restatement check finds a message before the step that states the line's instruction in
  * other words, or the check cannot read them all; the audit finds the real step breaks the line,
@@ -270,6 +277,8 @@ export const DROP_REASONS = {
   "reader-failed": "the case reader's every reply was refused",
   "reader-error": "the case reader's call failed",
   "no-step": "the case reader found no step the skill governs",
+  "no-common-line":
+    "the session's own successful reads of the skill's files hold no whole line of the base text, so the case reader has no line to offer",
   "step-not-after-read": "the case reader's step is at or before the skill's read",
   "line-not-in-base": "the proposed line is not a whole line of the base text",
   "line-not-in-read": "no successful read result of the line's file before the step holds the line",
@@ -619,6 +628,31 @@ function skillReads(messages: readonly SessionMessage[], skill: string): SkillRe
     });
   }
   return reads;
+}
+
+/** The lines of each base file in `files` that a successful read of it in `reads` holds whole
+ *  (its text after the `[Skill file: …]` line; each line trimmed, as the builder's check of a
+ *  proposed line compares them; blank lines aside), each with its number in the base file. A file
+ *  no read holds a line of is not offered. */
+function offeredFiles(
+  files: readonly { readonly path: string; readonly text: string }[],
+  reads: readonly SkillRead[],
+  messages: readonly SessionMessage[]
+): CaseInput["files"] {
+  return files.flatMap((file) => {
+    const held = new Set(
+      reads
+        .filter((read) => read.ok && read.file === file.path)
+        .flatMap((read) =>
+          textLines(stripSkillHeader(messages[read.index]?.content?.[0]?.text ?? ""))
+        )
+        .map((line) => line.trim())
+    );
+    const lines = textLines(file.text).flatMap((text, index) =>
+      text.trim() !== "" && held.has(text.trim()) ? [{ number: index + 1, text }] : []
+    );
+    return lines.length === 0 ? [] : [{ path: file.path, lines }];
+  });
 }
 
 /** Why a read call of `messages` reads a file of the skill in a way arms.ts does not rebuild, or
@@ -1621,7 +1655,8 @@ interface CaseRun {
   readonly cut: { readonly id: string; readonly repo: string };
   readonly skill: string;
   readonly old: string;
-  readonly files: CaseInput["files"];
+  /** The skill's base files (`--old`). */
+  readonly files: readonly { readonly path: string; readonly text: string }[];
   readonly copies: Copies;
   readonly github: GithubReads;
   readonly gateway: Gateway;
@@ -1758,12 +1793,25 @@ async function caseOf(
     (entry, at) => at > firstAt && (entry.type === "compaction" || entry.type === "reset_boundary")
   );
   const readable = t.items.filter((item) => boundaryAfterRead < 0 || item.at < boundaryAfterRead);
+
+  // The lines the case reader may name: those of the base text the session's own successful
+  // reads of the skill's files held, among the messages it reads. A session with none gives no
+  // case, and no reader reads it.
+  const readsInReach = reads.filter((read) => read.ok && read.index < readable.length);
+  const offered = offeredFiles(run.files, readsInReach, allMessages);
+  if (offered.length === 0) {
+    const read = [...new Set(readsInReach.map((each) => each.file))];
+    return drop(
+      "no-common-line",
+      `the session's successful reads of ${read.join(", ")} hold no whole line of the base text`
+    );
+  }
   const hidden = skillReadResults(allMessages, run.skill);
   const shown = (index: number, message: SessionMessage): CaseInput["messages"][number] => ({
     index,
     role: message.role ?? "message",
     text: hidden.has(index)
-      ? "[tool result: read]\n[the text of a file of the skill, left out: <skill> holds it]"
+      ? "[tool result: read]\n[the text of a file of the skill, left out: <skill> shows the lines of it a case may name]"
       : cut(
           typeof message.summary === "string"
             ? `${renderMessage(message)}\n${message.summary}`
@@ -1815,7 +1863,7 @@ async function caseOf(
     try {
       const result = await runReader(
         "case",
-        { skill: run.skill, files: run.files, messages: [...earlier, ...windowMessages] },
+        { skill: run.skill, files: offered, messages: [...earlier, ...windowMessages] },
         run.gateway
       );
       record.readerUsd += usdOf(result.spent);

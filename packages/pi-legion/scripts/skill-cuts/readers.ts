@@ -19,12 +19,14 @@
  * input does not hold.
  *
  * The readers, each with the input it reads and the answer it gives:
- * - `case` (R2): a skill's base text and the session around the skill's read; the first step the
- *   skill governs, its message index, the line it exercises, a criterion stating pass and fail, a
- *   violating step (a plausible next step that breaks the line and otherwise looks valid, which
- *   the judge must fail), and each message before the step that states the line's instruction in
- *   any wording, with words quoted from it; or no step. The case builder drops a proposal whose
- *   line is not a whole line of the base text, or that names a restatement.
+ * - `case` (R2): the lines of a skill's base text a case may name (those the session's own read
+ *   of each file held, each with its number in the file; a file the session did not read is not
+ *   shown) and the session around the skill's read; the first step the skill governs, its message
+ *   index, the line it exercises, a criterion stating pass and fail, a violating step (a plausible
+ *   next step that breaks the line and otherwise looks valid, which the judge must fail), and each
+ *   message before the step that states the line's instruction in any wording, with words quoted
+ *   from it; or no step. The case builder drops a proposal whose line is not a whole line of the
+ *   base text, or of the session's read of its file, or that names a restatement.
  * - `restate` (R2): a case's line and one window of the messages before its step (a long message
  *   in parts); each message that states the line's instruction in any wording, with words quoted
  *   from it. The case builder reads every message before the step this way, window by window, and
@@ -333,9 +335,16 @@ const TranscriptMessage = z.strictObject({
   role: z.string().min(1),
   text: z.string(),
 });
+/** A file of the skill as the case reader is offered it: its path, and only the lines of it a case
+ *  may name (the base text's lines the session's own read of the file held), each with its number
+ *  in the file. */
+const OfferedFile = z.strictObject({
+  path: z.string().min(1),
+  lines: z.array(z.strictObject({ number: z.int().positive(), text: OneLine })).min(1),
+});
 export const CaseInput = z.strictObject({
   skill: z.string().min(1),
-  files: z.array(File).min(1),
+  files: z.array(OfferedFile).min(1),
   messages: z.array(TranscriptMessage).min(1),
 });
 export type CaseInput = z.infer<typeof CaseInput>;
@@ -380,6 +389,10 @@ function looseText(text: string): string {
     .toLowerCase();
 }
 
+/** What the case reader's `<skill>` says of the lines it shows. */
+const OFFERED_NOTE =
+  "Only the lines a case may name are shown: the lines of each file that the agent's own read of that file held, each with its number in the file. A line not shown cannot be a case's line, and a file not shown was not read.";
+
 const caseReader: Reader<CaseInput, CaseAnswer> = {
   input: CaseInput,
   answer: (input) =>
@@ -397,7 +410,7 @@ const caseReader: Reader<CaseInput, CaseAnswer> = {
         );
       }
       if (!input.files.some((file) => file.path === answer.line.file)) {
-        refuse(ctx, ["line", "file"], "is no file of the skill");
+        refuse(ctx, ["line", "file"], "is no file of the skill shown");
       }
       // A restatement is a message before the step that holds the words quoted from it.
       for (const [index, { messageIndex, quote }] of answer.restatements.entries()) {
@@ -414,7 +427,12 @@ const caseReader: Reader<CaseInput, CaseAnswer> = {
     }),
   render: (input) =>
     [
-      `<skill name="${input.skill}">\n${fileBlocks(input.files)}\n</skill>`,
+      `<skill name="${input.skill}">\n${OFFERED_NOTE}\n\n${input.files
+        .map(
+          (file) =>
+            `<file path="${file.path}">\n${file.lines.map((line) => `${line.number}: ${line.text}`).join("\n")}\n</file>`
+        )
+        .join("\n\n")}\n</skill>`,
       `<transcript>\n${input.messages
         .map(
           (message) =>
