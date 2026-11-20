@@ -343,13 +343,10 @@ func childReason(parentStatus string) string {
 }
 
 // parentStatusConflict is a write that R24 refuses, with each issue that holds the rule against
-// it. writeHandlerError answers it 409 PARENT_STATUS_CONFLICT.
+// it. writeHandlerError answers it 409 PARENT_STATUS_CONFLICT. The status-change route answers it
+// with the entries of the steps that committed before it (statusChangeConflict).
 type parentStatusConflict struct {
 	issues []parentStatusConflictIssue
-	// changed is what a call of several steps answers for the steps that it committed before
-	// the step that is refused. It is nil for the PATCH and the create, which write one issue,
-	// and their body leaves it out.
-	changed any
 }
 
 // parentStatusConflictIssue is an issue that holds R24 against a write: the issue at the other
@@ -369,16 +366,16 @@ type parentStatusConflictIssue struct {
 
 // parentStatusConflictBody is the 409 PARENT_STATUS_CONFLICT body.
 type parentStatusConflictBody struct {
-	Code    string                      `json:"code"`
-	Error   string                      `json:"error"`
-	Issues  []parentStatusConflictIssue `json:"issues"`
-	Changed any                         `json:"changed,omitempty"`
+	Code   string                      `json:"code"`
+	Error  string                      `json:"error"`
+	Issues []parentStatusConflictIssue `json:"issues"`
 }
 
 // Error names each issue that holds the rule with its status, so a client that reads no issues
-// still shows them.
+// still shows them. Each issue is a sentence of its own.
 func (conflict *parentStatusConflict) Error() string {
-	sentences := make([]string, 0, len(conflict.issues))
+	sentences := make([]string, 0, len(conflict.issues)+2)
+	sentences = append(sentences, "this change would leave a parent's status out of line with its children's.")
 	for _, issue := range conflict.issues {
 		of := issue.of
 		if of == "" {
@@ -388,18 +385,17 @@ func (conflict *parentStatusConflict) Error() string {
 		if issue.Relation == relationParent {
 			kin = "the parent of"
 		}
-		sentences = append(sentences, fmt.Sprintf("%s (%s) is %s %s and %s", issue.Key, issue.Status, kin, of, issue.reason))
+		sentences = append(sentences, fmt.Sprintf("%s (%s) is %s %s and %s.", issue.Key, issue.Status, kin, of, issue.reason))
 	}
-	return "this change would leave a parent's status out of line with its children's: " + strings.Join(sentences, "; ") +
-		". A parent is done only when each child is done, and while a child is in work, its parent is in work."
+	sentences = append(sentences, "A parent is done only when each child is done, and while a child is in work, its parent is in work.")
+	return strings.Join(sentences, " ")
 }
 
 // body is the conflict as writeHandlerError answers it.
 func (conflict *parentStatusConflict) body() parentStatusConflictBody {
 	return parentStatusConflictBody{
-		Code:    "PARENT_STATUS_CONFLICT",
-		Error:   conflict.Error(),
-		Issues:  conflict.issues,
-		Changed: conflict.changed,
+		Code:   "PARENT_STATUS_CONFLICT",
+		Error:  conflict.Error(),
+		Issues: conflict.issues,
 	}
 }

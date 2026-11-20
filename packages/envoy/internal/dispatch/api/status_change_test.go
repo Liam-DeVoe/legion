@@ -1,0 +1,1322 @@
+// status_change_test.go holds the tests of POST /api/v1/issues/{key}/status-change: the three
+// options and the dry run, who may close the issues under an issue with it, the order of its
+// writes, its answer, its refusals, and its sequence fence (R20).
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// statusChangeRule is the rule as each comment of an option states it.
+const statusChangeRule = "Dispatch keeps a parent's status in line with its children's: a parent is done only when each " +
+	"child is done, and while a child is in work its parent is in work too."
+
+// browserSignInRefusal is the message of the 403 BROWSER_SIGN_IN_REQUIRED.
+const browserSignInRefusal = "only a person signed in at a browser can close the open issues under an issue with it " +
+	"(include_children with done); this request presents a token"
+
+// statusChangeRig is ruleRig with the server Register mounted, whose step hook a test sets
+// (statusChangeAfterStep).
+type statusChangeRig struct {
+	ruleRig
+	served *server
+}
+
+func newStatusChangeRig(t *testing.T, on bool) statusChangeRig {
+	t.Helper()
+	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{parentStatusRule: on})
+	createProjects(t, handler, ruleProject)
+	return statusChangeRig{ruleRig: ruleRig{handler: handler, database: database, deps: deps}, served: served}
+}
+
+// afterStep sets the server's step hook to hook for the rest of the test.
+func (rig statusChangeRig) afterStep(t *testing.T, hook func(ctx context.Context, step int)) {
+	rig.served.statusChangeAfterStep = hook
+	t.Cleanup(func() { rig.served.statusChangeAfterStep = nil })
+}
+
+// quiet waits until no write the server left running and no document settlement is owed, so the
+// next fingerprint of the database reads only what the next request writes.
+func (rig statusChangeRig) quiet(t *testing.T) map[string]string {
+	t.Helper()
+	awaitNoSettlementOwed(t, rig.database)
+	awaitBackgroundWrites(t, rig.served)
+	return databaseFingerprint(t, rig.database)
+}
+
+// statusChangeOf is the status change of key with body.
+func statusChangeOf(key string, body map[string]any) ruleWrite {
+	return ruleWrite{http.MethodPost, "/api/v1/issues/" + key + "/status-change", body}
+}
+
+// lastSeq reads the last_seq of key as it is stored.
+func (rig ruleRig) lastSeq(t *testing.T, key string) int {
+	t.Helper()
+	var seq int
+	if err := rig.database.Pool.QueryRow(context.Background(), `select last_seq from issues where key = $1`, key).Scan(&seq); err != nil {
+		t.Fatalf("read the last_seq of %s: %v", key, err)
+	}
+	return seq
+}
+
+// wantChange is an entry of changed, or the answer's issue, as a test expects it: the key, the
+// status and the parent after the call ("" for no parent), the issue's last_seq before its step,
+// and the last_seq of the entry's issue after it. last is -1 for a dry run's entry, which holds
+// no issue.
+type wantChange struct {
+	key, status, parent string
+	previous, last      int
+}
+
+// issue is the issue of the entry as projectedStatusChange keeps it.
+func (change wantChange) issue() map[string]any {
+	return map[string]any{"key": change.key, "status": change.status, "parent": optionalKey(change.parent), "last_seq": float64(change.last)}
+}
+
+// entry is the entry as projectedStatusChange keeps it.
+func (change wantChange) entry() map[string]any {
+	entry := map[string]any{
+		"key": change.key, "status": change.status, "parent": optionalKey(change.parent), "previous_last_seq": float64(change.previous),
+	}
+	if change.last >= 0 {
+		entry["issue"] = change.issue()
+	}
+	return entry
+}
+
+// optionalKey is key as JSON decodes it: nil for "".
+func optionalKey(key string) any {
+	if key == "" {
+		return nil
+	}
+	return key
+}
+
+// entries is each change as an entry of changed.
+func entries(changed []wantChange) []any {
+	listed := make([]any, 0, len(changed))
+	for _, change := range changed {
+		listed = append(listed, change.entry())
+	}
+	return listed
+}
+
+// wantAnswer is the 200 answer of a call as projectedStatusChange keeps it.
+func wantAnswer(named wantChange, changed ...wantChange) map[string]any {
+	return map[string]any{"issue": named.issue(), "changed": entries(changed)}
+}
+
+// wantRefusal is a refusal's whole body: its code, its message and the committed steps' entries.
+func wantRefusal(code, message string, changed ...wantChange) map[string]any {
+	return map[string]any{"code": code, "error": message, "changed": entries(changed)}
+}
+
+// wantConflict is a 409 PARENT_STATUS_CONFLICT's whole body: the rule's refusal that names holders
+// (ruleRefusalBody), and the committed steps' entries.
+func wantConflict(holders []ruleHolder, changed ...wantChange) map[string]any {
+	body := ruleRefusalBody(holders)
+	body["changed"] = entries(changed)
+	return body
+}
+
+// projectedStatusChange is response's whole body as JSON decodes it, with each issue in it, the
+// answer's and each entry's, held to its key, status, parent and last_seq: every other member of
+// the body is compared as it stands.
+func projectedStatusChange(t *testing.T, response *httptest.ResponseRecorder) any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the answer %s: %v", response.Body.String(), err)
+	}
+	project := func(value any) any {
+		issue, ok := value.(map[string]any)
+		if !ok {
+			return value
+		}
+		return map[string]any{"key": issue["key"], "status": issue["status"], "parent": issue["parent"], "last_seq": issue["last_seq"]}
+	}
+	if issue, ok := body["issue"]; ok {
+		body["issue"] = project(issue)
+	}
+	if changed, ok := body["changed"].([]any); ok {
+		for _, value := range changed {
+			if entry, ok := value.(map[string]any); ok {
+				if issue, ok := entry["issue"]; ok {
+					entry["issue"] = project(issue)
+				}
+			}
+		}
+	}
+	return body
+}
+
+// requireStatusChange fails t unless response has status and its whole body, each issue in it held
+// to its key, status, parent and last_seq, is want.
+func requireStatusChange(t *testing.T, request string, response *httptest.ResponseRecorder, status int, want map[string]any) {
+	t.Helper()
+	if got := projectedStatusChange(t, response); response.Code != status || !reflect.DeepEqual(got, any(want)) {
+		gotJSON, _ := json.Marshal(got)
+		wantJSON, _ := json.Marshal(want)
+		t.Fatalf("%s: status=%d body=%s\nwant %d %s", request, response.Code, gotJSON, status, wantJSON)
+	}
+}
+
+// storedComments is every comment on keys, oldest first, each as "<issue> <author kind>:<author
+// id>: <body>".
+func storedComments(t *testing.T, database *store.Store, keys ...string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select issue_key || ' ' || (author ->> 'kind') || ':' || (author ->> 'id') || ': ' || body
+		from comments where issue_key = any($1) order by created_at, id
+	`, keys)
+	if err != nil {
+		t.Fatalf("read the comments: %v", err)
+	}
+	comments, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the comments: %v", err)
+	}
+	return comments
+}
+
+// optionComment is a comment of Dispatch's system actor on key, as storedComments lists it.
+func optionComment(key, body string) string {
+	return key + " " + parentStatusRuleActor.Kind + ":" + parentStatusRuleActor.ID + ": " + body + " " + statusChangeRule
+}
+
+// requireComments fails t unless the comments on keys are want, in their order.
+func requireComments(t *testing.T, database *store.Store, keys []string, want ...string) {
+	t.Helper()
+	if want == nil {
+		want = []string{}
+	}
+	if got := storedComments(t, database, keys...); !slices.Equal(got, want) {
+		t.Errorf("the comments on %v are\n%s\nwant\n%s", keys, strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// requireIssue fails t unless key is stored with status under parent ("" for no parent).
+func (rig ruleRig) requireIssue(t *testing.T, key, status, parent string) {
+	t.Helper()
+	gotStatus, gotParent := rig.issue(t, key)
+	got := ""
+	if gotParent != nil {
+		got = *gotParent
+	}
+	if gotStatus != status || got != parent {
+		t.Errorf("%s is %s under %q, want %s under %q", key, gotStatus, got, status, parent)
+	}
+}
+
+// TestIncludeChildrenMovesTheOpenIssuesUnderIt: include_children writes the status of the call on
+// each open issue under the issue, at any depth, that is not in that status's group. For done the
+// issues close deepest first, then the issue itself; for backlog an icebox child is kept, as it is
+// not started already; a done child is kept in both. The answer lists each change in the order of
+// the writes, and each issue an option changes has one comment of Dispatch's system actor that
+// names the caller, the issue and the option, the issue the call names none. With the rule on, the
+// same close with no option is refused before anything is written.
+func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
+	rig := newStatusChangeRig(t, true)
+
+	t.Run("done closes every open issue under the issue, deepest first", func(t *testing.T) {
+		root := rig.file(t, "Root closed with its tree", "in_progress", "")
+		middle := rig.file(t, "Middle in work", "in_progress", root)
+		leaf := rig.file(t, "Leaf in todo", "todo", middle)
+		done := rig.file(t, "Child already done", "done", root)
+		iced := rig.file(t, "Child on ice", "icebox", root)
+		seq := map[string]int{}
+		for _, key := range []string{root, middle, leaf, done, iced} {
+			seq[key] = rig.lastSeq(t, key)
+		}
+		write := statusChangeOf(root, map[string]any{"status": "done", "include_children": true})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+			wantChange{root, "done", "", seq[root] + 2, seq[root] + 3},
+			wantChange{leaf, "done", middle, seq[leaf], seq[leaf] + 2},
+			wantChange{middle, "done", root, seq[middle] + 1, seq[middle] + 3},
+			wantChange{iced, "done", root, seq[iced], seq[iced] + 2},
+			wantChange{root, "done", "", seq[root] + 2, seq[root] + 3},
+		))
+		for _, key := range []string{root, middle, leaf, done, iced} {
+			if status, _ := rig.issue(t, key); status != "done" {
+				t.Errorf("%s is %s after the call, want done", key, status)
+			}
+		}
+		moved := func(key, from string) string {
+			return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `done` with %s, because alice's status change of %s passed `include_children`.", from, root, root))
+		}
+		requireComments(t, rig.database, []string{root, middle, leaf, done, iced},
+			moved(leaf, "todo"), moved(middle, "in_progress"), moved(iced, "icebox"))
+	})
+
+	t.Run("backlog moves the issues in work under the issue and keeps the rest", func(t *testing.T) {
+		root := rig.file(t, "Root put back on the backlog", "in_progress", "")
+		child := rig.file(t, "Child in work", "in_progress", root)
+		grandchild := rig.file(t, "Grandchild in todo", "todo", child)
+		iced := rig.file(t, "Child kept on ice", "icebox", root)
+		done := rig.file(t, "Child kept done", "done", root)
+		seq := map[string]int{}
+		for _, key := range []string{root, child, grandchild} {
+			seq[key] = rig.lastSeq(t, key)
+		}
+		write := statusChangeOf(root, map[string]any{"status": "backlog", "include_children": true})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+			wantChange{root, "backlog", "", seq[root] + 1, seq[root] + 2},
+			wantChange{grandchild, "backlog", child, seq[grandchild], seq[grandchild] + 2},
+			wantChange{child, "backlog", root, seq[child] + 1, seq[child] + 3},
+			wantChange{root, "backlog", "", seq[root] + 1, seq[root] + 2},
+		))
+		rig.requireIssue(t, root, "backlog", "")
+		rig.requireIssue(t, child, "backlog", root)
+		rig.requireIssue(t, grandchild, "backlog", child)
+		rig.requireIssue(t, iced, "icebox", root)
+		rig.requireIssue(t, done, "done", root)
+		moved := func(key, from string) string {
+			return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `backlog` with %s, because alice's status change of %s passed `include_children`.", from, root, root))
+		}
+		requireComments(t, rig.database, []string{root, child, grandchild, iced, done}, moved(grandchild, "todo"), moved(child, "in_progress"))
+	})
+
+	t.Run("with no option the close is refused and nothing is written", func(t *testing.T) {
+		root := rig.file(t, "Root closed with no option", "in_progress", "")
+		child := rig.file(t, "Child that holds it", "todo", root)
+		before := rig.quiet(t)
+		write := statusChangeOf(root, map[string]any{"status": "done"})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusConflict, wantConflict([]ruleHolder{
+			{child, "Child that holds it", "todo", "child", child + " (todo) is a child of " + root + " and is not done"},
+		}))
+		assertUnchanged(t, write.String(), before, databaseFingerprint(t, rig.database))
+	})
+}
+
+// statusChangeCaller is one way a request reaches the status-change route: what it presents, and
+// whether optionalActor takes it for a person at a browser.
+type statusChangeCaller struct {
+	name   string
+	person bool
+	send   func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder
+}
+
+// statusChangeServer is a server whose callers reach the route in one of the ways optionalActor
+// knows, with the project its issues are filed in and its person.
+type statusChangeServer struct {
+	name     string
+	project  string
+	database *store.Store
+	// beside sends a request as the server's person, with authorization as its Authorization
+	// header when it is not empty.
+	beside  func(t *testing.T, method, path string, body map[string]any, authorization string) *httptest.ResponseRecorder
+	callers []statusChangeCaller
+}
+
+// asPerson sends a request as the server's person.
+func (server statusChangeServer) asPerson(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+	return server.beside(t, method, path, body, "")
+}
+
+// seed files an issue titled title as the server's person, under parent when parent is not
+// empty, and moves it to status.
+func (server statusChangeServer) seed(t *testing.T, title, status, parent string) string {
+	t.Helper()
+	body := map[string]any{"project": server.project, "title": title, "force": true}
+	if parent != "" {
+		body["parent"] = parent
+	}
+	created := server.asPerson(t, http.MethodPost, "/api/v1/issues", body)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("file %q: status=%d body=%s", title, created.Code, created.Body.String())
+	}
+	key := decodeBody[model.Issue](t, created).Key
+	if status != model.IssueStatusTriage {
+		if moved := server.asPerson(t, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"status": status}); moved.Code != http.StatusOK {
+			t.Fatalf("move %s to %s: status=%d body=%s", key, status, moved.Code, moved.Body.String())
+		}
+	}
+	return key
+}
+
+// createProject creates the server's project as its person.
+func (server statusChangeServer) createProject(t *testing.T) {
+	t.Helper()
+	if created := server.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": server.project, "name": server.project}); created.Code != http.StatusCreated {
+		t.Fatalf("create the project %s on %s: status=%d body=%s", server.project, server.name, created.Code, created.Body.String())
+	}
+}
+
+// personCaller is the caller that the server's person is.
+func (server statusChangeServer) personCaller(name string) statusChangeCaller {
+	return statusChangeCaller{name: name, person: true, send: server.asPerson}
+}
+
+// statusChangeSession is the session a bearer that proves none names in its body.
+var statusChangeSession = map[string]any{"kind": "session", "id": "ses_status_change"}
+
+// tokenCallersServer is the server of every bearer branch of optionalActor and of the trusted
+// identity header: the deployment's shared token, a personal token, one holding the person scope,
+// a service-account token, a broker token acting as its session for one project, and one scoped
+// to its person.
+func tokenCallersServer(t *testing.T, on bool) statusChangeServer {
+	t.Helper()
+	issuer := newServiceTokenIssuer(t)
+	rig := newBrokerTokenRigOn(t, testServerOptions{parentStatusRule: on, oidc: issuer.verifier(t)})
+	agent := newBrokerCaller(t)
+	const sessionToken, personToken = "a-token-acting-as-its-session", "a-token-scoped-to-its-person"
+	rig.broker.Says(sessionToken, liveNamedToken(agent.jkt))
+	scoped := liveNamedToken(agent.jkt)
+	scoped.ProjectScope, scoped.Projects = brokertoken.ProjectScopePerson, nil
+	rig.broker.Says(personToken, scoped)
+	server := statusChangeServer{
+		name: "the token server", project: brokerTestProject, database: rig.database,
+		beside: func(t *testing.T, method, path string, body map[string]any, authorization string) *httptest.ResponseRecorder {
+			return rig.serve(withPerson(brokerRequest(t, method, path, body, authorization, ""), brokerTestPerson))
+		},
+	}
+	server.createProject(t)
+	bearer := func(token string) func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+		return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+			body["actor"] = statusChangeSession
+			return rig.serve(brokerRequest(t, method, path, body, "Bearer "+token, ""))
+		}
+	}
+	broker := func(token string) func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+		return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+			return rig.serve(agent.presenting(t, method, path, token, body))
+		}
+	}
+	server.callers = []statusChangeCaller{
+		{name: "the shared token", send: bearer("agent-token")},
+		{name: "a personal token", send: bearer(personalTokenOwnedBy(t, rig.database, brokerTestPerson))},
+		{name: "a person-scoped personal token", send: bearer(personalTokenOwnedBy(t, rig.database, brokerTestPerson, model.ScopePerson))},
+		{name: "a service-account token", send: bearer(issuer.mint(t, serviceTokenAudience))},
+		{name: "a session broker token", send: broker(sessionToken)},
+		{name: "a person-scoped broker token", send: broker(personToken)},
+		server.personCaller("a trusted identity header"),
+	}
+	return server
+}
+
+// cookieServer is a server whose person signs in with a session cookie.
+func cookieServer(t *testing.T, on bool) statusChangeServer {
+	t.Helper()
+	database := storetest.Open(t)
+	sessions := store.NewPgSessionStore(database.Pool)
+	handler, _, _ := newTestServer(t, testServerOptions{
+		store: database, parentStatusRule: on, identity: identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
+	})
+	const login = "alice@d.example"
+	generation, err := sessions.EnsureSession(context.Background(), login)
+	if err != nil {
+		t.Fatalf("establish the session of %s: %v", login, err)
+	}
+	seedPeople(t, database, login)
+	cookie, err := http.ParseSetCookie(auth.IssueSessionCookie(login, generation, testSigningKey, true))
+	if err != nil {
+		t.Fatalf("parse the session cookie: %v", err)
+	}
+	server := statusChangeServer{
+		name: "the cookie server", project: ruleProject, database: database,
+		beside: func(t *testing.T, method, path string, body map[string]any, authorization string) *httptest.ResponseRecorder {
+			request := brokerRequest(t, method, path, body, authorization, "")
+			request.AddCookie(cookie)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		},
+	}
+	server.createProject(t)
+	server.callers = []statusChangeCaller{server.personCaller("a sign-in cookie")}
+	return server
+}
+
+// iapServer is a server behind an identity-aware proxy, whose person no Dispatch cookie names:
+// the proxy's signed assertion alone.
+func iapServer(t *testing.T, on bool) statusChangeServer {
+	t.Helper()
+	database := storetest.Open(t)
+	iap := newIAPSocketKeys(t, database)
+	handler, _, _ := newTestServer(t, testServerOptions{store: database, parentStatusRule: on, identity: iap.identity})
+	server := statusChangeServer{
+		name: "the IAP server", project: ruleProject, database: database,
+		beside: func(t *testing.T, method, path string, body map[string]any, authorization string) *httptest.ResponseRecorder {
+			request := brokerRequest(t, method, path, body, authorization, "")
+			for name, values := range iap.assertion(t, time.Now().Add(9*time.Minute)) {
+				request.Header[name] = values
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		},
+	}
+	server.createProject(t)
+	server.callers = []statusChangeCaller{server.personCaller("an identity-aware proxy's signed assertion with no cookie")}
+	return server
+}
+
+// TestOnlyABrowserSignInClosesChildrenWithTheirParent: include_children with done is taken only
+// from a request that presents no token and that the browser identity names: a sign-in cookie, a
+// trusted identity header, or an identity-aware proxy's signed assertion with no Dispatch cookie.
+// Every bearer branch of optionalActor is refused 403 BROWSER_SIGN_IN_REQUIRED before anything is
+// written: the shared token, a personal token, one holding the person scope, a service-account
+// token, a broker token acting as its session, and one scoped to its person. Both hold with the
+// setting off too.
+func TestOnlyABrowserSignInClosesChildrenWithTheirParent(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		t.Run(fmt.Sprintf("with the rule on %t", on), func(t *testing.T) {
+			for _, server := range []statusChangeServer{tokenCallersServer(t, on), cookieServer(t, on), iapServer(t, on)} {
+				for c, caller := range server.callers {
+					t.Run(caller.name, func(t *testing.T) {
+						parent := server.seed(t, fmt.Sprintf("Parent %d of %s", c+1, server.name), "in_progress", "")
+						child := server.seed(t, fmt.Sprintf("Child %d of %s", c+1, server.name), "todo", parent)
+						path := "/api/v1/issues/" + parent + "/status-change"
+						response := caller.send(t, http.MethodPost, path, map[string]any{"status": "done", "include_children": true})
+						rig := ruleRig{database: server.database}
+						if caller.person {
+							if response.Code != http.StatusOK {
+								t.Fatalf("POST %s from %s: status=%d body=%s, want 200", path, caller.name, response.Code, response.Body.String())
+							}
+							rig.requireIssue(t, parent, "done", "")
+							rig.requireIssue(t, child, "done", parent)
+							return
+						}
+						requireStatusChange(t, "POST "+path+" from "+caller.name, response, http.StatusForbidden,
+							wantRefusal("BROWSER_SIGN_IN_REQUIRED", browserSignInRefusal))
+						rig.requireIssue(t, parent, "in_progress", "")
+						rig.requireIssue(t, child, "todo", parent)
+						requireComments(t, server.database, []string{parent, child})
+					})
+				}
+			}
+		})
+	}
+}
+
+// TestATokenBesideABrowserIdentityIsTheTokens: a request that presents a token beside a browser
+// identity, a personal token beside the trusted identity header or the shared token beside a
+// sign-in cookie, is the token's. Its include_children with done is refused as a token's, and the
+// write of a call it is allowed records the session the token acts as, not the person.
+func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
+	tokens := tokenCallersServer(t, true)
+	cookies := cookieServer(t, true)
+	for _, beside := range []struct {
+		name          string
+		server        statusChangeServer
+		authorization string
+	}{
+		{"a personal token beside the trusted identity header", tokens, "Bearer " + personalTokenOwnedBy(t, tokens.database, brokerTestPerson)},
+		{"the shared token beside a sign-in cookie", cookies, "Bearer agent-token"},
+	} {
+		t.Run(beside.name, func(t *testing.T) {
+			server := beside.server
+			parent := server.seed(t, "Parent changed from beside a person", "in_progress", "")
+			child := server.seed(t, "Child of that parent", "todo", parent)
+			path := "/api/v1/issues/" + parent + "/status-change"
+			send := func(body map[string]any) *httptest.ResponseRecorder {
+				body["actor"] = statusChangeSession
+				return server.beside(t, http.MethodPost, path, body, beside.authorization)
+			}
+			requireStatusChange(t, "POST "+path+" with "+beside.name, send(map[string]any{"status": "done", "include_children": true}),
+				http.StatusForbidden, wantRefusal("BROWSER_SIGN_IN_REQUIRED", browserSignInRefusal))
+			rig := ruleRig{database: server.database}
+			rig.requireIssue(t, parent, "in_progress", "")
+			rig.requireIssue(t, child, "todo", parent)
+
+			if response := send(map[string]any{"status": "backlog", "include_children": true}); response.Code != http.StatusOK {
+				t.Fatalf("POST %s to backlog with %s: status=%d body=%s, want 200", path, beside.name, response.Code, response.Body.String())
+			}
+			for _, key := range []string{parent, child} {
+				rig.requireIssue(t, key, "backlog", map[string]string{parent: "", child: parent}[key])
+				if actor := latestEventActor(t, server.database, key, "issue.updated"); actor.Kind != "session" || actor.ID != statusChangeSession["id"] {
+					t.Errorf("the issue.updated of %s is %s %s, want the token's session %s", key, actor.Kind, actor.ID, statusChangeSession["id"])
+				}
+			}
+		})
+	}
+}
+
+// TestUnlinkChildrenMakesEachARoot: unlink_children removes each open child of the issue from it,
+// a child of every group, so each one becomes a root with its status and the issues under it; a
+// done child stays. Each unlinked child has one comment that names the call, and the issue the
+// call names none.
+func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
+	rig := newStatusChangeRig(t, true)
+	named := rig.file(t, "Parent closed without its children", "in_progress", "")
+	triaged := rig.file(t, "Child in triage", model.IssueStatusTriage, named)
+	backlog := rig.file(t, "Child on the backlog", "backlog", named)
+	grandchild := rig.file(t, "Grandchild on the backlog", "backlog", backlog)
+	planned := rig.file(t, "Child in todo", "todo", named)
+	running := rig.file(t, "Child in work", "in_progress", named)
+	done := rig.file(t, "Child already done", "done", named)
+	seq := map[string]int{}
+	for _, key := range []string{named, triaged, backlog, planned, running} {
+		seq[key] = rig.lastSeq(t, key)
+	}
+	write := statusChangeOf(named, map[string]any{"status": "done", "unlink_children": true})
+	unlinked := func(key, status string) wantChange { return wantChange{key, status, "", seq[key], seq[key] + 2} }
+	requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+		wantChange{named, "done", "", seq[named] + 4, seq[named] + 5},
+		unlinked(triaged, model.IssueStatusTriage), unlinked(backlog, "backlog"), unlinked(planned, "todo"), unlinked(running, "in_progress"),
+		wantChange{named, "done", "", seq[named] + 4, seq[named] + 5},
+	))
+	rig.requireIssue(t, named, "done", "")
+	rig.requireIssue(t, triaged, model.IssueStatusTriage, "")
+	rig.requireIssue(t, backlog, "backlog", "")
+	rig.requireIssue(t, grandchild, "backlog", backlog)
+	rig.requireIssue(t, planned, "todo", "")
+	rig.requireIssue(t, running, "in_progress", "")
+	rig.requireIssue(t, done, "done", named)
+	removed := func(key string) string {
+		return optionComment(key, fmt.Sprintf("Dispatch removed this issue from %s, because alice's status change of %s passed `unlink_children`.", named, named))
+	}
+	requireComments(t, rig.database, []string{named, triaged, backlog, grandchild, planned, running, done},
+		removed(triaged), removed(backlog), removed(planned), removed(running))
+}
+
+// TestIncludeParentMovesTheAncestorsIntoWork: include_parent moves each ancestor of the issue that
+// is not in work to in_progress, highest first, and keeps an ancestor in work as it is. A done
+// ancestor is reopened into in_progress (D5), which the reopen of its done child under it needs:
+// with no option the rule refuses that reopen. Each moved ancestor has one comment that names the
+// call, and the issue the call names none.
+func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
+	rig := newStatusChangeRig(t, true)
+
+	t.Run("two ancestors that have not started, highest first", func(t *testing.T) {
+		top := rig.file(t, "Ancestor in work", "in_progress", "")
+		upper := rig.file(t, "Upper ancestor on the backlog", "backlog", top)
+		lower := rig.file(t, "Lower ancestor on the backlog", "backlog", upper)
+		named := rig.file(t, "Issue started", "backlog", lower)
+		seq := map[string]int{}
+		for _, key := range []string{upper, lower, named} {
+			seq[key] = rig.lastSeq(t, key)
+		}
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_parent": true})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+			wantChange{named, "todo", lower, seq[named], seq[named] + 1},
+			wantChange{upper, "in_progress", top, seq[upper], seq[upper] + 2},
+			wantChange{lower, "in_progress", upper, seq[lower], seq[lower] + 2},
+			wantChange{named, "todo", lower, seq[named], seq[named] + 1},
+		))
+		rig.requireIssue(t, top, "in_progress", "")
+		rig.requireIssue(t, upper, "in_progress", top)
+		rig.requireIssue(t, lower, "in_progress", upper)
+		rig.requireIssue(t, named, "todo", lower)
+		moved := func(key string) string {
+			return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `backlog` to `in_progress`, because alice's status change of %s passed `include_parent`.", named))
+		}
+		requireComments(t, rig.database, []string{top, upper, lower, named}, moved(upper), moved(lower))
+	})
+
+	t.Run("a done ancestor is reopened", func(t *testing.T) {
+		parent := rig.file(t, "Ancestor closed", "in_progress", "")
+		named := rig.file(t, "Issue reopened under it", "done", parent)
+		rig.move(t, parent, "done")
+		reopen := statusChangeOf(named, map[string]any{"status": "backlog"})
+		requireStatusChange(t, reopen.String(), rig.send(t, reopen), http.StatusConflict, wantConflict([]ruleHolder{
+			{parent, "Ancestor closed", "done", "parent", parent + " (done) is the parent of " + named + " and is done"},
+		}))
+		seq := map[string]int{parent: rig.lastSeq(t, parent), named: rig.lastSeq(t, named)}
+		write := statusChangeOf(named, map[string]any{"status": "backlog", "include_parent": true})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+			wantChange{named, "backlog", parent, seq[named], seq[named] + 1},
+			wantChange{parent, "in_progress", "", seq[parent], seq[parent] + 2},
+			wantChange{named, "backlog", parent, seq[named], seq[named] + 1},
+		))
+		rig.requireIssue(t, parent, "in_progress", "")
+		rig.requireIssue(t, named, "backlog", parent)
+		requireComments(t, rig.database, []string{parent, named}, optionComment(parent,
+			fmt.Sprintf("Dispatch moved this issue from `done` to `in_progress`, because alice's status change of %s passed `include_parent`.", named)))
+	})
+}
+
+// statusChangeCase is a call with one option over issues it seeds first, in a state that keeps
+// the rule.
+type statusChangeCase struct {
+	option string
+	// seed files the case's issues, titled after label, and answers the issue the call names, the
+	// call's body, and each issue it filed.
+	seed func(t *testing.T, rig ruleRig, label string) (named string, body map[string]any, filed []string)
+}
+
+// statusChangeCases are a call of each option.
+var statusChangeCases = []statusChangeCase{
+	{optionIncludeChildren, func(t *testing.T, rig ruleRig, label string) (string, map[string]any, []string) {
+		named := rig.file(t, label+" parent", "in_progress", "")
+		child := rig.file(t, label+" child", "backlog", named)
+		return named, map[string]any{"status": "todo", "include_children": true}, []string{named, child}
+	}},
+	{optionUnlinkChildren, func(t *testing.T, rig ruleRig, label string) (string, map[string]any, []string) {
+		named := rig.file(t, label+" parent", "in_progress", "")
+		child := rig.file(t, label+" child", "todo", named)
+		return named, map[string]any{"status": "done", "unlink_children": true}, []string{named, child}
+	}},
+	{optionIncludeParent, func(t *testing.T, rig ruleRig, label string) (string, map[string]any, []string) {
+		parent := rig.file(t, label+" parent", "backlog", "")
+		named := rig.file(t, label+" child", "backlog", parent)
+		return named, map[string]any{"status": "todo", "include_parent": true}, []string{parent, named}
+	}},
+}
+
+// withMembers is body with the members given added.
+func withMembers(body map[string]any, members map[string]any) map[string]any {
+	out := make(map[string]any, len(body)+len(members))
+	for key, value := range body {
+		out[key] = value
+	}
+	for key, value := range members {
+		out[key] = value
+	}
+	return out
+}
+
+// changedOf is each entry of a call's answer as key, status and parent.
+func changedOf(t *testing.T, response *httptest.ResponseRecorder) []string {
+	t.Helper()
+	answer := decodeBody[statusChangeAnswer](t, response)
+	listed := make([]string, 0, len(answer.Changed))
+	for _, entry := range answer.Changed {
+		parent := ""
+		if entry.Parent != nil {
+			parent = *entry.Parent
+		}
+		listed = append(listed, entry.Key+" "+entry.Status+" under "+parent)
+	}
+	return listed
+}
+
+// keyedStatusChange sends write as alice under the Idempotency-Key key.
+func (rig ruleRig) keyedStatusChange(t *testing.T, write ruleWrite, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	encoded, err := json.Marshal(write.body)
+	if err != nil {
+		t.Fatalf("encode the request: %v", err)
+	}
+	request := httptest.NewRequest(write.method, write.path, bytes.NewReader(encoded))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Dispatch-User", "alice")
+	request.Header.Set(contracts.IdempotencyKeyHeader, key)
+	response := httptest.NewRecorder()
+	rig.handler.ServeHTTP(response, request)
+	return response
+}
+
+// TestADryRunWritesNothing: a dry run of each option answers each issue the call would change,
+// with the status and the parent the call would leave, the issue's last_seq now and no issue, and
+// writes nothing: no row, no event, no comment, and under a request key no recovery point. Its
+// entries name the issues, statuses and parents of the real call's. With the rule off, a dry run
+// of a call the rule would refuse answers 409 PARENT_STATUS_CONFLICT as with it on (D8), and the
+// real call is taken.
+func TestADryRunWritesNothing(t *testing.T) {
+	rig := newStatusChangeRig(t, true)
+	for index, test := range statusChangeCases {
+		t.Run(test.option, func(t *testing.T) {
+			named, body, _ := test.seed(t, rig.ruleRig, "Dry run of "+test.option)
+			dry := statusChangeOf(named, withMembers(body, map[string]any{"dry_run": true}))
+			before := rig.quiet(t)
+			response := rig.send(t, dry)
+			assertUnchanged(t, dry.String(), before, databaseFingerprint(t, rig.database))
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s: status=%d body=%s, want 200", dry, response.Code, response.Body.String())
+			}
+			answer := decodeBody[statusChangeAnswer](t, response)
+			for _, entry := range answer.Changed {
+				if entry.Issue != nil {
+					t.Errorf("the dry run's entry of %s holds an issue, want none", entry.Key)
+				}
+				if now := rig.lastSeq(t, entry.Key); entry.PreviousLastSeq != now {
+					t.Errorf("the dry run's entry of %s has previous_last_seq %d, want the last_seq now, %d", entry.Key, entry.PreviousLastSeq, now)
+				}
+			}
+			if answer.Issue.Key != named || answer.Issue.LastSeq != rig.lastSeq(t, named) {
+				t.Errorf("the dry run answered the issue %s at last_seq %d, want %s as it stands", answer.Issue.Key, answer.Issue.LastSeq, named)
+			}
+			key := fmt.Sprintf("status-change-dry-run-%d", index)
+			if keyed := rig.keyedStatusChange(t, dry, key); keyed.Code != http.StatusOK {
+				t.Fatalf("%s under a request key: status=%d body=%s, want 200", dry, keyed.Code, keyed.Body.String())
+			}
+			var pointless bool
+			if err := rig.database.Pool.QueryRow(context.Background(), `
+				select recovery is null from request_keys where idempotency_key = $1
+			`, key).Scan(&pointless); err != nil || !pointless {
+				t.Errorf("the keyed dry run left a recovery point (%v), want none", err)
+			}
+			real := statusChangeOf(named, body)
+			taken := rig.send(t, real)
+			if taken.Code != http.StatusOK {
+				t.Fatalf("%s: status=%d body=%s, want 200", real, taken.Code, taken.Body.String())
+			}
+			if planned, made := changedOf(t, response), changedOf(t, taken); !slices.Equal(planned, made) {
+				t.Errorf("the dry run answered %q, and the call changed %q", planned, made)
+			}
+		})
+	}
+
+	t.Run("a call the rule refuses, with the rule off", func(t *testing.T) {
+		off := newStatusChangeRig(t, false)
+		named := off.file(t, "Parent closed over an open child", "in_progress", "")
+		child := off.file(t, "Open child", "todo", named)
+		dry := statusChangeOf(named, map[string]any{"status": "done", "dry_run": true})
+		before := off.quiet(t)
+		requireStatusChange(t, dry.String(), off.send(t, dry), http.StatusConflict, wantConflict([]ruleHolder{
+			{child, "Open child", "todo", "child", child + " (todo) is a child of " + named + " and is not done"},
+		}))
+		assertUnchanged(t, dry.String(), before, databaseFingerprint(t, off.database))
+		real := statusChangeOf(named, map[string]any{"status": "done"})
+		if taken := off.send(t, real); taken.Code != http.StatusOK {
+			t.Fatalf("%s with the rule off: status=%d body=%s, want 200", real, taken.Code, taken.Body.String())
+		}
+		off.requireIssue(t, named, "done", "")
+		off.requireIssue(t, child, "todo", named)
+	})
+}
+
+// TestTheOptionsRideARouteOfTheirOwn: the PATCH takes none of the options. Its include_children is
+// a member it does not declare, so the close moves no child: with the rule off it closes the
+// parent alone, and with the rule on it is refused for the open child.
+func TestTheOptionsRideARouteOfTheirOwn(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		t.Run(fmt.Sprintf("with the rule on %t", on), func(t *testing.T) {
+			rig := newRuleRig(t, on)
+			parent := rig.file(t, "Parent patched with an option", "in_progress", "")
+			child := rig.file(t, "Child the option would move", "todo", parent)
+			write := patchOf(parent, map[string]any{"status": "done", "include_children": true})
+			response := rig.send(t, write)
+			if on {
+				requireRuleRefusal(t, write.String(), response, []ruleHolder{
+					{child, "Child the option would move", "todo", "child", child + " (todo) is a child of " + parent + " and is not done"},
+				})
+				rig.requireIssue(t, parent, "in_progress", "")
+			} else {
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s with the rule off: status=%d body=%s, want 200", write, response.Code, response.Body.String())
+				}
+				rig.requireIssue(t, parent, "done", "")
+			}
+			rig.requireIssue(t, child, "todo", parent)
+		})
+	}
+}
+
+// TestAStatusChangeRefusedMidwayNamesWhatItChanged: a step that another writer's write between two
+// steps made the rule refuse stops the call. Here a writer files an issue under a child after the
+// first child closed, so the second child's close is refused: the call answers that refusal's
+// status, code and body, with changed holding the first child's entry as its write answered it,
+// and no step after it runs. A call refused before its first step answers changed [].
+func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
+	rig := newStatusChangeRig(t, true)
+	named := rig.file(t, "Parent closed with its children", "in_progress", "")
+	first := rig.file(t, "First child", "todo", named)
+	second := rig.file(t, "Second child", "todo", named)
+	seq := rig.lastSeq(t, first)
+	var late string
+	hooked := 0
+	rig.afterStep(t, func(ctx context.Context, step int) {
+		hooked++
+		if step != 0 {
+			return
+		}
+		created := rig.send(t, createUnder(second, "Filed between two steps"))
+		if created.Code != http.StatusCreated {
+			t.Fatalf("file an issue under %s between two steps: status=%d body=%s", second, created.Code, created.Body.String())
+		}
+		late = decodeBody[model.Issue](t, created).Key
+	})
+	write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true})
+	response := rig.send(t, write)
+	requireStatusChange(t, write.String(), response, http.StatusConflict, wantConflict([]ruleHolder{
+		{late, "Filed between two steps", model.IssueStatusTriage, "child", late + " (triage) is a child of " + second + " and is not done"},
+	}, wantChange{first, "done", named, seq, seq + 2}))
+	if hooked != 1 {
+		t.Errorf("the hook ran after %d steps, want after the one step that committed", hooked)
+	}
+	refusal := decodeBody[struct {
+		Changed []statusChangeEntry `json:"changed"`
+	}](t, response)
+	if issue := refusal.Changed[0].Issue; issue == nil || issue.ClosedAt == nil || issue.Title != "First child" {
+		t.Errorf("the entry of %s holds %+v, want the closed issue as its write answered it", first, issue)
+	}
+	rig.requireIssue(t, first, "done", named)
+	rig.requireIssue(t, second, "todo", named)
+	rig.requireIssue(t, named, "in_progress", "")
+	requireComments(t, rig.database, []string{named, first, second, late}, optionComment(first,
+		fmt.Sprintf("Dispatch moved this issue from `todo` to `done` with %s, because alice's status change of %s passed `include_children`.", named, named)))
+
+	other := rig.file(t, "Parent refused before its first step", "in_progress", "")
+	child := rig.file(t, "Child that refuses it", "todo", other)
+	refused := statusChangeOf(other, map[string]any{"status": "done"})
+	requireStatusChange(t, refused.String(), rig.send(t, refused), http.StatusConflict, wantConflict([]ruleHolder{
+		{child, "Child that refuses it", "todo", "child", child + " (todo) is a child of " + other + " and is not done"},
+	}))
+}
+
+// ruleState is an issue's status and parent, as a replay of the call's writes holds them.
+type ruleState struct {
+	status string
+	parent *string
+}
+
+// statesOf reads the status and the parent of each issue of keys.
+func (rig ruleRig) statesOf(t *testing.T, keys ...string) map[string]ruleState {
+	t.Helper()
+	states := make(map[string]ruleState, len(keys))
+	for _, key := range keys {
+		status, parent := rig.issue(t, key)
+		states[key] = ruleState{status, parent}
+	}
+	return states
+}
+
+// breaches is each pair of states that breaks R24, as "<child> under <parent>".
+func breaches(states map[string]ruleState) []string {
+	var broken []string
+	for key, state := range states {
+		if state.parent == nil {
+			continue
+		}
+		if parent, ok := states[*state.parent]; ok && pairBreaksTheRule(state.status, parent.status) {
+			broken = append(broken, fmt.Sprintf("%s (%s) under %s (%s)", key, state.status, *state.parent, parent.status))
+		}
+	}
+	slices.Sort(broken)
+	return broken
+}
+
+// requireEachWriteKeepsTheRule replays the status and parent writes of the issues of states that
+// the events after the event id after record, in the order of their ids, over states, which keep
+// the rule, and fails t for each write that leaves a state that breaks it.
+func requireEachWriteKeepsTheRule(t *testing.T, database *store.Store, after int64, states map[string]ruleState) {
+	t.Helper()
+	if broken := breaches(states); len(broken) > 0 {
+		t.Fatalf("the fixture breaks the rule before the call: %v", broken)
+	}
+	keys := make([]string, 0, len(states))
+	for key := range states {
+		keys = append(keys, key)
+	}
+	rows, err := database.Pool.Query(context.Background(), `
+		select id, issue_key, payload ->> 'status', payload ->> 'parent' from events
+		where id > $1 and issue_key = any($2) and type in ('issue.updated', 'issue.closed') order by id
+	`, after, keys)
+	if err != nil {
+		t.Fatalf("read the call's writes: %v", err)
+	}
+	type write struct {
+		id     int64
+		key    string
+		status string
+		parent *string
+	}
+	writes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (write, error) {
+		var w write
+		err := row.Scan(&w.id, &w.key, &w.status, &w.parent)
+		return w, err
+	})
+	if err != nil {
+		t.Fatalf("read the call's writes: %v", err)
+	}
+	if len(writes) == 0 {
+		t.Fatal("the call wrote no status and no parent")
+	}
+	for _, w := range writes {
+		states[w.key] = ruleState{w.status, w.parent}
+		if broken := breaches(states); len(broken) > 0 {
+			t.Errorf("after event %d (%s to %s), the state breaks the rule: %v", w.id, w.key, w.status, broken)
+		}
+	}
+}
+
+// requireTheCallWroteItsEntries holds each entry of answer to what the call wrote. Each event of
+// the entry's issue after its previous_last_seq, up to its issue's last_seq, was appended after the
+// event id after, when the call began. Each event of the issue after that, up to its last_seq now,
+// is a child.status that a later step of the call appended. The answer's issue is the named
+// issue's entry's.
+func requireTheCallWroteItsEntries(t *testing.T, database *store.Store, after int64, named string, answer statusChangeAnswer) {
+	t.Helper()
+	for index, entry := range answer.Changed {
+		if entry.Issue == nil {
+			t.Fatalf("the entry of %s holds no issue", entry.Key)
+		}
+		later := map[string]bool{}
+		for _, next := range answer.Changed[index+1:] {
+			later[next.Key] = true
+		}
+		rows, err := database.Pool.Query(context.Background(), `
+			select id, seq, type, coalesce(payload ->> 'child_key', '') from events where issue_key = $1 and seq > $2 order by seq
+		`, entry.Key, entry.PreviousLastSeq)
+		if err != nil {
+			t.Fatalf("read the events of %s: %v", entry.Key, err)
+		}
+		for rows.Next() {
+			var id int64
+			var seq int
+			var kind, child string
+			if err := rows.Scan(&id, &seq, &kind, &child); err != nil {
+				t.Fatalf("read an event of %s: %v", entry.Key, err)
+			}
+			switch {
+			case id <= after:
+				t.Errorf("the event %d of %s at seq %d, after the entry's previous_last_seq %d, was appended before the call", id, entry.Key, seq, entry.PreviousLastSeq)
+			case seq > entry.Issue.LastSeq && (kind != "child.status" || !later[child]):
+				t.Errorf("the event %d of %s at seq %d, after the entry's last_seq %d, is %s of %q, want a child.status of a later step", id, entry.Key, seq, entry.Issue.LastSeq, kind, child)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the events of %s: %v", entry.Key, err)
+		}
+		var now int
+		if err := database.Pool.QueryRow(context.Background(), `select last_seq from issues where key = $1`, entry.Key).Scan(&now); err != nil || now < entry.Issue.LastSeq {
+			t.Errorf("%s stands at last_seq %d (%v), below its entry's %d", entry.Key, now, err, entry.Issue.LastSeq)
+		}
+		if entry.Key == named {
+			got, _ := json.Marshal(answer.Issue)
+			want, _ := json.Marshal(entry.Issue)
+			if !bytes.Equal(got, want) {
+				t.Errorf("the answer's issue is %s, want its entry's %s", got, want)
+			}
+		}
+	}
+}
+
+// reopenNotes is a second document of the issue the reopen case closes, with a decision block whose
+// ask the close withdraws and the reopen restores.
+const reopenNotes = "Notes context\n\n:::ask{#reopen-decision urgency=\"med\" multiple=\"false\"}\nShip the notes?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+
+// TestTheStatusChangeRouteTakesThePatchFence: R20 on the route. A call that sends
+// expected_sequence is fenced as the PATCH is: with the rule on and off, for each option and for
+// its dry run, a stale value is 409 ISSUE_CHANGED with nothing written, decided before
+// ISSUE_CLOSED, and the issue's own last_seq is taken. A call with no expected_sequence is taken,
+// and actor names the write's actor. A fenced call is fenced again at each step, with every event
+// that its earlier steps appended on the issue it names counted as its own: its own step's into
+// work, and the document work of a reopen through the ledger's sink. Each entry holds what its
+// step wrote, and each status and parent write of the call leaves a state that keeps the rule.
+// Through the step hook, another writer's event on the named issue stops the call at the next
+// step, and an issue that another writer moved first is left as that writer left it.
+func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
+	const changedSince = "issue changed since the hand-over read"
+
+	t.Run("a stale expected_sequence refuses each option and its dry run", func(t *testing.T) {
+		for _, on := range []bool{true, false} {
+			rig := newStatusChangeRig(t, on)
+			for _, test := range statusChangeCases {
+				t.Run(fmt.Sprintf("%s with the rule on %t", test.option, on), func(t *testing.T) {
+					named, body, _ := test.seed(t, rig.ruleRig, "Fenced "+test.option)
+					stale := rig.lastSeq(t, named)
+					if retitled := rig.send(t, patchOf(named, map[string]any{"title": "Retitled by another writer"})); retitled.Code != http.StatusOK {
+						t.Fatalf("retitle %s: status=%d body=%s", named, retitled.Code, retitled.Body.String())
+					}
+					for _, dry := range []bool{false, true} {
+						write := statusChangeOf(named, withMembers(body, map[string]any{"expected_sequence": stale, "dry_run": dry}))
+						before := rig.quiet(t)
+						requireStatusChange(t, write.String(), rig.send(t, write), http.StatusConflict, wantRefusal("ISSUE_CHANGED", changedSince))
+						assertUnchanged(t, write.String(), before, databaseFingerprint(t, rig.database))
+					}
+					current := statusChangeOf(named, withMembers(body, map[string]any{"expected_sequence": rig.lastSeq(t, named)}))
+					if taken := rig.send(t, current); taken.Code != http.StatusOK {
+						t.Fatalf("%s with the issue's own last_seq: status=%d body=%s, want 200", current, taken.Code, taken.Body.String())
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("a stale done on an issue closed since the read is ISSUE_CHANGED, not ISSUE_CLOSED", func(t *testing.T) {
+		rig := newStatusChangeRig(t, true)
+		named := rig.file(t, "Issue closed since the read", "in_progress", "")
+		stale := rig.lastSeq(t, named)
+		rig.move(t, named, "done")
+		write := statusChangeOf(named, map[string]any{"status": "done", "unlink_children": true, "expected_sequence": stale})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusConflict, wantRefusal("ISSUE_CHANGED", changedSince))
+		unfenced := statusChangeOf(named, map[string]any{"status": "done", "unlink_children": true})
+		requireStatusChange(t, unfenced.String(), rig.send(t, unfenced), http.StatusConflict, wantRefusal("ISSUE_CLOSED", "issue is closed"))
+	})
+
+	t.Run("no expected_sequence is taken, and actor names the write's actor", func(t *testing.T) {
+		rig := newStatusChangeRig(t, true)
+		named := rig.file(t, "Issue moved by a session", "in_progress", "")
+		child := rig.file(t, "Child moved by the session", "backlog", named)
+		path := "/api/v1/issues/" + named + "/status-change"
+		if taken := sessionRequest(t, rig.handler, http.MethodPost, path, map[string]any{
+			"status": "todo", "include_children": true, "actor": sessionActor(),
+		}); taken.Code != http.StatusOK {
+			t.Fatalf("POST %s with no expected_sequence: status=%d body=%s, want 200", path, taken.Code, taken.Body.String())
+		}
+		for _, key := range []string{named, child} {
+			rig.requireIssue(t, key, "todo", map[string]string{named: "", child: named}[key])
+			if actor := latestEventActor(t, rig.database, key, "issue.updated"); actor.Kind != "session" || actor.ID != sessionActor()["id"] {
+				t.Errorf("the issue.updated of %s is %s %s, want the session the body names", key, actor.Kind, actor.ID)
+			}
+		}
+	})
+
+	t.Run("a fenced call into work is taken after its own step", func(t *testing.T) {
+		rig := newStatusChangeRig(t, true)
+		named := rig.file(t, "Issue started with its tree", "backlog", "")
+		child := rig.file(t, "Child on the backlog", "backlog", named)
+		grandchild := rig.file(t, "Grandchild on the backlog", "backlog", child)
+		iced := rig.file(t, "Child on ice", "icebox", named)
+		seq := map[string]int{}
+		for _, key := range []string{named, child, grandchild, iced} {
+			seq[key] = rig.lastSeq(t, key)
+		}
+		dry := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true, "expected_sequence": seq[named], "dry_run": true})
+		before := rig.quiet(t)
+		requireStatusChange(t, dry.String(), rig.send(t, dry), http.StatusOK, map[string]any{
+			"issue": wantChange{named, "backlog", "", 0, seq[named]}.issue(),
+			"changed": entries([]wantChange{
+				{named, "todo", "", seq[named], -1}, {child, "todo", named, seq[child], -1},
+				{iced, "todo", named, seq[iced], -1}, {grandchild, "todo", child, seq[grandchild], -1},
+			}),
+		})
+		assertUnchanged(t, dry.String(), before, databaseFingerprint(t, rig.database))
+
+		states := rig.statesOf(t, named, child, grandchild, iced)
+		started := lastEventID(t, rig.database)
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true, "expected_sequence": seq[named]})
+		response := rig.send(t, write)
+		requireStatusChange(t, write.String(), response, http.StatusOK, wantAnswer(
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{child, "todo", named, seq[child], seq[child] + 2},
+			wantChange{iced, "todo", named, seq[iced], seq[iced] + 2},
+			wantChange{grandchild, "todo", child, seq[grandchild], seq[grandchild] + 2},
+		))
+		requireTheCallWroteItsEntries(t, rig.database, started, named, decodeBody[statusChangeAnswer](t, response))
+		requireEachWriteKeepsTheRule(t, rig.database, started, states)
+	})
+
+	t.Run("a reopen's own events through the ledger's sink refuse none of the later steps", func(t *testing.T) {
+		ctx := context.Background()
+		handler, database, documents := closedSettlementHandlerSettlingAfter(t, time.Hour)
+		issue := createInteractionIssue(t, handler, "TEST", "Issue reopened with the issues under it", "Context\n")
+		named, spec := issue.Key, issue.PrimaryArtifactID
+		settle := func(what string) {
+			t.Helper()
+			if err := documents.SettleIssueDocuments(ctx, named); err != nil {
+				t.Fatalf("settle %s: %v", what, err)
+			}
+		}
+		settle("the spec")
+		awaitSettled(t, database, spec)
+		notes := uploadDocument(t, handler, "/api/v1/issues/"+named, "notes.md", reopenNotes).Artifact
+		settle("the notes")
+		awaitIndexedAskBlock(t, handler, notes.ID, "reopen-decision", "Ship the notes?")
+		anchored := createThreadComment(t, handler, named, map[string]any{
+			"body": "Does this still hold?", "anchor": map[string]any{"artifact": notes.ID, "quote": "Notes context"},
+		}, "alice")
+		requestApproval(t, handler, spec)
+		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "TEST", "title": "Child left on the backlog", "parent": named, "force": true,
+		}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("file the child: status=%d body=%s", created.Code, created.Body.String())
+		}
+		child := decodeBody[model.Issue](t, created).Key
+		if moved := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+child, map[string]any{"status": "backlog"}, "alice"); moved.Code != http.StatusOK {
+			t.Fatalf("move the child to backlog: status=%d body=%s", moved.Code, moved.Body.String())
+		}
+		settle("the issue's documents")
+		awaitSettled(t, database, spec, notes.ID)
+		// The settle delay is an hour, so no settlement runs between two steps of the call: the test
+		// runs each one itself. The browser's edit inside the close margin is settled into a version
+		// while the issue is closed, which the reopen's follow then moves the approval request to.
+		peer := connectBrowserPeer(t, documents, spec)
+		closeIssueThroughPatch(t, handler, database, named)
+		stored := storedUpdateCount(t, database, spec)
+		peer.edit(t, replaceFirstParagraph("Context", "Context, edited in the margin"))
+		peer.barrier(t)
+		awaitStoredUpdates(t, database, spec, stored+1)
+		settle("the closed issue's documents")
+		awaitSettled(t, database, spec, notes.ID)
+		peer.closeAndWait(t)
+		staleAnchorQuote(t, database, anchored.ID)
+
+		check := ruleRig{database: database}
+		seq := check.lastSeq(t, named)
+		started := lastEventID(t, database)
+		path := "/api/v1/issues/" + named + "/status-change"
+		response := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
+			"status": "in_progress", "include_children": true, "expected_sequence": seq,
+		}, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("POST %s: status=%d body=%s, want 200", path, response.Code, response.Body.String())
+		}
+		answer := decodeBody[statusChangeAnswer](t, response)
+		if len(answer.Changed) != 2 || answer.Changed[0].Key != named || answer.Changed[1].Key != child {
+			t.Fatalf("the call changed %+v, want %s and then %s", answer.Changed, named, child)
+		}
+		own := issueEventsAfter(t, database, named, seq)
+		kinds := eventKinds(own[:answer.Changed[0].Issue.LastSeq-seq])
+		for _, kind := range []string{"ask.opened", "comment.anchor_refreshed", "ask.edited", "issue.updated"} {
+			if !slices.Contains(kinds, kind) {
+				t.Errorf("the reopen's own step appended %v on %s, want a %s among them", kinds, named, kind)
+			}
+		}
+		check.requireIssue(t, named, "in_progress", "")
+		check.requireIssue(t, child, "in_progress", named)
+		requireTheCallWroteItsEntries(t, database, started, named, answer)
+	})
+
+	t.Run("another writer's event on the named issue stops the call at the next step", func(t *testing.T) {
+		rig := newStatusChangeRig(t, true)
+		named := rig.file(t, "Issue retitled during its call", "backlog", "")
+		first := rig.file(t, "First child", "backlog", named)
+		second := rig.file(t, "Second child", "backlog", named)
+		seq := map[string]int{named: rig.lastSeq(t, named), first: rig.lastSeq(t, first)}
+		rig.afterStep(t, func(ctx context.Context, step int) {
+			if step != 1 {
+				return
+			}
+			if retitled := rig.send(t, patchOf(named, map[string]any{"title": "Retitled between two steps"})); retitled.Code != http.StatusOK {
+				t.Fatalf("retitle %s between two steps: status=%d body=%s", named, retitled.Code, retitled.Body.String())
+			}
+		})
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true, "expected_sequence": seq[named]})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusConflict, wantRefusal("ISSUE_CHANGED", changedSince,
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{first, "todo", named, seq[first], seq[first] + 2},
+		))
+		rig.requireIssue(t, named, "todo", "")
+		rig.requireIssue(t, first, "todo", named)
+		rig.requireIssue(t, second, "backlog", named)
+		var title string
+		if err := rig.database.Pool.QueryRow(context.Background(), `select title from issues where key = $1`, named).Scan(&title); err != nil || title != "Retitled between two steps" {
+			t.Errorf("%s is titled %q (%v), want the other writer's title", named, title, err)
+		}
+		requireComments(t, rig.database, []string{named, first, second}, optionComment(first,
+			fmt.Sprintf("Dispatch moved this issue from `backlog` to `todo` with %s, because alice's status change of %s passed `include_children`.", named, named)))
+	})
+
+	t.Run("a grandchild another writer closed between two steps stays done", func(t *testing.T) {
+		rig := newStatusChangeRig(t, true)
+		named := rig.file(t, "Issue put back on the backlog", "in_progress", "")
+		child := rig.file(t, "Child in work", "in_progress", named)
+		first := rig.file(t, "First grandchild", "todo", child)
+		second := rig.file(t, "Grandchild closed by another writer", "todo", child)
+		seq := map[string]int{named: rig.lastSeq(t, named), child: rig.lastSeq(t, child), first: rig.lastSeq(t, first)}
+		rig.afterStep(t, func(ctx context.Context, step int) {
+			if step == 0 {
+				rig.move(t, second, "done")
+			}
+		})
+		write := statusChangeOf(named, map[string]any{"status": "backlog", "include_children": true})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+			wantChange{named, "backlog", "", seq[named] + 1, seq[named] + 2},
+			wantChange{first, "backlog", child, seq[first], seq[first] + 2},
+			wantChange{child, "backlog", named, seq[child] + 2, seq[child] + 4},
+			wantChange{named, "backlog", "", seq[named] + 1, seq[named] + 2},
+		))
+		rig.requireIssue(t, second, "done", child)
+		moved := func(key, from string) string {
+			return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `backlog` with %s, because alice's status change of %s passed `include_children`.", from, named, named))
+		}
+		requireComments(t, rig.database, []string{named, child, first, second}, moved(first, "todo"), moved(child, "in_progress"))
+	})
+
+	t.Run("an ancestor another writer moved into work between two steps keeps that status", func(t *testing.T) {
+		rig := newStatusChangeRig(t, true)
+		upper := rig.file(t, "Upper ancestor", "backlog", "")
+		lower := rig.file(t, "Lower ancestor moved by another writer", "backlog", upper)
+		named := rig.file(t, "Issue started", "backlog", lower)
+		seq := map[string]int{upper: rig.lastSeq(t, upper), named: rig.lastSeq(t, named)}
+		rig.afterStep(t, func(ctx context.Context, step int) {
+			if step == 0 {
+				rig.move(t, lower, "todo")
+			}
+		})
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_parent": true})
+		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
+			wantChange{named, "todo", lower, seq[named], seq[named] + 1},
+			wantChange{upper, "in_progress", "", seq[upper], seq[upper] + 2},
+			wantChange{named, "todo", lower, seq[named], seq[named] + 1},
+		))
+		rig.requireIssue(t, lower, "todo", upper)
+		requireComments(t, rig.database, []string{upper, lower, named}, optionComment(upper,
+			fmt.Sprintf("Dispatch moved this issue from `backlog` to `in_progress`, because alice's status change of %s passed `include_parent`.", named)))
+	})
+}
+
+// TestAStatusChangeChecksItsPlanUnderItsLocks: the route reads its plan again under the owner
+// locks of every issue the plan writes (D16). A writer that holds the owner lock of one step's
+// issue makes a dry run wait for it, which pg_locks shows, and the open child that writer files
+// under that issue before it commits is in the dry run's answer.
+func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
+	ctx := context.Background()
+	rig := newStatusChangeRig(t, true)
+	named := rig.file(t, "Parent whose plan is read under its locks", "in_progress", "")
+	child := rig.file(t, "Child whose lock a writer holds", "todo", named)
+	awaitNoSettlementOwed(t, rig.database)
+	var number int
+	if err := rig.database.Pool.QueryRow(ctx, `
+		update projects set next_number = next_number + 1 where key = $1 returning next_number - 1
+	`, ruleProject).Scan(&number); err != nil {
+		t.Fatalf("take the late child's number: %v", err)
+	}
+	late := fmt.Sprintf("%s-%d", ruleProject, number)
+	hold, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the writer: %v", err)
+	}
+	defer hold.Rollback(ctx)
+	if err := store.LockOwners(ctx, hold, store.IssueOwner(child)); err != nil {
+		t.Fatalf("take the owner lock of %s: %v", child, err)
+	}
+	if _, err := hold.Exec(ctx, `
+		insert into issues (key, project_key, number, title, parent_key, created_by, rank)
+		values ($1, $2, $3, 'Child filed under the lock', $4, '{"kind":"user","id":"alice"}', 'zz')
+	`, late, ruleProject, number, child); err != nil {
+		t.Fatalf("file the late child: %v", err)
+	}
+	handler, pid := oneConnectionHandler(t, rig.deps)
+	write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true, "dry_run": true})
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- dispatchRequest(t, handler, write.method, write.path, write.body, "alice") }()
+	testwait.Eventually(t, write.String()+" to wait on the writer's lock", func() bool {
+		select {
+		case response := <-answered:
+			t.Fatalf("%s answered %d before it waited on the writer: %s", write, response.Code, response.Body.String())
+		default:
+		}
+		queued, err := storetest.QueuedBehind(ctx, hold, pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return queued
+	})
+	if err := hold.Commit(ctx); err != nil {
+		t.Fatalf("commit the writer: %v", err)
+	}
+	var response *httptest.ResponseRecorder
+	testwait.Eventually(t, write.String()+" to answer", func() bool {
+		select {
+		case response = <-answered:
+			return true
+		default:
+			return false
+		}
+	})
+	seq := map[string]int{named: rig.lastSeq(t, named), child: rig.lastSeq(t, child), late: rig.lastSeq(t, late)}
+	requireStatusChange(t, write.String(), response, http.StatusOK, map[string]any{
+		"issue": wantChange{named, "in_progress", "", 0, seq[named]}.issue(),
+		"changed": entries([]wantChange{
+			{late, "done", child, seq[late], -1}, {child, "done", named, seq[child], -1}, {named, "done", "", seq[named], -1},
+		}),
+	})
+}

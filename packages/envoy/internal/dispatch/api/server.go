@@ -558,6 +558,11 @@ type server struct {
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// statusChangeAfterStep is called after each step of a status change commits, with the
+	// step's index in the call's plan (status_change.go); nil, which every server the deployment
+	// builds leaves it, calls nothing. Only a test sets it, to make another writer's write between
+	// two steps of one call.
+	statusChangeAfterStep func(ctx context.Context, step int)
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
