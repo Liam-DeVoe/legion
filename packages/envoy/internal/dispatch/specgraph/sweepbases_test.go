@@ -63,7 +63,7 @@ import (
 // read the check's earlier pass true. And two of production-and-graph with its program check of
 // production written as another kind: as a program check of the graph, whose runs read the
 // transaction tx1 and count at the commit of their test, and as an agent of production, whose block
-// production. Each of the twenty reads, at the subjects of its shape, the state that the shape
+// names no test. Each of the twenty reads, at the subjects of its shape, the state that the shape
 // gives its check (readsAt): the ten above the states that their shapes are for, and the ten of
 // production-and-graph their check of the graph, or the check that they write, in the state that
 // the check's kind gives its results; the eight that write a check also read it as its kind
