@@ -287,7 +287,7 @@ func seedRoleDocumentAsFile(t *testing.T, database *store.Store, issueKey, name,
 	if err := database.Pool.QueryRow(context.Background(), `
 		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
 		select key, project_key, $2, $3, $4, '{"kind":"user","id":"alice"}' from issues where key = $1
-		returning id::text`, issueKey, artifactSlug(name), name, kind).Scan(&id); err != nil {
+		returning id::text`, issueKey, model.ArtifactSlug(name), name, kind).Scan(&id); err != nil {
 		t.Fatalf("store %s as a %s: %v", name, kind, err)
 	}
 	seedExec(t, database, name+"'s version 1", `

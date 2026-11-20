@@ -37,8 +37,8 @@ const priorityIDMax = 200
 
 // priorityIDPattern is the grammar of a priority id: lowercase letters and digits in groups
 // joined by single hyphens, which is the slug spelling a document's id already takes
-// (artifactSlug, and text.artifactSlugPattern, which reads one back). An id is written into a
-// path and into the `advances` filter of the issue listing, so one that spells anything else
+// (model.ArtifactSlug, and text.artifactSlugPattern, which reads one back). An id is written into
+// a path and into the `advances` filter of the issue listing, so one that spells anything else
 // would be stored and then address nothing. The grammar admits two words the filter reads as
 // keywords, noAdvancesFilter and anyAdvancesFilter, and the length is bounded by priorityIDMax;
 // priorityIDRefusal holds an id to all of them.
@@ -515,9 +515,10 @@ func (s *server) refusePriorityWrite(w http.ResponseWriter, r *http.Request, id 
 }
 
 // priorityIDFromTitle is the id a create takes when its body names none: the title written as a
-// slug, by the rule artifactSlug writes one, so one spelling names every slug this deployment
-// stores. A title holding no ASCII letter or digit derives nothing — artifactSlug would answer
-// its own fallback word, which is no name of that title — and the create then asks for an id.
+// slug, by the rule model.ArtifactSlug writes one, so one spelling names every slug this
+// deployment stores. A title holding no ASCII letter or digit derives nothing — model.ArtifactSlug
+// would answer its own fallback word, which is no name of that title — and the create then asks
+// for an id.
 func priorityIDFromTitle(title string) string {
 	if !strings.ContainsFunc(title, func(character rune) bool {
 		return ('a' <= character && character <= 'z') ||
@@ -526,5 +527,5 @@ func priorityIDFromTitle(title string) string {
 	}) {
 		return ""
 	}
-	return artifactSlug(title)
+	return model.ArtifactSlug(title)
 }

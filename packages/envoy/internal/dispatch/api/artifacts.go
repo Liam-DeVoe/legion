@@ -2366,61 +2366,20 @@ func artifactKind(mediaType, declared string, content []byte) (kind, storedType 
 	return "file", declared
 }
 
-func artifactSlug(name string) string {
-	var slug strings.Builder
-	previousDash := false
-	for _, r := range strings.ToLower(name) {
-		// ASCII only: every grammar that reads a slug back - text.artifactSlugPattern, the
-		// dashboard's own artifactSlugPattern, 0009's cleanup of malformed references - spells it
-		// [a-z0-9]+(-[a-z0-9]+)*, so a slug holding another letter would be stored and then name
-		// nothing, and the picture a `![name](dispatch://.../artifact/<slug>@vN)` line shows would
-		// never load (LEGION-541).
-		if ('a' <= r && r <= 'z') || ('0' <= r && r <= '9') {
-			slug.WriteRune(r)
-			previousDash = false
-			continue
-		}
-		if slug.Len() > 0 && !previousDash {
-			slug.WriteByte('-')
-			previousDash = true
-		}
-	}
-	result := strings.Trim(slug.String(), "-")
-	if result == "" {
-		return "artifact"
-	}
-	return result
-}
-
-// roleSlugs pairs each role a document plays with the slug that names it: the one place the two
-// spellings are written. Everything that asks what part a document plays is built from it —
-// documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
-// (documentRolePredicate), documentPlays, which asks the same of a row already read, and
-// documentRoleOf, which names the part one row plays.
-var roleSlugs = map[string]string{
-	model.ArtifactRoleVerification: "verification-md",
-	model.ArtifactRolePlan:         "plan-md",
-	// The Decisions view already spells the decisions document's slug, which a reference to it
-	// names, so the role takes that constant rather than a second copy of the same word.
-	model.ArtifactRoleDecisions: decisionsDocumentSlug,
-}
-
 // documentRole is the role a document takes when its row is created: an issue's markdown
-// document whose slug roleSlugs names plays that role; every other new artifact plays none. The
-// slug decides, not the name, because the slug is the unique key the upload already took within
-// the owner (nextArtifactSlug), so a second document whose name gives a slug already in use -
-// verification-md-2 - plays no role rather than colliding with the one that holds it. The role
-// is written once, as is_primary is: a later upload of the same name is that document's next
-// version, under the row this made, and the only write that ever sets it afterwards is the
-// repair of a row the rolling deploy left with none (storeArtifact).
+// document whose slug model.RoleDocumentSlugs names plays that role; every other new artifact
+// plays none. The slug decides, not the name, because the slug is the unique key the upload
+// already took within the owner (nextArtifactSlug), so a second document whose name gives a slug
+// already in use - verification-md-2 - plays no role rather than colliding with the one that
+// holds it. The role is written once, as is_primary is: a later upload of the same name is that
+// document's next version, under the row this made, and the only write that ever sets it
+// afterwards is the repair of a row the rolling deploy left with none (storeArtifact).
 func documentRole(target artifactTarget, kind, slug string) *string {
 	if target.IssueKey == nil || kind != "doc" {
 		return nil
 	}
-	for role, named := range roleSlugs {
-		if named == slug {
-			return &role
-		}
+	if role := model.RoleOfDocumentSlug(slug); role != "" {
+		return &role
 	}
 	return nil
 }
@@ -2435,19 +2394,19 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 // reader — the queries that find a document by its role and the routes that judge the document in
 // hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
-	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
+	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == model.RoleDocumentSlugs[role])
 }
 
-// documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
-// true for, asked of the row as every other reader asks it. A row plays at most one of them - a
-// row that carries a role carries one of them, and an issue's row that carries none falls back to
-// its slug, which the map pairs with a single role - so the order this walks the map in cannot
-// change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
-// whose role column is still null the role its slug decides, which is the state a rolling deploy
-// leaves behind. A document that plays none of them answers "", which omits the field of a
-// report that carries it (movedApprovalDocument).
+// documentRoleOf is the part a document plays: the role of model.RoleDocumentSlugs that
+// documentPlays answers true for, asked of the row as every other reader asks it. A row plays at
+// most one of them - a row that carries a role carries one of them, and an issue's row that
+// carries none falls back to its slug, which the map pairs with a single role - so the order this
+// walks the map in cannot change the answer. Asking documentPlays rather than reading
+// artifacts.role is what gives a row whose role column is still null the role its slug decides,
+// which is the state a rolling deploy leaves behind. A document that plays none of them answers
+// "", which omits the field of a report that carries it (movedApprovalDocument).
 func documentRoleOf(artifact model.Artifact) string {
-	for role := range roleSlugs {
+	for role := range model.RoleDocumentSlugs {
 		if documentPlays(artifact, role) {
 			return role
 		}
@@ -2473,7 +2432,7 @@ func documentRolePredicate(alias, role string) string {
 		alias += "."
 	}
 	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
-		alias + `slug = '` + roleSlugs[role] + `'))`
+		alias + `slug = '` + model.RoleDocumentSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query
@@ -2506,10 +2465,10 @@ func blankWriteToADocumentThatExists(name string, artifact model.Artifact) error
 }
 
 // createRoleNameRefusal is the 400 refusing a create with no content whose minted slug is the
-// slug of one of the documents Dispatch makes itself (roleSlugs): a person who types `Plan.md`
-// as a title means that document, which Dispatch writes with its own content. The slug is read,
-// not the title, so every spelling that gives it reads the same refusal, and a title whose slug
-// the owner already holds - which mints `plan-md-2` - is a document of its own.
+// slug of one of the documents Dispatch makes itself (model.RoleDocumentSlugs): a person who types
+// `Plan.md` as a title means that document, which Dispatch writes with its own content. The slug
+// is read, not the title, so every spelling that gives it reads the same refusal, and a title
+// whose slug the owner already holds - which mints `plan-md-2` - is a document of its own.
 func createRoleNameRefusal(name, slug, role string) error {
 	return errorf(apicode.ArtifactRoleName,
 		"%q gives the slug %s, the slug of the issue's %s document, which Dispatch makes itself; give this document another name",
@@ -2518,14 +2477,14 @@ func createRoleNameRefusal(name, slug, role string) error {
 
 // fileUnderRoleNameRefusal is the 400 ARTIFACT_ROLE_NAME refusing a file or an image (kind) that
 // an upload stores under name on target, an issue, where the slug it lands on belongs to one of
-// the documents that play a role there (roleSlugs): found, the artifact the name or the slug finds,
-// plays one (documentRoleOf), or, where the name finds none, minted, the slug a new artifact takes
-// (nextArtifactSlug), is a role's. Such a document holds Markdown, and a file stored there would
-// read as the issue's plan, Verification document or decisions document to every reader that
-// finds it by its slug while holding no text any of them reads. A project's or a session's
-// artifact plays no role (documentPlays), and a slug the owner already holds mints another
-// (plan-md-2), which plays none either, so both answer nil, as a document upload does. Both places
-// that refuse an upload ask it before they compare kinds (refuseUploadBeforeItsObject,
+// the documents that play a role there (model.RoleDocumentSlugs): found, the artifact the name or
+// the slug finds, plays one (documentRoleOf), or, where the name finds none, minted, the slug a
+// new artifact takes (nextArtifactSlug), is a role's. Such a document holds Markdown, and a file
+// stored there would read as the issue's plan, Verification document or decisions document to
+// every reader that finds it by its slug while holding no text any of them reads. A project's or
+// a session's artifact plays no role (documentPlays), and a slug the owner already holds mints
+// another (plan-md-2), which plays none either, so both answer nil, as a document upload does.
+// Both places that refuse an upload ask it before they compare kinds (refuseUploadBeforeItsObject,
 // storeArtifact), so a file under the name of a role document that is already a document reads
 // this refusal and not ARTIFACT_KIND_MISMATCH.
 func fileUnderRoleNameRefusal(target artifactTarget, kind, name string, found *model.Artifact, minted string) error {
@@ -2541,11 +2500,17 @@ func fileUnderRoleNameRefusal(target artifactTarget, kind, name string, found *m
 	if role == "" {
 		return nil
 	}
-	// Every role document's name is its role's with the Markdown extension (plan.md), the name
-	// whose upload the dispatch command sends as Markdown.
+	// Every role document's name is its role's with the Markdown extension (plan.md). The advice
+	// names a path that is that name, which both the dispatch command of this release and the one
+	// deployed before it send as Markdown: this release's sends a --name ending in .md as
+	// text/markdown whatever its path (uploadedFile, packages/envoy-client/src/dispatch-commands/
+	// documents.ts), while the one before it (pi-envoy-v19.15.4) sends the type Bun reads from the
+	// path's extension, text/markdown for .md. Advice that named --name alone would send that
+	// release's `--name plan.md --path plan.txt` back to this refusal as text/plain.
+	document := role + ".md"
 	return errorf(apicode.ArtifactRoleName,
-		"%q names the issue's %s document (%s), which holds Markdown: upload it as text/markdown (dispatch artifact --name %s sends its file as Markdown), or give this file another name",
-		name, role, slug, role+".md")
+		"%q names the issue's %s document (%s), which holds Markdown: upload it as text/markdown (save it as %s and send it with dispatch artifact --name %s --path %s: a path ending in .md is sent as Markdown), or give this file another name",
+		name, role, slug, document, document, document)
 }
 
 // newArtifactNameRefusal is the 400 refusing a new artifact's name past maxNewArtifactKeyBytes,
@@ -2658,7 +2623,7 @@ func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx
 }
 
 func (s *server) nextArtifactSlug(ctx context.Context, q queryer, target artifactTarget, name string) (string, error) {
-	base := artifactSlug(name)
+	base := model.ArtifactSlug(name)
 	query, owner := target.ownerLookup(artifactSlugTakenSQL, agentArtifactSlugTakenSQL)
 	for suffix := 1; ; suffix++ {
 		candidate := base

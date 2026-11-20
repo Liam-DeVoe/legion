@@ -106,14 +106,14 @@ func TestEveryArtifactSlugReadsBackAsItsArtifact(t *testing.T) {
 		"--.png--",
 		"日本",
 	} {
-		slug := artifactSlug(name)
+		slug := model.ArtifactSlug(name)
 		for _, reference := range []string{
 			"![" + name + "](dispatch://CORE-1/artifact/" + slug + "@v1)",
 			"![" + name + "](dispatch://agent/" + agentSession + "/artifact/" + slug + "@v1)",
 		} {
 			refs := text.Extract(reference, "")
 			if len(refs) != 1 || refs[0].Kind != "artifact" || refs[0].ID != slug {
-				t.Errorf("artifactSlug(%q) = %q, and %s reads as %#v; want that artifact", name, slug, reference, refs)
+				t.Errorf("model.ArtifactSlug(%q) = %q, and %s reads as %#v; want that artifact", name, slug, reference, refs)
 			}
 		}
 	}

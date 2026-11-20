@@ -91,7 +91,7 @@ func (s *server) renameArtifactTo(w http.ResponseWriter, r *http.Request, actor 
 	// (documentRole), so every spelling that gives a role's slug reads the same refusal. The
 	// document that already plays that role keeps it: the issue's plan document is corrected to
 	// `plan.md` as any other title is.
-	slug := artifactSlug(name)
+	slug := model.ArtifactSlug(name)
 	if role := documentRole(target, artifact.Kind, slug); role != nil && !documentPlays(artifact, *role) {
 		s.writeHandlerError(w, r, renameRoleNameRefusal(name, slug, *role))
 		return model.Artifact{}, false
@@ -135,8 +135,9 @@ func artifactNameTakenRefusal(name string, artifact model.Artifact) error {
 }
 
 // renameRoleNameRefusal is the 400 refusing a correction whose new name gives slug, the slug of
-// one of the documents Dispatch makes itself (roleSlugs), on a document that does not play that
-// role. The slug is read, not the title, so every spelling that gives it reads this refusal.
+// one of the documents Dispatch makes itself (model.RoleDocumentSlugs), on a document that does
+// not play that role. The slug is read, not the title, so every spelling that gives it reads this
+// refusal.
 func renameRoleNameRefusal(name, slug, role string) error {
 	return errorf(apicode.ArtifactRoleName,
 		"%q gives the slug %s, the slug of the issue's %s document, which this document is not; give it another name",

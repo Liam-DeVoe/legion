@@ -40,12 +40,11 @@ import (
 // the block graph already answers.
 
 const (
-	// decisionsDocumentName is the document an issue's decisions live in, and
-	// decisionsDocumentSlug the slug its reference names
-	// (`dispatch://KEY/artifact/decisions-md`). The view reads the slug first and falls back to
-	// the filename, as every document reference resolves.
+	// decisionsDocumentName is the document an issue's decisions live in; the slug its
+	// reference names (`dispatch://KEY/artifact/decisions-md`) is its role's,
+	// model.RoleDocumentSlugs[model.ArtifactRoleDecisions]. The view reads the slug first and
+	// falls back to the filename, as every document reference resolves.
 	decisionsDocumentName = "decisions.md"
-	decisionsDocumentSlug = "decisions-md"
 	// replacedHeading is the section that holds replaced decisions; its own `###` sections are
 	// the replaced ones, and it is no decision itself.
 	replacedHeading = "Replaced"
@@ -160,7 +159,7 @@ func (s *server) issueSpecDocument(ctx context.Context, key string) (model.Artif
 // names, else the one whose filename it is, as every document reference resolves.
 func (s *server) issueDecisionsDocument(ctx context.Context, key string) (model.Artifact, bool, error) {
 	target := artifactTarget{IssueKey: &key}
-	document, err := s.loadArtifactByRefKey(ctx, s.deps.Store.Pool, target.refPrefix()+"/"+decisionsDocumentSlug)
+	document, err := s.loadArtifactByRefKey(ctx, s.deps.Store.Pool, target.refPrefix()+"/"+model.RoleDocumentSlugs[model.ArtifactRoleDecisions])
 	if err == nil {
 		return document, true, nil
 	}

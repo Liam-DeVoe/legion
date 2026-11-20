@@ -1224,6 +1224,61 @@ const (
 	ArtifactRoleDecisions    = "decisions"
 )
 
+// ArtifactSlug is the slug Dispatch gives an artifact named name, the word its reference key and
+// every `dispatch://.../artifact/<slug>` reference to it name: the name lower-cased, each run of
+// other characters one dash, no dash at either end, and "artifact" for a name that leaves nothing.
+// An upload's slug (api's nextArtifactSlug) and a priority's id taken from its title
+// (priorityIDFromTitle) are both spelled by it.
+func ArtifactSlug(name string) string {
+	var slug strings.Builder
+	previousDash := false
+	for _, r := range strings.ToLower(name) {
+		// ASCII only: every grammar that reads a slug back - text.artifactSlugPattern, the
+		// dashboard's own artifactSlugPattern, 0009's cleanup of malformed references - spells it
+		// [a-z0-9]+(-[a-z0-9]+)*, so a slug holding another letter would be stored and then name
+		// nothing, and the picture a `![name](dispatch://.../artifact/<slug>@vN)` line shows would
+		// never load (LEGION-541).
+		if ('a' <= r && r <= 'z') || ('0' <= r && r <= '9') {
+			slug.WriteRune(r)
+			previousDash = false
+			continue
+		}
+		if slug.Len() > 0 && !previousDash {
+			slug.WriteByte('-')
+			previousDash = true
+		}
+	}
+	result := strings.Trim(slug.String(), "-")
+	if result == "" {
+		return "artifact"
+	}
+	return result
+}
+
+// RoleDocumentSlugs pairs each role a document plays (Artifact.Role) with the slug that names it:
+// the one place the two spellings are written. Everything that asks what part a document plays is
+// built from it — api's documentRole, which writes the role on a new row, the SQL predicates that
+// hold a row to a role (documentRolePredicate), documentPlays, which asks the same of a row already
+// read, and documentRoleOf, which names the part one row plays — and so is the Decisions view,
+// which finds an issue's decisions document by the slug its reference names
+// (`dispatch://KEY/artifact/decisions-md`). Read it, never write it.
+var RoleDocumentSlugs = map[string]string{
+	ArtifactRoleVerification: "verification-md",
+	ArtifactRolePlan:         "plan-md",
+	ArtifactRoleDecisions:    "decisions-md",
+}
+
+// RoleOfDocumentSlug is the role of RoleDocumentSlugs whose document slug names, or "" for a slug
+// that names none of them.
+func RoleOfDocumentSlug(slug string) string {
+	for role, named := range RoleDocumentSlugs {
+		if named == slug {
+			return role
+		}
+	}
+	return ""
+}
+
 // ArtifactReview is one human review of a document, pinned to the version it was
 // given on: an approval, or a request for changes with a reason. EventSeq is the
 // sequence of the artifact.* event the review appended on its document's owner, nil
