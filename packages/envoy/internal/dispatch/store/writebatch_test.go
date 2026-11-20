@@ -1,8 +1,13 @@
 package store
 
 import (
+	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // A write phase past the send bound goes as several batches (partEnd): every statement once and
@@ -59,4 +64,111 @@ func TestAFailedBuildEndsThePartAtItsStatement(t *testing.T) {
 	if end, err := partEnd(2, 4, 8, size); end != 2 || !errors.Is(err, failed) {
 		t.Fatalf("a part starting at the failed statement ends at %d with %v, want 2 and its failure, so nothing of it is sent", end, err)
 	}
+}
+
+// A write phase whose arguments pass the send bound goes to Postgres as several batches in a row
+// (Send), and those batches together run every statement of the phase once and in the order it
+// was queued, whether the statement was queued with its arguments or with a build of them: no
+// statement is dropped or sent twice where one part ends and the next begins. Each statement's
+// callback runs once, in that same order.
+//
+// Control: change `start = end` in Send to `start = end + 1`, so each part after the first
+// starts one statement late, and this fails, naming statements 3, 7 and 11 as missing.
+func TestAWritePhasePastTheSendBoundRunsEveryStatementOnceAndInOrder(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	tx, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin a transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `create temporary table parted_send (
+		position bigserial primary key,
+		statement int not null,
+		bytes int not null
+	) on commit drop`); err != nil {
+		t.Fatalf("create the table the write phase inserts into: %v", err)
+	}
+
+	// Each statement carries a payload a little over a quarter of the bound, so no part holds
+	// more than three statements. Every statement shares the one payload string.
+	const statements = 12
+	payload := strings.Repeat("x", sendBound/4+1)
+	if total := statements * len(payload); total <= 2*sendBound {
+		t.Fatalf("%d statements of %d payload bytes carry %d bytes, want more than twice the send bound of %d, so that Send must cut the phase into three parts or more",
+			statements, len(payload), total, sendBound)
+	}
+
+	const insert = `insert into parted_send (statement, bytes) values ($1, length($2::text))`
+	var batch WriteBatch
+	var ran []int
+	for index := range statements {
+		var queued Queued
+		if index%2 == 0 {
+			queued = batch.Queue("insert a statement's row", insert, index, payload)
+		} else {
+			queued = batch.QueueBuilt("insert a statement's row", insert, func() ([]any, error) {
+				return []any{index, payload}, nil
+			})
+		}
+		queued.Exec(func(pgconn.CommandTag) error {
+			ran = append(ran, index)
+			return nil
+		})
+	}
+	if err := batch.Send(ctx, tx); err != nil {
+		t.Fatalf("send the write phase: %v", err)
+	}
+
+	rows, err := tx.Query(ctx, `select statement, bytes from parted_send order by position`)
+	if err != nil {
+		t.Fatalf("read the rows the write phase inserted: %v", err)
+	}
+	defer rows.Close()
+	var inserted []int
+	for rows.Next() {
+		var statement, bytes int
+		if err := rows.Scan(&statement, &bytes); err != nil {
+			t.Fatalf("scan a row the write phase inserted: %v", err)
+		}
+		if bytes != len(payload) {
+			t.Errorf("statement %d inserted a payload of %d bytes, want %d", statement, bytes, len(payload))
+		}
+		inserted = append(inserted, statement)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the rows the write phase inserted: %v", err)
+	}
+
+	want := make([]int, statements)
+	for index := range want {
+		want[index] = index
+	}
+	// everyOnceInOrder fails the test where got is not every statement once and in order, and
+	// names the statements missing from got and those it holds more than once.
+	everyOnceInOrder := func(what string, got []int) {
+		t.Helper()
+		if slices.Equal(got, want) {
+			return
+		}
+		counts := make([]int, statements)
+		for _, statement := range got {
+			if statement >= 0 && statement < statements {
+				counts[statement]++
+			}
+		}
+		var missing, repeated []int
+		for statement, count := range counts {
+			if count == 0 {
+				missing = append(missing, statement)
+			}
+			if count > 1 {
+				repeated = append(repeated, statement)
+			}
+		}
+		t.Errorf("%s statements %v, want %v, each once and in order: missing %v, repeated %v",
+			what, got, want, missing, repeated)
+	}
+	everyOnceInOrder("the table holds rows, in insert order, of", inserted)
+	everyOnceInOrder("the callbacks ran for", ran)
 }
