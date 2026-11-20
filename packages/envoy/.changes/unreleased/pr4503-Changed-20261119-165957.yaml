@@ -5,9 +5,12 @@ body: |-
   cross-project leg, the term-statistics refresh a pick starts or joins, and the route roster
   fetch are now counted as the server's detached work, which it already waited for. Each of them
   could otherwise still write after its request answered. The document service gains
-  `AwaitBackgroundWrites`, which waits for the settlements, evictions, room stores and compaction
-  it runs in the background and answers the next one it leaves armed; nothing in production calls
-  it, and the API's tests wait with it before they compare the whole database.
+  `AwaitBackgroundWrites`, which waits for the settlements, evictions, room stores, document
+  sockets and compaction it runs in the background, compacts a document whose rows a compaction
+  may already fold, and answers the next write it leaves armed, and `SettleAfter`, which arms a
+  document's settlement a span ahead; the event horizon gains `Busy`, which says whether an
+  observation or its write to `event_horizon` is under way. Nothing in production calls them:
+  the API's tests wait with them before they compare the whole database.
 time: 2026-11-19T16:59:57Z
 custom:
     Issue: pr4503

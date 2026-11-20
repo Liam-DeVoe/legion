@@ -49,14 +49,44 @@ func databaseFingerprint(t *testing.T, served *server) fingerprint {
 	return takeFingerprint(t, served, nil)
 }
 
-// takeFingerprint is databaseFingerprint, calling waiting, when it is not nil, as its wait for
-// the server's background writes begins: the tests of that wait (database_fingerprint_wait_test.go)
-// release there a writer they hold, so a fingerprint that took no wait reads while it is held.
-func takeFingerprint(t *testing.T, served *server, waiting func()) fingerprint {
+// heldWriter is one background writer a test of the wait (database_fingerprint_wait_test.go) holds
+// past the answer of the request that left it. release, which the fingerprint calls as its wait
+// begins, lets the writer go heldWriterLag later, so a wait that did not wait for it is reading by
+// the time it writes; ended answers whether it has written, which the fingerprint asks as its reads
+// begin, so such a wait fails naming the writer, whatever its reads then see.
+type heldWriter struct {
+	name    string
+	release func()
+	ended   func() bool
+}
+
+// heldWriterLag is how long after a fingerprint's wait begins a held writer is let go (heldWriter).
+// It guards the red of each test of the wait: a wait that skips the held writer's branch must
+// reach its reads before the writer writes, so the lag must outlast one pass of the wait over the
+// writers it does not skip - a few counts read under their locks, the document service's two looks
+// at its rooms and timers, and its statements, one listing the documents with a row after their
+// first and one check of each. Beside a machine at a one-minute load of about 600, a whole pass of
+// the wait over a server holding such a document took at most 9 ms in 100 passes, so 2 s leaves a
+// pass room to run two hundred times slower before a skipped branch could go unseen. A wait that
+// did not skip the writer waits out the lag and then the writer, so the lag cannot fail a test; it
+// lengthens each by 2 s, a thirtieth of the minute the wait itself may take (backgroundBound).
+const heldWriterLag = 2 * time.Second
+
+// takeFingerprint is databaseFingerprint, holding held, when it is not nil, through the wait: its
+// release runs as the wait for the server's background writes begins, and the reads begin only
+// once it has ended, or the test fails naming it.
+func takeFingerprint(t *testing.T, served *server, held *heldWriter) fingerprint {
 	t.Helper()
 	ctx, cancel := backgroundContext(t)
 	defer cancel()
+	var waiting func()
+	if held != nil {
+		waiting = held.release
+	}
 	quiet := backgroundWrites(t, ctx, served, waiting)
+	if held != nil && !held.ended() {
+		t.Fatalf("the fingerprint's reads began while %s had not written: its wait did not wait for it", held.name)
+	}
 	database := served.deps.Store
 	rows, err := database.Pool.Query(ctx, `select tablename from pg_tables where schemaname = 'public'`)
 	if err != nil {
@@ -141,43 +171,51 @@ func boundedError(ctx context.Context, err error) error {
 //     the term-statistics refresh a pick starts or joins, a display-tree store, a related record's
 //     retry and the route roster fetch;
 //   - the mention sender (srv.mentions): every send it holds, queued or in flight, each of which
-//     writes its attempt's row and the comment's events when it settles, and the claims it writes
-//     again while one waits;
+//     writes its attempt's row and the comment's events when it settles, and every refresh of the
+//     claims of those sends whose statement runs, which can still write a row whose send has left
+//     held (mentionSenderWriting);
+//   - the server's event horizon (events.Horizon.Busy): an observation in flight and the write of
+//     the safe horizon it proved to event_horizon, which the last read of an event stream relay
+//     generation that stopped meanwhile makes on the relay's goroutine;
 //   - the document service behind srv (docs.Service.AwaitBackgroundWrites): its settlements, running or
-//     armed to run before backgroundSoon from now, and the rest of its background writes.
+//     armed to run before backgroundSoon from now, its compactions, its document sockets and the
+//     rest of its background writes.
 //
 // One writer can start another - a detached run that writes a document arms its settlement - so it
 // passes over all of them again after any wait, and returns only from a pass that waited for none.
 // It answers the next write the document service left armed for later. It refuses, by name, a
-// server whose delivery hub runs: a view the hub reads again may record a deploy run's warning
-// (firstToWarn, delivery_run_warnings) at any moment, and nothing counts those reads. The other
-// goroutines register starts write no row: the event stream relay and the hub's listener read, the
-// boot mark consumes a transaction id and stores nothing (events.Horizon.Mark), the test hooks'
-// fanout answers each call before its request does, and a socket's heartbeat resolves its caller
-// again, which under the test server's header identity is an insert that conflicts and does
-// nothing (store.PgPeopleStore.Record).
+// server whose delivery hub or event stream relay runs (backgroundRefusal), at each pass. The other
+// goroutines register starts write no row: the hub's listener reads, the boot mark consumes a
+// transaction id and stores nothing (events.Horizon.Mark), the test hooks' fanout answers each
+// call before its request does, and a socket's heartbeat resolves its caller again, which under the
+// test server's header identity is an insert that conflicts and does nothing
+// (store.PgPeopleStore.Record).
 func backgroundWrites(t *testing.T, ctx context.Context, srv *server, waiting func()) docs.BackgroundQuiet {
 	t.Helper()
-	if hub := srv.deliveryHub; hub != nil {
-		hub.mu.Lock()
-		running := hub.generation != nil
-		hub.mu.Unlock()
-		if running {
-			t.Fatal("the server's delivery hub runs (a live socket subscribed to a delivery view): a view it reads again can record a deploy run's warning at any moment, and no wait sees those reads, so no fingerprint of this server can tell its writes from a request's")
-		}
+	if refusal := backgroundRefusal(srv); refusal != "" {
+		t.Fatal(refusal)
 	}
 	if waiting != nil {
 		waiting()
 	}
 	for {
+		if refusal := backgroundRefusal(srv); refusal != "" {
+			t.Fatal(refusal)
+		}
 		waited := false
 		if detachedRunning(&srv.detached) {
 			waited = true
 			awaitWait(t, ctx, "the server's detached work (server.detached)", srv.detached.wait)
 		}
-		if mentionSendsHeld(srv.mentions) > 0 {
+		if mentionSenderWriting(srv.mentions) {
 			waited = true
-			awaitCondition(t, ctx, "the mention sender's queued and running sends", func() bool { return mentionSendsHeld(srv.mentions) == 0 })
+			awaitCondition(t, ctx, "the mention sender's queued and running sends and its claim refreshes", func() bool { return !mentionSenderWriting(srv.mentions) })
+		}
+		if srv.deps.Store != nil {
+			if horizon := srv.horizon(); horizon.Busy() {
+				waited = true
+				awaitCondition(t, ctx, "the event horizon's observation and its write to event_horizon", func() bool { return !horizon.Busy() })
+			}
 		}
 		var quiet docs.BackgroundQuiet
 		if srv.deps.Docs != nil {
@@ -191,6 +229,39 @@ func backgroundWrites(t *testing.T, ctx context.Context, srv *server, waiting fu
 			return quiet
 		}
 	}
+}
+
+// backgroundRefusal names why no fingerprint of srv can tell the server's own writes from a
+// request's, and answers "" when nothing stands in the way. The two lazy generations a live socket
+// starts each write at moments no wait can see, so a server running either is refused rather than
+// waited for: the delivery hub, whose views read again can record a deploy run's warning
+// (firstToWarn, delivery_run_warnings) and which nothing counts; and the event stream relay, whose
+// generation an events view starts and keeps from its first subscription (a feed subscribes again
+// before it lets the old subscription go, live_events.go) to its last cancel, and which observes the
+// event horizon on its own goroutine at every event commit and on a gap's fallback timer, writing
+// what it proved to event_horizon (events.Horizon.PersistProven, writePersisted). A relay whose
+// generation is starting is refused too: its first cursor waits for a proven horizon, which writes
+// it as well. Once a generation has stopped, its context is cancelled with it, so its goroutines
+// start no observation that can persist; the one already in flight the wait sees on the horizon
+// itself (events.Horizon.Busy).
+func backgroundRefusal(srv *server) string {
+	if hub := srv.deliveryHub; hub != nil {
+		hub.mu.Lock()
+		running := hub.generation != nil
+		hub.mu.Unlock()
+		if running {
+			return "the server's delivery hub runs (a live socket subscribed to a delivery view): a view it reads again can record a deploy run's warning at any moment, and no wait sees those reads, so no fingerprint of this server can tell its writes from a request's"
+		}
+	}
+	if relay := srv.eventRelay; relay != nil {
+		relay.mu.Lock()
+		running := relay.generation != nil || relay.starting != nil
+		relay.mu.Unlock()
+		if running {
+			return "the server's event stream relay runs (a live socket subscribed to an events view): it observes the event log's safe horizon on its own goroutine and writes it to event_horizon at moments no wait sees, so no fingerprint of this server can tell its writes from a request's"
+		}
+	}
+	return ""
 }
 
 // detachedRunning answers whether any of work runs now.
@@ -210,6 +281,18 @@ func mentionSendsHeld(sender *mentionSender) int {
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
 	return len(sender.held)
+}
+
+// mentionSenderWriting answers whether the mention sender can still write: it holds a send, or a
+// refresh of the claims of the sends it held runs its statement (mentionSender.refreshing), which
+// writes without the lock after the snapshot it took, so a send it named may have left held.
+func mentionSenderWriting(sender *mentionSender) bool {
+	if sender == nil {
+		return false
+	}
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	return len(sender.held) > 0 || sender.refreshing > 0
 }
 
 // awaitWait runs wait, which returns once what it waits for has ended, failing the test naming

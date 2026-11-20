@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // BackgroundQuiet is what AwaitBackgroundWrites answers of a Service's background writes: whether
@@ -25,54 +29,124 @@ const backgroundPoll = 10 * time.Millisecond
 // a request (the API tests' databaseFingerprint) calls it so that no write of this service lands
 // between its two reads unseen.
 //
-// It waits for a settlement whose timer is due by soon or has fired and whose callback still runs
-// (settleTimer, settleCallbacks), and one a caller runs in a timer's place (roomState.settling);
-// for every forced eviction (evicting); for every room's updates its persistence has not taken or
-// has not stored (pendingUpdates, durableAppends), which a settlement's sweep of unrecorded marks
-// leaves behind it; and for the compaction step in flight. One of them can arm another - a
-// settlement retries, a stored update arms a settlement - so it looks again until one look finds
-// none.
+// The service's writers that run beside its callers, from its own code, and what the wait does
+// with each:
 //
-// What it leaves armed it answers rather than waits for: a settlement armed for after soon, and a
-// compaction, which folds only rows older than compactTail (compactRule): a room's close folds any
-// two such rows, and the queue's step folds a room only once it is due (compactionCheck), or on one
-// such row when the step is a retry (tryCompaction). At is the earliest moment one of them may begin
-// to write. The service's other background work writes no row: the awareness relay's sends and a
-// room query's answer are notifications (pg_notify), and warming the appends pool takes and gives
-// back one connection. The loops cmd/dispatch starts (RunEditNotices, RunSettlementResumption,
-// RunCompactionSweep and the others) run only where their caller starts them. A service whose
-// process registered room sync (RegisterRoomSync) is refused: another process's notification can
-// make it write at any moment.
+//   - a settlement: one whose timer is due by soon or has fired and whose callback still runs
+//     (settleTimer, settleCallbacks), or one a caller runs in a timer's place
+//     (roomState.settling), it waits for; one armed for after soon it answers;
+//   - a forced eviction (evicting), which flushes and compacts the room it closes, it waits for;
+//   - the store of a room's updates its persistence has not taken or has not stored
+//     (pendingUpdates, durableAppends), which a settlement's sweep of unrecorded marks leaves
+//     behind it, and of the parked bytes no store has taken (roomState.parked), it waits for;
+//   - a document socket (serving), whose peer's updates, the parked bytes they leave
+//     (storeParked), its last browser's settlement (settleLastPeer) and the retirement of the room
+//     that settlement loaded (retireSettlementRoom) write on the socket's own goroutines, it waits
+//     for, so a socket a test keeps open fails the wait at ctx's end, naming it;
+//   - a compaction under the tail rule, whichever path runs it - the queue's step, ygo's close of a
+//     room, before or after ygo has taken the room out of its map, a retirement's or a forced
+//     eviction's - folds only rows older than compactTail (compactRule). The queue's step in
+//     flight it waits for. For every document with a row after its first it answers the moment the
+//     oldest such row leaves compactTail, read by the queue's own check (checkCompaction,
+//     compactionCheck.untilAged), which no path can fold before. A document whose rows a
+//     compaction may fold already it compacts itself, under the tail rule and waiting for the
+//     document's lock, once, so no path is left anything to fold until another row comes of age;
+//     one whose rows would not fold it answers as a compaction that may run now.
+//
+// One of them can arm another - a settlement retries, a stored update arms a settlement - so it
+// looks again until one look finds none (runningBackgroundWrite), and then once more, for a writer
+// that moved from a count the look read into a register it had read before. Each look takes the
+// service's locks on a goroutine of its own (within), so a lock held past ctx's end fails the wait
+// rather than holding it. The service's other background work writes no row: the awareness relay's
+// sends and a room query's answer are notifications (pg_notify), and warming the appends pool takes
+// and gives back one connection. The loops cmd/dispatch starts (RunEditNotices,
+// RunSettlementResumption, RunCompactionSweep and the others) run only where their caller starts
+// them. A service whose process registered room sync (RegisterRoomSync) is refused: another
+// process's notification can make it write at any moment.
 func (s *Service) AwaitBackgroundWrites(ctx context.Context, soon time.Time) (BackgroundQuiet, error) {
 	if s.roomSyncRegistered.Load() {
 		return BackgroundQuiet{}, errors.New("this document service runs room sync (RegisterRoomSync): another process's notification can make it write at any moment, which no wait of this process sees")
 	}
 	var quiet BackgroundQuiet
-	look := time.NewTimer(0)
-	defer look.Stop()
+	compacted := map[string]bool{}
 	for {
-		writer := s.runningBackgroundWrite(soon)
-		if writer == "" {
-			break
+		waited, err := s.awaitNoRunningWrite(ctx, soon)
+		quiet.Waited = quiet.Waited || waited
+		if err != nil {
+			return quiet, err
 		}
+		next, err := s.nextBackgroundWrite(ctx)
+		if err != nil {
+			return quiet, err
+		}
+		room := ""
+		for _, foldable := range next.foldable {
+			if !compacted[foldable] {
+				room = foldable
+				break
+			}
+		}
+		if room == "" {
+			quiet.At, quiet.Writer = next.at, next.writer
+			return quiet, nil
+		}
+		compacted[room] = true
 		quiet.Waited = true
-		look.Reset(backgroundPoll)
-		select {
-		case <-ctx.Done():
-			return quiet, fmt.Errorf("%s did not end: %w", writer, ctx.Err())
-		case <-look.C:
+		if _, err := s.persistence.compactRoom(ctx, room, tailRule, true); err != nil {
+			return quiet, fmt.Errorf("compact document %s, whose rows a background compaction may fold now: %w", room, err)
 		}
 	}
-	at, writer, err := s.nextBackgroundWrite(ctx)
-	quiet.At, quiet.Writer = at, writer
-	return quiet, err
+}
+
+// awaitNoRunningWrite waits until two looks in a row find no background write of the service
+// running now or due by soon (runningBackgroundWrite), and answers whether it waited for one.
+func (s *Service) awaitNoRunningWrite(ctx context.Context, soon time.Time) (bool, error) {
+	waited := false
+	for empty := 0; empty < 2; {
+		writer, err := within(ctx, func() string { return s.runningBackgroundWrite(soon) })
+		if err != nil {
+			return waited, fmt.Errorf("look for the document service's background writes: %w", err)
+		}
+		if writer == "" {
+			empty++
+			continue
+		}
+		empty, waited = 0, true
+		if err := pause(ctx, backgroundPoll); err != nil {
+			return waited, fmt.Errorf("%s did not end: %w", writer, err)
+		}
+	}
+	return waited, nil
 }
 
 // runningBackgroundWrite names a background write of the service that runs now or is due by soon,
-// and answers "" when there is none.
+// and answers "" when there is none. It reads the registers a writer stands in while it is owed -
+// each room's record, then the settlement timers - before the counts a writer keeps while it runs
+// (settleCallbacks, evicting, serving, the compaction step), in the order every hand-off between
+// two of them takes: an append arms its room's settlement before the room's count of it falls (a
+// room's record, then the timers), a fired timer's callback counts itself before it drops its timer
+// (the timers, then settleCallbacks), and an append that fails its room starts the room's eviction
+// while the room still counts the append (failRoomLocked, refuseClosedIssueAppend,
+// closeRoomOnReplacedHistory: a room's record, then evicting). So a writer that moves on while one
+// look reads is in what that look reads after. A writer that moves the other way, from a count into
+// a register - a socket's peer update its room has not stored when the socket ends - is in the
+// register at the next look, which AwaitBackgroundWrites takes before it goes on.
 func (s *Service) runningBackgroundWrite(soon time.Time) string {
-	if s.settleCallbacks.Load() > 0 {
-		return "a document settlement whose timer fired"
+	var busy string
+	s.rooms.Range(func(key, value any) bool {
+		room, state := key.(string), value.(*roomState)
+		state.mu.Lock()
+		switch {
+		case state.settling > 0:
+			busy = "the settlement of document " + room
+		case state.pendingLocked() || state.appendingLocked() || len(state.parked) > 0:
+			busy = "the store of document " + room + "'s room updates"
+		}
+		state.mu.Unlock()
+		return busy == ""
+	})
+	if busy != "" {
+		return busy
 	}
 	s.timerMu.Lock()
 	for _, armed := range s.timers {
@@ -82,146 +156,110 @@ func (s *Service) runningBackgroundWrite(soon time.Time) string {
 		}
 	}
 	s.timerMu.Unlock()
-	if s.evicting.Load() > 0 {
-		return "a forced eviction of a document room"
+	if s.betweenBackgroundReads != nil {
+		s.betweenBackgroundReads()
 	}
-	if _, stepping := s.compactions.held(); stepping {
+	switch {
+	case s.settleCallbacks.Load() > 0:
+		return "a document settlement whose timer fired"
+	case s.evicting.Load() > 0:
+		return "a forced eviction of a document room"
+	case s.serving.Load() > 0:
+		return "a document socket, whose peer's updates, parked bytes, last browser's settlement and room retirement write on its own goroutines"
+	case s.compactions.stepping():
 		return "a document compaction"
 	}
-	var busy string
-	s.rooms.Range(func(key, value any) bool {
-		room, state := key.(string), value.(*roomState)
-		state.mu.Lock()
-		switch {
-		case state.settling > 0:
-			busy = "the settlement of document " + room
-		case state.pendingLocked() || state.appendingLocked():
-			busy = "the store of document " + room + "'s room updates"
-		}
-		state.mu.Unlock()
-		return busy == ""
-	})
-	return busy
+	return ""
 }
 
-// nextBackgroundWriteSQL answers, for each room $1 names, how many seconds from the statement's
-// now() its second doc_updates row, and its ($2 + 1)th, leave compactTail behind them: the first
-// moment a fold may take two rows (a close's, or a retry's), and the first moment the room holds
-// compactMinRows rows past its first that are older than compactTail (the queue's due). Each is null
-// when the room holds no such row. The second row is also what compactMaxTailAge ages.
-const nextBackgroundWriteSQL = `
-	select r.room,
-		extract(epoch from (
-			select u.created_at from doc_updates u where u.artifact_id::text = r.room
-			order by u.version offset 1 limit 1) - now()),
-		extract(epoch from (
-			select u.created_at from doc_updates u where u.artifact_id::text = r.room
-			order by u.version offset $2 limit 1) - now())
-	from unnest($1::text[]) as r(room)`
+// armedWrite is what nextBackgroundWrite answers: the earliest moment a write the service leaves
+// armed may begin and what it is, at the zero time when nothing is armed, and the documents whose
+// rows a compaction may fold already.
+type armedWrite struct {
+	at       time.Time
+	writer   string
+	foldable []string
+}
 
-// nextBackgroundWrite answers the earliest moment a write the service holds armed may begin, and
-// what it is: the settlement timer due first, and the first compaction that may fold a resident
-// room's rows (a close's, which ygo's idle sweeper may run at any moment) or a queued room's (the
-// queue's step, at its time and only on a room due). It answers the zero time when nothing is armed.
-func (s *Service) nextBackgroundWrite(ctx context.Context) (time.Time, string, error) {
-	var at time.Time
-	var writer string
+// compactableRoomsSQL names every document with a row after its first: the documents a compaction
+// may one day fold. Which of them it may fold, and from when, is the queue's own check's to read
+// (checkCompaction).
+const compactableRoomsSQL = `select artifact_id::text from doc_updates group by artifact_id having count(*) > 1`
+
+// nextBackgroundWrite answers the earliest moment a write the service leaves armed may begin, and
+// what it is: the settlement timer due first, or the first compaction that may fold a document's
+// rows, for every document with a row after its first, resident or not, since a close's
+// compaction can still run once ygo has taken a room out of its map. It lists the documents a
+// compaction may fold already.
+func (s *Service) nextBackgroundWrite(ctx context.Context) (armedWrite, error) {
+	var next armedWrite
 	take := func(when time.Time, what string) {
-		if at.IsZero() || when.Before(at) {
-			at, writer = when, what
+		if next.at.IsZero() || when.Before(next.at) {
+			next.at, next.writer = when, what
 		}
 	}
-	s.timerMu.Lock()
-	for _, armed := range s.timers {
+	timers, err := within(ctx, func() []settleTimer {
+		s.timerMu.Lock()
+		defer s.timerMu.Unlock()
+		return slices.Collect(maps.Values(s.timers))
+	})
+	if err != nil {
+		return next, fmt.Errorf("read the document settlements armed: %w", err)
+	}
+	for _, armed := range timers {
 		take(armed.due, fmt.Sprintf("the settlement of document %s armed for %s", armed.room, armed.due.Format(time.RFC3339Nano)))
 	}
-	s.timerMu.Unlock()
-
-	resident := map[string]bool{}
-	s.rooms.Range(func(key, _ any) bool {
-		if room := key.(string); s.srv.GetDoc(room) != nil {
-			resident[room] = true
-		}
-		return true
-	})
-	queued, _ := s.compactions.held()
-	rooms := make([]string, 0, len(resident)+len(queued))
-	for room := range resident {
-		rooms = append(rooms, room)
-	}
-	for _, held := range queued {
-		if !resident[held.room] {
-			rooms = append(rooms, held.room)
-		}
-	}
-	if len(rooms) == 0 {
-		return at, writer, nil
-	}
-	asked := time.Now()
-	rows, err := s.store.Pool.Query(ctx, nextBackgroundWriteSQL, rooms, compactMinRows)
+	rows, err := s.store.Pool.Query(ctx, compactableRoomsSQL)
 	if err != nil {
-		return at, writer, fmt.Errorf("read when a document compaction may fold rows: %w", err)
+		return next, fmt.Errorf("list the documents a compaction may fold: %w", err)
 	}
-	defer rows.Close()
-	type ages struct{ second, due *float64 }
-	aged := map[string]ages{}
-	for rows.Next() {
-		var room string
-		var age ages
-		if err := rows.Scan(&room, &age.second, &age.due); err != nil {
-			return at, writer, fmt.Errorf("read when a document compaction may fold rows: %w", err)
+	rooms, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return next, fmt.Errorf("list the documents a compaction may fold: %w", err)
+	}
+	for _, room := range rooms {
+		// From asked, which comes before the check's now(), so the moment reads no later than it is.
+		asked := time.Now()
+		check, err := s.checkCompaction(ctx, room)
+		if err != nil {
+			return next, fmt.Errorf("read when a compaction may fold document %s: %w", room, err)
 		}
-		aged[room] = age
-	}
-	if err := rows.Err(); err != nil {
-		return at, writer, fmt.Errorf("read when a document compaction may fold rows: %w", err)
-	}
-	// From asked, which comes before the statement's now(), so each moment reads no later than it is.
-	past := func(seconds *float64, beyond time.Duration) (time.Time, bool) {
-		if seconds == nil {
-			return time.Time{}, false
-		}
-		return asked.Add(time.Duration(*seconds*float64(time.Second)) + beyond), true
-	}
-	fold := func(room string, when time.Time, how string) {
-		take(when, fmt.Sprintf("a compaction of document %s (%s), which may fold its rows older than %s", room, how, compactTail))
-	}
-	for room := range resident {
-		if when, ok := past(aged[room].second, compactTail); ok {
-			fold(room, when, "its room's close")
+		switch {
+		case check.later == 0:
+		case check.aged:
+			next.foldable = append(next.foldable, room)
+			take(asked, fmt.Sprintf("a compaction of document %s, which may fold its rows older than %s now", room, compactTail))
+		default:
+			take(asked.Add(check.untilAged), fmt.Sprintf("a compaction of document %s, which may fold its rows older than %s", room, compactTail))
 		}
 	}
-	for _, held := range queued {
-		age := aged[held.room]
-		var due time.Time
-		if held.retrying {
-			when, ok := past(age.second, compactTail)
-			if !ok {
-				continue
-			}
-			due = when
-		} else {
-			many, manyOK := past(age.due, compactTail)
-			old, oldOK := past(age.second, compactMaxTailAge)
-			switch {
-			case manyOK && oldOK:
-				if many.Before(old) {
-					due = many
-				} else {
-					due = old
-				}
-			case manyOK:
-				due = many
-			case oldOK:
-				due = old
-			default:
-				continue
-			}
-		}
-		if due.Before(held.at) {
-			due = held.at
-		}
-		fold(held.room, due, "the compaction queue's step")
+	return next, nil
+}
+
+// within runs look on a goroutine of its own and answers what it answers, or ctx's cause when ctx
+// ends first. A look takes the service's locks (timerMu, each room's state.mu), and a holder that
+// stalls in a slow call keeps one past any bound, so the wait never blocks on one past ctx; a look
+// ctx left behind ends on its own once the lock is let go.
+func within[T any](ctx context.Context, look func() T) (T, error) {
+	answer := make(chan T, 1)
+	go func() { answer <- look() }()
+	select {
+	case value := <-answer:
+		return value, nil
+	case <-ctx.Done():
+		var zero T
+		return zero, context.Cause(ctx)
 	}
-	return at, writer, nil
+}
+
+// pause waits for d, answering ctx's error when ctx ends first.
+func pause(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

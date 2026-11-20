@@ -45,7 +45,9 @@ func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
-	settleNowAndWait(t, service, artifactID)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	settleNowAndWait(t, ctx, service, artifactID)
 	var rows int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from asks where block_artifact_id = $1 and block_id = any($2::text[])

@@ -5050,19 +5050,19 @@ func settleArmedNow(t *testing.T, service *Service, rooms ...string) {
 			t.Fatalf("the service holds no settlement armed for %s", room)
 		}
 	}
-	settleNowAndWait(t, service, rooms...)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	settleNowAndWait(t, ctx, service, rooms...)
 }
 
 // settleNowAndWait runs the settlement of each of rooms at once, armed or not, and waits with the
-// service's own wait (AwaitBackgroundWrites) for it, and for every settlement it arms in turn
-// within a second of now, to end.
-func settleNowAndWait(t *testing.T, service *Service, rooms ...string) {
+// service's own wait (AwaitBackgroundWrites), within ctx, for it, and for every settlement it arms
+// in turn within a second of now, to end.
+func settleNowAndWait(t *testing.T, ctx context.Context, service *Service, rooms ...string) {
 	t.Helper()
 	for _, room := range rooms {
 		service.SettleNow(room)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
 	if _, err := service.AwaitBackgroundWrites(ctx, time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("wait for the settlements run now: %v", err)
 	}
