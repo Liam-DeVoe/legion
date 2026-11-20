@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -70,14 +71,27 @@ func TestAFailedBuildEndsThePartAtItsStatement(t *testing.T) {
 // (Send), and those batches together run every statement of the phase once and in the order it
 // was queued, whether the statement was queued with its arguments or with a build of them: no
 // statement is dropped or sent twice where one part ends and the next begins. Each statement's
-// callback runs once, in that same order.
+// callback runs once, in that same order. The test's connection records each batch it sends
+// (sentBatches), so the test sees the phase go in more than one part, and names the statement
+// each later part begins with: the one after the last statement of the part before it.
 //
 // Control: change `start = end` in Send to `start = end + 1`, so each part after the first
-// starts one statement late, and this fails, naming statements 3, 7 and 11 as missing.
-func TestAWritePhasePastTheSendBoundRunsEveryStatementOnceAndInOrder(t *testing.T) {
-	store := openTestStore(t)
+// starts one statement late, and this fails, naming statements 3, 7 and 11, the first of each
+// later part, as missing from the rows.
+func TestAWritePhasePastTheSendBoundRunsEveryStatementInOrder(t *testing.T) {
 	ctx := context.Background()
-	tx, err := store.Pool.Begin(ctx)
+	config, err := pgx.ParseConfig(testDatabaseURL(t))
+	if err != nil {
+		t.Fatalf("parse the test database's URL: %v", err)
+	}
+	sent := &sentBatches{}
+	config.Tracer = sent
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("connect to the test database: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin a transaction: %v", err)
 	}
@@ -86,7 +100,7 @@ func TestAWritePhasePastTheSendBoundRunsEveryStatementOnceAndInOrder(t *testing.
 		position bigserial primary key,
 		statement int not null,
 		bytes int not null
-	) on commit drop`); err != nil {
+	)`); err != nil {
 		t.Fatalf("create the table the write phase inserts into: %v", err)
 	}
 
@@ -94,11 +108,8 @@ func TestAWritePhasePastTheSendBoundRunsEveryStatementOnceAndInOrder(t *testing.
 	// more than three statements. Every statement shares the one payload string.
 	const statements = 12
 	payload := strings.Repeat("x", sendBound/4+1)
-	if total := statements * len(payload); total <= 2*sendBound {
-		t.Fatalf("%d statements of %d payload bytes carry %d bytes, want more than twice the send bound of %d, so that Send must cut the phase into three parts or more",
-			statements, len(payload), total, sendBound)
-	}
 
+	// Each statement inserts a row naming its place in the phase, its first argument.
 	const insert = `insert into parted_send (statement, bytes) values ($1, length($2::text))`
 	var batch WriteBatch
 	var ran []int
@@ -118,6 +129,9 @@ func TestAWritePhasePastTheSendBoundRunsEveryStatementOnceAndInOrder(t *testing.
 	}
 	if err := batch.Send(ctx, tx); err != nil {
 		t.Fatalf("send the write phase: %v", err)
+	}
+	if len(sent.batches) < 2 {
+		t.Fatalf("the write phase went as the batches %v, want more than one", sent.batches)
 	}
 
 	rows, err := tx.Query(ctx, `select statement, bytes from parted_send order by position`)
@@ -144,31 +158,47 @@ func TestAWritePhasePastTheSendBoundRunsEveryStatementOnceAndInOrder(t *testing.
 	for index := range want {
 		want[index] = index
 	}
-	// everyOnceInOrder fails the test where got is not every statement once and in order, and
-	// names the statements missing from got and those it holds more than once.
-	everyOnceInOrder := func(what string, got []int) {
-		t.Helper()
-		if slices.Equal(got, want) {
-			return
-		}
-		counts := make([]int, statements)
-		for _, statement := range got {
-			if statement >= 0 && statement < statements {
-				counts[statement]++
-			}
-		}
-		var missing, repeated []int
-		for statement, count := range counts {
-			if count == 0 {
-				missing = append(missing, statement)
-			}
-			if count > 1 {
-				repeated = append(repeated, statement)
-			}
-		}
-		t.Errorf("%s statements %v, want %v, each once and in order: missing %v, repeated %v",
-			what, got, want, missing, repeated)
+	if !slices.Equal(inserted, want) {
+		t.Errorf("the table holds rows, in insert order, of statements %v, want %v, each once and in order", inserted, want)
 	}
-	everyOnceInOrder("the table holds rows, in insert order, of", inserted)
-	everyOnceInOrder("the callbacks ran for", ran)
+	if !slices.Equal(ran, want) {
+		t.Errorf("the callbacks ran for statements %v, want %v, each once and in order", ran, want)
+	}
+	// A part ends where the next begins, so the statement after each batch's last begins a later
+	// part, unless that batch ends the phase.
+	var missing []int
+	for _, carried := range sent.batches {
+		if first := carried[len(carried)-1] + 1; first < statements && !slices.Contains(inserted, first) {
+			missing = append(missing, first)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("statements %v begin the parts after the batches %v, but the table holds no row of them", missing, sent.batches)
+	}
 }
+
+// sentBatches is a pgx tracer that records, for each batch its connection sends, the statements
+// the batch carried, each by its first argument.
+type sentBatches struct{ batches [][]int }
+
+func (s *sentBatches) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	var carried []int
+	for _, query := range data.Batch.QueuedQueries {
+		statement, _ := query.Arguments[0].(int)
+		carried = append(carried, statement)
+	}
+	s.batches = append(s.batches, carried)
+	return ctx
+}
+
+func (*sentBatches) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (*sentBatches) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+// TraceQueryStart and TraceQueryEnd make sentBatches a pgx.QueryTracer, the type of
+// pgx.ConnConfig's Tracer, which pgx hands each batch when it is a pgx.BatchTracer too.
+func (*sentBatches) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (*sentBatches) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}

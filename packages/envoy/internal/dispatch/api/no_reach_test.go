@@ -565,6 +565,20 @@ func threeBadRequests(t *testing.T) {
 		}
 		probed = append(probed, route.Method+" "+target)
 		response := crossProjectRequest(t, handler, route, target, owned)
+		// The source's removal and its sync find a source by the key and the repository together
+		// (deleteArchitectureSource, architecture.Importer.loadSourceByRepo), so under another
+		// project's key each finds none and answers 404 SOURCE_NOT_FOUND, and nothing else. One
+		// that matched the repository alone would act on this project's source: the removal
+		// would delete it (204), and the sync would load it and, the test server holding no
+		// GitHub App, answer 409 SOURCE_ACCESS (syncArchitectureSource), which the checks below
+		// would pass as a refusal.
+		if strings.Contains(route.Pattern, "/architecture-sources/{owner}/{repo}") {
+			if code := responseCode(t, response); response.Code != http.StatusNotFound || code != "SOURCE_NOT_FOUND" {
+				t.Errorf("%s answers %d %s for another project's architecture source, want 404 SOURCE_NOT_FOUND: %s",
+					route.Method+" "+target, response.Code, code, firstLine(response.Body.String()))
+			}
+			continue
+		}
 		if response.Code < 400 {
 			t.Errorf("%s answers %d for an identifier of another project: %s",
 				route.Method+" "+target, response.Code, firstLine(response.Body.String()))
@@ -598,6 +612,14 @@ func threeBadRequests(t *testing.T) {
 			t.Errorf("%s refuses the probe's caller %s before it reads the identifier, so the probe proves nothing about it",
 				route.Method+" "+target, why)
 		}
+	}
+	// A removal that answered 404 but deleted the source all the same would pass the check
+	// above, so the source the probe sent under another project's key must still be listed.
+	if sources := listSources(t, handler, "TEST"); !slices.ContainsFunc(sources, func(source architectureSourceResponse) bool {
+		return source.Repo == owned.architectureSource
+	}) {
+		t.Errorf("GET /api/v1/projects/TEST/architecture-sources lists %q after the probe, without the source %s it sent under OTH",
+			sourceStrings(sources), owned.architectureSource)
 	}
 	if len(probed) < 5 {
 		t.Fatalf("only %d route(s) were probed with another project's identifier, which is too few to prove anything", len(probed))
