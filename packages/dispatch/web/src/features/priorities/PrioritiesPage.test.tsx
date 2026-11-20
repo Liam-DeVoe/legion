@@ -148,8 +148,15 @@ function Address() {
 
 /** The page as a signed-in person sees it at `at`, with the reads it makes answered from
  *  `answer`; a reader who is not a person, and so may not write a priority, where `writer` is
- *  false. */
-function page(answer: Priorities, issues: IssueSummary[] = [], writer = true, at = "/priorities") {
+ *  false; and each table's box `box` px wide where a test names a width, which the unit DOM
+ *  otherwise measures as none, a phone's. */
+function page(
+  answer: Priorities,
+  issues: IssueSummary[] = [],
+  writer = true,
+  at = "/priorities",
+  box?: number
+) {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
@@ -171,6 +178,18 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true, at
       return this.dataset.testid?.endsWith("-scroll") ? 600 : (descriptor?.get?.call(this) ?? 0);
     },
   });
+  // Stubbed on Element, the prototype that owns the method, for the boxes alone.
+  const measured = Element.prototype.getBoundingClientRect;
+  const rect =
+    box === undefined
+      ? undefined
+      : spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+          this: Element
+        ) {
+          return this.getAttribute("data-testid")?.endsWith("-scroll") === true
+            ? new DOMRect(0, 0, box, 600)
+            : measured.call(this);
+        });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], whoami);
   // An open row's description is drawn in the documents' own editor, which a test edits through.
@@ -192,6 +211,7 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true, at
     client.clear();
     for (const spy of [priorities, listing, state, agents, viewer, create, patch])
       spy.mockRestore();
+    rect?.mockRestore();
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
@@ -500,9 +520,13 @@ test("with no priority a reader who may not write one is shown only the sentence
   expect(screen.queryByRole("button", { name: "New priority" })).toBeNull();
 });
 
+/** The box a table gets in a 1280 px window beside the sidebar, and in a 390 px one. */
+const DESKTOP_BOX = 910;
+const PHONE_BOX = 342;
+
 test("a row counts the work in flight, waiting and parked, shows its newest event, and what closed when asked", async () => {
   const user = userEvent.setup();
-  page(FIFTEEN);
+  page(FIFTEEN, [], true, "/priorities", DESKTOP_BOX);
   const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   const texts = (of: HTMLElement) =>
     within(of)
@@ -563,6 +587,48 @@ test("a row counts the work in flight, waiting and parked, shows its newest even
   expect(texts(row).slice(3, 7)).toEqual(["7", "12", "0", "22"]);
   const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
   expect(texts(second).slice(3)).toEqual(["1", "0", "3", "2", "Never"]);
+});
+
+// On a phone every header stands on one line at its column's left edge, the place and the title
+// take the whole box while the other columns scroll behind them, and the one cell of the place
+// holds the grip and the disclosure that opens the row (INFRA-2947, R7).
+test("on a phone every header stands on one line, and the place and the title take the box", async () => {
+  page(FIFTEEN, [], true, "/priorities", PHONE_BOX);
+  const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  expect(
+    screen.getAllByRole("columnheader").map((header) => {
+      const line = header.firstElementChild?.className.split(" ") ?? [];
+      return {
+        name: header.textContent?.replace("Filter", ""),
+        oneLine: !line.includes("flex-col") && !line.includes("justify-end"),
+        width: header.style.width,
+      };
+    })
+  ).toEqual([
+    { name: "#▲", oneLine: true, width: "76px" },
+    { name: "Priority", oneLine: true, width: `${PHONE_BOX - 76}px` },
+    { name: "Owner", oneLine: true, width: "112px" },
+    { name: "Active", oneLine: true, width: "76px" },
+    { name: "Triage, Todo", oneLine: true, width: "104px" },
+    { name: "Backlog, icebox", oneLine: true, width: "128px" },
+    { name: "Newest event", oneLine: true, width: "160px" },
+  ]);
+  for (const name of ["Triage, Todo", "Backlog, icebox", "Newest event"]) {
+    const header = screen.getByRole("columnheader", { name: new RegExp(`^${name}`) });
+    expect(within(header).getByRole("button", { name }).className, name).toContain(
+      "whitespace-nowrap"
+    );
+  }
+  const place = within(row).getAllByRole("cell")[0];
+  if (place === undefined) throw new Error("the row draws no cell");
+  expect(
+    within(place)
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label"))
+  ).toEqual([
+    "Move #1 Legion works reliably first: drag it, or press the up and down arrows",
+    "Open #1 Legion works reliably first",
+  ]);
 });
 
 test("the first line of a description shows on a closed row, in two lines at most, and the whole of it when it opens", async () => {

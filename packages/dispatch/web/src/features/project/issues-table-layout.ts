@@ -19,9 +19,10 @@ export interface LayoutPins {
    *  box. Where they would cover more, `flexible` narrows first, down to its minimum, and then
    *  the rightmost unpin one at a time. Their visibility is not the reader's, so none is stored. */
   readonly wide: { readonly columns: readonly string[]; readonly share: number };
-  /** In a phone's box: these columns, left to right, within `share` of it. Each column of
-   *  `widths` is drawn at that width whatever the reader dragged, and `flexible` takes what the
-   *  others leave, between `flexibleMin` and its own width. */
+  /** In a phone's box: these columns, left to right, within `share` of it and never past the
+   *  room inside its borders and beside its scrollbar, so a share of 1 ends them at its inner
+   *  edge. Each column of `widths` is drawn at that width whatever the reader dragged, and
+   *  `flexible` takes what the others leave, between `flexibleMin` and its own width. */
   readonly phone: {
     readonly columns: readonly string[];
     readonly share: number;
@@ -78,8 +79,8 @@ export interface TableLayoutModel {
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
   /** The widths the window allows, the columns pinned at its left, and whether the box is a
-   *  phone's (`compact`): there the title's header stacks its controls and a column takes its
-   *  phone minimum. */
+   *  phone's (`compact`): there each header stands on one line but the one the table stacks
+   *  (`DataTable`'s `stackedHeader`), and a column takes its phone minimum or width. */
   readonly responsive: {
     readonly sizing: ColumnSizingState;
     readonly pinned: string[];
@@ -173,13 +174,11 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     const flexibleWidth = widths[flexible];
     if (!desktop) {
       Object.assign(widths, phone.widths);
+      const room = Math.min(boxWidth * phone.share, Math.floor(boxWidth - boxEdge));
       if (flexibleWidth !== undefined)
         widths[flexible] = Math.max(
           phone.flexibleMin,
-          Math.min(
-            flexibleWidth,
-            boxWidth * phone.share - covered(phone.columns.filter((id) => id !== flexible))
-          )
+          Math.min(flexibleWidth, room - covered(phone.columns.filter((id) => id !== flexible)))
         );
       return { sizing: widths, pinned: [...phone.columns], compact: true };
     }

@@ -118,7 +118,10 @@ const COUNT = { size: 76, min: 76, numeric: true } as const;
  *  the four counts have no filter, and their headers no filter control; a count's column is as
  *  narrow as its numbers, which stand at its right edge under its header's words, two lines of
  *  them where they need it (`numeric`). The newest event's words take two lines as well, beside
- *  its filter, over a time that takes one (`wrap`). */
+ *  its filter, over a time that takes one (`wrap`). A phone draws every header on one line, at
+ *  its column's left edge, so a column whose words wrap on a desktop is as wide as its words on
+ *  one line there (`phone`), measured in Chromium's DejaVu Sans with room to spare: the columns
+ *  scroll behind the place and the title, which take the box. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   { id: "order", header: "#", size: 76, min: 76, pinned: true, text: (item) => item.order },
   {
@@ -138,14 +141,15 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     group: ownerOf,
   },
   { id: "in-flight", header: "Active", ...COUNT },
-  { id: "waiting", header: "Triage, Todo", ...COUNT },
-  { id: "parked", header: "Backlog, icebox", ...COUNT },
-  { id: "closed", header: "Closed, 7 days", ...COUNT, hidden: true },
+  { id: "waiting", header: "Triage, Todo", ...COUNT, phone: 104 },
+  { id: "parked", header: "Backlog, icebox", ...COUNT, phone: 128 },
+  { id: "closed", header: "Closed, 7 days", ...COUNT, hidden: true, phone: 120 },
   {
     id: "newest",
     header: "Newest event",
     size: 104,
     min: 104,
+    phone: 160,
     wrap: true,
     values: (item) => [newestBucket(item.newest)],
     group: (item) => newestBucket(item.newest),

@@ -78,14 +78,24 @@ function GripIcon(): ReactNode {
   );
 }
 
+/**
+ * A row's place in the one order, with the disclosure that opens the row under it: one cell at
+ * every width, no wider than 80 px, in which a phone's 44 px targets stand one above the other.
+ * Where the reader may drag the order, the place is the grip's words, so a row is dragged by its
+ * place.
+ */
 function OrderCell({ item }: { item: PriorityItem }) {
   const actions = useRowActions();
+  const open = actions.openId === item.priority.id;
+  const place = (
+    <span className={`font-semibold tabular-nums ${textSecondaryOnCanvas}`}>{item.order}</span>
+  );
   return (
-    <span className="flex items-center gap-1">
+    <div className="flex flex-col items-start gap-1">
       {actions.canWrite && actions.canReorder ? (
         <button
           aria-label={`Move ${item.order} ${item.priority.title}: drag it, or press the up and down arrows`}
-          className={`-ml-1 cursor-grab rounded p-0.5 active:cursor-grabbing ${textMutedOnCanvas} ${focusVisibleRing}`}
+          className={`-ml-1 flex cursor-grab items-center gap-1 rounded p-0.5 active:cursor-grabbing ${textMutedOnCanvas} ${focusVisibleRing}`}
           draggable
           onDragEnd={actions.onDragEnd}
           onDragStart={(event) => {
@@ -102,10 +112,21 @@ function OrderCell({ item }: { item: PriorityItem }) {
           type="button"
         >
           <GripIcon />
+          {place}
         </button>
-      ) : null}
-      <span className={`font-semibold tabular-nums ${textSecondaryOnCanvas}`}>{item.order}</span>
-    </span>
+      ) : (
+        place
+      )}
+      <button
+        aria-expanded={open}
+        aria-label={`${open ? "Close" : "Open"} ${item.order} ${item.priority.title}`}
+        className={`-ml-1 rounded p-0.5 ${textMutedOnCanvas} ${focusVisibleRing}`}
+        onClick={() => actions.onOpen(item)}
+        type="button"
+      >
+        <ChevronIcon expanded={open} />
+      </button>
+    </div>
   );
 }
 
@@ -115,51 +136,37 @@ function TitleCell({ item }: { item: PriorityItem }) {
   const { description, id, title } = item.priority;
   const keptDescription = actions.kept(id, description);
   return (
-    <div className="flex min-w-0 items-start gap-1">
-      <button
-        aria-expanded={open}
-        aria-label={`${open ? "Close" : "Open"} ${item.order} ${title}`}
-        className={`mt-0.5 rounded ${textMutedOnCanvas} ${focusVisibleRing}`}
-        onClick={() => actions.onOpen(item)}
-        type="button"
+    <div className="min-w-0 space-y-1">
+      {/* The title is read here and renamed on the priority's own page, which it opens: a
+          click, or `o` and Enter on the focused row, which open the row's `data-issue-link`.
+          It wraps whole, however long, in the type of the Issues table's titles. */}
+      <Link
+        className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
+        data-issue-link
+        to={priorityPath(item.priority.id)}
       >
-        <ChevronIcon expanded={open} />
-      </button>
-      <div className="min-w-0 flex-1 space-y-1">
-        {/* The title is read here and renamed on the priority's own page, which it opens: a
-            click, or `o` and Enter on the focused row, which open the row's `data-issue-link`.
-            It wraps whole, however long, in the type of the Issues table's titles. */}
-        <Link
-          className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
-          data-issue-link
-          to={priorityPath(item.priority.id)}
-        >
-          <span className={`min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>{title}</span>
-        </Link>
-        {/* An open row draws its whole description, and so does a closed one that keeps the
-            reader's text beside it: the notice of a write another person's change refused is on
-            the row whether it is open or not. */}
-        {open || keptDescription.length > 0 ? (
-          <PriorityDescription
-            canWrite={actions.canWrite}
-            description={description}
-            kept={keptDescription}
-            label={`Description of ${item.order}`}
-            onKeptChange={(texts) => actions.onKeep(id, texts)}
-            onSave={(next) => actions.onDescribe(item, next)}
-          />
-        ) : item.summary === "" ? null : (
-          // A closed row shows the description's first line, muted, in at most two lines that
-          // end in '…' where it runs on; the whole line is its tooltip, and the open row shows
-          // the whole description in its editor.
-          <p
-            className={`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`}
-            title={item.summary}
-          >
-            {item.summary}
-          </p>
-        )}
-      </div>
+        <span className={`min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>{title}</span>
+      </Link>
+      {/* An open row draws its whole description, and so does a closed one that keeps the
+          reader's text beside it: the notice of a write another person's change refused is on
+          the row whether it is open or not. */}
+      {open || keptDescription.length > 0 ? (
+        <PriorityDescription
+          canWrite={actions.canWrite}
+          description={description}
+          kept={keptDescription}
+          label={`Description of ${item.order}`}
+          onKeptChange={(texts) => actions.onKeep(id, texts)}
+          onSave={(next) => actions.onDescribe(item, next)}
+        />
+      ) : item.summary === "" ? null : (
+        // A closed row shows the description's first line, muted, in at most two lines that
+        // end in '…' where it runs on; the whole line is its tooltip, and the open row shows
+        // the whole description in its editor.
+        <p className={`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`} title={item.summary}>
+          {item.summary}
+        </p>
+      )}
     </div>
   );
 }

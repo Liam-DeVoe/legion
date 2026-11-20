@@ -468,6 +468,8 @@ export function IssuesTable({
           />
         )}
         scrollTestId="issues-table-scroll"
+        // A phone draws Title beside the key at its narrowest: its filter stands under its words.
+        stackedHeader="title"
         trailingWidth={actions}
       />
 

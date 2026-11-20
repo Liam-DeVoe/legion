@@ -28,6 +28,9 @@ export interface TableColumn<Row> {
   readonly numeric?: boolean;
   /** A header whose words wrap onto a second line in a column narrower than they are. */
   readonly wrap?: boolean;
+  /** Its width on a phone, which draws every header on one line (`DataTable`): wider than
+   *  `size` for a column whose header's words wrap on a desktop (`numeric`, `wrap`). */
+  readonly phone?: number;
   /** The text a typed filter matches, where this column filters by typing. */
   readonly text?: (row: Row) => string;
   /** The values a picked filter offers, where this column filters by picking. */
@@ -123,7 +126,8 @@ export function headingOf<Row>(
 
 /** The layout rules `useTableLayout` takes for these columns: each at its own width, never
  *  below its minimum, with the pinned ones kept at the left edge and the first of them that
- *  may narrow giving up width so the rest fit. */
+ *  may narrow giving up width so the rest fit. On a phone the pinned ones take the whole of the
+ *  box, so the rest scroll behind them, and a column that names a phone width is drawn at it. */
 export function tableLayout<Row>(
   columns: readonly TableColumn<Row>[],
   flexible: string
@@ -141,8 +145,10 @@ export function tableLayout<Row>(
       wide: { columns: pinned, share: 0.6 },
       phone: {
         columns: pinned,
-        share: 0.85,
-        widths: {},
+        share: 1,
+        widths: Object.fromEntries(
+          columns.flatMap(({ id, phone }) => (phone === undefined ? [] : [[id, phone]]))
+        ),
         flexibleMin: minimums[flexible] ?? 0,
       },
       flexible,

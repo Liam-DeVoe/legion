@@ -319,6 +319,10 @@ export interface DataTableProps<Row> {
    *  (`useTableLayout`'s `boxHeight`), so the rows scroll inside it only once they are more
    *  than the window holds. Unset, the box is always that height. */
   readonly fitRows?: boolean;
+  /** The column whose header stands its filter under its words, centred, in a phone's box
+   *  (`useTableLayout`'s `compact`): the issues table's title, which a phone draws narrow beside
+   *  the key. Every other header stands on one line there. */
+  readonly stackedHeader?: string;
 }
 
 /**
@@ -338,6 +342,7 @@ export function DataTable<Row>({
   renderGroup,
   renderRow,
   scrollTestId,
+  stackedHeader,
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
   const { displayRows, layout, table, virtualizer } = model;
@@ -390,6 +395,7 @@ export function DataTable<Row>({
                       setDragColumn={setDragColumn}
                       setOpenFilter={onOpenFilterChange}
                       setOrder={layout.setOrder}
+                      stacked={layout.responsive.compact && header.column.id === stackedHeader}
                       unloaded={filterUnloaded?.get(header.column.id) ?? NONE_UNLOADED}
                     />
                   ))}
@@ -445,10 +451,11 @@ function TableHeaderCell<TData>({
   setDragColumn,
   setOpenFilter,
   setOrder,
+  stacked,
   unloaded,
 }: {
-  /** A phone's box (`useTableLayout`'s `compact`), where the title's header stacks its
-   *  controls. */
+  /** A phone's box (`useTableLayout`'s `compact`), where every header stands on one line at its
+   *  column's left edge but the stacked one. */
   compact: boolean;
   counts: ReadonlyMap<string, number>;
   dragColumn: string | undefined;
@@ -461,16 +468,20 @@ function TableHeaderCell<TData>({
   setDragColumn: (id: string | undefined) => void;
   setOpenFilter: (id: string | undefined) => void;
   setOrder: (next: string[]) => void;
+  /** Whether this header stands its filter under its words (`DataTableProps.stackedHeader`). */
+  stacked: boolean;
   /** This column's filter values whose rows are not loaded yet. */
   unloaded: readonly string[];
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
-  // A column of counts is as narrow as its numbers: its words stand at its right edge, over the
-  // numbers, after the sort arrow. Its words, and those of a header that wraps (`wrap`), take a
-  // second line rather than be cut, and such a header draws no sort arrow's place while it is
-  // not sorted: in a column that narrow its gap is width the longest word needs.
-  const { numeric = false, wrap = numeric } = column.columnDef.meta ?? {};
+  // On a desktop a column of counts is as narrow as its numbers: its words stand at its right
+  // edge, over the numbers, after the sort arrow. Its words, and those of a header that wraps
+  // (`wrap`), take a second line rather than be cut, and such a header draws no sort arrow's
+  // place while it is not sorted: in a column that narrow its gap is width the longest word
+  // needs. A phone's box draws each of them on one line at its column's left edge, as it draws
+  // every other header: the column scrolls inside the box, as wide as its header needs there.
+  const { numeric = false, wrap = numeric } = (compact ? undefined : column.columnDef.meta) ?? {};
   const sorted = column.getIsSorted();
   const mark =
     wrap && sorted === false ? null : (
@@ -494,7 +505,7 @@ function TableHeaderCell<TData>({
       }}
     >
       <span
-        className={`flex ${numeric ? "justify-end" : "justify-between"} ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
+        className={`flex ${numeric ? "justify-end" : "justify-between"} ${stacked ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
       >
         {column.getCanSort() ? (
           <button
