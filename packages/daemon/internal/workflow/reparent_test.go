@@ -118,6 +118,33 @@ func TestAParentChangeIsSeededOncePerNewParent(t *testing.T) {
 	}
 }
 
+// A root at admitted is its architect's to work (phase.RoleFor), so the seed of its move under
+// another parent carries its architect's phase entry: the entry numbers of an admitted root are
+// the architect's, and the row another role holds on the issue, here a planner's, is not what the
+// seed names.
+func TestAReparentSeedOfARootAtAdmittedCarriesItsArchitectsEntry(t *testing.T) {
+	pool := migratedPool(t)
+	seedLiveRoot(t, pool, reparentSecond, 1)
+	const admitted = "LEGION-600"
+	seedIssue(t, pool, record.Issue{Key: admitted, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: admitted, Project: "LEGION", Title: "the admitted root", Phase: phase.Admitted, Generation: 1,
+		Status: "in_progress", DispatchStatus: "in_progress", Rank: "X", LastDispatchSeq: 4})
+	seedSlot(t, pool, record.Slot{Issue: admitted, Index: 2, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	raised := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+	seedPhase(t, pool, record.PhaseRow{Issue: admitted, Role: claim.RoleArchitect, Claim: "architect-claim",
+		Entry: 3, EntryTask: "write the spec", EntryRaisedAt: raised})
+	seedPhase(t, pool, record.PhaseRow{Issue: admitted, Role: claim.RolePlanner, Claim: "planner-claim",
+		Entry: 7, EntryTask: "plan it", EntryRaisedAt: raised})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	applyMirrored(t, pool, engine, "admitted-moved-under-300", intake.DispatchIssue{Key: admitted, ResolvedRepo: "sjawhar/legion", Seq: 5,
+		Type: "issue.updated", Status: "in_progress", Title: "the admitted root", Parent: reparentSecond, Rank: "X"})
+	seeds := reparentSeeds(t, pool, admitted)
+	if len(seeds) != 1 || seeds[0].Phase != phase.Admitted || seeds[0].Entry != 3 {
+		t.Fatalf("the re-parent seeds of %s = %#v, want one at admitted carrying entry 3, its architect's", admitted, seeds)
+	}
+}
+
 // The seed's read of the new parent comes back as a fact (intake.ReparentRead), which tells each
 // distinct architect among the issue's own, the one above it before and the one above it now,
 // once, each by a reparented notice that names it (R18 of dispatch://INFRA-3320). Every notice

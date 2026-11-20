@@ -1711,6 +1711,17 @@ type PhaseEnded struct {
 	From   phase.Phase `json:"from"`
 	To     phase.Phase `json:"to"`
 	Reason string      `json:"reason"`
+	// MergeForward is the merge forward the move into awaiting_children dropped before it landed
+	// (PullRequest.MergeForward with Landed empty), nil where it dropped none.
+	MergeForward *DroppedMergeForward `json:"mergeForward,omitempty"`
+}
+
+// DroppedMergeForward is a merge forward a move into awaiting_children dropped before it landed
+// (PhaseEnded.MergeForward): Head is the head the merge forward was asked of, and Base the base
+// branch it was to merge forward onto that head.
+type DroppedMergeForward struct {
+	Head string `json:"head"`
+	Base string `json:"base"`
 }
 
 func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
@@ -2815,6 +2826,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 //
 // `reparented` tells an architect that the Dispatch parent of an issue in Legion's work changed
 // (ReparentedNotice, R18 of dispatch://INFRA-3320).
+//
+// `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
+// launcher, older than the release that added the kind, could not look the session up by its id,
+// and Oh My Pi did not resume it by that id (workflow's sessionLost). It is a kind of its own and
+// not `session-lost` because the kind is published as the notice's one-line message, and that
+// session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
+// of migration 20261120042902 deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2822,7 +2840,7 @@ var validNoticeKinds = []NoticeKind{
 	"basis-ended", "basis-changes-requested", "resting-root",
 	"child-closed", "child-status", "children-first", "awaiting-children", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-store-fault", ReparentedNotice,
+	"session-lost", "session-forgotten", "session-store-fault", ReparentedNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left

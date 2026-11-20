@@ -84,6 +84,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:           {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}:     {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                    {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
+	{file: "internal/workflow/reparent.go", fn: "Engine.reparentSeed"}:                {calls: 1, test: "TestAReparentSeedOfARootAtAdmittedCarriesItsArchitectsEntry"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:          {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:                     {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:                  {calls: 2, test: "TestAnIssueAtAdmittedRunsNoStep"},

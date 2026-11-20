@@ -2464,7 +2464,49 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 189: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 196: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -2503,7 +2545,7 @@ package api
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 189 is served every issue without `treeRuns`, and without `gatedSteps` on an
+// contract below 196 is served every issue without `treeRuns`, and without `gatedSteps` on an
 // issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller
 // below 178 is served the state without `paused` and `lastPause`, the entry of 178 above
 // (withoutPause), a caller below 146 the issues without both entry times and `architectStalls`,
@@ -2512,14 +2554,14 @@ package api
 // issue, the entry of 133 (withoutMergeWait), and so on down the bands that entry lists; the
 // twenty-two compose. 178's row runs before this one and the two touch no key of each other's:
 // withoutPause takes the state's `paused` and `lastPause`, and withoutGateBasis takes `treeRuns`
-// and some `gatedSteps` and reads the phase and the held word, so a caller at 178 through 188 is
+// and some `gatedSteps` and reads the phase and the held word, so a caller at 178 through 195 is
 // served the pause and none of this entry's keys and words, and a caller at 146 through 177 the
 // entry times and neither.
 // The strip of `gatedSteps` is not for the key's sake: every plugin from 55 on
 // reads `status` with a strict enum of the four words and refuses the whole body for a fifth, and
 // no word of the four is true of such a step — `waiting` would send its architect to ask a person
 // for an approval of its own, and `approved` names a person's approval no person gave — so such a
-// caller is served no entry of that issue at all rather than a wrong one. Every reader from 189
+// caller is served no entry of that issue at all rather than a wrong one. Every reader from 196
 // on takes `treeRuns` and `basis` as optional and reads the six words
 // (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
@@ -2531,7 +2573,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 189 knows
+// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 196 knows
 // neither word — its phase enum and its held words are the ones before this change — so the daemon
 // serves it that issue's `phase` as `admitted`, the status that names no worker's phase, and that
 // held entry's `reason` as `children_first`, the word a started parent's wait took over (api's
@@ -2615,7 +2657,13 @@ package api
 // (#4049, #4493, #4495 and #4573, and #4596, which stacks on this change), 192, 193 and 194
 // declared, and no head declaring 189, so this change moved 191 → 189, the lowest number above
 // main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20c-md). Read the base's own number and
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20c-md). At the forward merge of
+// 2026-11-20 that brought main in at a4cd4949fce7, main carried 189, which its #4581
+// (dispatch://INFRA-4108) took at the same time as this change, and a REST raw read of each of the
+// 283 open heads' file between 2026-11-20T16:16Z and 16:20Z found 189 (#4611 and #4634), 190
+// (#4578), 191, 192, 193, 194 and 195 (#4493 and #4590) declared by other heads, so this change
+// moved 189 → 196, the lowest number above main's that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20d-md). Read the base's own number and
 // every open head again, by a REST raw read of each head's file, at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 189
+const DaemonAPIVersion = 196
