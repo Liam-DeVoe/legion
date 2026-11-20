@@ -1175,9 +1175,9 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Every later row of stateNarrowings
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
-// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's and
-// OwnerPlanContract's, the last this daemon's own contract — so a caller from it up is served the
-// measure, and none of what a later row adds until it reaches that row's contract (123,
+// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's, pauseContract's
+// and OwnerPlanContract's, the last this daemon's own contract — so a caller from it up is served
+// the measure, and none of what a later row adds until it reaches that row's contract (123,
 // INFRA-3146's contract, moves no shape of the state).
 const quietTimeContract = 111
 

@@ -403,7 +403,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "handoff-complete.json",
     ],
-    // A tester's fail names the step its task returns to (contract 181).
+    // A tester's fail names the step its task returns to (contract 183).
     [
       "handoffComplete",
       "/legion/v1/handoff/complete",
@@ -495,7 +495,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209" },
       "child-rerun.json",
     ],
-    // The owner's plan (contract 181): register_plan answers the plan it took, stop_task nothing.
+    // The owner's plan (contract 183): register_plan answers the plan it took, stop_task nothing.
     [
       "planRegister",
       "/legion/v1/plans/register",
@@ -607,6 +607,7 @@ test("a completion naming returnTo without the verdict fail is refused before it
       .catch((caught: unknown) => caught);
     expect(refused, `verdict ${JSON.stringify(verdict)} with returnTo`).toBeInstanceOf(Error);
   }
+});
 // A refused pause or resume carries more than a code and a sentence: the pause that stands, or
 // the last pause (`LegionPauseFailureResponse`). The client reads the refusal through the plain
 // refusal shape, which ignores those keys, so the caller still gets the daemon's code and its

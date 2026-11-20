@@ -160,9 +160,9 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-/** The `legion` tool description Oh My Pi agents read, written out whole: the shared template
+/** The static text of the description before `stop_task`: the shared template
  * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
-const OMP_LEGION_TOOL_DESCRIPTION =
+const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
   PHASE_OP_SENTENCES.readRecord +
   "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
@@ -1046,7 +1046,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
   ]);
 });
 
-// The owner's plan (contract 181): register_plan names its document as register_gate does, for any
+// The owner's plan (contract 183): register_plan names its document as register_gate does, for any
 // issue of the architect's tree, and answers the plan Legion took; each refusal of the call itself
 // comes before any lookup, grant or request, and the daemon's refusal reaches the agent with its
 // code. stop_task names the task to stop by its block's id.
