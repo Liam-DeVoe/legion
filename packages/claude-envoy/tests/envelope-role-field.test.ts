@@ -62,7 +62,9 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue: renderInbound, the
   expect(before.notifications[0]?.eventId).toBe(withoutRole.event_id)
   // A direct card reads `to: you`, and a session's words come in a block after its fields.
   expect(before.notifications[0]?.content).toContain("\n  to: you\n")
-  expect(before.notifications[0]?.content).toContain("<message>\nReview the plan before noon.\n</message>")
+  expect(before.notifications[0]?.content).toContain(
+    "<message>\nReview the plan before noon.\n</message>",
+  )
   expect(before.inbox).toEqual([
     {
       event_id: withoutRole.event_id,
