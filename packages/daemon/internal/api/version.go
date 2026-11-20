@@ -2838,6 +2838,94 @@ package api
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.)
 //
+// 199: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// `--session-writer-audience <audience>`, a fifth session flag after
+// `--session-impersonate-service-account` (`sessionWriterAudienceFlag` after
+// `sessionProxyAccountFlag`, `internal/runtime/sandbox/manifest.go`). The daemon renders it only
+// when `runtime.kubernetes.session_database.writer_audience` is set. Its value is a workload
+// identity provider's full resource name. The launcher then reads a projected ServiceAccount token
+// of that audience at `<roles-dir>/session-writer/token`, which no role's namespace shows. Its
+// session proxy exchanges that token at Google's security token service and impersonates the
+// account with the federated token, never with the pod's own credentials (`connectorOptions`,
+// `internal/sessionproxy`). The proxy admits to the session socket only the launcher's own process
+// and the generation's Oh My Pi process, and closes and logs every other connection
+// (`internal/launcher`'s sessionPeer). The launcher's start command gains `agentExecutable`
+// (`shimwire.LauncherStart.AgentExecutable`), the agent's executable, by which the launcher knows
+// the Oh My Pi process. The daemon fills it for every Oh My Pi launch (sandbox's launcherCommand)
+// and leaves it out when it is empty, as for a Claude Code launch. Under the same member the
+// controller's pod runs the launcher's roles-dir form for its one role in place of the
+// single-role form (`--roles-dir` and `--role controller`, sandbox's
+// controllerPod.rolesDirContainer), so role-init hides the writer token and the controller's
+// launcher token from the controller's agent. A launcher built before 199 exits 2 on the unknown
+// flag in every pod the daemon creates with it, so the image probe, which holds the image's
+// pi-legion to this number, refuses such an image at boot instead, as it did for 137's flag. An
+// older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
+// renders neither the flag nor the controller's roles-dir form. An older launcher ignores
+// `agentExecutable`. A pod created under the member keeps `--session-writer-audience` in its
+// launcher's command for its life, and an older daemon sends no `agentExecutable`, so that
+// launcher refuses every Oh My Pi start an older daemon sends it (`internal/launcher`'s
+// newSessionPeer). An older daemon also reads no fifth flag, and where it knows a plugin pair
+// every relaunch of an Oh My Pi claim recorded at 199 installs that pair and so keeps the pod
+// whatever its image: each Oh My Pi start is refused and charged as a launch failure (a Claude
+// Code start is admitted), the controller's claim fails and its retries install into the same pod
+// until its Sandbox is deleted, and each issue claim on Oh My Pi fails and needs a retry once its
+// pod is replaced. So the member is turned off on this release first: restore the account's grant
+// to the pod's own principal, remove writer_audience and restart the daemon, which reads the fifth
+// flag as a moved session store and replaces each pod that carries it (an issue pod by its update
+// round, the controller's pod at its next launch). The writer pool, its provider and the
+// account's grant to the pool's principal stay until then, since a pod that carries the flag
+// exchanges the writer token until it is replaced. Only once no launcher command carries the flag
+// is the daemon rolled back below 199 (docs/kubernetes.md, "Selecting the store"). A deployment
+// that sets no writer audience renders no fifth flag, and its launcher reads no
+// `agentExecutable`, so its pods carry the command they carried before. (The
+// number was first read at 2026-11-19T10:30Z-10:34Z as 170, the lowest above main's 160 (46795520,
+// #3519's INFRA-2009) that no open pull request of cybermonklabs/legion declared, with the `take`
+// of .github/scripts/check-daemon-api-contract.sh, while this branch's base, 4eec2cc2, still
+// carried 152. The forward merge of 2026-11-19 brought in cf5905d3 and with it main's 160. A
+// reading of every open pull request at that merge, which ended at 2026-11-19T12:17:28Z, found 170
+// declared by #2230, #4030 and #4173 as well, and 161 (#4180, #4193 and #4259), 162 (#3712), 163
+// (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#4273), 168 (#3659, #3993, #4175 and #4488)
+// and 169 (#3831, #4065, #4485 and #4493) declared, so this entry moved to 171, the lowest number
+// above main's 160 that no other open pull request declares. The forward merge of 2026-11-19
+// that brought in a20e0b05 brought main's 168 (#4488's entry above). A reading of every open pull
+// request at that merge, which ended at 2026-11-19T16:56:58Z, found 169 (#3831 and #4065), 170
+// (#2230, #4030, #4173, #4180 and #4193), 171 (#4115 and #4485), 172 (#3659), 173 (#4493) and
+// 174 (#4273) declared, so this entry moved to 175, the lowest number above main's 168 that no
+// other open pull request declares. The forward merge of 2026-11-19 that brought in d7c7c531 left
+// main at 168. A reading of every open pull request at that merge, which ended at
+// 2026-11-19T23:08:22Z, found 169 (#4273), 171 (#2230, #4049 and #4065), 172 (#3659), 173
+// (#4493), 174 (#3993), 175 (#3712 and #4432 as well), 176 (#4030, #4173, #4180, #4182, #4193,
+// #4259, #4261, #4269 and #4290), 177 (#4017), 178 (#3831 and #4115), 179 (#4392 and #4540) and
+// 180 (#4175) declared, and none 170, so this entry moved to 170, the lowest number above main's
+// 168 that no other open pull request declares. The forward merge of 2026-11-20 that brought in
+// 9e0f0b8e left main at 168, and a reading of every open pull request at that merge, which ended at
+// 2026-11-20T00:44:52Z, found 170 declared by no other, so this entry kept 170. The forward merge
+// of 2026-11-20 that brought in c7e1cbd5 brought main's 178 (#4115's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-20T01:02:32Z, found 179 (#4392 and
+// #4540), 180 (#4049 and #4175) and 181 (#4553) declared, so this entry moved to 182, the lowest
+// number above main's 178 that no other open pull request declared. The forward merge of
+// 2026-11-20 that brought in 28b2ea9e left main at 178. A reading of every open pull request at
+// that merge, which ended at 2026-11-20T04:54:42Z, found 179 (#4540), 180 (#4049), 181 (#3831 and
+// #4273), 182 (#4173, #4180, #4193, #4392 and #4493 as well), 183 (#2230, #3712, #4030 and
+// #4432), 184 (#3659, #4065, #4553 and #4573) and 185 (#4175 and #4543) declared, so this entry
+// moved to 186, the lowest number above main's 178 that no other open pull request declares. The
+// forward merge of 2026-11-20 that brought in 1c7c8253 brought main's 188 (#4543's entry above). A
+// reading of every open pull request at that merge, which ended at 2026-11-20T10:16:19Z, found 189
+// (#3831, #4592 and #4596) and 190 (#4493 and #4578) declared, so this entry moved to 191, the
+// lowest number above main's 188 that no other open pull request declares. The forward merge of
+// 2026-11-20 that brought in a4cd4949 brought main's 189 (#4581's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-20T16:05:12Z, found 190 (#4578), 191
+// (#2230, #4049 and #4573), 192 (#3993, #4173, #4175, #4182, #4193, #4273, #4392 and #4580), 193
+// (#3659, #3712, #4065, #4432 and #4553), 194 (#3831 and #4030) and 195 (#4493 and #4590)
+// declared, so this entry moved to 196, the lowest number above main's 189 that no other open pull
+// request declares. The forward merge of 2026-11-20 that brought in 8a954068 brought main's 193
+// (#3659's entry above). A reading of every open pull request at that merge, which ended at
+// 2026-11-20T20:51:40Z, found 194 (#3831 and #4030), 195 (#4590), 196 (#3993, #4173, #4193, #4273,
+// #4392, #4432, #4493, #4580, #4592 and #4596), 197 (#4065, #4553 and #4578) and 198 (#4175)
+// declared, so this entry moved to 199, the lowest number above main's 193 that no other open pull
+// request declares. Read the base's own number and every open pull request again at every forward
+// merge rather than from this line.)
+//
 // 200: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
@@ -2885,46 +2973,46 @@ package api
 // below 200 a PauseFailure without `heldPods`. While a release runs (its record neither finished
 // nor ended by a boot, store.ProjectRelease.Runs), both doors' pause answer 409
 // `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The records under
-// `packages/contracts/fixtures/daemon-api/contract-shapes.json` gain 200's, which are 193's with
+// `packages/contracts/fixtures/daemon-api/contract-shapes.json` gain 200's, which are 199's with
 // the key paths of `projectRelease` on the state's and of `heldPods` on the refusal's, and every
 // record below 200 gains the empty domain of each of the six fields, which no contract below 200
-// admits a value of.
-// The number is the lowest above main's 193 that no other open pull request declared at the
-// forward merge that brought in 8a954068: main reached 193 with #3659 (dispatch://INFRA-2694, its
-// entry above), and a reading of `const DaemonAPIVersion` at the head of every open pull request
-// that changes this file, made between 2026-11-20T21:42:44Z and 21:48:06Z, found 193 declared by
-// #2918, #4187, #4533, #4622 and #4631 as well, 194 by #4030, 195 by #4590, 196 by eleven pull
-// requests, 197 by #4065, #4553 and #4578, 198 by #4175 and #4589, and 199 by #3831, #4495 and
-// #4661, and none declaring 200, so this change took 200. A pod at main's 193, or at a number
-// another open pull request declares below 200, runs a plugin that does not know this release's
-// shapes, so it is served the state without `projectRelease`. This change first took 150, the
-// lowest free number at the forward merge of 2026-11-15, then 157 once main reached 151, then 159
-// once three other heads had taken 157, then 161 once #4175 declared 159 as well and #3519 took
-// 160, then 163 once #4173 declared 161 as well and three heads took 162, which held at the
-// forward merge that brought in c70a8022 with main at 160, then 171 once main reached 168 (#4488's
-// entry above) at the forward merge that brought in b2cf98a0:
+// admits a value of. The number is the lowest above main's 193 that no other open pull request
+// declared at the forward merge that brought in 8a954068: main reached 193 with #3659
+// (dispatch://INFRA-2694, its entry above), and a reading of `const DaemonAPIVersion` at the head
+// of every open pull request that changes this file, made between 2026-11-20T21:42:44Z and
+// 21:48:06Z, found 193 declared by #2918, #4187, #4533, #4622 and #4631 as well, 194 by #4030, 195
+// by #4590, 196 by eleven pull requests, 197 by #4065, #4553 and #4578, 198 by #4175 and #4589, and
+// 199 by #3831, #4495 and #4661, and none declaring 200, so this change took 200. 200 stayed above
+// main's 199 (#4495's entry above) at the forward merge that brought in 998c3f56. A pod at main's
+// 199, or at a number another open pull request declares below 200, runs a plugin that does not
+// know this release's shapes, so it is served the state without `projectRelease`. This change first
+// took 150, the lowest free number at the forward merge of 2026-11-15, then 157 once main reached
+// 151, then 159 once three other heads had taken 157, then 161 once #4175 declared 159 as well and
+// #3519 took 160, then 163 once #4173 declared 161 as well and three heads took 162, which held at
+// the forward merge that brought in c70a8022 with main at 160, then 171 once main reached 168
+// (#4488's entry above) at the forward merge that brought in b2cf98a0:
 // `.github/scripts/check-daemon-api-contract.sh`, run as ci.yaml's lint job runs it on this pull
 // request, refused 168 at 2026-11-19T18:36:14Z naming 171, when #4065 declared 169 and #2230,
 // #4173, #4180 and #4193 declared 170, and a reading of every open head (2026-11-19T18:36:50Z to
 // 18:41:40Z) found 171 declared by none. 171 held at the forward merge that brought in 506395be
 // with main still at 168. Then 180, the lowest above main's 168 that no other open pull request
 // declared at 2026-11-19T22:35:55Z: the check passed 171 then, but a reading of every open head
-// that changes this file (2026-11-19T22:27Z to 22:35:55Z) found 171 declared by #2230 and #4065
-// too and every number from 169 to 179 declared by another open pull request. 180 stayed above
-// main's 178 (#4115's entry above) at the forward merges that brought in c7e1cbd5 (#4115),
-// bafd3618, 13af9401 and 2610675b. Then 191, the lowest above main's 188 that no other open pull
-// request declared at 2026-11-20T10:26:20Z: main reached 188 with #4543 (its entry above), which
-// the forward merge that brought in 1c7c8253 brought, and a reading of `const DaemonAPIVersion` at
-// the head of every open pull request that changes this file then found 188 declared by #4581 too
-// and every number from 189 to 190 declared by another open pull request, 189 by #3831, #4592 and
-// #4596 and 190 by #4493 and #4578, and none declaring 191. 191 stayed above main's 188 at the
-// forward merges that brought in 5570d0ac and f3252759, and above main's 189 (#4581's entry above)
-// at the one that brought in a4cd4949, though a reading of every open head that changes this file
-// made between 2026-11-20T16:32:50Z and 16:37:44Z found 191 declared by #2230, #4495 and #4573 as
-// well, each after 10:26:20Z. Read the base's own number and every open head again at the next
-// merge rather than from this entry, as
+// that changes this file (2026-11-19T22:27Z to 22:35:55Z) found 171 declared by #2230 and #4065 too
+// and every number from 169 to 179 declared by another open pull request. 180 stayed above main's
+// 178 (#4115's entry above) at the forward merges that brought in c7e1cbd5 (#4115), bafd3618,
+// 13af9401 and 2610675b. Then 191, the lowest above main's 188 that no other open pull request
+// declared at 2026-11-20T10:26:20Z: main reached 188 with #4543 (its entry above), which the
+// forward merge that brought in 1c7c8253 brought, and a reading of `const DaemonAPIVersion` at the
+// head of every open pull request that changes this file then found 188 declared by #4581 too and
+// every number from 189 to 190 declared by another open pull request, 189 by #3831, #4592 and #4596
+// and 190 by #4493 and #4578, and none declaring 191. 191 stayed above main's 188 at the forward
+// merges that brought in 5570d0ac and f3252759, and above main's 189 (#4581's entry above) at the
+// one that brought in a4cd4949, though a reading of every open head that changes this file made
+// between 2026-11-20T16:32:50Z and 16:37:44Z found 191 declared by #2230, #4495 and #4573 as well,
+// each after 10:26:20Z. Read the base's own number and every open head again at the next merge
+// rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. A renumber moves projectReleaseContract in shaping.go with it: it is the number the
-// state's `projectRelease` and the refusal's `heldPods` are served down below, the arrival of the
-// six fields' values, and the last number of answers.go's SupportedContracts.
+// says. A renumber moves projectReleaseContract in shaping.go with it: it is the number the state's
+// `projectRelease` and the refusal's `heldPods` are served down below, the arrival of the six
+// fields' values, and the last number of answers.go's SupportedContracts.
 const DaemonAPIVersion = 200

@@ -279,7 +279,7 @@ func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) 
 		kube: newIssueSandboxAPI(), kubeconfigs: map[*issueSandboxAPI]string{}, agents: newIdleRigAgents(t, pool),
 		listener: listener, records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}, options: options}
 	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
-		func(context.Context, string) (sessionproxy.Dialer, error) {
+		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
 	keys := make([]string, len(seeds))
