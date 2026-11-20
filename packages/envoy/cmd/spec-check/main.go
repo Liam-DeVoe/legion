@@ -246,6 +246,11 @@
 // so the output of print must not reach a CI log: a line of a block that starts with "::" would be
 // a workflow command there. changed writes its base line and each path as git gives it, the data
 // of a file, which the citations job writes its standard output to.
+//
+// The command opens no database. citations runs go list in <root>, which can download the
+// workspace's modules, git, and <root>'s .github/scripts/go-test-reads.sh, and for the tie at the
+// base the base's own go-test-reads.sh in a temporary directory; changed runs git; the other
+// subcommands start no process and reach no network.
 package main
 
 import (
