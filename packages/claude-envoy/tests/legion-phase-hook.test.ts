@@ -354,6 +354,97 @@ test("a timer that decides not to remind clears the wake and sends a report", as
   }
 })
 
+// A server Claude Code restarts inside one `claude` process has read no `${background_tasks}`
+// yet, and a background task the last `Stop` saw may still be running: a report of no background
+// work would let the idle release take the pod under it. So a timer that clears the wake before
+// this server's first `Stop` reports nothing, and once a `Stop` has run, the timer's report
+// repeats what that `Stop` saw.
+test("a timer that clears the wake before this server's first Stop reports nothing, and after a Stop it repeats what that Stop saw", async () => {
+  const { endpoint, reports, asked, boot, close } = await harness({
+    record: recorded("active", 0),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
+    boot()
+    await waitFor(async () => asked.length === 1, "the resume timer to ask the daemon")
+    // Nothing is sent, so there is no condition to wait for: one of the file's fixed waits,
+    // three times the 20 ms resume delay.
+    await Bun.sleep(60)
+    expect(reports).toEqual([])
+
+    // The running task puts the worker in its quiet wait, whose timer the daemon answers that the
+    // claim owes nothing: that timer clears the wake and reports the task the `Stop` saw.
+    await endpoint.handle({
+      event: "Stop",
+      lastAssistantMessage: "Waiting for the build.",
+      backgroundTasks: JSON.stringify([{ id: "bg_1", status: "running" }]),
+    })
+    expect(reports).toHaveLength(1)
+    expect(reports[0]?.activity.backgroundWork).toEqual({
+      running: true,
+      kinds: ["claude-background-task"],
+    })
+    await waitFor(async () => reports.length === 2, "the timer's report")
+    expect(reports[1]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[1]?.activity.backgroundWork).toEqual({
+      running: true,
+      kinds: ["claude-background-task"],
+    })
+  } finally {
+    await close()
+  }
+})
+
+// No handler waits for the report a timer sends after it clears the wake, so the `Stop`'s 3 s
+// bound does not cut it off: a daemon slower than that still takes it.
+test(
+  "the report a timer sends after clearing the wake is not cut off at the turn-end bound",
+  async () => {
+    // The `Stop`'s report is answered at once. The timer's is held until the case releases it,
+    // and fails as `fetch` does if its caller aborts it.
+    const signals: (AbortSignal | undefined)[] = []
+    let release: ((answer: Response) => void) | undefined
+    const activity = (init: RequestInit | undefined): Response | Promise<Response> => {
+      const signal = init?.signal ?? undefined
+      signals.push(signal)
+      if (signals.length === 1) return new Response(null, { status: 204 })
+      const answer = Promise.withResolvers<Response>()
+      signal?.addEventListener("abort", () => answer.reject(signal.reason), { once: true })
+      release = answer.resolve
+      return answer.promise
+    }
+    // The restored count makes the settle's reminder a timer's.
+    const { endpoint, reports, lines, close } = await harness({
+      record: recorded("active", 1),
+      claim: implementer,
+      owed: owesNothing,
+      activity,
+    })
+    try {
+      expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." })).toEqual({})
+      await waitFor(async () => reports.length === 2, "the timer's report")
+      expect(reports[1]?.activity.phase).toEqual({ nextReminderAt: null })
+
+      // A real wait past the turn-end bound: the bound is a real `setTimeout` inside
+      // `withBound`, and a bound that does not fire gives nothing to await.
+      await Bun.sleep(ACTIVITY_REPORT_BOUND_MS + 300)
+      expect(signals).toHaveLength(2)
+      expect(signals[1]?.aborted).toBe(false)
+
+      release?.(new Response(null, { status: 204 }))
+      // A report that lands writes nothing, so this is one of the file's fixed waits.
+      await Bun.sleep(20)
+      expect(
+        lines.filter((line) => line.includes("activity report did not reach the daemon")),
+      ).toEqual([])
+    } finally {
+      await close()
+    }
+  },
+  ACTIVITY_REPORT_BOUND_MS + 10_000,
+)
+
 // INFRA-945: every settle tells the daemon what this session is doing, so the idle rule can
 // decide whether the pane's pod may be released. A turn ending with a background task of the
 // worker's own still running names it; a report the daemon refuses costs the worker nothing.

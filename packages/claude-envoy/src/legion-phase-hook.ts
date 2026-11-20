@@ -13,6 +13,7 @@ import {
 import { type PhaseStallEntry, phaseStallEntryFrom } from "@legion/pi-shared/phase-stall"
 import {
   CLAUDE_BACKGROUND_TASK_KIND,
+  reportActivityBetweenTurns,
   reportActivityWithin,
   sessionActivity,
   sessionActivityRequest,
@@ -173,9 +174,11 @@ export interface PhaseHookDeps {
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
    * idle rule can decide whether the pane's pod may be released (INFRA-945). The request is to
-   * abort with `signal`, which is aborted once `ACTIVITY_REPORT_BOUND_MS` passes without an
-   * answer (`reportActivityWithin`, `@legion/pi-shared/session-activity`), so a daemon that hangs
-   * is left no open request. */
+   * abort with `signal`, which is aborted once the report's bound passes without an answer, so a
+   * daemon that hangs is left no open request. The `Stop` report's bound is
+   * `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`), and the bound of the report a timer sends
+   * after it clears the reminder wake is `ACTIVITY_BETWEEN_TURNS_BOUND_MS`
+   * (`reportActivityBetweenTurns`), both in `@legion/pi-shared/session-activity`. */
   readonly reportActivity: (input: ActivityInput, signal: AbortSignal) => Promise<void>
   /** Writes one line into the session over the bridge's inbox, which turns it into a user turn,
    * and resolves once the bridge has queued it. Undefined for a session outside a Legion pane,
@@ -378,9 +381,14 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     return writeToSession(text, "a phase reminder")
   }
 
-  /** Whether the last `Stop` saw background work of the worker's own running: Claude Code's only
-   * sight of it, which a report sent between turns repeats (`sendActivity`). */
-  let lastBackgroundWork = false
+  /** Whether the last `Stop` of this server saw background work of the worker's own running:
+   * Claude Code's only sight of it, which a report sent between turns repeats (`sendActivity`).
+   * It is undefined until this server's first `Stop`, and `wakeChanged` sends nothing while it
+   * is. A server Claude Code restarts inside one `claude` process has read no
+   * `${background_tasks}` yet, and a background task the last `Stop` saw may still be running, so
+   * a report of no background work would let the idle release take the pod under it. The report
+   * of the last `Stop` stands until this server's first `Stop`. */
+  let lastBackgroundWork: boolean | undefined
   const reminder = createPhaseReminder({
     // The bridge turns one inbox line into a user turn, which is what every reminder after the
     // `Stop` continuation is.
@@ -393,13 +401,16 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     saveEntry: saveRecord,
     claim: deps.claim,
     readOwed: deps.readOwed,
-    // A timer whose check decided not to remind has cleared the wake. This host reports only at
-    // `Stop`, and no turn starts whose `Stop` would carry the change, so the report goes now: a
-    // reported wake that is due and past holds the pod from its idle release. It repeats the
-    // background work the last `Stop` saw, which nothing has read since.
+    // A timer whose check decided not to remind has cleared the wake. This host otherwise reports
+    // only at `Stop`, and no turn starts whose `Stop` would carry the change, so the report goes
+    // now: a reported wake that is due and past holds the pod from its idle release. It repeats
+    // the background work the last `Stop` of this server saw, which nothing has read since, and
+    // a server that has seen no `Stop` sends nothing (`lastBackgroundWork`). No handler waits for
+    // this report, so it goes under the bound for a report between turns.
     wakeChanged: () => {
       const claim = deps.claim()
-      if (claim !== undefined) void sendActivity(claim, lastBackgroundWork)
+      if (claim === undefined || lastBackgroundWork === undefined) return
+      void sendActivity(claim, lastBackgroundWork, reportActivityBetweenTurns)
     },
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
@@ -415,16 +426,24 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
    * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
    * idle rule can decide whether the pane's pod may be released. Claude Code's only sight of
    * background work is the `Stop` hook's `${background_tasks}`, so this host reports at the
-   * settle, and between turns only when a timer's check cleared the reminder wake
-   * (`wakeChanged`); the one kind it can name is a Claude Code background task.
+   * settle, and between turns only when a timer's check cleared the reminder wake after this
+   * server's first `Stop` (`wakeChanged`); the one kind it can name is a Claude Code background
+   * task.
    *
    * A report that does not reach the daemon is logged and dropped: the turn's reminder is what
    * the hook owes its worker, and a claim with no report after its last turn is held rather than
-   * released. The report is bounded at `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`),
-   * because the `Stop` hook awaits it: a daemon that does not answer holds the turn end here for
-   * at most 3 s. A report the bound cuts off leaves the claim unreported until its next report.
+   * released. The caller chooses the report's bound (`bounded`). The `Stop` report goes under
+   * `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`), because the `Stop` hook awaits it: a
+   * daemon that does not answer holds the turn end here for at most 3 s. A report that bound cuts
+   * off leaves the claim unreported until its next report. No handler waits for the report
+   * `wakeChanged` sends, so it goes under `ACTIVITY_BETWEEN_TURNS_BOUND_MS`
+   * (`reportActivityBetweenTurns`): a daemon slower than 3 s still takes it.
    */
-  const sendActivity = async (claim: ClaimCapability, backgroundWork: boolean): Promise<void> => {
+  const sendActivity = async (
+    claim: ClaimCapability,
+    backgroundWork: boolean,
+    bounded: typeof reportActivityWithin,
+  ): Promise<void> => {
     const request = sessionActivityRequest({
       project: configuredValue(deps.env["LEGION_PROJECT"]),
       claim,
@@ -435,7 +454,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     })
     if (request === undefined) return
     try {
-      await reportActivityWithin(deps.reportActivity, request)
+      await bounded(deps.reportActivity, request)
     } catch (error) {
       deps.log.warn("legion: this session's activity report did not reach the daemon", {
         issue: claim.issue,
@@ -524,7 +543,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // After the settle, so the report carries the wake that settle armed. The daemon
           // releases no claim whose last report is older than its last turn, so it goes at every
           // settle, whatever it says.
-          await sendActivity(claim, backgroundWork)
+          await sendActivity(claim, backgroundWork, reportActivityWithin)
           return reminded === undefined ? {} : { decision: "block", reason: reminded }
         }
         case "StopFailure": {

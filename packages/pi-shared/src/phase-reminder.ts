@@ -7,7 +7,7 @@ import {
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
-import { type OwedInput, withBound } from "./daemon-client";
+import { createFailureLogGate, type OwedInput, withBound } from "./daemon-client";
 import type { ClaimCapability } from "./legion-phase-ops";
 import {
   LAST_MESSAGE_LIMIT,
@@ -237,20 +237,12 @@ type OwedCheck = { readonly reminds: false } | { readonly reminds: true; readonl
  * silence sweep (`tellSilentPhaseWorkers`, `packages/daemon/internal/daemon/silence.go`,
  * dispatch://INFRA-3163) sends a silent phase worker its task again from the daemon's own record.
  * The decision, and the gaps it accepts, are dispatch://INFRA-2746/artifact/decisions-md. The
- * check logs the cause once per claim per hour (`UNREAD_LOG_INTERVAL_MS`), and a timer whose
- * check ends here clears its wake, as an answer that the claim owes nothing does (`armReminder`).
- * So a failed read counts no reminder toward the architect notice either.
+ * check logs the cause once per claim per hour (`FAILURE_LOG_INTERVAL_MS` in
+ * `src/daemon-client.ts`), and a timer whose check ends here clears its wake, as an answer that
+ * the claim owes nothing does (`armReminder`). So a failed read counts no reminder toward the
+ * architect notice either.
  */
 const UNREAD_CHECK: OwedCheck = { reminds: false };
-
-/**
- * How long the owed check writes no second line about the failed reads of one claim, counted from
- * the line it wrote (dispatch://INFRA-2746/spec#b-r7: one line at warn level per claim per hour,
- * which names the cause). A worker ends many turns in an hour, and each turn end can read, so one
- * line an hour names the cause without a line at every turn. The count is this process's own: a
- * process the daemon starts again logs at its first failed read.
- */
-const UNREAD_LOG_INTERVAL_MS = 60 * 60 * 1000;
 
 export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   const boundMs = deps.owedBoundMs ?? OWED_READ_BOUND_MS;
@@ -281,9 +273,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * (`LegionOwed.architect`), which the architect notice goes to; undefined until an answer has
    * named one, when the notice goes to the tree's architect. */
   let owner: string | undefined;
-  /** When the owed check last logged a failed read, by the claim token it was about; `""` keys a
-   * check that found no claim (`UNREAD_LOG_INTERVAL_MS`). */
-  const unreadLogged = new Map<string, number>();
+  /** Whether the owed check may log a failed read now, by the claim token it was about; `""` keys
+   * a check that found no claim. One line per claim per hour: a worker ends many turns in an
+   * hour, and each turn end can read (`createFailureLogGate`, `src/daemon-client.ts`). */
+  const mayLogUnread = createFailureLogGate(now);
 
   const entryOf = (): PhaseStallEntry => ({
     // The machine's own wait that the record does not hold (`recordedPhaseStall`): a session
@@ -318,13 +311,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   };
 
   /** One warn line for a failed read of `claim`'s answer, naming `cause`, unless such a line was
-   * written for the same claim less than `UNREAD_LOG_INTERVAL_MS` ago. */
+   * written for the same claim less than `FAILURE_LOG_INTERVAL_MS` ago. */
   const logUnread = (claim: ClaimCapability | undefined, cause: string): void => {
-    const key = claim?.claimToken ?? "";
-    const at = now();
-    const last = unreadLogged.get(key);
-    if (last !== undefined && at - last < UNREAD_LOG_INTERVAL_MS) return;
-    unreadLogged.set(key, at);
+    if (!mayLogUnread(claim?.claimToken ?? "")) return;
     deps.log.warn(
       "legion: the daemon did not say what this claim owes; no reminder is sent",
       claim === undefined ? { cause } : { claimToken: claim.claimToken, issue: claim.issue, cause }

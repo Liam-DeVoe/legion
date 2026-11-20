@@ -2625,10 +2625,91 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 10_000
     );
 
-    // A failed activity report is sent again at the next reading, so a daemon slower than the
-    // report's bound fails a report every 5 s. The pane writes the warn line of a failed report
-    // once per claim per hour, counted from the line it wrote, as the owed check does for a failed
-    // read; the clock is moved rather than waited on, and handed back after.
+    // No handler waits for a report sent between turns, so the turn-end bound does not cut it
+    // off: a daemon slower than 3 s still takes it. One is open at a time, so a slow daemon gets
+    // one request rather than one at every 5 s reading, and the first reading after its answer
+    // sends what has changed since.
+    test(
+      "a phase worker's report between turns is not cut off at the turn-end bound, and no second one is sent while it is open",
+      async () => {
+        const jobsRunning = (...types: string[]): AsyncJobSnapshot => ({
+          running: types.map((type, i) => ({
+            id: `job_${i}`,
+            type,
+            status: "running",
+            label: type,
+            startTime: i,
+          })),
+          recent: [],
+          delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+        });
+        let jobs = jobsRunning();
+        // The daemon answers at once until `holding`; from then on it holds each report until the
+        // case releases it, and fails it as `fetch` does if its caller aborts it.
+        const signals: (AbortSignal | undefined)[] = [];
+        let holding = false;
+        let release: ((answer: Response) => void) | undefined;
+        const activity = (init: RequestInit | undefined): Response | Promise<Response> => {
+          const signal = init?.signal ?? undefined;
+          signals.push(signal);
+          if (!holding) return new Response(null, { status: 204 });
+          const answer = Promise.withResolvers<Response>();
+          signal?.addEventListener("abort", () => answer.reject(signal.reason), { once: true });
+          release = answer.resolve;
+          return answer.promise;
+        };
+        const worker = await bootStalling({ activity, asyncJobs: () => jobs });
+        await worker.arrives(assignment);
+        const answered = async (): Promise<void> => {
+          const drained = Promise.withResolvers<void>();
+          setImmediate(drained.resolve);
+          await drained.promise;
+        };
+
+        const { warnings } = await loggedWarnings(async () => {
+          await worker.settles("Pushed.");
+          expect(activityReports(worker)).toHaveLength(1);
+
+          holding = true;
+          jobs = jobsRunning("bash");
+          await ticks(worker);
+          expect(activityReports(worker)).toHaveLength(2);
+
+          // Past the turn-end bound, the report is still open, and a reading that sees a newer
+          // change sends nothing beside it. The wait is real on purpose, as the bound case above
+          // is: each bound is a real `setTimeout` inside `withBound`, and a bound that does not
+          // fire gives nothing to await.
+          await Bun.sleep(ACTIVITY_REPORT_BOUND_MS + 300);
+          expect(signals).toHaveLength(2);
+          expect(signals[1]?.aborted).toBe(false);
+          jobs = jobsRunning("bash", "task");
+          await ticks(worker);
+          expect(activityReports(worker)).toHaveLength(2);
+
+          holding = false;
+          release?.(new Response(null, { status: 204 }));
+          await answered();
+          await ticks(worker);
+          expect(activityReports(worker)).toHaveLength(3);
+          expect(activityReports(worker).at(-1)).toMatchObject({
+            activity: { backgroundWork: { running: true, kinds: ["async-job", "subagent"] } },
+          });
+        });
+
+        expect(
+          warnings.filter(
+            (warning) =>
+              warning.message === "legion: this session's activity report did not reach the daemon"
+          )
+        ).toEqual([]);
+      },
+      ACTIVITY_REPORT_BOUND_MS + 10_000
+    );
+
+    // A failed activity report is sent again at the next reading, so a daemon that refuses every
+    // report fails one every 5 s. The pane writes the warn line of a failed report once per claim
+    // per hour, counted from the line it wrote, through the gate the owed check's failed reads use
+    // too; the clock is moved rather than waited on, and handed back after.
     test("a phase worker's failed activity reports write one warn line per claim per hour", async () => {
       const worker = await bootStalling({ activity: () => new Response("down", { status: 503 }) });
       await worker.arrives(assignment);

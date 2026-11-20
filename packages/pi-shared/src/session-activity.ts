@@ -12,8 +12,9 @@ import type { ClaimCapability } from "./legion-phase-ops";
  * background, and the phase reminder's armed wake.
  *
  * The module builds a report, compares two of them, renders the request that carries one and
- * sends that request under its bound (`reportActivityWithin`). The hosts decide when to send it:
- * `packages/pi-legion/extensions/legion.ts` at `session_stop` and on a change, and
+ * sends that request under one of its two bounds: `reportActivityWithin` for the report a turn-end
+ * handler awaits, `reportActivityBetweenTurns` for one no handler awaits. The hosts decide when to
+ * send it: `packages/pi-legion/extensions/legion.ts` at `session_stop` and on a change, and
  * `packages/claude-envoy/src/legion-phase-hook.ts` at the `Stop` hook and when a timer clears the
  * reminder wake.
  * Neither host decides what the report says, or how long it waits for the daemon to take it, so
@@ -140,9 +141,10 @@ export function sessionActivityRequest(input: {
 }
 
 /**
- * How long a host waits for the daemon to take one activity report: 3 s, the same bound as the
- * owed read (`OWED_READ_BOUND_MS` in `src/phase-reminder.ts`). Each host's turn-end handler awaits
- * the report, so this bound is part of the handler's own bound (dispatch://INFRA-2746/spec#b-r7).
+ * How long a host waits for the daemon to take the activity report its turn-end handler sends:
+ * 3 s, the same bound as the owed read (`OWED_READ_BOUND_MS` in `src/phase-reminder.ts`). Each
+ * host's turn-end handler awaits the report, so this bound is part of the handler's own bound
+ * (dispatch://INFRA-2746/spec#b-r7).
  *
  * These are every wait of the two handlers. Oh My Pi's `session_stop` handler for a phase worker
  * (`packages/pi-legion/extensions/legion.ts`) waits on `phaseReminder.settle`, whose one daemon
@@ -160,9 +162,10 @@ export function sessionActivityRequest(input: {
  *
  * A report the bound cuts off is a report not sent, and it costs each host this. On Oh My Pi, a
  * failed report clears `lastActivity`, so the next 5 s reading (`SESSION_ACTIVITY_PERIOD_MS`)
- * sends it again. On Claude Code, which reports only at `Stop` and when a timer clears the
- * reminder wake, the claim stays unreported until its next report, and for that time the idle
- * release holds its pod (`IdleHoldUnreported` in `packages/daemon/internal/workflow/idle.go`).
+ * sends it again, as a report between turns (`reportActivityBetweenTurns`). On Claude Code, which
+ * reports only at `Stop` and when a timer clears the reminder wake, the claim stays unreported
+ * until its next report, and for that time the idle release holds its pod (`IdleHoldUnreported`
+ * in `packages/daemon/internal/workflow/idle.go`).
  */
 export const ACTIVITY_REPORT_BOUND_MS = 3_000;
 
@@ -171,12 +174,41 @@ export const ACTIVITY_REPORT_BOUND_MS = 3_000;
  * take it. At the bound the signal `send` was handed is aborted, so the request does not stay
  * open, and the promise rejects with `no answer within 3000ms` (`withBound` in
  * `src/daemon-client.ts`, which also bounds the owed read). `send` is the host's
- * `LegionDaemonClient.activity`, given the signal. Both hosts send every report through this,
- * and each keeps its own handling of a rejection.
+ * `LegionDaemonClient.activity`, given the signal. Both hosts send their turn-end report through
+ * this, and each keeps its own handling of a rejection.
  */
 export function reportActivityWithin(
   send: (request: LegionActivityRequestBody, signal: AbortSignal) => Promise<void>,
   request: LegionActivityRequestBody
 ): Promise<void> {
   return withBound((signal) => send(request, signal), ACTIVITY_REPORT_BOUND_MS);
+}
+
+/**
+ * How long a host waits for the daemon to take an activity report it sends between turns: 60 s.
+ * No handler waits for such a report, so the 3 s turn-end bound does not apply to it, and a daemon
+ * slower than 3 s still takes it. A report cut off at 3 s between turns would be cut off again at
+ * each later report while the daemon stays slow, so none would land.
+ *
+ * This bound ends only a request the daemon never answers. Oh My Pi keeps one report between turns
+ * open at a time (`reportActivity` in `packages/pi-legion/extensions/legion.ts`), and a request
+ * that never ends would hold that rule shut for ever. Sixty seconds is about six times the
+ * slowest daemon answer measured on INFRA, its whole-state read (8.8 to 9.4 s,
+ * dispatch://INFRA-2746/artifact/decisions-md).
+ */
+export const ACTIVITY_BETWEEN_TURNS_BOUND_MS = 60_000;
+
+/**
+ * Sends `request` through `send` and waits at most `ACTIVITY_BETWEEN_TURNS_BOUND_MS` for the
+ * daemon to take it, the same way `reportActivityWithin` waits for a turn-end report: at the bound
+ * the signal `send` was handed is aborted, and the promise rejects with `no answer within
+ * 60000ms` (`withBound` in `src/daemon-client.ts`). Both hosts send a report no handler awaits
+ * through this: Oh My Pi's 5 s reading and its report after a timer clears the reminder wake, and
+ * Claude Code's report after a timer clears the reminder wake.
+ */
+export function reportActivityBetweenTurns(
+  send: (request: LegionActivityRequestBody, signal: AbortSignal) => Promise<void>,
+  request: LegionActivityRequestBody
+): Promise<void> {
+  return withBound((signal) => send(request, signal), ACTIVITY_BETWEEN_TURNS_BOUND_MS);
 }
