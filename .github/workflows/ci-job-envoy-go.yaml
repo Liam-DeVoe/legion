@@ -47,9 +47,10 @@ jobs:
     # 30 is 86 (its -timeout bounds each package, not the step, so the step has a limit of its
     # own, and its comment below says why 30); after that step's 30 at most, natslive's default
     # 10, the bus matrix's own 5, the auth service's own 5, the edge grant's own 5 and the edge
-    # listener's own 5 are 116, the integration step's 5 is less, and the callout check's own 6,
-    # after the seconds those two steps measure, is less too.
-    timeout-minutes: 120
+    # listener's own 10 (its relay socket's rows wait out a 30 s token twice and a consumer's 60 s
+    # ack wait) are 121, the integration step's 5 is less, and the callout check's own 6, after the
+    # seconds those two steps measure, is less too.
+    timeout-minutes: 125
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -267,7 +268,7 @@ jobs:
           grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
           go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
           edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
-          go test -count=1 -timeout 5m -tags natslive -run "$edge" -v ./cmd/listener/
+          go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
