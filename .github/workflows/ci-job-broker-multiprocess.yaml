@@ -65,15 +65,15 @@ jobs:
       - name: Read the disposable service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       # Only the tests the multiprocess tag adds: go-tagged-tests.sh reads their names off the
-      # source, since `-tags multiprocess ./cmd/broker` alone would run the package's untagged tests
+      # source, since `-tags multiprocess ./cmd/cipherd` alone would run the package's untagged tests
       # again, which envoy-go's step "Count the database broker suites' skips" runs. They are a job
       # of their own rather than a part of that step because each starts real broker processes and
-      # waits out tens of seconds: beside cmd/broker's other tests they would lengthen the package
+      # waits out tens of seconds: beside cmd/cipherd's other tests they would lengthen the package
       # time that step's --timeout 9m is sized from (.github/workflows/ci-job-envoy-go.yaml).
       - name: Two-process tests of the secrets broker
         run: |
-          pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/broker)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/broker
+          pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/cipherd)
+          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

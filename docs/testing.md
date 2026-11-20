@@ -346,7 +346,7 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   directories a package's `TestMain` owns (the build directories of `internal/daemon`,
   `internal/stream` and `internal/runtime/tmux`, the jj configuration directory of
   `cmd/legion/main_test.go` and the home of `internal/workspace/workspace_test.go` in the daemon
-  module; the sign-in secret directory of `internal/broker/config` and the certificate directory
+  module; the sign-in secret directory of `internal/cipher/config` and the certificate directory
   of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget,
   and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that
   `TestMain`.
@@ -489,7 +489,7 @@ test ends, and the package's
 composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same kind of fixture for
-Dispatch's schema, and `packages/envoy/internal/broker/store/storetest`'s `URL` and `Open` for the
+Dispatch's schema, and `packages/envoy/internal/cipher/store/storetest`'s `URL` and `Open` for the
 broker's, each a clone through `pgtemplate`, whose template no process drops (below); a broker
 package whose `TestMain` is not `storetest.Main` migrates a database of its own per test instead.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests

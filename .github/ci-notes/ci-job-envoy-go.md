@@ -125,7 +125,7 @@ listenerwire's clients test type-checks daemon packages, so a change to only tho
 packages starts envoy-go-checks rather than this job. The pattern is built in
 .github/scripts/ci_job_reads.py from the same lists those jobs' own steps are built from,
 so what the list leaves out and what the other jobs run cannot drift apart. The
-broker's packages, internal/broker and everything under it, and its command, cmd/broker,
+broker's packages, internal/cipher and everything under it, and its command, cmd/cipherd,
 are left out too: the database-skips step below runs them with -json and fails on a failed
 test as on a skipped one, so this step ran each of them a second time
 (DATABASE_SKIPS_PKGS in ci_job_reads.py); that step in turn leaves out the race lane's
@@ -136,23 +136,23 @@ longest packages it held (the API's and the documents service's), which the lane
 now. Its own -timeout is below, with the call. Its one -skip names seven tests: the
 shutdown feed test, which the shutdown call runs on a service of its own, the two tests
 of the web app's display-tree fixture, and the backend count's four tests of
-cmd/agent-secrets. Without `--check` TestWebDisplayFixture writes the committed fixture
+cmd/cipher. Without `--check` TestWebDisplayFixture writes the committed fixture
 rather than checking it, so a run here would ask nothing of it, and
 TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it a
 read of this job; envoy-go-checks runs both, the first with the check, and both texts are
-built from the same list. So are the backend count's four tests of cmd/agent-secrets,
+built from the same list. So are the backend count's four tests of cmd/cipher,
 which the count step below runs in this same job and env (BACKEND_COUNT_TESTS); the
-package list is the one call of this step that runs cmd/agent-secrets.
+package list is the one call of this step that runs cmd/cipher.
 The long poles lead the list. `go test` starts the packages in the order its arguments
 name, so a package that starts late ends the call late however little it is waiting for:
 measured in run 42469495554, pmdoc started about 95 s into the step and ended it 91 s
 after any other package finished, while every other long package was done 90 s earlier.
 Leading with the five longest overlaps the longest one with the rest, which is what
 longest-first scheduling buys. The five are internal/dispatch/pmdoc, cmd/dispatch,
-cmd/agent-secrets, cmd/dispatch-seed and internal/dispatch/outbox, which are the five
+cmd/cipher, cmd/dispatch-seed and internal/dispatch/outbox, which are the five
 longest in both runs of the pair at cf069e0d (runs 43733795306 and 43737129665: pmdoc
-525.2 s and 487.2 s, cmd/dispatch 521.0 s and 495.6 s, cmd/agent-secrets 411.2 s and
-398.4 s, cmd/dispatch-seed 396.6 s and 388.1 s, outbox 391.1 s and 386.4 s), ahead of
-cmd/broker at 215.7 s and 211.3 s. Their order among themselves is not a ranking: the two
-runs rank the first two the other way round, so what the list leads with is the five,
-read back from the call's own -json (dispatch://INFRA-1075).
+525.2 s and 487.2 s, cmd/dispatch 521.0 s and 495.6 s, cmd/cipher, then cmd/agent-secrets,
+411.2 s and 398.4 s, cmd/dispatch-seed 396.6 s and 388.1 s, outbox 391.1 s and 386.4 s),
+ahead of cmd/cipherd, then cmd/broker, at 215.7 s and 211.3 s. Their order among themselves
+is not a ranking: the two runs rank the first two the other way round, so what the list
+leads with is the five, read back from the call's own -json (dispatch://INFRA-1075).

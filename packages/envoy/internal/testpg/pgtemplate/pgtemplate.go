@@ -1,6 +1,6 @@
 // Package pgtemplate is the test-database harness the module's two stores share: Dispatch's
 // (internal/dispatch/store/storetest, and internal/dispatch/store's own tests, which cannot import
-// storetest) and the broker's (internal/broker/store/storetest). Each test gets a database of its
+// storetest) and the broker's (internal/cipher/store/storetest). Each test gets a database of its
 // own, a file copy of one migrated template, and that database is dropped once the test ends, so
 // no test can be given a database another test wrote in. It imports neither store: a harness is
 // handed its migration set's fingerprint and the function that migrates a database (New).

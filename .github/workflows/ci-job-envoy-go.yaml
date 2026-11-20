@@ -61,7 +61,7 @@ jobs:
     # other job, so a new pair changes those lines and no others.
     #
     #   call                slowest package   reading    run          job           t / 30  limit
-    #   the package list    agent-secrets     555.3 s    44790111577  136476756402   18.51    19m
+    #   the package list    cmd/cipher        555.3 s    44790111577  136476756402   18.51    19m
     #   race-impossible     docs              216.1 s    44657322918  136026779841    7.20     8m
     #   pgmigrate           pgmigrate         278.2 s    44657322918  136026779841    9.27    10m
     #   shutdown            cmd/dispatch       50.2 s    44657322918  136026779841    1.67     2m
@@ -71,11 +71,13 @@ jobs:
     #   natslive (cap)      bus                20.5 s    44657415021  136039517737    0.68     1m
     #   natslive (callout)  natscallout         5.1 s    44657415021  136039517737    0.17     1m
     #   integration         integration         7.7 s    44657415021  136039517737    0.26     1m
-    #   skip count          cmd/broker        263.2 s    44657322918  136026779841    8.77     9m
+    #   skip count          cmd/cipherd       263.2 s    44657322918  136026779841    8.77     9m
     #
-    # The skip count is the step "Count the database broker suites' skips", whose go test writes
-    # its stream to broker.json through the script's --keep: its reading is cmd/broker's package
-    # time there, 263.2 s and 260.8 s in the pair (jobs 136026779841 and 136039517737). Its
+    # The package list's reading is that of cmd/cipher, then cmd/agent-secrets, 555.3 s: run
+    # 44790111577 read the package under its old path. The skip count is the step "Count the
+    # database broker suites' skips", whose go test writes its stream to broker.json through the
+    # script's --keep: its reading is the package time there of cmd/cipherd, then cmd/broker,
+    # 263.2 s and 260.8 s in the pair (jobs 136026779841 and 136039517737). Its
     # step limit of 19 minutes is its 9m -timeout plus 10, main's own rule for it, which the
     # comment on the step gives. The skip counter's test keeps main's step limit of 15 minutes, and
     # the callout check step main's 6.
@@ -377,18 +379,18 @@ jobs:
           # and 65.6 s in that pair.
           #
           # -timeout 19m, by R6 from the pair at 8cfd2682 and the dispatch runs since (the table on
-          # this job): this call's slowest package's slowest reading is cmd/agent-secrets, 555.3 s
-          # (run 44790111577 at 85f6b018, job 136476756402), against 522.8 s and 506.9 s in the
-          # pair, and 555.3 / 30 = 18.51, so 19m. The limit leaves 652.5 s above
-          # internal/dispatch/pmdoc's 487.5 s in that run, its slowest reading, over the 60 s of
-          # pmdoc's perCallReportMargin, which is the floor a package that reads the test binary's
-          # deadline sets for itself.
+          # this job): this call's slowest package's slowest reading is cmd/cipher, then
+          # cmd/agent-secrets, 555.3 s (run 44790111577 at 85f6b018, job 136476756402), against
+          # 522.8 s and 506.9 s in the pair, and 555.3 / 30 = 18.51, so 19m. The limit leaves
+          # 652.5 s above internal/dispatch/pmdoc's 487.5 s in that run, its slowest reading, over
+          # the 60 s of pmdoc's perCallReportMargin, which is the floor a package that reads the
+          # test binary's deadline sets for itself.
           lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
           github.com/sjawhar/envoy/cmd/dispatch-seed
           github.com/sjawhar/envoy/internal/dispatch/outbox
           github.com/sjawhar/envoy/cmd/dispatch
-          github.com/sjawhar/envoy/cmd/agent-secrets"
-          rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
+          github.com/sjawhar/envoy/cmd/cipher"
+          rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
@@ -518,12 +520,12 @@ jobs:
           # deployment runs (INFRA-1384). The others are a session consumer's own messages behind
           # other sessions' traffic on the hub's image, the listener's refusal of nats:2.10
           # (natsversion), and that refusal's control: on 2.10, stepped past, the consumer loses
-          # its old-form message. internal/broker/natscallout has one too: that the image the hub
+          # its old-form message. internal/cipher/natscallout has one too: that the image the hub
           # runs lets a user with an empty publish allow list publish anywhere, the fail-open its
           # guard refuses, so the guard is shown able to fail on the server production runs. Each
           # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
           # package's untagged tests, which already run elsewhere - internal/testnats in the
-          # package list above, and internal/bus and internal/broker/natscallout in
+          # package list above, and internal/bus and internal/cipher/natscallout in
           # envoy-go-race, which that list's grep -Ev leaves out - so
           # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
           # source at run time, and no test name is spelled here. Each assignment is a line of
@@ -532,15 +534,15 @@ jobs:
           # which matches every test. -timeout 1m on each command, by R6 from the pair at
           # 8cfd2682 (the table on this job): on the slower run of each, internal/testnats took
           # 4.7 s (run 44657322918, job 136026779841) and internal/bus 20.5 s and
-          # internal/broker/natscallout 5.1 s (run 44657415021, job 136039517737), and
-          # 4.7 / 30 = 0.16, 20.5 / 30 = 0.68 and 5.1 / 30 = 0.17, so 1m each, the smallest whole
-          # minute there is.
+          # internal/cipher/natscallout, then internal/broker/natscallout, 5.1 s (run 44657415021,
+          # job 136039517737), and 4.7 / 30 = 0.16, 20.5 / 30 = 0.68 and 5.1 / 30 = 0.17, so 1m
+          # each, the smallest whole minute there is.
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
-          callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/broker/natscallout)
+          callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
           { go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
             go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/ &&
-            go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/broker/natscallout/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+            go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/cipher/natscallout/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
           natslive=$!
           # The integration suite, which runs a real NATS server in the test process.
           # -timeout 1m, by R6 from the pair at 8cfd2682 (the table on this job): this call's
@@ -608,19 +610,19 @@ jobs:
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
       # in-process AWS store (onEachStore) and the use chain against a broker whose settings name
       # each store, each row that runs the command reading the injection line that names its
-      # store's kind (source.withSettings), all in ./cmd/agent-secrets/; and GET /v1/settings
+      # store's kind (source.withSettings), all in ./cmd/cipher/; and GET /v1/settings
       # answering each store's own key field beside the Google exchange audience, in
-      # ./internal/broker/api/. This step runs only those tests in only those two packages (-run,
+      # ./internal/cipher/api/. This step runs only those tests in only those two packages (-run,
       # under backend-count.sh's own 5-minute -timeout, which the job's measured time holds) and counts
       # the passes of each, so a test whose AWS half was skipped or removed, or that lives in
       # neither package, reads aws=0 and fails, as the verification's check c8 requires. It is
       # their one run: the unit step and the database-skips step skip them by name.
       - name: Count the store-form rows on each backend
-        run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
+        run: packages/envoy/scripts/backend-count.sh ./cmd/cipher/ ./internal/cipher/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # The step below is the one skip counter of the module's database-backed packages, which
       # envoy-go-race-api runs the Dispatch API through too, so its own test runs first:
       # packages/envoy/scripts/database-skips.test.sh plants a skipped test in
-      # ./internal/broker/api/, ./cmd/broker/ and ./internal/dispatch/api/ through a Go overlay and
+      # ./internal/cipher/api/, ./cmd/cipherd/ and ./internal/dispatch/api/ through a Go overlay and
       # holds the counter to count it; holds it to database_skips=UNKNOWN with a variable unset
       # and on a report that shows no run (no test of its packages ran, or one package's did not);
       # holds it to failing on a failed test; holds its --timeout to ending a test binary; and
@@ -632,7 +634,7 @@ jobs:
         run: packages/envoy/scripts/database-skips.test.sh
       # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
       # none skips. go test reports a skip as a pass, so this step is where the broker's packages
-      # and its command run: it runs ./internal/broker/... and ./cmd/broker/ with -json (less the
+      # and its command run: it runs ./internal/cipher/... and ./cmd/cipherd/ with -json (less the
       # race lane's packages under the tree, the auth service's natscallout, which envoy-go-race
       # runs: the script's DEFAULT_EXCEPT), which the unit step above leaves out, fails on a failed
       # test, and fails on any skipped test there
@@ -640,27 +642,27 @@ jobs:
       # built Lean model of the airlock, and the airlock-lean job runs them). A report that shows
       # no run prints database_skips=UNKNOWN and fails too. Its --timeout 9m is by R6 from the
       # pair at 8cfd2682 (the table on this job): the step's slowest package on the slower run is
-      # cmd/broker, 263.2 s (run 44657322918, job 136026779841; 260.8 s in run 44657415021, job
-      # 136039517737), which its stream holds, and 263.2 / 30 = 8.77, so 9m. cmd/broker took
-      # 580 s in main's unit step in CI on 2026-11-18 (job 135007706189, on arm64), more than the
-      # 9m, and the broker's packages had 15 minutes here. That -timeout bounds each package's
-      # test binary, and the packages run several at a time, so one that starts late ends up to 9
-      # minutes after its own start: the step's own limit of 19 minutes, main's rule of that
-      # -timeout plus 10, leaves a package that starts within the first 10 its whole -timeout,
-      # and so its dump. Measured in that same job, before cmd/broker joined this step: 355 s for
-      # the step. Its --keep copies that run's `go test -json` stream to broker.json under
-      # $RUNNER_TEMP/go-test-json, which the upload step below uploads with the unit step's
-      # streams: this step's go test is one of the job's, so its stream is a job artifact as the
-      # others are, and each broker test's name and result can be read there (dispatch://INFRA-1075).
-      # Its --skip leaves out the backend count's test of ./internal/broker/api/, which the count
-      # step above runs.
+      # cmd/cipherd, then cmd/broker, 263.2 s (run 44657322918, job 136026779841; 260.8 s in run
+      # 44657415021, job 136039517737), which its stream holds, and 263.2 / 30 = 8.77, so 9m.
+      # cmd/cipherd, then cmd/broker, took 580 s in main's unit step in CI on 2026-11-18 (job
+      # 135007706189, on arm64), more than the 9m, and the broker's packages had 15 minutes here.
+      # That -timeout bounds each package's test binary, and the packages run several at a time,
+      # so one that starts late ends up to 9 minutes after its own start: the step's own limit of
+      # 19 minutes, main's rule of that -timeout plus 10, leaves a package that starts within the
+      # first 10 its whole -timeout, and so its dump. Measured in that same job, before
+      # cmd/cipherd joined this step: 355 s for the step. Its --keep copies that run's `go test
+      # -json` stream to broker.json under $RUNNER_TEMP/go-test-json, which the upload step below
+      # uploads with the unit step's streams: this step's go test is one of the job's, so its
+      # stream is a job artifact as the others are, and each broker test's name and result can be
+      # read there (dispatch://INFRA-1075). Its --skip leaves out the backend count's test of
+      # ./internal/cipher/api/, which the count step above runs.
       - name: Count the database broker suites' skips
         timeout-minutes: 19
         run: packages/envoy/scripts/database-skips.sh --timeout 9m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' --keep "$RUNNER_TEMP/go-test-json/broker.json"
       # The run of the built agent-secrets against moto needs moto, so it sits behind a build tag
       # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
       - name: Vet agent-secrets' moto run (no moto)
-        run: go vet -tags moto ./cmd/agent-secrets/
+        run: go vet -tags moto ./cmd/cipher/
         working-directory: packages/envoy
       # check c-callout-live of the NATS auth service's verification: the real broker (twice, one
       # queue group), listener, Dispatch and nats-server behind the auth callout, built and started

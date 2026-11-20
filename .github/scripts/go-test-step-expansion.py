@@ -235,7 +235,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-envoy-go-race.yaml", "Test the wall-clock measurements alone"),
             (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/natscallout",
+        package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
         requirement=(
             "c-callout-available (the NATS auth service's verification): five hundred "
@@ -304,7 +304,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("FuzzAirlock",),
         requirement=(
             "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
@@ -324,7 +324,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestModelAgreesOnHostShapes",),
         requirement=(
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
@@ -342,7 +342,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
         requirement=(
             "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
@@ -393,8 +393,8 @@ BACKEND_COUNT_TESTS = (
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1` over its packages, then counts the skips in its report. With no package argument it
-    # runs its DEFAULT_PACKAGES, ./internal/broker/... and ./cmd/broker/, less the import paths its
-    # DEFAULT_EXCEPT's `grep -Ev '/internal/broker/natscallout$'` takes out of `go list` of them (the
+    # runs its DEFAULT_PACKAGES, ./internal/cipher/... and ./cmd/cipherd/, less the import paths its
+    # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
     # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
@@ -402,20 +402,20 @@ AUDITED_SCRIPTS = {
     # FILE (making its directory) and changes no test it runs. With `--report FILE` it reads a
     # report and runs no test. envoy-go's count step passes the first argument list below, whose
     # command is that run in the listing form this script reads, and envoy-go-race-api's race step
-    # the second. The first's --skip leaves out the backend count's test of ./internal/broker/api/.
+    # the second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
             "--timeout 9m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
             "--keep \"$RUNNER_TEMP/go-test-json/broker.json\"":
-                "go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | "
+                "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
                 "-timeout 9m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 39m "
             "--keep \"$RUNNER_TEMP/go-test-json/race-api.json\" ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 39m ./internal/dispatch/api/",
         },
-        sha256="5108082db39c66515e4f216428e738cf57b7452250826c91b5df88e2d69b0f00",
+        sha256="59fdcfa7225b116bbc60b0ddff66cbd28add159223820b5b3885d130e03a5f4f",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -425,11 +425,11 @@ AUDITED_SCRIPTS = {
     "packages/envoy/scripts/backend-count.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "./cmd/agent-secrets/ ./internal/broker/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
+            "./cmd/cipher/ ./internal/cipher/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
-                "./cmd/agent-secrets/ ./internal/broker/api/",
+                "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="034c00d5c296c9f1ef112e2a0d2df27b5aac0754ac1cdd29d9551e45c1750ae1",
+        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

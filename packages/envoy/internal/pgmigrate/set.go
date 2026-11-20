@@ -1,5 +1,5 @@
 // Package pgmigrate holds what Envoy's two Postgres migration runners share: Dispatch's
-// (internal/dispatch/store) and the secrets broker's (internal/broker/store). Both record an
+// (internal/dispatch/store) and the secrets broker's (internal/cipher/store). Both record an
 // applied migration by its version and its file's identity, its name and the sha256 of its text
 // (Identity), and apply every version they have not recorded, so both trust the set they embed to
 // give each version one file, and both run a migration's statements under locks that production's
@@ -206,7 +206,7 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 // since it changes no database.
 //
 // Its caller is the Postgres test harness of each runner (internal/testpg/pgtemplate, through
-// internal/dispatch/store/storetest and internal/broker/store/storetest), which names the migrated
+// internal/dispatch/store/storetest and internal/cipher/store/storetest), which names the migrated
 // template database every test clones after it, so the test processes of one run share the one
 // template rather than each migrating a template of its own, and a run whose set differs builds a
 // template of its own rather than cloning a stale one (dispatch://INFRA-1075). A template an
