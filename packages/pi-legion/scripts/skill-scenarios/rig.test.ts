@@ -10862,6 +10862,44 @@ sleep() { command sleep 0.05; }`;
     expect(missed).toEqual([]);
   });
 
+  // Catches: a guard that reads a <run>/reviewer-wake.json it cannot parse as one that relays no
+  // message, or one that dies of it naming nothing. The guard leaves out of the prompt only what
+  // that file says the rig relayed from another agent of the run (run-names.ts's `promptOf`), so
+  // a file of no shape the rig writes is a prompt whose own text the guard cannot tell from an
+  // agent's: each refuses the launch, naming the file, and the agent does not start.
+  test("a reviewer-wake.json the guard cannot parse refuses the launch, naming the file", () => {
+    const name = "threads-closed-correct-head-1";
+    const message = "Pushed one commit c9268b02bfc2 fixing the open thread PRRT_kwDOfix002.";
+    const relayed = { at: "2026-11-20T16:46:07.292Z", message, sender: "01a1f9d6" };
+    const rows: { what: string; text: string }[] = [
+      { what: "no JSON", text: '{"wake": [' },
+      { what: "no wake", text: JSON.stringify({ messages: [relayed] }) },
+      {
+        what: "a message of no text",
+        text: JSON.stringify({ wake: [{ ...relayed, message: 1 }] }),
+      },
+      {
+        what: "a time that is none",
+        text: JSON.stringify({ wake: [{ ...relayed, at: "today" }] }),
+      },
+    ];
+    const missed: string[] = [];
+    for (const row of rows) {
+      const work = freshDir("launch-unparsed-wake");
+      const ran = path.join(runDirOf(work, name), "agent-ran");
+      const { run, result } = launched(work, name, `: >${ran}`, [], {
+        files: {
+          "prompt.txt": `Implementer → reviewer, WID-1. ${message}\n`,
+          "reviewer-wake.json": row.text,
+        },
+      });
+      const refused = `the world of ${path.basename(run)} cannot be read whole: <run>/reviewer-wake.json cannot be parsed: `;
+      if (result.code !== 1 || !result.stderr.includes(refused) || existsSync(ran))
+        missed.push(`${row.what}: exit ${result.code}: ${result.stderr.trim()}`);
+    }
+    expect(missed).toEqual([]);
+  });
+
   // Catches: a guard that reads what the rig did not compose, and refuses a run on it. The
   // label's install ships a checkout's own words: every base agent of the preflight at cc09c638
   // was refused on `var SPEC_WRITING_POINTER` in pi-legion's dist/legion.js, a production name,

@@ -1480,18 +1480,20 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     timestamp: at(minute),
     content: text,
   });
-  /** A run holding `transcripts` (each a path under the run and its entries, after a header) and
-   * `files` (each a path under the run and its text), at `dir`, read as `rig.sh health` reads it. */
+  /** A run holding `transcripts` (each a path under the run and its entries, after a header: the
+   * session `s1`'s, unless the first entry is a header of its own) and `files` (each a path under
+   * the run and its text), at `dir`, read as `rig.sh health` reads it. */
   function runWith(
     transcripts: Record<string, object[]>,
     files: Record<string, string> = {},
     dir = path.join(runs(), "0123456789ab")
   ) {
     for (const [file, entries] of Object.entries(transcripts)) {
+      const own = (entries[0] as { type?: unknown } | undefined)?.type === "session";
       mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
       writeFileSync(
         path.join(dir, file),
-        [header, ...entries].map((entry) => `${JSON.stringify(entry)}\n`).join("")
+        [...(own ? [] : [header]), ...entries].map((entry) => `${JSON.stringify(entry)}\n`).join("")
       );
     }
     for (const [file, text] of Object.entries(files)) {
@@ -1759,6 +1761,110 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     expect(namesOf(run).own).toEqual([
       `a thinking part in ${FILE} says "text-only": "These are text-only."`,
     ]);
+  });
+
+  // Catches: a message the rig relayed from the implementer into the reviewer's prompt (rig.sh's
+  // run_threads_closed, kept whole in <run>/reviewer-wake.json) read as the rig's own text, so a
+  // word the implementer made itself and sent the reviewer is a leak: INFRA-764's round 26 at
+  // 10c26bb8, whose implementer of threads-closed-correct-head-1 wrote "Pushed one text-only
+  // commit" to its reviewer. And the other way, every relayed word trusted, whatever carried it
+  // to its sender first. A word is an agent's own only where nothing the rig wrote carried it to
+  // an agent of that run first (the architect's ruling of 2026-11-20T17:30Z and 17:35Z).
+  test("a relayed message's word is its sender's own, unless the rig gave it the sender first, wrote it or relayed it from no agent of the run", () => {
+    const sender = "01a1f9d6-d286-7165-97d6-fe3f0206e8b7";
+    const REVIEWER = "sessions/reviewer/s2.jsonl";
+    const topic = "role.legion-fernbrookwidgets0da355854a62-wid-1-reviewer";
+    /** <run>/reviewer-wake.json as run_threads_closed writes it: `message`, sent by `from` at
+     * minute 10. */
+    const wakeOf = (message: string, from = sender) =>
+      JSON.stringify({
+        wake: [
+          {
+            at: at(10),
+            topic: `notifications.${topic}`,
+            message,
+            sender: from,
+            subject: `notifications.envoy.kept.${topic}`,
+          },
+        ],
+      });
+    const sent = "Pushed one text-only commit c9268b02bfc2 fixing the open thread PRRT_kwDOfix002.";
+    const plain = "Pushed one commit c9268b02bfc2 fixing the open thread PRRT_kwDOfix002.";
+    const approved = "The text-only commit is in, so I approve.";
+    const publish = (message: string) =>
+      call("envoy_publish", { topic: `notifications.${topic}`, message }, 9);
+    /** A threads-closed run: the implementer's transcript, its prompt and then `implementer`;
+     * the reviewer's, woken at minute 20 by `prompt`, which says `approved`; and `wake`. */
+    const relayed = (implementer: object[], prompt: string, wake: string) =>
+      runWith(
+        {
+          [FILE]: [
+            { type: "session", id: sender, timestamp: at(0) },
+            user("Reviewer → implementer, WID-1. I approved PR #1001. Over to you.", 0),
+            ...implementer,
+          ],
+          [REVIEWER]: [
+            { type: "session", id: "01a1f9e0-5c3b-7a41-9d2e-3f6b8c1a0e77", timestamp: at(0) },
+            user(prompt.trimEnd(), 20),
+            says("text", approved, 21),
+          ],
+        },
+        { "prompt.txt": prompt, "reviewer-wake.json": wake }
+      );
+    const theirs = `a text part in ${REVIEWER} says "text-only": "${approved}"`;
+    // The word only in the relayed message, and no input of the implementer held it: its own.
+    const own = relayed([publish(sent)], `Implementer → reviewer, WID-1. ${sent}\n`, wakeOf(sent));
+    expect({ leaked: namesSaid(own), own: namesOf(own).own }).toEqual({
+      leaked: undefined,
+      own: [theirs],
+    });
+    // The message is the sender's writing at the time Envoy accepted it, whatever its transcript
+    // recorded of the call that sent it.
+    expect(
+      namesSaid(relayed([], `Implementer → reviewer, WID-1. ${sent}\n`, wakeOf(sent)))
+    ).toBeUndefined();
+    // A tool result gave the implementer the word before it sent it: a leak, naming the result.
+    expect(
+      namesSaid(
+        relayed(
+          [
+            call("bash", { command: "cat notes.md" }, 1),
+            result("bash", "These findings are text-only.", 2),
+            publish(sent),
+          ],
+          `Implementer → reviewer, WID-1. ${sent}\n`,
+          wakeOf(sent)
+        )
+      )
+    ).toBe(
+      `names: ${theirs}, which the result of bash in ${FILE} held before any agent of the run wrote it`
+    );
+    // The word in the rig's own line of the prompt, which no relayed message holds: a leak.
+    expect(
+      namesSaid(
+        relayed(
+          [publish(plain)],
+          `Implementer → reviewer, WID-1, a text-only round. ${plain}\n`,
+          wakeOf(plain)
+        )
+      )
+    ).toBe(`names: ${theirs}, which <run>/prompt.txt held before any agent of the run wrote it`);
+    // A sender no transcript of the run names: the message stays the rig's text, so a leak.
+    expect(
+      namesSaid(
+        relayed(
+          [publish(sent)],
+          `Implementer → reviewer, WID-1. ${sent}\n`,
+          wakeOf(sent, "01a1ffff-0000-7000-8000-000000000000")
+        )
+      )
+    ).toBe(`names: ${theirs}, which <run>/prompt.txt held before any agent of the run wrote it`);
+    // A record of the wake that cannot be parsed is a prompt no word can be traced in.
+    const unparsed = namesSaid(
+      relayed([publish(sent)], `Implementer → reviewer, WID-1. ${sent}\n`, '{"wake": [')
+    );
+    expect(unparsed).toStartWith("names: <run>/reviewer-wake.json cannot be parsed: ");
+    expect(unparsed).toEndWith(", so no word it gave the run's agents can be traced");
   });
 });
 

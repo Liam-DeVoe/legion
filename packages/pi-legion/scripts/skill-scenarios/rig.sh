@@ -1469,8 +1469,13 @@ tmux_ready() {
 # prompt, its stand-ins and its jj configuration for a word of the vocabulary (run-names.ts's
 # `worldNames`, COMPOSED), and the run fails, naming the word and where it is, where one is there.
 # It reads neither the label's install, whose words are its checkout's own, nor what the run has
-# written, whose words are its agents' own. On 2026-11-16, 16 of the 36 runs of the batch at
-# c273084d reasoned from the run's name, which every path of the run carried.
+# written, whose words are its agents' own, nor a message one agent of the run sent the next that
+# the rig relays into the next one's prompt (run_threads_closed, which keeps each whole in
+# $R/reviewer-wake.json): the message's words are its sender's, so the guard reads the prompt less
+# each message, at the place the rig wrote it, and the rest, each line's own prefix included, is
+# the rig's (run-names.ts's `promptOf`); a reviewer-wake.json it cannot parse fails the run. On
+# 2026-11-16, 16 of the 36 runs of the batch at c273084d reasoned from the run's name, which every
+# path of the run carried.
 launch() {
   local system='' extra='' omp unshare kind path other hidden
   omp=$(pinned_omp "$pin") || exit 1
@@ -4463,7 +4468,11 @@ run_threads_closed() {
   # `wake`.
   wake=$(reviewer_wake)
   # One delivery per message, in Envoy's own order, which is what the reviewer's session would
-  # have been handed; an implementer that published none leaves the prompt empty.
+  # have been handed; an implementer that published none leaves the prompt empty. Each line's
+  # prefix is the rig's text and the message after it the implementer's own words: launch's guard
+  # and rule 17 of health.ts read the prompt less each message of <run>/reviewer-wake.json, at the
+  # end of its line here (run-names.ts's `promptOf`), and rule 17 reads the message as the
+  # implementer's writing at the time Envoy accepted it.
   jq -r --arg key "$worker_key" '.[] | "Implementer → reviewer, \($key). \(.message)"' \
     <<<"$wake" >"$R/prompt.txt"
   jq -n --argjson wake "$wake" '{wake:$wake}' >"$R/reviewer-wake.json"

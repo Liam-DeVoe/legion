@@ -486,6 +486,12 @@ place with the text around it, where one is there. It reads nothing else the wor
 - not what the run has written (`sessions/`, `out*.txt`, `cwd/`, `ws/`, `calls.jsonl`, a HOME an
   agent used), which holds its agents' own words: read before a run's second agent, the first
   agent's transcript refused it;
+- not a message one agent of the run sent the next, which `run_threads_closed` relays into the
+  reviewer's prompt and keeps whole in `<run>/reviewer-wake.json`: the guard reads the prompt less
+  each such message, at the end of the line the rig wrote it on, so the rig's own prefix of that
+  line is still read and the message's words are its sender's (`run-names.ts`'s `promptOf`); a
+  `reviewer-wake.json` it cannot parse fails the run. In INFRA-764's round 26 the implementer's
+  "Pushed one text-only commit" refused its reviewer's launch;
 - not the world's repositories, their remote helpers and gh answers (`world.json`,
   `fixtures.json`, `src/`, `ws/`, the shared clone `repos/`, `remote.git`, `bin/git-remote-ghapp`
   and `lib/git-core/git-remote-https`), which the run writes into after its first agent, and which
@@ -773,7 +779,11 @@ in its own text or thinking, where its prompt, its system prompt or an entry of 
 is not an agent's own (a user message, a tool result, a message it was sent, an entry Oh My Pi put
 in its context) held the word before any agent of the run wrote it, its tool calls' arguments
 included: earlier in the same transcript, or earlier by the entries' times across two, so a
-message one agent sends another carries the sender's own word. The unhealthy line quotes the
+message one agent sends another carries the sender's own word. The prompt is read as the guard
+reads it, less each message the rig relayed into it from another agent of the run
+(`<run>/reviewer-wake.json`): such a message is its sender's own writing at the time Envoy
+accepted it, so its word is a leak only where an input held it before then, and a message whose
+sender has no transcript in the run stays the rig's text. The unhealthy line quotes the
 sentence and names the input. A word the run's agents wrote before any input held it is theirs:
 `health: names its agents wrote before any input held them (no verdict): <n> of <m> runs: <run>
 (<sentence>); …` names each such run and its first sentence, and the run stays healthy, since the

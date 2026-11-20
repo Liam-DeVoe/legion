@@ -139,10 +139,14 @@
  *      makes the run unhealthy only where an input held it before any agent of the run wrote it
  *      (`namesSaid`, the leak test the tester's reader uses): the run's prompt or system
  *      prompt (<run>/prompt.txt, <run>/system-args and the prompt file it names, read through
- *      run-names.ts's `systemPromptOf`, whose refusal of a system prompt it cannot read fails
- *      the run under this rule), or an entry of a transcript that is not an
+ *      run-names.ts's `promptOf` and `systemPromptOf`, whose refusal of a
+ *      <run>/reviewer-wake.json it cannot parse or a system prompt it cannot read fails the run
+ *      under this rule), or an entry of a transcript that is not an
  *      agent's own — a user message, a tool result (so every file an agent read), a message it
- *      was sent, an entry Oh My Pi put in its context. The word is run-names.ts's vocabulary,
+ *      was sent, an entry Oh My Pi put in its context. A message the rig relayed into the prompt
+ *      from one agent of the run to the next (<run>/reviewer-wake.json) is no input: it is its
+ *      sender's own writing, at the time Envoy accepted it, where the run holds the sender's
+ *      transcript, and the rig's text where it does not. The word is run-names.ts's vocabulary,
  *      derived from its SCENARIOS, completion-answers.ts's LABELS and the run's own label, and its
  *      REMOVED_NAMES, as its `proseNames` reads a sentence (rule 13 reads a web search's query by
  *      it too): a distinctive word (`text-only`, `threads-closed`), a removed name
@@ -291,8 +295,10 @@ import { githubRouteOf } from "./github-routes";
 import {
   entryKind,
   holds,
+  promptOf,
   proseNames,
   RUN_ID,
+  rigText,
   runIdentity,
   SCENARIOS,
   systemPromptOf,
@@ -315,7 +321,7 @@ import {
   transcriptFiles,
   withoutBodies,
 } from "./score";
-import { type SessionEntry, transcriptEntries } from "./transcript";
+import { type SessionEntry, sessionId, transcriptEntries } from "./transcript";
 
 const USAGE = "usage: rig.sh health [--tmp-snapshot <file>] [--repo <git dir>]... <run dir>...";
 const BOOT_USAGE = "usage: health.ts --boot-refusal <run dir> <role> <since> <sessions dir>";
@@ -338,9 +344,10 @@ interface Access {
 }
 
 /** An entry of a transcript an agent wrote or was given, or a file of the run it was given
- * (rule 17): where it is (a transcript's path under the run, or `<run>/prompt.txt`), its kind,
- * its text, its place in that transcript (-1 for a file of the run, which every agent was given
- * before it wrote anything) and its time (NaN where the entry has none). */
+ * (rule 17): where it is (a transcript's path under the run, `<run>/prompt.txt`, or
+ * `<run>/reviewer-wake.json` for a message the rig relayed), its kind, its text, its place in that
+ * transcript or record (-1 for a file of the run, which every agent was given before it wrote
+ * anything) and its time (NaN where the entry has none). */
 interface TracedPart {
   readonly file: string;
   readonly kind: string;
@@ -392,6 +399,10 @@ interface Run {
   readonly repos: readonly string[];
   /** Every tool call of every transcript of the run, with the transcript it is in and when. */
   readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
+  /** The transcript of each session of the run, by the session id its header names
+   * (`sessionId`): the agent whose transcript it is sent each message Envoy recorded that session
+   * as the sender of (rule 17). */
+  readonly sessions: ReadonlyMap<string, string>;
   /** Every tool result's text of every transcript of the run, with the transcript it is in. */
   readonly results: readonly { file: string; text: string }[];
   /** Every text and thinking part an agent of the run wrote, with the transcript it is in, its
@@ -472,13 +483,17 @@ export function loadRun(
   ];
   const ran = { dir, label, namespaced: existsSync(path.join(dir, NAMESPACE)) };
   const calls: { file: string; tool: string; args: ToolArgs; at: number }[] = [];
+  const sessions = new Map<string, string>();
   const results: { file: string; text: string }[] = [];
   const said: TracedPart[] = [];
   const wrote: TracedPart[] = [];
   const heard: TracedPart[] = [];
   for (const full of transcriptFiles(dir)) {
     const file = path.relative(dir, full);
-    for (const [index, entry] of transcriptEntries(full).entries()) {
+    const entries = transcriptEntries(full);
+    const id = sessionId(entries);
+    if (id !== undefined && !sessions.has(id)) sessions.set(id, file);
+    for (const [index, entry] of entries.entries()) {
       const message = entry.message;
       const at = Date.parse(entry.timestamp ?? "");
       if (message?.role === "assistant") {
@@ -517,6 +532,7 @@ export function loadRun(
     repos,
     namespaced: ran.namespaced,
     calls,
+    sessions,
     results,
     said,
     wrote,
@@ -4383,14 +4399,24 @@ const namesRead = new WeakMap<object, Names>();
 /** Rule 17's reading of `run`: each sentence of an agent's own text or thinking, in any
  * transcript of the run, that says a word of the measurement, a scenario, case or label word or a
  * removed name (run-names.ts's `proseNames`, over `runVocabulary`, which rule 13 reads a web
- * search's query by too), traced to where it came from. Its inputs are the run's prompt and
- * system prompt and every entry of every transcript that is not an agent's own (`heard`); its
- * writings, every assistant entry of every transcript, tool calls' arguments included (`wrote`).
- * The word leaked where an input held it before every writing of it (`before`, `holds`): the
- * agent was given it. Otherwise the run's agents made it, and it is theirs: the preflight at
- * cc09c638 read "Since those are text-only issues rather than code that changes behavior" in a
- * head run where no input held the word. */
-export function namesOf(run: Pick<Run, "dir" | "label" | "said" | "wrote" | "heard">): Names {
+ * search's query by too), traced to where it came from. Its inputs are the rig's own text of the
+ * run's prompt (run-names.ts's `promptOf` and `rigText`), its system prompt and every entry of
+ * every transcript that is not an agent's own (`heard`); its writings, every assistant entry of
+ * every transcript, tool calls' arguments included (`wrote`), and every message the rig relayed
+ * into the prompt from one agent of the run to the next (<run>/reviewer-wake.json), which is its
+ * sender's own writing at the time Envoy accepted it, not an input: a run's agents' own words are
+ * no leak, the words one agent sends another included, and a word is an agent's own only where
+ * nothing the rig wrote carried it to an agent of the run first (the architect's ruling of
+ * 2026-11-20T17:30Z and 17:35Z). A relayed message whose sender has no transcript in the run
+ * (`sessions`) is no agent's of the run, so it stays the rig's text of the prompt. The word leaked
+ * where an input held it before every writing of it (`before`, `holds`): the agent was given it.
+ * Otherwise the run's agents made it, and it is theirs: the preflight at cc09c638 read "Since
+ * those are text-only issues rather than code that changes behavior" in a head run where no input
+ * held the word, and INFRA-764's round 26 at 10c26bb8 read "Pushed one text-only commit" in the
+ * message the implementer of threads-closed-correct-head-1 sent its reviewer. */
+export function namesOf(
+  run: Pick<Run, "dir" | "label" | "sessions" | "said" | "wrote" | "heard">
+): Names {
   const read = namesRead.get(run);
   if (read !== undefined) return read;
   const vocab = runVocabulary(run.label);
@@ -4401,19 +4427,31 @@ export function namesOf(run: Pick<Run, "dir" | "label" | "said" | "wrote" | "hea
     index: -1,
     at: Number.NaN,
   });
-  const prompt = path.join(run.dir, "prompt.txt");
-  const inputs: TracedPart[] = existsSync(prompt)
-    ? [given("<run>/prompt.txt", readFileSync(prompt, "utf8"))]
-    : [];
+  const inputs: TracedPart[] = [];
+  const wrote = [...run.wrote];
   try {
+    const prompt = promptOf(run.dir);
+    if (prompt !== undefined) {
+      const theirs = prompt.relayed.filter(({ relayed }) => run.sessions.has(relayed.sender));
+      inputs.push(given("<run>/prompt.txt", rigText(prompt.text, theirs)));
+      for (const one of theirs)
+        wrote.push({
+          file: "<run>/reviewer-wake.json",
+          kind: "a relayed message",
+          text: one.relayed.message,
+          index: prompt.relayed.indexOf(one),
+          at: Date.parse(one.relayed.at),
+        });
+    }
     const system = systemPromptOf(run.dir);
     if (system !== undefined) {
       inputs.push(given("<run>/system-args", system.argument));
       if (system.place !== "<run>/system-args") inputs.push(given(system.place, system.text));
     }
   } catch (error) {
-    // A system prompt that cannot be read is an input no word can be traced to, so no sentence of
-    // the run's agents can be called their own: the rule fails the run, naming why.
+    // A relayed message or a system prompt that cannot be read is an input no word can be traced
+    // to, so no sentence of the run's agents can be called their own: the rule fails the run,
+    // naming why.
     const names = {
       leaked: `names: ${error instanceof Error ? error.message : String(error)}, so no word it gave the run's agents can be traced`,
       own: [],
@@ -4429,7 +4467,7 @@ export function namesOf(run: Pick<Run, "dir" | "label" | "said" | "wrote" | "hea
       const word = proseNames(sentence, vocab);
       if (word === undefined) continue;
       const quoted = `a ${part.kind} part in ${part.file} says "${word}": "${sentence.trim().slice(0, 240)}"`;
-      const writings = run.wrote.filter((one) => holds(one.text, word));
+      const writings = wrote.filter((one) => holds(one.text, word));
       const source = inputs.find(
         (input) => holds(input.text, word) && writings.every((one) => before(input, one))
       );
@@ -4450,7 +4488,7 @@ export function namesOf(run: Pick<Run, "dir" | "label" | "said" | "wrote" | "hea
 /** Rule 17: the first sentence of an agent of the run that says a word an input gave it
  * (`namesOf`). */
 export function namesSaid(
-  run: Pick<Run, "dir" | "label" | "said" | "wrote" | "heard">
+  run: Pick<Run, "dir" | "label" | "sessions" | "said" | "wrote" | "heard">
 ): string | undefined {
   return namesOf(run).leaked;
 }
