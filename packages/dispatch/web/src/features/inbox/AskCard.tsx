@@ -652,8 +652,10 @@ export function AskCard({
         >
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
-        {/* A form refusal's findings grow up to half the window, keeping Answer on screen.
-            Other drafts keep their default field shape. */}
+        {/* A form refusal's findings grow with their text up to half the window (`growingField`),
+            so the reason that Dispatch wrote shows whole and Answer stays on the screen. Other
+            drafts keep their default field shape. `min-h-16!` keeps the findings field two lines
+            tall over styles.css's unlayered touch floor. */}
         <textarea
           className={`${answerShape} ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
           data-ask-answer=""

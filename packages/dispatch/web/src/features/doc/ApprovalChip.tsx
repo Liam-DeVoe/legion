@@ -278,8 +278,10 @@ function RequestChangesDialog({
                 submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
                 the body in a browser, and Tab would then leave the dialog. Outside both are
                 `disabled` while the write is out, as on `main`. */}
-            {/* A form refusal's reason grows up to half the window; ordinary reasons keep their
-                default shape. The minimum keeps the findings field two lines tall. */}
+            {/* A form refusal's reason grows with its text up to half the window (`growingField`),
+                so the reason that Dispatch wrote shows whole, not in two lines; ordinary reasons
+                keep their default shape. `min-h-14!` keeps the findings field two lines tall over
+                styles.css's unlayered touch floor. */}
             <textarea
               className={`${reasonShape} ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
               disabled={page === null && saving}
@@ -576,8 +578,10 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either. At the new issue
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
-              // Inside `NoTooltips`, keep focus while pending; outside keep main's disabled
-              // control. A form refusal returns focus once the write ends.
+              // Inside `NoTooltips`, while the write is out, Approve is `aria-disabled` and a press
+              // of it does nothing, so it keeps the focus: a `disabled` button drops it to the
+              // body in a browser. Outside it is `disabled` while the write is out, as on `main`.
+              // On both sides a form refusal gives the focus back to Approve once the write ends.
               aria-disabled={(page !== null && review.isPending) || undefined}
               aria-label={actionNames?.approve}
               className={

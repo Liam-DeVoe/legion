@@ -62,7 +62,10 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
-  /** Variables supplied to the server beside its isolated default environment. */
+  /**
+   * Variables the server gets beside its own, such as `DISPATCH_SPEC_ROOTS`. Where the stack
+   * sets a name too, the value here is the one the server gets.
+   */
   readonly env?: Readonly<Record<string, string>>;
   /** Called with the port the stack chooses for the server, before the server starts. */
   readonly portChosen?: PortChosen;

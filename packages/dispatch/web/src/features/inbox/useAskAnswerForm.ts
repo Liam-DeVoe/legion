@@ -111,10 +111,13 @@ function withRefusalReason(reason: string, note: string): string {
 /**
  * The refusals the same answer is refused with again however often it is sent, and what the card
  * says for each: the ask was answered or closed elsewhere, its question changed (the card reloads
- * it, so the next answer is to the new wording), or writing even its server state would leave the
- * document's live state past what the server can decode. An answer the reader stopped may have
- * been saved, and the card's Retry makes that very press again (`retryLast`). Any other failure
- * may pass on a retry.
+ * it, so the next answer is to the new wording), writing even its server state would leave the
+ * document's live state past what the server can decode, or an approval of a document whose text
+ * breaks the form of The Spec. For that one the card shows Dispatch's own words, which name each
+ * text, but its own last line: Dispatch's names Request changes, which the card has already
+ * picked, so the card's names the press that is left (`CARD_FORM_NEXT_STEP`). An answer the reader
+ * stopped may have been saved, and the card's Retry makes that very press again (`retryLast`). Any
+ * other failure may pass on a retry.
  */
 function answerFailure(answer: {
   readonly error: Error;
@@ -293,8 +296,12 @@ export function useAskAnswerForm({
         }
       }
       if (isSpecFormRefusal(error)) {
-        // The refusal and its reason belong to the press's ask even if this card now shows
-        // another one. Keeping the reason in that ask's draft also survives its remount.
+        // Dispatch refused the approval and wrote the reason a request for changes sends to the
+        // author: the card picks Request changes with that reason (below, from the kept
+        // refusal), and one more press sends it. The reason goes in the request's draft before
+        // the refusal shows, so Answer is ready for the focus that the press owes. The refusal
+        // and its reason belong to the press's ask even if this card now shows another one, and
+        // keeping the reason in that ask's draft also survives its remount.
         const reason = error.changesReason ?? "";
         setAnswerTextOf(press.ask.id, (note) => withRefusalReason(reason, note));
         setFormRefusal(press.refusalKey, { error, press: press.refusalPress });
