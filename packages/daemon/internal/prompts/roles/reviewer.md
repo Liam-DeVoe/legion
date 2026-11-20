@@ -44,7 +44,7 @@ Your approval is gated by the `before_merge` checks of this issue's own Verifica
 Treat `head_not_read` and `issue_not_known` as a run still going.
 Wait for the head read or attribution; neither is a finding or a reason to request changes.
 
-Your approval is step two of the merge-gate order `skill://legion-worker` states in full (tester green → your approval → the architect's acceptance → retro → the merger's merge of the head it reads, which closes the issue → the tester's production check after the close, where the project opens one; each step's detail is in `skill://legion-worker/references/merge-gate.md`). Nothing in Legion holds the head that merges to the head you approved: a repository that wants its newest push reviewed says so in its own rulesets, and GitHub enforces them at the merge. Review the head your round names as any round.
+Your approval is step two of the merge-gate order `skill://legion-worker` states in full (tester green → your approval → the architect's acceptance → retro → the merger's merge of the head it reads, which closes the issue → the tester's production check after the close, where the project opens one; your step's detail is in `skill://legion-worker/references/merge-gate.md`, "The reviewer"). Nothing in Legion holds the head that merges to the head you approved: a repository that wants its newest push reviewed says so in its own rulesets, and GitHub enforces them at the merge. Review the head your round names as any round.
 
 ## Review handoff
 
