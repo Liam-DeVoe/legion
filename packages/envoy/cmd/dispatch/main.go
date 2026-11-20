@@ -1024,25 +1024,25 @@ func main() {
 	// waitIntakes waits for the three intakes to stop once ctx is cancelled: the two delivery
 	// intakes and the Legion state intake. StartIntakes and legion.StartIntake each return their
 	// stop as a function a second call of which returns once the first has, so a second call of
-	// waitIntakes does too. The shutdown runs it before it closes the database pool: an intake
-	// releases its duty.Hold through that pool as it stops, and a hold left in place for its TTL
-	// names the stopped process's deliver subject, which a process of the build before holds,
-	// binding by lookup, goes on delivering at, so the next holder would read that binding as a
-	// dead holder's and take it over. Every exit after the intakes start runs it too
-	// (exitAfterIntakes, stopIntakesOnExit, and the stop during the registry's admission wait),
-	// since each intake can hold its durable before this process serves anything. With no NATS
-	// client there is nothing to wait for.
+	// waitIntakes does too. The shutdown runs it before it closes the database pool: each stop
+	// closes its intakes' NATS clients after their Runs return, then waits for any hand-back
+	// finalizer to release its duty.Hold through that pool. A hold left in place for its TTL names
+	// the stopped process's deliver subject, which a process of the build before holds, binding by
+	// lookup, goes on delivering at, so the next holder would read that binding as a dead holder's
+	// and take it over. Every exit after the intakes start runs it too (exitAfterIntakes,
+	// stopIntakesOnExit, and the stop during the registry's admission wait), since each intake can
+	// hold its durable before this process serves anything. With no NATS client there is nothing
+	// to wait for.
 	waitIntakes := func() {}
 	if natsClient != nil {
 		// The intake and the job intake (LEGION-690) each bind a durable, and the Legion state
 		// intake a third, so each takes a client of its own (delivery.StartIntakes,
-		// legion.StartIntake). Their Runs return once ctx is cancelled; each begins stopping then,
-		// at the signal, beside the HTTP drain and the document shutdown, and returns once a
-		// message still in its handler has been acknowledged, or given up at its stop budget from
-		// the signal and handed back, with the messages behind it handed back too and the intake's
-		// hold released, so another process takes its durable over at once and the clients close
-		// after it. Each connects in the background as the publisher does, and its poll takes the
-		// durable's hold once it has.
+		// legion.StartIntake). Their Runs begin stopping at the signal beside the HTTP drain and
+		// document shutdown, and return once a message in a handler has been acknowledged or given
+		// up at its stop budget and handed back. Each stop then closes its clients, waits for each
+		// pending hand-back's finalizer to release the hold through the pool, and returns. Each
+		// connects in the background as the publisher does, and its poll takes the durable's hold
+		// once it has.
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}

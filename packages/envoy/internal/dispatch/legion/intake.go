@@ -308,9 +308,10 @@ func ReserveLeases(callers *store.LeaseCallers) (delivery.DurableLeases, error) 
 // NewIntake reads the settings again on.
 //
 // The returned stop, called once ctx is cancelled, waits for Run, which returns once the intake has
-// stopped delivering and released its hold under the intakes' stop budget from ctx's end, and then
-// closes the client. A caller that closes the database pool after stop returns never closes it
-// under one of the intake's writes. A second call returns once the first has.
+// stopped delivering under the intakes' stop budget from ctx's end, and then closes the client and
+// waits for the hand-back finalizers Run left behind to release the hold (delivery.HeldDurable.Stop).
+// A caller that closes the database pool after stop returns closes it under none of the intake's
+// writes. A second call returns once the first has.
 func StartIntake(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases delivery.DurableLeases, settingsWake <-chan struct{}) (stop func(), err error) {
 	client, err := connect(intakeConnectionName)
 	if err != nil {
@@ -322,13 +323,10 @@ func StartIntake(ctx context.Context, connect func(name string) (*bus.Client, er
 		defer close(done)
 		intake.Run(ctx)
 	}()
-	var stopped sync.Once
-	return func() {
-		stopped.Do(func() {
-			<-done
-			client.Close()
-		})
-	}, nil
+	return sync.OnceFunc(func() {
+		<-done
+		intake.durable.Stop()
+	}), nil
 }
 
 // Run delivers the state events from the durable while this process holds its hold, and stands by
