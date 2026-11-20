@@ -86,15 +86,19 @@ const (
 //
 // The ticks are a ticker's: TickAfterInterval starts at the first tick, one interval after the
 // loop starts, and TickAtStart makes one tick at the moment the loop starts before it. Each tick
-// is due on a grid one interval apart from the start, and the moment it hands Exclusive is that
-// grid moment, so a lone loop's due times fall in consecutive periods on this process's clock
-// (periodBoundary) and no period is lost. A tick armed only once the pass before it returned
-// would be due one interval plus that pass's time after it, and as those delays add up its due
-// times would drift across the period boundaries and jump over a period no pass serves. A pass
-// that overruns the interval gets what a ticker gives a slow receiver (Go's runtime, time.go): the
-// first tick it overran comes at once, with the moment it was due, and only the ticks after it
-// are dropped, so due times stay whole intervals apart and overrun ticks are not run late one
-// after another.
+// is due on a grid one interval apart from the start, and the moment it hands Exclusive is the
+// clock's present at its fire, as a time.Ticker hands the time it sent each tick: every process
+// buckets a tick on the wall clock (periodBoundary), so two processes agree on its period after a
+// step of the wall clock too. The grid compares the clock's own readings, which a Go time does by
+// its monotonic reading, so a step does not move it: a lone loop's ticks fall in consecutive
+// periods and no period is lost, but for a step forward, which leaves the periods it jumped over
+// with no tick, as a ticker's would, and a step back, whose next tick falls in a period already
+// served and is refused. A tick armed only once the pass before it returned would be due one
+// interval plus that pass's time after it, and as those delays add up its due times would drift
+// across the period boundaries and jump over a period no pass serves. A pass that overruns the
+// interval gets what a ticker gives a slow receiver (Go's runtime, time.go): the first tick it
+// overran comes at once, and only the ticks after it are dropped, so the grid stays whole
+// intervals apart and overrun ticks are not run late one after another.
 //
 // ctx ending returns at once from a wait, and from a tick once its pass returns.
 func RunLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
@@ -127,7 +131,7 @@ func RunLeasedOn(ctx context.Context, c clock.Clock, leases Leases, name string,
 		for !next.After(received) {
 			next = next.Add(interval)
 		}
-		Exclusive(ctx, leases, name, due, interval, pass)
+		Exclusive(ctx, leases, name, received, interval, pass)
 		due = next
 		timer.Reset(due.Sub(c.Now()))
 	}

@@ -360,3 +360,41 @@ func TestStopAndReset(t *testing.T) {
 		t.Error("a stopped AfterFunc ran")
 	}
 }
+
+// StepWall moves what Now reads, forward and back, and fires no timer: the timers stay on the
+// fake's own moment, as Go's run on the monotonic clock whatever the wall clock does, and fire
+// when a move of that moment reaches them.
+func TestStepWallMovesNowAndFiresNoTimer(t *testing.T) {
+	c := clocktest.New(epoch)
+	channel := c.NewTimer(time.Minute)
+	ran := false
+	c.AfterFunc(time.Minute, func() { ran = true })
+	pending := []time.Time{epoch.Add(time.Minute), epoch.Add(time.Minute)}
+
+	for _, step := range []struct {
+		by   time.Duration
+		want time.Time
+	}{{time.Hour, epoch.Add(time.Hour)}, {-2 * time.Hour, epoch.Add(-time.Hour)}} {
+		c.StepWall(step.by)
+		if now := c.Now(); !now.Equal(step.want) {
+			t.Errorf("after a step of %v the fake reads %s, want %s", step.by, now, step.want)
+		}
+		if armed := c.Armed(); !slices.Equal(armed, pending) {
+			t.Errorf("after a step of %v armed: %v, want the timers where they were, %v", step.by, armed, pending)
+		}
+		if got := len(channel.C()); got != 0 || ran {
+			t.Errorf("a step of %v fired a timer: the channel holds %d values, the AfterFunc ran %t", step.by, got, ran)
+		}
+	}
+
+	c.Advance(time.Minute)
+	if got := testwait.Receive(t, "the channel timer's send once the fake's own moment reached it", channel.C()); !got.Equal(epoch.Add(time.Minute)) {
+		t.Errorf("the channel timer sent %s, want its deadline on the fake's own moment, %s", got, epoch.Add(time.Minute))
+	}
+	if !ran {
+		t.Error("the AfterFunc did not run once the fake's own moment reached it")
+	}
+	if now := c.Now(); !now.Equal(epoch.Add(-time.Hour + time.Minute)) {
+		t.Errorf("after the move the fake reads %s, want its moment plus the steps, %s", now, epoch.Add(-time.Hour+time.Minute))
+	}
+}

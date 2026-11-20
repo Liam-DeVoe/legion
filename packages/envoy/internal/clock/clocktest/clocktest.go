@@ -73,6 +73,9 @@ type Fake struct {
 	held  bool
 	now   time.Time
 	added time.Duration
+	// stepped is every step StepWall has made, which Now reads on top of the fake's moment and the
+	// timers do not.
+	stepped time.Duration
 	// arms counts every arm, so the timers due together fire in the order they were armed.
 	arms    uint64
 	pending []*timer
@@ -86,10 +89,29 @@ func New(start time.Time) *Fake { return &Fake{now: start} }
 // Held is a fake whose Now is the wall clock plus what Advance and Set have added.
 func Held() *Fake { return &Fake{held: true} }
 
+// Now is the fake's moment plus every step StepWall has made.
 func (c *Fake) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.nowLocked()
+	return c.nowLocked().Add(c.stepped)
+}
+
+// StepWall steps the wall clock that Now reads by d, forward or back, as an operator or NTP steps
+// a machine's clock, and fires no timer. The timers, Armed, AwaitArmed, Advance, Set and SetWhen
+// stay on the fake's own moment, as Go's timers run on the monotonic clock whatever the wall clock
+// does, and a channel timer sends its deadline on that moment. A fake that never steps is a fake
+// whose Now is its moment.
+//
+// What the fake cannot model: a Go time.Time that time.Now returns carries a monotonic reading
+// beside its wall one, and Go compares and subtracts two such times by the monotonic one, so code
+// that compares or subtracts its own readings of the clock never sees a step of the wall. A time
+// from the fake has one reading, so after a step such code sees it. A loop whose grid compares its
+// own readings of Now (duty.RunLeasedOn) shifts that grid by a step on the fake, where production's
+// grid does not move.
+func (c *Fake) StepWall(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stepped += d
 }
 
 func (c *Fake) nowLocked() time.Time {
