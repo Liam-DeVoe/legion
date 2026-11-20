@@ -195,6 +195,10 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
+	// repositories is the edge listener's repository reader (K-E5), which holds each GitHub
+	// frame to its session's projects (relayNATS); nil on every listener but an edge one, which
+	// relays every frame as it always has. Set before the first relay starts and read-only after.
+	repositories *edgeRepositories
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -1038,6 +1042,17 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry
 		}
+		// At the edge a GitHub event reaches the session only while a fresh answer of its
+		// token's projects names the event's repository (E2, R15). One that does not is
+		// acknowledged undelivered and counted, and while no such answer can be read the
+		// session's next frame carries the gap mark, since the events withheld then are ones
+		// the session may have been owed.
+		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
+			if reason == withheldAnswerUnknown {
+				gap = true
+			}
+			continue
+		}
 		if err := m.publishFrame(ctx, run, msg, streamID, gap); err != nil {
 			if ctx.Err() != nil {
 				return relayEnded
@@ -1047,6 +1062,29 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		}
 		gap = false
 	}
+}
+
+// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why, and when
+// it does, acknowledges the message undelivered, counts it and logs it: the consumer holds it no
+// longer, and nothing else is ever sent for it. Every other listener withholds nothing.
+func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
+	if m.repositories == nil {
+		return false, ""
+	}
+	entry, _ := m.sessions.Lookup(sessionID)
+	withhold, reason := m.repositories.relayVerdict(entry.Projects, msg.Subject)
+	if !withhold {
+		return false, ""
+	}
+	m.repositories.withheld.Inc([2]string{"reason", reason})
+	if err := msg.Ack(); err != nil {
+		m.logger.Warn("edge listener could not acknowledge a GitHub event it withholds; the consumer delivers it again",
+			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("error", err.Error()))
+		return true, reason
+	}
+	m.logger.Info("edge listener withheld a GitHub event from a session",
+		slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("reason", reason))
+	return true, reason
 }
 
 // publishFrame publishes msg as a frame on the session's relay subject, its reply subject a token

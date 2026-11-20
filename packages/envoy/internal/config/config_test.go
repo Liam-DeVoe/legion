@@ -191,6 +191,43 @@ func TestLoadRefusesASettingItsParserRefuses(t *testing.T) {
 	}
 }
 
+// ENVOY_EDGE_PROJECTS is the projects an edge listener serves, read as a broker token's own list
+// is: commas or white space between project keys, sorted, each once; unset or blank is every
+// other listener, which serves none. A list a token could never carry is refused naming the
+// variable, so a misspelt edge stays down rather than serving a project it was not meant to.
+func TestEdgeProjectsAreReadSortedAndRefusedNamingTheVariable(t *testing.T) {
+	t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+	load := func(value string) (Service, error) {
+		t.Setenv("ENVOY_EDGE_PROJECTS", value)
+		return Load(9020)
+	}
+	for _, tc := range []struct {
+		value string
+		want  []string
+	}{
+		{"", nil},
+		{"  ", nil},
+		{"PRIV", []string{"PRIV"}},
+		{"PRIV, INFRA", []string{"INFRA", "PRIV"}},
+		{"OEDGE PRIV", []string{"OEDGE", "PRIV"}},
+	} {
+		service, err := load(tc.value)
+		if err != nil || !slices.Equal(service.EdgeProjects, tc.want) {
+			t.Errorf("ENVOY_EDGE_PROJECTS=%q: EdgeProjects %q, error %v; want %q", tc.value, service.EdgeProjects, err, tc.want)
+		}
+	}
+	for _, value := range []string{"priv", "PRIV,PRIV", "PRIV,_", "P"} {
+		if _, err := load(value); err == nil || !strings.Contains(err.Error(), "ENVOY_EDGE_PROJECTS") {
+			t.Errorf("ENVOY_EDGE_PROJECTS=%q: error %v, want a refusal naming ENVOY_EDGE_PROJECTS", value, err)
+		}
+	}
+	fixtureenv.Unset(t, "ENVOY_EDGE_PROJECTS")
+	if service, err := Load(9020); err != nil || service.EdgeProjects != nil {
+		t.Errorf("ENVOY_EDGE_PROJECTS unset: EdgeProjects %q, error %v; want none", service.EdgeProjects, err)
+	}
+}
+
 func TestHostName(t *testing.T) {
 	cases := map[string]string{
 		"127.0.0.1:9020":            "127.0.0.1",

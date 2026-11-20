@@ -2479,7 +2479,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 	}`), &placed); err != nil {
 		t.Fatalf("decode the registration that names a pane: %v", err)
 	}
-	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{})); err != nil {
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{}, nil)); err != nil {
 		t.Fatalf("store the registration that names a pane: %v", err)
 	}
 
@@ -2487,7 +2487,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 	if err := json.Unmarshal([]byte(`{"session_id":"ses_moved"}`), &left); err != nil {
 		t.Fatalf("decode the registration that names none: %v", err)
 	}
-	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{})); err != nil {
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{}, nil)); err != nil {
 		t.Fatalf("store the registration that names none: %v", err)
 	}
 

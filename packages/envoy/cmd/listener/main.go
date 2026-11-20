@@ -95,6 +95,9 @@ type listenerDeps struct {
 	// listener (sender_limit.go). nil is no limit, which is what every test that builds
 	// listenerDeps itself runs with.
 	senderLimit *senderLimit
+	// repositories is the edge listener's reader of the repositories its projects' issues
+	// resolve to (K-E5, edge_repositories.go), nil on every listener but an edge one.
+	repositories *edgeRepositories
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -1001,6 +1004,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// An edge listener admits a broker token alone, so it refuses to start beside any other
+	// credential, beside webhooks, and without the broker-token settings (E6), before any of them
+	// is read below.
+	if err := validateEdgeMode(cfg.EdgeProjects, os.Environ()); err != nil {
+		log.Fatal(err)
+	}
 	logger := logging.New(cfg.MachineID)
 	// The first lines of the log belong to the settings a deployment still carries and this
 	// listener does not read, before it does any other work, so an operator reading from the top
@@ -1048,6 +1057,7 @@ func main() {
 		accounts:     oidcAccounts,
 		google:       googleCallers,
 		brokers:      brokerTokenAuth,
+		edgeProjects: cfg.EdgeProjects,
 		allowedHosts: cfg.AllowedHosts,
 		logger:       logger,
 	}
@@ -1572,6 +1582,14 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
+	// An edge listener reads the repositories its projects' issues resolve to from the broker,
+	// with its own broker account (K-E5), and its relay holds every GitHub frame to them. It is
+	// set before the relay relays anything, which only the durable binding below starts.
+	var repositories *edgeRepositories
+	if len(cfg.EdgeProjects) > 0 {
+		repositories = newEdgeRepositories(brokerConfig.BrokerURL, brokerConfig.account(), cfg.EdgeProjects, newEdgeWithheldCounter(met), logger)
+		relays.repositories = repositories
+	}
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
 	parts := listenerParts{
@@ -1614,6 +1632,7 @@ func main() {
 
 		sendsToUnresponsive: sendsToUnresponsive,
 		senderLimit:         senderMessageLimit,
+		repositories:        repositories,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 
@@ -1723,6 +1742,20 @@ func main() {
 	// role_keep_sweep.go), and its cadence is the interval the repeated wake report is named by
 	// (roleWakeInterval).
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval))
+
+	// Phase 6b0: An edge listener reads its projects' repositories again every
+	// edgeRepositoryRefresh and removes the interests of a repository that left them
+	// (runEdgeRepositories). It lists the interest bucket, so it stops with the reapers.
+	if repositories != nil {
+		edgeDone := make(chan struct{})
+		go func() {
+			defer close(edgeDone)
+			ticker := time.NewTicker(edgeRepositoryRefresh)
+			defer ticker.Stop()
+			runEdgeRepositories(kvLoopsCtx, ready, cfg.MachineID, ticker.C)
+		}()
+		kvLoopsDone = append(kvLoopsDone, edgeDone)
+	}
 
 	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
 	// holds. The deregistration route deletes the consumer of a registration it removed, and a

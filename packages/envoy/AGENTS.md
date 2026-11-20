@@ -5850,7 +5850,7 @@ The boot log names it beside the bearers: `broker tokens at <url> as projected t
 A caller the broker names is bound to its session on the seven routes that act as one — `/v1/interests/subscribe`, `/v1/interests/unsubscribe`, `/v1/roles/set`, `/v1/messages/send`, `/v1/messages/publish`, `DELETE /v1/sessions/{session_id}` and `DELETE /v1/interests/{session_id}` — each refusing 403 a request whose `session_id`, `source_session` or path names another session, under one `listener: broker token acts as another session` warning naming both sessions and the path.
 The Claude Code `/clear` handoff still deregisters the session it hands off from: it does so while it is still that session, so the token it presents names the session its `DELETE` names (`adoptHandoff` sets the new id only after the deregistration, `packages/claude-envoy/src/envoy-channel-server.ts`), and the `client_instance_id` that `DELETE` carries goes on deciding what it always decided — which client instance's registration under that one session id may be removed.
 A send or publish that names no `source_session` acts as no session and is not refused.
-The read routes that name another session by design (`GET /v1/registry/{session_id}`, `GET /v1/interests/{session_id}`, `GET /v1/sessions`) are not narrowed: every session looks another up.
+The read routes that name another session by design (`GET /v1/registry/{session_id}`, `GET /v1/interests/{session_id}`, `GET /v1/sessions`) are not narrowed: every session looks another up, except at the edge listener (below).
 A token naming a service and no person (a machine nobody has signed in on) is admitted on all of them and bound to its own session like any other.
 A read-only token is not admitted on any `/v1` route: the listener's verifier is built without `brokertoken.Options.ServesReadOnly`, so it answers that token `401` with the class `not_a_session`, and no code of the listener's own names that token.
 A presentation the listener does not admit is one `listener: broker token rejected` warning carrying the class and the path, never the token or the proof: `starting` (the spent-proof bucket is not open yet), `not_active` (unknown, revoked or expired), `key_mismatch`, `proof_invalid` (a replayed proof among them), `not_a_session`, `rate_limited`, `unavailable` and `check_failed` (the spent-proof store did not answer, so nothing was decided).
@@ -5862,6 +5862,31 @@ The classes are `malformed`, `issuer`, `audience`, `expired`, `cancelled` (the r
 — the issuer down, its JWKS 500ing, TLS refused
 — so no verdict was reached either; the verifier reads the set through `internal/oidc`'s own key cache, which carries that failure past the `%v` go-oidc flattens it with), and `signature`, which is the residue:
 a token the issuer never signed, one naming a key id the issuer publishes nothing under among them.
+
+### The edge listener
+
+`ENVOY_EDGE_PROJECTS` names the projects an edge listener serves: project keys separated by commas or white space, read as a broker token's own list is (`oauthwire.ParseProjects`: sorted, each once, at most 16), and a list no token could carry refuses the start naming the variable.
+Set, the listener is the edge listener an outside person's agents reach Envoy through (`cmd/listener/project_scope.go`); unset or blank, it is every other listener, and nothing below applies.
+The edge holds each session to the projects of the token that admitted it, also in a deployment where each project is public, and gives a session no message of no project but the GitHub events of its projects' repositories.
+
+- **Start.** It refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, `ENVOY_WEBHOOKS` or a webhook secret (`ENVOY_GITHUB_WEBHOOK_SECRET`, `ENVOY_SLACK_SIGNING_SECRET`, `ENVOY_GHOSTWISPR_SIGNING_SECRET`), and without the broker-token settings above; each refusal names the variable (`validateEdgeMode`).
+- **Admission.** `/v1` admits a broker token alone, and only one of project scope `named` or `person` whose projects are all among `ENVOY_EDGE_PROJECTS`, at least one (`EdgeAdmits`, which the relay socket asks again of each live answer).
+  Any other token is `403 {"code":"token_not_admitted"}` and one `listener: edge listener refused a broker token` warning naming the session and the rule; a request presenting no broker token is `401`, before any handler.
+- **Topics followed.** A registration's topics are each the session's own agent subject, a topic `contracts.SubjectProject` gives one of the token's projects, or a GitHub topic of one repository that the broker's answer for the token's projects names.
+  A GitHub topic naming no single repository, or one no issue of the projects resolves to, is `403 repository_not_in_project`; every other topic of no project, another session's agent subject and the listener's own `notifications.envoy.` lanes are `403 topic_not_in_project`; nothing of a refused registration is stored.
+- **The repository answer (K-E5).** The edge reads `GET <ENVOY_AGENT_SECRETS_URL>/v1/project-repositories?project=<KEY>` with its own broker account (the account file or Google audience above), fresh at each registration that names a GitHub topic and every 30 s for each project it serves (`cmd/listener/edge_repositories.go`).
+  Owner and name are compared with the tokens `contracts.GithubRepositoryPrefix` writes for each answered `owner/name`, ignoring case: Dispatch answers lower case and the intake keeps GitHub's.
+  A registration whose read gives no whole answer (a 503, a refusal, a timeout, a body that does not decode) is `503 repositories_unknown`.
+- **Relay.** A GitHub frame reaches its session only while an answer of the session's projects no older than 60 s names its repository.
+  One that no fresh answer names is acknowledged undelivered and counted in `envoy_edge_github_withheld_total{reason="not_in_project"}`, and the refresh after the one that read the change removes the session's interest in that repository and refollows its consumer.
+  While some project of the session has no answer younger than 60 s, GitHub frames are acknowledged undelivered under `reason="answer_unknown"`, the session's next frame carries `Envoy-Gap: true`, and every frame that is not GitHub's flows as before.
+- **Publishes.** `POST /v1/messages/publish` takes only a role subject of the token's projects in the form that names the project, `notifications.role.<KEY>.<role>`, for a role that works for that project by its own name (a claim is keyed by its bare role name in this slice); anything else is `403 topic_not_published`.
+- **Roles.** A claim and a read (`POST /v1/roles/set`, `GET /v1/roles/{role}`) name a role that `contracts.ClaimProject` gives one of the token's projects, else `403 role_not_in_project`.
+- **Sends.** `POST /v1/messages/send` reaches a session whose registering token listed one of the sender's projects; any other target, and one with no record, is answered `404` as a session no listener has heard of, with no wake reported.
+- **Reads.** `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and the Legion agents of the token's projects, each session with only those projects' roles; any other session is the `404` of an unknown one.
+  `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` are `403 session_not_in_project`, the two `DELETE`s of another session are the `403` every broker token gets, and a write of the Legion agent registry is `403 legion_registry_not_written`.
+
+Every listener that verifies broker tokens records the registering token's projects on the session's entry in `envoy_sessions` (`session.SessionEntry.Projects`, `"projects"`, sorted, `[]` for a registration that presented no token or one listing none), which the edge's send and read rules read; no answer of the API carries it.
 
 ## Topic shapes
 
