@@ -20,7 +20,9 @@ import (
 //   - one missed report: a listener removed before one drop leaves the old life current until one
 //     check ends it; the windows it carried are refused and a fresh window pins;
 //   - a drop between the life and connected reads: the old life closes before the pin can record it,
-//     so the loop takes a fresh life after the reconnect; that fresh window survives two checks;
+//     so the loop takes a fresh life after the reconnect; that fresh window survives two checks. The
+//     pin is one that waits for a connection (as a Probe's does): a send's pin waits for none
+//     (pinToSend), so a send that meets the drop answers ErrUnavailable rather than the reconnect;
 //   - a clean reconnect: a reported drop ends the old life, and the post-reconnect window survives
 //     two checks.
 //
@@ -76,7 +78,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 			w.pinCountRead.Store(nil)
 			hold.Release()
 		})
-		if err := w.pinToSend(); err != nil {
+		if err := w.pin(time.Minute); err != nil {
 			t.Fatalf("a window whose life read the drop before connected answered %v, want nil", err)
 		}
 		life := lifeOf(conn)
