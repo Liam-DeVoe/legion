@@ -103,6 +103,12 @@ mkdir -p "$evidence/logs" "$evidence/a13" "$evidence/sessions" "$cache"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and cleanup's sweep ends what carries it
+# and nothing else (marked_processes, lib/process-tree.sh). The services and the daemons start
+# under `env -i`, so service_env and start_daemon name the mark again. A fork of this shell that
+# execs nothing, the asker's heartbeat, carries none and is stopped by its pid. The transcript's
+# tee, started above, carries none, so it outlives the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 
 # ---- pins ------------------------------------------------------------------------------------------
 # Postgres 17 from the zonky embedded-postgres jar on Maven Central, with Debian trixie's pgvector
@@ -285,7 +291,7 @@ kill_tmux_servers() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$?
   set +e
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
   rm -f "$work/anthropic-key" "$work/anthropic-key-header" "$work/gpt-preflight-header" "$work/provision-token"
@@ -301,7 +307,7 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
   stop_pid "$listener_keeper_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work" || true
   [ "${#github_writes[@]}" = 0 ] || github_cleanup
   # The App keys go next, and unconditionally. They cannot go first, as the other proofs' traps
   # take them: the undo above acts as the implement App and mints its token from that very file.
@@ -799,7 +805,7 @@ EOF
 }
 
 # ---- services --------------------------------------------------------------------------------------
-service_env=(env -i "PATH=$PATH" "LANG=C.UTF-8" "TZ=UTC")
+service_env=(env -i "PATH=$PATH" "LANG=C.UTF-8" "TZ=UTC" "LEGION_E2E_RUN=$work")
 
 # start_nats starts nats-server on a port the kernel chooses (`-p -1`), read back from the line this
 # start logged (lib/rig.sh's report_port): nats-server takes no inherited socket, so no keeper holds
@@ -987,17 +993,23 @@ start_daemon() {
   done
   printf '=== boot at %s (%s)\n' "$(date -u +%FT%TZ)" "$daemon_config" >>"$daemon_log"
   boot_offset=$(stat -c %s "$daemon_log")
+  # Monitor mode is on for the start alone, so the daemon leads a process group of its own, as
+  # lib/rig.sh's start_process gives each service: stop_pid stops it with SIGSTOP first, and a
+  # stopped member of this shell's own group would have the kernel hang up this shell too.
+  set -m
   python3 "$root/scripts/e2e/lib/held-port.py" exec --from "$work/daemon_keeper.sock" --fd-env LEGION_LISTEN_FD -- \
-    env -i "HOME=$daemon_home" "OMP_PROFILE=$daemon_profile" "PATH=$daemon_path" "TMPDIR=$work/tmp" \
+    env -i "LEGION_E2E_RUN=$work" "HOME=$daemon_home" "OMP_PROFILE=$daemon_profile" "PATH=$daemon_path" "TMPDIR=$work/tmp" \
     "TMUX_TMPDIR=$work/tmux" "XDG_STATE_HOME=$work/xdg" "${host_env[@]}" \
     LANG=C.UTF-8 TZ=UTC "USER=$(id -un)" "LOGNAME=$(id -un)" SHELL=/bin/bash TERM=xterm-256color \
     "LEGION_OMP_PATH=$omp_bin" "LEGION_CLAUDE_PATH=$claude_bin" "LEGION_BUN_PATH=$work/realbin/bun" \
     "LEGION_CLAUDE_PLUGIN_DIR=$daemon_plugin_dir" LEGION_LISTEN_FD=3 \
-    "$daemon_bin" start --config "$daemon_config" >>"$daemon_log" 2>&1 &
+    "$daemon_bin" start --config "$daemon_config" </dev/null >>"$daemon_log" 2>&1 &
   daemon_pid=$!
+  set +m
+  record_start "$daemon_pid" || started_at[$daemon_pid]=gone
   note "waiting up to 300s for the daemon ($daemon_config) to answer /healthz"
   until curl -fsS --max-time 5 "http://127.0.0.1:$port_daemon/healthz" >/dev/null 2>&1; do
-    kill -0 "$daemon_pid" 2>/dev/null ||
+    [ "$(proc_start "$daemon_pid")" = "${started_at[$daemon_pid]:-}" ] ||
       fail "the daemon exited at boot; its log $daemon_log says: $(tail -c +$((boot_offset + 1)) "$daemon_log" | grep -v '^{' | tail -3 | tr '\n' ' ')"
     ((SECONDS - started < 300)) || fail "the daemon did not answer /healthz within 300 s; see $daemon_log"
     sleep 0.5
@@ -1574,7 +1586,7 @@ note "mode: $mode$([ "$mode" = workflow ] || printf ' (%s is unset: the daemon r
 pass
 
 begin provision
-started_at=$(date +%s)
+bringup_started=$(date +%s)
 provision_postgres
 provision_tmux
 provision_nats
@@ -1627,11 +1639,16 @@ note "NATS $port_nats (pid $nats_pid), proxy $port_proxy (pid $proxy_pid), inbox
 register_asker ||
   fail "the listener gave a stand-in no consumer of its own: asker $(cat "$work/registration-$asker_session.json" 2>/dev/null); controller $(cat "$work/registration-$controller_session.json" 2>/dev/null)"
 note "the stand-ins registered with their own consumers: $(jq -c '{session_id, delivery, topics}' "$work/registration-$asker_session.json" "$work/registration-$controller_session.json" | tr '\n' ' ')"
+# In a process group of its own, as start_daemon's daemon is: cleanup's stop_tree stops it with
+# SIGSTOP first.
+set -m
 (while :; do
   register_asker >/dev/null 2>&1 || true
   sleep 60
-done) &
+done) </dev/null &
 asker_heartbeat_pid=$!
+set +m
+record_start "$asker_heartbeat_pid" || started_at[$asker_heartbeat_pid]=gone
 # The base daemon's Oh My Pi home: the base commit's plugins (its daemon refuses another contract).
 base_home=$work/base-omp-home
 base_profile=legion-e2eal-base-$$
@@ -1648,7 +1665,7 @@ install_model_route "$branch_home" "$branch_profile" agents
 # is made; otherwise its clause records WAITING on what the route answered.
 gpt_preflight
 [ -n "$gpt_refusal" ] || install_gpt_route "$branch_home" "$branch_profile" agents-gpt
-note "bring-up took $(($(date +%s) - started_at)) s"
+note "bring-up took $(($(date +%s) - bringup_started)) s"
 pass
 
 # ---- the criteria ----------------------------------------------------------------------------------
@@ -2212,7 +2229,7 @@ check_a8() {
     [ "$(inbox_replies "$event3")" = 0 ] || break
     sleep 0.1
   done
-  kill -KILL "$daemon_pid" 2>/dev/null || note "the daemon $daemon_pid was already gone before the kill"
+  freeze_if "$daemon_pid" "${started_at[$daemon_pid]:-}" KILL || note "the daemon $daemon_pid was already gone before the kill"
   daemon_pid=
   note "killed the daemon $(inbox_replies "$event3") reply after its post; the question's last state before the kill: $(boot_log | jq -s -c --arg s "$planner" '[.[] | select(.msg == "answers: question" and .session == $s) | .state] | last')"
   start_daemon "$work/branch/legion" "$daemon_config" "$daemon_log" "$daemon_home" "$daemon_profile" "$daemon_plugin_dir"
@@ -2931,7 +2948,7 @@ check_a18() {
   event=${sent#* }
   if hold_after_tool "$label" "$k"; then
     note "the comment's gh line before the kill: $(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "implementer")' | tail -1)"
-    kill -KILL "$daemon_pid" 2>/dev/null || note "the daemon $daemon_pid was already gone before the kill"
+    freeze_if "$daemon_pid" "${started_at[$daemon_pid]:-}" KILL || note "the daemon $daemon_pid was already gone before the kill"
     daemon_pid=
     start_daemon "$daemon_bin" "$daemon_config" "$daemon_log" "$daemon_home" "$daemon_profile" "$daemon_plugin_dir"
     release "$label"
