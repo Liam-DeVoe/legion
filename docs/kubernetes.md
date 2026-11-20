@@ -3025,7 +3025,7 @@ A push moves that head, and so does a pull request opened for an issue that had 
 The refusal tells the issue's worker in a `role_message` row, whose payload carries only the `role` and `body` an earlier release's `record.RoleMessage` already names.
 A save that failed for another reason writes no row, and its release is marked again on the next idle tick, as before.
 
-To roll this release back, stop its daemon, run the block below, and then re-pin the earlier image (contract 160 at the base this release was written on).
+To roll this release back, stop its daemon, run the block below, and then re-pin the earlier image (contract 168 at the base this release was written on).
 There is no `legion.yaml` key to put back.
 The earlier release names every column it reads and writes, so after the block it boots with the nine columns and the two new tables in place, reads none of them and writes none of them.
 Its write of a later answer to a root's wait leaves `awaiting_answered_version` and `awaiting_answered_version_at` as they stood, and when this release is pinned again it reads that answer as one with no version, since the moment beside the version is no longer the answer's: the resume then asks whether the person's approval followed that changes request at the version the gate holds approved, as it asks of a kept decision.
