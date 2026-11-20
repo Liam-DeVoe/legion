@@ -264,7 +264,10 @@ func ProofToken(account, audience string) string {
 // ProofClient is the hub-admission client of the hub at url, as cmd/dispatch builds one per hub
 // of DISPATCH_PRIVATE_HUBS: a bus client that connects as a service presenting token, which it
 // reads from a file at each connect, and that connects in the background, so a hub that refuses it
-// leaves it retrying rather than failing its construction. It closes when the test ends.
+// leaves it retrying rather than failing its construction. It stays inside the proof's grant, so
+// the hub refuses it nothing and it logs no permissions violation: its reply inboxes are under
+// ProofInboxPrefix (bus.WithInboxPrefix), and it never reads the stream's subjects, a publish the
+// grant refuses (bus.WithoutStreamSubjects). It closes when the test ends.
 func ProofClient(t testing.TB, url, token string) *bus.Client {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "hub-admission-token")
@@ -275,6 +278,8 @@ func ProofClient(t testing.TB, url, token string) *bus.Client {
 	client, err := bus.Connect([]string{url},
 		bus.WithName("envoy-dispatch-hub-admission"),
 		bus.WithEnvironment(func(name string) (string, bool) { value, ok := environment[name]; return value, ok }),
+		bus.WithInboxPrefix(ProofInboxPrefix),
+		bus.WithoutStreamSubjects(),
 		bus.WithConnectInBackground())
 	if err != nil {
 		t.Fatalf("make the hub-admission client of %s: %v", url, err)

@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 )
 
 // ErrNoBus is Prove's answer on a nil *HubAdmission: the deployment names no hub that serves
@@ -86,12 +85,10 @@ type hub struct {
 // from a client's servers and credential (bus.Client.ProveAdmission) and never tests the client's
 // own connection: the auth service decides a connection once, when it connects, so a connection
 // it admitted earlier proves nothing about now. A client's connection events wake Run for a
-// proof.
-//
-// broker is not read: the proof appends no event and reads none. It is the event broker
-// cmd/dispatch builds every writer of the database with.
-func NewHubAdmission(conns []*bus.Client, broker *events.Broker) *HubAdmission {
-	_ = broker
+// proof. Each client should be built WithInboxPrefix, naming its grant's own reply inboxes, and
+// WithoutStreamSubjects, since the hub-admission grant lets it subscribe nothing else and publish
+// nothing but its ping (busprojectstest.ProofClient builds one so).
+func NewHubAdmission(conns []*bus.Client) *HubAdmission {
 	if len(conns) == 0 {
 		return nil
 	}
