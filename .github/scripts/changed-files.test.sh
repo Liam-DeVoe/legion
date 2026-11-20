@@ -25,9 +25,11 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/bin"
 real_git=$(command -v git)
-# A bound of 5 s an attempt: the hanging case waits it out once, and the fetches from a local
-# origin, which take milliseconds, stay well inside it on a loaded runner.
-export GH_RETRY_SECONDS=0 GH_ATTEMPT_SECONDS=5 GITHUB_REPOSITORY=o/r STANDIN_DIR="$work"
+# A 90 s budget with no wait between attempts: (90 - 0) / 6 - 10 = 5 s an attempt. The hanging case
+# waits it out once, and the fetches from a local origin, which take milliseconds, stay well inside
+# it on a loaded runner.
+export GH_RETRY_SECONDS=0 GITHUB_REPOSITORY=o/r STANDIN_DIR="$work"
+BUDGET=90
 
 # Two pages of the files route. The rows carry every status the API answers with, and two pairs of
 # paths that trade a file for a directory (docs/old becomes a directory, lib/x/y becomes the file
@@ -61,6 +63,8 @@ if [ "$calls" -le "${GH_REFUSE_FIRST:-0}" ]; then
     # script retries a refusal whatever its status.
     load) echo "gh: Server Error: Sorry, this diff is temporarily unavailable due to heavy server load." >&2 ;;
     hang) exec sleep 600 ;;
+    # A read that ignores TERM, so only the KILL `timeout -k` sends 10 s after its bound ends it.
+    hang-ignoring-term) trap '' TERM; exec sleep 600 ;;
   esac
   exit 1
 fi
@@ -81,16 +85,17 @@ exec "$real_git" "\$@"
 GIT
 chmod +x "$work/bin/git"
 
-# list_files <event> <directory> [VAR=value...]: runs the script under `timeout` over
-# $work/event.json, writing the repository to <directory>; sets out, err and status, and leaves the
-# stand-ins' call logs in gh_calls and fetches.
+# list_files <event> <directory> [VAR=value...]: runs the script with --budget $BUDGET under a
+# `timeout` of CASE_SECONDS (60 by default) over $work/event.json, writing the repository to
+# <directory>; sets out, err and status, and leaves the stand-ins' call logs in gh_calls and
+# fetches.
 list_files() {
   local event_name=$1 dest=$2
   shift 2
   rm -f "$work/gh-calls" "$work/git-fetches"
   set +e
   out=$(env PATH="$work/bin:$PATH" GITHUB_EVENT_NAME="$event_name" GITHUB_EVENT_PATH="$work/event.json" "$@" \
-    timeout 60 "$script_dir/changed-files.sh" "$dest" 2> "$work/err")
+    timeout "${CASE_SECONDS:-60}" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
   status=$?
   set -e
   err=$(cat "$work/err")
@@ -156,14 +161,52 @@ list_files pull_request "$work/pr-down" GH_REFUSE_FIRST=99
 check "it fails" "$(is "$status" 1)"
 check "after three attempts" "$(is "$(call_count "$gh_calls")" 3)"
 check "naming the pull request, the read, the attempts and their bounds" \
-  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files failed 3 attempts, 0 s and 0 s apart, each bounded at 5 s ")"
+  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files failed 3 attempts, 0 s and 0 s apart, each bounded at 5 s within the step's 90 s budget ")"
 check "it writes no repository" "$(is "$(test -e "$work/pr-down" && echo yes || echo no)" no)"
+
+echo "case: GitHub never answers, and each read ignores TERM, so only KILL ends it"
+# The worst case the budget is divided for, on the one read a pull request makes: three attempts,
+# each running to its 5 s bound and killed 10 s later, 45 s in all. The case's own bound is the
+# 90 s budget, so a script that spent more than its budget is killed here and fails the first check.
+CASE_SECONDS=$BUDGET list_files pull_request "$work/pr-term" GH_REFUSE_FIRST=99 GH_REFUSAL=hang-ignoring-term
+check "it fails by itself, inside its budget" "$(is "$status" 1)"
+check "after three attempts" "$(is "$(call_count "$gh_calls")" 3)"
+check "naming the read" "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: ")"
+
+echo "case: the budget is divided over two reads of three attempts and their waits"
+# 300 s with a 1 s backoff unit, so 1 s and 2 s between attempts: (300 - 2 x 3) / 6 - 10 = 39 s an
+# attempt. Every read is refused at once, so the case reads the bound from the error line.
+BUDGET=300
+list_files pull_request "$work/pr-300" GH_REFUSE_FIRST=99 GH_RETRY_SECONDS=1
+BUDGET=90
+check "it fails after three refused attempts" "$(is "$status" 1)"
+check "each attempt bounded at 39 s within the 300 s budget" \
+  "$(contains "$err" "failed 3 attempts, 1 s and 2 s apart, each bounded at 39 s within the step's 300 s budget ")"
 
 echo "case: a pull request that changes no file"
 echo '[]' > "$work/pages.json"
 list_files pull_request "$work/pr-empty"
 check "it answers" "$(is "$status" 0)"
 check "the repository's diff is empty, so every filter is false" "$(is "$(diff_paths "$work/pr-empty")" "")"
+
+# 65 s: 65 / 6 - 10 = 0 s an attempt. 66 s would leave 1 s, which the script takes.
+echo "case: a budget that leaves no second for an attempt, and no budget at all"
+rm -f "$work/gh-calls"
+set +e
+err=$(env PATH="$work/bin:$PATH" GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" \
+  "$script_dir/changed-files.sh" --budget 65 "$work/pr-small" 2>&1 > /dev/null)
+status=$?
+set -e
+check "a 65 s budget is refused" "$(is "$status" 2)"
+check "  and says why" "$(contains "$err" "^::error::changed-files.sh's budget of 65 s leaves no second for an attempt: 2 reads of 3 attempts, each with 10 s between TERM and KILL, and 0 s of waiting a read\$")"
+set +e
+err=$(env PATH="$work/bin:$PATH" GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" \
+  "$script_dir/changed-files.sh" "$work/pr-nobudget" 2>&1 > /dev/null)
+status=$?
+set -e
+check "a call with no budget is refused" "$(is "$status" 2)"
+check "  and says the budget comes first" "$(contains "$err" '^::error::usage: changed-files.sh --budget <seconds> <directory>')"
+check "neither read the API" "$(is "$(cat "$work/gh-calls" 2> /dev/null || true)" "")"
 
 echo "case: a merge group whose base the checkout lacks"
 origin="$work/origin"

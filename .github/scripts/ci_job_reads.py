@@ -2429,6 +2429,10 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/apt-install.test.sh", [
         (f"{SCRIPTS}/apt-install.sh", "the script under test"),
     ]),
+    harness("check_retry_budgets_test", "Test the check that holds each bounded retry to its job's timeout",
+            f"{SCRIPTS}/check-retry-budgets.test.sh", [
+        (f"{SCRIPTS}/check-retry-budgets.sh", "the script under test, copied into every fixture"),
+    ]),
     harness("merge_group_cancels_test", "Test the merge-group cancel decision", f"{SCRIPTS}/merge-group-cancels.test.sh", [
         (f"{SCRIPTS}/merge-group-cancels.sh", "the script under test"),
     ]),

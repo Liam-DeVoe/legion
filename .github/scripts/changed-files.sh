@@ -9,9 +9,19 @@
 # attempt 1, of pull request #4449; the re-run passed). On a merge group it fetches the group's
 # base commit from origin, once, with no retry either. Both reads are GitHub's to fail now and
 # then, so here each read goes through gh-read.sh's retry ladder: three attempts, 10 s and then
-# 20 s apart, each attempt bounded at 60 s by `timeout` so that a read that hangs counts as a
-# refused attempt instead of holding the job until its own timeout. After the third the script
-# fails with an ::error:: line that names the read and the attempts.
+# 20 s apart, each attempt bounded by `timeout` so that a read that hangs counts as a refused
+# attempt instead of holding the job until its own timeout. After the third the script fails with
+# an ::error:: line that names the read and the attempts.
+#
+# The budget is the most the script may take, and it divides it: at most two reads (a merge
+# group's base and head, where the checkout lacks them; a pull request makes one), three attempts
+# each and 10 s + 20 s of waiting each, so each attempt is bounded at
+# (budget - 2 x 30 s) / 6 - 10 s, since `timeout` sends TERM at the bound and KILL 10 s later. The
+# worst case - every attempt running to its bound and ignoring TERM - is never more than the
+# budget, so the named error prints inside it. .github/scripts/check-retry-budgets.sh, in ci.yaml's
+# lint job, refuses a budget above half the job's timeout-minutes. The changes job passes 300 s of
+# its 10 minutes: each attempt is bounded at 30 s, and the API's largest list, 30 pages, takes
+# 11 s at the 0.36 s one page took in run 44595619799.
 #
 #   pull_request  GET repos/<repo>/pulls/<number>/files, every page, the read paths-filter v4.0.3
 #                 makes (src/main.ts, getChangedFilesFromApi). A renamed file counts under both its
@@ -34,16 +44,14 @@
 # removal handed to it before any addition, so a path that turned from a file into a directory, or
 # back, is no conflict.
 #
-# Usage: changed-files.sh <directory>
+# Usage: changed-files.sh --budget <seconds> <directory>
 # Its inputs, from Actions' own environment and the step's env:
 #   GITHUB_EVENT_NAME  pull_request or merge_group; any other event is refused.
 #   GITHUB_EVENT_PATH  the payload: .pull_request.number, or .merge_group.base_sha and head_sha.
 #   GITHUB_REPOSITORY  owner/repo. pull_request only.
 #   GH_TOKEN           the job's github.token. pull_request only.
-#   GH_RETRY_SECONDS   gh-read.sh's backoff unit, 10 by default; the tests set 0.
-#   GH_ATTEMPT_SECONDS the bound on one attempt, 60 by default; the tests set 5. The API's largest
-#                      list is 30 pages, and at the 0.36 s one page took in that run 30 pages
-#                      take 11 s.
+#   GH_RETRY_SECONDS   gh-read.sh's backoff unit, 10 by default; the tests set 0. Its waits are
+#                      taken out of the budget like every other second.
 # A merge group runs it at the root of a checkout of the group's head.
 #
 # Its tests are in changed-files.test.sh, which ci.yaml's test job runs.
@@ -54,13 +62,23 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=.github/scripts/gh-read.sh
 source "$script_dir/gh-read.sh"
 
-dest=${1:?usage: changed-files.sh <directory>}
+readonly READS=2 ATTEMPTS=3 KILL_SECONDS=10
+if [ "${1:-}" != --budget ] || ! [[ ${2:-} =~ ^[0-9]+$ ]] || [ -z "${3:-}" ]; then
+  echo "::error::usage: changed-files.sh --budget <seconds> <directory>; the budget is the most the reads may take, which .github/scripts/check-retry-budgets.sh holds to half the job's timeout-minutes" >&2
+  exit 2
+fi
+budget=$2
+dest=$3
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the event payload}
 event_name=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
 
-attempt_seconds=${GH_ATTEMPT_SECONDS:-60}
 retry_seconds=${GH_RETRY_SECONDS:-10}
-ladder="3 attempts, $retry_seconds s and $((2 * retry_seconds)) s apart, each bounded at $attempt_seconds s"
+attempt_seconds=$(((budget - READS * 3 * retry_seconds) / (READS * ATTEMPTS) - KILL_SECONDS))
+if [ "$attempt_seconds" -lt 1 ]; then
+  echo "::error::changed-files.sh's budget of $budget s leaves no second for an attempt: $READS reads of $ATTEMPTS attempts, each with $KILL_SECONDS s between TERM and KILL, and $((3 * retry_seconds)) s of waiting a read" >&2
+  exit 2
+fi
+ladder="3 attempts, $retry_seconds s and $((2 * retry_seconds)) s apart, each bounded at $attempt_seconds s within the step's $budget s budget"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -73,7 +91,7 @@ case $event_name in
     number=$(jq -r '.pull_request.number' "$event")
     repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
     route="repos/$repository/pulls/$number/files"
-    if ! gh_read timeout "$attempt_seconds" gh api --paginate "$route?per_page=100" > "$work/files.json"; then
+    if ! gh_read timeout -k "$KILL_SECONDS" "$attempt_seconds" gh api --paginate "$route?per_page=100" > "$work/files.json"; then
       echo "::error::the changes job could not read the files of pull request #$number: GET $route failed $ladder (the log above holds each attempt's answer)" >&2
       exit 1
     fi
@@ -91,7 +109,7 @@ case $event_name in
     head=$(jq -r '.merge_group.head_sha' "$event")
     for sha in "$base" "$head"; do
       git cat-file -e "$sha^{commit}" 2> /dev/null && continue
-      if ! gh_read timeout "$attempt_seconds" git fetch --depth=1 --no-tags origin "$sha" >&2; then
+      if ! gh_read timeout -k "$KILL_SECONDS" "$attempt_seconds" git fetch --depth=1 --no-tags origin "$sha" >&2; then
         echo "::error::the changes job could not fetch commit $sha of the merge group from origin: git fetch failed $ladder (the log above holds each attempt's answer)" >&2
         exit 1
       fi
