@@ -62,12 +62,15 @@ func (h *goingAgentHooks) wrap(inner http.Handler) http.Handler {
 }
 
 // goingAgentRig is a server whose agent's socket listens under a short temporary directory, the
-// client of agentwire holding its secret, and hooks in front of its route table called in-process.
+// client of agentwire holding its secret, hooks in front of its route table called in-process,
+// and the plan rows it approved (approve), by run, tool and arguments, which a call of that write
+// names (call).
 type goingAgentRig struct {
 	goingWritesRig
 	hooks  *goingAgentHooks
 	agent  *AgentListener
 	client agentwire.Client
+	rows   *sync.Map
 }
 
 // newGoingAgentRig is the rig, its claims waiting 2 s for a ready run where the server waits 25 s;
@@ -90,7 +93,7 @@ func newGoingAgentRig(t *testing.T, adjust func(*AgentListener)) goingAgentRig {
 	agent.start()
 	t.Cleanup(func() { agent.Close(time.Now().Add(time.Minute)) })
 	return goingAgentRig{goingWritesRig: rig, hooks: hooks, agent: agent,
-		client: agentwire.Client{Path: agent.Path(), Secret: agent.Secret()}}
+		client: agentwire.Client{Path: agent.Path(), Secret: agent.Secret()}, rows: &sync.Map{}}
 }
 
 // listenGoingRuns runs a listener hub on database that delivers GoingRunsChannel to signal, as
@@ -168,18 +171,28 @@ func (rig goingAgentRig) working(t *testing.T, login, words string) (run, token 
 	return run, token
 }
 
-// approve records an approved row of run's plan: tool with arguments.
+// approve records an approved row of run's plan: tool with arguments, which a later call of that
+// write names (call).
 func (rig goingAgentRig) approve(t *testing.T, run, tool string, arguments map[string]any) {
 	t.Helper()
 	change, err := json.Marshal(map[string]any{"tool": tool, "arguments": arguments})
 	if err != nil {
 		t.Fatal(err)
 	}
+	encoded, err := json.Marshal(arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rig.exec(t, `insert into going_plans (run_id, plan, state) values ($1::uuid, 1, 'approved') on conflict do nothing`, run)
-	rig.exec(t, `
+	var row int
+	if err := rig.database.Pool.QueryRow(context.Background(), `
 		insert into going_plan_rows (run_id, plan, row, change, state)
 		select $1::uuid, 1, coalesce(max(row), 0) + 1, $2::jsonb, 'approved' from going_plan_rows where run_id = $1::uuid and plan = 1
-	`, run, string(change))
+		returning row
+	`, run, string(change)).Scan(&row); err != nil {
+		t.Fatalf("approve %s: %v", tool, err)
+	}
+	rig.rows.Store(run+" "+tool+" "+string(encoded), agentwire.PlanRow{Plan: 1, Row: row})
 }
 
 // settleQueue stops every queued and working run, so a claim of the test's next row takes only
@@ -211,10 +224,16 @@ func goingRouteCall(run, token string, step, call int, tool string, arguments ma
 	return agentwire.CallRequest{Run: run, LeaseToken: token, Step: step, Call: call, Kind: agentwire.KindRoute, Tool: tool, Arguments: encoded}
 }
 
-// call makes one call, waiting at most 90 s for it.
+// call makes one call, waiting at most 90 s for it. A write of a row the rig approved names it.
 func (rig goingAgentRig) call(request agentwire.CallRequest) (agentwire.CallAnswer, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	if request.Row == nil {
+		if row, approved := rig.rows.Load(request.Run + " " + request.Tool + " " + string(request.Arguments)); approved {
+			named := row.(agentwire.PlanRow)
+			request.Row = &named
+		}
+	}
 	return rig.client.Call(ctx, request)
 }
 

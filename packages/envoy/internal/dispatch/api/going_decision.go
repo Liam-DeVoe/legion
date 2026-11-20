@@ -572,7 +572,7 @@ type goingDisplayFitInput struct {
 // treats the configured decision model as having no display fit, so no decision draws a chart
 // unasked, which is "the chart-display threshold unset" of a deployment whose model has none, and
 // with off false it reads the record's threshold again. A body without off is 400 INVALID_STATE,
-// as the settings route answers one without confirm_writes. It removes a measured number and adds
+// as the settings route answers one without a mode. It removes a measured number and adds
 // none, and acts on the process the call lands on, as the new-issue settings hook does.
 // Test-only: mounted only under Deps.TestHooksEnabled.
 func (s *server) setGoingDisplayFit(w http.ResponseWriter, r *http.Request) {

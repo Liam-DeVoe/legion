@@ -224,22 +224,16 @@ func goingGuardWrite(action string, route GoingRoute, args map[string]any, value
 			built.WriteByte('\n')
 		}
 	}
-	prepared := goingPrepared{action: action, route: route, arguments: args, call: call}
-	if refused := goingSendRefusal(approved, prepared, goingGuardHeld(action, args), goingPerson{}); refused != nil {
-		built.WriteString("refused: " + refused.Error() + "\n")
-	}
 	return built.String(), nil
 }
 
 // TestEveryTranslatorForwardsOrConsumesEveryArgument (merge guard): for every catalogue action
 // whose rows are translated by a hand-written translator (not goingArgumentsAsBody, which forwards
-// the whole argument map), and under every approval the writes route takes (goingApprovals),
-// every argument the action takes either reaches the write - the request some row's translator
-// builds, its path, its body, a pre-request such as a reasoned close's message, or a resolved
-// document id, or the refusal the write meets before it is sent (goingSendRefusal) - or is one
-// goingTranslatorConsumes names for that action, with why. An argument no row forwards and no
-// reason names is a silent drop, as goingTranslateIssueUpdate dropped `advances` after the merge
-// added it, and as the writes route dropped an upload's `force` for a write the person picked.
+// the whole argument map), every argument the action takes reaches the write - the request some
+// row's translator builds, its path, its body, a pre-request such as a reasoned close's message,
+// or a resolved document id - or is one goingTranslatorConsumes names for that action, with why.
+// An argument no row forwards and no reason names is a silent drop, as goingTranslateIssueUpdate
+// dropped `advances` after the merge added it.
 // Actions are read from BuildGoingCatalogue, so a tool spec's new argument is held to this at
 // once. An argument is tested against each row it routes to in turn, and passes as soon as one
 // forwards it (a result's `check` is the record row's, not the retract row's); an argument whose
@@ -251,7 +245,7 @@ func TestEveryTranslatorForwardsOrConsumesEveryArgument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, approved := range goingApprovals {
+	for _, approved := range []string{goingApprovedByPerson} {
 		for _, action := range catalogue.Actions() {
 			var rows []GoingRoute
 			for _, route := range action.Routes {

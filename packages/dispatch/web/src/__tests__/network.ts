@@ -96,9 +96,9 @@ const shellHandlers: RequestHandler[] = [
   http.get("*/api/v1/going/capability", () => Response.json(UNCONFIGURED_CAPABILITY)),
   // The Settings page's Command bar section reads the person's own setting
   // (`goingSettingsQuery`) wherever the page renders. The answer is a person who never set it -
-  // the server's own default, off - and a test of the setting spies `api.myGoingSettings`. It is
+  // the server's own default, Ask - and a test of the setting spies `api.myGoingSettings`. It is
   // answered at any origin, as the capability read above is.
-  http.get("*/api/v1/me/going/settings", () => Response.json({ confirm_writes: false })),
+  http.get("*/api/v1/me/going/settings", () => Response.json({ mode: "ask" })),
   // The base an upload names: before it posts a markdown file, the Upload control reads the
   // token of the document the owner already holds under that name
   // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can

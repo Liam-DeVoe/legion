@@ -530,13 +530,12 @@ function PaletteDialog({
       }))
     : [];
   // Dispatch's answer to the words and the bar's operations (useGoingBar): the operation the
-  // decision acts on, or the two best actions to pick from, as rows above the hits; what they
-  // wrote, one line each, under the list. A new issue and a send to this issue's agent stay the
-  // two offers below, which always ask, and write through the run where the decision chose them.
+  // decision acts on, or the two best actions to pick from, as rows above the hits, and the run's
+  // plan under the list once one is pressed. A new issue and a send to this issue's agent stay the
+  // two offers below, which always ask.
   const { gaps, operations, runHint, shownAnswer, stale } = useGoingBar({
     context: scope.context,
     enabled: queryEnabled,
-    hits: results,
     login: whoAmI.data?.login,
     project: filters.project ?? "",
     showHits,
@@ -547,7 +546,6 @@ function PaletteDialog({
   // offer is the last thing left when nothing else answers. Where the bar's decision chose a new
   // issue, it is offered once the proposal offers it, whatever the search found.
   const newIssue = useNewIssueOffer({
-    file: operations.newIssue?.file,
     offered: operations.newIssue?.offered ?? (showHits && results.length === 0),
     onOpen: (key) => {
       navigate(buildIssuePath({ key, kind: "issue" }));
@@ -563,7 +561,6 @@ function PaletteDialog({
   const sendToAgent = useSendToAgentOffer({
     block: scope.targets.block,
     issue: scope.targets.issue,
-    send: operations.sendToAgent,
     words: searchText,
   });
   const commandSections: readonly CommandSection[] = [

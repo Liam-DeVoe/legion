@@ -86,11 +86,11 @@ func toolCall(tool string, arguments map[string]any) agenttest.Reply {
 func answered(text string) agenttest.Reply { return agenttest.Reply{Text: text} }
 
 // goingLoopRun is a run a row starts, as the route that starts a run records one: login's words,
-// at level, following continues where it is set, with what it already spent, granted to the
-// header identity or, where token is set, to that agent token.
+// at level, in mode (ask where it is empty), following continues where it is set, with what it
+// already spent, granted to the header identity or, where token is set, to that agent token.
 type goingLoopRun struct {
-	login, words, level, continues, token string
-	workingMS                             int64
+	login, words, level, mode, continues, token string
+	workingMS                                   int64
 }
 
 // begin records run queued and announces it, and answers its id.
@@ -104,11 +104,14 @@ func (rig goingAgentRig) begin(t *testing.T, run goingLoopRun) string {
 	if run.continues != "" {
 		continues = &run.continues
 	}
+	if run.mode == "" {
+		run.mode = goingModeAsk
+	}
 	rig.exec(t, `
 		insert into going_runs (id, author_login, words, conversation_id, continues, level, mode, state, shape, created_at, budget_used)
 		values ($1::uuid, $2, $3, coalesce((select coalesce(conversation_id, id) from going_runs where id = $4::uuid), $1::uuid), $4::uuid,
-		  $5, 'ask', 'queued', $6, clock_timestamp(), jsonb_build_object('calls', 0, 'working_ms', $7::bigint, 'tokens', 0))
-	`, id, run.login, run.words, continues, run.level, goingRunShape, run.workingMS)
+		  $5, $8, 'queued', $6, clock_timestamp(), jsonb_build_object('calls', 0, 'working_ms', $7::bigint, 'tokens', 0))
+	`, id, run.login, run.words, continues, run.level, goingRunShape, run.workingMS, run.mode)
 	if run.token != "" {
 		rig.exec(t, `insert into going_run_grants (run_id, kind, login, token_id) values ($1::uuid, 'token', $2, $3::uuid)`, id, run.login, run.token)
 	} else {
@@ -270,13 +273,15 @@ func TestTheAgentActsAsThePerson(t *testing.T) {
 
 // TestARunKeepsItsBoundsAndItsRecord: a run keeps its bounds, its record and its credential, and
 // survives a restart (check c11). A Fast run whose model never ends stops after 6 calls, says the
-// call budget stopped it, and offers Continue; a Standard run lasts past 30 s; a run cut by a
-// restart in its model loop resumes from its last stored turn; a follow-up's request holds the
-// turns before it; Continue starts a follow-up with a budget of its own; and a run whose token is
-// revoked stops at its next call, naming the revoked token. The rows that need a plan's approval
-// (t8) or the routes of History and Stop (t14) are those tasks'.
+// call budget stopped it, and offers Continue; a plan that waits 10 minutes for its person uses
+// none of a Fast run's 90 s; a Standard run lasts past 30 s; a run cut by a restart in its model
+// loop resumes from its last stored turn; a run cut by a restart between two writes of its plan
+// resumes, and each change runs once; a follow-up's request holds the turns before it; Continue
+// starts a follow-up with a budget of its own; and a run whose token is revoked stops at its next
+// call, naming the revoked token. The rows of History and Stop are the routes' of t14.
 func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 	rig := newGoingAgentRig(t, nil)
+	rig.served.deps.Identity = headerIdentity(rig.database)
 	loop := newGoingLoop(t, rig)
 	neverEnds := func(int) agenttest.Reply {
 		return toolCall("find_tools", map[string]any{"need": "an issue's status"})
@@ -298,8 +303,41 @@ func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 		}
 	})
 
+	approve := func(t *testing.T, run string) {
+		t.Helper()
+		if response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve", map[string]any{"plan": 1}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("approve the plan of %s answered %d %s", run, response.Code, response.Body.String())
+		}
+	}
+	comments := func(t *testing.T, issue string) int {
+		t.Helper()
+		return rig.count(t, `select count(*) from comments where issue_key = $1`, issue)
+	}
+	commentOn := func(issue string) map[string]any {
+		return map[string]any{"tool": "dispatch_comment", "arguments": map[string]any{"issue": issue, "body": "A comment on " + issue + "."}}
+	}
+
 	t.Run("a plan that waits 10 minutes uses none of Fast's 90 s", func(t *testing.T) {
-		t.Skip("t8: the approval that ends the wait is the plan's route")
+		const words = "comment, after a long wait"
+		issue := rig.issue(t, "Waited on")
+		loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall("propose_plan", map[string]any{"summary": "A comment.", "changes": []map[string]any{commentOn(issue)}})
+			}
+			return answered("Commented.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words, level: "fast"})
+		if record := rig.ended(t, run, time.Minute); record.state != "waiting" {
+			t.Fatalf("the run ended %s with %q, want its plan waiting", record.state, record.reason)
+		}
+		// Ten minutes of waiting for its person, as the run's times show them.
+		rig.exec(t, `update going_runs set created_at = created_at - interval '10 minutes', finished_at = finished_at - interval '10 minutes' where id = $1::uuid`, run)
+		approve(t, run)
+		record := rig.ended(t, run, time.Minute)
+		if record.state != "done" || comments(t, issue) != 1 || record.used.WorkingMS >= 90_000 {
+			t.Fatalf("after the wait the run ended %s with %q, %d comments and %d ms worked, want done with the comment and the wait unworked",
+				record.state, record.reason, comments(t, issue), record.used.WorkingMS)
+		}
 	})
 
 	t.Run("a Standard run lasts past 30 s", func(t *testing.T) {
@@ -356,7 +394,34 @@ func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 		t.Skip("t14: History and its sweep are the conversations route's")
 	})
 	t.Run("a run stopped by a restart between two writes of its plan resumes, and each change runs once", func(t *testing.T) {
-		t.Skip("t8: the plan runner makes a plan's writes")
+		const words = "comment twice, across a restart"
+		first, second := rig.issue(t, "Before the restart"), rig.issue(t, "After the restart")
+		loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall("propose_plan", map[string]any{"summary": "Two comments.", "changes": []map[string]any{commentOn(first), commentOn(second)}})
+			}
+			return answered("Commented twice.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		if record := rig.ended(t, run, time.Minute); record.state != "waiting" {
+			t.Fatalf("the run ended %s with %q, want its plan waiting", record.state, record.reason)
+		}
+		held, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		rig.hooks.set(t, http.MethodPost, "/api/v1/issues/"+second+"/comments", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			once.Do(func() { close(held) })
+			<-release
+			inner.ServeHTTP(w, r)
+		})
+		approve(t, run)
+		<-held
+		loop.stop()
+		close(release)
+		loop.start(rig)
+		if record := rig.ended(t, run, 2*time.Minute); record.state != "done" || comments(t, first) != 1 || comments(t, second) != 1 {
+			t.Fatalf("after the restart the run ended %s with %q and the issues hold %d and %d comments, want done with one each",
+				record.state, record.reason, comments(t, first), comments(t, second))
+		}
 	})
 	t.Run("a second person reads no conversation of the first (404)", func(t *testing.T) {
 		t.Skip("t14: the conversation's read is the conversations route's")

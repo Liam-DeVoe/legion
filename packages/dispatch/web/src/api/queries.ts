@@ -326,13 +326,21 @@ export const goingCapabilityQuery = () =>
     staleTime: 60_000,
   });
 
-/** The person's own command-bar setting (`GET /api/v1/me/going/settings`): whether every write
- *  the bar makes for them asks first. Held on Dispatch, so it follows the person to every browser;
- *  the Settings page's Command bar section writes it and the bar reads it before it runs a write. */
+/** The person's own command-bar setting (`GET /api/v1/me/going/settings`): its mode, which says
+ *  which changes of a run's plan wait for them. Held on Dispatch, so it follows the person to
+ *  every browser; the Settings page's Command bar section writes it. */
 export const goingSettingsQuery = () =>
   queryOptions({
     queryKey: ["going-settings"],
     queryFn: () => api.myGoingSettings(),
+  });
+
+/** The latest plan of one of the bar's runs (`GET /api/v1/going/runs/{id}/plan`), which waits
+ *  for the person's approval before any change of it is made. */
+export const goingPlanQuery = (run: string) =>
+  queryOptions({
+    queryKey: ["going-plan", run],
+    queryFn: () => api.goingPlan(run),
   });
 
 /** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:

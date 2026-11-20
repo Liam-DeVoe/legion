@@ -1,53 +1,20 @@
 import { useSyncExternalStore } from "react";
 
-import { ApiError, api, goingUndoRequest, goingWriteRequest } from "../../api/client";
-import { goingSettingsQuery } from "../../api/queries";
-import type { GoingUndoLine, GoingWriteInput, GoingWriteLine } from "../../api/types";
-import { WriteDiscardedError } from "../writes/keyed-write";
+import { api, goingUndoRequest } from "../../api/client";
+import type { GoingUndoLine } from "../../api/types";
 import { defineWriteKind, isLive, type Write, type Writes } from "../writes/write-store";
 import { refusalText } from "./offer";
 
 /**
- * The bar's turns: what each run of the bar wrote and what its undo did, kept outside the bar so
- * that the undo key (`$mod+z`, `app.tsx`) works from any page and the bar draws the lines of a
- * run it is showing whoever sent them.
+ * The bar's turns: what each run's undo did, kept outside the bar so that the undo key
+ * (`$mod+z`, `app.tsx`) works from any page and the shell says what it did.
  *
- * Every write of a turn is one write of the page's store (`Writes.run`), one request per
- * invocation to `POST /api/v1/going/runs/{id}/writes`, all on the run's own line
- * (`goingRunTarget`): they go out one after another, so a write still waiting its turn has never
- * reached Dispatch and an undo stops it there (`Writes.discard`) rather than sending it to undo
- * it. A turn's undo waits for the writes that are out, since each may have reached Dispatch, and
- * then asks Dispatch to undo every write of the run that went through
- * (`POST /api/v1/going/runs/{id}/undo`), each by the undo its catalogue row states. Each write
- * and each undo that lands has the bar read its hits again (`goingWrite`), so a hit shows what
- * the turn left rather than what the search read before it.
+ * A turn's undo goes out on the run's own line (`goingRunTarget`): it stops any write of the run
+ * still waiting its turn there, waits for one that is out, and then asks Dispatch to undo every
+ * write of the run that went through (`POST /api/v1/going/runs/{id}/undo`), each by the undo its
+ * catalogue row states. An undo that lands has the bar read its hits again (`goingWrite`), so a
+ * hit shows what the undo left rather than what the search read before it.
  */
-
-/** How a write of the bar came to run: at once on submit, as the decision chose it at or above
- *  the action threshold (`auto`); picked by the person among the offers (`person`); or confirmed
- *  by a person whose setting asks before every write (`confirmed`). */
-export type GoingApproval = GoingWriteInput["approved"];
-
-/** Where one write of a turn stands: out or waiting its turn, landed, refused by Dispatch, or
- *  stopped by an undo before it was sent. */
-export type TurnLineState = "sending" | "done" | "refused" | "stopped";
-
-/** One write of a turn, as its line shows it. Before Dispatch answers, the line names what the
- *  invocation's arguments name; once it has, the item, the field, the value before and the value
- *  now that Dispatch read (`written`), or Dispatch's refusal. */
-export interface TurnLine {
-  readonly key: string;
-  readonly action: string;
-  /** The item the arguments name, `""` where they name none. */
-  readonly target: string;
-  /** What the arguments change, besides the item. */
-  readonly change: string;
-  readonly state: TurnLineState;
-  readonly written: GoingWriteLine | undefined;
-  readonly refusal: { readonly code: string | undefined; readonly message: string } | undefined;
-  /** How the write's undo went, once a turn's undo answered for it. */
-  readonly undo: GoingUndoLine | undefined;
-}
 
 /** Where a turn's undo stands: out, answered with one line per write it undid, or refused as a
  *  whole. `stopped` counts the writes it stopped before they were sent. */
@@ -58,11 +25,10 @@ export interface TurnUndo {
   readonly message: string | undefined;
 }
 
-/** One run of the bar, as this page wrote and undid it. */
+/** One run of the bar, as this page undid it. */
 export interface Turn {
   readonly runId: string;
   readonly words: string;
-  readonly lines: readonly TurnLine[];
   readonly undo: TurnUndo | undefined;
 }
 
@@ -74,33 +40,11 @@ export interface LastUndo extends TurnUndo {
 
 const TARGET_PREFIX = "going-run:";
 
-/** The code Dispatch refuses a write sent at once with while the person's setting asks first. */
-const CONFIRMATION_REQUIRED = "GOING_CONFIRMATION_REQUIRED";
-
-/** Whether Dispatch refused `line`'s write because the person's setting asks first: the write is
- *  still the person's to run, and their next press asks first. */
-export function awaitsConfirmation(line: TurnLine): boolean {
-  return line.state === "refused" && line.refusal?.code === CONFIRMATION_REQUIRED;
-}
-
-/** Whether `line`'s write settles its invocation: waiting its turn, out or landed (`sending`,
- *  `done`), as `made` holds it, so no further press of the turn sends it again
- *  (`runGoingWrite`). A refused or a stopped line leaves the invocation the person's to send. */
-export function settlesInvocation(line: TurnLine): boolean {
-  return line.state === "sending" || line.state === "done";
-}
-
 /**
- * The kind of every write of a turn and of every turn's undo: a plain write that, once it lands,
- * has the bar read its hits again (`["search", …]`, `useTieredSearch`), since a hit shows the
- * status and title of the item the write changed or put back, read afresh from Dispatch rather
- * than patched here. A landing no surface awaits, or one without an answer, reads every query
- * again, as a plain write's does. A write Dispatch refused `GOING_CONFIRMATION_REQUIRED` was sent
- * at once on a copy of the person's setting that no longer holds - they turned it on since this
- * page read it, in Settings or another tab - and the refusal itself says the setting is on: the
- * page's copy says so at once, so the bar's next press asks first with no window for another
- * write sent at once, and the setting is read again behind it (`goingSettingsQuery`,
- * `useGoingOperations`).
+ * The kind of every turn's undo: a plain write that, once it lands, has the bar read its hits
+ * again (`["search", …]`, `useTieredSearch`), since a hit shows the status and title of the item
+ * the undo put back, read afresh from Dispatch rather than patched here. A landing no surface
+ * awaits, or one without an answer, reads every query again, as a plain write's does.
  */
 const goingWrite = defineWriteKind<null>({
   kept: (value): value is null => value === null,
@@ -112,17 +56,6 @@ const goingWrite = defineWriteKind<null>({
     void client.invalidateQueries({ queryKey: ["search"] });
   },
   name: "going-write",
-  undone: (client, write) => {
-    if (
-      write.status === "refused" &&
-      write.refusal instanceof ApiError &&
-      write.refusal.code === CONFIRMATION_REQUIRED
-    ) {
-      const key = goingSettingsQuery().queryKey;
-      client.setQueryData(key, { confirm_writes: true });
-      void client.invalidateQueries({ queryKey: key });
-    }
-  },
 });
 
 /** The line every write of one run goes out on, in press order. */
@@ -141,11 +74,6 @@ let lastUndo: LastUndo | undefined;
 /** The runs whose undo, out now, the shell says as it goes: an undo the key made, or one already
  *  out from a turn's Undo that the key was pressed during. */
 const followed = new Set<string>();
-/** Each write of a turn this page has made that is queued, out or landed, by run and line key
- *  (`run\naction:invocation`): a second submit of the turn answers it rather than writing it
- *  again. A write refused, or stopped before it was sent, leaves it, so making the write again is
- *  the person's. */
-const made = new Map<string, Promise<GoingWriteLine | null>>();
 const listeners = new Set<() => void>();
 
 function publish(): void {
@@ -160,30 +88,11 @@ function subscribe(listener: () => void): () => void {
 }
 
 function changeTurn(runId: string, words: string, change: (turn: Turn) => Turn): void {
-  const current = turns.get(runId) ?? { lines: [], runId, undo: undefined, words };
+  const current = turns.get(runId) ?? { runId, undo: undefined, words };
   const next = new Map(turns);
   next.set(runId, change(current));
   turns = next;
   publish();
-}
-
-function changeLine(runId: string, key: string, change: (line: TurnLine) => TurnLine): void {
-  changeTurn(runId, "", (turn) => ({
-    ...turn,
-    lines: turn.lines.map((line) => (line.key === key ? change(line) : line)),
-  }));
-}
-
-/** The turn of `runId` as this page holds it. */
-export function turnOf(runId: string): Turn | undefined {
-  return turns.get(runId);
-}
-
-/** The turn of `runId`, drawn again whenever a line of it changes. */
-export function useTurn(runId: string | undefined): Turn | undefined {
-  return useSyncExternalStore(subscribe, () =>
-    runId === undefined ? undefined : turns.get(runId)
-  );
 }
 
 /** The undo the undo key made last, until the person dismisses what the shell says of it. */
@@ -201,7 +110,6 @@ export function forgetTurns(): void {
   turns = new Map();
   lastUndo = undefined;
   followed.clear();
-  made.clear();
   publish();
 }
 
@@ -210,158 +118,11 @@ export function actionName(action: string): string {
   return action.replace(/^dispatch_/, "").replaceAll("_", " ");
 }
 
-/** An action and the item it acts on, as a line names them: `issue update CORE-1`. */
-export function actionOn(action: string, target: string): string {
-  return `${actionName(action)}${target === "" ? "" : ` ${target}`}`;
-}
-
 /** The item an invocation's arguments name: the value of `argument`, the argument Dispatch says
  *  names it (`GoingInvocation.target_argument`), and `""` where it names none. */
 export function targetOf(args: Readonly<Record<string, unknown>>, argument: string): string {
   const value = argument === "" ? undefined : args[argument];
   return typeof value === "string" ? value : "";
-}
-
-const SHOWN_MAX = 80;
-
-function cut(text: string): string {
-  return text.length > SHOWN_MAX ? `${text.slice(0, SHOWN_MAX - 1)}…` : text;
-}
-
-/** A value as one line shows it: text as it is, nothing as `none`, anything else as its JSON. */
-function shown(value: unknown): string {
-  if (value === undefined || value === null) return "none";
-  if (typeof value === "string") return cut(value);
-  return cut(JSON.stringify(value));
-}
-
-/** The value a write read before or after it, for the fields it changed: a read of an issue
- *  answers an object keyed by the fields the write changed, and the line shows the fields' own
- *  values. */
-export function shownValue(value: unknown, fields: readonly string[] | null): string {
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    const record = value as Readonly<Record<string, unknown>>;
-    const named = (fields ?? []).filter((name) => name !== "");
-    if (named.length > 0 && named.every((name) => name in record)) {
-      return named.map((name) => shown(record[name])).join(", ");
-    }
-  }
-  return shown(value);
-}
-
-/** What an invocation's arguments change, besides the item they name. */
-function changeOf(args: Readonly<Record<string, unknown>>, target: string): string {
-  return cut(
-    Object.entries(args)
-      .filter(([, value]) => value !== target)
-      .map(([name, value]) => `${name} ${shown(value)}`)
-      .join(", ")
-  );
-}
-
-/** One write of a turn to make: the invocation of an offer of the run's proposal, the fill of
- *  the argument it was missing, the arguments the write sends over the invocation's own, and how
- *  it came to run. */
-export interface GoingWriteSpec {
-  readonly runId: string;
-  readonly words: string;
-  readonly action: string;
-  readonly invocation: number;
-  /** The invocation's own arguments, which its line is named from. */
-  readonly arguments: Readonly<Record<string, unknown>>;
-  /** The argument naming the item the invocation acts on (`target_argument`), `""` for none. */
-  readonly target: string;
-  readonly approved: GoingApproval;
-  /** The argument the invocation was missing, and the value the person gave it. */
-  readonly fill?: { readonly field: string; readonly value: unknown };
-  readonly replace?: Readonly<Record<string, unknown>>;
-}
-
-/**
- * Makes one write of a turn and keeps its line: one write of the store on the run's line, inline
- * since the line says its refusal itself. Answers Dispatch's line for it (`null` for a landing it
- * had no answer to give for) or rejects with its refusal, or with `WriteDiscardedError` where an
- * undo stopped it before it was sent. An invocation of the run this page already has queued, out
- * or landed is not written again: the call answers that write's own answer, and sends nothing.
- */
-export function runGoingWrite(
-  writes: Writes,
-  spec: GoingWriteSpec
-): Promise<GoingWriteLine | null> {
-  const key = `${spec.action}:${spec.invocation}`;
-  const invocation = `${spec.runId}\n${key}`;
-  const already = made.get(invocation);
-  if (already !== undefined) return already;
-  const named: Record<string, unknown> = { ...spec.arguments, ...spec.replace };
-  if (spec.fill !== undefined) named[spec.fill.field] = spec.fill.value;
-  const target = targetOf(named, spec.target);
-  const line: TurnLine = {
-    action: spec.action,
-    change: changeOf(named, target),
-    key,
-    refusal: undefined,
-    state: "sending",
-    target,
-    undo: undefined,
-    written: undefined,
-  };
-  changeTurn(spec.runId, spec.words, (turn) => ({
-    ...turn,
-    lines: [...turn.lines.filter((kept) => kept.key !== key), line],
-  }));
-  const input: GoingWriteInput = {
-    approved: spec.approved,
-    invocation: spec.invocation,
-    offer: spec.action,
-    ...(spec.replace === undefined ? {} : { arguments: { ...spec.replace } }),
-    ...(spec.fill === undefined ? {} : { fill: spec.fill.value }),
-  };
-  const write: Promise<GoingWriteLine | null> = writes
-    .run({
-      detail: null,
-      inline: true,
-      kind: goingWrite,
-      label: actionOn(spec.action, target),
-      presentation: "indicator",
-      request: goingWriteRequest(spec.runId, input),
-      target: goingRunTarget(spec.runId),
-    })
-    .then(
-      (written) => {
-        changeLine(spec.runId, key, (kept) => ({
-          ...kept,
-          state: "done",
-          written: written ?? undefined,
-        }));
-        return written;
-      },
-      (error: unknown) => {
-        changeLine(spec.runId, key, (kept) =>
-          error instanceof WriteDiscardedError
-            ? { ...kept, state: "stopped" }
-            : {
-                ...kept,
-                refusal: {
-                  code: error instanceof ApiError ? error.code : undefined,
-                  message: refusalText(error, "the write did not reach Dispatch."),
-                },
-                state: "refused",
-              }
-        );
-        if (made.get(invocation) === write) made.delete(invocation);
-        throw error;
-      }
-    );
-  made.set(invocation, write);
-  return write;
-}
-
-/** Makes every write of `specs`, in order on the run's line, each line saying how it went. */
-export async function runGoingWrites(
-  writes: Writes,
-  specs: readonly GoingWriteSpec[]
-): Promise<void> {
-  await Promise.allSettled(specs.map((spec) => runGoingWrite(writes, spec)));
 }
 
 /** Stops every write of the runs `inRun` names that waits its turn and was never sent: it has not
@@ -406,14 +167,7 @@ function setUndo(runId: string, words: string, undo: TurnUndo, notice: boolean):
     lastUndo = { ...undo, runId, words };
     if (undo.state !== "undoing") followed.delete(runId);
   }
-  changeTurn(runId, words, (turn) => ({
-    ...turn,
-    lines: turn.lines.map((line) => {
-      const answered = undo.lines.find((undone) => undone.write_id === line.written?.write_id);
-      return answered === undefined ? line : { ...line, undo: answered };
-    }),
-    undo,
-  }));
+  changeTurn(runId, words, (turn) => ({ ...turn, undo }));
 }
 
 /**

@@ -1,43 +1,24 @@
-import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useCallback, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useState } from "react";
 
-import { goingSettingsQuery } from "../../api/queries";
+import { ApiError, apiErrorMessage, goingPlanApproveRequest } from "../../api/client";
+import { goingPlanQuery } from "../../api/queries";
 import type {
   GoingDecisionEvent,
-  GoingMissingArgument,
   GoingOffer,
+  GoingPlanAnswer,
   GoingProposalEvent,
-  SearchResult,
 } from "../../api/types";
 import {
   borderDefault,
   dangerText,
-  inputClasses,
   secondaryButtonCompact,
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { useWrites, type Writes } from "../writes/write-store";
-import {
-  actionName,
-  actionOn,
-  awaitsConfirmation,
-  type GoingApproval,
-  runGoingWrite,
-  runGoingWrites,
-  settlesInvocation,
-  shownValue,
-  type Turn,
-  type TurnLine,
-  targetOf,
-  undoGoingTurn,
-  undoneText,
-  useTurn,
-} from "./going-turns";
-import type { FileNewIssue } from "./NewIssueOffer";
-import { fileNewIssue, newIssueFields } from "./new-issue";
+import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { actionName, type Turn, targetOf } from "./going-turns";
 import { barNoteClassName, type OfferRow, useWordsState } from "./offer";
-import { handoffBody, runSendOutcome, type SendToAgent } from "./send-to-agent";
 import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 
 /** The group the bar's operation rows sit in, above the hits, and the operation row's own id. */
@@ -52,25 +33,23 @@ export function offerOptionId(action: string): string {
 type Decision = GoingDecisionEvent["data"];
 type Proposal = GoingProposalEvent["data"];
 
-/** The two actions the bar sends through offers of its own, which always ask (`NewIssueOffer`,
+/** The two actions the bar offers through offers of its own, which always ask (`NewIssueOffer`,
  *  `SendToAgentOffer`), rather than through a row of the operation group. */
 const OWN_OFFERS: Readonly<Record<string, true>> = {
   dispatch_issue: true,
   dispatch_send_to_agent: true,
 };
 
-/** The value of each invocation's missing argument the person gave, by invocation. */
-type Fills = Readonly<Record<number, string>>;
+/** How a press came: a submit, which names the operation the decision chose at or above the
+ *  action threshold (`auto`), or the person's pick of a row (`person`). */
+type Approval = "auto" | "person";
 
 /** What the person asked to run: the action the decision chose, `undefined` while the decision
- *  that names it has not arrived, how the write came to run, and the invocations a row the person
- *  picked names, by index, `undefined` where the approval alone says which run (`runIndexes`). */
+ *  that names it has not arrived, and how the press came. */
 interface Wanted {
   readonly action: string | undefined;
-  readonly approved: GoingApproval;
-  readonly fills: Fills;
-  readonly picked?: readonly number[];
-  /** The run current when the person pressed, whose writes alone the press sends (`isPressOf`);
+  readonly approved: Approval;
+  /** The run current when the person pressed, whose plan alone the press shows (`isPressOf`);
    *  `undefined` for a press made before that run's id was known, until the preparing effect
    *  binds it to that run as the id arrives. */
   readonly pressedOn: string | undefined;
@@ -78,30 +57,17 @@ interface Wanted {
 
 /**
  * Where the bar's operation stands for the words in the box, once the person submitted it or
- * picked an offer: waiting for the decision or the proposal, asking for the one argument an
- * invocation is missing, asking first because the person's setting says so, an action the
- * proposal offered nothing to run for, or one whose every invocation names an item neither the
- * page nor the words named, which runs only when the person picks it (`picks`). Nothing submitted
- * is no state at all, and so is a submit that had nothing to run (`idle`); once a write has gone,
- * its lines say the rest. Every stage of a press - preparing, the fill step, the confirm step, and
- * the note that the answer offered nothing to run or that its items are the person's to pick - is
- * of the run the person pressed on (`pressedOn`): it is idle once another run is current, and the
- * one send (`sendPress`) sends nothing of it to another run.
+ * picked an offer: waiting for the decision or the proposal, showing the run's plan, which waits
+ * for the person's approval, an action the proposal offered nothing to run for, or one whose every
+ * invocation names an item neither the page nor the words named, which runs only when the person
+ * picks it (`picks`). Nothing submitted is no state at all, and so is a submit that had nothing to
+ * run (`idle`). Every stage of a press is of the run the person pressed on (`pressedOn`): it is
+ * idle once another run is current, so nothing of it is shown beside, or approved for, another
+ * run.
  */
 type Stage =
   | ({ readonly kind: "preparing"; readonly words: string } & Wanted)
-  | ({
-      readonly kind: "filling";
-      readonly words: string;
-      readonly action: string;
-    } & Omit<Wanted, "action">)
-  | {
-      readonly kind: "confirming";
-      readonly words: string;
-      readonly action: string;
-      readonly fills: Fills;
-      readonly pressedOn: string | undefined;
-    }
+  | { readonly kind: "plan"; readonly words: string; readonly pressedOn: string | undefined }
   | {
       readonly kind: "unoffered";
       readonly words: string;
@@ -116,20 +82,8 @@ type Stage =
     }
   | { readonly kind: "idle"; readonly words: string };
 
-/** What a submit or a pick comes to now: a stage to show, or the writes to make. */
-type Step =
-  | Stage
-  | {
-      readonly kind: "run";
-      readonly action: string;
-      readonly approved: GoingApproval;
-      readonly fills: Fills;
-      readonly picked: readonly number[] | undefined;
-      readonly pressedOn: string | undefined;
-    };
-
-/** Whether a press made on the run `pressedOn` is a press of the run `runId`: a press sends only
- *  the writes of the run that was current when the person pressed, never another run's - a chip
+/** Whether a press made on the run `pressedOn` is a press of the run `runId`: a press shows only
+ *  the plan of the run that was current when the person pressed, never another run's - a chip
  *  change asks the same words again, and another run of them is current. */
 function isPressOf(pressedOn: string | undefined, runId: string | undefined): boolean {
   return pressedOn === runId;
@@ -149,45 +103,19 @@ function withheldOf(proposal: Proposal | undefined, action: string): string | un
   return withheld.length === 0 ? undefined : `Nothing to run: ${withheld.join(" ")}`;
 }
 
-/** The invocations of `offer` a write of the bar runs, by their index in it: those a row the
- *  person picked names (`picked`); every one where the person picked the action itself; and
- *  otherwise - a submit, and its confirmation - only those the proposal marked automatic. An
- *  invocation naming an item neither the page nor the person's words named came from text
- *  someone stored, and runs only when the person picks it. */
-function runIndexes(
-  offer: GoingOffer | undefined,
-  approved: GoingApproval,
-  picked?: readonly number[]
-): number[] {
-  return (offer?.invocations ?? []).flatMap((invocation, index) => {
-    if (picked !== undefined) return picked.includes(index) ? [index] : [];
-    return approved === "person" || invocation.automatic ? [index] : [];
-  });
-}
-
-/** The invocations of `offer` a press still sends (`runIndexes`), less each one a write of `turn`
- *  settles already (`settlesInvocation`), which no press sends again: what the operation row
- *  names, the fill step asks for, and the confirm step lists and sends. */
-function unsettledIndexes(
-  offer: GoingOffer | undefined,
-  turn: Turn | undefined,
-  approved: GoingApproval,
-  picked?: readonly number[]
-): number[] {
-  const settled = new Set(turn?.lines.filter(settlesInvocation).map((line) => line.key));
-  return runIndexes(offer, approved, picked).filter(
-    (index) => !settled.has(`${offer?.action}:${index}`)
+/** The invocations of `offer` a press names, by their index in it: every one where the person
+ *  picked the action itself, and otherwise - a submit - only those the proposal marked automatic.
+ *  An invocation naming an item neither the page nor the person's words named came from text
+ *  someone stored, and is named only by the row the person picks. */
+function runIndexes(offer: GoingOffer | undefined, approved: Approval): number[] {
+  return (offer?.invocations ?? []).flatMap((invocation, index) =>
+    approved === "person" || invocation.automatic ? [index] : []
   );
 }
 
 /** `offer` with only the invocations at `indexes`, for a row that names their items alone. */
 function offerWith(offer: GoingOffer, indexes: readonly number[]): GoingOffer {
   return { ...offer, invocations: offer.invocations.filter((_, index) => indexes.includes(index)) };
-}
-
-/** The value a fill sends for the argument it fills: a number field's as a number. */
-function fillValue(missing: GoingMissingArgument, text: string): unknown {
-  return missing.kind === "number" ? Number(text) : text;
 }
 
 /** The items an offer acts on, in the words of one row: `CORE-1, CORE-2 and CORE-3`. */
@@ -209,20 +137,14 @@ function rowLabel(action: string, offer: GoingOffer | undefined): string {
 }
 
 /**
- * The step a submit (`wanted.action` undefined: the operation the decision chose at or above the
+ * The stage a submit (`wanted.action` undefined: the operation the decision chose at or above the
  * action threshold) or a pick comes to, from what the run has streamed so far. A run that has not
  * decided, or a decision whose proposal has not arrived, is `preparing`; an answer that ended
- * without either has nothing to run. A submit runs only the invocations the proposal marked
- * automatic (`runIndexes`), and one with none is `picks`: the person picks the rest. A press whose
- * every invocation a write of `turn` settles already is `idle`: nothing is left to ask for or send.
+ * without either has nothing to run. A submit names only the invocations the proposal marked
+ * automatic (`runIndexes`), and one with none is `picks`: the person picks the rest. Otherwise the
+ * press shows the run's plan, which makes no change until the person approves it.
  */
-function nextStep(
-  words: string,
-  wanted: Wanted,
-  answer: GoingAnswer | undefined,
-  turn: Turn | undefined,
-  confirmWrites: boolean | undefined
-): Step {
+function nextStage(words: string, wanted: Wanted, answer: GoingAnswer | undefined): Stage {
   if (answer === undefined || answer.runId === undefined || answer.decision === undefined) {
     return answer !== undefined && answerSettled(answer)
       ? { kind: "idle", words }
@@ -242,111 +164,10 @@ function nextStep(
   if (offer === undefined) {
     return { action, kind: "unoffered", pressedOn: wanted.pressedOn, words };
   }
-  if (runIndexes(offer, wanted.approved, wanted.picked).length === 0) {
+  if (runIndexes(offer, wanted.approved).length === 0) {
     return { action, kind: "picks", pressedOn: wanted.pressedOn, words };
   }
-  const runs = unsettledIndexes(offer, turn, wanted.approved, wanted.picked);
-  if (runs.length === 0) return { kind: "idle", words };
-  const unfilled = runs.some(
-    (index) =>
-      offer.invocations[index]?.missing !== null && (wanted.fills[index] ?? "").trim() === ""
-  );
-  if (unfilled)
-    return {
-      action,
-      approved: wanted.approved,
-      fills: wanted.fills,
-      kind: "filling",
-      picked: wanted.picked,
-      pressedOn: wanted.pressedOn,
-      words,
-    };
-  if (wanted.approved === "auto") {
-    if (confirmWrites === undefined) return { ...wanted, action, kind: "preparing", words };
-    if (confirmWrites) {
-      return {
-        action,
-        fills: wanted.fills,
-        kind: "confirming",
-        pressedOn: wanted.pressedOn,
-        words,
-      };
-    }
-  }
-  return {
-    action,
-    approved: wanted.approved,
-    fills: wanted.fills,
-    kind: "run",
-    picked: wanted.picked,
-    pressedOn: wanted.pressedOn,
-  };
-}
-
-/** A press as the one send takes it (`sendPress`): the action it runs and how it came to run,
- *  the values typed for its invocations' missing arguments, the invocations a picked row names,
- *  and the run current when the person pressed. */
-type Press = Omit<Wanted, "action"> & { readonly action: string };
-
-/**
- * The one send of every step's writes: each invocation of the proposal's offer of `press.action`
- * that the press runs (`runIndexes`) is one write on the run `runId`, under the words that run
- * asked (`runGoingWrites`), and `close` closes the step before any of them goes. A press made on
- * another run than `runId` sends nothing, and its step closes: this is the one send's own guard
- * (`isPressOf`). Every stage's derivation in `useGoingOperations` closes a step of a run no longer
- * current before a press can reach this send, so no rendered path reaches the guard; it stays so
- * that no stage, now or added later, can send a press of one run to another run.
- */
-export function sendPress({
-  close,
-  press,
-  proposal,
-  runId,
-  words,
-  writes,
-}: {
-  readonly close: () => void;
-  readonly press: Press;
-  /** The run the writes go to - the one current now - with its proposal and the words it asked;
-   *  each undefined while there is none. */
-  readonly runId: string | undefined;
-  readonly proposal: Proposal | undefined;
-  readonly words: string | undefined;
-  readonly writes: Writes;
-}): void {
-  if (!isPressOf(press.pressedOn, runId)) {
-    close();
-    return;
-  }
-  const offer = offerOf(proposal, press.action);
-  if (runId === undefined || words === undefined || offer === undefined) return;
-  close();
-  void runGoingWrites(
-    writes,
-    runIndexes(offer, press.approved, press.picked).flatMap((index) => {
-      const invocation = offer.invocations[index];
-      if (invocation === undefined) return [];
-      return [
-        {
-          action: press.action,
-          approved: press.approved,
-          arguments: invocation.arguments,
-          ...(invocation.missing === null
-            ? {}
-            : {
-                fill: {
-                  field: invocation.missing.field,
-                  value: fillValue(invocation.missing, (press.fills[index] ?? "").trim()),
-                },
-              }),
-          invocation: index,
-          runId,
-          target: invocation.target_argument,
-          words,
-        },
-      ];
-    })
-  );
+  return { kind: "plan", pressedOn: wanted.pressedOn, words };
 }
 
 /** One row of the bar's operation group, as the list draws it: its label, its trailing control,
@@ -366,17 +187,12 @@ export interface GoingOperations {
     | undefined;
   /** The bar's submit (`$mod+Enter`, the Run button, Enter on the operation row). */
   readonly submit: () => void;
-  /** What the operation is doing and what it did: preparing, the missing argument, the confirm
-   *  step, and one line per write with its undo. */
+  /** What the operation is doing: preparing, the note that nothing runs, or the run's plan with
+   *  its approval. */
   readonly panel: ReactNode;
-  /** How the new-issue offer files, where the decision chose a new issue: offered once the
-   *  proposal offers it, its create a write of the run. Undefined leaves the offer as it is. */
-  readonly newIssue:
-    | { readonly offered: boolean; readonly file: FileNewIssue | undefined }
-    | undefined;
-  /** How the send-to-agent offer sends, where the proposal offers the send: a write of the run.
-   *  Undefined leaves the offer as it is. */
-  readonly sendToAgent: SendToAgent | undefined;
+  /** Whether the new-issue offer is offered, where the decision chose a new issue: once the
+   *  proposal offers it. Undefined leaves the offer as it is. */
+  readonly newIssue: { readonly offered: boolean } | undefined;
 }
 
 /**
@@ -384,60 +200,45 @@ export interface GoingOperations {
  * the box. Where the decision acts - its choice at or above the action threshold and none of the
  * writes that always ask - the operation is one row above the hits with a Run button, and it runs
  * on submit: `$mod+Enter` anywhere in the bar, the Run button, or Enter on the row, which the
- * highlight reaches only when the person moves it there. A submit runs only the invocations the
+ * highlight reaches only when the person moves it there. A submit names only the invocations the
  * proposal marked automatic - each item they name is the page's or named in the words - and the
  * rest, which only text someone stored asked for, are a row the person picks. Below the threshold
  * the two best actions are rows of their own, and neither runs until the person picks it. A new
  * issue and a send to the agent on the issue go through the bar's own two offers, which always
  * ask. An invocation the proposal withheld beside others of its action it offered - one the bar
- * can never send as written, or an upload over a document its owner holds - is in no row and no
- * line, so the panel says why, in Dispatch's words, for as long as the proposal stands.
+ * can never send as written, or an upload over a document its owner holds - is in no row, so the
+ * panel says why, in Dispatch's words, for as long as the proposal stands.
  *
- * A submit before the proposal arrives says it is preparing and runs when the proposal lands; one
- * with no run yet asks at once. An invocation missing one argument asks for it first, and with
- * the person's setting on (`GET /api/v1/me/going/settings`) every write asks first and is sent
- * confirmed; a write Dispatch refused because that setting is on, which this page read before the
- * person turned it on, tells the page the setting is on (`goingWrite`) and keeps its row and Run
- * button (`awaitsConfirmation`), so the next press, from either or the key, asks first.
- * Each invocation is one write (`runGoingWrite`), and each write one line; a submit pressed again,
- * while the turn's writes are out or once they landed, writes none of them again, and makes again
- * only one Dispatch refused.
+ * A press makes no change itself: it shows the plan the run proposed
+ * (`GET /api/v1/going/runs/{id}/plan`), and the run makes its changes once the person approves
+ * that plan (`POST /api/v1/going/runs/{id}/plan/approve`). A submit before the proposal arrives
+ * says it is preparing and shows the plan when the proposal lands; one with no run yet asks at
+ * once.
  */
 export function useGoingOperations({
   answer,
   askNow,
-  hits,
   words,
 }: {
   /** The answer to the words in the box, or the replay of the last one. */
   readonly answer: GoingAnswer | undefined;
   /** Asks for the words at once, answering whether an answer is coming (`useGoingAnswer`). */
   readonly askNow: () => boolean;
-  /** The hits the bar lists, which an argument naming an item is picked from. */
-  readonly hits: readonly SearchResult[];
   /** The words in the box, trimmed. */
   readonly words: string;
 }): GoingOperations {
-  const writes = useWrites();
-  // A replay draws an answer the person already had, whose writes were theirs to make then.
+  // A replay draws an answer the person already had, whose plan was theirs to approve then.
   const current = answer !== undefined && !answer.replayed ? answer : undefined;
   const runId = current?.runId;
   const decision: Decision | undefined = runId === undefined ? undefined : current?.decision;
   const proposal = decision === undefined ? undefined : current?.proposal;
-  const settings = useQuery({ ...goingSettingsQuery(), enabled: decision !== undefined });
-  // A setting that could not be read is no reason to hold the write: Dispatch refuses a write
-  // sent at once while the setting is on, and the line says so. A setting the page holds is
-  // kept when a later read of it fails - the refusal that set it showed it is on (`goingWrite`).
-  const confirmWrites =
-    settings.isError && settings.data === undefined ? false : settings.data?.confirm_writes;
   const [held, setStage] = useWordsState<Stage>(words);
-  // Every stage of a press - preparing, the fill step, the confirm step, and the note that the
-  // answer offered nothing to run or that its items are the person's to pick - made on a run that
-  // is no longer current (a chip change asked the same words again) is idle: it closes, so neither
-  // the preparing effect nor a Run or Confirm sends it to the run now current, and no note of the
-  // old run stays beside the new run's rows (`isPressOf`, which the one send reads too). A press
-  // made before its run's id was known is of no run yet: the preparing effect below binds it or
-  // closes it.
+  // Every stage of a press - preparing, the plan, and the note that the answer offered nothing to
+  // run or that its items are the person's to pick - made on a run that is no longer current (a
+  // chip change asked the same words again) is idle: it closes, so neither the preparing effect
+  // nor an Approve reaches the run now current, and no note of the old run stays beside the new
+  // run's rows (`isPressOf`). A press made before its run's id was known is of no run yet: the
+  // preparing effect below binds it or closes it.
   const stage: Stage | undefined =
     held !== undefined &&
     held.kind !== "idle" &&
@@ -445,56 +246,18 @@ export function useGoingOperations({
     !isPressOf(held.pressedOn, runId)
       ? { kind: "idle", words }
       : held;
-  const turn = useTurn(runId);
-  // The lines of the turn that count as run: every one but a write Dispatch refused because the
-  // person's setting asks first, which is still theirs to run - their next press asks first
-  // (`goingWrite`) - so its row, its Run button and the bar's run hint stay.
-  const counted = turn?.lines.filter((line) => !awaitsConfirmation(line)) ?? [];
-  const ran = new Set(counted.map((line) => line.action));
-  // Each line's own invocation, `action:index`, so an action whose automatic invocations ran
-  // still offers the ones the person has to pick. Unlike `unsettledIndexes`, a line the route
-  // refused counts as run here, so the row does not come back after a route refusal with the
-  // setting off.
-  const ranInvocations = new Set(counted.map((line) => line.key));
-  // What the confirm step lists and what its Confirm sends: one set, so the person agrees to
-  // exactly the writes the bar then makes.
-  const confirming =
-    stage?.kind === "confirming"
-      ? unsettledIndexes(offerOf(proposal, stage.action), turn, "confirmed")
-      : [];
-  // The field a missing argument is asked in takes focus as it appears, so the person types the
-  // value where the bar asked for it; a ref of one identity, so a later render moves nothing.
-  const focusField = useCallback((field: HTMLInputElement | HTMLSelectElement | null) => {
-    field?.focus();
-  }, []);
+  const begin = (wanted: Wanted) => setStage(nextStage(words, wanted, current));
 
-  // The one send (`sendPress`), to the run now current: its guard refuses a press made on another
-  // run, and the step closes.
-  const run = (press: Press) =>
-    sendPress({
-      close: () => setStage({ kind: "idle", words }),
-      press,
-      proposal,
-      runId,
-      words: current?.words,
-      writes,
-    });
-  const apply = (step: Step) => {
-    if (step.kind === "run") run(step);
-    else setStage(step);
-  };
-  const begin = (wanted: Wanted) => apply(nextStep(words, wanted, current, turn, confirmWrites));
-
-  // A submit made before the run could say what to run waits for it: the decision, its proposal
-  // and the setting, each as it arrives. One made before its run's id was known (`askNow` set a
-  // fresh answer in the same event) is bound to that run as the id arrives, and goes on from
-  // there; where the request it waited for was dropped first - a chip change, or the bar turning
-  // off - it closes instead, so it can never bind to the run the next ask starts. That close reads
-  // the drop as `current` going undefined: `useGoingAnswer` lets the answer go on every change of
-  // the words, the chip or `enabled`, before it asks again after the pause, so no render shows
-  // the next ask's answer to a press still waiting for the dropped one.
+  // A submit made before the run could say what to run waits for it: the decision and its
+  // proposal, each as it arrives. One made before its run's id was known (`askNow` set a fresh
+  // answer in the same event) is bound to that run as the id arrives, and goes on from there;
+  // where the request it waited for was dropped first - a chip change, or the bar turning off -
+  // it closes instead, so it can never bind to the run the next ask starts. That close reads the
+  // drop as `current` going undefined: `useGoingAnswer` lets the answer go on every change of the
+  // words, the chip or `enabled`, before it asks again after the pause, so no render shows the
+  // next ask's answer to a press still waiting for the dropped one.
   const preparing = stage?.kind === "preparing" ? stage : undefined;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `apply` reads this render's run, and the step changes only with what it is computed from
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `setStage` is the words state's own setter, and the stage changes only with what it is computed from
   useEffect(() => {
     if (preparing === undefined) return;
     if (preparing.pressedOn === undefined) {
@@ -507,24 +270,14 @@ export function useGoingOperations({
         return;
       }
     }
-    const step = nextStep(words, preparing, current, turn, confirmWrites);
-    if (step.kind !== "preparing") apply(step);
-  }, [preparing, current, runId, turn, confirmWrites, words]);
+    const next = nextStage(words, preparing, current);
+    if (next.kind !== "preparing") setStage(next);
+  }, [preparing, current, runId, words]);
 
   const submit = () => {
-    if (stage?.kind === "filling") {
-      begin({
-        action: stage.action,
-        approved: stage.approved,
-        fills: stage.fills,
-        picked: stage.picked,
-        pressedOn: stage.pressedOn,
-      });
-      return;
-    }
-    if (stage?.kind === "confirming" || stage?.kind === "preparing") return;
+    if (stage?.kind === "preparing") return;
     if (current === undefined && !askNow()) return;
-    begin({ action: undefined, approved: "auto", fills: {}, pressedOn: runId });
+    begin({ action: undefined, approved: "auto", pressedOn: runId });
   };
 
   const options: OperationOption[] = [];
@@ -534,17 +287,10 @@ export function useGoingOperations({
     if (acted !== undefined) {
       sectionLabel = "Operation";
       const actedOffer = offerOf(proposal, acted);
-      // The automatic invocations no write of the turn ran yet: the row stays while any is left,
-      // also once the person ran the pick row of the rest.
-      const automatic = runIndexes(actedOffer, "auto").filter(
-        (index) => !ranInvocations.has(`${acted}:${index}`)
-      );
+      const automatic = runIndexes(actedOffer, "auto");
       if (proposal === undefined || automatic.length > 0) {
         const waiting = stage?.kind === "preparing";
-        // The row names what its press sends, a refused invocation included, as the fill step and
-        // the confirm step it may open ask for and list them.
-        const sends = unsettledIndexes(actedOffer, turn, "auto");
-        const label = rowLabel(acted, actedOffer && offerWith(actedOffer, sends));
+        const label = rowLabel(acted, actedOffer && offerWith(actedOffer, automatic));
         options.push({
           hint: waiting ? (
             <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>Preparing…</span>
@@ -566,10 +312,10 @@ export function useGoingOperations({
           row: { id: OPERATION_OPTION_ID, kind: "offer", label, select: submit },
         });
       }
-      // The invocations no submit runs - each names an item neither the page nor the words named -
-      // are a row of their own, which runs them only when the person picks it.
+      // The invocations no submit names - each names an item neither the page nor the words
+      // named - are a row of their own, which the person picks.
       const offered = (actedOffer?.invocations ?? []).flatMap((invocation, index) =>
-        invocation.automatic || ranInvocations.has(`${acted}:${index}`) ? [] : [index]
+        invocation.automatic ? [] : [index]
       );
       if (actedOffer !== undefined && offered.length > 0) {
         const label = rowLabel(acted, offerWith(actedOffer, offered));
@@ -580,21 +326,14 @@ export function useGoingOperations({
             id: offerOptionId(acted),
             kind: "offer",
             label,
-            select: () =>
-              begin({
-                action: acted,
-                approved: "person",
-                fills: {},
-                picked: offered,
-                pressedOn: runId,
-              }),
+            select: () => begin({ action: acted, approved: "person", pressedOn: runId }),
           },
         });
       }
     } else {
       sectionLabel = "Suggested actions: pick one to run it";
       for (const { action } of decision.actions) {
-        if (action === "none" || OWN_OFFERS[action] === true || ran.has(action)) continue;
+        if (action === "none" || OWN_OFFERS[action] === true) continue;
         if (proposal !== undefined && offerOf(proposal, action) === undefined) continue;
         const label = rowLabel(action, offerOf(proposal, action));
         options.push({
@@ -604,75 +343,29 @@ export function useGoingOperations({
             id: offerOptionId(action),
             kind: "offer",
             label,
-            select: () => begin({ action, approved: "person", fills: {}, pressedOn: runId }),
+            select: () => begin({ action, approved: "person", pressedOn: runId }),
           },
         });
       }
     }
   }
 
-  const named = (action: string) => decision?.actions.some((decided) => decided.action === action);
-  const issueOffer = offerOf(proposal, "dispatch_issue");
-  const sendOffer = offerOf(proposal, "dispatch_send_to_agent");
   const newIssue: GoingOperations["newIssue"] =
-    runId === undefined || current === undefined || named("dispatch_issue") !== true
+    runId === undefined ||
+    current === undefined ||
+    decision?.actions.some((decided) => decided.action === "dispatch_issue") !== true
       ? undefined
-      : {
-          file:
-            issueOffer === undefined
-              ? undefined
-              : (store, write) =>
-                  fileNewIssue(store, write, async (through, filing) => {
-                    const invocation = issueOffer.invocations[0];
-                    const written = await runGoingWrite(through, {
-                      action: "dispatch_issue",
-                      approved: "person",
-                      arguments: invocation?.arguments ?? {},
-                      invocation: 0,
-                      replace: newIssueFields(filing),
-                      runId,
-                      target: invocation?.target_argument ?? "",
-                      words: current.words,
-                    });
-                    // The write's line names the issue it made: the key is all the filing reads.
-                    return written === null || written.item === "" ? null : { key: written.item };
-                  }),
-          offered: issueOffer !== undefined,
-        };
-  const sendToAgent: SendToAgent | undefined =
-    runId === undefined || current === undefined || sendOffer === undefined
-      ? undefined
-      : async (store, { block, issue, session, words: typed }) => {
-          const invocation = sendOffer.invocations[0];
-          const written = await runGoingWrite(store, {
-            action: "dispatch_send_to_agent",
-            approved: "person",
-            arguments: invocation?.arguments ?? {},
-            invocation: 0,
-            replace: { body: handoffBody(issue, block, typed), delivery: "aside", session },
-            runId,
-            target: invocation?.target_argument ?? "",
-            words: current.words,
-          });
-          // Dispatch writes the message under a 201 whatever became of its delivery - failed, or
-          // queued for a session that has stopped - so the line's record of that delivery says
-          // what became of the words; a line that records none says only that they are stored.
-          // The run records each of its invocations once, so a failed delivery is this send's last
-          // word, never a refusal a second press could send past (`runSendOutcome`).
-          return runSendOutcome(written?.delivery);
-        };
+      : { offered: offerOf(proposal, "dispatch_issue") !== undefined };
 
   const stageShown = stage !== undefined && stage.kind !== "idle";
   // Why the proposal withheld some invocations of an action it still offered others of, in
-  // Dispatch's own words: the rows and the lines show only what was offered, so nothing else says
-  // why an invocation the answer wrote is missing from them.
+  // Dispatch's own words: the rows show only what was offered, so nothing else says why an
+  // invocation the answer wrote is missing from them.
   const withheldBeside = (proposal?.offers ?? []).flatMap((offer) =>
     offer.offered ? (offer.withheld ?? []) : []
   );
   const panel =
-    !stageShown &&
-    (turn === undefined || turn.lines.length === 0) &&
-    withheldBeside.length === 0 ? null : (
+    !stageShown && withheldBeside.length === 0 ? null : (
       <section
         aria-label="Operation"
         className={`max-h-[30vh] shrink-0 overflow-y-auto border-t px-3 py-2 text-sm ${borderDefault}`}
@@ -681,7 +374,7 @@ export function useGoingOperations({
       >
         {stage?.kind === "preparing" ? (
           <p className={barNoteClassName} data-testid="going-operation-preparing" role="status">
-            Preparing the operation: it runs as soon as the answer says what to run.
+            Preparing the operation: its plan shows as soon as the answer says what to run.
           </p>
         ) : null}
         {stage?.kind === "unoffered" ? (
@@ -696,49 +389,11 @@ export function useGoingOperations({
             page nor your words named. Pick it to run it.
           </p>
         ) : null}
-        {stage?.kind === "filling" ? (
-          <MissingArguments
-            focusField={focusField}
-            fills={stage.fills}
-            hits={hits}
-            offer={offerOf(proposal, stage.action)}
-            onFill={(fills) => setStage({ ...stage, fills })}
-            onSubmit={submit}
-            runs={unsettledIndexes(
-              offerOf(proposal, stage.action),
-              turn,
-              stage.approved,
-              stage.picked
-            )}
-          />
-        ) : null}
-        {stage?.kind === "confirming" ? (
-          <ConfirmStep
-            action={stage.action}
-            offer={offerOf(proposal, stage.action)}
-            onCancel={() => setStage({ kind: "idle", words })}
-            onConfirm={() =>
-              run({
-                action: stage.action,
-                approved: "confirmed",
-                fills: stage.fills,
-                picked: confirming,
-                pressedOn: stage.pressedOn,
-              })
-            }
-            runs={confirming}
-          />
-        ) : null}
+        {stage?.kind === "plan" && runId !== undefined ? <PlanStep runId={runId} /> : null}
         {withheldBeside.length === 0 ? null : (
           <p className={barNoteClassName} data-testid="going-operation-withheld" role="status">
             {withheldBeside.join(" ")}
           </p>
-        )}
-        {turn === undefined || turn.lines.length === 0 ? null : (
-          <TurnLines
-            onUndo={() => void undoGoingTurn(writes, turn.runId, turn.words)}
-            turn={turn}
-          />
         )}
       </section>
     );
@@ -748,252 +403,101 @@ export function useGoingOperations({
     panel,
     section:
       options.length === 0 ? undefined : { id: OPERATION_GROUP_ID, label: sectionLabel, options },
-    sendToAgent,
     submit,
   };
 }
 
-/** The field an invocation's one missing argument is asked in: a text, a number, one of an
- *  enumeration's values, or an item the bar's hits list - for each invocation the press still
- *  sends (`runs`, `unsettledIndexes`). */
-function MissingArguments({
-  focusField,
-  fills,
-  hits,
-  offer,
-  onFill,
-  onSubmit,
-  runs,
-}: {
-  readonly focusField: (field: HTMLInputElement | HTMLSelectElement | null) => void;
-  readonly fills: Fills;
-  readonly hits: readonly SearchResult[];
-  readonly offer: GoingOffer | undefined;
-  readonly onFill: (fills: Fills) => void;
-  readonly onSubmit: () => void;
-  readonly runs: readonly number[];
-}): ReactNode {
-  if (offer === undefined) return null;
-  const asked = offer.invocations.flatMap((invocation, index) =>
-    invocation.missing === null || !runs.includes(index)
-      ? []
-      : [{ index, invocation, missing: invocation.missing }]
-  );
-  const submitted = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    onSubmit();
-  };
-  return (
-    <form className="space-y-2" data-testid="going-operation-fill" onSubmit={submitted}>
-      {asked.map(({ index, invocation, missing }, position) => {
-        const target = targetOf(invocation.arguments, invocation.target_argument);
-        const label = `Fill ${missing.field === "@session" ? "the session" : missing.field}${
-          target === "" ? "" : ` for ${target}`
-        }`;
-        const value = fills[index] ?? "";
-        const change = (next: string) => onFill({ ...fills, [index]: next });
-        const ref = position === 0 ? focusField : undefined;
-        const field = `block w-full rounded-md border px-2 py-1 text-sm ${inputClasses(false)} ${textPrimaryOnSurface}`;
-        const items =
-          missing.kind === "item" ? hits.filter((hit) => hit.kind === missing.item) : [];
-        const id = `going-fill-${index}`;
-        return (
-          <div className={`grid gap-1 text-xs ${textMutedOnSurface}`} key={id}>
-            <label htmlFor={id}>{label}</label>
-            {missing.kind === "enum" || items.length > 0 ? (
-              <select
-                className={field}
-                id={id}
-                onChange={(event) => change(event.target.value)}
-                ref={ref}
-                value={value}
-              >
-                <option value="">Pick one</option>
-                {missing.kind === "enum"
-                  ? (missing.choices ?? []).map((choice) => (
-                      <option key={choice} value={choice}>
-                        {choice}
-                      </option>
-                    ))
-                  : items.map((hit) => (
-                      <option key={hit.id} value={hit.id}>
-                        {hit.id}
-                      </option>
-                    ))}
-              </select>
-            ) : (
-              <input
-                className={field}
-                id={id}
-                onChange={(event) => change(event.target.value)}
-                ref={ref}
-                type={missing.kind === "number" ? "number" : "text"}
-                value={value}
-              />
-            )}
-          </div>
-        );
-      })}
-      <button className={secondaryButtonCompact} type="submit">
-        Run
-      </button>
-    </form>
-  );
-}
+/** The code Dispatch answers a plan read with for a run that proposed no plan. */
+const PLAN_NOT_FOUND = "GOING_PLAN_NOT_FOUND";
 
-/** The step a person whose setting asks before every write takes before the bar writes: the
- *  writes a confirm would make (`runs`: the automatic ones no write of the turn settles, as a
- *  submit would), each in its line, and Confirm or Cancel. An invocation the person has to pick
- *  is not among them. */
-function ConfirmStep({
-  action,
-  offer,
-  onCancel,
-  onConfirm,
-  runs,
-}: {
-  readonly action: string;
-  readonly offer: GoingOffer | undefined;
-  readonly onCancel: () => void;
-  readonly onConfirm: () => void;
-  readonly runs: readonly number[];
-}): ReactNode {
-  // Each line named once, ahead of the list: an offer's invocations are its own, in its order.
-  const asking = (offer?.invocations ?? []).flatMap((invocation, index) =>
-    runs.includes(index)
-      ? [
-          {
-            key: `${action}:${index}`,
-            text: `${actionOn(action, targetOf(invocation.arguments, invocation.target_argument))}: asks first`,
-          },
-        ]
-      : []
-  );
+/**
+ * The run's latest plan (`GET /api/v1/going/runs/{id}/plan`): each of its rows and where it
+ * stands, and, while the plan waits for the person, an Approve that approves every row as the plan
+ * shows it (`POST /api/v1/going/runs/{id}/plan/approve`), after which the run makes its changes.
+ * Nothing of the plan is made before that. A run that proposed no plan says so, and offers nothing
+ * to approve.
+ */
+function PlanStep({ runId }: { readonly runId: string }): ReactNode {
+  const queryClient = useQueryClient();
+  const query = goingPlanQuery(runId);
+  const plan = useQuery({ ...query, retry: false });
+  const [refusal, setRefusal] = useState<string>();
+  const approve = useKeyedWrite<GoingPlanAnswer, number>({
+    inline: true,
+    label: () => "Approve the command bar's plan",
+    onError: (error) => setRefusal(apiErrorMessage(error, "The approval did not reach Dispatch.")),
+    onSuccess: (answered) => {
+      if (answered !== null) {
+        queryClient.setQueryData(query.queryKey, answered);
+        return;
+      }
+      void queryClient.invalidateQueries({ queryKey: query.queryKey });
+    },
+    request: (number) => goingPlanApproveRequest(runId, { plan: number }),
+    target: () => `going-plan:${runId}`,
+  });
+  if (plan.isPending) {
+    return (
+      <p className={barNoteClassName} data-testid="going-plan-reading" role="status">
+        Reading the run's plan…
+      </p>
+    );
+  }
+  if (plan.isError) {
+    return (
+      <p className={barNoteClassName} data-testid="going-plan-none" role="status">
+        {plan.error instanceof ApiError && plan.error.code === PLAN_NOT_FOUND
+          ? "This run proposed no plan, so nothing runs."
+          : apiErrorMessage(plan.error, "The run's plan could not be read.")}
+      </p>
+    );
+  }
+  const answer = plan.data;
   return (
-    <div data-testid="going-confirm-step">
-      <p className={barNoteClassName}>Your setting asks before every write. Run these?</p>
+    <div data-plan={answer.plan} data-state={answer.state} data-testid="going-plan">
+      {answer.summary === "" ? null : <p className={barNoteClassName}>{answer.summary}</p>}
       <ul className="space-y-1">
-        {asking.map((line) => (
+        {(answer.rows ?? []).map((row) => (
           <li
             className={`text-xs ${textPrimaryOnSurface}`}
-            data-state="asking"
-            data-testid="going-write-line"
-            key={line.key}
+            data-state={row.state}
+            data-testid="going-plan-row"
+            key={row.row}
           >
-            {line.text}
+            {/* The change, the item it acts on, and where the row stands. */}
+            {`${actionName(row.tool)}${row.item === "" ? "" : ` ${row.item}`}: ${row.state}`}
           </li>
         ))}
       </ul>
-      <div className="mt-2 flex gap-2">
-        <button
-          className={secondaryButtonCompact}
-          data-testid="going-confirm"
-          onClick={onConfirm}
-          type="button"
-        >
-          Confirm
-        </button>
-        <button className={secondaryButtonCompact} onClick={onCancel} type="button">
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** What one line of a turn says: the item, the field, the value before and the value now once
- *  Dispatch answered; its refusal where it refused; and how its undo went. */
-function lineText(line: TurnLine): string {
-  const named = actionOn(line.action, line.target);
-  switch (line.state) {
-    case "sending":
-      return `${named}${line.change === "" ? "" : ` (${line.change})`}: sending…`;
-    case "stopped":
-      return `${named}: stopped before it was sent`;
-    case "refused":
-      return `${named}: refused: ${line.refusal?.message ?? ""}`;
-    case "done": {
-      const written = line.written;
-      if (written === undefined) return `${named}: done; Dispatch kept no answer naming it`;
-      const item = written.item === "" ? named : written.item;
-      const fields = (written.fields ?? []).join(", ");
-      return fields === ""
-        ? `${item}: done`
-        : `${item} · ${fields}: ${shownValue(written.before, written.fields)} → ${shownValue(
-            written.now,
-            written.fields
-          )}`;
-    }
-  }
-}
-
-/** One line per write of a turn, and the turn's Undo. */
-function TurnLines({
-  onUndo,
-  turn,
-}: {
-  readonly onUndo: () => void;
-  readonly turn: Turn;
-}): ReactNode {
-  const undo = turn.undo;
-  return (
-    <div className="mt-1">
-      <ul className="space-y-1" data-testid="going-write-lines">
-        {turn.lines.map((line) => (
-          <li
-            className={`text-xs ${line.state === "refused" ? dangerText : textPrimaryOnSurface}`}
-            data-action={line.action}
-            data-before={
-              line.written === undefined
-                ? undefined
-                : shownValue(line.written.before, line.written.fields)
-            }
-            data-code={line.refusal?.code}
-            data-field={
-              line.written === undefined ? undefined : (line.written.fields ?? []).join(", ")
-            }
-            data-item={line.written?.item ?? line.target}
-            data-now={
-              line.written === undefined
-                ? undefined
-                : shownValue(line.written.now, line.written.fields)
-            }
-            data-state={line.state}
-            data-testid="going-write-line"
-            data-undo={
-              line.undo === undefined ? undefined : line.undo.outcome.ok ? "ok" : "refused"
-            }
-            key={line.key}
-            role={line.state === "refused" ? "alert" : undefined}
-          >
-            {lineText(line)}
-            {line.undo === undefined ? null : (
-              <span className={line.undo.outcome.ok ? textMutedOnSurface : dangerText}>
-                {` · ${undoneText(line.undo)}`}
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
-      <div className="mt-2 flex items-center gap-2">
-        {undo?.state === "undone" ? null : (
+      {answer.state === "waiting" ? (
+        <div className="mt-2 flex items-center gap-2">
           <button
             className={secondaryButtonCompact}
-            data-testid="going-undo"
-            disabled={undo?.state === "undoing"}
-            onClick={onUndo}
+            data-testid="going-plan-approve"
+            disabled={approve.isPending}
+            onClick={() => {
+              setRefusal(undefined);
+              approve.mutate(answer.plan);
+            }}
             type="button"
           >
-            Undo
+            Approve
           </button>
-        )}
-        <UndoSaid undo={undo} />
-      </div>
+          <span className={`text-xs ${textMutedOnSurface}`}>
+            Nothing changes until you approve.
+          </span>
+        </div>
+      ) : null}
+      {refusal === undefined ? null : (
+        <p className={`text-xs ${dangerText}`} data-testid="going-plan-refused" role="alert">
+          {refusal}
+        </p>
+      )}
     </div>
   );
 }
 
-/** What a turn's undo says beside its lines. */
+/** What a turn's undo says, in the shell's notice of the undo key. */
 export function UndoSaid({ undo }: { readonly undo: Turn["undo"] }): ReactNode {
   if (undo === undefined) return null;
   const stopped =

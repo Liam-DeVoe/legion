@@ -9,10 +9,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"maps"
-	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -20,7 +16,6 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // goingInternals is what a reason the bar shows a person may not name, since the person at the bar
@@ -378,90 +373,6 @@ func TestGoingUploadOverAHeldDocumentIsWithheldUnlessTheWordsWriteTheNameTheAnsw
 	}
 }
 
-// TestGoingUploadRefusalsSayWhatThePersonCanDoInTheBar: each reason the writes route gives for an
-// upload it does not send - one over a document the words do not ask for, by its slug or by its
-// stored name, one whose name the person filled in, one with no force over a held name or over an
-// owner it cannot name, and one sent at once whose owner it cannot name - reaches the person in
-// the bar's panel. So it names the name to write in the question, the document's stored name or
-// the upload's own, and none of goingInternals; and each keeps the status and the code it is
-// answered with (goingWriteClaim.refuse). The one refused for being sent at once tells the person
-// to pick or confirm nothing: the bar shows no pick of an invocation it sent at once, so writing
-// the name in the question is what that person can do.
-func TestGoingUploadRefusalsSayWhatThePersonCanDoInTheBar(t *testing.T) {
-	issueUpload := GoingRoute{Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts"}
-	unnamedUpload := GoingRoute{Method: http.MethodPost, Pattern: "/api/v1/somewhere/{key}/artifacts"}
-	plan := &model.Artifact{Name: "plan.md", Slug: "plan-md", Kind: "doc", CreatedBy: model.Actor{Kind: "user", ID: "alice"},
-		Versions: []model.Version{{Number: 2, Authors: []model.Actor{{Kind: "user", ID: "bob"}}}}}
-	content := "# Plan\n\nWritten by the model.\n"
-	unnamedPrepared := goingPrepared{action: "dispatch_artifact", route: unnamedUpload,
-		arguments: map[string]any{"name": "notes", "content": content}, call: goingCall{path: map[string]string{"key": "DEMO-12"}}}
-	unnamed, err := (goingObserver{}).uploadedOver(context.Background(), unnamedPrepared, goingFields("artifact"), "")
-	if err != nil || !unnamed.ownerUnnamed {
-		t.Fatalf("read what an upload to an owner it cannot name writes over: %+v, %v", unnamed, err)
-	}
-	// answered is a refusal as the writes route answers it (goingWriteClaim.refuse): a
-	// GoingArgumentError as 400 GOING_ARGUMENTS with its reason alone, which is the one way a
-	// refusal answers that code, and any other route refusal as it stands.
-	answered := func(err error) (int, string, string) {
-		var argument GoingArgumentError
-		if errors.As(err, &argument) {
-			return http.StatusBadRequest, codeGoingArguments, argument.Reason
-		}
-		var refused *apiError
-		if errors.As(err, &refused) && refused.code != codeGoingArguments {
-			return refused.status, refused.code, refused.message
-		}
-		return 0, "", fmt.Sprint(err)
-	}
-	for _, tc := range []struct {
-		name, approved string
-		route          GoingRoute
-		arguments      map[string]any
-		before         goingObservation
-		person         goingPerson
-		status         int
-		code, write    string
-	}{
-		{"its slug, which the words do not ask for", goingApprovedPerson, issueUpload,
-			map[string]any{"issue": "DEMO-12", "name": "plan-md", "content": content, "force": true},
-			goingObservation{held: plan}, goingPerson{words: "save this as plan-md"}, http.StatusConflict, codeGoingNotProposed, "plan.md"},
-		{"its stored name, which the words do not write", goingApprovedConfirmed, issueUpload,
-			map[string]any{"issue": "DEMO-12", "name": "plan.md", "content": content, "force": true},
-			goingObservation{held: plan}, goingPerson{words: "save this as the plan"}, http.StatusConflict, codeGoingNotProposed, "plan.md"},
-		{"its slug, filled in by the person", goingApprovedPerson, issueUpload,
-			map[string]any{"issue": "DEMO-12", "name": "plan-md", "content": content, "force": true},
-			goingObservation{held: plan}, goingPerson{words: "save this to the issue", filled: "name"}, http.StatusConflict, codeGoingNotProposed, "plan.md"},
-		{"its stored name, filled in by the person", goingApprovedPerson, issueUpload,
-			map[string]any{"issue": "DEMO-12", "name": "plan.md", "content": content, "force": true},
-			goingObservation{held: plan}, goingPerson{words: "save this to the issue", filled: "name"}, http.StatusConflict, codeGoingNotProposed, "plan.md"},
-		{"a held name, with no force", goingApprovedAuto, issueUpload,
-			map[string]any{"issue": "DEMO-12", "name": "plan.md", "content": content},
-			goingObservation{held: plan}, goingPerson{words: "replace plan.md with this"}, http.StatusBadRequest, codeGoingArguments, "plan.md"},
-		{"an owner it cannot name, with no force", goingApprovedPerson, unnamedUpload,
-			map[string]any{"name": "notes", "content": content},
-			unnamed, goingPerson{words: "save this as a doc"}, http.StatusBadRequest, codeGoingArguments, "notes"},
-		{"an owner it cannot name, sent at once", goingApprovedAuto, unnamedUpload,
-			map[string]any{"name": "notes", "content": content, "force": true},
-			unnamed, goingPerson{words: "save this as a doc"}, http.StatusConflict, codeGoingNotAutomatic, "notes"},
-	} {
-		prepared := goingPrepared{action: "dispatch_artifact", route: tc.route, arguments: tc.arguments,
-			call: goingCall{path: map[string]string{"key": "DEMO-12"}}}
-		status, code, reason := answered(goingSendRefusal(tc.approved, prepared, tc.before, tc.person))
-		if status != tc.status || code != tc.code {
-			t.Errorf("%s: the upload is answered %d %s %q, want %d %s", tc.name, status, code, reason, tc.status, tc.code)
-		}
-		if !strings.Contains(reason, tc.write) {
-			t.Errorf("%s: the upload is refused %q, which never names %s, the name to write in the question", tc.name, reason, tc.write)
-		}
-		if internals := goingInternals.FindAllString(reason, -1); len(internals) > 0 {
-			t.Errorf("%s: the upload is refused %q, which names %q, none of which the person at the bar holds", tc.name, reason, internals)
-		}
-		if tc.code == codeGoingNotAutomatic && goingPickOrConfirm.MatchString(reason) {
-			t.Errorf("%s: the upload is refused %q, which tells the person to pick or confirm an invocation the bar sent at once and shows no pick of", tc.name, reason)
-		}
-	}
-}
-
 // goingPickOrConfirm is a reason telling the person to pick or to confirm a write.
 var goingPickOrConfirm = regexp.MustCompile(`(?i)\b(pick|confirm)`)
 
@@ -556,59 +467,6 @@ func TestGoingProposalWithholdsACallTheBarCanNeverSend(t *testing.T) {
 	}
 }
 
-// TestGoingWriteTheBarCanNeverSendIsRefusedInTheBarsWords (deep review, Minor finding): a run
-// recorded by a build that offered a call the bar can never send - a comment with a picture file,
-// and one naming its place by a dispatch:// link, each marked automatic - is refused when the
-// person picks it, 400 GOING_ARGUMENTS, with nothing written, and the refusal is the words the
-// proposal now withholds it with: no tool id before it, nothing of goingInternals, and what of
-// the call the bar cannot send rather than the argument's name as the reason.
-func TestGoingWriteTheBarCanNeverSendIsRefusedInTheBarsWords(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Commented on", "The spec.\n").Key
-	catalogue, err := BuildGoingCatalogue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	comments := func() int {
-		t.Helper()
-		return len(decodeBody[[]model.Comment](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/issues/"+issue+"/comments", nil)))
-	}
-	for _, tc := range goingUnsendableCalls {
-		if tc.action != "dispatch_comment" {
-			continue
-		}
-		t.Run(tc.name, func(t *testing.T) {
-			arguments := maps.Clone(tc.arguments)
-			arguments["issue"] = issue
-			proposal := goingProposal{Offers: []goingOffer{{Action: tc.action, Offered: true, Invocations: []goingInvocation{
-				{Arguments: arguments, Automatic: true, TargetArgument: "issue"},
-			}}}}
-			run := rig.recorded(t, "alice", true, tc.action, "post this on "+issue, proposal)
-			refused := rig.write(t, "alice", run, map[string]any{"offer": tc.action, "invocation": 0, "approved": goingApprovedPerson})
-			refusal := decodeBody[errorBody](t, refused)
-			if refused.Code != http.StatusBadRequest || refusal.Code != codeGoingArguments {
-				t.Fatalf("the pick answered %d %s, want 400 %s", refused.Code, refused.Body.String(), codeGoingArguments)
-			}
-			if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
-				t.Errorf("the pick is refused %q, which names %q, none of which the person at the bar holds", refusal.Error, internals)
-			}
-			if regexp.MustCompile(`\b` + tc.argument + `\b`).MatchString(refusal.Error) {
-				t.Errorf("the pick is refused %q, which gives the argument %s as its reason rather than saying what the bar cannot send", refusal.Error, tc.argument)
-			}
-			start := goingRunStart{actions: catalogue.Actions(), words: "post this on " + issue}
-			written, _ := json.Marshal(map[string][]map[string]any{tc.action: {arguments}})
-			withheld := goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{tc.action}},
-				&going.Final{Answer: "Done.", Arguments: string(written)}, start, goingHolds{}).Offers[0].Withheld
-			if len(withheld) != 1 || withheld[0] != refusal.Error {
-				t.Errorf("the pick is refused %q, and a proposal made now withholds the call with %q, want the same words", refusal.Error, withheld)
-			}
-			if count := comments(); count != 0 {
-				t.Fatalf("%s holds %d comments after the refused pick, want none", issue, count)
-			}
-		})
-	}
-}
-
 // goingEmptyArguments is, by action, each argument goingUnsendable refuses a call for carrying, as
 // an answer may write it empty: a list of no pictures, a link or a file path of no text. Such a
 // call names no picture, no link and no file, and no translator sends the argument on, so the
@@ -620,112 +478,6 @@ var goingEmptyArguments = map[string]map[string]any{
 	"dispatch_suggest":  {"ref": ""},
 	"dispatch_doc_edit": {"ref": ""},
 	"dispatch_artifact": {"path": ""},
-}
-
-// TestGoingCallWithAnEmptyPictureListLinkOrFileIsOfferedAndSent (deep review, Minor finding): an
-// answer that wrote an empty list of pictures, an empty link or an empty file path named no
-// picture, link or file, so no reason the bar can never send the call is true of it. For every row
-// of those actions a person's browser reaches (goingRowCases), the call with each such argument
-// empty is offered, with nothing withheld, and the person's pick of it, every such argument empty
-// at once, is sent and lands.
-func TestGoingCallWithAnEmptyPictureListLinkOrFileIsOfferedAndSent(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	cases := goingRowCases(newGoingRowFixtures(t, rig))
-	catalogue, err := BuildGoingCatalogue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	const words = "do what the answer says"
-	start := goingBrowserStart(t)
-	start.words = words
-	for _, action := range catalogue.Actions() {
-		empties := goingEmptyArguments[action.Action]
-		if len(empties) == 0 {
-			continue
-		}
-		for _, route := range action.Routes {
-			row := action.Action + " " + route.Method + " " + route.Pattern
-			call, held := cases[row]
-			if !held || call.bearer || call.session != "" {
-				continue
-			}
-			t.Run(row, func(t *testing.T) {
-				arguments := maps.Clone(call.arguments)
-				for argument, empty := range empties {
-					one := maps.Clone(call.arguments)
-					one[argument] = empty
-					written, err := json.Marshal(map[string][]map[string]any{action.Action: {one}})
-					if err != nil {
-						t.Fatal(err)
-					}
-					offer := goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{action.Action}},
-						&going.Final{Answer: "Done.", Arguments: string(written)}, start, goingHolds{}).Offers[0]
-					if !offer.Offered || len(offer.Invocations) != 1 || len(offer.Withheld) != 0 {
-						t.Errorf("the call with %s %#v proposed %+v, want it offered with nothing withheld", argument, empty, offer)
-					}
-					arguments[argument] = empty
-				}
-				proposal := goingProposal{Offers: []goingOffer{{Action: action.Action, Offered: true, Invocations: []goingInvocation{
-					{Arguments: arguments, TargetArgument: goingTargetArgument(route)},
-				}}}}
-				run := rig.recorded(t, "alice", false, action.Action, words, proposal)
-				response := rig.write(t, "alice", run, map[string]any{"offer": action.Action, "invocation": 0, "approved": goingApprovedPerson})
-				if response.Code != http.StatusOK {
-					t.Fatalf("the pick of %v answered %d %s, want it sent", arguments, response.Code, response.Body.String())
-				}
-				if line := decodeBody[goingWriteLine](t, response); !line.Outcome.OK {
-					t.Errorf("the pick of %v answered %+v, want it landed", arguments, line.Outcome)
-				}
-			})
-		}
-	}
-}
-
-// TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt (deep review round 5,
-// finding D): an upload with force the proposal offers because the answer wrote the held
-// document's stored name and the words write it, whatever its case, is one the person can run:
-// picked as the bar picks an offer (approved person), the write is made and the document's next
-// version written.
-func TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "An issue holding notes", "The spec.\n").Key
-	uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nThe first line.\n")
-	holds := rig.served.goingHoldsBy(context.Background())
-	for index, tc := range []struct{ words, upload string }{
-		{"overwrite notes.md with this text", "notes.md"},
-		{"replace NOTES.MD with this", "notes.md"},
-	} {
-		words := tc.words
-		t.Run(words, func(t *testing.T) {
-			arguments := map[string]any{"issue": issue, "name": tc.upload, "content": "# Notes\n\nNew words.\n", "force": true}
-			written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {arguments}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			start := goingBrowserStart(t)
-			start.words = words
-			start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
-			proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
-				&going.Final{Answer: "Done.", Arguments: string(written)}, start, holds)
-			if len(proposal.Offers) != 1 || !proposal.Offers[0].Offered || len(proposal.Offers[0].Invocations) != 1 {
-				t.Fatalf("%q proposed %+v, want the upload offered", words, proposal)
-			}
-			run := rig.recorded(t, "alice", true, "dispatch_artifact", words, proposal)
-			line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson})
-			if !line.Outcome.OK {
-				t.Fatalf("the picked upload under %q answered %+v, want it made", words, line)
-			}
-			var versions int
-			if err := rig.database.Pool.QueryRow(context.Background(), `
-				select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
-				where a.issue_key = $1 and a.name = 'notes.md'`, issue).Scan(&versions); err != nil {
-				t.Fatal(err)
-			}
-			if versions != index+2 {
-				t.Fatalf("notes.md holds %d versions after the picked upload under %q, want %d", versions, words, index+2)
-			}
-		})
-	}
 }
 
 // TestGoingAutomaticNeverRunsAnUploadOverADocumentByItsSlug (review round 7, finding 1): an upload

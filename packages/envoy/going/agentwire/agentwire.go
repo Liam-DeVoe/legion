@@ -45,16 +45,96 @@ const (
 	CallEnd   = "end"
 )
 
-// The three kinds of call (CallRequest.Kind).
+// The five kinds of call (CallRequest.Kind).
 const (
 	// KindRoute is one read or write of Dispatch: a tool by its name and its arguments, run
-	// through the server's route table as the run's person.
+	// through the server's route table as the run's person. A write runs only as a row of the
+	// run's plan that the person approved, or that Auto-review let through (CallRequest.Row).
 	KindRoute = "route"
 	// KindGitHub is a read of a repository through the server's GitHub App.
 	KindGitHub = "github"
 	// KindWeb is a read of a public web address.
 	KindWeb = "web"
+	// KindPlan proposes the run's plan (CallRequest.Proposal): the server checks each change
+	// against its tool spec and keeps the plan, whose rows wait for the person. It answers the
+	// plan as the server keeps it (PlanAnswer).
+	KindPlan = "plan"
+	// KindReview is the answer of Auto-review's model call on the run's latest plan
+	// (CallRequest.Asked): the rows the person's words ask for. The server lets through those of
+	// them its mode policy lets through, and answers the rows to run now (ReviewAnswer).
+	KindReview = "review"
 )
+
+// PlanProposal is the plan a run's model proposed: what it does, in one or two sentences, and
+// its changes, in the order they run.
+type PlanProposal struct {
+	Summary string       `json:"summary"`
+	Changes []PlanChange `json:"changes"`
+}
+
+// PlanChange is one change of a proposal: a write tool of Dispatch, its arguments, and the
+// indexes, from 0, of the earlier changes it needs.
+type PlanChange struct {
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+	Needs     []int           `json:"needs,omitempty"`
+}
+
+// PlanAnswer is a plan call's answer: the plan's number within the run and each of its rows.
+type PlanAnswer struct {
+	Plan int           `json:"plan"`
+	Rows []PlanRowRead `json:"rows"`
+}
+
+// PlanRowRead is one row of a plan as Auto-review's model reads it: its number (the change's
+// index), the tool and its arguments, the item it changes, that item's fields and its value now,
+// and the reasons it waits for the person in every mode, none for a row Auto-review may let
+// through.
+type PlanRowRead struct {
+	Row       int             `json:"row"`
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+	Item      string          `json:"item,omitempty"`
+	Fields    []string        `json:"fields,omitempty"`
+	Now       json.RawMessage `json:"now,omitempty"`
+	Waits     []string        `json:"waits,omitempty"`
+}
+
+// ReviewAnswer is a review call's answer: the rows to run now, in order, and how many rows of the
+// plan still wait for the person.
+type ReviewAnswer struct {
+	Run     []PlanRun `json:"run"`
+	Waiting int       `json:"waiting"`
+}
+
+// PlanRow names one row of one of a run's plans.
+type PlanRow struct {
+	Plan int `json:"plan"`
+	Row  int `json:"row"`
+}
+
+// PlanRun is one row of a plan to run: the row, the tool and the arguments it runs with (the
+// person's edits included), and the step whose call already ran it, 0 for none: a row whose call
+// an earlier owner of the run made is made again under that step's key, which answers what it
+// landed and sends nothing twice.
+type PlanRun struct {
+	PlanRow
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+	Step      int             `json:"step,omitempty"`
+}
+
+// PersonStep is the body of a step of kind StepPerson, which the server saves when the person
+// answers a plan: the plan, and either the rows the person approved (Approved, each with the
+// arguments it runs with) and those they left out (Unticked), or the words they asked a new plan
+// with (Revise) and the rows of the plan those words revise (Rows).
+type PersonStep struct {
+	Plan     int       `json:"plan"`
+	Approved []PlanRun `json:"approved,omitempty"`
+	Unticked []int     `json:"unticked,omitempty"`
+	Revise   string    `json:"revise,omitempty"`
+	Rows     []PlanRun `json:"rows,omitempty"`
+}
 
 // The states an end leaves a run in (EndRequest.State).
 const (
@@ -64,12 +144,15 @@ const (
 	StateFailed  = "failed"
 )
 
-// The two kinds of step (StepRequest.Kind): one model call with its reply, or one tool call with
-// its result. A web read's address may be one a tool result of the run names, and the server reads
-// those in the run's tool steps.
+// The kinds of step (StepRequest.Kind): one model call with its reply, one tool call with its
+// result, Auto-review's model call on a plan, and the person's answer to a plan, which the server
+// saves itself (PersonStep). A web read's address may be one a tool result of the run names, and
+// the server reads those in the run's tool steps.
 const (
-	StepModel = "model"
-	StepTool  = "tool"
+	StepModel  = "model"
+	StepTool   = "tool"
+	StepReview = "review"
+	StepPerson = "person"
 )
 
 // CallBodyLimit is the most of an answer's body a call carries: the server's writer stops there
@@ -173,9 +256,16 @@ const (
 	CodeStaleLease = "STALE_LEASE"
 	// CodeUnknownTool is a route call naming no tool of the server's table.
 	CodeUnknownTool = "UNKNOWN_TOOL"
-	// CodeWriteNotApproved is a route call of a write tool that no approved row of the run's plan
-	// names with those arguments.
+	// CodeWriteNotApproved is a route call of a write tool that names no row of the run's plan
+	// that the person approved, or Auto-review let through, with that tool and those arguments.
 	CodeWriteNotApproved = "WRITE_NOT_APPROVED"
+	// CodeRowWaits is a route call of an approved row whose item changed after the person saw
+	// it, or that needs a row that waits: the row waits for the person's approval again, and
+	// nothing of it was sent.
+	CodeRowWaits = "ROW_WAITS"
+	// CodeRowSkipped is a route call of an approved row that needs a row that failed or was
+	// skipped: it is skipped, and nothing of it was sent.
+	CodeRowSkipped = "ROW_SKIPPED"
 	// CodeCallRefused is a route call the tool's own schema or translation refuses before any
 	// request is sent.
 	CodeCallRefused = "CALL_REFUSED"
@@ -272,6 +362,10 @@ type ClaimedRun struct {
 	// History is the run's saved steps in order: the last 8 whole, each older one as its note
 	// alone, with no body.
 	History []SavedStep `json:"history"`
+	// Rows are the rows of the run's plan that the person approved, or Auto-review let through,
+	// and that no saved step of the run answers yet, in order: the agent runs each before the
+	// run's next model call.
+	Rows []PlanRun `json:"rows,omitempty"`
 	// Turns are the runs of the conversation before this one, oldest first, the last
 	// EarlierTurns of them: what the person asked in each and the note of each of its steps.
 	Turns []Turn `json:"turns"`
@@ -370,8 +464,13 @@ type CallRequest struct {
 	Call       int    `json:"call"`
 	Kind       string `json:"kind"`
 	// Tool and Arguments are a route call's: the tool's name and the arguments its schema takes.
+	// Row names the plan row a write runs, nil for a read and for the model's own call.
 	Tool      string          `json:"tool,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Row       *PlanRow        `json:"row,omitempty"`
+	// Proposal is a plan call's proposal, and Asked a review call's rows.
+	Proposal *PlanProposal `json:"proposal,omitempty"`
+	Asked    []int         `json:"asked,omitempty"`
 	// Repository and Path are a GitHub read's: the repository as owner/name, and the path of the
 	// read under the repository's API path, such as "pulls/12".
 	Repository string `json:"repository,omitempty"`

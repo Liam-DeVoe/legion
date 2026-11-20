@@ -246,18 +246,20 @@ func (w *worker) callTool(ctx context.Context, step int, input json.RawMessage) 
 }
 
 // planChange is one change of a proposed plan: a tool of Dispatch that changes something, its
-// arguments, and the indexes of the changes it needs first.
+// arguments, and the indexes of the earlier changes it needs.
 type planChange struct {
 	Tool      string          `json:"tool"`
 	Arguments json.RawMessage `json:"arguments"`
 	Needs     []int           `json:"needs"`
 }
 
-// proposePlan records the model's plan as this step, which the tool step saves, and ends the
-// run's turn: the run waits for its person's approval, and the plan runner runs the approved
-// changes. A plan of no change, or of a tool Dispatch has no spec of, or one that needs a change
-// it does not hold, is refused back to the model.
-func (w *worker) proposePlan(_ context.Context, _ int, input json.RawMessage) (string, bool) {
+// proposePlan proposes the model's plan to the server by a plan call (agentwire.KindPlan), as
+// the step numbered step, and ends the run's turn: the server keeps the plan, whose rows wait for
+// the person, and the step is saved with it. A plan of no change, of a tool Dispatch has no spec
+// of, or one that needs a change it does not hold, is refused back to the model, and so is one
+// the server refuses: a change whose arguments its tool's schema refuses, or over an item the
+// person may not read.
+func (w *worker) proposePlan(ctx context.Context, step int, input json.RawMessage) (string, bool) {
 	var plan struct {
 		Summary string       `json:"summary"`
 		Changes []planChange `json:"changes"`
@@ -265,6 +267,7 @@ func (w *worker) proposePlan(_ context.Context, _ int, input json.RawMessage) (s
 	if err := json.Unmarshal(input, &plan); err != nil || len(plan.Changes) == 0 {
 		return "propose_plan takes summary and changes, at least one change", true
 	}
+	proposal := agentwire.PlanProposal{Summary: plan.Summary}
 	for index, change := range plan.Changes {
 		if _, known := dispatchTool(change.Tool); !known {
 			return fmt.Sprintf("change %d names the tool %q, which Dispatch has no spec of; find_tools names the tools", index, change.Tool), true
@@ -274,9 +277,22 @@ func (w *worker) proposePlan(_ context.Context, _ int, input json.RawMessage) (s
 				return fmt.Sprintf("change %d needs change %d, which is no other change of this plan", index, need), true
 			}
 		}
+		if len(change.Arguments) == 0 || string(change.Arguments) == "null" {
+			change.Arguments = json.RawMessage(`{}`)
+		}
+		proposal.Changes = append(proposal.Changes, agentwire.PlanChange{Tool: change.Tool, Arguments: change.Arguments, Needs: change.Needs})
 	}
+	answer, told, refused := w.serverCall(ctx, agentwire.CallRequest{Step: step, Call: 1, Kind: agentwire.KindPlan, Proposal: &proposal})
+	if told != "" {
+		return told, refused
+	}
+	var made agentwire.PlanAnswer
+	if err := json.Unmarshal(answer.Body, &made); err != nil {
+		return fmt.Sprintf("the server's answer to the plan does not read as a plan: %v", err), true
+	}
+	w.plan.Store(&made)
 	w.proposed.Store(true)
-	return fmt.Sprintf("The plan of %d changes is saved and waits for the person's approval.", len(plan.Changes)), false
+	return fmt.Sprintf("The plan is saved as plan %d: its %d changes wait for the person's approval.", made.Plan, len(made.Rows)), false
 }
 
 // signInRetry is the first wait before a call the sign-in issuer could not confirm the person for
@@ -286,11 +302,22 @@ const (
 	signInRetryMost = 8 * time.Second
 )
 
-// callServer makes call of the run at the server and answers what the model is told of it. A
-// membership the sign-in issuer could not confirm now is waited on and tried again within the
-// step's time; a grant that ended stops the run with its reason (grantEnded), and a lease the run
-// no longer holds stops working on it (lose); every other refusal goes back to the model.
+// callServer makes call of the run at the server and answers what the model is told of it: the
+// call's answer (resultText), or what serverCall says of its refusal.
 func (w *worker) callServer(ctx context.Context, call agentwire.CallRequest) (string, bool) {
+	answer, told, refused := w.serverCall(ctx, call)
+	if told != "" {
+		return told, refused
+	}
+	return resultText(answer), answer.Status/100 != 2
+}
+
+// serverCall makes call of the run at the server and answers its answer, or, where it has none,
+// what the model is told instead and that it was refused. A membership the sign-in issuer could
+// not confirm now is waited on and tried again within the step's time; a grant that ended stops
+// the run with its reason (grantEnded), and a lease the run no longer holds stops working on it
+// (lose); every other refusal goes back to the model.
+func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (agentwire.CallAnswer, string, bool) {
 	call.Run, call.LeaseToken = w.run.ID, w.run.LeaseToken
 	wait := signInRetry
 	for {
@@ -298,11 +325,11 @@ func (w *worker) callServer(ctx context.Context, call agentwire.CallRequest) (st
 		var refused *agentwire.Error
 		switch {
 		case err == nil:
-			return resultText(answer), answer.Status/100 != 2
+			return answer, "", false
 		case ctx.Err() != nil:
-			return "the call was cut off: the run stopped", true
+			return answer, "the call was cut off: the run stopped", true
 		case !errors.As(err, &refused):
-			return fmt.Sprintf("the server could not make the call: %v", err), true
+			return answer, fmt.Sprintf("the server could not make the call: %v", err), true
 		}
 		switch refused.Code {
 		case agentwire.CodeSignInUnavailable:
@@ -310,21 +337,23 @@ func (w *worker) callServer(ctx context.Context, call agentwire.CallRequest) (st
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return "the call was cut off: the run stopped", true
+				return answer, "the call was cut off: the run stopped", true
 			case <-timer.C:
 			}
 			wait = min(2*wait, signInRetryMost)
 			continue
 		case agentwire.CodeGrantEnded:
 			w.endGrant(refused.Message)
-			return "the call was refused: " + refused.Message, true
+			return answer, "the call was refused: " + refused.Message, true
 		case agentwire.CodeStaleLease:
 			w.lose()
-			return "the call was refused: this run is no longer held", true
+			return answer, "the call was refused: this run is no longer held", true
 		case agentwire.CodeWriteNotApproved:
-			return fmt.Sprintf("%s changes something, which call_tool does not run: propose it in propose_plan for the person to approve", call.Tool), true
+			if call.Row == nil {
+				return answer, fmt.Sprintf("%s changes something, which call_tool does not run: propose it in propose_plan for the person to approve", call.Tool), true
+			}
 		}
-		return fmt.Sprintf("the call was refused (%s): %s", refused.Code, refused.Message), true
+		return answer, fmt.Sprintf("the call was refused (%s): %s", refused.Code, refused.Message), true
 	}
 }
 

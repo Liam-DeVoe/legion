@@ -4,10 +4,10 @@ package api
 // undo's write back (going_undo.go) - an issue's fields, an ask's parts, a document's content, a
 // claim taken back or released, a thread reopened, a created issue closed - puts its value back
 // only where the item still holds what the undone write left, and every other upload the bar
-// sends makes a document only where its owner holds none of the name, an upload with force shedding
+// sends makes a document only where its owner holds none of the name, a row of a plan shedding
 // that condition at the write where its read before found the document it names
-// (goingUploadWritesOver, going_translate.go). Each is a compare-and-set its route decides under
-// the lock it takes for the write, never a read and then a write.
+// (AgentListener.rowUpload). Each is a compare-and-set its route decides under the lock it takes
+// for the write, never a read and then a write.
 //
 // The condition rides on the request's context (goingSend.condition, withGoingCondition), never
 // in its body. No client off the network can set a context, so none can make a route conditional

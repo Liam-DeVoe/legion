@@ -241,9 +241,12 @@ func (s *server) goingMembershipStands(ctx context.Context, login string) error 
 	return err
 }
 
-// goingTokenCaller is the caller of a token grant: the personal token its row is now, as
-// personalTokenActor resolves a request presenting it, while the row is unrevoked and still the
-// grant's person's.
+// goingTokenCaller is the caller of a token grant, while its token's row is unrevoked and still
+// the grant's person's: the person, as a sign-in's call is, with the token's credential - the
+// scopes its row holds now, which the route's scope gate reads - and an act naming the token. So
+// each change of the run is the person's own, as every route records a person, and its history
+// names the token and the command bar; a route the token's scopes do not open refuses the call as
+// it refuses the token's own request.
 func (s *server) goingTokenCaller(ctx context.Context, grant goingGrant, run string) (resolvedCaller, error) {
 	if grant.token == nil {
 		return resolvedCaller{}, goingGrantEnded{Reason: goingGrantTokenRevoked}
@@ -266,17 +269,19 @@ func (s *server) goingTokenCaller(ctx context.Context, grant goingGrant, run str
 	if revokedAt != nil || model.CanonicalLogin(owner) != grant.login {
 		return resolvedCaller{}, goingGrantEnded{Reason: goingGrantTokenRevoked}
 	}
-	token := model.Actor{
-		Kind:       "session",
-		Owner:      &owner,
+	person := model.Actor{
+		Kind:       "user",
+		ID:         grant.login,
 		Credential: &model.Credential{Scopes: scopes, TokenID: *grant.token, TokenName: name},
+		Proven:     true,
 	}
-	return goingBarCaller(token, false, run), nil
+	return goingBarCaller(person, true, run), nil
 }
 
 // goingBarCaller is actor, a caller resolved as optionalActor resolves one (human for a person's
-// own sign-in), as a call of the command bar's run is made as it: the same credential, with the
-// bar's act beside it (goingBarAct).
+// own sign-in, and for a run's call under a personal token, which acts as the person), as a call
+// of the command bar's run is made as it: the same credential, with the bar's act beside it
+// (goingBarAct).
 func goingBarCaller(actor model.Actor, human bool, run string) resolvedCaller {
 	actor.Act = goingBarAct(actor.Credential, run)
 	return resolvedCaller{actor: actor, human: human}

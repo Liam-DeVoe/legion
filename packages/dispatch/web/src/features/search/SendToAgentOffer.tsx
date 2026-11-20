@@ -82,8 +82,7 @@ export function useSendToAgentOffer({
   readonly block: string | undefined;
   /** The issue the chip names, or undefined where it names no issue. */
   readonly issue: string | undefined;
-  /** How the press sends: the bar's run supplies it where its proposal offers the send;
-   *  defaults to the direct send. */
+  /** How the press sends: the direct send, unless a test passes its own. */
   readonly send?: SendToAgent;
   /** The words in the box, as the person typed them. */
   readonly words: string;

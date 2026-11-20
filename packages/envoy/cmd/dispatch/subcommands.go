@@ -139,8 +139,8 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 	}()
 	slots := agentSlots
 	if raw := strings.TrimSpace(env.get("DISPATCH_AGENT_SLOTS")); raw != "" {
-		if slots, err = strconv.Atoi(raw); err != nil || slots <= 0 {
-			fmt.Fprintf(stderr, "agent: DISPATCH_AGENT_SLOTS=%q (expected a positive whole number of runs)\n", raw)
+		if slots, err = strconv.Atoi(raw); err != nil || slots <= 0 || slots > 64 {
+			fmt.Fprintf(stderr, "agent: DISPATCH_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)\n", raw)
 			return 1
 		}
 	}

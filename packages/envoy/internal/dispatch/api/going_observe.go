@@ -155,7 +155,7 @@ type goingObservation struct {
 	stood     json.RawMessage
 	// ownerUnnamed is an upload whose route names no owner the read before could read
 	// (uploadedOver), and held the document the read before found under the upload's name, with
-	// its versions, which an upload without force is refused naming (goingUploadForceRefusal).
+	// its versions.
 	ownerUnnamed bool
 	held         *model.Artifact
 	// token is a document's token as the read that saw its value answered it, which a document

@@ -890,11 +890,9 @@ func goingTranslateResultRecord(_ context.Context, _ goingReader, call goingCall
 // from, or no content, before the translation). `force` is no field of the route's: every upload
 // is sent as a create alone (goingUploadCondition), so a document of its name the owner holds by
 // the time the upload takes the owner's lock - one another writer made after the write's read
-// before - is the route's to refuse, 409 DOCUMENT_EXISTS. Where that read before found one, the
-// writes route refuses an upload without force before it is sent, however the write came to run
-// (goingUploadForceRefusal), as the dispatch command does, and sends one with force, which asks
-// for that document's next version, with no condition and naming the token of the version it
-// replaces (goingUploadWritesOver).
+// before - is the route's to refuse, 409 DOCUMENT_EXISTS. A row of a run's plan whose upload's
+// read before found the document of its name is sent as that document's next version, with no
+// condition and naming the token of the version it replaces (AgentListener.rowUpload).
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	body := goingPick(call.arguments, "name", "summary")
 	body["content"] = goingText(call.arguments, "content")
@@ -902,9 +900,9 @@ func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput)
 }
 
 // goingUploadCondition is the condition an upload carries to its route on its context
-// (going_conditions.go): a create alone (ExpectNew), with force or without, since whether force
-// writes over a document is known only once the write's read before is in. An upload with force
-// whose read before found the document of its name sheds it there (goingUploadWritesOver).
+// (going_conditions.go): a create alone (ExpectNew), since whether an upload writes over a
+// document is known only once its read before is in. A row of a plan whose read before found the
+// document of its name sheds it there (AgentListener.rowUpload).
 func goingUploadCondition() *goingCondition {
 	return &goingCondition{ExpectNew: true}
 }

@@ -14,14 +14,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -123,10 +121,9 @@ type goingHeldDocument struct {
 // goingHolds is what the store holds now that a proposal's invocations are marked automatic
 // against: what each issue holds of its hand-overs (issue), and whether an upload's owner holds
 // a document of its name (document). A nil read reads nothing, so what it would have answered has
-// to be named in the words. What the document read answers is the proposal's hint alone: the
-// write reads the document again, under the owner its route writes to, on every run however it
-// was approved (uploadedOver), and the refusals before its send act on what that read finds
-// (goingUploadForceRefusal, goingUploadOverRefusal).
+// to be named in the words. What the document read answers is the proposal's hint alone: a plan's
+// run reads the document again before it sends an upload row, and writes the row as that
+// document's next version or as a create by what that read finds (rowUpload).
 type goingHolds struct {
 	issue    goingHeld
 	document goingDocumentHeld
@@ -372,9 +369,8 @@ func (n goingNamed) holds(argument string, value any, arguments map[string]any, 
 // stored under and the words write it. A name that finds a held document only as its slug, or
 // that only stored text wrote, would write that document's next version, so it is an offer. Where
 // the owner cannot be read, nothing says which document the name finds, and the words writing it
-// decide. This is the proposal's mark; the write holds an upload over a document to the rule
-// again when it runs, however it came to run (goingUploadForceRefusal, goingUploadOverRefusal),
-// since a document of the name may be made between the two.
+// decide. This is the proposal's mark; a plan's run reads the owner again before it sends the row
+// (rowUpload), since a document of the name may be made between the two.
 func (n goingNamed) uploads(name string, arguments map[string]any, session string, document goingDocumentHeld) bool {
 	name = strings.TrimSpace(name)
 	owner, known := goingUploadOwner(arguments, session)
@@ -421,140 +417,20 @@ func goingRouteUploadOwner(route GoingRoute, values map[string]string) (artifact
 	return artifactTarget{}, false
 }
 
-// goingUploadsOver reports whether an upload the write is about to send may write the next
-// version of a document the person did not ask for with nothing read saying whether it would:
-// its route names no owner the read before could read (goingObservation.ownerUnnamed), so whether
-// that owner holds a document of the upload's name is unknown, and the words do not write that
-// name. It is the one case the write alone decides, and it holds an upload sent at once back for
-// the person to pick. An owner the read before did read is none of it: the document that read
-// found, or found none of, is what the refusals before it decide on - an upload with content and
-// no force over a document found is refused (goingUploadForceRefusal), one with force the person
-// did not ask for is refused (goingUploadOverRefusal), and one without force that stores nothing,
-// its content blank, is the upload route's to refuse under a held name, 409 DOCUMENT_EXISTS, as
-// the dispatch command leaves it to.
-func goingUploadsOver(prepared goingPrepared, before goingObservation, words string) bool {
-	argument, uploads := goingUploadNames[prepared.action]
-	if !uploads || !before.ownerUnnamed {
-		return false
-	}
-	return !goingWordsName(words, goingText(prepared.arguments, argument))
-}
-
-// goingUploadForceRefusal is the refusal of an upload the write is about to send, however the
-// write came to run, under the name of a document its owner already holds - as the read before it
-// found one, under the owner its route writes to (uploadedOver), or may hold where it could name
-// no owner to read - with content to store and no `force`: force is what asks for that document's
-// next version, and without it the dispatch command refuses the upload, as the bar does, 400
-// GOING_ARGUMENTS - a GoingArgumentError, answered with its reason alone - naming the document
-// and saying what the person at the bar can do instead (goingUploadReplaceAdvice), since that
-// person holds neither the force nor the command. An upload that stores nothing, its content
-// blank, is the route's to refuse under a held name whatever force says, as the command leaves
-// it. nil where the upload may be sent.
-func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) error {
-	argument, uploads := goingUploadNames[prepared.action]
-	if !uploads || prepared.arguments["force"] == true || strings.TrimSpace(goingText(prepared.arguments, "content")) == "" {
-		return nil
-	}
-	owner := "the owner this upload writes to"
-	if target, named := goingRouteUploadOwner(prepared.route, prepared.call.path); named {
-		owner = artifactOwnerText(target)
-	}
-	var reason, stored string
-	switch held := before.held; {
-	case held != nil && len(held.Versions) == 0:
-		reason = fmt.Sprintf("%s already holds %s (slug %s, kind %s), which has no version yet and which %s created.",
-			owner, held.Name, held.Slug, held.Kind, goingActorText(held.CreatedBy))
-		stored = held.Name
-	case held != nil:
-		newest := held.Versions[len(held.Versions)-1]
-		wrote := goingActorText(held.CreatedBy)
-		if len(newest.Authors) > 0 {
-			authors := make([]string, len(newest.Authors))
-			for index, author := range newest.Authors {
-				authors[index] = goingActorText(author)
-			}
-			wrote = strings.Join(authors, " and ")
-		}
-		reason = fmt.Sprintf("%s already holds %s (slug %s, kind %s) at version %d, which %s wrote.",
-			owner, held.Name, held.Slug, held.Kind, newest.Number, wrote)
-		stored = held.Name
-	case before.ownerUnnamed:
-		stored = strings.TrimSpace(goingText(prepared.arguments, argument))
-		reason = fmt.Sprintf("%s cannot be named, so it may already hold %s.", owner, stored)
-	default:
-		return nil
-	}
-	return GoingArgumentError{Action: prepared.action, Reason: fmt.Sprintf("%s An upload under that name would replace the text the document holds, and this upload does not ask to replace it. %s",
-		reason, goingUploadReplaceAdvice(stored))}
-}
-
-// goingUploadOverRefusal is the refusal of an upload with force the write is about to send,
-// however the write came to run - at once, picked by the person, or confirmed - where the read
-// before it (uploadedOver), made under the owner its route writes to as the store stands when the
-// write runs, found a document of its name that the person did not ask for (goingUploadAskedFor):
-// the upload would replace that document whole, which a proposal made now would withhold
-// (goingUploadWithheld). A document made between the proposal and the write, and one the proposal
-// could not read, are held to the rule the offer is held to, and the refusal is the one a pick of
-// a withheld upload meets, 409 GOING_NOT_PROPOSED, in the withheld offer's own words
-// (goingUploadWithheldReason). Where the name is the one the person filled in themselves
-// (goingPerson.filled), because the answer left it out and the proposal asked them for it, that
-// upload was offered and the name is theirs: it is refused all the same, since a name filled into
-// that field asks for a document of it to be made and not for the one it finds to be written over,
-// and the force came with the answer - but in the words of that case
-// (goingUploadFilledNameReason). nil where the upload may be sent.
-func goingUploadOverRefusal(prepared goingPrepared, before goingObservation, person goingPerson) error {
-	argument, uploads := goingUploadNames[prepared.action]
-	held := before.held
-	if !uploads || prepared.arguments["force"] != true || held == nil {
-		return nil
-	}
-	name := strings.TrimSpace(goingText(prepared.arguments, argument))
-	if goingUploadAskedFor(person.words, name, held.Name) {
-		return nil
-	}
-	owner := "the owner this upload writes to"
-	if target, named := goingRouteUploadOwner(prepared.route, prepared.call.path); named {
-		owner = artifactOwnerText(target)
-	}
-	reason := goingUploadWithheldReason(name, owner, held.Name, held.Slug)
-	if person.filled == argument {
-		reason = goingUploadFilledNameReason(name, owner, held.Name, held.Slug)
-	}
-	return errorf(http.StatusConflict, codeGoingNotProposed, "%s", reason)
-}
-
-// goingUploadWritesOver reports whether an upload the write is about to send carries force and
-// its read before (uploadedOver) found the document of its name - one the person asked for, since
-// goingUploadOverRefusal refuses every other - so it writes that document's next version and is
-// sent without the create alone its translation carries (goingUploadCondition). Every other
-// upload stays a create alone: one with force whose read before found no document, or could name
-// no owner to read, is refused 409 DOCUMENT_EXISTS by its route where the owner holds a document
-// of the name by the time the upload takes the owner's lock, as an upload without force is. An
-// upload over the document found names, as every upload replacing a document does, the token of
-// the version it replaces (goingObserver.uploadBase), read just before it is sent, so its route
-// refuses it 409 PRECONDITION_FAILED where another writer changed the document after that read.
-func goingUploadWritesOver(prepared goingPrepared, before goingObservation) bool {
-	_, uploads := goingUploadNames[prepared.action]
-	return uploads && prepared.arguments["force"] == true && before.held != nil
-}
-
 // goingUploadWithheld is why an upload the answer wrote is not offered, "" where it is: one under
 // the name of a document its owner already holds, as the proposal reads the store now (holds),
-// which would write that document's next version over the text it holds. Without force every
-// write of it is refused (goingUploadForceRefusal), and the bar has no control that sets force;
-// with force, a pick would replace the document whole, which nothing the bar shows says before the
-// person picks it, unless the person asked for that document themselves (goingUploadAskedFor): the
-// answer wrote the name the document is stored under, its file name, and their own words write
-// that name. An upload that finds the document by its slug is withheld whatever the words, its
-// reason naming the stored name the person would have to write: every issue's spec is stored as
-// spec.md under the slug spec, so "replace spec.md with this" offers an upload named spec.md,
-// while "replace the spec with this" and "add a note to the spec" offer none, named spec or
-// spec.md. Nor does the stored name without its extension count: "add a note" writes the stem of
-// note.md, a word typed for every other reason. So it is offered only with force and the stored
-// name both written, and otherwise withheld, the person asking for the replacement by the stored
-// name or changing the document in its own editor (goingUploadReplaceAdvice). An owner the
-// proposal could not read is offered, and held to the write's own checks when it runs
-// (goingSendRefusal, goingUploadOverRefusal, goingUploadCondition).
+// which would write that document's next version over the text it holds, unless the person asked
+// for that document themselves (goingUploadAskedFor): the answer wrote the name the document is
+// stored under, its file name, and their own words write that name, and the upload carries force.
+// An upload that finds the document by its slug is withheld whatever the words, its reason naming
+// the stored name the person would have to write: every issue's spec is stored as spec.md under
+// the slug spec, so "replace spec.md with this" offers an upload named spec.md, while "replace the
+// spec with this" and "add a note to the spec" offer none, named spec or spec.md. Nor does the
+// stored name without its extension count: "add a note" writes the stem of note.md, a word typed
+// for every other reason. So it is offered only with force and the stored name both written, and
+// otherwise withheld, the person asking for the replacement by the stored name or changing the
+// document in its own editor (goingUploadReplaceAdvice). An owner the proposal could not read is
+// offered.
 func goingUploadWithheld(action string, arguments map[string]any, session string, words string, document goingDocumentHeld) string {
 	argument, uploads := goingUploadNames[action]
 	if !uploads || document == nil {
@@ -576,9 +452,9 @@ func goingUploadWithheld(action string, arguments map[string]any, session string
 }
 
 // goingUploadWithheldReason is why an upload under name, over the document owner holds stored
-// under stored with its slug, is not offered (goingUploadWithheld) nor sent when it runs
-// (goingUploadOverRefusal), in words for the person at the bar: one that went by the document's
-// slug says so, and each says what that person can do there (goingUploadReplaceAdvice).
+// under stored with its slug, is not offered (goingUploadWithheld), in words for the person at the
+// bar: one that went by the document's slug says so, and each says what that person can do there
+// (goingUploadReplaceAdvice).
 func goingUploadWithheldReason(name, owner, stored, slug string) string {
 	if name != stored {
 		return fmt.Sprintf("an upload under %q is not offered: %q is the slug of %s, which %s already holds, and the upload would replace the text that document holds. %s",
@@ -602,25 +478,6 @@ func goingUploadReplaceAdvice(stored string) string {
 // would replace: change it where they read it.
 const goingUploadEditAdvice = "To change part of it, open the document and edit it there."
 
-// goingUploadFilledNameReason is why an upload under name does not run, where the name is the one
-// the person filled in themselves and the owner holds a document stored under stored with its
-// slug (goingUploadOverRefusal): the answer left the name out and wrote the force, the proposal
-// asked the person for the name, and a name filled into that field asks for a document of it to be
-// made, never for the document it finds to be replaced. It says what does ask for that
-// replacement in the bar: its stored name written in the question itself, which the words are read
-// for (goingUploadAskedFor), and filled in where the person filled its slug, since only the stored
-// name asks for it; and what else the person can do there (goingUploadEditAdvice).
-func goingUploadFilledNameReason(name, owner, stored, slug string) string {
-	found := fmt.Sprintf("%s already holds %s (slug %s)", owner, stored, slug)
-	ask := fmt.Sprintf("write %s in the question itself", stored)
-	if name != stored {
-		found = fmt.Sprintf("%q is the slug of %s, which %s already holds", name, stored, owner)
-		ask = fmt.Sprintf("write %s in the question itself and fill in %s, not its slug", stored, stored)
-	}
-	return fmt.Sprintf("an upload under %q does not run: %s, and a name you fill in asks for a new document of that name, not for the replacement of the one it finds. To replace that document, %s. %s",
-		name, found, ask, goingUploadEditAdvice)
-}
-
 // goingUploadAskedFor reports whether the person asked, in their own typed words, for the
 // document an upload under name would write the next version of, one its owner holds stored under
 // stored: name is that stored name, exactly as the store holds it, and the words write it as a
@@ -628,18 +485,11 @@ func goingUploadFilledNameReason(name, owner, stored, slug string) string {
 // asks for nothing, whatever the words: a slug is a word people type for every other reason - an
 // issue's spec is stored as spec.md under the slug spec, and "add a note to the spec" asks for no
 // upload that replaces it - and a wrong match costs the document's whole text, a missed one only
-// the person writing the stored name. The proposal's offer (goingUploadWithheld), its mark of an
-// upload that runs at once (goingNamed.uploads) and every write of an upload with force, however
-// it came to run (goingUploadOverRefusal), each hold an upload over a held document to it.
+// the person writing the stored name. The proposal's offer (goingUploadWithheld) and its mark of
+// an upload that runs at once (goingNamed.uploads) each hold an upload over a held document to it.
 func goingUploadAskedFor(words, name, stored string) bool {
 	name = strings.TrimSpace(name)
 	return name == stored && goingWordsName(words, name)
-}
-
-// goingActorText names an actor as the dispatch command names a document's author: its kind and
-// its id.
-func goingActorText(actor model.Actor) string {
-	return actor.Kind + " " + actor.ID
 }
 
 // goingIDOf is an item's id as the words and an argument are compared by, and whether value is an

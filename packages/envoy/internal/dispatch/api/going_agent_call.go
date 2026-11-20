@@ -8,8 +8,8 @@ package api
 //
 // A call of kind route runs a tool's rows through the server's own route table in-process
 // (goingInProcess), through a writer that keeps at most agentwire.CallBodyLimit of the answer and
-// marks the rest cut. A write tool runs only as an approved row of the run's plan
-// (going_plan_rows). Each request a write sends carries a landing (goingRunLanding) whose step, in
+// marks the rest cut. A write tool runs only as the approved row of the run's plan the call names
+// (going_plan_run.go). Each request a write sends carries a landing (goingRunLanding) whose step, in
 // the route's own transaction, checks the lease under the run's row locked for share and writes
 // the request's going_landings row, keyed by the run, the step, the call and the request's number
 // within the call: so the change and the record that it landed commit together or not at all,
@@ -21,14 +21,17 @@ package api
 // and fails once it commits, which rolls back the second try's change with it.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -113,9 +116,9 @@ func (a *AgentListener) call(ctx context.Context, request agentwire.CallRequest)
 		return agentwire.CallAnswer{}, refusal
 	}
 	switch request.Kind {
-	case agentwire.KindRoute, agentwire.KindGitHub, agentwire.KindWeb:
+	case agentwire.KindRoute, agentwire.KindGitHub, agentwire.KindWeb, agentwire.KindPlan, agentwire.KindReview:
 	default:
-		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "a call is of kind route, github or web, not %q", request.Kind)
+		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "a call is of kind route, github, web, plan or review, not %q", request.Kind)
 	}
 	select {
 	case a.slots <- struct{}{}:
@@ -174,17 +177,21 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 	}
 	doer := a.s.goingDoer(caller, a.s.deps.ServerURL).(goingInProcess)
 	doer.limit = agentwire.CallBodyLimit
-	if hook := a.s.deps.AgentCallHook; hook.Route != "" {
+	if hook := a.s.deps.AgentCallHook; len(hook.Rules) > 0 {
 		doer.handler = hook.wrap(doer.handler)
 	}
 	var answer agentwire.CallAnswer
 	switch request.Kind {
 	case agentwire.KindRoute:
-		answer, refusal = a.routeCall(ctx, request, doer)
+		answer, refusal = a.routeCall(ctx, request, run.login, doer)
 	case agentwire.KindGitHub:
 		answer, refusal = a.githubRead(ctx, request, doer)
 	case agentwire.KindWeb:
 		answer, refusal = a.webRead(ctx, request)
+	case agentwire.KindPlan:
+		answer, refusal = a.planCall(ctx, request, run, doer)
+	case agentwire.KindReview:
+		answer, refusal = a.reviewCall(ctx, request, run)
 	}
 	if refusal == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		// What a route answered once the call's own time was over is not the call's answer: the
@@ -195,65 +202,118 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 }
 
 // AgentCallHook is a test hook on the calls the server runs for its agent (Deps.AgentCallHook),
-// which an end-to-end test of the agent process sets: every request of Route ("METHOD /path") that
-// a call sends panics, where Panic is set, or is held Hold, or until the call's own context ends,
-// before the route answers it. The zero hook sets none.
+// which an end-to-end test of the agent process sets: its rules, each on the requests of one
+// route. The zero hook sets none.
 type AgentCallHook struct {
+	Rules []AgentCallRule
+}
+
+// AgentCallRule is one rule of an AgentCallHook: every request of Route ("METHOD /path") that a
+// call sends panics, where Panic is set, or is held Hold, or until the call's own context ends -
+// before the route answers it, or, where After is set, once the route answered it and before that
+// answer reaches the call, so the route's write has committed and the call has not yet heard it.
+type AgentCallRule struct {
 	Route string
 	Panic bool
 	Hold  time.Duration
+	After bool
 }
 
-// ParseAgentCallHook reads a hook as DISPATCH_TEST_AGENT_CALL_HOOK writes one: "panic METHOD
-// /path", or "hold DURATION METHOD /path".
+// ParseAgentCallHook reads a hook as DISPATCH_TEST_AGENT_CALL_HOOK writes one: its rules, apart by
+// ";", each "panic METHOD /path", "hold DURATION METHOD /path" or "after DURATION METHOD /path".
 func ParseAgentCallHook(raw string) (AgentCallHook, error) {
-	fields := strings.Fields(raw)
 	var hook AgentCallHook
-	switch {
-	case len(fields) == 3 && fields[0] == "panic":
-		hook.Panic = true
-	case len(fields) == 4 && fields[0] == "hold":
-		hold, err := time.ParseDuration(fields[1])
-		if err != nil || hold <= 0 {
-			return AgentCallHook{}, fmt.Errorf("%q is no positive Go duration", fields[1])
+	for part := range strings.SplitSeq(raw, ";") {
+		rule, err := parseAgentCallRule(part)
+		if err != nil {
+			return AgentCallHook{}, err
 		}
-		hook.Hold = hold
-	default:
-		return AgentCallHook{}, errors.New("expected panic METHOD /path, or hold DURATION METHOD /path")
+		hook.Rules = append(hook.Rules, rule)
 	}
-	method, path := fields[len(fields)-2], fields[len(fields)-1]
-	if method != strings.ToUpper(method) || !strings.HasPrefix(path, "/") || strings.Contains(path, "?") {
-		return AgentCallHook{}, errors.New("expected a method and a request path, such as GET /api/v1/search")
-	}
-	hook.Route = method + " " + path
 	return hook, nil
 }
 
-// wrap is inner with the hook in front of its route: a request of it panics, or is held, logged
-// as it is held and as it is released, so a test reads when each call entered and left the route.
+// parseAgentCallRule reads one rule of ParseAgentCallHook's.
+func parseAgentCallRule(raw string) (AgentCallRule, error) {
+	fields := strings.Fields(raw)
+	var rule AgentCallRule
+	switch {
+	case len(fields) == 3 && fields[0] == "panic":
+		rule.Panic = true
+	case len(fields) == 4 && (fields[0] == "hold" || fields[0] == "after"):
+		hold, err := time.ParseDuration(fields[1])
+		if err != nil || hold <= 0 {
+			return AgentCallRule{}, fmt.Errorf("%q is no positive Go duration", fields[1])
+		}
+		rule.Hold, rule.After = hold, fields[0] == "after"
+	default:
+		return AgentCallRule{}, errors.New("expected panic METHOD /path, hold DURATION METHOD /path or after DURATION METHOD /path, apart by ;")
+	}
+	method, path := fields[len(fields)-2], fields[len(fields)-1]
+	if method != strings.ToUpper(method) || !strings.HasPrefix(path, "/") || strings.Contains(path, "?") {
+		return AgentCallRule{}, errors.New("expected a method and a request path, such as GET /api/v1/search")
+	}
+	rule.Route = method + " " + path
+	return rule, nil
+}
+
+// wrap is inner with the hook's rules in front of their routes: a request of a rule's route
+// panics, or is held, before its route or after it, logged as it is held and as it is released, so
+// a test reads when each call entered and left the hold.
 func (h AgentCallHook) wrap(inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method+" "+r.URL.Path != h.Route {
+		at := slices.IndexFunc(h.Rules, func(rule AgentCallRule) bool { return rule.Route == r.Method+" "+r.URL.Path })
+		if at < 0 {
 			inner.ServeHTTP(w, r)
 			return
 		}
-		if h.Panic {
-			panic("the test hook DISPATCH_TEST_AGENT_CALL_HOOK panics " + h.Route)
+		rule := h.Rules[at]
+		if rule.Panic {
+			panic("the test hook DISPATCH_TEST_AGENT_CALL_HOOK panics " + rule.Route)
 		}
-		slog.Info("dispatch: a test hook holds a call of the agent", "route", h.Route, "hold", h.Hold)
-		timer := time.NewTimer(h.Hold)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-r.Context().Done():
+		if rule.After {
+			answered := &goingHeldAnswer{header: http.Header{}, status: http.StatusOK}
+			inner.ServeHTTP(answered, r)
+			if !rule.hold(r, "dispatch: a test hook holds the answer of a call of the agent", "dispatch: a test hook released the answer of a call of the agent") {
+				return
+			}
+			maps.Copy(w.Header(), answered.header)
+			w.WriteHeader(answered.status)
+			_, _ = w.Write(answered.body.Bytes())
+			return
 		}
-		slog.Info("dispatch: a test hook released a call of the agent", "route", h.Route)
-		if r.Context().Err() != nil {
+		if !rule.hold(r, "dispatch: a test hook holds a call of the agent", "dispatch: a test hook released a call of the agent") {
 			return
 		}
 		inner.ServeHTTP(w, r)
 	})
 }
+
+// hold holds r for the rule's Hold or until r's context ends, logging held as it starts and
+// released as it ends, and reports whether r's context is still live.
+func (rule AgentCallRule) hold(r *http.Request, held, released string) bool {
+	slog.Info(held, "route", rule.Route, "hold", rule.Hold)
+	timer := time.NewTimer(rule.Hold)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-r.Context().Done():
+	}
+	slog.Info(released, "route", rule.Route)
+	return r.Context().Err() == nil
+}
+
+// goingHeldAnswer is a route's answer an after rule of an AgentCallHook holds before the call
+// hears it: its header, its status and its body.
+type goingHeldAnswer struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (a *goingHeldAnswer) Header() http.Header         { return a.header }
+func (a *goingHeldAnswer) WriteHeader(status int)      { a.status = status }
+func (a *goingHeldAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
 
 // callRun reads the call's run and refuses a call whose lease token is not the run's, or whose
 // run no longer works.
@@ -337,9 +397,11 @@ func (s *server) goingCallLandings(ctx context.Context, key goingCallKey) ([]*go
 }
 
 // routeCall makes a call of kind route: the tool's rows, by its name and arguments, through the
-// route table in-process as the run's person. A second try of the call key sends only what its
-// earlier tries did not land.
-func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, doer goingInProcess) (agentwire.CallAnswer, *agentwire.Error) {
+// route table in-process as the run's person (login). A write runs only as the row of the run's
+// plan it names, held to it by rowGate under the call key's lock, and what it came to is kept on
+// that row (recordRow). A second try of the call key sends only what its earlier tries did not
+// land.
+func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, login string, doer goingInProcess) (answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	key := goingCallKey{run: request.Run, step: request.Step, call: request.Call}
 	release, held := a.keys.lock(ctx, key, a.callKeyWait)
 	if !held {
@@ -360,6 +422,12 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 	if err != nil {
 		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
 	}
+	if _, writes := a.s.going.Lookup(request.Tool); writes {
+		if refusal := a.rowGate(ctx, request, login, doer); refusal != nil {
+			return agentwire.CallAnswer{}, refusal
+		}
+		defer func() { a.recordRow(ctx, request, answer, refusal) }()
+	}
 	specs, write, refusal := a.routeSends(ctx, request, arguments, doer, landed)
 	if refusal != nil {
 		if last := goingLastLanded(landed); last != nil && refusal.Code == agentwire.CodeCallRefused {
@@ -369,7 +437,6 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 		}
 		return agentwire.CallAnswer{}, refusal
 	}
-	var answer agentwire.CallAnswer
 	for index, spec := range specs {
 		if index < len(landed) && landed[index] != nil {
 			if !landed[index].sends(spec) {
@@ -440,27 +507,33 @@ func goingCallAnswerOf(recorded *recordedAnswer) agentwire.CallAnswer {
 }
 
 // routeSends is the requests a route call sends, and whether the tool writes. A write tool is one
-// of the catalogue (GoingCaller), run only where an approved or running row of the run's plan names
-// it with these arguments; it is prepared as the writes route prepares one, its translation's reads
-// made through doer, and told what of its requests landed before (landed). A read tool sends one
-// request (goingReadSends). Any other name is refused UNKNOWN_TOOL.
+// of the catalogue (GoingCaller), whose row of the run's plan rowGate held the call to; it is
+// prepared as the plan prepared it, its translation's reads made through doer, and told what of
+// its requests landed before (landed). An upload whose row is sent over the document of its name
+// (rowUpload) sheds the create alone its translation carries and names the token of the version it
+// replaces, so it lands as that document's next version. A read tool sends one request
+// (goingReadSends). Any other name is refused UNKNOWN_TOOL.
 func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRequest, arguments map[string]any, doer goingInProcess,
 	landed []*goingLandedRequest,
 ) ([]goingSend, bool, *agentwire.Error) {
 	if _, writes := a.s.going.Lookup(request.Tool); writes {
-		approved, err := a.s.goingWriteApproved(ctx, request.Run, request.Tool, request.Arguments)
-		if err != nil {
-			return nil, true, goingAgentFailed(agentwire.CallCall, err)
-		}
-		if !approved {
-			return nil, true, goingAgentRefusal(agentwire.CodeWriteNotApproved,
-				"%s with these arguments is no approved row of this run's plan, so it was not sent", request.Tool)
-		}
 		caller := GoingCaller{Catalogue: a.s.going, Doer: doer, knownSession: a.s.goingKnownSession,
 			resumeAfter: func(specs []goingSend) []goingWriteRequest { return goingLandedBefore(landed, specs) }}
 		prepared, err := caller.prepare(ctx, request.Tool, arguments)
 		if err != nil {
 			return nil, true, goingCallRefusal(request.Tool, err)
+		}
+		if _, uploads := goingUploadNames[request.Tool]; uploads && request.Row != nil {
+			upload, refusal := a.rowUpload(ctx, request, prepared, caller.reader())
+			if refusal != nil {
+				return nil, true, refusal
+			}
+			if upload.Over {
+				prepared.call.condition = nil
+				if upload.Base != "" && prepared.call.body != nil {
+					prepared.call.body["precondition"] = map[string]any{"document": upload.Base}
+				}
+			}
 		}
 		specs, err := prepared.call.requests(prepared.route)
 		if err != nil {
@@ -505,23 +578,6 @@ func goingLandedBefore(landed []*goingLandedRequest, specs []goingSend) []goingW
 			Outcome: goingWriteOutcome{OK: true, Status: landed[index].status}})
 	}
 	return before
-}
-
-// goingWriteApproved reports whether an approved or running row of run's plan names tool with
-// arguments, compared as JSON values.
-func (s *server) goingWriteApproved(ctx context.Context, run, tool string, arguments json.RawMessage) (bool, error) {
-	if len(arguments) == 0 {
-		arguments = json.RawMessage("{}")
-	}
-	var approved bool
-	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select exists (
-			select 1 from going_plan_rows
-			where run_id = $1::uuid and state in ('approved', 'running')
-			  and change->>'tool' = $2 and coalesce(change->'arguments', '{}'::jsonb) = $3::jsonb
-		)
-	`, run, tool, string(arguments)).Scan(&approved)
-	return approved, err
 }
 
 // goingIssueOfPath is the issue a request's path addresses, "" for a path under no issue.

@@ -1,4 +1,3 @@
-import type { GoingWriteInput } from "../web/src/api/types";
 import { createIssue, createProject, search } from "./api";
 import type { ChatReply } from "./fake-chat-model";
 import type { DecisionReply } from "./fake-decision-model";
@@ -148,14 +147,24 @@ export async function submitOperation(page: Page): Promise<void> {
   await page.keyboard.press("Control+Enter");
 }
 
-/** Every write of the bar the page sends from here on, `POST /api/v1/going/runs/{id}/writes`,
- *  each with its body: the offer, the invocation and how it came to run. */
-export function countGoingWrites(page: Page): { readonly bodies: GoingWriteInput[] } {
-  const sent = { bodies: [] as GoingWriteInput[] };
+/** The body of a write the bar sent to `POST /api/v1/going/runs/{id}/writes`: the offer, the
+ *  invocation and how it came to run. The server no longer serves that route, and the bar sends
+ *  none: every change of a run is a row of its plan, approved through the plan's own route. */
+interface GoingWriteBody {
+  readonly offer: string;
+  readonly invocation?: number;
+  readonly approved: string;
+  readonly fill?: unknown;
+}
+
+/** Every write of the bar the page sends from here on to `POST /api/v1/going/runs/{id}/writes`,
+ *  each with its body. */
+export function countGoingWrites(page: Page): { readonly bodies: GoingWriteBody[] } {
+  const sent = { bodies: [] as GoingWriteBody[] };
   page.on("request", (request) => {
     if (request.method() !== "POST") return;
     if (!/^\/api\/v1\/going\/runs\/[^/]+\/writes$/.test(new URL(request.url()).pathname)) return;
-    sent.bodies.push(request.postDataJSON() as GoingWriteInput);
+    sent.bodies.push(request.postDataJSON() as GoingWriteBody);
   });
   return sent;
 }

@@ -40,13 +40,11 @@ export type SendToAgentOutcome =
   | { readonly kind: "sent" | "queued" | "stored" }
   | { readonly kind: "failed" | "refused"; readonly refusal: string };
 
-/** How the offer sends: this direct send, or a write of the bar's run where its proposal offers
- *  the send. The direct send answers what its message's attempt says (`sendOutcome`), and a write
- *  of the run what its line says (`runSendOutcome`); the tests pass their own. */
+/** How the offer sends: this direct send, which answers what its message's attempt says
+ *  (`sendOutcome`); the tests pass their own. */
 export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<SendToAgentOutcome>;
 
-/** A delivery attempt as a send reads it: the message's own (`MessageDelivery`) or the one a write
- *  of the bar's run records (`GoingWriteLine.delivery`). */
+/** A delivery attempt as a send reads it: the message's own (`MessageDelivery`). */
 interface SentAttempt {
   readonly error: string | null;
   readonly state: string;
@@ -65,25 +63,6 @@ export function sendOutcome(attempt: SentAttempt | undefined): SendToAgentOutcom
     return { kind: "refused", refusal: attempt.error ?? "Dispatch gave no reason." };
   }
   return { kind: state === "queued" ? "queued" : "sent" };
-}
-
-/**
- * What a write of the bar's run that sent the words says became of them, from the last delivery
- * attempt its line records (`GoingWriteLine.delivery`), which Dispatch reads by the message's id
- * where the send's own answer was never read. The write landed, so the words are stored: a line
- * that records no attempt - none could be read, or Dispatch kept no line for the landing - or an
- * attempt still `pending`, whose sender ended before it settled, says that and no more (`stored`),
- * never that they reached the session. A `failed` attempt is the send's last word (`failed`): the
- * run records each of its invocations once, so a second press of it is answered this same line and
- * sends nothing, as every write the run recorded is. Every other attempt reads as the direct send
- * reads it.
- */
-export function runSendOutcome(attempt: SentAttempt | undefined): SendToAgentOutcome {
-  if (attempt === undefined || deliveryOutcomeState(attempt.state) === "pending") {
-    return { kind: "stored" };
-  }
-  const outcome = sendOutcome(attempt);
-  return outcome.kind === "refused" ? { kind: "failed", refusal: outcome.refusal } : outcome;
 }
 
 /**

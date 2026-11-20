@@ -99,10 +99,12 @@ type worker struct {
 
 	// grantEnded is the reason a call's grant ended with, which stops the run; lost is set once
 	// the run is no longer held under its lease, after which the worker writes nothing more of it;
-	// proposed is set by a step whose model proposed a plan.
+	// proposed is set by a step whose model proposed a plan, and plan is the plan the server kept
+	// of it.
 	grantEnded atomic.Pointer[string]
 	lost       atomic.Bool
 	proposed   atomic.Bool
+	plan       atomic.Pointer[agentwire.PlanAnswer]
 }
 
 // newWorker is the worker of run, its context ctx's, its slot freed by release.
@@ -137,8 +139,10 @@ func (w *worker) endGrant(reason string) {
 	w.cancel()
 }
 
-// work runs the run's turn: a step at a time from its saved steps, until it answers, proposes a
-// plan, spends a bound of its level, fails, or stops being the agent's to work.
+// work runs the run's turn: the rows of its plan that are approved and not yet run, then a step at
+// a time from its saved steps, until it answers, proposes a plan, spends a bound of its level,
+// fails, or stops being the agent's to work. A plan proposed in Auto-review is reviewed before the
+// turn ends (review).
 func (w *worker) work() {
 	level, known := Levels[w.run.Level]
 	switch {
@@ -150,8 +154,21 @@ func (w *worker) work() {
 		return
 	}
 	w.level = level
-	if done, state, reason := w.settled(); done {
+	if len(w.run.Rows) > 0 {
+		w.runRows(w.run.Rows)
+	} else if outcome, resumed := w.resumePlan(); resumed {
+		if w.halted() {
+			return
+		}
+		if outcome.state != "" {
+			w.end(outcome.state, outcome.reason, outcome.offers)
+			return
+		}
+	} else if done, state, reason := w.settled(); done {
 		w.end(state, reason, nil)
+		return
+	}
+	if w.halted() {
 		return
 	}
 	retry := time.Second
@@ -165,13 +182,11 @@ func (w *worker) work() {
 			return
 		}
 		outcome := w.step()
+		if outcome.state == agentwire.StateWaiting && w.proposed.Load() && w.run.Mode == modeAutoReview && !w.halted() {
+			outcome = w.review()
+		}
 		switch {
-		case w.lost.Load():
-			return
-		case w.grantEnded.Load() != nil:
-			w.end(agentwire.StateStopped, *w.grantEnded.Load(), nil)
-			return
-		case w.ctx.Err() != nil:
+		case w.halted():
 			return
 		case outcome.retry:
 			timer := time.NewTimer(retry)
@@ -189,6 +204,21 @@ func (w *worker) work() {
 		}
 		retry = time.Second
 	}
+}
+
+// halted reports whether the run is no longer the worker's to go on with: it is no longer held,
+// its grant ended, which ends the run stopped with the grant's reason, or its context ended.
+func (w *worker) halted() bool {
+	switch {
+	case w.lost.Load():
+		return true
+	case w.grantEnded.Load() != nil:
+		w.end(agentwire.StateStopped, *w.grantEnded.Load(), nil)
+		w.grantEnded.Store(nil)
+		w.lost.Store(true)
+		return true
+	}
+	return w.ctx.Err() != nil
 }
 
 // settled reports whether the run's saved steps already end its turn: a last step that answered
@@ -257,34 +287,9 @@ func (w *worker) step() stepOutcome {
 	if w.agent.config.Hooks {
 		request.OnText = hookOnText
 	}
-	stepCtx, cancel := context.WithCancel(w.ctx)
-	defer cancel()
-	finished := w.agent.watch(w, request.Bounds.Time+watchdogGrace)
-	started := time.Now()
-	result, err := agentloop.Run(stepCtx, request)
-	working := time.Since(started)
-	if !finished() {
-		// The watchdog gave the run up: its goroutine was counted stuck, and it writes nothing.
-		w.lose()
-		return stepOutcome{}
-	}
-	w.turn.WorkingMS += working.Milliseconds()
-	w.used.WorkingMS += working.Milliseconds()
-	w.turn.Tokens += result.Usage.Output
-	w.used.Tokens += result.Usage.Output
-	if len(result.Steps) > 0 || result.Fault != "" {
-		w.turn.Calls++
-		w.used.Calls++
-	}
-	w.mu.Lock()
-	w.history = append(w.history, w.stepped...)
-	if len(w.stepped) > 0 {
-		w.next = w.stepped[len(w.stepped)-1].Step + 1
-	}
-	w.stepped = nil
-	w.mu.Unlock()
+	result, kept, err := w.runModel(request)
 	switch {
-	case w.lost.Load() || w.grantEnded.Load() != nil || w.ctx.Err() != nil:
+	case !kept || w.lost.Load() || w.grantEnded.Load() != nil || w.ctx.Err() != nil:
 		return stepOutcome{}
 	case errors.Is(err, errStepTaken):
 		switch {
@@ -300,6 +305,45 @@ func (w *worker) step() stepOutcome {
 		return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %v", codeAgentFailed, err)}
 	}
 	return w.faulted(result)
+}
+
+// runModel makes request's one model call on the run's context, under the watchdog, adds what it
+// spent to the run's budget, and adds the steps it saved to the run's history. It reports false
+// where the watchdog gave the run up: the run is lost, and nothing more of it is written.
+func (w *worker) runModel(request agentloop.Request) (agentloop.Result, bool, error) {
+	stepCtx, cancel := context.WithCancel(w.ctx)
+	defer cancel()
+	finished := w.agent.watch(w, request.Bounds.Time+watchdogGrace)
+	started := time.Now()
+	result, err := agentloop.Run(stepCtx, request)
+	working := time.Since(started)
+	if !finished() {
+		// The watchdog gave the run up: its goroutine was counted stuck, and it writes nothing.
+		w.lose()
+		return result, false, err
+	}
+	w.turn.WorkingMS += working.Milliseconds()
+	w.used.WorkingMS += working.Milliseconds()
+	w.turn.Tokens += result.Usage.Output
+	w.used.Tokens += result.Usage.Output
+	if len(result.Steps) > 0 || result.Fault != "" {
+		w.turn.Calls++
+		w.used.Calls++
+	}
+	w.merge()
+	return result, true, err
+}
+
+// merge adds the steps saved since the last merge to the run's history, and numbers the next step
+// after the last of them.
+func (w *worker) merge() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.history = append(w.history, w.stepped...)
+	if len(w.stepped) > 0 {
+		w.next = max(w.next, w.stepped[len(w.stepped)-1].Step+1)
+	}
+	w.stepped = nil
 }
 
 // faulted is how a step whose model call saved nothing ends the run's turn: at its level's time,

@@ -248,10 +248,11 @@ func goingBarPerson(login, run string) resolvedCaller {
 // against the store as it is at that call, with the checks the person's own request gets: a
 // sign-out, a sign-in past its cookie's expiry, a revoked token and a lost membership each refuse
 // the next call with their reason; a membership the sign-in pool could not confirm is an error to
-// wait on and try again, which ends nothing; a sign-in through IAP lasts its run's working budget;
-// a token's caller holds the scopes its row holds at the call; an approval under another token
-// moves the grant to it, so revoking the first refuses nothing; and a broker-issued token, the
-// shared token and a service-account token start no run.
+// wait on and try again, which ends nothing; a sign-in through IAP lasts its run's working budget,
+// and an approval through IAP moves the grant to it; a token's caller holds the scopes its row
+// holds at the call; an approval under another token moves the grant to it, so revoking the first
+// refuses nothing; and a broker-issued token, the shared token and a service-account token start
+// no run.
 func TestTheGrantResolvesAsTheRequestWould(t *testing.T) {
 	rig := newGoingGrantRig(t)
 	ctx := context.Background()
@@ -314,9 +315,8 @@ func TestTheGrantResolvesAsTheRequestWould(t *testing.T) {
 		run := rig.run(t, "alice")
 		rig.granted(t, rig.cookies, run, goingStarting(goingBearer(token)))
 		caller, err := rig.caller(rig.cookies, run)
-		owner := "alice"
-		want := resolvedCaller{actor: model.Actor{
-			Kind: "session", Owner: &owner,
+		want := resolvedCaller{human: true, actor: model.Actor{
+			Kind: "user", ID: "alice", Proven: true,
 			Credential: &model.Credential{Scopes: model.Scopes, TokenID: id, TokenName: "probe"},
 			Act:        &model.ActorAct{TokenID: id, TokenName: "probe", Scopes: model.Scopes, Agent: model.ActAgentCommandBar, Run: run},
 		}}
@@ -355,17 +355,40 @@ func TestTheGrantResolvesAsTheRequestWould(t *testing.T) {
 		}
 	})
 
-	t.Run("a sign-in through IAP lasts its run's working budget", func(t *testing.T) {
+	t.Run("a sign-in through IAP lasts its run's working budget, and an approval through IAP moves the grant to it", func(t *testing.T) {
 		const person = "a.person@example.com"
 		run := rig.run(t, person)
 		assertion := rig.iapKeys.assertion(t, time.Now().Add(9*time.Minute)).Get(identity.IAPAssertionHeader)
-		rig.granted(t, rig.iap, run, goingStarting(func(r *http.Request) { r.Header.Set(identity.IAPAssertionHeader, assertion) }))
+		throughIAP := func(r *http.Request) { r.Header.Set(identity.IAPAssertionHeader, assertion) }
+		rig.granted(t, rig.iap, run, goingStarting(throughIAP))
 		caller, err := rig.iap.goingGrantCaller(ctx, run, time.Now().Add(time.Hour))
 		if want := goingBarPerson(person, run); err != nil || !reflect.DeepEqual(caller, want) {
 			t.Fatalf("the call inside the budget resolves %+v, %v; want %+v", caller, err, want)
 		}
 		_, err = rig.iap.goingGrantCaller(ctx, run, time.Now().Add(-time.Second))
 		requireGrantEnded(t, err, goingGrantSignInExpired, "the call past the run's working budget")
+
+		// A run the person started with a token of theirs, approved through IAP: the grant is the
+		// approval's, so revoking the token refuses nothing, and the run's budget still ends it.
+		started := personalTokenOwnedBy(t, rig.database, person, model.ScopePerson, model.ScopeApprove)
+		moved := rig.run(t, person)
+		rig.granted(t, rig.cookies, moved, goingStarting(goingBearer(started)))
+		approval := httptest.NewRequest(http.MethodPost, "/api/v1/going/runs/"+moved+"/plan/approve", nil)
+		throughIAP(approval)
+		rig.granted(t, rig.iap, moved, approval)
+		var kind string
+		var token *string
+		if err := rig.database.Pool.QueryRow(ctx, `select kind, token_id::text from going_run_grants where run_id = $1::uuid`, moved).Scan(&kind, &token); err != nil ||
+			kind != goingGrantIAP || token != nil {
+			t.Fatalf("the approved run's grant is %s naming token %v (%v), want the approval's sign-in through IAP", kind, token, err)
+		}
+		rig.exec(t, `update agent_tokens set revoked_at = now() where id = $1::uuid`, rig.tokenID(t, started))
+		caller, err = rig.iap.goingGrantCaller(ctx, moved, time.Now().Add(time.Hour))
+		if want := goingBarPerson(person, moved); err != nil || !reflect.DeepEqual(caller, want) {
+			t.Fatalf("the call after the starting token was revoked resolves %+v, %v; want %+v", caller, err, want)
+		}
+		_, err = rig.iap.goingGrantCaller(ctx, moved, time.Now().Add(-time.Second))
+		requireGrantEnded(t, err, goingGrantSignInExpired, "the approved run's call past its working budget")
 	})
 
 	t.Run("a credential that is no person's own starts no run", func(t *testing.T) {

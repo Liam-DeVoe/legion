@@ -186,14 +186,14 @@ type bootConfig struct {
 	// hooks on (going/agent's hooks.go); only DISPATCH_TEST_AGENT_HOOKS=1, under the test hooks,
 	// sets it.
 	AgentHooks bool
-	// AgentCallHook is a route every call of which this process runs for its agent panics in, or
-	// is held in (api.Deps.AgentCallHook); only DISPATCH_TEST_AGENT_CALL_HOOK, under the test
-	// hooks, sets it.
+	// AgentCallHook is the rules on routes every call of which this process runs for its agent
+	// panics in, or is held in before or after its route (api.Deps.AgentCallHook); only
+	// DISPATCH_TEST_AGENT_CALL_HOOK, under the test hooks, sets it.
 	AgentCallHook api.AgentCallHook
 	// AgentSlots is how many runs the agent works at once, zero for the slots its limits give
 	// (agentLimits); only DISPATCH_TEST_AGENT_SLOTS, under the test hooks, sets it, so a test
 	// crosses the server's bound of calls at once, which the agent's own slots stay under.
-	AgentSlots int64
+	AgentSlots int
 	// TrustFile is SSL_CERT_FILE, the file of certificate authorities crypto/x509 trusts in place
 	// of the system's, which this process hands on to its agent process, so the agent trusts the
 	// chat model's endpoint as the server does; empty for the system's.
@@ -315,7 +315,7 @@ func main() {
 		limits.Ceiling = boot.AgentCeiling
 	}
 	if boot.AgentSlots > 0 {
-		limits.Slots = int(boot.AgentSlots)
+		limits.Slots = boot.AgentSlots
 	}
 	if boot.AgentLimit > 0 {
 		limits.AgentLimit = boot.AgentLimit
@@ -1452,7 +1452,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if !boot.TestHooksEnabled {
 			return bootConfig{}, errors.New("DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_AGENT_SLOTS")
 		}
-		if boot.AgentSlots, err = strconv.ParseInt(raw, 10, 64); err != nil || boot.AgentSlots <= 0 || boot.AgentSlots > 64 {
+		if boot.AgentSlots, err = strconv.Atoi(raw); err != nil || boot.AgentSlots <= 0 || boot.AgentSlots > 64 {
 			return bootConfig{}, fmt.Errorf("DISPATCH_TEST_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)", raw)
 		}
 	}

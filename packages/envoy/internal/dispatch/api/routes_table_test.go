@@ -562,9 +562,12 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// A person's command-bar runs are no older row: they are the person's own record, read by
 		// the person alone, as the answers above them are.
 		"GET /api/v1/me/going-runs",
-		// A run's writes, its undo and the person's own setting of the bar are the person's as
+		// A run's plan, its undo and the person's own setting of the bar are the person's as
 		// their runs are: each acts on, or is, the person's own record.
-		"POST /api/v1/going/runs/{id}/writes",
+		"GET /api/v1/going/runs/{id}/plan",
+		"POST /api/v1/going/runs/{id}/plan/approve",
+		"POST /api/v1/going/runs/{id}/plan/revise",
+		"POST /api/v1/going/runs/{id}/plan/reject",
 		"POST /api/v1/going/runs/{id}/undo",
 		"GET /api/v1/me/going/settings",
 		"PUT /api/v1/me/going/settings",

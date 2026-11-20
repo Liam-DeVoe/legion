@@ -85,9 +85,9 @@ func TestTheRunTablesHoldTheirRules(t *testing.T) {
 		const inserted = "00000000-0000-4000-8000-0000000000a2"
 		exec(t, "record a run as the bar's pause records it", `
 			insert into going_runs (id, author_login, words, context) values ($1::uuid, 'alice', 'what moved?', null)`, inserted)
-		exec(t, "store a setting as the settings route stores it", `
-			insert into user_going_settings (login, confirm_writes, updated_at) values ('bob', false, now())
-			on conflict (login) do update set confirm_writes = excluded.confirm_writes, updated_at = excluded.updated_at`)
+		exec(t, "store a setting that names no mode", `
+			insert into user_going_settings (login, updated_at) values ('bob', now())
+			on conflict (login) do update set updated_at = excluded.updated_at`)
 		for _, id := range []string{stored, inserted} {
 			var blank bool
 			var budget string

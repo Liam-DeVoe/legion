@@ -647,24 +647,23 @@ export function agentStateRequest(
   );
 }
 
-/** `POST /api/v1/going/runs/{id}/writes`: one write of one of the bar's runs - one invocation of
- *  an action its proposal offered, and how it came to run (`approved`). Every write of a run goes
- *  on the run's own line (`goingRunTarget`), so a write the bar has not sent yet is still the
- *  undo's to stop. */
-export function goingWriteRequest(
-  id: string,
-  input: Body<"/api/v1/going/runs/{id}/writes", "post">
-) {
-  return writeRequest("post", "/api/v1/going/runs/{id}/writes", { id }, input);
-}
-
 /** `POST /api/v1/going/runs/{id}/undo`: undoes every write of one of the bar's runs that went
  *  through, each by the undo its catalogue row states. */
 export function goingUndoRequest(id: string, input: Body<"/api/v1/going/runs/{id}/undo", "post">) {
   return writeRequest("post", "/api/v1/going/runs/{id}/undo", { id }, input);
 }
 
-/** `PUT /api/v1/me/going/settings`: the person's own command-bar setting (`confirm_writes`). */
+/** `POST /api/v1/going/runs/{id}/plan/approve`: the person approves the run's waiting plan, each
+ *  row as the plan shows it unless the body unticks or edits it, and the run makes its changes. */
+export function goingPlanApproveRequest(
+  id: string,
+  input: Body<"/api/v1/going/runs/{id}/plan/approve", "post">
+) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/plan/approve", { id }, input);
+}
+
+/** `PUT /api/v1/me/going/settings`: the person's own command-bar setting, its `mode`: `ask`, where
+ *  every change of a plan waits for the person, or `auto_review`. */
 export function goingSettingsRequest(input: Body<"/api/v1/me/going/settings", "put">) {
   return writeRequest("put", "/api/v1/me/going/settings", {}, input);
 }
@@ -1296,8 +1295,16 @@ export class DispatchApiClient {
     return this.read("/api/v1/me/going-runs", {}, query);
   }
 
-  /** `GET /api/v1/me/going/settings`: the person's own command-bar setting, whether every write
-   *  the bar makes for them asks first (`confirm_writes`); off for a person who never set it. */
+  /** `GET /api/v1/going/runs/{id}/plan`: the latest plan of one of the caller's runs of the bar,
+   *  each row with what its item holds now; 404 `GOING_PLAN_NOT_FOUND` for a run that proposed
+   *  none. */
+  goingPlan(id: string) {
+    return this.read("/api/v1/going/runs/{id}/plan", { id });
+  }
+
+  /** `GET /api/v1/me/going/settings`: the person's own command-bar setting, its `mode`: `ask`,
+   *  where every change of a plan waits for them, the mode of a person who never set it, or
+   *  `auto_review`. */
   myGoingSettings() {
     return this.read("/api/v1/me/going/settings", {});
   }

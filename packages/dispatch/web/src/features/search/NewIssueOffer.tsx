@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 
 import { newIssueSettingsQuery } from "../../api/queries";
 import { stoppedWriteNote } from "../writes/keyed-write";
-import { useWrites, type Writes } from "../writes/write-store";
-import { type FiledIssue, fileNewIssue, type NewIssueWrite } from "./new-issue";
+import { useWrites } from "../writes/write-store";
+import { type FiledIssue, fileNewIssue } from "./new-issue";
 import {
   barNoteClassName,
   type Offer,
@@ -29,13 +29,6 @@ type OfferState =
   | { readonly filed: FiledIssue | undefined; readonly kind: "made"; readonly words: string }
   | UnconfirmedPress;
 
-/** How the offer writes: `fileNewIssue` through the issues route, or with its create a write of
- *  the bar's run where the decision chose a new issue. */
-export type FileNewIssue = (
-  writes: Writes,
-  write: NewIssueWrite
-) => Promise<FiledIssue | undefined>;
-
 /**
  * The bar's offer of the words a person typed as a new issue, for words its search matched
  * nothing with. Offering is not making: nothing is written until the person presses the row.
@@ -49,15 +42,11 @@ export type FileNewIssue = (
  * what the press did is said all the same, until the person types something else.
  */
 export function useNewIssueOffer({
-  file = fileNewIssue,
   offered,
   onOpen,
   project,
   words,
 }: {
-  /** How the press writes: the bar's run supplies it where its decision chose a new issue;
-   *  defaults to the filing through the issues route. */
-  readonly file?: FileNewIssue;
   /** Whether the words matched nothing, so there is an offer to make at all. */
   readonly offered: boolean;
   /** Opens the issue the press made. */
@@ -90,7 +79,7 @@ export function useNewIssueOffer({
   const accept = () => {
     const settled = settings.data;
     setState({ kind: "making", words });
-    file(writes, { project, settings: settled, words }).then(
+    fileNewIssue(writes, { project, settings: settled, words }).then(
       (made) => {
         void queryClient.invalidateQueries({ queryKey: ["issues"] });
         setState({ filed: made, kind: "made", words });

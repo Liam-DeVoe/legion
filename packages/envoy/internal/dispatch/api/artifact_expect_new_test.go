@@ -11,9 +11,9 @@ import (
 // it sends but an undo's write back, which carries the content it expects instead, makes it
 // a create alone, decided under the owner's lock: under a name
 // the owner already holds it is refused, 409 DOCUMENT_EXISTS, and nothing is written - the
-// document keeps its one version - and under a free name it makes the document. An upload with
-// force sheds the condition only at the write where its read before found the document it names
-// (goingUploadWritesOver); this one carries it, as every such upload the bar sends does by default. It
+// document keeps its one version - and under a free name it makes the document. A row of a plan
+// sheds the condition only at the write where its read before found the document it names
+// (AgentListener.rowUpload); this one carries it, as every other upload the bar sends does. It
 // holds for an issue's JSON upload, a project's, and a multipart upload, and it cannot be carried
 // with an expected content (ExpectSHA256), which asks for the opposite.
 func TestAnUploadMadeACreateAloneMakesADocumentAndNeverWritesOverOne(t *testing.T) {

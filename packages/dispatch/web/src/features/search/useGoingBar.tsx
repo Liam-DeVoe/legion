@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { goingCapabilityQuery } from "../../api/queries";
-import type { GoingContextInput, SearchResult } from "../../api/types";
+import type { GoingContextInput } from "../../api/types";
 import { kbdHint } from "../../theme/classes";
 import { DIALOG_SCOPE, MOD_KEY_LABEL, useKeymap } from "../shell/keymap";
 import { type CapabilityGap, capabilityGaps } from "./CapabilityNote";
@@ -45,7 +45,6 @@ export interface GoingBar {
 export function useGoingBar({
   context,
   enabled,
-  hits,
   login,
   project,
   showHits,
@@ -55,8 +54,6 @@ export function useGoingBar({
   readonly context: GoingContextInput;
   /** Whether the words are a query the bar searches. */
   readonly enabled: boolean;
-  /** The hits the bar lists, which an argument naming an item is picked from. */
-  readonly hits: readonly SearchResult[];
   /** The person asking; undefined while the page has not read it. */
   readonly login: string | undefined;
   /** The project the words are asked of, `""` for every project: the filter chip's. */
@@ -74,7 +71,7 @@ export function useGoingBar({
     project,
     words,
   });
-  const operations = useGoingOperations({ answer, askNow, hits, words });
+  const operations = useGoingOperations({ answer, askNow, words });
   useKeymap(DIALOG_SCOPE, [
     {
       id: "search-run",

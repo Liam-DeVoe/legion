@@ -2146,15 +2146,20 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_HOOKS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_AGENT_CALL_HOOK": func(t *testing.T) {
-			for raw, want := range map[string]api.AgentCallHook{
-				" panic GET /api/v1/search ":   {Route: "GET /api/v1/search", Panic: true},
-				"hold 20s POST /api/v1/issues": {Route: "POST /api/v1/issues", Hold: 20 * time.Second},
+			for raw, want := range map[string][]api.AgentCallRule{
+				" panic GET /api/v1/search ":   {{Route: "GET /api/v1/search", Panic: true}},
+				"hold 20s POST /api/v1/issues": {{Route: "POST /api/v1/issues", Hold: 20 * time.Second}},
+				"hold 20s PATCH /api/v1/issues/A-3; after 1m PATCH /api/v1/issues/A-5": {
+					{Route: "PATCH /api/v1/issues/A-3", Hold: 20 * time.Second},
+					{Route: "PATCH /api/v1/issues/A-5", Hold: time.Minute, After: true},
+				},
 			} {
-				if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CALL_HOOK": raw}); boot.AgentCallHook != want {
-					t.Errorf("DISPATCH_TEST_AGENT_CALL_HOOK=%q: AgentCallHook = %+v, want %+v", raw, boot.AgentCallHook, want)
+				if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CALL_HOOK": raw}); !slices.Equal(boot.AgentCallHook.Rules, want) {
+					t.Errorf("DISPATCH_TEST_AGENT_CALL_HOOK=%q: AgentCallHook = %+v, want %+v", raw, boot.AgentCallHook.Rules, want)
 				}
 			}
-			for _, invalid := range []string{"panic /api/v1/search", "hold soon GET /api/v1/search", "hold 1s get /api/v1/search", "sleep GET /x"} {
+			for _, invalid := range []string{"panic /api/v1/search", "hold soon GET /api/v1/search", "hold 1s get /api/v1/search", "sleep GET /x",
+				"hold 1s GET /x;", "after GET /x"} {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CALL_HOOK": invalid},
 					fmt.Sprintf("DISPATCH_TEST_AGENT_CALL_HOOK=%q", invalid))
 			}
@@ -2172,15 +2177,17 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"DISPATCH_AGENT_SLOTS": func(t *testing.T) {
 			// The server names the agent's slots in its environment, and the agent refuses a count
-			// that is no positive whole number before it calls anything.
+			// that is no whole number from 1 to 64 before it calls anything.
 			if env := agentEnvironment(answererConfig{}, "agent.sock", agentMemory{Slots: 5}, "", false); !slices.Contains(env, "DISPATCH_AGENT_SLOTS=5") {
 				t.Errorf("the agent's environment is %v, want DISPATCH_AGENT_SLOTS=5", env)
 			}
-			var stderr bytes.Buffer
-			values := envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": "agent.sock", "DISPATCH_AGENT_SLOTS": "0"})
-			if code := runAgent(context.Background(), values, bytes.NewReader(make([]byte, agentwire.SecretSize)), &stderr); code != 1 ||
-				!strings.Contains(stderr.String(), `DISPATCH_AGENT_SLOTS="0"`) {
-				t.Errorf("DISPATCH_AGENT_SLOTS=0: exit %d, stderr %q; want 1, naming it", code, stderr.String())
+			for _, invalid := range []string{"0", "65"} {
+				var stderr bytes.Buffer
+				values := envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": "agent.sock", "DISPATCH_AGENT_SLOTS": invalid})
+				if code := runAgent(context.Background(), values, bytes.NewReader(make([]byte, agentwire.SecretSize)), &stderr); code != 1 ||
+					!strings.Contains(stderr.String(), fmt.Sprintf("DISPATCH_AGENT_SLOTS=%q", invalid)) {
+					t.Errorf("DISPATCH_AGENT_SLOTS=%s: exit %d, stderr %q; want 1, naming it", invalid, code, stderr.String())
+				}
 			}
 		},
 		"SSL_CERT_FILE": func(t *testing.T) {

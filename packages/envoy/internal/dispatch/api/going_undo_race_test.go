@@ -7,11 +7,63 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// goingApprovedPerson is how a write the person ran came to run, as its record keeps it.
+const goingApprovedPerson = "person"
+
+// holdGoingRun runs request while the test's own transaction holds the run's row, so request
+// reads the run and then waits at its claim; then, in that transaction, change writes what
+// another request records in the meantime, and commits, so the claim lands on what change left.
+func (rig goingWritesRig) holdGoingRun(t *testing.T, run string, change func(pgx.Tx), request func()) {
+	t.Helper()
+	ctx := context.Background()
+	lock, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err := lock.Exec(ctx, `select 1 from going_runs where id = $1::uuid for update`, run); err != nil {
+		t.Fatalf("hold the run: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		request()
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select count(*) from pg_stat_activity
+			where wait_event_type = 'Lock' and query like '%update going_runs%' and pid <> pg_backend_pid()`).Scan(&waiting); err != nil {
+			t.Fatalf("read who waits on the run: %v", err)
+		}
+		if waiting > 0 {
+			break
+		}
+		select {
+		case <-done:
+			t.Fatal("the request ended without waiting on the run it read")
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the request never reached its claim of the run")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The change is the other request's, made as the held transaction's own write.
+	change(lock)
+	if err := lock.Commit(ctx); err != nil {
+		t.Fatalf("let the run go: %v", err)
+	}
+	<-done
+}
 
 // goingBefore is a route table that, the first time it is sent `request`, lets meanwhile run
 // first - another writer's change made between the bar's read and the bar's write - and then

@@ -103,11 +103,12 @@ func readCall(tool string, arguments map[string]any) agenttest.Reply {
 func answer(text string) agenttest.Reply { return agenttest.Reply{Text: text} }
 
 // agentGrant is the credential a run acts with: the header identity of a test server where kind is
-// empty, or a sign-in's generation and expiry.
+// empty, a sign-in's generation and expiry, or a personal token's agent_tokens row (kind token).
 type agentGrant struct {
 	kind       string
 	generation int64
 	expires    time.Time
+	token      string
 }
 
 // agentRun is a run a row starts, as the route that starts a run records one: login's words at
@@ -147,11 +148,16 @@ func (s agentServer) begin(t *testing.T, runs ...agentRun) []string {
 		}
 		var generation *int64
 		var expires *time.Time
-		if grant.kind == "sign_in" {
+		var token *string
+		switch grant.kind {
+		case "sign_in":
 			generation, expires = &grant.generation, &grant.expires
+		case "token":
+			token = &grant.token
 		}
-		if _, err := tx.Exec(ctx, `insert into going_run_grants (run_id, kind, login, generation, expires_at) values ($1::uuid, $2, $3, $4, $5)`,
-			id, grant.kind, run.login, generation, expires); err != nil {
+		if _, err := tx.Exec(ctx, `
+			insert into going_run_grants (run_id, kind, login, generation, expires_at, token_id) values ($1::uuid, $2, $3, $4, $5, $6::uuid)
+		`, id, grant.kind, run.login, generation, expires, token); err != nil {
 			t.Fatalf("grant run %q: %v", run.words, err)
 		}
 		ids = append(ids, id)
@@ -354,10 +360,11 @@ func TestStopCancelsAStreamInFlight(t *testing.T) {
 // TestTheGrantIsCheckedAtEachCall: each call of a run is checked as the person's own request would
 // be (check c30). In a deployment whose people sign in by cookie: a call after the person signs out
 // is refused and the run stops with SESSION_ENDED, though the call before it ran; a sign-in past
-// its 30 days stops the run with SIGN_IN_EXPIRED; a membership the sign-in pool ended stops it with
-// MEMBERSHIP_ENDED; and a membership read the pool answers 503 waits, and the call runs once the
-// pool answers. The rows of an approval are the plan's (t8), and those of a run's start the start
-// route's (t14).
+// its 30 days stops the run with SIGN_IN_EXPIRED; an approval under a token without the approve
+// scope is refused, and nothing of the plan runs; a membership the sign-in pool ended stops it with
+// MEMBERSHIP_ENDED; a membership read the pool answers 503 waits, and the call runs once the pool
+// answers; and an approval under token B moves the grant to it, so revoking token A, which started
+// the run, stops nothing. The rows of a run's start are the start route's (t14).
 func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
@@ -444,11 +451,82 @@ func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 		}
 	})
 
-	t.Run("a token without the approve scope is refused at the approval", func(t *testing.T) {
-		t.Skip("t8: the approval is the plan's route")
-	})
-	t.Run("an IAP grant ends with the run's working budget, and an approval moves it", func(t *testing.T) {
-		t.Skip("t8: the approval is the plan's route")
+	// asPerson sends body to path as the signed-in person, by their cookie, or by bearer where it
+	// is set.
+	asPerson := func(t *testing.T, session *http.Cookie, bearer, method, path, body string) httpAnswer {
+		t.Helper()
+		header := http.Header{"Sec-Fetch-Site": {"same-origin"}, "Cookie": {session.Name + "=" + session.Value}}
+		if bearer != "" {
+			header = http.Header{"Authorization": {"Bearer " + bearer}}
+		}
+		return server.send(t, method, path, body, header)
+	}
+	// token makes the person a personal agent token holding scopes, and answers it and its id.
+	token := func(t *testing.T, session *http.Cookie, scopes ...string) (string, string) {
+		t.Helper()
+		encoded, err := json.Marshal(map[string]any{"name": "a token of " + strings.Join(scopes, " and "), "scopes": scopes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		made := asPerson(t, session, "", http.MethodPost, "/api/v1/me/agent-tokens", string(encoded))
+		var answer struct {
+			ID    string `json:"id"`
+			Token string `json:"token"`
+		}
+		if made.status != http.StatusCreated || json.Unmarshal(made.body, &answer) != nil || answer.Token == "" {
+			t.Fatalf("POST /api/v1/me/agent-tokens answered %d %s", made.status, made.body)
+		}
+		return answer.Token, answer.ID
+	}
+	server.exec(t, `insert into projects (key, name, default_assignee) values ('GRANT', 'Grants', $1)`, cookiePerson)
+	// planned scripts words to propose a comment on a new issue of the person's, and answers the
+	// issue.
+	planned := func(t *testing.T, session *http.Cookie, words string) string {
+		t.Helper()
+		made := asPerson(t, session, "", http.MethodPost, "/api/v1/issues", fmt.Sprintf(`{"project":"GRANT","title":%q,"force":true}`, words))
+		var issue struct {
+			Key string `json:"key"`
+		}
+		if made.status != http.StatusCreated || json.Unmarshal(made.body, &issue) != nil {
+			t.Fatalf("POST /api/v1/issues answered %d %s", made.status, made.body)
+		}
+		server.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall("propose_plan", map[string]any{"summary": "A comment.", "changes": []map[string]any{
+					{"tool": "dispatch_comment", "arguments": map[string]any{"issue": issue.Key, "body": "Planned on " + issue.Key + "."}},
+				}})
+			}
+			return answer("Commented.")
+		})
+		return issue.Key
+	}
+	commented := func(t *testing.T, issue string) int {
+		t.Helper()
+		var count int
+		if err := server.database.Pool.QueryRow(context.Background(), `select count(*) from comments where issue_key = $1`, issue).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	approve := func(run string) string { return "/api/v1/going/runs/" + run + "/plan/approve" }
+
+	t.Run("a token without the approve scope is refused at the approval, and nothing of the plan runs", func(t *testing.T) {
+		const words = "comment, under a token that cannot approve"
+		session, login, _ := signIn(t, month)
+		plaintext, id := token(t, session, "person")
+		issue := planned(t, session, words)
+		run := server.begin(t, agentRun{login: login, words: words, grant: agentGrant{kind: "token", token: id}})[0]
+		if row := server.ended(t, run, time.Minute); row.state != "waiting" {
+			t.Fatalf("the run ended %s with %q, want its plan waiting", row.state, row.reason)
+		}
+		if refused := asPerson(t, session, plaintext, http.MethodPost, approve(run), `{"plan":1}`); refused.status != http.StatusForbidden ||
+			!strings.Contains(string(refused.body), "approve") {
+			t.Fatalf("the approval under the token answered %d %s, want 403 naming the approve scope", refused.status, refused.body)
+		}
+		time.Sleep(2 * time.Second)
+		if row := server.run(t, run); row.state != "waiting" || commented(t, issue) != 0 {
+			t.Fatalf("after the refused approval the run is %s and %s holds %d comments, want it waiting with nothing run", row.state, issue, commented(t, issue))
+		}
 	})
 
 	t.Run("a lost membership stops the run", func(t *testing.T) {
@@ -503,11 +581,129 @@ func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 		t.Skip("t14: the route that starts a run records its grant")
 	})
 	t.Run("an approval by token B moves the grant, and revoking token A stops nothing", func(t *testing.T) {
-		t.Skip("t8: the approval is the plan's route")
+		const words = "comment, approved by another token"
+		session, login, _ := signIn(t, month)
+		_, first := token(t, session, "person", "approve")
+		second, secondID := token(t, session, "person", "approve")
+		issue := planned(t, session, words)
+		run := server.begin(t, agentRun{login: login, words: words, grant: agentGrant{kind: "token", token: first}})[0]
+		if row := server.ended(t, run, time.Minute); row.state != "waiting" {
+			t.Fatalf("the run ended %s with %q, want its plan waiting", row.state, row.reason)
+		}
+		// The approved run waits at a shape no build reads until token A is revoked.
+		server.exec(t, `update going_runs set shape = $2 where id = $1::uuid`, run, unreadShape)
+		if approved := asPerson(t, session, second, http.MethodPost, approve(run), `{"plan":1}`); approved.status != http.StatusOK {
+			t.Fatalf("the approval under token B answered %d %s", approved.status, approved.body)
+		}
+		var granted string
+		if err := server.database.Pool.QueryRow(context.Background(), `select coalesce(token_id::text, '') from going_run_grants where run_id = $1::uuid`, run).Scan(&granted); err != nil || granted != secondID {
+			t.Fatalf("the run's grant names token %q (%v), want token B's %s", granted, err, secondID)
+		}
+		if revoked := asPerson(t, session, "", http.MethodDelete, "/api/v1/me/agent-tokens/"+first, ""); revoked.status/100 != 2 {
+			t.Fatalf("revoking token A answered %d %s", revoked.status, revoked.body)
+		}
+		server.exec(t, `update going_runs set shape = $2 where id = $1::uuid`, run, readShape)
+		server.exec(t, `select pg_notify($1, 'ready')`, api.GoingRunsChannel)
+		if row := server.ended(t, run, time.Minute); row.state != "done" || commented(t, issue) != 1 {
+			t.Fatalf("the run ended %s with %q and %s holds %d comments, want done with the approved comment", row.state, row.reason, issue, commented(t, issue))
+		}
 	})
 	t.Run("a broker token, the shared token and a service token are refused at the start with RUN_NEEDS_PERSON_CREDENTIAL", func(t *testing.T) {
 		t.Skip("t14: the route that starts a run refuses them")
 	})
+}
+
+// TestAKilledAgentMakesEachChangeOnce (check c18): an approved plan of 7 changes, each a comment on
+// an issue of its own, runs to its end though its agent process is killed at three points - with
+// the plan's rows claimed and before their first call, while a call is held before its route, and
+// while a call is held after its route committed and before the call heard the answer - and its
+// server is killed while a call is held after its route committed. Each time the run goes on from
+// its last saved step, and the store holds each of the 7 comments once. The first kill lands while
+// the agent works a second run beside the plan's, so that death is charged to neither (the bound
+// of three deaths a run causes alone is requireARunThatKillsTheAgentThreeTimesFails').
+func TestAKilledAgentMakesEachChangeOnce(t *testing.T) {
+	const project = "KILL"
+	comments := func(n int) string { return fmt.Sprintf("/api/v1/issues/%s-%d/comments", project, n) }
+	hooks := fmt.Sprintf("hold 30s POST %s; after 30s POST %s; after 50s POST %s", comments(3), comments(5), comments(7))
+	server := startModelServer(t, map[string]string{"DISPATCH_TEST_AGENT_CALL_HOOK": hooks})
+	first := server.agentStarted(t, 1, 30*time.Second)
+	server.createProject(t, project, "Kills")
+	changes := make([]map[string]any, 0, 7)
+	issues := make([]string, 0, 7)
+	for n := 1; n <= 7; n++ {
+		key, _ := server.createIssueIn(t, project, fmt.Sprintf("Issue %d", n), "Context.\n")
+		issues = append(issues, key)
+		changes = append(changes, map[string]any{"tool": "dispatch_comment", "arguments": map[string]any{"issue": key, "body": "Change " + key + "."}})
+	}
+	const words, beside = "comment on the seven issues", "a run beside the plan's"
+	server.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return toolCall("propose_plan", map[string]any{"summary": "A comment on each of the seven issues.", "changes": changes})
+		}
+		return answer("Commented on all seven.")
+	})
+	held := make(chan struct{})
+	t.Cleanup(func() { close(held) })
+	server.script.set(beside, func(n int) agenttest.Reply {
+		if n == 1 {
+			return agenttest.Reply{Text: "Held.", Hold: held}
+		}
+		return answer("Beside.")
+	})
+	ids := server.begin(t, agentRun{login: dispatchTestLogin, words: words}, agentRun{login: dispatchTestLogin, words: beside})
+	run := ids[0]
+	server.eventually(t, time.Minute, "the plan to wait for its person, beside the other run's model call", func() bool {
+		return server.run(t, run).state == "waiting" && len(server.fake.Asking(beside)) == 1
+	})
+
+	// Killed with the plan's rows claimed and before their first call: the run, approved, is
+	// leased to the agent while it is stopped, and the agent is killed.
+	server.exec(t, `update going_runs set shape = $2 where id = $1::uuid`, run, unreadShape)
+	server.call(t, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve", `{"plan":1}`, http.StatusOK)
+	server.stopHolding(t, first, run)
+	signalProcess(t, first, syscall.SIGKILL)
+
+	// Killed while a call is held before its route, and while one is held after its route committed.
+	server.waitForLog(t, 2*time.Minute, `msg="dispatch: a test hook holds a call of the agent"`, comments(3))
+	signalProcess(t, server.agentStarted(t, 2, 30*time.Second), syscall.SIGKILL)
+	server.waitForLog(t, 3*time.Minute, `msg="dispatch: a test hook holds the answer of a call of the agent"`, comments(5))
+	signalProcess(t, server.agentStarted(t, 3, 30*time.Second), syscall.SIGKILL)
+
+	// The server killed while a call is held after its route committed, and started again on the
+	// same database, without the hooks.
+	server.waitForLog(t, 3*time.Minute, `msg="dispatch: a test hook holds the answer of a call of the agent"`, comments(7))
+	if err := server.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill the server: %v", err)
+	}
+	<-server.Exited
+	restarted := agentServer{
+		dispatchProcess: startDispatchProcessWith(t, server.database.Pool.Config().ConnString(),
+			dispatchOptions{Env: modelEnv(t, server.fake), OwnProcessGroup: true}),
+		database: server.database,
+	}
+	restarted.waitHealthy(t)
+	if row := restarted.ended(t, run, 3*time.Minute); row.state != "done" || row.kills >= 3 {
+		t.Fatalf("the run ended %s with %q after %d deaths charged to it, want done", row.state, row.reason, row.kills)
+	}
+	for _, issue := range issues {
+		var made int
+		if err := server.database.Pool.QueryRow(context.Background(),
+			`select count(*) from comments where issue_key = $1 and body like $2`, issue, "Change "+issue+"%").Scan(&made); err != nil {
+			t.Fatal(err)
+		}
+		if made != 1 {
+			t.Errorf("%s holds the plan's comment %d times, want once", issue, made)
+		}
+	}
+	var steps int
+	if err := server.database.Pool.QueryRow(context.Background(), `
+		select count(distinct (body->'row'->>'row')::int) from going_run_steps where run_id = $1::uuid and body ? 'row'
+	`, run).Scan(&steps); err != nil {
+		t.Fatal(err)
+	}
+	if steps != 7 {
+		t.Errorf("the run saved a step for %d of the plan's 7 rows, want each", steps)
+	}
 }
 
 // requireTheWatchdogEndsAStuckAgent: a tool and a model stream that ignore their context hold

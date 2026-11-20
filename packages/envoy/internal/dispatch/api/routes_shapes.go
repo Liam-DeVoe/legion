@@ -847,8 +847,15 @@ var routeShapes = map[string]routeShape{
 		OpaqueContentTypes: []string{"text/event-stream"},
 	},
 	"POST /api/v1/going/requests/{id}/cancel": {Status: http.StatusOK, Response: goingCancellation{}},
-	"POST /api/v1/going/runs/{id}/writes": {
-		Status: http.StatusOK, Response: goingWriteLine{}, Request: goingWriteInput{},
+	"GET /api/v1/going/runs/{id}/plan":        {Status: http.StatusOK, Response: goingPlanAnswer{}},
+	"POST /api/v1/going/runs/{id}/plan/approve": {
+		Status: http.StatusOK, Response: goingPlanAnswer{}, Request: goingPlanApproveInput{},
+	},
+	"POST /api/v1/going/runs/{id}/plan/revise": {
+		Status: http.StatusOK, Response: goingPlanAnswer{}, Request: goingPlanReviseInput{},
+	},
+	"POST /api/v1/going/runs/{id}/plan/reject": {
+		Status: http.StatusOK, Response: goingPlanAnswer{}, Request: goingPlanRejectInput{},
 	},
 	"POST /api/v1/going/runs/{id}/undo": {
 		Status: http.StatusOK, Response: goingUndoAnswer{}, Request: goingUndoInput{}, OptionalRequest: true,

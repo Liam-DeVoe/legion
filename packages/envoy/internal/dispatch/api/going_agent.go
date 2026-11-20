@@ -740,6 +740,9 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 	if claimed.History == nil {
 		claimed.History = []agentwire.SavedStep{}
 	}
+	if claimed.Rows, err = goingPendingRows(ctx, tx, run); err != nil {
+		return nil, err
+	}
 	turns, err := tx.Query(ctx, `
 		select e.id::text, e.words, array(select s.note from going_run_steps s where s.run_id = e.id order by s.step)
 		from going_runs r
@@ -1005,9 +1008,11 @@ func goingLeaseHeld(ctx context.Context, tx pgx.Tx, run, token string) (bool, er
 // the turn spent to its budget, in one statement whose condition is the request's lease token and
 // the run working, so a stale owner's end changes nothing; and in the same transaction it appends
 // the run's end frame (agentwire.EndFrame), which names what the run's record offers its person
-// next. The statement locks the run's row for the update it makes, which no share lock is taken
-// before: a share lock held while the update waits behind a renew's would deadlock with it. An
-// ended run is no suspect any more, and its instance's run slot is free (runEnded).
+// next. A turn that ends done while a row of the run's plan waits for its person leaves the run
+// waiting (goingRowsWaitSQL). The statement locks the run's row for the update it makes, which no
+// share lock is taken before: a share lock held while the update waits behind a renew's would
+// deadlock with it. An ended run is no suspect any more, and its instance's run slot is free
+// (runEnded).
 func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (agentwire.EndAnswer, *agentwire.Error) {
 	if refusal := goingRunID(request.Run, request.LeaseToken); refusal != nil {
 		return agentwire.EndAnswer{}, refusal
@@ -1022,15 +1027,24 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 			return agentwire.EndAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "an end offers %q, not %q", agentwire.OfferContinue, offer)
 		}
 	}
-	frame, err := json.Marshal(agentwire.EndFrame{State: request.State, Reason: request.Reason, Offers: append([]string{}, request.Offers...)})
-	if err != nil {
-		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
-	}
 	tx, err := a.s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if request.State == agentwire.StateDone {
+		var waits bool
+		if err := tx.QueryRow(ctx, goingRowsWaitSQL, request.Run).Scan(&waits); err != nil {
+			return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
+		}
+		if waits {
+			request.State = agentwire.StateWaiting
+		}
+	}
+	frame, err := json.Marshal(agentwire.EndFrame{State: request.State, Reason: request.Reason, Offers: append([]string{}, request.Offers...)})
+	if err != nil {
+		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
+	}
 	tag, err := tx.Exec(ctx, `
 		update going_runs set state = $3, stop_reason = nullif($4, ''), lease_token = null, lease_owner = null,
 		  lease_ends_at = null, finished_at = case when $3 = 'waiting' then null else now() end,

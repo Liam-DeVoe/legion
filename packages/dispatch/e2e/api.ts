@@ -512,7 +512,7 @@ export function listMyGoingRuns(
   return get("/api/v1/me/going-runs", { query }, options);
 }
 
-/** `GET /api/v1/me/going/settings`: the caller's own command-bar setting (`confirm_writes`). */
+/** `GET /api/v1/me/going/settings`: the caller's own command-bar setting (`mode`). */
 export function getMyGoingSettings(options: ApiOptions = {}) {
   return get("/api/v1/me/going/settings", {}, options);
 }
