@@ -180,11 +180,8 @@ var projections = []projection{{
 		`t.kind in ('`+graphstore.TupleAnchoredTo+`', '`+graphstore.TupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
 		from graph_nodes n where n.kind = '` + graphstore.KindComment + `'`,
 	pastBound: `
-		select count(*) from comments c
-		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
-		left join artifacts owner on owner.id = c.artifact_id
-		where octet_length(coalesce(anchor.ref_key, '')) > ` + addressBound + `
-		   or octet_length(coalesce(owner.ref_key, '')) > ` + addressBound + `
+		select count(*) from comments c` + refs.CommentStoreJoins + `
+		where not (` + refs.CommentInTheStore + `)
 		   or (c.author->>'kind' = '` + graphstore.KindSession + `'
 		       and octet_length(coalesce(c.author->>'id', '')) > ` + addressBound + `)`,
 }, {
@@ -351,8 +348,9 @@ func currentLinks(fromKind, kinds string) string {
 // nobody. The login an actor of kind user carries is a person, and so is the owner a personal
 // token's actor carries, each canonicalised the way user_threads_login canonicalises a login
 // (migration 0095, which is model.CanonicalLogin in SQL); a session's id is the session. It is
-// spelled once here for the two readings of who wrote a comment: the far end of the authored_by a
-// row states (commentAuthor) and the people a comment names (commentWriterPeople).
+// spelled once here for the readings of who wrote a comment: the far end of the authored_by a row
+// states (commentAuthor), the people a comment names (commentWriterPeople) and the person whose
+// aliases the sizing counts (sizingWritesWith).
 func actorAuthor(actor string) string {
 	return `case
 			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> ''
@@ -622,7 +620,8 @@ func readNames(ctx context.Context, tx pgx.Tx, kind, names string) ([]string, er
 
 // StoreCensus reads the node and tuple store against the tables that project it, in one
 // read-only repeatable-read transaction on a connection of its own. It writes nothing: the
-// transaction is read only, and every statement it runs is a select.
+// transaction is read only, and every statement it runs is a select, but for the savepoint the
+// growth pass reads the store's type nodes in (installStoreBlockSchema).
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
@@ -636,8 +635,9 @@ func readNames(ctx context.Context, tx pgx.Tx, kind, names string) ([]string, er
 // and projection rows rather than tuples.
 //
 // sizing adds the growth pass (SizingReport), which reads the same snapshot. The growth pass
-// reads no table of the store, so it runs on a database this branch's migrations have not
-// reached, where the census reads no kind and says the store is absent.
+// reads no table of the store but its type nodes, and those only where the store holds them, so
+// it runs on a database this branch's migrations have not reached, where the census reads no kind
+// and says the store is absent.
 func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreReport, error) {
 	return storeCensus(ctx, databaseURL, sizing, nil)
 }

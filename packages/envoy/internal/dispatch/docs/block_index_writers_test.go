@@ -551,8 +551,8 @@ var indexPasses = map[string]string{
 	// markStaleDocuments marks each document another release indexed after the store last
 	// stated it, read off the two versions the document's own row records (store_version below
 	// version). That pass writes neither a projected table nor the store, so it is no entry here.
-	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
-	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
+	"graphcensus/backfill_blocks.go#writeBlockBatch":        "each pre-store document_blocks row's own content and the document it is in",
+	"graphcensus/backfill_block_refs.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	// The comment write both of the comment batch's writers share - the backfill's comment batch
 	// and the block-index tick's write of the comments the events after its cursor name whose rows
 	// name no node (refs.CommentsNamingNoNode) - each comment's node and facts, read from the
@@ -565,12 +565,12 @@ var indexPasses = map[string]string{
 	// store census holds to a node, which a row addresses now or an event of the log ever
 	// addressed (addressedRoles), and it writes the nodes the store lacks of them, leaving a node
 	// another write made alone rather than mending it.
-	"graphcensus/backfill.go#writeRoleBatch": "the roles a row addresses now or an event ever addressed (addressedRoles)",
+	"graphcensus/backfill_roles.go#writeRoleBatch": "the roles a row addresses now or an event ever addressed (addressedRoles)",
 	// The backfill of the sessions, the same case as the roles': a session has no projection
 	// row, and the batch's input is the sessions the store census holds to a node, which a row
 	// names now or an ask.follower_added event ever named (recordedSessions). It writes the nodes
 	// the store lacks of them, and a node another write made it leaves alone.
-	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
+	"graphcensus/backfill_sessions.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

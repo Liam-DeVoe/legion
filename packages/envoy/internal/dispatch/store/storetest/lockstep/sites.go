@@ -69,11 +69,11 @@ var storeWriteCallSites = map[string]string{
 	// (refs.CommentWrite.Queue), which the block-index tick queues too, for the comments
 	// the events after its build's cursor name whose rows name no node, after its cursor row and
 	// its marking statement's document_block_versions rows (docs' test holds it to that).
-	"graphcensus/backfill.go#writeBlockBatch":    "graphcensus#TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow",
-	"graphcensus/backfill.go#writeBlockRefBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"refs/comment_nodes.go#Queue":                "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#writeRoleBatch":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#writeSessionBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_blocks.go#writeBlockBatch":        "graphcensus#TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow",
+	"graphcensus/backfill_block_refs.go#writeBlockRefBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"refs/comment_nodes.go#Queue":                           "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_roles.go#writeRoleBatch":          "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_sessions.go#writeSessionBatch":    "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner locks it writes under before that
 	// row, and its projection rows after it.
