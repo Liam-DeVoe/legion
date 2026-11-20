@@ -6737,7 +6737,7 @@ Only processes in the caller's own pid namespace are read, since a pid means not
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
 A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
-`lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
+`lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run.
 `lib/leftovers-containers.test.ts` holds the reading of containers: both name forms, a marked container left to the removal, a live run's container, and the comparison in ticks, with a `docker` of its own and a proc root of its own.
 
 A Postgres container is not the check's.
