@@ -45,9 +45,13 @@ SET LOCAL statement_timeout = '15min';
 --    (files whose model is not null), "bytes" (bytes read: each head), "lines_parsed",
 --    "bad_lines"}
 -- No path or line text leaves the database.
+-- Each head is cut to its first MiB (the file row's content, then the first part): a file row can
+-- hold a whole older file of hundreds of MB, and the first model line is near the file's start; a
+-- head left whole filled the server's temp_file_limit on four devbox days (2026-11-20 run).
 WITH
 heads AS MATERIALIZED (
-  SELECT f.path, coalesce(f.content, '') || coalesce(fp.content, '') AS head
+  SELECT f.path,
+    substr(coalesce(substr(f.content, 1, 1048576), '') || coalesce(substr(fp.content, 1, 1048576), ''), 1, 1048576) AS head
   FROM public.omp_session_files f
   LEFT JOIN LATERAL (
     SELECT pt.content
