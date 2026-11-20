@@ -36,6 +36,8 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// with its spec, and the document of the block the erase takes, with that block.
 	var run, ask, edited, target, filedFrom, lens, chained, result, orphaned, refreshed, pinned string
 	var roomIssue, roomSpec, erasedDocument, erased string
+	// The token of the version refreshed.md's second upload replaces, read before its drive.
+	var refreshedBase map[string]string
 	return []graphcensus.StoreDrive{{
 		// alice's run of the command bar (recordGoingRequest), which records the run's node with
 		// her words, its ends_at, its project and her authored_by, which the term interaction
@@ -261,9 +263,12 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Ready: func(t *testing.T) {
 			document := r.uploaded(t, "refreshed.md", "# Refreshed\n\nThe moon is up.\n")
 			refreshed = r.suggestion(t, document, "moon is up").ID
+			refreshedBase = r.uploadBase(t, document)
 		},
 		Drive: func(t *testing.T) {
-			r.uploaded(t, "refreshed.md", "# Refreshed\n\nStars come out.\n")
+			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
+				"name": "refreshed.md", "content": "# Refreshed\n\nStars come out.\n", "precondition": refreshedBase,
+			}, "alice", http.StatusCreated)
 			r.awaitTrue(t, "the refresh orphaning the suggestion's anchor", `
 				select coalesce((anchor->>'orphaned')::boolean, false) from comments where id = $1::uuid
 			`, refreshed)

@@ -2,11 +2,15 @@ package refs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -212,10 +216,168 @@ func standingAddressKind(kind, id string) string {
 }
 
 // placedNode is one node read by loadReasoningNodes, with the far end of its current part_of
-// tuple, empty where it holds none.
+// tuple, empty where it holds none, and pinned, that far end named at version, the version of its
+// document or the revision of its item that last held it, where a version, a retirement or a
+// revision took it out (pinnedParentSQL).
 type placedNode struct {
 	node                 resolvedNode
 	parentKind, parentID string
+	pinned               *model.NodeParent
+	version              int
+}
+
+// pinnedParentSQL is the read of the node whose kind and id, as a part_of tuple names them, are
+// the SQL kindExpr and idExpr, where a version, a retirement or a revision took it out of its
+// issue: one row, the columns of its document that documentColumns reads, or of the item whose
+// block it is (item_issue_key, item_project, item_slug, as itemRef reads them), the id of a
+// document's block (block_id), and the version of the document or the revision of the item a node
+// standing on it names it at (version), which pinnedParentColumns selects, and no row for any
+// other node. For a node standing on it, a lens on it among them, that node is history and not a
+// node taken gone, as an anchored comment on a removed paragraph keeps its place (spec v59 R5):
+//
+//   - A block of a document that no current version holds (no document_blocks row) is named at
+//     the last version that held it: the latest version a block-aware build indexed below the
+//     version that last deleted it (indexedBelowSQL, removedAtSQL), the version its own node
+//     belongs to (RemovedBlockNode), whether its document is retired since or not.
+//   - A retired document (artifacts.retired_at, docs.RetireDocument), and a block of one that its
+//     last version holds, are named at that last version of the document.
+//   - A block of a comment or a part of an ask that no current revision of its item holds (its
+//     row's position is null) is named at the revision before the one that last removed it (the
+//     newest revision whose texts row records it null), the last revision that held it and the
+//     one its own node belongs to (RemovedItemBlockNode). A message records no revisions and
+//     removes no block, so no block of one is pinned.
+//
+// A block of a document of an issue room is keyed by the room's tree artifact, `<tree
+// ref_key>#<block id>`, as the room's block index writes its node: its document is the one whose
+// fragment holds or last held it (RoomBlockDocumentSQL), and the versions it is named at are that
+// document's own, which the room's text rows are written at (removedAtSQL). The tree itself where
+// no such record stands.
+//
+// A current block of a document that is not retired, a document that is not retired, a current
+// block of an item and a node of any other kind answer no row, and stand where their own loader
+// says.
+func pinnedParentSQL(kindExpr, idExpr string) string {
+	block := `pinned_block.id`
+	last := `(select max(last_version.number) from artifact_versions last_version where last_version.artifact_id = pinned_document.id)`
+	var items strings.Builder
+	for _, item := range itemKinds {
+		tables, _ := item.tables()
+		if !tables.revisions() {
+			continue
+		}
+		items.WriteString(`
+		union all
+		select null::uuid, null::text, null::text, null::text, null::text, null::text, null::boolean,
+			pinned_item.issue_key, coalesce(pinned_issue.project_key, pinned_on.project_key, ''), coalesce(pinned_on.slug, ''),
+			null::text, pinned_removal.revision - 1
+		from ` + tables.blocks + ` pinned_item_block
+		join ` + tables.items + ` pinned_item on pinned_item.id = pinned_item_block.` + tables.item + `
+		left join issues pinned_issue on pinned_issue.key = pinned_item.issue_key
+		left join artifacts pinned_on on pinned_on.id = pinned_item.artifact_id
+		cross join lateral (
+			select max(removal.revision) as revision from ` + tables.texts + ` removal
+			where removal.` + tables.item + ` = pinned_item_block.` + tables.item + ` and removal.block_id = pinned_item_block.block_id
+				and removal.text is null
+		) pinned_removal
+		where ` + kindExpr + ` in ('` + BlockNodeKind + `', '` + item.BlockKind() + `')
+			and pinned_item_block.node_id = ` + idExpr + ` and pinned_item_block.position is null
+			and pinned_removal.revision > 1`)
+	}
+	return `select pinned_document.id, pinned_document.issue_key, pinned_document.project_key, pinned_document.session_id,
+			pinned_document.slug, pinned_document.kind, pinned_document.is_primary,
+			null::text as item_issue_key, null::text as item_project, null::text as item_slug,
+			case when ` + kindExpr + ` = '` + BlockNodeKind + `' then ` + block + ` end as block_id, pinned_at.version
+		from artifacts pinned_keyed
+		cross join lateral (select substr(` + idExpr + `, length(pinned_keyed.ref_key) + 2) as id) pinned_block
+		join artifacts pinned_document on pinned_document.id = case
+			when ` + kindExpr + ` = '` + BlockNodeKind + `' and pinned_keyed.kind = 'tree'
+			then coalesce(` + RoomBlockDocumentSQL("pinned_keyed.id", block) + `, pinned_keyed.id)
+			else pinned_keyed.id end
+		cross join lateral (
+			select case
+				when ` + kindExpr + ` = '` + graphstore.KindArtifact + `'
+					or exists (select 1 from document_blocks held_block where held_block.node_id = ` + idExpr + `)
+				then case when pinned_document.retired_at is not null then ` + last + ` end
+				else ` + indexedBelowSQL("pinned_document.id", removedAtSQL("pinned_document.id", block)) + `
+			end as version
+		) pinned_at
+		where ` + kindExpr + ` in ('` + graphstore.KindArtifact + `', '` + BlockNodeKind + `')
+			and pinned_keyed.ref_key = case when ` + kindExpr + ` = '` + graphstore.KindArtifact + `' then ` + idExpr + `
+				else split_part(` + idExpr + `, '#', 1) end
+			and pinned_at.version is not null` + items.String()
+}
+
+// pinnedParentColumns selects, from the row pinnedParentSQL reads aliased alias, what
+// pinnedParent.targets scans, in its order: its document's columns (documentColumns), its item's,
+// its block's id and its version. They are read off the row rather than inside the read, so a
+// node the read finds no row for, which a left join answers null, scans as no document and no
+// item.
+func pinnedParentColumns(alias string) string {
+	return documentColumns(alias) + `, ` + alias + `.item_issue_key, ` + alias + `.item_project, ` + alias + `.item_slug, ` +
+		alias + `.block_id, ` + alias + `.version`
+}
+
+// pinnedParent is the node pinnedParentSQL reads, as its columns select it: its document, or the
+// item whose block it is - the issue the item belongs to, its project and the slug of the document
+// it hangs on, as itemRef reads them, project and slug nil for no item - the id of a document's
+// block, and the version or the revision a node standing on it names it at, nil where the read
+// found no row.
+type pinnedParent struct {
+	document                         documentParent
+	itemIssue, itemProject, itemSlug *string
+	block                            *string
+	version                          *int
+}
+
+func (p *pinnedParent) targets() []any {
+	return append(p.document.targets(), &p.itemIssue, &p.itemProject, &p.itemSlug, &p.block, &p.version)
+}
+
+// parent is the node, whose node id is nodeID, as a node standing on it names it, and the version
+// it names it at: the block or the document, by its uuid or its block's node id as its own loader
+// names it, or the block of an item by its node id (itemBlockParent), its address pinned to that
+// version or revision (`dispatch://KEY/artifact/<slug>#b-<id>@v<N>`,
+// `dispatch://KEY/artifact/<slug>@v<N>`, `dispatch://KEY/comment/<uuid>#b-<id>@v<N>`,
+// `dispatch://KEY/ask/<uuid>#b-<id>@v<N>`), the one address that reads it now. It is nil where the
+// read found no row.
+func (p pinnedParent) parent(nodeID string) (*model.NodeParent, int) {
+	if p.version == nil {
+		return nil, 0
+	}
+	named := p.document.parent()
+	switch {
+	case p.itemProject != nil && p.itemSlug != nil:
+		named = itemBlockParent(p.itemIssue, *p.itemProject, *p.itemSlug, nodeID)
+	case named == nil:
+		return nil, 0
+	case p.block != nil:
+		named = &model.NodeParent{Kind: BlockNodeKind, ID: nodeID, Ref: BlockRef(named.Ref, *p.block)}
+	}
+	if named.Ref != "" {
+		named.Ref += "@v" + strconv.Itoa(*p.version)
+	}
+	return named, *p.version
+}
+
+// PinnedParent is the node of kind and id, as a part_of tuple names it, as a lens standing on it
+// names it where a version, a retirement or a revision took it out of its issue
+// (pinnedParentSQL), its address pinned to the version of its document or the revision of its
+// item that last held it, and nil for any other node. The lens read names each lens on such a node
+// by it, so the address a lens's on answers is the one the read of the node answers, and is the
+// parent loadReasoningNodes names. It reads no predicate: its caller has read the node through
+// one.
+func PinnedParent(ctx context.Context, q Queryer, kind, id string) (*model.NodeParent, error) {
+	var pinned pinnedParent
+	err := q.QueryRow(ctx, `select `+pinnedParentColumns("pinned")+` from (`+pinnedParentSQL(`$1::text`, `$2::text`)+`) pinned`,
+		kind, id).Scan(pinned.targets()...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the version a lens on %s %s names it at: %w", kind, id, err)
+	}
+	parent, _ := pinned.parent(id)
+	return parent, nil
 }
 
 // loadReasoningNodes resolves the nodes of kind - lenses, the findings of lenses (lens_block) or
@@ -240,20 +402,28 @@ type placedNode struct {
 // Document and no version; its BlockID is its own block id, and its text is cut as a document
 // block's stored excerpt is (BlockExcerptRunes), which an edge at it shows whole.
 //
-// Its parent is that far end, as every loader's is the node it belongs to, where the store does
-// not hold that node gone: a lens on a finding its lens took gone with it, or on a lens a person
-// took gone, names no parent, as no read answers that node, while the issue it stands under is
-// still the one the walk reaches through it. A parent of a standing kind is named by its kind, its
-// store id and its address; any other parent is resolved through its own kind's loader, in one more
-// read for the whole batch (resolveNodes), so it carries the id and the address that loader answers
-// - an artifact's uuid, a block's node id - and a parent no loader answers, a block no version
-// holds now, names none.
+// Its parent is that far end, as every loader's is the node it belongs to. A block of a document
+// that a version removed, a retired document and a block of one, and a block of a comment or a
+// part of an ask that a revision of its item removed, are history for the node standing on them,
+// and no node taken gone (spec v59 R5): each is named at the version of its document or the
+// revision of its item that last held it, from the columns of the same statement
+// (pinnedParentSQL), with that version as the node's ParentVersion, since no loader answers a
+// block no current version or revision holds, and the address of a retired document read by its
+// ref_key answers its issue (loadArtifactNodes). So no lens on what a version, a retirement or a
+// revision took out answers a null parent. Any other parent is named where
+// the store does not hold it gone: a lens on a finding its lens took gone with it, or on a lens a
+// person took gone, names no parent, as no read answers that node, while the issue it stands under
+// is still the one the walk reaches through it; a person's gone takes every node under it gone
+// with it (api's writeNodeState), so no such lens is live. A parent of a standing kind is named by
+// its kind, its store id and its address; any other is resolved through its own kind's loader, in
+// one more read for the whole batch (resolveNodes), so it carries the id and the address that
+// loader answers - an artifact's uuid, a block's node id.
 func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select held.id, held.made_by, held.made_at, state, visibility, held.project_key, `+standingText[kind]("held", "$4")+`,
-		       case when placed_parent.state_held is distinct from $3 then placed.to_kind end,
-		       case when placed_parent.state_held is distinct from $3 then placed.to_id end,
-		       `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`
+		       case when placed_parent.state_held is distinct from $3 or pinned.version is not null then placed.to_kind end,
+		       case when placed_parent.state_held is distinct from $3 or pinned.version is not null then placed.to_id end,
+		       `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`, `+pinnedParentColumns("pinned")+`
 		from graph_nodes held
 		left join lateral (
 			`+CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `held.kind`, `held.id`, graphstore.TuplePartOf)+`
@@ -263,6 +433,9 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 			where parent_row.kind = `+storedKindSQL(`placed.to_kind`)+` and parent_row.id = placed.to_id
 			offset 0
 		) placed_parent on true
+		left join lateral (
+			`+pinnedParentSQL(`placed.to_kind`, `placed.to_id`)+`
+		) pinned on true
 		where `+heldNodesWhere(kind),
 		StoredKindOf(kind), ids, graphstore.StateGone, VisibilityArg(who))
 	if err != nil {
@@ -275,8 +448,9 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 		var madeAt time.Time
 		var project, parentKind, parentID *string
 		var body string
-		if err := rows.Scan(&node.ID, &madeBy, &madeAt, &node.State, &node.Visibility, &project, &body,
-			&parentKind, &parentID, &node.IssueKey); err != nil {
+		var pinned pinnedParent
+		if err := rows.Scan(append([]any{&node.ID, &madeBy, &madeAt, &node.State, &node.Visibility, &project, &body,
+			&parentKind, &parentID, &node.IssueKey}, pinned.targets()...)...); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan %s node: %w", kind, err)
 		}
@@ -295,6 +469,7 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 		one := placedNode{node: resolvedNode{GraphNode: node, text: body}}
 		if parentKind != nil && parentID != nil {
 			one.parentKind, one.parentID = standingAddressKind(*parentKind, *parentID), *parentID
+			one.pinned, one.version = pinned.parent(*parentID)
 		}
 		placed = append(placed, one)
 	}
@@ -320,11 +495,13 @@ func heldNodesWhere(kind string) string {
 	return where + ` and ` + VisibleKindRow(kind, "held", "$4")
 }
 
-// placeReasoningNodes gives each node its parent, as loadReasoningNodes says, and adds it to nodes.
+// placeReasoningNodes gives each node its parent, as loadReasoningNodes says, and adds it to nodes:
+// a parent the statement named at a version, with that version, as it named it; one of a standing
+// kind by its own address; and any other through its loader.
 func placeReasoningNodes(ctx context.Context, q Queryer, who model.Actor, placed []placedNode, nodes map[[2]string]resolvedNode) error {
 	var lookups []edgeRow
 	for _, one := range placed {
-		if one.parentKind != "" && !slices.Contains(standingKinds, one.parentKind) {
+		if one.parentKind != "" && one.pinned == nil && !slices.Contains(standingKinds, one.parentKind) {
 			lookups = append(lookups, edgeRow{otherKind: one.parentKind, otherID: one.parentID})
 		}
 	}
@@ -339,6 +516,8 @@ func placeReasoningNodes(ctx context.Context, q Queryer, who model.Actor, placed
 		node := one.node
 		switch {
 		case one.parentKind == "":
+		case one.pinned != nil:
+			node.Parent, node.ParentVersion = one.pinned, &one.version
 		case slices.Contains(standingKinds, one.parentKind):
 			node.Parent = &model.NodeParent{Kind: one.parentKind, ID: one.parentID, Ref: StoreRef(one.parentKind, one.parentID)}
 		default:

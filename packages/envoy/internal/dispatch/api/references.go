@@ -390,7 +390,7 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
-	document, found, err := s.documentAtAddress(ctx, who, documentKey)
+	document, found, err := documentAtAddress(ctx, pool, who, documentKey)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -408,7 +408,18 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	if err != nil {
 		return model.GraphNode{}, err
 	}
-	at, err := refs.BlockTextAt(ctx, pool, document.ID, ref.Block, ref.Pin)
+	return pinnedBlockNode(ctx, pool, who, document, node, current, named, ref)
+}
+
+// pinnedBlockNode is block nodeID of document read at the version ref pins (ref.Pin is not 0), as
+// a reference pinned to it reads it (blockReferenceNode, which passes the node its address names,
+// refs.NamedBlock), where node and current are what refs.Node answered for nodeID: the block with
+// what that version recorded of it (model.BlockPin). A block no current version holds is the node
+// RemovedBlockNode builds, and a pin to a version the document lacks, to one whose blocks are not
+// on record or to one that did not hold the block answers 404, each saying which. The lens read
+// reads a pinned address the same way (lensReadNode).
+func pinnedBlockNode(ctx context.Context, q refs.Queryer, who model.Actor, document, node model.GraphNode, current bool, nodeID string, ref text.Ref) (model.GraphNode, error) {
+	at, err := refs.BlockTextAt(ctx, q, document.ID, ref.Block, ref.Pin)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -420,9 +431,9 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	// hold it, and its text, its removal and its existence stay unsaid.
 	hidden := false
 	if !current && at.Text != nil {
-		if err := pool.QueryRow(ctx, `select not `+refs.VisibleKind("block", "$1", "$2"),
-			named, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
-			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", named, err)
+		if err := q.QueryRow(ctx, `select not `+refs.VisibleKind("block", "$1", "$2"),
+			nodeID, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
+			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", nodeID, err)
 		}
 	}
 	switch {
@@ -439,14 +450,14 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
 		pin.State, pin.RemovedVersion = "removed", at.RemovedVersion
-		removed, err := refs.RemovedBlockNode(ctx, pool, document, named, ref.Block, at.RemovedVersion)
+		removed, err := refs.RemovedBlockNode(ctx, q, document, nodeID, ref.Block, at.RemovedVersion)
 		if err != nil {
 			return model.GraphNode{}, err
 		}
 		removed.Pin = pin
 		return removed, nil
 	}
-	if node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block); err != nil {
+	if node.Text, err = refs.CurrentBlockText(ctx, q, document.ID, ref.Block); err != nil {
 		return model.GraphNode{}, err
 	}
 	pin.State = "unchanged"
@@ -522,17 +533,16 @@ func (s *server) movedDocumentNode(ctx context.Context, who model.Actor, refKey 
 // refs.Node answers for the address, or, where the address is a retired document's, which refs
 // answers as the document's issue (refs.loadArtifactNodes), the document itself, read by its uuid,
 // since a retired document's blocks and versions stay readable.
-func (s *server) documentAtAddress(ctx context.Context, who model.Actor, refKey string) (model.GraphNode, bool, error) {
-	pool := s.deps.Store.Pool
-	document, found, err := refs.Node(ctx, pool, who, graphstore.KindArtifact, refKey, true)
+func documentAtAddress(ctx context.Context, q refs.Queryer, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	document, found, err := refs.Node(ctx, q, who, graphstore.KindArtifact, refKey, true)
 	if err != nil || !found || document.Kind == graphstore.KindArtifact {
 		return document, found, err
 	}
 	var id string
-	if err := pool.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`, refKey).Scan(&id); err != nil {
+	if err := q.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`, refKey).Scan(&id); err != nil {
 		return model.GraphNode{}, false, fmt.Errorf("read the retired document at %s: %w", refKey, err)
 	}
-	return refs.Node(ctx, pool, who, graphstore.KindArtifact, id, false)
+	return refs.Node(ctx, q, who, graphstore.KindArtifact, id, false)
 }
 
 // itemBlockReferenceNode is the block node ref, a part of an ask or a block of a comment or a
@@ -571,7 +581,20 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, qu
 		}
 		return node, nil
 	}
-	at, err := refs.ItemBlockAt(ctx, pool, kind, item.ID, ref.Block, ref.Pin)
+	return pinnedItemBlockNode(ctx, pool, who, item, node, current, query.ID, ref)
+}
+
+// pinnedItemBlockNode is block nodeID of item, an ask or a comment, read at the revision ref pins
+// (ref.Pin is not 0), as a reference pinned to it reads it (itemBlockReferenceNode), where node and
+// current are what refs.Node answered for nodeID, its text the current one: the block with what
+// that revision recorded of it (model.BlockPin). A block no current revision holds is the node
+// refs.RemovedItemBlockNode builds, and a pin past the item's current revision or to one that did
+// not hold the block answers 404, each saying which. The lens read reads a pinned address of an
+// item's block the same way (lensReadNode).
+func pinnedItemBlockNode(ctx context.Context, q refs.Queryer, who model.Actor, item, node model.GraphNode, current bool, nodeID string, ref text.Ref) (model.GraphNode, error) {
+	kind := refs.ItemKind(ref.Item)
+	noun := itemBlockNoun(ref.Item)
+	at, err := refs.ItemBlockAt(ctx, q, kind, item.ID, ref.Block, ref.Pin)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -583,7 +606,7 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, qu
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
-		removed, held, err := refs.RemovedItemBlockNode(ctx, pool, who, kind, query.ID, at.RemovedRevision)
+		removed, held, err := refs.RemovedItemBlockNode(ctx, q, who, kind, nodeID, at.RemovedRevision)
 		if err != nil {
 			return model.GraphNode{}, err
 		}

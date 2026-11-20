@@ -12,19 +12,20 @@ package api
 // because a document's own write removes its block. gone is final: every write on a gone node is
 // 409 NODE_GONE, naming it (nodeGone), the state route's and the settle's, and the reasoning
 // routes' write of a lens, a finding, a risk or a pointer on it (findWrittenNode). The write that
-// takes a lens to gone takes each finding and each risk under it to gone with it, those the caller
-// may not see among them (writeNodeState), so that move is a person's alone, whatever the lens
-// holds (lensGoneNotPermitted). settled goes through the settle alone, which a person makes on any
-// proposal and any other caller on a proposal its own credential wrote (maySettle). The state
-// route holds every other move of a node into or out of proposed or settled, and every other move
-// into gone, to that one rule too, and refuses any other caller 403 STATE_NOT_PERMITTED: a move
-// out of settled undoes what a settle decided, a move out of proposed ends a proposal and counts a
-// proposed check or plan task as serving its requirement as a settle would, a move into proposed
-// takes a requirement's gaps out of the coverage read and the approval request, and a move into
-// gone is final. Both routes share one body (writeNodeStateAs), which records one writer for one
-// person, and write through writeNodeState, at graphstore.NoEvent: no event is appended and no
-// delivery is sent, as for every node of these kinds (reasoning_write.go), and the reads answer
-// the new state at once, since every one of them reads the node's row.
+// takes a node to gone takes its whole part_of subtree to gone with it, at every depth and of
+// every kind, those nodes the caller may not see among them (writeNodeState, spec v59 R5), so that
+// move is a person's alone on a lens, a finding, a risk and a constraint alike, whatever stands
+// under the node (goneNotPermitted). settled goes through the settle alone, which a person makes on
+// any proposal and any other caller on a proposal its own credential wrote (maySettle). The state
+// route holds every other move of a node into or out of proposed or settled to that one rule too,
+// and refuses any other caller 403 STATE_NOT_PERMITTED: a move out of settled undoes what a settle
+// decided, a move out of proposed ends a proposal and counts a proposed check or plan task as
+// serving its requirement as a settle would, and a move into proposed takes a requirement's gaps
+// out of the coverage read and the approval request. Both routes share one body
+// (writeNodeStateAs), which records one writer for one person, and write through writeNodeState,
+// at graphstore.NoEvent: no event is appended and no delivery is sent, as for every node of these
+// kinds (reasoning_write.go), and the reads answer the new state at once, since every one of them
+// reads the node's row.
 //
 // A block of an ask, a comment or a message is a node every read answers, and no node the store
 // holds: no writer, the backfill among them, writes a graph_nodes row for one, so every read
@@ -65,9 +66,10 @@ const (
 	// codeSettleNotPermitted is a settle by a caller who is neither a person nor the proposal's
 	// own author.
 	codeSettleNotPermitted = "SETTLE_NOT_PERMITTED"
-	// codeStateNotPermitted is a move of a node into or out of proposed or settled, or into gone,
-	// through the state route by a caller who is neither a person nor the node's own author
-	// (maySettle).
+	// codeStateNotPermitted is a move of a lens, a finding, a risk or a constraint into gone
+	// through the state route by a caller who is no person (goneNotPermitted), and any other move
+	// of a node into or out of proposed or settled by a caller who is neither a person nor the
+	// node's own author (maySettle).
 	codeStateNotPermitted = "STATE_NOT_PERMITTED"
 )
 
@@ -83,16 +85,17 @@ func nodeGone(kind, address string) error {
 	return errorf(http.StatusConflict, codeNodeGone, "the %s %s is gone: no write writes on it", kind, address)
 }
 
-// lensGoneNotPermitted is the 403 STATE_NOT_PERMITTED of a move of the lens target into gone by a
-// caller who is no person (spec requirement r-proposed). That move takes the lens's findings and
-// its risks to gone with it, those the caller may not see among them, so it is a person's
-// alone: a rule that read what the lens holds would tell the caller what stands under it. So the
-// refusal reads nothing under the lens and names the lens alone, in the same words whatever the
-// lens holds, and the lens's own author is refused it as every other caller is; an agent marks a
-// lens it wrote overtaken instead.
-func lensGoneNotPermitted(target stateTarget) error {
+// goneNotPermitted is the 403 STATE_NOT_PERMITTED of a move of target - a lens, a finding, a risk
+// or a constraint, the nodes the state route takes to gone (stateRefusal) - into gone by a caller
+// who is no person (spec requirement r-proposed, spec v59 R5). That move takes the node's whole
+// part_of subtree to gone with it, those nodes the caller may not see among them, so it is a
+// person's alone: a rule that read what stands under the node would tell the caller what stands
+// there. So the refusal reads nothing under the node and names the node alone, in the same words
+// whatever stands under it, and the node's own author is refused it as every other caller is; an
+// agent marks a node it wrote overtaken instead.
+func goneNotPermitted(target stateTarget) error {
 	return errorf(http.StatusForbidden, codeStateNotPermitted,
-		"this credential may not move the %s %s to gone: a person alone takes a lens to gone, with its findings and its risks, and its author marks it overtaken instead",
+		"this credential may not move the %s %s to gone: a person alone takes a lens, a finding, a risk or a constraint to gone, with everything that stands under it, and its author marks it overtaken instead",
 		target.kind, target.address)
 }
 
@@ -258,8 +261,9 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 type nodeStateInput struct {
 	Actor *model.Actor `json:"actor"`
 	// State is the value the node's state is written at: proposed, overtaken or live on any node
-	// the store holds that is not gone, gone on a lens, a finding, a risk or a constraint. settled
-	// is written by the settle alone, and any other word is no value of the node state.
+	// the store holds that is not gone, and gone on a lens, a finding, a risk or a constraint, by
+	// a person alone, taking the node's whole part_of subtree with it. settled is written by the
+	// settle alone, and any other word is no value of the node state.
 	State string `json:"state" required:"true" enum:"live,gone,proposed,overtaken"`
 }
 
@@ -290,14 +294,15 @@ func stateRefusal(target stateTarget, held, asked string) error {
 // finding, a risk or a constraint alone, and refuses settled and gone on any other node with 409
 // NODE_STATE_NOT_WRITABLE. A node the store holds no row of is the same 409: a block of an ask, a
 // comment or a message, of which the store keeps none (itemBlockRefusal), and a node written
-// before the store existed that the backfill has not reached yet. A move of a lens into gone is a
-// person's alone (lensGoneNotPermitted), read off the credential and nothing under the lens. Any
-// other move of the node into or out of proposed or settled, or into gone (takesTheSettleRule),
-// then takes the settle's caller rule over the node's made_by (maySettle). Any other caller is 403
-// STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the shared bearer, which proves
-// no author, makes no such move. The write appends one state tuple, written by the caller, and a
-// lens's gone one on each finding and each risk under it too (writeNodeState); a write of the
-// state the node holds appends none.
+// before the store existed that the backfill has not reached yet. A move into gone, which the route
+// makes on a lens, a finding, a risk or a constraint alone, is a person's alone (goneNotPermitted),
+// read off the credential and nothing under the node, since it takes the node's whole part_of
+// subtree with it. Any other move of the node into or out of proposed or settled
+// (takesTheSettleRule) then takes the settle's caller rule over the node's made_by (maySettle).
+// Any other caller is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the
+// shared bearer, which proves no author, makes no such move. The write appends one state tuple,
+// written by the caller, and a gone one on each node of the subtree it takes with it too
+// (writeNodeState); a write of the state the node holds appends none.
 func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 	var input nodeStateInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -309,15 +314,15 @@ func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 			if err := stateRefusal(target, stored.State, input.State); err != nil {
 				return err
 			}
-			if input.State == graphstore.StateGone && target.end.kind == graphstore.KindLens {
+			if input.State == graphstore.StateGone {
 				if !proving.Credential.Holds(model.ScopePerson) {
-					return lensGoneNotPermitted(target)
+					return goneNotPermitted(target)
 				}
 				return nil
 			}
 			if takesTheSettleRule(stored.State, input.State) && !maySettle(proving, stored.MadeBy) {
 				return errorf(http.StatusForbidden, codeStateNotPermitted,
-					"this credential may not move the %s %s from %s to %s: a person makes any move into or out of proposed or settled and any move into gone, and any other caller only on a node whose author is the author this credential proves",
+					"this credential may not move the %s %s from %s to %s: a person makes any move into or out of proposed or settled, and any other caller only on a node whose author is the author this credential proves",
 					target.kind, target.address, stored.State, input.State)
 			}
 			return nil
@@ -338,16 +343,16 @@ func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 
 // takesTheSettleRule is whether a write of asked on a node the store holds at held is a move the
 // settle's caller rule decides (maySettle): a move of the node into or out of proposed or settled,
-// other than the settle itself, which this route never writes (stateRefusal), and a move into
-// gone, but for a lens's, which is a person's alone (lensGoneNotPermitted). A move out of settled
-// undoes what a settle decided; a move out of proposed ends a proposal, and counts a proposed
-// check or plan task as serving its requirement as a settle would; a move into proposed takes a
-// requirement's gaps out of the coverage read and the approval request; and a move into gone is
-// final. A write of the state the node already holds is none of these: it moves nothing and
-// appends no tuple (writeNodeState), so it changes no decision and no count.
+// other than the settle itself, which this route never writes (stateRefusal). A move into gone,
+// out of proposed or settled or not, never reaches this rule: the route holds it to a person alone
+// first (goneNotPermitted). A move out of settled undoes what a settle decided; a move out of
+// proposed ends a proposal, and counts a proposed check or plan task as serving its requirement as
+// a settle would; and a move into proposed takes a requirement's gaps out of the coverage read and
+// the approval request. A write of the state the node already holds is none of these: it moves
+// nothing and appends no tuple (writeNodeState), so it changes no decision and no count.
 func takesTheSettleRule(held, asked string) bool {
 	return held != asked && (held == graphstore.StateProposed || held == graphstore.StateSettled ||
-		asked == graphstore.StateProposed || asked == graphstore.StateSettled || asked == graphstore.StateGone)
+		asked == graphstore.StateProposed || asked == graphstore.StateSettled)
 }
 
 // --- POST /api/v1/issues/{key}/nodes/{id}/settle ------------------------------------------------
@@ -364,7 +369,7 @@ func takesTheSettleRule(held, asked string) bool {
 // shared bearer proves no author (graphstore.ProvesAuthor), and every holder of it is one
 // credential, so it settles nothing. The state route holds each move takesTheSettleRule names to
 // this same rule, so the callers who may settle a node are the callers who may move it into or
-// out of proposed or settled, or into gone.
+// out of proposed or settled.
 func maySettle(proving, author model.Actor) bool {
 	return proving.Credential.Holds(model.ScopePerson) || graphstore.SameAuthor(author, proving)
 }

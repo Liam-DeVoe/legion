@@ -244,6 +244,15 @@ latest_markdown() {
   jq -j '.markdown' "$work/body" >"$work/latest.md"
 }
 
+# document_token SECTION DOCUMENT: the token DOCUMENT carries now, the one `dispatch doc-read`
+# prints, in $doc_token. An upload replacing DOCUMENT names it, as every replacement does.
+document_token() {
+  send agent GET "/api/v1/artifacts/$2/text"
+  want_status 200 "$1" "read the text of $2"
+  field "$1" "the token of $2" '.token'
+  doc_token="$value"
+}
+
 # ask_block ID FILE: the markdown of the ask block ID in FILE, its fence and attributes included,
 # on stdout; nothing where FILE holds no such block.
 ask_block() {
@@ -767,8 +776,10 @@ without_block() {
   ' "$2"
 }
 without_block q-kept "$work/spec-before-refusals.md" >"$work/replacement.md"
+document_token refusal "$spec_a"
 send agent POST "/api/v1/issues/$issue_a/artifacts" \
-  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" --argjson a "$(seed_actor)" '{name: $n, content: $c, actor: $a}')"
+  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" --arg t "$doc_token" --argjson a "$(seed_actor)" \
+    '{name: $n, content: $c, precondition: {document: $t}, actor: $a}')"
 refused "an agent's whole-document replacement without q-kept"
 send agent POST "/api/v1/artifacts/$spec_a/edits" \
   "$(jq -cn --argjson a "$(seed_actor)" '{ops: [{op: "retype", block: "q-kept", type: "callout", attributes: {kind: "note", title: ""}}], actor: $a}')"
@@ -794,8 +805,9 @@ send person POST "/api/v1/artifacts/$spec_a/edits" '{"ops":[{"op":"delete","bloc
 taken "the person's delete of q-kept" q-kept ""
 latest_markdown person "$spec_a"
 without_block q-left-format "$work/latest.md" >"$work/replacement.md"
+document_token person "$spec_a"
 send person POST "/api/v1/issues/$issue_a/artifacts" \
-  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" '{name: $n, content: $c}')"
+  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" --arg t "$doc_token" '{name: $n, content: $c, precondition: {document: $t}}')"
 taken "the person's whole-document replacement without the answered q-left-format" q-left-format ""
 send person POST "/api/v1/artifacts/$spec_a/edits" \
   '{"ops":[{"op":"retype","block":"q-doc-plain","type":"callout","attributes":{"kind":"note","title":""}}]}'

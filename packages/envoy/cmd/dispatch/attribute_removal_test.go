@@ -55,10 +55,16 @@ func removalDocument(name string) string {
 }
 
 // uploadDocument uploads content under name to the issue through p, as the test's person, and
-// answers the answer: a new document, or a new version of the issue's document of that name.
+// answers the answer: a new document, or a new version of the issue's document of that name, which
+// names the token of the version it replaces.
 func uploadDocument(t *testing.T, p *dispatchProcess, issue, name, content string) httpAnswer {
 	t.Helper()
-	answer := p.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", encodeJSON(t, map[string]string{"name": name, "content": content}), asUser(dispatchTestLogin))
+	artifacts := "/api/v1/issues/" + issue + "/artifacts"
+	body := map[string]any{"name": name, "content": content}
+	if base := p.uploadBase(t, artifacts, name); base != nil {
+		body["precondition"] = base
+	}
+	answer := p.send(t, http.MethodPost, artifacts, encodeJSON(t, body), asUser(dispatchTestLogin))
 	if answer.status != http.StatusCreated && answer.status != http.StatusOK {
 		t.Fatalf("upload %s to %s: %s", name, issue, answer)
 	}
@@ -381,7 +387,11 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 			t.Fatalf("the first document answers no answered ask, so its read proves nothing:\n%s", trailer)
 		}
 		t.Logf("dispatch doc-read's trailer:\n%s", trailer)
-		uploaded := runCurrentCLI(t, current, home, "artifact", "--issue", issue, "--name", documentName(t, current, first), "--content", markdown, "--force")
+		// The upload replaces the version doc-read printed, so it names the token doc-read printed
+		// with it: the trailer's first line.
+		tokenLine, _, _ := strings.Cut(trailer, "\n")
+		uploaded := runCurrentCLI(t, current, home, "artifact", "--issue", issue, "--name", documentName(t, current, first), "--content", markdown, "--force",
+			"--precondition-json", encodeJSON(t, map[string]string{"document": strings.TrimPrefix(tokenLine, "Document token: ")}))
 		if uploaded.code != 0 {
 			t.Fatalf("dispatch artifact --force refused the text dispatch doc-read printed: %s", uploaded)
 		}

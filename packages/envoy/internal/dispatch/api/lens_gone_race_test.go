@@ -11,8 +11,8 @@ import (
 )
 
 // holdGone takes the node target names to gone in a transaction it holds open - writeNodeState,
-// which takes the issue's owner lock first and then moves the node, and a lens's findings and
-// risks with it - sends post meanwhile, waits until post waits on that transaction or answers,
+// which takes the issue's owner lock first and then moves the node, and its whole part_of subtree
+// with it - sends post meanwhile, waits until post waits on that transaction or answers,
 // commits it, and answers what post answered. name names the post in a failure.
 func holdGone(t *testing.T, rig reasoningRig, name string, target stateTarget, post func() *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()

@@ -3032,7 +3032,7 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 	storedJoin, storedColumns := storedNode(BlockNodeKind, "$4")
 	if err := q.QueryRow(ctx, `
 		select `+blockFirstColumns("first")+`, removed.authors, removed.created_at,
-		       (select max(i.version) from document_indexed_versions i where i.artifact_id = b.artifact_id and i.version < $3),
+		       `+indexedBelowSQL("b.artifact_id", "$3")+`,
 		       `+storedColumns+`
 		from (select $1::uuid as artifact_id, `+DocumentRoomSQL("$1::uuid")+` as room, $2::text as block_id) b
 		`+blockFirstVersionOr("first", "b.room", "b.block_id", "b.artifact_id")+`
@@ -3066,6 +3066,15 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 	}
 	setStored(&node, stored)
 	return node, nil
+}
+
+// indexedBelowSQL is the latest version of document artifact a block-aware build indexed below
+// version, as a scalar expression over the SQL artifact and version, null where none is: the last
+// version known to hold a block that version deleted, which is the version a removed block's own
+// node belongs to (RemovedBlockNode) and the version a lens on it names it at (pinnedParentSQL).
+func indexedBelowSQL(artifact, version string) string {
+	return `(select max(indexed.version) from document_indexed_versions indexed
+		where indexed.artifact_id = ` + artifact + ` and indexed.version < ` + version + `)`
 }
 
 // uniqueBlocks keeps the first block of each id, in order, as the node GET …/blocks addresses by

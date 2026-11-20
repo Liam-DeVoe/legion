@@ -171,19 +171,20 @@ func requireGoneRefused(t *testing.T, name string, response *httptest.ResponseRe
 
 // TestALensTakenGoneTakesItsFindingsAndRisksGone holds the gone of a lens (spec requirement
 // r-proposed), the Go twin of c-state-closed's lens. alice's pre-mortem lens holds a finding and a
-// risk, which she proposes and settles. A move of a lens into gone is a person's alone: the shared
-// bearer's gone on the lens is 403 STATE_NOT_PERMITTED naming the lens and stores nothing, and so
-// is the gone of bob's personal token, without the person scope, on a lens bob wrote that holds
-// only his own finding, in the same words once the lens is substituted; that token marks its lens
-// overtaken instead. A person's gone takes what the lens holds to gone whether or not she may see
-// it: bob's cookie takes gone a lens of alice's holding a risk alice reserved for herself, and the
-// risk with it. alice's gone takes her lens, its finding and its risk gone in one write, each with
-// a state tuple written by her, and each then reads as an address nobody holds and as a reference
-// target that is gone and names nothing. gone is final: live, proposed and overtaken on the lens,
-// proposed and the settle on the risk, a finding added to the lens, a risk written under it, a
-// pointer out of it and a lens invoked on the risk are each 409 NODE_GONE naming the node written
-// on, and a lens triggered by the gone lens, a far end, is still 404 NOT_FOUND. A gone lens
-// reserved for alice answers bob as a lens nobody wrote.
+// risk, which she proposes and settles. A move into gone, of a lens as of a finding, a risk or a
+// constraint, is a person's alone, since it takes the node's whole part_of subtree with it (spec
+// v59 R5): the shared bearer's gone on the lens is 403 STATE_NOT_PERMITTED naming the lens and
+// stores nothing, and so is the gone of bob's personal token, without the person scope, on a lens
+// bob wrote that holds only his own finding, in the same words once the lens is substituted; that
+// token marks its lens overtaken instead. A person's gone takes what stands under the lens to gone
+// whether or not she may see it: bob's cookie takes gone a lens of alice's holding a risk alice
+// reserved for herself, and the risk with it. alice's gone takes her lens, its finding and its
+// risk gone in one write, each with a state tuple written by her, and each then reads as an
+// address nobody holds and as a reference target that is gone and names nothing. gone is final:
+// live, proposed and overtaken on the lens, proposed and the settle on the risk, a finding added
+// to the lens, a risk written under it, a pointer out of it and a lens invoked on the risk are each
+// 409 NODE_GONE naming the node written on, and a lens triggered by the gone lens, a far end, is
+// still 404 NOT_FOUND. A gone lens reserved for alice answers bob as a lens nobody wrote.
 func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
@@ -241,10 +242,10 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 	requireNodeState(t, rig.handler, held.Address, "alice", graphstore.StateSettled)
 
 	// lensGoneWords is the one refusal of a gone on the lens at address by a caller who is no
-	// person, whatever the lens holds (lensGoneNotPermitted).
+	// person, whatever the lens holds (goneNotPermitted).
 	lensGoneWords := func(address string) string {
 		return "this credential may not move the lens " + address +
-			" to gone: a person alone takes a lens to gone, with its findings and its risks, and its author marks it overtaken instead"
+			" to gone: a person alone takes a lens, a finding, a risk or a constraint to gone, with everything that stands under it, and its author marks it overtaken instead"
 	}
 	before := stateTupleCount(t, rig.database)
 	shared := asToken("agent-token", "ses_shared_bearer_01", nodePath(lens.Address, "state"), map[string]any{"state": graphstore.StateGone})
@@ -528,6 +529,87 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 	}
 }
 
+// sender is one caller of a test: the request it sends of method to path with body.
+type sender = func(method, path string, body any) *httptest.ResponseRecorder
+
+// The two agents of c-settle's tests, each a broker session that acts for a person of its own.
+const (
+	settleFirstSession  = "ses_first_agent_0001"
+	settleSecondSession = "ses_second_agent_002"
+	settleFirstPerson   = "bob"
+	settleSecondPerson  = "carol"
+)
+
+// settleRigIssue is the issue a settleRig holds, as its create answers it.
+type settleRigIssue struct {
+	Key               string `json:"key"`
+	PrimaryArtifactID string `json:"primary_artifact_id"`
+}
+
+// settleRig is the server c-settle's tests drive: the broker-token rig, on a server that also
+// verifies the pod tokens of issuer, holding one issue of the project brokerTestProject that
+// alice, the person, made, whose spec, at spec, opens with a paragraph. alice signs in with her
+// cookie (asAlice), and each of the two agents holds a broker-issued token bound to a session of
+// its own (agent), the first acting for bob and the second for carol, so each proves an author and
+// holds no person scope.
+type settleRig struct {
+	*brokerTokenRig
+	issuer                     *serviceTokenIssuer
+	issue                      settleRigIssue
+	spec                       string
+	asAlice, asFirst, asSecond sender
+}
+
+func newSettleRig(t *testing.T) settleRig {
+	t.Helper()
+	issuer := newServiceTokenIssuer(t)
+	rig := settleRig{brokerTokenRig: newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)}), issuer: issuer}
+	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": brokerTestProject, "name": "Broker"}); created.Code != http.StatusCreated {
+		t.Fatalf("create the project: status=%d body=%s", created.Code, created.Body.String())
+	}
+	created := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": brokerTestProject, "title": "Settled by whom", "spec": "An opening paragraph.\n",
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the issue: status=%d body=%s", created.Code, created.Body.String())
+	}
+	rig.issue = decodeBody[settleRigIssue](t, created)
+	rig.spec = "dispatch://" + rig.issue.Key + "/spec"
+	rig.asAlice = func(method, path string, body any) *httptest.ResponseRecorder {
+		return dispatchRequest(t, rig.handler, method, path, body, "alice")
+	}
+	rig.asFirst = rig.agent(t, settleFirstSession, settleFirstPerson, "the-first-agent's-token")
+	rig.asSecond = rig.agent(t, settleSecondSession, settleSecondPerson, "the-second-agent's-token")
+	return rig
+}
+
+// agent is a broker-issued token bound to a session of its own that acts for person, and the
+// requests it makes.
+func (r settleRig) agent(t *testing.T, session, person, token string) sender {
+	t.Helper()
+	caller := newBrokerCaller(t)
+	answer := liveNamedToken(caller.jkt)
+	answer.Session, answer.Person = session, person
+	r.broker.Says(token, answer)
+	return func(method, path string, body any) *httptest.ResponseRecorder {
+		return r.serve(caller.presenting(t, method, path, token, body))
+	}
+}
+
+// storedNodeOf is the row the store holds of the node address names, failing where it holds none.
+func storedNodeOf(t *testing.T, database *store.Store, address string) graphstore.Node {
+	t.Helper()
+	kind, id, ok := decodeNodeAddress(address)
+	if !ok {
+		t.Fatalf("decode the node address %s", address)
+	}
+	node, held, err := graphstore.ReadNode(context.Background(), database.Pool, refs.StoredKindOf(kind), id)
+	if err != nil || !held {
+		t.Fatalf("read the row of %s: held %t, %v", address, held, err)
+	}
+	return node
+}
+
 // TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor is c-settle
 // of the verification document (plan V18). alice signs in with her cookie and
 // holds a personal token with the person scope and two without it; two agents each hold a
@@ -558,47 +640,21 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 // agent writes two pre-mortems of its own, one holding only its own finding and one under which
 // alice reserves a risk for herself: its gone on each is 403 STATE_NOT_PERMITTED naming the lens,
 // the two answers alike byte for byte once the lens is substituted, and both lenses stay live; it
-// marks the first overtaken, and alice's gone on the second takes her risk gone with it.
+// marks the first overtaken, and alice's gone on the second takes her risk gone with it. The tree
+// a gone takes whole, on the same rig (settleRig), is TestANodeTakenGoneTakesItsWholePartOfSubtree's
+// (gone_subtree_test.go), and the lenses a document's removal takes gone are
+// TestRemovingADocumentTakesEveryLensOnItGone's.
 func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
-	issuer := newServiceTokenIssuer(t)
-	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
+	settle := newSettleRig(t)
+	rig, issuer, issue, spec := settle.brokerTokenRig, settle.issuer, settle.issue, settle.spec
+	asFirst, asSecond := settle.asFirst, settle.asSecond
 	ctx := context.Background()
-	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": brokerTestProject, "name": "Broker"}); created.Code != http.StatusCreated {
-		t.Fatalf("create the project: status=%d body=%s", created.Code, created.Body.String())
-	}
-	created := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": brokerTestProject, "title": "Settled by whom", "spec": "An opening paragraph.\n",
-	})
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create the issue: status=%d body=%s", created.Code, created.Body.String())
-	}
-	issue := decodeBody[struct {
-		Key               string `json:"key"`
-		PrimaryArtifactID string `json:"primary_artifact_id"`
-	}](t, created)
-	spec := "dispatch://" + issue.Key + "/spec"
 	// The spec is a document of its issue's room, whose tree keys its requirements' nodes, which
 	// the store's reads below take.
 	room := readDecisionDocument(t, rig.database, issue.Key, "spec")
 
-	const (
-		firstSession  = "ses_first_agent_0001"
-		secondSession = "ses_second_agent_002"
-	)
-	firstPerson, secondPerson := "bob", "carol"
-	// agent is a broker-issued token bound to a session of its own that acts for person, and the
-	// requests it makes.
-	agent := func(session, person, token string) func(method, path string, body any) *httptest.ResponseRecorder {
-		caller := newBrokerCaller(t)
-		answer := liveNamedToken(caller.jkt)
-		answer.Session, answer.Person = session, person
-		rig.broker.Says(token, answer)
-		return func(method, path string, body any) *httptest.ResponseRecorder {
-			return rig.serve(caller.presenting(t, method, path, token, body))
-		}
-	}
-	asFirst := agent(firstSession, firstPerson, "the-first-agent's-token")
-	asSecond := agent(secondSession, secondPerson, "the-second-agent's-token")
+	const firstSession, secondSession = settleFirstSession, settleSecondSession
+	firstPerson, secondPerson := settleFirstPerson, settleSecondPerson
 	asBearer := func(method, path string, body map[string]any) *httptest.ResponseRecorder {
 		body["actor"] = sessionActor()
 		return rig.serve(brokerRequest(t, method, path, body, "Bearer agent-token", ""))
@@ -782,8 +838,8 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	// session of hers settles it: neither holds the person scope, and the one author rule names
 	// alice for both.
 	const aliceFirstSession, aliceSecondSession = "ses_alice_agent_0001", "ses_alice_agent_0002"
-	asAliceFirst := agent(aliceFirstSession, aliceLogin, "alice's-first-session-token")
-	asAliceSecond := agent(aliceSecondSession, aliceLogin, "alice's-second-session-token")
+	asAliceFirst := settle.agent(t, aliceFirstSession, aliceLogin, "alice's-first-session-token")
+	asAliceSecond := settle.agent(t, aliceSecondSession, aliceLogin, "alice's-second-session-token")
 	if written := asAliceFirst(http.MethodPost, edits, insert("r-alice")); written.Code != http.StatusOK {
 		t.Fatalf("write the requirement of alice's first broker session: status=%d body=%s", written.Code, written.Body.String())
 	}
@@ -894,7 +950,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		t.Fatalf("r-first's newest state tuple is %s written by %+v, want live written by the first agent", newest.ToID, newest.Who)
 	}
 
-	// A lens's move into gone is a person's alone, whatever the lens holds (lensGoneNotPermitted):
+	// A lens's move into gone is a person's alone, whatever the lens holds (goneNotPermitted):
 	// the first agent's gone on each of two pre-mortems of its own, one holding only its own
 	// finding and one under which alice reserves a risk for herself, is refused, the two answers
 	// equal byte for byte once the lens is substituted and each lens still at live. The agent marks

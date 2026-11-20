@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -106,6 +107,11 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 // order of their part_of tuples, each with its part_of to the spec, its one has_kind with the
 // kind's words, its author through authored_by, and the chain from both ends: placement and
 // trigger kept apart.
+//
+// No lens of that read answers on null (spec v59 R5). A lens on what a version or a retirement
+// takes out of an issue is TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent's
+// (gone_subtree_test.go), and a lens on a block of a comment or a part of an ask that a revision
+// removes TestALensOnARemovedPartOrCommentBlockNamesItsLastRevision's.
 func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
@@ -193,6 +199,87 @@ func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	}
 	if !slices.Equal(chain.Lenses[1].TriggeredBy, []string{tradeOff.Address}) || !slices.Equal(chain.Lenses[0].Triggered, []string{premortem.Address}) {
 		t.Errorf("the chain answers the pre-mortem triggered by %v and the trade-off triggering %v", chain.Lenses[1].TriggeredBy, chain.Lenses[0].Triggered)
+	}
+	requireEveryLensOn(t, "the read of the spec", read)
+}
+
+// requireOnPinned fails unless GET /api/v1/lenses?on= pinned, the address of a node at the last
+// version of its document that held it, answers that node at that address with lens, called name,
+// among the lenses on it, on that address.
+func requireOnPinned(t *testing.T, rig reasoningRig, name, lens, pinned string) {
+	t.Helper()
+	response := rig.lensesResponse(pinned, "alice")
+	if response.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/lenses?on=%s answers %d %s, want the node with %s %s among the lenses on it",
+			pinned, response.Code, response.Body.String(), name, lens)
+		return
+	}
+	read := decodeBody[nodeLenses](t, response)
+	requireEveryLensOn(t, "the read of "+pinned, read)
+	if read.On.Address != pinned {
+		t.Errorf("GET /api/v1/lenses?on=%s answers the node %+v, want it at %s", pinned, read.On, pinned)
+	}
+	for _, listed := range read.Lenses {
+		if listed.Address == lens {
+			if listed.On == nil || *listed.On != pinned {
+				t.Errorf("GET /api/v1/lenses?on=%s answers %s %s on %s, want it on %s", pinned, name, lens, lensOn(nodeLenses{Lens: &listed}), pinned)
+			}
+			return
+		}
+	}
+	t.Errorf("GET /api/v1/lenses?on=%s answers the lenses %v, want %s %s among them", pinned, readAddresses(read.Lenses), name, lens)
+}
+
+// requireLensAt fails unless the lens at lens, called name, reads live and names parent at the
+// version of its document that last held it: GET /api/v1/lenses answers its on as
+// `<parent>@v<version>`, and GET /api/v1/references answers its node's parent naming parent,
+// pinned or not, with parent_version version (spec v59 R5). Each failure names the lens and parent.
+func requireLensAt(t *testing.T, rig reasoningRig, name, lens, parent string, version int) {
+	t.Helper()
+	pinned := fmt.Sprintf("%s@v%d", parent, version)
+	if state := storedStateOf(t, rig, lens); state != graphstore.StateLive {
+		t.Errorf("%s %s on %s is %s, want live: for a lens its parent is history, not a node taken gone", name, lens, pinned, state)
+	}
+	read := rig.lenses(lens, "alice")
+	requireEveryLensOn(t, "the read of "+name+" "+lens, read)
+	if read.Lens == nil || read.Lens.On == nil || *read.Lens.On != pinned || read.Lens.State != graphstore.StateLive {
+		t.Errorf("GET /api/v1/lenses?on=%s answers %s on %s, want it live on %s, the last version of its document that held it",
+			lens, name, lensOn(read), pinned)
+	}
+	response := dispatchReferences(t, rig.handler, lens, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/references?to=%s, %s: status=%d body=%s", lens, name, response.Code, response.Body.String())
+	}
+	node := decodeBody[model.GraphReferences](t, response).Node
+	if node.Parent == nil || (node.Parent.Ref != parent && node.Parent.Ref != pinned) {
+		t.Errorf("GET /api/v1/references?to=%s answers %s with parent %+v, want one naming %s", lens, name, node.Parent, parent)
+	}
+	if node.ParentVersion == nil || *node.ParentVersion != version {
+		held := "null"
+		if node.ParentVersion != nil {
+			held = fmt.Sprint(*node.ParentVersion)
+		}
+		t.Errorf("GET /api/v1/references?to=%s answers %s with parent_version %s, want %d, the last version that held %s",
+			lens, name, held, version, parent)
+	}
+}
+
+// requireEveryLensOn fails, naming each lens, where read answers a lens with on null: the node
+// itself where it is a lens, each lens on it and each lens of its chains. No read answers a lens
+// with on null (spec v59 R5).
+func requireEveryLensOn(t *testing.T, what string, read nodeLenses) {
+	t.Helper()
+	lenses := slices.Clone(read.Lenses)
+	if read.Lens != nil {
+		lenses = append(lenses, *read.Lens)
+	}
+	for _, chain := range read.Chains {
+		lenses = append(lenses, chain.Lenses...)
+	}
+	for _, lens := range lenses {
+		if lens.On == nil {
+			t.Errorf("%s answers the lens %s with on null: no read answers a lens with on or parent null", what, lens.Address)
+		}
 	}
 }
 
@@ -362,13 +449,13 @@ func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
 	}
 }
 
-// TestALensOnAFindingTakenGoneStandsOnNothing: a lens invoked on a finding reads that finding as
-// the node it stands on until a person takes the finding's lens to gone, which takes the finding
-// with it (writeNodeState). The lens on the finding stays live, and its on then names nothing, as a
-// lens's on names nothing where no read answers its node, a block a later version dropped among
-// them: no read answers a gone finding. It still stands under the issue, whose state route finds
-// and moves it.
-func TestALensOnAFindingTakenGoneStandsOnNothing(t *testing.T) {
+// TestALensOnAFindingGoesGoneWithTheFinding: a lens invoked on a finding hangs under that finding
+// through its part_of, so a person's gone on the finding's lens, which takes the finding to gone,
+// takes the lens on the finding to gone with it in the same write (writeNodeState, spec v59 R5):
+// no read answers it live with an on that names nothing. Its row reads gone; GET /api/v1/lenses
+// and GET /api/v1/references by its address answer what they answer for a lens nobody wrote, 404
+// NOT_FOUND; and gone is final, so the state route's overtaken on it is 409 NODE_GONE naming it.
+func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 	rig := newReasoningRig(t)
 	parent := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"A finding a lens looks at."}})
 	finding := parent.Findings[0].Address
@@ -378,14 +465,31 @@ func TestALensOnAFindingTakenGoneStandsOnNothing(t *testing.T) {
 	}
 
 	rig.writeState(parent.Address, graphstore.StateGone, "alice")
-	read := rig.lenses(onFinding.Address, "alice")
-	t.Logf("the lens on the finding once the finding's lens is gone: %+v", read.Lens)
-	if read.Lens == nil || read.Lens.State != graphstore.StateLive || read.Lens.On != nil {
-		t.Errorf("the lens on the finding reads %+v once the finding's lens is gone, want it live and on null", read.Lens)
+	address := graphstore.KindLens + "/" + onFinding.ID
+	if state := lensStateOf(t, rig.database, address); state != graphstore.StateGone {
+		t.Errorf("the lens on the finding %s is %s once the finding's lens is gone, want gone with the finding", onFinding.Address, state)
 	}
-	if moved := rig.writeState(onFinding.Address, graphstore.StateOvertaken, "alice"); moved.Node.State != graphstore.StateOvertaken {
-		t.Errorf("the state route answers %+v for the lens on the gone finding, want it found under the issue and moved to overtaken", moved)
+	// Each read by the lens's address answers what it answers for a lens nobody wrote, byte for
+	// byte once the id is substituted: the reference read names such a lens by its id alone.
+	nobody := uuid.NewString()
+	for _, read := range []struct {
+		route string
+		send  func(address string) *httptest.ResponseRecorder
+	}{
+		{"GET /api/v1/lenses?on=", func(address string) *httptest.ResponseRecorder { return rig.lensesResponse(address, "alice") }},
+		{"GET /api/v1/references?to=", func(address string) *httptest.ResponseRecorder {
+			return dispatchReferences(t, rig.handler, address, "alice")
+		}},
+	} {
+		seen, unwritten := read.send(onFinding.Address), read.send(refs.StoreRef(graphstore.KindLens, nobody))
+		if seen.Code != http.StatusNotFound || unwritten.Code != http.StatusNotFound ||
+			!bytes.Equal(seen.Body.Bytes(), bytes.ReplaceAll(unwritten.Body.Bytes(), []byte(nobody), []byte(onFinding.ID))) {
+			t.Errorf("alice's %s%s once the finding's lens is gone answers %d %s, and of a lens nobody wrote %d %s: want one 404 NOT_FOUND once the id is substituted",
+				read.route, onFinding.Address, seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
+		}
 	}
+	requireGoneRefused(t, "overtaken on the lens on the gone finding",
+		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.ID)
 }
 
 // TestATriggerPointsOnlyAtALensInvokedBefore: a lens is triggered only by a lens invoked before it

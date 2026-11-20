@@ -181,9 +181,10 @@ var storeWriteCallSites = map[string]string{
 	// it appends, which causes them (api's TestALaterVersionStatesItsBytesInTheStoreLockOrder proves
 	// its steps, and that a later version waits for a backfill naming its node).
 	// removedDocumentNodes is a removal's nodes of the document and of its versions stated gone,
-	// with each changed_by_run of the document's node retracted, after the issue's row and before
-	// any row of the document is deleted, and removeArtifact appends what it stated in the batch
-	// that appends the artifact.removed event, appendCausingEvent (api's
+	// with each changed_by_run of the document's node retracted, and every node beneath the
+	// document's taken to gone in the same batch, after the issue's row and before any row of the
+	// document is deleted, and removeArtifact appends what it stated in the batch that appends the
+	// artifact.removed event, appendCausingEvent (api's
 	// TestARemovalStatesItsDocumentGoneInTheStoreLockOrder).
 	// createIssueTree is an issue's tree artifact (R5 of this branch's spec): its node and its
 	// part_of to the issue through QueueNodes before the artifacts row that names the node and

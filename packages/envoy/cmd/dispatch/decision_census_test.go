@@ -107,11 +107,16 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	pointer := func(block string) string { return "dispatch://" + issue + "/spec#b-" + block }
 	upload := func(header http.Header, name, content string, actor any) {
 		t.Helper()
+		artifacts := "/api/v1/issues/" + issue + "/artifacts"
 		body := map[string]any{"name": name, "content": content}
 		if actor != nil {
 			body["actor"] = actor
 		}
-		if answer := process.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", censusBody(t, body), header); answer.status != http.StatusCreated {
+		// The second upload of asks.md replaces its first version, so it names that version's token.
+		if base := process.uploadBase(t, artifacts, name); base != nil {
+			body["precondition"] = base
+		}
+		if answer := process.send(t, http.MethodPost, artifacts, censusBody(t, body), header); answer.status != http.StatusCreated {
 			t.Fatalf("upload %s: %s", name, answer)
 		}
 	}

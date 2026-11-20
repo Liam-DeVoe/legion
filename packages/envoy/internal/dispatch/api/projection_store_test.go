@@ -535,9 +535,11 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/daemon/internal/record/store.go#record.*Postgres.MoveKeptClaims: update table":      {},
 	"packages/daemon/internal/store/kept_decisions.go#store.tellKeptDecisions: delete from table": {},
 	"packages/daemon/internal/store/kept_decisions.go#store.releaseKeptDecisions: update table":   {},
-	// The migration runners' version tables, schema_migrations and broker_schema_migrations, which
-	// the store's runner names at run time and never a projected table: a recorded identity's fix,
-	// a version's record, and the test helpers that write them as an earlier runner did.
+	// A migration runner's version table, which its caller names: schema_migrations for
+	// Dispatch's store (store.versionTable) and the broker's own for the broker. pgmigrate records
+	// each migration it applies and fills the identity of a row an earlier runner wrote; its test
+	// helper package, which every runner's tests share, writes rows of that table to drive the
+	// refusals. Neither reaches a projected table.
 	"packages/envoy/internal/pgmigrate/identity.go#pgmigrate.writeFixes: update pgx.Identifier{…}.Sanitize()":                     {},
 	"packages/envoy/internal/pgmigrate/identity.go#pgmigrate.Record: insert into pgx.Identifier{…}.Sanitize()":                    {},
 	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.RunIdentityChecks: insert into table":              {},
