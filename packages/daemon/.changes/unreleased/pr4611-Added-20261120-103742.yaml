@@ -13,7 +13,7 @@ body: |-
   each plan this release cannot carry out (`PLAN_REFUSED`, one reason for each cause). A tester's
   failed completion may name the step it returns to (`returnTo`). A task with no reviewer step
   waits for no approval, and a parent whose plan has no acceptance step waits before its retro,
-  held `children`, until the issues beneath it leave the workflow. The daemon API contract is 192.
+  held `children`, until the issues beneath it leave the workflow. The daemon API contract is 189.
 
   One migration adds the plan tables. Its header and the Kubernetes guide hold the transaction
   that rolls it back: every project's daemon on the database rolls back with it, and the plans

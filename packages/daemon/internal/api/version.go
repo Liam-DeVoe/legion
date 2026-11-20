@@ -1358,7 +1358,7 @@ package api
 // one the daemon was about to start from one nothing will start again.
 // `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of `LEGION_HELD_REASONS`,
 // which refuses a value it does not name rather than stripping it like an unknown key, so a word
-// added to the ladder later bumps this number again, as 192 did with `children_before_retro` and
+// added to the ladder later bumps this number again, as 189 did with `children_before_retro` and
 // `task_stopped`. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 98 is served the
 // admission block without it (api's stateFor, withoutHeld), as a caller below 94 is served every
@@ -1497,8 +1497,8 @@ package api
 // slot on this contract, so one not standing in `held` stands in that list under `at_work` where
 // no earlier word of the ladder is true of it, and one held from such a phase under
 // `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
-// reader of 98 or above refuses them. From 192 a parent held there for the issues beneath it
-// reads `children_before_retro` and a task that was stopped there `task_stopped` (192 below).
+// reader of 98 or above refuses them. From 189 a parent held there for the issues beneath it
+// reads `children_before_retro` and a task that was stopped there `task_stopped` (189 below).
 // (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
 // moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
 // as 64 (#3521), so this change takes a number above both. Read again on
@@ -2466,7 +2466,7 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 192: the owner of an issue gives Legion a plan with one task, and the plan picks which of
+// 189: the owner of an issue gives Legion a plan with one task, and the plan picks which of
 // today's steps run. Two architect routes are new. `POST /legion/v1/plans/register`
 // (`api.PlanRegisterRequest`: `grantId`, `issue`, `artifactId`, `version` from 1) reads that
 // version of a document of the issue from Dispatch, with its blocks, and answers 200 with the
@@ -2498,7 +2498,7 @@ package api
 // `legion claims retry` answer `409 TASK_STOPPED` or `409 HELD_FOR_CHILDREN` on a hold of one of
 // the two new reasons; only this release writes plan rows and those reasons, so no issue a release
 // before ran gets the new answers. `readBody` refuses an unknown field, so a plugin sending
-// `returnTo` to a daemon below 192 would have the completion refused, and a daemon below 192 has
+// `returnTo` to a daemon below 189 would have the completion refused, and a daemon below 189 has
 // neither route; the bump is why the two never meet (`api.OwnerPlanContract`).
 // Every architect request of one issue — register_plan, stop_task, sign_off,
 // request_backward_move, retry_or_escalate, close_root and register_gate — names on its fact the
@@ -2517,22 +2517,22 @@ package api
 // One value set of `GET /legion/v1/state` gets wider: an issue's `holdReason` takes
 // `task-stopped` (its owner stopped its task) and `children` (a parent whose plan has no
 // acceptance step waits, before its retro, for the issues beneath it) beside `escalated`. A caller
-// from a pod whose claims record a contract below 192 is served an issue held for either new
+// from a pod whose claims record a contract below 189 is served an issue held for either new
 // reason with no `holdReason`, as a hold of no reason is served (one row of `stateNarrowings`,
-// `withoutNewHoldReasons`); the bands compose, and every reader from 192 on takes the three values.
+// `withoutNewHoldReasons`); the bands compose, and every reader from 189 on takes the three values.
 // A second value set gets wider with it: `admission.held`'s `reason` takes
 // `children_before_retro` (a parent whose plan has no acceptance step, held before its retro,
 // with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
 // that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
 // `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
-// plugin reads the word as a `z.enum`, so a caller below 192 is served each row of either word as
+// plugin reads the word as a `z.enum`, so a caller below 189 is served each row of either word as
 // `unclassified` with no `heldBy`, the row it read for that issue before (the same row of
 // `stateNarrowings`, `withoutNewHoldReasons`).
 // `settings.projects.<KEY>.default_steps`, the steps a task that names none runs, came with it: a
 // key of the settings block the plugin parses loosely, so it narrows nothing.
-// (This entry takes 192, the lowest number above main's 188 that no open pull request declared
-// when a census read all 264 open heads from 2026-11-20T10:29:43Z to 2026-11-20T10:30:17Z. The
-// census found 188 declared by #4581 and #4610, 189 by #3831, #4592 and #4596, 190 by #4493 and
-// #4578, and 191 by #4495, with nothing above 191. Read the base's own number and every open pull
-// request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 192
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when a census read all 266 open heads from 2026-11-20T12:29:39Z to 2026-11-20T12:30:29Z. The
+// census found none declaring 189, and above it 190 (#4578), 191 (six heads), 192 (six heads and
+// this one before this merge), 193 (five) and 194 (#3831 and #4030). Read the base's own number
+// and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 189

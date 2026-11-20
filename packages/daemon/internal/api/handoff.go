@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -396,7 +397,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		returnTo = *req.ReturnTo
 		eventID += fmt.Sprintf(":%d", returnTo)
 	}
-	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && reported != position.lastHandoff {
+	// The phase's last handoff is stored text, so what this completion reports is compared as the
+	// store would keep it (storetext.Text).
+	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && storetext.Text(reported) != position.lastHandoff {
 		if !s.implementationPullRequest(w, r, issue, position.pullRequest, eventID) {
 			return
 		}
@@ -474,6 +477,9 @@ func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *
 //     from before handoffs moved to the Dispatch issue is under the daemon's own session
 //     (dispatch.DaemonSession), so it is refused this way too, and the refusal says to read it
 //     and write it again from the worker's session.
+//
+// The claim holds session as the store keeps it (supervise's register), so the record Dispatch
+// answers is compared as the store would keep it (storetext.Strings).
 func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session string, issue *record.Issue, of phase.Phase, word string, req HandoffCompleteRequest) bool {
 	write := fmt.Sprintf("`dispatch handoff-write --issue %s --phase %s --body-file <file>`", issue.Key, word)
 	read := fmt.Sprintf("`dispatch handoff-read --issue %s --phase %s`", issue.Key, word)
@@ -501,6 +507,7 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 			req.HandoffID, err))
 		return false
 	}
+	handoff = storetext.Strings(handoff)
 	if handoff.IssueKey != issue.Key || handoff.Phase != word || handoff.Version != req.HandoffVersion {
 		writeFailure(w, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
 			"handoff record %s is version %d of %s's %s handoff, and this completion is of %s's %s handoff at version %d: name the record %s shows; this completion changed nothing",
