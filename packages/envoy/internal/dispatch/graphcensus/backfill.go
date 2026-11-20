@@ -2,7 +2,6 @@ package graphcensus
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
@@ -857,18 +856,6 @@ func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]bl
 	return held, nil
 }
 
-// commentRow is one comments row the backfill reads: its id, its author as the row stored it,
-// when it was written, the addresses of the artifact it is anchored to and the artifact that
-// owns it, and the event that stored it.
-type commentRow struct {
-	id        string
-	author    model.Actor
-	createdAt time.Time
-	anchor    string
-	owner     string
-	event     int64
-}
-
 // backfillComments writes a node and the facts its row is the projection of for every comment
 // written before the store existed: the artifact it is anchored to and the artifact that owns it
 // where it has them (graphstore.CommentFacts, as api's commentStored states them), the two base
@@ -878,22 +865,22 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 	done := KindBackfill{Kind: graphstore.KindComment}
 	after := "00000000-0000-0000-0000-000000000000"
 	for {
-		batch, err := readCommentRows(ctx, database, after)
+		ids, causes, err := readCommentRows(ctx, database, after)
 		if err != nil {
 			return done, err
 		}
-		if len(batch) == 0 {
+		if len(ids) == 0 {
 			break
 		}
-		after = batch[len(batch)-1].id
-		nodes, tuples, err := writeCommentBatch(ctx, database, batch)
+		after = ids[len(ids)-1]
+		nodes, tuples, err := writeCommentBatch(ctx, database, ids, causes)
 		if err != nil {
 			return done, err
 		}
-		done.Rows += int64(len(batch))
+		done.Rows += int64(len(ids))
 		done.Nodes += nodes
 		done.Tuples += tuples
-		if len(batch) < backfillBatch {
+		if len(ids) < backfillBatch {
 			break
 		}
 	}
@@ -911,10 +898,14 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 	return done, nil
 }
 
-func readCommentRows(ctx context.Context, database *store.Store, after string) ([]commentRow, error) {
+// readCommentRows reads the next batch of comments rows after the comment after, in id order,
+// that name no node and whose relations fit the store's bound: each one's id, and beside it the
+// first comment.created event that names it, or the sentinel (graphstore.NoEvent) where no event
+// does, which is the cause of what the batch states of it (refs.CommentsNamingNoNode reads the
+// rest of the row again under the owner locks).
+func readCommentRows(ctx context.Context, database *store.Store, after string) (ids []string, causes []int64, err error) {
 	rows, err := database.Pool.Query(ctx, `
-		select c.id::text, c.author, c.created_at,
-		       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''),
+		select c.id::text,
 		       coalesce((
 			select e.id from events e
 			where coalesce(e.issue_key, e.artifact_id::text, e.project_key)
@@ -933,165 +924,32 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 		limit $2
 	`, after, backfillBatch, graphstore.NoEvent)
 	if err != nil {
-		return nil, fmt.Errorf("read the comments naming no node: %w", err)
+		return nil, nil, fmt.Errorf("read the comments naming no node: %w", err)
 	}
-	return scanCommentRows(rows)
-}
-
-// CommentsNamingNoNode is the backfill's write (CommentWrite) of each comment of ids whose row
-// names no node, read through q, for the block-index tick's write of the comments the events after
-// its cursor name (docs' readEventsAfterCursor). Beside each id, causes holds the event that
-// stored the comment, the comment.created or comment.answered the tick read, which is the cause of
-// what the write states, as readCommentRows reads it for the backfill's own pass: the tick has it
-// in hand, so it reads no event of the log to find it. A row that names its node already is left
-// alone, as the backfill leaves it, and so is a comment one of whose relations is past the store's
-// address bound (commentInTheStore), which no writer gives a node. The caller reads it under the
-// owner locks of those comments (LockCommentOwners), which it takes before, so what it reads is
-// what it writes.
-func CommentsNamingNoNode(ctx context.Context, q graphstore.Queryer, ids []string, causes []int64) (CommentWrite, error) {
-	rows, err := q.Query(ctx, `
-		select c.id::text, c.author, c.created_at,
-		       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), named.cause
-		from unnest($1::uuid[], $2::bigint[]) as named (id, cause)
-		join comments c on c.id = named.id`+commentStoreJoins+`
-		where c.node_kind is null and `+commentInTheStore+`
-		order by c.id
-	`, ids, causes)
-	if err != nil {
-		return CommentWrite{}, fmt.Errorf("read the comments the events name that name no node: %w", err)
-	}
-	batch, err := scanCommentRows(rows)
-	if err != nil {
-		return CommentWrite{}, err
-	}
-	return commentWriteOf(batch), nil
-}
-
-// LockCommentOwners takes the owner lock of every comment of ids (store.LockOwners): its issue's,
-// or the document's that owns a comment on a document no issue owns, the lock every writer of a
-// comments row takes before it reads what it writes. A comment's owner never moves, so the owners
-// are read plainly first and the rows a writer goes on to write are read again under the locks.
-// A comment no row holds names no owner.
-func LockCommentOwners(ctx context.Context, tx pgx.Tx, ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	rows, err := tx.Query(ctx, `
-		select distinct issue_key, artifact_id::text from comments where id = any($1::uuid[])
-	`, ids)
-	if err != nil {
-		return fmt.Errorf("read the owners of %d comments: %w", len(ids), err)
-	}
-	var owners []store.Owner
-	for rows.Next() {
-		var issueKey, artifactID *string
-		if err := rows.Scan(&issueKey, &artifactID); err != nil {
-			rows.Close()
-			return fmt.Errorf("read the owner of a comment: %w", err)
-		}
-		if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
-			owners = append(owners, *owner)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the owners of %d comments: %w", len(ids), err)
-	}
-	return store.LockOwners(ctx, tx, owners...)
-}
-
-// scanCommentRows reads every row of rows, a read of commentRow's columns in its order, and
-// closes it.
-func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 	defer rows.Close()
-	var batch []commentRow
 	for rows.Next() {
-		var row commentRow
-		var author []byte
-		if err := rows.Scan(&row.id, &author, &row.createdAt, &row.anchor, &row.owner, &row.event); err != nil {
-			return nil, fmt.Errorf("read a comment naming no node: %w", err)
+		var id string
+		var cause int64
+		if err := rows.Scan(&id, &cause); err != nil {
+			return nil, nil, fmt.Errorf("read a comment naming no node: %w", err)
 		}
-		if err := json.Unmarshal(author, &row.author); err != nil {
-			return nil, fmt.Errorf("read the author of comment %s: %w", row.id, err)
-		}
-		batch = append(batch, row)
+		ids, causes = append(ids, id), append(causes, cause)
 	}
-	return batch, rows.Err()
+	return ids, causes, rows.Err()
 }
 
-// CommentWrite is the backfill's write of a batch of comments rows that name no node, built once
-// (commentWriteOf) for both of its writers: the backfill's own pass (writeCommentBatch) and the
-// block-index tick's write of the comments the events after its cursor name (docs'
-// readEventsAfterCursor). Nodes and Tuples are what the writer states in its one store write
-// (graphstore.QueueWrite): each comment's node and the facts its row projects
-// (graphstore.CommentFacts), and who wrote it (graphstore.AuthorFacts). Queue then names each
-// comment's node on its row.
-type CommentWrite struct {
-	Nodes  []graphstore.Node
-	Tuples []graphstore.Tuple
-	// ids are the comments the write names the nodes of. A comment's node address is its own id.
-	ids []string
-}
-
-// Comments is how many comments rows the write names the nodes of.
-func (w CommentWrite) Comments() int { return len(w.ids) }
-
-// Queue queues the write on b: its one store write of every node and every tuple
-// (graphstore.QueueWrite), and then the node named on each comment's row, which has to follow the
-// store write of the nodes: the row's foreign key names the node.
-func (w CommentWrite) Queue(b *store.WriteBatch) error {
-	graphstore.QueueWrite(b, w.Nodes, w.Tuples)
-	b.Queue("name the nodes of a comment batch on their rows", `
-		update comments c
-		set node_kind = $3, node_address = p.address
-		from unnest($1::text[], $2::text[]) as p (id, address)
-		where c.id = p.id::uuid
-	`, w.ids, w.ids, graphstore.KindComment)
-	return nil
-}
-
-// commentWriteOf builds the write of one batch of comments rows (CommentWrite). One write writes
-// a node once, so an author several comments of the batch name is made by the first of them.
-func commentWriteOf(batch []commentRow) CommentWrite {
-	write := CommentWrite{Nodes: make([]graphstore.Node, 0, 2*len(batch)), ids: make([]string, 0, len(batch))}
-	written := map[[2]string]struct{}{}
-	for _, row := range batch {
-		// A comment any of whose relation ends is past the store's address bound is left whole
-		// out of the store, so neither reader reads it and no batch writes one: a far end past
-		// the bound does not reach here (api's commentStored, outbox's rule).
-		var node graphstore.Node
-		node, write.Tuples = graphstore.CommentFacts(write.Tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner)
-		write.Nodes = append(write.Nodes, node)
-		// The owner a proved session names is made once too; each comment still states its own
-		// authored_by and aliases.
-		if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, row.id, row.author, row.createdAt, row.event); named {
-			for _, author := range authors {
-				if _, made := written[[2]string{author.Kind, author.ID}]; !made {
-					written[[2]string{author.Kind, author.ID}] = struct{}{}
-					// The author's node is the person's or the session's, whose state and
-					// visibility no comment of theirs owns.
-					author.Restates = true
-					write.Nodes = append(write.Nodes, author)
-				}
-			}
-			write.Tuples = append(write.Tuples, facts...)
-		}
-		write.ids = append(write.ids, row.id)
-	}
-	return write
-}
-
-// writeCommentBatch writes one batch's comment nodes, the facts each row projects and who wrote
-// each, in one transaction, and answers the nodes and the tuples it stated, as the upper bound
-// the report states: an author's node another write already made moves nothing, and a tuple
-// stated again under its event appends nothing. The count is the batch's own tuples and the two
-// base attributes the store write states for each comment node its insert makes, which the batch
-// does not state itself: every comment here is new, since a row that already names its node is
-// never read.
+// writeCommentBatch writes one batch's comment nodes, the comments of ids each caused by the event
+// beside it in causes (readCommentRows), the facts each row projects and who wrote each, in one
+// transaction, and answers the nodes and the tuples it stated, as the upper bound the report
+// states: an author's node another write already made moves nothing, and a tuple stated again
+// under its event appends nothing. The count is the batch's own tuples and the two base attributes
+// the store write states for each comment node its insert makes, which the batch does not state
+// itself: every comment here is new, since a row that already names its node is never read.
 //
-// The transaction takes the owner lock of every comment of the batch first (LockCommentOwners),
-// the lock every writer of a comments row takes, and reads the rows again under it, so a row a
-// writer of the comment moved or named meanwhile is written as it now stands, or left alone.
+// The transaction takes the owner lock of every comment of the batch first
+// (refs.LockCommentOwners), the lock every writer of a comments row takes, and reads the rows
+// again under it (refs.CommentsNamingNoNode), so a row a writer of the comment moved or named
+// meanwhile is written as it now stands, or left alone.
 // Then it runs its writes back to back in one batch, holding a transaction id for those statements
 // alone: every node of the batch goes in its one store write, the comments' and their authors',
 // so the transaction takes every node row in ascending (kind, id) before it appends its first
@@ -1103,21 +961,16 @@ func commentWriteOf(batch []commentRow) CommentWrite {
 // already there, since every writer of a person or a session node writes it as AuthorFacts does:
 // project-visible, live and carrying no attribute. The batch restates that node too, so a state
 // or a visibility another write gave it stays.
-func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, error) {
+func writeCommentBatch(ctx context.Context, database *store.Store, ids []string, causes []int64) (int64, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("begin the comment batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	ids := make([]string, len(batch))
-	causes := make([]int64, len(batch))
-	for index, row := range batch {
-		ids[index], causes[index] = row.id, row.event
-	}
-	if err := LockCommentOwners(ctx, tx, ids); err != nil {
+	if err := refs.LockCommentOwners(ctx, tx, ids); err != nil {
 		return 0, 0, err
 	}
-	write, err := CommentsNamingNoNode(ctx, tx, ids, causes)
+	write, err := refs.CommentsNamingNoNode(ctx, tx, ids, causes)
 	if err != nil {
 		return 0, 0, err
 	}

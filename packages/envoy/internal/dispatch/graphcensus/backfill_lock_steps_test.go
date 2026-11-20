@@ -128,7 +128,7 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // in ascending (kind, id) and then appends every tuple: the facts each comment row projects, and
 // each author's authored_by and aliases (graphstore.AuthorFacts). Only then does it name the
 // nodes on the comments rows. It takes the owner lock of its comments' issue first, as every
-// writer of a comments row does (LockCommentOwners), and appends no event.
+// writer of a comments row does (refs.LockCommentOwners), and appends no event.
 //
 // Three comments are written with comment.created events, so every tuple carries a cause other
 // than the sentinel and so a repeat key a hold can stand on. Their ids order them c1, c2, c3, which

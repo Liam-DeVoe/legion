@@ -27,10 +27,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// This file is the package's external test because the sites it drives live in packages that
-// import graphcensus - docs imports it for the block-index tick's comment write, api imports
-// docs, and grapherase imports api - so the package's own tests cannot import them. It hands its
-// drives to TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
+// This file is the package's external test because one site it drives lives in a package that
+// imports graphcensus - grapherase, whose erase reads the census's ProvedSessionComments - so the
+// package's own tests cannot import it, and the API's and the document service's drives run on the
+// same rig ahead of the erase's, which takes a comment they wrote. It hands its drives to
+// TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
 func init() { graphcensus.ImportedDrives = importedDrives }
 
 // writersServerURL is the public origin the writers' server serves under.

@@ -66,12 +66,12 @@ var storeWriteCallSites = map[string]string{
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one
 	// (recordedSessions). The comments are written through the backfill's comment write
-	// (graphcensus.CommentWrite.Queue), which the block-index tick queues too, for the comments
+	// (refs.CommentWrite.Queue), which the block-index tick queues too, for the comments
 	// the events after its build's cursor name whose rows name no node, after its cursor row and
 	// its marking statement's document_block_versions rows (docs' test holds it to that).
 	"graphcensus/backfill.go#writeBlockBatch":    "graphcensus#TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow",
 	"graphcensus/backfill.go#writeBlockRefBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#Queue":              "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"refs/comment_nodes.go#Queue":                "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill.go#writeRoleBatch":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill.go#writeSessionBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both

@@ -173,8 +173,8 @@ var projections = []projection{{
 		           or octet_length(coalesce(c.author->>'id', '')) <= `+addressBound+`
 		      then '`+graphstore.TupleAuthoredBy+`>' || `+commentAuthor+` end`,
 	) + `)
-		from comments c` + commentStoreJoins + `
-		where ` + commentInTheStore,
+		from comments c` + refs.CommentStoreJoins + `
+		where ` + refs.CommentInTheStore,
 	nodes: `
 		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(graphstore.KindComment,
 		`t.kind in ('`+graphstore.TupleAnchoredTo+`', '`+graphstore.TupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
@@ -346,39 +346,33 @@ func currentLinks(fromKind, kinds string) string {
 	 ) held where held.asserted)`
 }
 
-// commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
-// the node graphstore.AuthorOf reads off the actor the row stored, a login canonicalised as
-// commentWriterPeople canonicalises one, and null for an actor that names nobody, whose comment
-// states no authored_by at all.
-const commentAuthor = `case
-			when c.author->>'kind' = 'user' and coalesce(c.author->>'id', '') <> ''
-				then '` + graphstore.KindPerson + `:' || user_threads_login(c.author->>'id')
-			when c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
-				then '` + graphstore.KindSession + `:' || (c.author->>'id')
-			when coalesce(c.author->>'owner', '') <> ''
-				then '` + graphstore.KindPerson + `:' || user_threads_login(c.author->>'owner')
+// actorAuthor is the node graphstore.AuthorOf reads off a stored actor, the SQL expression actor,
+// as one value: an array of two, the node's kind and its id, or null for an actor that names
+// nobody. The login an actor of kind user carries is a person, and so is the owner a personal
+// token's actor carries, each canonicalised the way user_threads_login canonicalises a login
+// (migration 0095, which is model.CanonicalLogin in SQL); a session's id is the session. It is
+// spelled once here for the two readings of who wrote a comment: the far end of the authored_by a
+// row states (commentAuthor) and the people a comment names (commentWriterPeople).
+func actorAuthor(actor string) string {
+	return `case
+			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> ''
+				then array['` + graphstore.KindPerson + `', user_threads_login(` + actor + `->>'id')]
+			when ` + actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> ''
+				then array['` + graphstore.KindSession + `', ` + actor + `->>'id']
+			when coalesce(` + actor + `->>'owner', '') <> ''
+				then array['` + graphstore.KindPerson + `', user_threads_login(` + actor + `->>'owner')]
 		end`
+}
 
-// commentStoreJoins are the two artifacts a comment's relations name, joined so that the bound
-// below can read their addresses: the document its anchor names and the artifact that owns it.
-// It follows `from comments c`.
-const commentStoreJoins = `
-		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
-		left join artifacts owner on owner.id = c.artifact_id`
-
-// commentInTheStore is true of a comments row the store holds a node for: one whose anchor's
-// and owner's addresses both fit the store's bound (commentStoreJoins names the two). A comment
-// with a longer one is left whole out of the store - no node, no tuple and no stamp, so that
-// the old comments arm answers both of its edges (api's commentStored) - and the backfill
-// leaves it alone for the same reason. So no such row names an author the store is held to a
-// node for, and every side that reads the people and the sessions comments name binds this.
-var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key) <= ` + addressBound + `)
-		  and (owner.ref_key is null or octet_length(owner.ref_key) <= ` + addressBound + `)`
+// commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
+// the node graphstore.AuthorOf reads off the actor the row stored (actorAuthor), and null for an
+// actor that names nobody, whose comment states no authored_by at all.
+var commentAuthor = `array_to_string(` + actorAuthor("c.author") + `, ':')`
 
 // commentWriters are the comments the store holds or held, each as the actor that wrote it, the
 // time it was written and the event that stored it, null for a row: every comments row the store
-// holds (commentInTheStore), and the comment.created or comment.answered event of every comment
-// the comments table no longer holds. It is who wrote a comment, as commentPeople and
+// holds (refs.CommentInTheStore), and the comment.created or comment.answered event of every
+// comment the comments table no longer holds. It is who wrote a comment, as commentPeople and
 // recordedSessions read it.
 //
 // The events are there for the erase. It deletes a comment's row and keeps the comment's events,
@@ -392,15 +386,15 @@ var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key)
 // the store holds a node of, whose author's node the write that stored it made with it, so an
 // event whose comment is gone names an author a writer wrote a node for. An event of a comment the
 // table still holds adds nothing: the row names the same author, and only the row says whether the
-// store holds the comment at all (commentInTheStore). An event whose payload names no comment says
-// nothing of one and is not read; the filler events of a seeded corpus are such events.
+// store holds the comment at all (refs.CommentInTheStore). An event whose payload names no comment
+// says nothing of one and is not read; the filler events of a seeded corpus are such events.
 //
 // The comment an event stored is matched by the payload's id, which the redaction never rewrites,
 // compared as text so that an id no row could hold reads as no row rather than failing a cast.
 var commentWriters = `
 	select c.author as actor, c.created_at as at, null::bigint as event
-	from comments c` + commentStoreJoins + `
-	where ` + commentInTheStore + `
+	from comments c` + refs.CommentStoreJoins + `
+	where ` + refs.CommentInTheStore + `
 	union all
 	select e.actor, e.created_at, e.id
 	from events e
@@ -410,18 +404,18 @@ var commentWriters = `
 // commentWriterPeople is each person a comment the store holds or held names as its writer
 // (commentWriters), one row for each such comment and person, with the time the comment was
 // written and the event that stored it (null for a row). It reads an actor as graphstore.AuthorOf
-// does: the login an actor of kind user carries, or the owner a personal token's actor carries,
-// each canonicalised the way user_threads_login canonicalises a login (migration 0095, which is
-// model.CanonicalLogin in SQL). Beside them are the owners of the sessions the server proved that
-// wrote a comment: the comment's author is the session, whose act names that same session and
-// whose owner is the person it belongs to, and the write that ties the two with an alias_of tuple
-// makes the owner's node with it (graphstore.AuthorFacts), except for a session past the store's
-// bound, of which nothing is written.
+// does (actorAuthor): the login an actor of kind user carries, or the owner a personal token's
+// actor carries, each canonicalised the way user_threads_login canonicalises a login (migration
+// 0095, which is model.CanonicalLogin in SQL). Beside them are the owners of the sessions the
+// server proved that wrote a comment: the comment's author is the session, whose act names that
+// same session and whose owner is the person it belongs to, and the write that ties the two with
+// an alias_of tuple makes the owner's node with it (graphstore.AuthorFacts), except for a session
+// past the store's bound, of which nothing is written.
 //
-// Only the comments the store holds name anybody here (commentInTheStore): a comment anchored
-// to or owned by a document whose address is past the bound is left whole out of the store, so
-// it states no authored_by and makes no author node, and a person whose only comment is one of
-// those is no node of the store and no difference of this census.
+// Only the comments the store holds name anybody here (refs.CommentInTheStore): a comment
+// anchored to or owned by a document whose address is past the bound is left whole out of the
+// store, so it states no authored_by and makes no author node, and a person whose only comment is
+// one of those is no node of the store and no difference of this census.
 //
 // It is the one reading of who a comment names, read by two: the census's person row side
 // (commentPeople) and the sizing's people (sizingWritesWith), so the sizing counts the people
@@ -432,12 +426,8 @@ var commentWriterPeople = `
 	select user_threads_login(author.login) as login, written.at, written.event
 	from (` + commentWriters + `) written
 	cross join lateral (
-		select case
-			when written.actor->>'kind' = 'user' and coalesce(written.actor->>'id', '') <> ''
-				then written.actor->>'id'
-			when written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> '' then null
-			when coalesce(written.actor->>'owner', '') <> '' then written.actor->>'owner'
-		end
+		select authored.node[2] from (select ` + actorAuthor("written.actor") + `) authored (node)
+		where authored.node[1] = '` + graphstore.KindPerson + `'
 		union all
 		select written.actor->>'owner'
 		where ` + provedSessionOwner("written.actor") + `
@@ -458,15 +448,15 @@ func provedSessionOwner(actor string) string {
 
 // ProvedSessionComments is the select of the id of every comments row that names the person
 // bound at $1 as the owner of the session that wrote it, in id order: a row of a comment the
-// store holds (commentInTheStore) whose author is a session the server proved
+// store holds (refs.CommentInTheStore) whose author is a session the server proved
 // (provedSessionOwner) and whose `owner` is that person's login as user_threads_login reads it.
 // Each is a row the census names that person by (commentWriterPeople), though nothing the row
 // projects states a tuple into her: the comment's authored_by names the session, and only the
 // session's alias_of names her. The erase refuses a person while such a row stands (grapherase's
 // readBlockers), since the census would go on naming her from it once her node was gone.
 var ProvedSessionComments = `
-	select c.id::text from comments c` + commentStoreJoins + `
-	where ` + commentInTheStore + `
+	select c.id::text from comments c` + refs.CommentStoreJoins + `
+	where ` + refs.CommentInTheStore + `
 	  and ` + provedSessionOwner("c.author") + `
 	  and user_threads_login(c.author->>'owner') = $1
 	order by c.id`

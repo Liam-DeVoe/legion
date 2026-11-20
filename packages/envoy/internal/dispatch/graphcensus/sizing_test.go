@@ -528,7 +528,7 @@ const (
 	archiveIndexDrive  = "refs/blocks.go#Queue, over the archive's three versions"
 	blockBatchDrive    = "graphcensus/backfill.go#writeBlockBatch"
 	blockRefBatchDrive = "graphcensus/backfill.go#writeBlockRefBatch"
-	commentBatchDrive  = "graphcensus/backfill.go#Queue, from the backfill's comment pass"
+	commentBatchDrive  = "refs/comment_nodes.go#Queue, from the backfill's comment pass"
 	roleBatchDrive     = "graphcensus/backfill.go#writeRoleBatch"
 	sessionBatchDrive  = "graphcensus/backfill.go#writeSessionBatch"
 	busDeliveryDrive   = "outbox/publisher.go#recordBatch, the bus's delivery of comment.created"
@@ -592,7 +592,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		Database: database, Drive: backfill(backfillBlockRefs),
 		Counts: map[StoredKind][]string{{refs.BlockNodeKind, "mentions"}: {"block_ref"}},
 	}, {
-		Name: commentBatchDrive, Sites: []string{"graphcensus/backfill.go#Queue"},
+		Name: commentBatchDrive, Sites: []string{"refs/comment_nodes.go#Queue"},
 		Database: database, Drive: backfill(backfillComments),
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},

@@ -901,7 +901,7 @@ var commentsRowWriters = []string{
 	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
-	"packages/envoy/internal/dispatch/graphcensus/backfill.go#graphcensus.CommentWrite.Queue",
+	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
 	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply",
 }
 

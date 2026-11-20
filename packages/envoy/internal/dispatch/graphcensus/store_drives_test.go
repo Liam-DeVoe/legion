@@ -48,12 +48,13 @@ type StoreDrive struct {
 	Counts map[StoredKind][]string
 }
 
-// ImportedDrives builds the drives of the sites whose packages import this one, and so cannot be
-// imported by its internal tests: the API's, the document service's and the erase's, since docs
-// imports graphcensus (the block-index tick queues CommentWrite), api imports docs and grapherase
-// imports api. Its value is set by this package's external test package as it starts
-// (imported_drives_test.go), and writeTheStore runs the drives it builds beside its own; while it
-// is nil, every site only those drives run is listed and not driven, and the test fails naming it.
+// ImportedDrives builds the drives this package's external test package runs on one rig: the
+// API's, the document service's and the erase's. The erase's package imports this one (its
+// readBlockers reads ProvedSessionComments), so it cannot be imported by this package's internal
+// tests, and the erase's drive takes a comment the API's drives wrote on that rig. Its value is
+// set by this package's external test package as it starts (imported_drives_test.go), and
+// writeTheStore runs the drives it builds beside its own; while it is nil, every site only those
+// drives run is listed and not driven, and the test fails naming it.
 var ImportedDrives func(*testing.T) []StoreDrive
 
 // requireEveryListedSiteDriven fails on every site the register of the store's writers lists that

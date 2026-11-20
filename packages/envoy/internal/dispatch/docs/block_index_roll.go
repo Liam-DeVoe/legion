@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -28,8 +28,8 @@ const blockIndexEventPage = 1000
 // events it read, the id of the last one (null when it read none), every document an
 // artifact.version or artifact.created event among them names, and every document of each issue
 // an issue.created event among them names, in id order, and the comments a comment.created or
-// comment.answered event among them names, in id order, each beside the first of those events that
-// names it.
+// comment.answered event among them names whose row names no node, in id order, each beside the
+// first of those events that names it.
 //
 // A version event names its document in payload->>'artifact_id' (ArtifactVersionEventPayload),
 // and the event that creates a document, which records its version 1, carries the whole artifact
@@ -46,6 +46,12 @@ const blockIndexEventPage = 1000
 // name a document or a comment, and a value that is no uuid names nothing rather than failing the
 // tick (store.CastableUUID). Only a document that exists is named, and only one of kind 'doc'. The
 // page bounds the issues as it bounds the documents, and an issue holds a few documents.
+//
+// The comments rows are read with no lock, and a comment whose row already names its node, as the
+// row of a comment this build writes does from the write that stores it, is left out: the tick
+// has nothing to write for it, so it takes no owner lock for it (readEventsAfterCursor). A comment
+// another writer gives its node after this read is left alone by the read the tick makes under
+// the owner locks (refs.CommentsNamingNoNode).
 var readEventPage = `
 	with page as (
 		select id, type, issue_key, case type
@@ -66,7 +72,10 @@ var readEventPage = `
 			or a.issue_key = any(array(select distinct issue_key from page where type = 'issue.created' and issue_key is not null)))
 	),
 	commented as (
-		select comment_id, min(id) as cause from page where comment_id is not null group by comment_id
+		select comment_id, min(id) as cause from page
+		where comment_id is not null
+		  and exists (select 1 from comments c where c.id = page.comment_id and c.node_kind is null)
+		group by comment_id
 	)
 	select (select count(*) from page), (select max(id) from page),
 	       coalesce((select array_agg(id::text order by id) from named), '{}'),
@@ -114,7 +123,7 @@ const markVersionedDocuments = `
 // readEventsAfterCursor is the first step of every block-index tick: it reads the events after its
 // build's cursor, marks owed a block index, with this build's own mark, every document they name
 // that this build's store has not stated at its version (markVersionedDocuments), gives every
-// comment they name whose row names no node its node and its tuples (graphcensus.CommentWrite),
+// comment they name whose row names no node its node and its tuples (refs.CommentWrite),
 // and counts in tick what it read, marked and wrote, and whether another build serves.
 //
 // The release before this one indexes a version it writes, and a document it creates, the spec of
@@ -149,21 +158,26 @@ const markVersionedDocuments = `
 //
 // The tick reads everything first and writes after, in one batch back to back before its commit
 // (queueWrites), so its transaction holds a transaction id for those statements alone: the safe
-// horizon, the cursor, the page of events (readEventPage), the owner locks of the comments it
-// names (graphcensus.LockCommentOwners), the lock every writer of a comments row takes, and those
-// comments' rows under them (graphcensus.CommentsNamingNoNode). The batch then takes its locks in
-// the store's order: the cursor row first, which only block-index ticks write; then the marking
-// statement's document_block_versions rows `for no key update`, in ascending artifact_id order;
-// then the comments' node rows, in ascending (kind, id) in one store write, their tuples, and
-// their comments rows. A writer under the revision fence takes a document's
-// document_block_versions row before any node it writes (the fifth invariant on api's
-// markInboxReadThreads), and a settlement takes its document's row and then the node of the
-// session that follows an ask it opens (lockSettlementFence, followsByEvent): a tick that wrote a
-// comment's author's node first and then waited for that document's row would hold what the
-// settlement waits for, while the settlement held what the tick waits for. A tick that fails moves
-// nothing and the next reads the same events again; a document already marked keeps its mark and
-// its time. A document marked here is listed by the owed documents this same tick reads next, and
-// drained by it when its batch has room.
+// horizon, the cursor and the page of events (readEventPage), which keeps, read with no lock, only
+// the comments the events name whose row names no node; then the owner locks of those comments
+// alone (refs.LockCommentOwners), the lock every writer of a comments row takes, and those
+// comments' rows under them (refs.CommentsNamingNoNode), which decides again under the locks, so a
+// comment another writer gave its node between the two reads is left alone. A comment whose row
+// already names its node, as the row of a comment this build writes does, costs the tick no
+// owner lock: every tick reads the event of each comment written since its cursor, and locking the
+// owner of each would have every tick wait for, and hold up, the writers of every issue a recent
+// comment was written on. The batch then takes its locks in the store's order: the cursor row
+// first, which only block-index ticks write; then the marking statement's document_block_versions
+// rows `for no key update`, in ascending artifact_id order; then the comments' node rows, in
+// ascending (kind, id) in one store write, their tuples, and their comments rows. A writer under
+// the revision fence takes a document's document_block_versions row before any node it writes
+// (the fifth invariant on api's markInboxReadThreads), and a settlement takes its document's row
+// and then the node of the session that follows an ask it opens (lockSettlementFence,
+// followsByEvent): a tick that wrote a comment's author's node first and then waited for that
+// document's row would hold what the settlement waits for, while the settlement held what the
+// tick waits for. A tick that fails moves nothing and the next reads the same events again; a
+// document already marked keeps its mark and its time. A document marked here is listed by the
+// owed documents this same tick reads next, and drained by it when its batch has room.
 func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTick) (full bool, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
@@ -208,7 +222,7 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	var read, written int
 	var marked int64
 	var named []string
-	var commented graphcensus.CommentWrite
+	var commented refs.CommentWrite
 	if safe > *cursor {
 		var last *int64
 		var comments []string
@@ -222,10 +236,10 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 			next = *last
 		}
 		if len(comments) > 0 {
-			if err := graphcensus.LockCommentOwners(queued, tx, comments); err != nil {
+			if err := refs.LockCommentOwners(queued, tx, comments); err != nil {
 				return false, err
 			}
-			if commented, err = graphcensus.CommentsNamingNoNode(queued, tx, comments, causes); err != nil {
+			if commented, err = refs.CommentsNamingNoNode(queued, tx, comments, causes); err != nil {
 				return false, err
 			}
 		}

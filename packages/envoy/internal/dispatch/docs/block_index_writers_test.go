@@ -555,11 +555,11 @@ var indexPasses = map[string]string{
 	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	// The comment write both of the comment batch's writers share - the backfill's comment batch
 	// and the block-index tick's write of the comments the events after its cursor name whose rows
-	// name no node (graphcensus.CommentsNamingNoNode) - each comment's node and facts, read from the
+	// name no node (refs.CommentsNamingNoNode) - each comment's node and facts, read from the
 	// row's own content with the event that stored it as its cause, named on that comment's own row
-	// (graphcensus.CommentWrite.Queue). It reads no side of a projection to mend the other and
+	// (refs.CommentWrite.Queue). It reads no side of a projection to mend the other and
 	// leaves alone a row that names its node.
-	"graphcensus/backfill.go#Queue": "each comments row whose node the write states, read from the row's own content, and the event that stored it",
+	"refs/comment_nodes.go#Queue": "each comments row whose node the write states, read from the row's own content, and the event that stored it",
 	// The backfill of the roles. A role, its page and the page's part_of it have no projection
 	// row, so there is no projection to read one side of: the batch's input is the roles the
 	// store census holds to a node, which a row addresses now or an event of the log ever
