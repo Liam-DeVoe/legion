@@ -156,6 +156,30 @@ func (r *rigRuntime) probesOf(token claim.Token, from time.Time) []rigProbe {
 	return probes
 }
 
+// launchEnvironment is a launch's environment, which both localRuntime's launch and rigRuntime's
+// start from: paneEnvironment, and on a resume runtime.SessionExclusiveVariable set to 1, so the
+// resumed Oh My Pi is held to its recorded session as every runtime holds it. A resume that went
+// without it moved to a new session id while the older process still held the session (w3's step
+// 4, 2026-11-20, when rigRuntime built its own environment).
+//
+// It is a method of localRuntime but lives in this file, not in localruntime_live_test.go: each
+// check's control lays this file over the base's tree and leaves the base's own
+// localruntime_live_test.go there (the rig_files of scripts/e2e/*.sh), so a method defined there
+// would be missing from every control's build. For the same reason it writes the variable out
+// (rigSessionExclusive) rather than naming runtime's constants, which a control's base may predate
+// (w4's, e5e4900fe7). TestEachProofRuntimeHoldsAResumedOhMyPiToItsSession holds the two equal.
+func (r *localRuntime) launchEnvironment(spec runtime.SpawnSpec, variables []string, workDir string) []string {
+	env := r.paneEnvironment(variables, workDir)
+	if spec.ResumeSessionFile != "" {
+		env = append(env, rigSessionExclusive)
+	}
+	return env
+}
+
+// rigSessionExclusive is runtime.SessionExclusiveVariable set to runtime.SessionExclusiveValue,
+// written out (launchEnvironment says why).
+const rigSessionExclusive = "OMP_SESSION_EXCLUSIVE=1"
+
 // launch is localRuntime.launch with the spec's every secret written and named, and the shim
 // pointed at the relay (the file's header says why).
 func (r *rigRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {

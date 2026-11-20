@@ -427,19 +427,6 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 	return append(env, variables...)
 }
 
-// launchEnvironment is a launch's environment, which both this runtime's launch and rigRuntime's
-// start from: paneEnvironment, and on a resume runtime.SessionExclusiveVariable set to 1, so the
-// resumed Oh My Pi is held to its recorded session as every runtime holds it. A resume that went
-// without it moved to a new session id while the older process still held the session (w3's step
-// 4, 2026-11-20, when rigRuntime built its own environment).
-func (r *localRuntime) launchEnvironment(spec runtime.SpawnSpec, variables []string, workDir string) []string {
-	env := r.paneEnvironment(variables, workDir)
-	if spec.ResumeSessionFile != "" {
-		env = append(env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
-	}
-	return env
-}
-
 func (r *localRuntime) Suspend(ctx context.Context, loc runtime.Locator) error {
 	return r.stop(ctx, loc)
 }
