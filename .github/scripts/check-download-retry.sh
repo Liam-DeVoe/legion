@@ -399,11 +399,23 @@
 #      file, or `read` takes into a variable, is
 #      data where it is written; the run of that file or that variable is a run whose target is
 #      built from data or written as the step runs, refused where it happens (the reach under
-#      item 1; dispatch://INFRA-1545, round 37).
+#      item 1; dispatch://INFRA-1545, round 37). A `trap`'s action is commands of the text
+#      written on the trap's line, read for its sites: one on EXIT alone set outside every loop
+#      and every function's body runs once, as the shell ends, so its fetches are charged once
+#      and a call there of a function of the text, or of a library's, is one call; any other
+#      trap whose action holds a fetch or calls a function that fetches is refused by name below.
+#      Until round 46 no trap's action was read for a fetch (dispatch://INFRA-1545, round 46).
+#      The tree's twelve traps this check reads are each on EXIT alone and fetch nothing.
 #
 # Each of these shapes is REFUSED BY NAME where a fetch, or a call of a script that fetches, is
 # in its reach, with the file, the line, the step or the script, the shape and the form to write
 # instead:
+#   - a `trap` whose action holds a fetch or calls a function that fetches, where it does not
+#     run once: on a signal other than EXIT, which can fire any number of times, or on EXIT in a
+#     loop or in a function's body, where a fetch its action writes is charged at each pass or
+#     at each call and a call there is read as no call, while bash runs the last EXIT trap set
+#     once (TRAP_FETCH_REFUSAL; dispatch://INFRA-1545, round 46); a script its action names is
+#     refused as the argument of `trap` it is;
 #   - a function defined with the `function` keyword, with a blank before or inside its `()`,
 #     with a body that is not a `{ … }` group, after a reserved word on its line, inside
 #     another function's body, under a name the same text defines again, or on the line another
@@ -435,26 +447,44 @@
 #   - a sleep rule 8 does not price (sleep_form) in a loop's body, where every loop around it
 #     writes its passes and the outermost of them holds a fetch: a `sleep` behind `command`,
 #     `env`, `timeout`, `nice`, `exec`, `builtin` or any other wrapper, by its path, or in a
-#     shell's `-c` text or an `eval`'s, one with an argument written with a sign, with a
-#     variable or a command substitution, as `infinity` or as anything but a literal number
-#     with an optional `s`, `m`, `h` or `d`, and one with no argument; and a sleep of any form
-#     that a call in such a loop runs elsewhere, where no loop of the file writing it whose
-#     passes this check reads holds both it and a fetch (charged_where_written): one in the body
-#     of a function of the text, since a loop's passes are charged only the sleeps written
-#     between its `do` and its `done`, and one of a function defined inside the loop is read as
-#     a command of its body, once a pass, however many calls a pass makes; one a run of a script
-#     reaches, in its own text, in a function of a library it sources and calls, or in a script
-#     it runs in turn, since a run of a script is charged its fetches, each with the sleeps of
-#     such a loop around it, and no other sleep; and one in the body of a function of a library
-#     the text sources, or of one such a function calls, the helper's own `retry_fetch` aside,
-#     whose sleeps are its ladder (script_sleep, library_sleeps). Until round 45 each was
-#     charged 0 s, the sleep of a function defined in the loop once a pass, with nothing said,
-#     so three passes of a 300 s fetch each followed by `sleep 5m` waited 1800 s under a
-#     29-minute key that the check passed (sleep_of, unread_shapes_of;
-#     dispatch://INFRA-1545, round 45). A sleep outside every loop that holds a fetch is neither
-#     charged nor refused, whatever its form, and this tree writes none of these: its one sleep
-#     in a loop around a fetch is dequeued.yaml's `[ "$attempt" = 7 ] || sleep 10`, and neither
-#     of the two scripts it runs in a loop whose passes it reads sleeps;
+#     shell's `-c` text, an `eval`'s words or a `trap`'s action, one with an argument written
+#     with a sign, with a variable or a command substitution, as `infinity` or as anything but a
+#     literal number with an optional `s`, `m`, `h` or `d`, and one with no argument; and a
+#     sleep of any form that a pass of such a loop reaches elsewhere, where no loop of the file
+#     writing it whose passes this check reads holds both it and a fetch (charged_where_written),
+#     by each route by which a pass reaches a fetch: one in the body of a function of the text,
+#     since a loop's passes are charged only the sleeps written between its `do` and its `done`,
+#     and one of a function defined inside the loop is read as a command of its body, once a
+#     pass, however many calls a pass makes; one a run of a script reaches, in its own text, in a
+#     function of a library it sources and calls, in a script it runs in turn, and since round 46
+#     in a library it sources, read as that source runs it, and in a file it names in a place
+#     this check does not read as a call, since a run of a script is charged its fetches, each
+#     with the sleeps of such a loop around it, and no other sleep; one in the body of a function
+#     of a library the text sources, or of one such a function calls, the helper's own
+#     `retry_fetch` aside, whose sleeps are its ladder, and since round 46 one such a body
+#     reaches through a file it names, or through a function of the text, or of another library
+#     the text sources, that it calls (script_sleep, library_sleeps, spread_sleeps); and since
+#     round 46 one a source in a pass runs, its own commands and the bodies of the functions
+#     they call, a source inside a loop among them, whose functions a pass calls are read as a
+#     library's; one a file reaches that a pass names in a place this check does not read as a
+#     call, the body of a function the pass calls, a subshell, a wrapper, a shell's operand or
+#     its `-c` text, a `trap`'s action, `xargs` or `find -exec` among them, read as a run of it;
+#     one in a heredoc something in a pass may run, or in a file the body names (heredoc_sleep);
+#     and one a `trap`'s action reaches, set in a pass, or before the loop on a signal other than
+#     EXIT by the text or by a library it sources there, by a call of a function whose body
+#     sleeps, a `sleep` in it or a file it names (trap_sleep). Until round 45 each was charged
+#     0 s, the sleep of a function defined in the loop once a pass, with nothing said, so three
+#     passes of a 300 s fetch each followed by `sleep 5m` waited 1800 s under a 29-minute key
+#     that the check passed (sleep_of, unread_shapes_of; dispatch://INFRA-1545, round 45), and
+#     until round 46 each that round added, so three passes of a 300 s fetch each sourcing a
+#     file whose own commands `sleep 300` waited 1800 s under that key, charged 900 s
+#     (dispatch://INFRA-1545, the tester's round 46).
+#     A sleep outside every loop that holds a fetch is neither charged nor refused, whatever its
+#     form, and this tree writes none of these: its one loop around a fetch whose passes this
+#     check reads is dequeued.yaml's, whose one sleep is `[ "$attempt" = 7 ] || sleep 10`, which
+#     names no file, sources none, feeds no heredoc, sets no trap and calls no function but the
+#     helper's `retry_fetch`, and neither of the two scripts the tree runs in a loop whose passes
+#     this check reads sleeps;
 #   - a command after the `}` that closes a function, on a line its body holds a command of,
 #     which is read as the function's;
 #   - a definition of a function named `retry_fetch` anywhere but in .github/scripts/ci-retry.sh,
@@ -897,10 +927,13 @@
 #      sleep in any other form — behind a wrapper, by its path, or with an argument written with
 #      a sign, as an expansion, as `infinity` or as any other word — is charged nothing and
 #      refused by name where every loop around it writes its passes and the outermost holds a
-#      fetch, and so is a sleep of any form that a call in such a loop runs elsewhere: in the
-#      body of a function, the text's own or a library's, and in a script the loop runs
-#      (REFUSED BY NAME above). Until round 45 only `sleep <digits>` was priced, and each of
-#      these was charged 0 s with nothing said (dispatch://INFRA-1545, the tester's round 45).
+#      fetch, and so is a sleep of any form that a pass of such a loop reaches elsewhere, by each
+#      route by which a pass reaches a fetch: in the body of a function, the text's own or a
+#      library's, and in a script the loop runs (round 45); and in a file a pass sources or names
+#      in a place this check does not read as a call, a heredoc it may run, and a trap's action
+#      (round 46) (REFUSED BY NAME above). Until round 45 only `sleep <digits>` was priced, and
+#      each of these was charged 0 s with nothing said until the round named beside it
+#      (dispatch://INFRA-1545, the tester's rounds 45 and 46).
 #      A loop in the body of a loop runs, its sleeps among it, at each pass of the outer one, and
 #      its whole run's sleeps are that pass's, whether the fetch is in it or beside it, so a
 #      call is charged the sleeps of one run of the outermost loop around it. r43's step, `for
@@ -1397,6 +1430,11 @@ CALL_RUN = "run"
 CALL_SOURCED = "sourced"
 CALL_NONE = "non-call"
 CALL_UNREAD = "unread"
+# The form of an unread occurrence that is a source inside a loop whose passes or waits make it
+# run other than once (occurrences_of): refused by name where the library fetches, read as a
+# source where its own commands sleep, and its functions read at a pass's calls of them as a
+# library's (dispatch://INFRA-1545, rounds 37 and 46).
+SOURCE_IN_LOOP = "a source inside a loop"
 # The commands whose arguments are text a step prints or searches and never runs, the two this
 # tree writes a script's path after: a path written as an argument of one of them is a
 # recognised non-call, an `::error` message included, unless that command's output is piped into
@@ -2338,6 +2376,21 @@ class Loops:
         # every script is (script_sleep, library_sleeps; dispatch://INFRA-1545, round 45).
         self.loop_reaches: list[tuple[int, set[int],
                                       tuple[bool, set[str], set[str], set[str]]]] = []
+        # Each occurrence of a script's path in the body that this check does not read as a call
+        # (call_of), a source inside a loop among them, which a loop of `loop_reaches` refuses
+        # where its pass reaches one and the file named sleeps (script_sleep;
+        # dispatch://INFRA-1545, round 46).
+        self.unread: list[Occurrence] = []
+        # Each `trap` the body sets, as (the command, its action, its signals, the action's
+        # commands read on the trap's line, the function whose body sets it, whether it runs
+        # once: on EXIT alone, set outside every loop and every function's body), whose action's
+        # fetches are sites of the body (structure, sites_of); and each of those that does not
+        # run once, as (its line, its action, its signals, that function, the loop around it,
+        # whether a fetch is written in its action, the names its action calls), refused by name
+        # where its action reaches a fetch (TRAP_FETCH_REFUSAL; dispatch://INFRA-1545, round 46).
+        self.traps: list[tuple[Command, str, list[str], list[Command], str | None, bool]] = []
+        self.odd_traps: list[tuple[int, str, list[str], str | None, int | None, bool,
+                                   set[str]]] = []
         self.extent: dict[int, int] = {}
         self.function_span: dict[str, tuple[int, int]] = {}
         self.function_calls: dict[str, list[int]] = {}
@@ -2384,6 +2437,10 @@ class Loops:
         # Each heredoc body a shell runs as its program (commands_of; dispatch://INFRA-1545,
         # round 41).
         self.programs: list[tuple[int, list[str], int, str]] = []
+        # Each heredoc of the body that something may run (unread_heredocs), in the form of
+        # `programs`, which a loop of `loop_reaches` refuses where its pass feeds one and the body
+        # sleeps or names a file that does (heredoc_sleep; dispatch://INFRA-1545, round 46).
+        self.fed: list[tuple[int, list[str], int, str]] = []
         # Each heredoc body of the body by where its operator stands, which the reading of what a
         # body writes into `$GITHUB_ENV` reads (heredoc_bodies; dispatch://INFRA-1545, round 42).
         self.bodies: dict[tuple[int, int], list[tuple[str, bool]]] = {}
@@ -2528,6 +2585,19 @@ BODY_WORDS = {"if", "then", "elif", "else", "fi", "case", "esac", "do", "{", "}"
 SLEEP_ARGUMENT = re.compile(r"(\d+(?:\.\d*)?|\.\d+)([smhd]?)")
 
 
+def trap_action(reduced: list[str]) -> tuple[str, list[str]] | None:
+    """The action a `trap`, its words once the wrappers are gone, sets and the signals it sets it
+    on, or None where the command is no `trap` that sets one: `trap <action> <signal>…`, after an
+    optional `--`; `trap - <signal>` resets one, and `trap -p` and `trap -l` print
+    (dispatch://INFRA-1545, rounds 42 and 46)."""
+    if not reduced or program_name(reduced[0]) != "trap":
+        return None
+    action = reduced[2:] if reduced[1:2] == ["--"] else reduced[1:]
+    if len(action) > 1 and not action[0].startswith("-"):
+        return action[0], action[1:]
+    return None
+
+
 def sleep_form(rest: list[str], quoted: list[bool]) -> tuple[int | None, tuple[str, str]] | None:
     """Whether a command, its reserved words gone, runs a sleep, and what this check charges it
     (dispatch://INFRA-1545, round 45): None where no word of it runs one; else the seconds it
@@ -2537,8 +2607,9 @@ def sleep_form(rest: list[str], quoted: list[bool]) -> tuple[int | None, tuple[s
     `sleep 5m` is 300 s, `sleep 100 200` 300 s, `sleep 299.9` 300 s and `sleep 0.4 0.4` 1 s.
     Every other sleep is None seconds and the reason this check cannot price it, with what to
     write instead: a `sleep` behind a wrapper, `command`, `env`, `timeout`, `nice` or any other,
-    by its path, or in the text of a shell's `-c` or an `eval`; an argument written with a sign,
-    with an expansion, as `infinity`, or as anything else; and no argument this check reads.
+    by its path, or in the text of a shell's `-c`, an `eval` or a `trap`'s action (round 46); an
+    argument written with a sign, with an expansion, as `infinity`, or as anything else; and no
+    argument this check reads.
     Until round 45 a sleep was priced only as `sleep <digits>` and every other one was charged
     nothing with nothing said, so three passes of a 300 s fetch each followed by `sleep 5m` were
     charged 900 s of the 1800 s bash waits (the tester's round 45). A word `sleep` written in
@@ -2547,12 +2618,17 @@ def sleep_form(rest: list[str], quoted: list[bool]) -> tuple[int | None, tuple[s
         return None
     first = rest[0]
     reduced = reduce_words(rest)[0]
-    # The texts a shell runs as commands: an `eval`'s words, and the word after a shell's option
-    # holding `c`, `bash -c '…'` or `sh -ec '…'`, in which a `sleep` opening a command runs.
+    # The texts a shell runs as commands: an `eval`'s words, the word after a shell's option
+    # holding `c`, `bash -c '…'` or `sh -ec '…'`, and a `trap`'s action, which the shell runs each
+    # time the trap's signal fires (trap_action; dispatch://INFRA-1545, round 46), in which a
+    # `sleep` opening a command runs. Until round 46 a `trap 'sleep 300' RETURN` in a loop
+    # around a fetch was charged nothing and refused nothing.
+    trapped = trap_action(reduced)
     texts = (reduced[1:] if reduced[:1] == ["eval"]
              else [word for option, word in zip(reduced, reduced[1:])
                    if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", option)]
-             if reduced and program_name(reduced[0]) in INTERPRETERS else [])
+             if reduced and program_name(reduced[0]) in INTERPRETERS
+             else [trapped[0]] if trapped else [])
     if not (program_name(first) == "sleep"
             or any(program_name(word) == "sleep" and not quote
                    for word, quote in zip(rest[1:], quoted[1:]))
@@ -2896,13 +2972,15 @@ SLEEP_FUNCTION_INSIDE = (
 # A run, in a loop whose passes this check reads and that holds a fetch, or a call of a script
 # that fetches, of a script whose run reaches a sleep that no loop of the file writing it charges:
 # its own text writes one, or a library function it calls or a script it runs does
-# (script_sleep, charged_where_written; dispatch://INFRA-1545, round 45). This check charges a
-# run of a script its fetches, each with the sleeps of the loops around it there, and no other
-# sleep the run makes, so until round 45 such a loop's passes were charged nothing for those. A
-# sleep in a loop of the script around a fetch is charged at each run and refused nothing. None
-# is written in this tree: its two runs of a script in a loop whose passes it reads,
-# ci-job-envoy-infra-go.yaml's of go-tagged-tests.sh and check-pr-text.sh's of
-# check-private-names.sh, are in loops that hold no fetch, and neither script sleeps.
+# (script_sleep, charged_where_written; dispatch://INFRA-1545, round 45), or, since round 46, a
+# library it sources, read as the source runs it, or a file it names in a place this check does
+# not read as a call. This check charges a run of a script its fetches, each with the sleeps of
+# the loops around it there, and no other sleep the run makes, so until round 45 such a loop's
+# passes were charged nothing for those. A sleep in a loop of the script around a fetch is
+# charged at each run and refused nothing. None is written in this tree: its two runs of a
+# script in a loop whose passes it reads, ci-job-envoy-infra-go.yaml's of go-tagged-tests.sh and
+# check-pr-text.sh's of check-private-names.sh, are in loops that hold no fetch, and neither
+# script sleeps.
 SLEEP_SCRIPT_REFUSAL = (
     "runs `{target}` in the loop opened on line {loop}, and a fetch, or a call of a script that "
     "fetches, is in that loop; {where} writes `{sleep}` on its line {line}, outside every loop "
@@ -2917,17 +2995,123 @@ SLEEP_SCRIPT_REFUSAL = (
 # loop of the library around a fetch holds the sleep, or calls a function of those libraries
 # whose body does (library_sleeps; dispatch://INFRA-1545, round 45): refused as a call of a
 # function of the text itself is (SLEEP_FUNCTION_REFUSAL), at the call, since the sleep is
-# written in another file. The helper's own `retry_fetch` is none of them: its sleeps are the
+# written in another file. So, since round 46, is a call of one whose body names a file, in a
+# place this check does not read as a call, whose run reaches such a sleep; one whose body calls
+# a function of this text, or of another library it sources, whose body sleeps (spread_sleeps);
+# and a call of a function of a file a pass sources. `place` and `holder` say where the sleep is
+# and what to take it out of. The helper's own `retry_fetch` is none of them: its sleeps are the
 # 150 s rule 8 charges each call of it. None is written in this tree.
 SLEEP_LIBRARY_REFUSAL = (
     "calls `{name}`, which {library} defines, in the loop opened on line {loop}, and a fetch, or "
     "a call of a script that fetches, is in that loop; {sleeper} writes `{sleep}` on its line "
-    "{line}, in the body of `{function}`, which that call runs. Bash runs the sleep at each call "
-    "of `{name}`, and this check charges a loop's passes only the sleeps written between its "
-    "`do` and its `done`, so it charges the passes of that loop nothing for this one. Write the "
-    "sleep in the loop's body, where `{name}` is called, as the bare word `sleep` and literal "
-    "seconds, such as `sleep 300`, which this check charges at every pass, and take it out of "
-    "`{function}` (dispatch://INFRA-1545, round 45)")
+    "{line}, {place}, which that call runs. Bash runs the sleep at each call of `{name}`, and "
+    "this check charges a loop's passes only the sleeps written between its `do` and its `done`, "
+    "so it charges the passes of that loop nothing for this one. Write the sleep in the loop's "
+    "body, where `{name}` is called, as the bare word `sleep` and literal seconds, such as `sleep "
+    "300`, which this check charges at every pass, and take it out of {holder} "
+    "(dispatch://INFRA-1545, {rounds})")
+# A source, in a pass of such a loop, of a file whose own commands reach a sleep that no loop of
+# the file writing it charges (script_sleep with `sourced`; dispatch://INFRA-1545, round 46): a
+# source inside a loop of more than one pass, which this check reads as no call, and a source in
+# a loop of one. Bash runs a sourced file's commands at each source, and this check charges a
+# source no sleep, so until round 46 three passes of a 300 s fetch, each sourcing a file holding
+# `sleep 300` at its top level, waited 1800 s and were charged 900 s (the tester's round 46).
+# None is written in this tree, which sources no file in a loop.
+SLEEP_SOURCE_REFUSAL = (
+    "sources {target} in a command that a pass of the loop opened on line {loop} runs, and a "
+    "fetch, or a call of a script that fetches, is in that loop; {where} writes `{sleep}` on its "
+    "line {line}, outside every loop of that file whose passes this check reads around a fetch, "
+    "and the source runs it. Bash runs a sourced file's commands at each source and waits for "
+    "every sleep they reach, and this check charges a source no sleep, so the passes of this "
+    "loop are charged nothing for this one. Write the wait in this loop's body as the bare word "
+    "`sleep` and literal seconds, such as `sleep 300`, which this check charges at every pass, "
+    "and take the sleep out of {script}; or source {target} once, before the loop that holds the "
+    "fetch, where its commands run once (dispatch://INFRA-1545, round 46)")
+# A file named, in a pass of such a loop, in a place this check does not read as a call (call_of):
+# in the body of a function the pass calls, in a subshell, behind a wrapper, as the operand of a
+# shell, in a shell's `-c` text, in a `trap`'s action, handed to `xargs` or `find -exec`, and
+# each other place call_of names; and whose run reaches a sleep that no loop of the file writing
+# it charges (script_sleep; dispatch://INFRA-1545, round 46). Such a place may run the file or
+# source it, and this check charges a pass nothing for it, so it is refused by name, as such a
+# place naming a file that fetches is refused wherever it is written (round 37). None is written
+# in this tree.
+SLEEP_UNREAD_REFUSAL = (
+    "names {target} in {form}, a place this check does not read as a call, in a command that a "
+    "pass of the loop opened on line {loop} runs, and a fetch, or a call of a script that "
+    "fetches, is in that loop; {where} writes `{sleep}` on its line {line}, outside every loop "
+    "of that file whose passes this check reads around a fetch. That command may run the file, "
+    "or source it, at each pass, and bash waits for every sleep it reaches there, and this check "
+    "charges a pass nothing for a file named in such a place, so the passes of this loop are "
+    "charged nothing for this one. Write the wait in this loop's body as the bare word `sleep` "
+    "and literal seconds, such as `sleep 300`, which this check charges at every pass, and take "
+    "the sleep out of {script}; or name {target} outside the loop that holds the fetch "
+    "(dispatch://INFRA-1545, round 46)")
+# A heredoc that a command in a pass of such a loop may run (unread_heredocs), whose body writes
+# a sleep, in any form, or names a file whose run reaches one (heredoc_sleep;
+# dispatch://INFRA-1545, round 46). This check reads every heredoc's body as data, refused by name
+# where it fetches (HEREDOC_UNREAD), so until round 46 a `bash <<'EOF'` around `sleep 300` in each
+# pass was charged nothing. None is written in this tree.
+SLEEP_HEREDOC_REFUSAL = (
+    "feeds a heredoc to {consumer} in a command that a pass of the loop opened on line {loop} "
+    "runs, and a fetch, or a call of a script that fetches, is in that loop; {where}. This check "
+    "reads a heredoc's body as data and charges a pass nothing for what it runs, so where that "
+    "command runs the body, as it may at each pass, the passes of this loop are charged nothing "
+    "for this sleep. Write the wait in this loop's body as the bare word `sleep` and literal "
+    "seconds, such as `sleep 300`, which this check charges at every pass, and take the sleep "
+    "out of {holder}; or feed the heredoc outside the loop that holds the fetch "
+    "(dispatch://INFRA-1545, round 46)")
+# A `trap` whose action reaches a sleep (trap_sleep; dispatch://INFRA-1545, round 46): set in a
+# pass of such a loop, where its action calls a function whose body sleeps, a `sleep` in the
+# action itself being read as the loop's own sleep is (sleep_form, SLEEP_WRAPPED) and a file it
+# names as SLEEP_UNREAD_REFUSAL reads it; or set before the loop on a signal other than EXIT,
+# which can fire inside it, where its action does any of the three, by this text or by a library
+# it sources before the loop, at the library's top level or in a function's body, refused at
+# that source. None is written in this tree.
+SLEEP_TRAP_REFUSAL = (
+    "sets a trap on {signals} {where}; its action, `{action}`, {reaches}; and a fetch, or a call "
+    "of a script that fetches, is in that loop. Bash runs a trap's action each time its "
+    "signal fires once the trap is set, a DEBUG trap's before each command, a RETURN trap's at "
+    "the end of each function call and each source, an ERR trap's at each command that fails "
+    "and any other's at each signal of that name, so at passes of that loop too, and this check "
+    "reads no count of those, so it charges the passes of that loop nothing for this sleep. "
+    "Write the wait in that loop's body as the bare word `sleep` and literal seconds, such as "
+    "`sleep 300`, which this check charges at every pass, and take it out of the trap's action; "
+    "or set the trap before that loop on EXIT alone, whose action runs once, as the shell ends "
+    "(dispatch://INFRA-1545, round 46)")
+# The signal on which a trap's action runs once, as the shell ends, whatever the shell runs before
+# it: EXIT, in each spelling bash takes for it, compared with the signal's name in capitals
+# (SLEEP_TRAP_REFUSAL, TRAP_FETCH_REFUSAL; dispatch://INFRA-1545, round 46).
+FIRES_ONCE = {"EXIT", "SIGEXIT", "0"}
+# A `trap` whose action holds a fetch, or calls a function of the text whose reach holds one or a
+# fetching function of a library the text sources, and that does not run once
+# (dispatch://INFRA-1545, round 46): one whose signals are not EXIT alone, which can fire any
+# number of times, and one on EXIT alone set in a loop or in a function's body, where a fetch its
+# action writes is charged at each pass or at each call and a call there is read as no call,
+# while bash keeps the trap set last and runs its action once. A trap on EXIT alone set outside
+# every loop and every function's body is charged its action's fetches once, as a command of the
+# text (sites_of), a call there of a function of the text as one call of it (structure), and one
+# of a library's function as one call of it (library_calls). Until round 46 a trap's action was
+# read for no fetch, so `trap 'retry_fetch … -- curl …' EXIT` was charged nothing. This tree
+# writes twelve traps the check reads, each on EXIT alone, each removing files or stopping a
+# process.
+TRAP_FETCH_REFUSAL = (
+    "sets a trap on {signals}{where} whose action, `{action}`, holds a fetch or calls a function "
+    "that fetches. Bash runs a trap's action each time its signal fires once the trap is set: an "
+    "EXIT trap's once, as the shell ends, a DEBUG trap's before each command, a RETURN trap's at "
+    "the end of each function call and each source, an ERR trap's at each command that fails and "
+    "any other's at each signal of that name. This check charges what a trap's action fetches "
+    "once, to the text that sets it, for a trap on EXIT alone set by a command of the text "
+    "outside every loop and every function's body; {why} Set the trap that way, or write the "
+    "fetch as a command of its own where it is to run, which this check charges each time it "
+    "runs (dispatch://INFRA-1545, round 46)")
+TRAP_FIRES = ("this one is set on a signal other than EXIT, which can fire any number of times, "
+              "and no figure here counts them.")
+TRAP_IN_LOOP = ("this one is set in a loop, where a fetch its action writes is charged at each "
+                "pass and a call there is read as no call, while bash keeps the EXIT trap set last "
+                "and runs its action once.")
+TRAP_IN_FUNCTION = ("this one is set in the body of `{name}`, where a fetch its action writes is "
+                    "charged at each call of `{name}` and a call there is read as no call, while "
+                    "bash keeps the EXIT trap set last and runs its action once.")
 # Three more forms refused by name where a fetch, or a call of a script that fetches, is written
 # anywhere in the text, none written in this tree, each hiding a count of lines as a loop does
 # (dispatch://INFRA-1545, round 37): an alias, a brace bash reads as a word, and a loop's own
@@ -3233,6 +3417,24 @@ def structure(commands: list[Command], text: str) -> Loops:
         if name == "alias" and any("=" in word for word in reduced[1:]):
             read.aliases.append(command.line)
             read.whole_text.append((command.line, ALIAS_REFUSAL))
+        # A trap's action, read as commands written on the trap's line (dispatch://INFRA-1545,
+        # round 46). One on EXIT alone, set outside every loop and every function's body, runs
+        # once, as the shell ends, so a call there of a function of this text is a call made once;
+        # any other is refused by name where its action reaches a fetch (TRAP_FETCH_REFUSAL).
+        trapped = trap_action(reduced)
+        if trapped is not None:
+            inner = Scanner(command.line).scan(trapped[0])
+            for sub in inner:
+                sub.line, sub.offset = command.line, command.offset
+                sub.loops, sub.loop = command.loops, command.loop
+            once = (holder is None and not command.loops
+                    and all(signal.upper() in FIRES_ONCE for signal in trapped[1]))
+            read.traps.append((command, trapped[0], trapped[1], inner, holder, once))
+            for sub in inner if once else ():
+                sub_reduced = reduce_words(sub.words)[0]
+                if (sub_reduced and sub_reduced[0] in defined
+                        and tuple(sub.words[:len(sub.words) - len(sub_reduced)]) in CALL_PREFIXES):
+                    read.function_calls.setdefault(sub_reduced[0], []).append(command.line)
         if name not in defined or index == defined[name]:
             continue
         if tuple(command.words[:len(command.words) - len(reduced)]) not in CALL_PREFIXES:
@@ -4362,7 +4564,7 @@ def occurrences_of(text: str, first_line: int, loops: Loops) -> list[Occurrence]
                     first_line + starts[physical])
         factor, wait, blocked = times_run(loops, line)
         if kind == CALL_SOURCED and (factor != 1 or wait):
-            kind, form = CALL_UNREAD, "a source inside a loop"
+            kind, form = CALL_UNREAD, SOURCE_IN_LOOP
         found.append((pos, Occurrence(str(SCRIPTS / name), kind, line, first_line + physical,
                                       form, factor, wait, blocked)))
 
@@ -4536,6 +4738,24 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
         shapes.append((line, SHELL_TEXT_REFUSAL.format(form=form, why=why),
                        any(site.line == line and one_call(site) != 0 for site in found), set(),
                        set(), set()))
+    # A trap that does not run once, whose action holds a fetch, calls a function of this text
+    # whose reach holds one, as a call written after a word CALL_PREFIXES does not hold is read,
+    # or calls a function of a library it sources that fetches (dispatch://INFRA-1545, round 46).
+    # A script its action names is refused as a name in an argument of `trap` (call_of) where it
+    # fetches.
+    for line, action, signals, holder, loop, waits, names in loops.odd_traps:
+        within: set[int] = set()
+        for name in names & set(loops.function_span):
+            within |= reach(*loops.function_span[name])
+        reached = held(within)
+        why = (TRAP_FIRES if any(signal.upper() not in FIRES_ONCE for signal in signals)
+               else TRAP_IN_LOOP if loop is not None else TRAP_IN_FUNCTION.format(name=holder))
+        where = (f" in the loop opened on line {loop}" if loop is not None
+                 else f" in the body of `{holder}`" if holder is not None else "")
+        shapes.append((line, TRAP_FETCH_REFUSAL.format(
+            signals=" and ".join(f"`{signal}`" for signal in signals), where=where,
+            action=action, why=why), waits or reached[0], reached[1], names | reached[2],
+            sources))
     return shapes
 
 
@@ -4559,12 +4779,15 @@ def commands_of(body: str, first_line: int) -> tuple[list[Command], Loops,
                for word, following in zip(command.words, command.words[1:]))
         or (command.words[-1] == "retry_fetch" and command.line in scanner.blank_parens)]
     loops.commands, loops.text, loops.first_line = commands, text, first_line
-    # Each heredoc body a shell runs as its program, as (its operator's line, its consumer's
-    # words, the line its body starts on, the body), which the readings of patterns and of
-    # expansion settings read as shell text (unread_heredocs; dispatch://INFRA-1545, round 41).
-    loops.programs = [(first_line + number, consumer, first_line + number + 1, held)
-                      for number, held, _sentence, program, consumer
-                      in unread_heredocs(EXPRESSION.sub("EXPR", body)) if program]
+    # Each heredoc body something may run, as (its operator's line, its consumer's words, the
+    # line its body starts on, the body), whose sleeps a loop's pass may wait for (heredoc_sleep;
+    # dispatch://INFRA-1545, round 46), and those a shell runs as its program, which the readings
+    # of patterns and of expansion settings read as shell text (unread_heredocs; round 41).
+    fed = [(first_line + number, consumer, first_line + number + 1, held, program)
+           for number, held, _sentence, program, consumer
+           in unread_heredocs(EXPRESSION.sub("EXPR", body))]
+    loops.fed = [entry[:4] for entry in fed]
+    loops.programs = [entry[:4] for entry in fed if entry[4]]
     # Only a body naming `$GITHUB_ENV` can write into it (env_file_writes; round 42).
     loops.bodies = (heredoc_bodies(EXPRESSION.sub("EXPR", body), first_line)
                     if "GITHUB_ENV" in body else {})
@@ -4581,23 +4804,39 @@ def sites_of(path: str, body: str, first_line: int, step: str,
     the helper in a form that fetches nothing holds no site (dispatch://INFRA-1545, round 37). A
     form odd_command refuses whatever the command holds, an option of a wrapper it does not read
     or `busybox`, is kept as one that waits, so it is refused wherever it is written
-    (dispatch://INFRA-1545, round 38)."""
+    (dispatch://INFRA-1545, round 38). A trap's action is commands of the text written on the
+    trap's line (structure), so a fetch there is a site to every rule, charged once where the
+    trap runs once, on EXIT alone set outside every loop and every function's body, which
+    times_run reads as once; and a trap that does not run once is kept for its refusal where its
+    action reaches a fetch (odd_traps, TRAP_FETCH_REFUSAL; dispatch://INFRA-1545, round 46)."""
     commands, loops, probes = commands_of(body, first_line)
-    found: list[Site] = []
-    for command in commands:
-        if any(start <= command.offset < end for start, end in probes):
-            continue
+
+    def held_by(command: Command) -> list[Site]:
+        """The sites of one command, one odd_command names kept for its refusal."""
         odd = odd_command(command.words)
         if odd is not None:
             sentence, helper, always = odd
             loops.odd_commands.append((command.line, sentence, always or helper
                                        or verb_in(command.words) is not None, helper))
             if helper:
-                continue
+                return []
         held = sites_of_command(path, command, loops, step)
         for site in held:
             site.helper_bound = helper_bound_word(command.words)
+        return held
+
+    found: list[Site] = []
+    for command in commands:
+        if not any(start <= command.offset < end for start, end in probes):
+            found += held_by(command)
+    for command, action, signals, inner, holder, once in loops.traps:
+        held = [site for sub in inner for site in held_by(sub)]
         found += held
+        if not once:
+            loops.odd_traps.append((command.line, action, signals, holder, command.loop,
+                                    any(one_call(site) != 0 for site in held),
+                                    {words[0] for sub in inner
+                                     for words in [reduce_words(sub.words)[0]] if words}))
     if pipefail:
         for site in found:
             site.piped = False
@@ -5765,8 +6004,10 @@ for path in workflows + actions:
             occurrences = occurrences_of(step["run"], first_line, loops_read)
             called = recognised(occurrences)
             blocked = uncounted_of(found) + blocked_calls(path, called)
+            loops_read.unread = [occurrence for occurrence in occurrences
+                                 if occurrence.kind == CALL_UNREAD]
             unread_calls += [(path, occurrence.shown, who, occurrence)
-                             for occurrence in occurrences if occurrence.kind == CALL_UNREAD]
+                             for occurrence in loops_read.unread]
             unread_shapes.extend(
                 (path, line, who, *shape)
                 for line, *shape
@@ -5848,8 +6089,10 @@ for path in scripts:
     script_reach[path] = recognised(script_occurrences[path])
     script_uncounted[path] = uncounted_of(found) + blocked_calls(path, script_reach[path])
     script_waits[path] = [one for one in map(one_call, found) if one != 0]
+    script_read[path][1].unread = [occurrence for occurrence in script_occurrences[path]
+                                   if occurrence.kind == CALL_UNREAD]
     unread_calls += [(path, occurrence.shown, path, occurrence)
-                     for occurrence in script_occurrences[path] if occurrence.kind == CALL_UNREAD]
+                     for occurrence in script_read[path][1].unread]
     unread_shapes.extend(
         (path, line, path, *shape)
         for line, *shape
@@ -6606,7 +6849,7 @@ for path, line, who, occurrence in unread_calls:
                 "out.txt` and then `cmd out.txt`; for a `>(…)`, write what fed it to a file and "
                 f"run `{occurrence.target} … < that-file`. A command of its own is a run, which "
                 "this check charges once for each time the step runs it")
-    elif occurrence.form == "a source inside a loop":
+    elif occurrence.form == SOURCE_IN_LOOP:
         cure = ("Source the library once, before the loop: its functions stay defined for every "
                 "pass, and this check charges a library once for each shell that sources it. A "
                 "library whose own commands fetch each time it is sourced is a script: run it "
@@ -8197,11 +8440,8 @@ def inner_texts(reduced: list[str]) -> list[tuple[str, str]]:
     if head in INTERPRETERS:
         kind, target = shell_operand(reduced)
         return [(target, f"in the text `{head} -c` runs, ")] if kind == "text" and target else []
-    if head == "trap":
-        action = reduced[2:] if reduced[1:2] == ["--"] else reduced[1:]
-        if len(action) > 1 and not action[0].startswith("-"):
-            return [(action[0], "in the text `trap` runs, ")]
-    return []
+    trapped = trap_action(reduced)
+    return [(trapped[0], "in the text `trap` runs, ")] if trapped else []
 
 
 def tree_source(word: str, action: str | None) -> bool:
@@ -8825,21 +9065,12 @@ def charged_where_written(loops: Loops, line: int, span: tuple[int, int] | None 
                for loop, _within, holds in loops.loop_reaches)
 
 
-def library_sleeps(path: str) -> dict[str, tuple[str, str, int, str]]:
-    """The functions a library defines whose call sleeps where no loop of the library charges
-    it, and those of every library it sources in turn, each with (the library writing the sleep,
-    the function whose body writes it, its line, the sleep as written): a function whose body
-    writes such a sleep, in any form, and one whose body calls such a function of these
-    libraries (charged_where_written; dispatch://INFRA-1545, round 45). The helper's own
-    `retry_fetch` is none of them: its sleeps are the ladder rule 8 charges at each call of it."""
-    libraries = libraries_of(path)
-    found: dict[str, tuple[str, str, int, str]] = {}
-    for library in libraries:
-        reading = script_read[library][1]
-        for line, name, sleep in reading.function_sleeps:
-            if (not (library == HELPER and name == "retry_fetch")
-                    and not charged_where_written(reading, line)):
-                found.setdefault(name, (library, name, line, sleep))
+def spread_sleeps(found: dict[str, tuple[str, str, int, str, str, str, str]],
+                  libraries: list[str]) -> dict[str, tuple[str, str, int, str, str, str, str]]:
+    """`found`, the sleep each function name reaches as library_sleeps reads it, with each
+    function of these libraries whose body calls one of those names, in turn, holding what that
+    name reaches: bash runs the callee's sleep at each call of the caller (dispatch://INFRA-1545,
+    round 45)."""
     grown = True
     while grown:
         grown = False
@@ -8855,36 +9086,155 @@ def library_sleeps(path: str) -> dict[str, tuple[str, str, int, str]]:
     return found
 
 
-def script_sleep(path: str, seen: set[str]) -> tuple[str, int, str] | None:
+def library_sleeps(path: str) -> dict[str, tuple[str, str, int, str, str, str, str]]:
+    """The functions a library defines whose call sleeps where no loop of the library charges
+    it, and those of every library it sources in turn, each with (the file writing the sleep,
+    the function whose body reaches it, its line, the sleep as written, where a refusal says the
+    sleep is, what it says to take the sleep out of, the round its citation names): a function
+    whose body writes such a sleep, in any form (dispatch://INFRA-1545, round 45); one whose
+    body names a file in a place this check does not read as a call, a run or a source of it
+    among them, whose run reaches one (script_sleep; round 46); and one whose body calls such a
+    function of these libraries (spread_sleeps; charged_where_written; round 45). The helper's
+    own `retry_fetch` is none of them: its sleeps are the ladder rule 8 charges at each call of
+    it."""
+    libraries = libraries_of(path)
+    found: dict[str, tuple[str, str, int, str, str, str, str]] = {}
+    for library in libraries:
+        reading = script_read[library][1]
+        for line, name, sleep in reading.function_sleeps:
+            if (not (library == HELPER and name == "retry_fetch")
+                    and not charged_where_written(reading, line)):
+                found.setdefault(name, (library, name, line, sleep, f"in the body of `{name}`",
+                                        f"`{name}`", "round 45"))
+        for call in reading.unread:
+            name = reading.function_of(call.line)
+            reached = (script_sleep(call.target, set())
+                       if name is not None and name not in found else None)
+            if reached is not None:
+                script, line, sleep = reached
+                found[name] = (script, name, line, sleep, f"reached from the body of `{name}`",
+                               script, "round 46")
+    return spread_sleeps(found, libraries)
+
+
+def top_level_functions(reading: Loops) -> set[str]:
+    """The functions a text's own commands call, outside the body of every function, and those
+    the bodies of these call in turn, a call after a word CALL_PREFIXES does not hold among them
+    (odd_calls): the function bodies a source of the text runs as bash reads it. The others stay
+    defined for the text sourcing it, whose calls of them are read where they are written
+    (library_sleeps; dispatch://INFRA-1545, round 46)."""
+    calls = {name: set(lines) for name, lines in reading.function_calls.items()}
+    for line, name, _prefix in reading.odd_calls:
+        calls.setdefault(name, set()).add(line)
+    reached: set[str] = set()
+    waiting = [name for name, lines in calls.items()
+               if any(reading.function_of(line) is None for line in lines)]
+    while waiting:
+        name = waiting.pop()
+        if name not in reached:
+            reached.add(name)
+            start, end = reading.function_span[name]
+            waiting += [other for other, lines in calls.items()
+                        if any(start <= line <= end for line in lines)]
+    return reached
+
+
+def script_sleep(path: str, seen: set[tuple[str, bool]],
+                 sourced: bool = False) -> tuple[str, int, str] | None:
     """The first sleep a run of this script can reach where no loop of the file writing it
     charges it, as (that file, its line, the sleep as written), or None where it reaches none
     (dispatch://INFRA-1545, round 45): a sleep its own text writes, in any form, outside every
-    loop of it that charges one (charged_where_written); one in the body of a function of a
-    library it sources, which its text calls (library_sleeps); or one a script it runs reaches
-    in turn, in the order its runs are written. A sleep in a loop of the script around a fetch
-    is charged at each run of it, as a step's own loop's sleeps are. `seen` stops a script that
-    reaches itself."""
-    if path in seen or path not in script_read:
+    loop of it that charges one (charged_where_written), the body of the helper's own
+    `retry_fetch` aside, whose sleeps are the ladder rule 8 charges at each call of it; one in
+    the body of a function of a library it sources, which its text calls (library_sleeps); and
+    one each file its text names reaches in turn, in the order the names are written: a script
+    it runs, and since round 46 a library it sources, read as the source runs it, and a file it
+    names in a place this check does not read as a call, read as a run of it, which such a place
+    may make, but for a source inside a loop, which is a source of it whose functions the text
+    calls as a library's. A sleep in a loop of the script around a fetch is charged at each run
+    of it, as a step's own loop's sleeps are.
+
+    With `sourced`, what a source of the file reaches (round 46): its own commands, and the
+    bodies of the functions they call (top_level_functions), and not the body of any other
+    function it defines, which stays defined for the text sourcing it and is read at that text's
+    calls of it (library_sleeps). Until round 46 no source was read for a sleep, so a loop
+    sourcing a file whose own commands sleep, beside a fetch in each pass, was charged nothing
+    for that sleep, and so was a loop running a script that sources one. `seen` stops a script
+    that reaches itself."""
+    if (path, sourced) in seen or path not in script_read:
         return None
-    seen.add(path)
+    seen.add((path, sourced))
     reading = script_read[path][1]
+    reached = top_level_functions(reading) if sourced else set(reading.function_span)
+    skipped = {line for name, (start, end) in reading.function_span.items()
+               if name not in reached or (path == HELPER and name == "retry_fetch")
+               for line in range(start, end + 1)}
     own = next(((path, line, sleep) for line, sleep in reading.sleeps
-                if not charged_where_written(reading, line)), None)
+                if line not in skipped and not charged_where_written(reading, line)), None)
     if own is not None:
         return own
-    calls = script_reach.get(path, [])
-    sleeping: dict[str, tuple[str, str, int, str]] = {}
+    calls = script_occurrences.get(path, [])
+    sleeping: dict[str, tuple[str, str, int, str, str, str, str]] = {}
     for call in calls:
-        if call.kind == CALL_SOURCED:
+        if call.kind == CALL_SOURCED or call.form == SOURCE_IN_LOOP:
             for name, held in library_sleeps(call.target).items():
                 sleeping.setdefault(name, held)
     for command in reading.commands:
         reduced = reduce_words(command.words)[0]
-        if reduced and reduced[0] in sleeping and reduced[0] not in reading.function_span:
-            library, _function, line, sleep = sleeping[reduced[0]]
+        if (reduced and reduced[0] in sleeping and reduced[0] not in reading.function_span
+                and command.line not in skipped):
+            library, _function, line, sleep, *_said = sleeping[reduced[0]]
             return library, line, sleep
-    return next((found for call in calls if call.kind == CALL_RUN
-                 for found in [script_sleep(call.target, seen)] if found), None)
+    return next((found for call in calls
+                 if call.kind in (CALL_RUN, CALL_SOURCED, CALL_UNREAD) and call.line not in skipped
+                 for found in [script_sleep(call.target, seen, call.kind == CALL_SOURCED
+                                            or call.form == SOURCE_IN_LOOP)] if found), None)
+
+
+def heredoc_sleep(start: int, held: str) -> tuple[str, str] | None:
+    """What the refusal of a heredoc that a pass of a loop around a fetch may run says of the
+    sleep its body reaches, as (where it is, what to take it out of), or None where the body
+    reaches none (dispatch://INFRA-1545, round 46): a sleep the body writes, in any form, read as
+    shell from `start`, the line the body starts on; or one a file it names reaches, read as a
+    run of that file (script_sleep). Every other rule reads the body as data (without_heredocs),
+    and the refusal of a heredoc that fetches names none of this (unread_heredocs)."""
+    reading = commands_of(held, start)[1]
+    if reading.sleeps:
+        line, sleep = reading.sleeps[0]
+        return f"its body writes `{sleep}` on line {line}", "the heredoc's body"
+    for match in SCRIPT_CALL.finditer(held):
+        target = str(SCRIPTS / match.group(1))
+        found = script_sleep(target, set()) if target in script_files else None
+        if found is not None:
+            script, line, sleep = found
+            return (f"its body names {target}, and {script} writes `{sleep}` on its line {line}, "
+                    "outside every loop of that file whose passes this check reads around a "
+                    "fetch", script)
+    return None
+
+
+def trap_sleep(action: str, whole: bool,
+               functions: dict[str, tuple[str, str, int, str, str, str, str]]) -> str | None:
+    """What the refusal of a trap says its action reaches, or None where it reaches no sleep
+    (dispatch://INFRA-1545, round 46): a call of one of `functions`, the text's own and its
+    libraries' whose bodies sleep, as library_sleeps reads them; and, where `whole`, a sleep the
+    action writes, in any form, and a file it names whose run reaches one (script_sleep). A trap
+    set in a pass of a loop leaves those two to the readings of the loop's own sleeps (sleep_of,
+    which reads a trap's action) and of a file the loop names (SLEEP_UNREAD_REFUSAL)."""
+    for command in Scanner(1).scan(action):
+        reduced = reduce_words(command.words)[0]
+        if whole and sleep_form(command.words,
+                                command.quoted or [False] * len(command.words)) is not None:
+            return f"holds `{command_text(action, command.offset, 0)}`"
+        if reduced and reduced[0] in functions:
+            script, _function, line, sleep, place, *_said = functions[reduced[0]]
+            return f"calls `{reduced[0]}`, and {script} writes `{sleep}` on its line {line}, {place}"
+    for match in SCRIPT_CALL.finditer(action) if whole else ():
+        target = str(SCRIPTS / match.group(1))
+        found = script_sleep(target, set()) if target in script_files else None
+        if found is not None:
+            return f"names {target}, and {found[0]} writes `{found[2]}` on its line {found[1]}"
+    return None
 
 
 # A shape this check refuses by name rather than reads (unread_shapes_of), where what it can hide
@@ -8904,15 +9254,42 @@ for path, line, who, sentence, waits, targets, names, sources in unread_shapes:
 # SLEEP_SCRIPT_REFUSAL), and in the body of a function of a library the text sources
 # (library_sleeps, SLEEP_LIBRARY_REFUSAL). Each is read once every script is, over the loops
 # unread_shapes_of keeps (loop_reaches). A function, a script or a library function whose run
-# sleeps nowhere, or only in a loop of its own around a fetch, is charged as before.
+# sleeps nowhere, or only in a loop of its own around a fetch, is charged as before. Round 46
+# reads every other route by which a pass of such a loop reaches a sleep the same way
+# (dispatch://INFRA-1545, round 46): a source of a file in a pass, read as the source runs it
+# (SLEEP_SOURCE_REFUSAL), with the functions of a file sourced there read at the pass's calls of
+# them as a library's are; a file named in a place this check does not read as a call, read as
+# a run of it (SLEEP_UNREAD_REFUSAL); a heredoc something in a pass may run (heredoc_sleep,
+# SLEEP_HEREDOC_REFUSAL); a trap whose action reaches a sleep, set in a pass or before the loop
+# on a signal other than EXIT (trap_sleep, SLEEP_TRAP_REFUSAL); and a function of a library
+# whose body calls a function of this text, or of another library it sources, whose body sleeps
+# (spread_sleeps). Until round 46 each was charged nothing and refused nothing: three passes of a
+# 300 s fetch, each sourcing a file whose own `sleep 300` runs at each source, waited 1800 s under
+# a 29-minute key that the check passed (the tester's round 46).
 for path, _name, (who, loops, _found, called), _owner in body_reads:
-    sleeping: dict[str, tuple[str, str, str, int, str]] = {}
+    sleeping: dict[str, tuple[str, str, str, int, str, str, str, str]] = {}
+    defined: dict[str, str] = {}
+    sourced: list[str] = []
     for call in called:
         if call.kind == CALL_SOURCED:
             defining = library_definitions(call.target)
-            for name, (library, function, line, sleep) in library_sleeps(call.target).items():
-                sleeping.setdefault(name, (defining.get(name, library), library, function, line,
-                                           sleep))
+            for name, library in defining.items():
+                defined.setdefault(name, library)
+            sourced += [library for library in libraries_of(call.target) if library not in sourced]
+            for name, held in library_sleeps(call.target).items():
+                sleeping.setdefault(name, (defining.get(name, held[0]), *held))
+    # The functions of this text whose bodies sleep where no loop of their own charges it, which
+    # a function of a library the text sources calls where no library it sources defines them:
+    # bash runs this text's definition there. A library function calling a sleeping function of
+    # another library the text sources is read across them too (spread_sleeps).
+    local = {name: (path, name, line, sleep, f"in the body of `{name}`", f"`{name}`", "round 46")
+             for line, name, sleep in reversed(loops.function_sleeps)
+             if name in loops.function_span and name not in defined
+             and not charged_where_written(loops, line, loops.function_span[name])}
+    reached = {**local, **{name: held[1:] for name, held in sleeping.items()}}
+    for name, held in spread_sleeps(reached, sourced).items():
+        if name not in local:
+            sleeping.setdefault(name, (defined.get(name, held[0]), *held))
     for loop, within, holds in loops.loop_reaches:
         if not holds_fetch(*holds):
             continue
@@ -8930,6 +9307,25 @@ for path, _name, (who, loops, _found, called), _owner in body_reads:
                        else SLEEP_FUNCTION_OUTSIDE)
                 problem(path, line, f"{who} " + SLEEP_FUNCTION_REFUSAL.format(
                     sleep=sleep, name=name, loop=loop, how=how.format(name=name)) + ".")
+        # A source in a pass: a recognised one, in a loop of one pass, and one inside a loop
+        # of more, which occurrences_of reads as no call. Its own commands run at each source,
+        # and the functions it defines are read at the pass's calls of them, as a library's.
+        here = dict(sleeping)
+        for call in ([call for call in called if call.kind == CALL_SOURCED]
+                     + [call for call in loops.unread if call.form == SOURCE_IN_LOOP]):
+            if call.line not in within:
+                continue
+            defining = library_definitions(call.target)
+            for name, held in library_sleeps(call.target).items():
+                here.setdefault(name, (defining.get(name, held[0]), *held))
+            found = script_sleep(call.target, set(), True)
+            if found is not None:
+                script, line, sleep = found
+                where = (script if script == call.target
+                         else f"{script}, which that source reaches,")
+                problem(path, call.shown, f"{who} " + SLEEP_SOURCE_REFUSAL.format(
+                    target=call.target, loop=loop, where=where, sleep=sleep, line=line,
+                    script=script) + ".")
         for call in called:
             found = (script_sleep(call.target, set())
                      if call.kind == CALL_RUN and call.line in within else None)
@@ -8940,14 +9336,59 @@ for path, _name, (who, loops, _found, called), _owner in body_reads:
                 problem(path, call.shown, f"{who} " + SLEEP_SCRIPT_REFUSAL.format(
                     target=call.target, loop=loop, where=where, sleep=sleep, line=line,
                     script=script) + ".")
+        for call in loops.unread:
+            found = (script_sleep(call.target, set())
+                     if call.line in within and call.form != SOURCE_IN_LOOP else None)
+            if found is not None:
+                script, line, sleep = found
+                where = (script if script == call.target
+                         else f"{script}, which that file reaches,")
+                problem(path, call.shown, f"{who} " + SLEEP_UNREAD_REFUSAL.format(
+                    target=call.target, form=call.form, loop=loop, where=where, sleep=sleep,
+                    line=line, script=script) + ".")
         for command in loops.commands:
             reduced = reduce_words(command.words)[0]
             name = reduced[0] if reduced else ""
-            if command.line in within and name in sleeping and name not in loops.function_span:
-                library, sleeper, function, line, sleep = sleeping[name]
+            if command.line in within and name in here and name not in loops.function_span:
+                library, sleeper, _function, line, sleep, place, holder, rounds = here[name]
                 problem(path, command.line, f"{who} " + SLEEP_LIBRARY_REFUSAL.format(
                     name=name, library=library, loop=loop, sleeper=sleeper, sleep=sleep,
-                    line=line, function=function) + ".")
+                    line=line, place=place, holder=holder, rounds=rounds) + ".")
+        for operator, consumer, start, held in loops.fed:
+            found = heredoc_sleep(start, held) if operator in within else None
+            if found is not None:
+                where, holder = found
+                problem(path, operator, f"{who} " + SLEEP_HEREDOC_REFUSAL.format(
+                    consumer=f"`{consumer[0]}`" if consumer else "no command", loop=loop,
+                    where=where, holder=holder) + ".")
+        # A trap set in a pass, whatever its signal, and one set before the loop on a signal
+        # that can fire inside it, which is any but EXIT (FIRES_ONCE): an EXIT trap's action runs
+        # once, as the shell ends, after the loop. One a library this text sources before the
+        # loop sets, at its top level or in a function's body, is set by that source or by a
+        # call of that function, which may come before the loop too.
+        functions = {name: held[1:] for name, held in here.items()}
+        functions.update(local)
+        traps = [(command, command.line, "") for command in loops.commands]
+        traps += [(command, call.shown,
+                   f"on line {command.line} of {library}, which this text sources on line "
+                   f"{call.shown}, ")
+                  for call in called if call.kind == CALL_SOURCED and call.line < loop
+                  for library in libraries_of(call.target)
+                  for command in script_read[library][1].commands]
+        for command, line, through in traps:
+            trapped = trap_action(reduce_words(command.words)[0])
+            inside = not through and command.line in within
+            if trapped is None or not (inside or (through or command.line < loop) and any(
+                    signal.upper() not in FIRES_ONCE for signal in trapped[1])):
+                continue
+            reaches = trap_sleep(trapped[0], not inside, functions)
+            if reaches is not None:
+                problem(path, line, f"{who} " + SLEEP_TRAP_REFUSAL.format(
+                    signals=" and ".join(f"`{signal}`" for signal in trapped[1]),
+                    action=trapped[0], reaches=reaches, loop=loop,
+                    where=(f"in a command that a pass of the loop opened on line {loop} runs"
+                           if inside else f"{through}before the loop opened on line {loop}"))
+                        + ".")
 
 # An `env:` setting a variable of EXPANSION_VARIABLES, the file's, a job's or a step's, and a
 # `shell:` starting a shell with a setting that changes how bash expands a word, a step's own or
@@ -9227,10 +9668,13 @@ for path, name, (who, loops, found, called), owner in body_reads:
     # call of one after a word CALL_PREFIXES does not hold is no call this check reads, and one
     # of a library function that calls through a variable runs whatever this text hands it,
     # which the library's own reading cannot see: each is refused by name
-    # (dispatch://INFRA-1545, round 37).
+    # (dispatch://INFRA-1545, round 37). A call in the action of a trap that runs once, on EXIT
+    # alone set outside every loop and every function's body, is one call made as the shell ends
+    # (structure; round 46).
     counts: dict[str, int | None] = {}
     over: dict[str, tuple[int, list[str]]] = {}
-    for command in loops.commands:
+    for command in loops.commands + [sub for *_trap, inner, _holder, once in loops.traps if once
+                                     for sub in inner]:
         reduced = reduce_words(command.words)[0]
         function = reduced[0] if reduced else ""
         if function in loops.function_span:
