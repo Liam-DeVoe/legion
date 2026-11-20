@@ -18,7 +18,8 @@ import (
 // whose reread the broker then refuses, prints the reread to ask for once the tags hold what the
 // person wants (rereadCommand). Run in bash, with an environment holding PATH and HOME alone, so no
 // curlrc and no BASH_ENV of the runner's can send it elsewhere, the command:
-//   - makes one reread where the shell's AGENT_SECRETS_URL holds the broker's address;
+//   - makes one reread, with no proof, where the shell's AGENT_SECRETS_URL holds the broker's
+//     address, and prints nothing of the broker's answer, whose reason says the write stands;
 //   - makes one where that address ends in slashes, as an address typed by hand may, which the
 //     CLI strips (brokerclient.WithoutTrailingSlashes): a doubled slash would be answered with a
 //     redirect curl does not follow, and the command would exit 0 having asked nothing;
@@ -79,10 +80,10 @@ func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
 			cmd := exec.Command("bash", "--noprofile", "--norc", "-c", printed[1])
 			cmd.Env = env
 			out, err := cmd.CombinedOutput()
-			rereads, _ := broker.recorded()
+			rereads := broker.rereadUnsigned()
 			if c.wantReread {
-				if err != nil || len(rereads) != 1 || rereads[0] != "API_KEY" {
-					t.Fatalf("the printed command: err %v, output %q, rereads %v; want one reread of API_KEY", err, out, rereads)
+				if err != nil || len(rereads) != 1 || rereads[0] != "API_KEY" || strings.Contains(string(out), "stands") {
+					t.Fatalf("the printed command: err %v, output %q, rereads %v; want one reread of API_KEY, and no word of the write standing", err, out, rereads)
 				}
 				return
 			}

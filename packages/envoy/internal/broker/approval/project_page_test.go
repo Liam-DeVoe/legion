@@ -142,11 +142,13 @@ func TestAnOutsiderSeesNoPrivateRequest(t *testing.T) {
 }
 
 // TestASignInToAHiddenRequestNamesNoApprover is round 3's third hardening item on
-// cybermonklabs/legion#4135: a signed-out visitor's sign-in to a request of a private project, by
-// its secret's tag or by an issue its reason names, carries no login_hint. The approver is part of
-// what the page hides from a person outside the project (hideUnseen), and a visitor who has not
-// signed in is nobody yet. A request touching no private project still names its approver, so the
-// person it waits on is asked nothing at a provider they are already signed in to.
+// cybermonklabs/legion#4135: no sign-in to a request of a private project, by its secret's tag or
+// by an issue its reason names, carries its approver as login_hint to a person outside it. A
+// signed-out visitor's sign-in names none for any record, since the page reads no record before
+// a person signs in. The one sign-in that names an approver, ?switch=1 from a live session, is
+// answered 404 for a request the person may not see, as for an id no record has, and starts no
+// sign-in; for a request touching no private project it names its approver, so the person it
+// waits on is asked nothing at a provider they are already signed in to.
 func TestASignInToAHiddenRequestNamesNoApprover(t *testing.T) {
 	r, _ := projectRig(t)
 	enrollmentID, key := r.benSession(t, "ben-hint-box")
@@ -157,13 +159,21 @@ func TestASignInToAHiddenRequestNamesNoApprover(t *testing.T) {
 	plainSession, plainKey := r.benSession(t, "ben-hint-plain-box")
 	plain := r.request(t, plainSession, plainKey, "deploy the billing service", nil, "", "TEST_SECRET")
 
-	for _, hidden := range []pending{tagged, reasoned} {
-		if auth := r.browser(t).StartSignIn(t, "/approve/"+hidden.recordID); auth.Query().Has("login_hint") {
-			t.Errorf("a signed-out sign-in to %s, a request of PRIV, hints %q; want no login_hint", hidden.recordID, auth.Query().Get("login_hint"))
+	for _, p := range []pending{tagged, reasoned, plain} {
+		if auth := r.browser(t).StartSignIn(t, "/approve/"+p.recordID); auth.Query().Has("login_hint") {
+			t.Errorf("a signed-out sign-in to %s hints %q; want no login_hint for any record", p.recordID, auth.Query().Get("login_hint"))
 		}
 	}
-	if auth := r.browser(t).StartSignIn(t, "/approve/"+plain.recordID); auth.Query().Get("login_hint") != ada {
-		t.Errorf("a signed-out sign-in to %s, a request of no project, hints %q; want its approver %s, as before", plain.recordID, auth.Query().Get("login_hint"), ada)
+	outsider := r.browser(t)
+	outsider.SignIn(t, plain.recordID, person(carol))
+	for _, hidden := range []pending{tagged, reasoned} {
+		res := outsider.Get(t, "/approve/"+hidden.recordID+"?switch=1")
+		if res.Status != http.StatusNotFound || !strings.Contains(pageText(t, res.Body), "No such request") || res.Header.Get("Location") != "" {
+			t.Errorf("carol's switch to %s, a request of PRIV = %d Location %q:\n%s\nwant the 404 an id no record has, and no sign-in", hidden.recordID, res.Status, res.Header.Get("Location"), pageText(t, res.Body))
+		}
+	}
+	if auth := outsider.StartSignIn(t, "/approve/"+plain.recordID+"?switch=1"); auth.Query().Get("login_hint") != ada {
+		t.Errorf("carol's switch to %s, a request of no project, hints %q; want its approver %s", plain.recordID, auth.Query().Get("login_hint"), ada)
 	}
 }
 

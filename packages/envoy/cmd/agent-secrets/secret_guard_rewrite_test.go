@@ -664,10 +664,11 @@ func TestALandedRetagWhoseValueWasNotCheckedSaysSo(t *testing.T) {
 //     write was not made; a removal that needs no second write says to retag again if the tags do
 //     not hold its change.
 //   - A set retag's one write answers it, on AWS and on GCP, and says the same.
-//   - The removal's answer and the set's answer are lost and the broker then refuses the reread,
-//     as a dropped network does to both: the retag says the broker could not be asked and names
-//     the reread to ask for, and never that the write stands or that the broker refuses the secret
-//     after it, which a person may read as "nothing more to check".
+//   - The answer to a removal, to a requesters rewrite or to a set is lost and the broker then
+//     refuses the reread, as a dropped network does to both: the retag says the broker could not
+//     be asked and names the reread to ask for, and never that the write stands or that the broker
+//     refuses the secret after it, which a person may read as "nothing more to check". After a
+//     rewrite, the one thing it says stands is the removal, which landed.
 func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 	rewrite := guarded("ada@example.com")
 	notGuessed := []string{"does not hold " + policy.RequestersRollbackGuard + " yet", "still holds " + policy.RequestersRollbackGuard, "the removal landed, so", "and API_KEY's requesters were written as"}
@@ -679,6 +680,7 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 		lose             string
 		unlisted         bool
 		rereadFails      bool
+		removalStands    bool
 		args, want       []string
 		requesters, tier string
 		removed          bool
@@ -707,6 +709,11 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 			name: "the removal's answer was lost and the reread refused", lose: "untag", rereadFails: true, args: []string{"--max-grant", "none"},
 			want:       []string{"leaves open whether this write landed", "whether the removal landed is unknown", notAsked},
 			requesters: "ada@example.com", tier: policy.TierHuman, removed: true,
+		},
+		{
+			name: "the requesters rewrite's answer was lost and the reread refused", lose: "tag", rereadFails: true, removalStands: true, args: []string{"--max-grant", "none"},
+			want:       []string{"leaves open whether this write landed", "the removal stands, but whether API_KEY's requesters were written as " + `"` + rewrite + `"` + " is unknown", notAsked},
+			requesters: rewrite, tier: policy.TierHuman, removed: true,
 		},
 		{
 			name: "a set retag's answer was lost and the reread refused", lose: "tag", rereadFails: true, args: []string{"--tier", policy.TierAgent},
@@ -742,8 +749,12 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 				}
 			}
 			if c.rereadFails {
-				for _, claim := range []string{"stands", "after the write"} {
-					if strings.Contains(stderr, claim) {
+				said := stderr
+				if c.removalStands {
+					said = strings.ReplaceAll(said, "the removal stands", "")
+				}
+				for _, claim := range []string{"stands", "after the write", "its next reload"} {
+					if strings.Contains(said, claim) {
 						t.Fatalf("%s: stderr %q says %q of a write whose outcome is unknown", c.name, stderr, claim)
 					}
 				}

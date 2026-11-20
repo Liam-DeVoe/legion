@@ -262,6 +262,13 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		if rewrite != "" {
 			if err := writeGuardRewrite(s, slug, after, rewrite); err != nil {
 				reportRewriteFailure(s, stderr, form, name, rewrite, held, err)
+				if writeUnknown(err) {
+					// The removal landed, and whether the rewrite did is open, so the reread
+					// claims nothing of a write: rereadRetag would say "the write … stands", and a
+					// person who reads that may leave the secret without its guard.
+					rereadOpen(s, stdout, stderr, form, name)
+					return 1
+				}
 				// The removal landed, so the broker is asked to reread whatever the rewrite did.
 				rereadRetag(s, stdout, stderr, form, name, policy.TypeFromTags(after))
 				return 1
@@ -480,18 +487,21 @@ func reportSetFailure(s *secretSession, stderr io.Writer, form, name, unchecked,
 	}
 }
 
-// rereadRetag is rereadAfter for a retag, which also exits 1 when the broker serves the secret as
-// another type than type, the one the retag left it (after's): a reread can read the secret's
-// metadata stale (Secret Manager's is eventually consistent for up to hours), and a secret the
-// broker still serves as stored releases its stored value raw, so a key stored in it then reaches
-// every grant of it. Only this exit, not `broker: serving`, says the broker reads the new tags.
+// rereadRetag is rereadAfter for a retag, which also exits 1 when the secret does not hold type,
+// the one the retag left it (after's), as rereadValue does for a value write: the store's own type
+// tag is read back whatever the broker answers (reread). Where a session's reread was answered in
+// full, the broker must serve the secret as that type too: a reread can read the secret's metadata
+// stale (Secret Manager's is eventually consistent for up to hours), and a secret the broker still
+// serves as stored releases its stored value raw, so a key stored in it then reaches every grant
+// of it. Only an exit 0 with `broker: serving … (type …)`, not an exit 0 after the line saying the
+// broker's view was not checked, says the broker reads the new tags.
 func rereadRetag(s *secretSession, stdout, stderr io.Writer, form, name, secretType string) int {
-	r, ok := reread(s, stdout, stderr, form, name, true, nil)
+	r, ok := reread(s, stdout, stderr, form, name, secretType, true, nil)
 	if !ok {
 		return 1
 	}
-	if r.Type != secretType {
-		fmt.Fprintf(stderr, "agent-secrets %s: the retag in %s stands, but %s serves %s as %s, not %s: it still sees the old tags. Run this retag again to ask it to reread them, and store no value in %s until a retag exits 0\n", form, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), name)
+	if r.Told && r.Type != secretType {
+		fmt.Fprintf(stderr, "agent-secrets %s: the retag in %s stands, but %s serves %s as %s, not %s: it still sees the old tags. Run this retag again to ask it to reread them, and store no value in %s until a retag's `broker: serving %s` line says it serves %s as %s\n", form, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), name, name, name, typeName(secretType))
 		return 1
 	}
 	return 0

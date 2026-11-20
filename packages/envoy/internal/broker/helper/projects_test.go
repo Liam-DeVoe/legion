@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
 // TestHelperKeepsASessionsProjectsAcrossARestart: a register naming projects enrols the session
@@ -154,19 +156,24 @@ func TestASessionComingBackUnderOtherProjectsGetsANewIdentity(t *testing.T) {
 // are given, each one a project key named once, as the broker's enrollment route reads them. So
 // the element "PRIV CORE" is refused, not read as the two projects CORE and PRIV, and so are an
 // element with a space before its key and an empty one; register and enroll-session-key both
-// refuse each with BAD_REQUEST, and none of them reaches the broker.
+// refuse each with BAD_REQUEST, and none of them reaches the broker. The refusal says the list
+// holds one key in each element, and never that keys are separated by white space, which would
+// send the caller to write the very element it refused.
 func TestHelperRefusesAProjectElementThatIsNotOneKey(t *testing.T) {
 	r := startRig(t, filepath.Join(t.TempDir(), "sessions.json"))
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
+	said := func(resp Response) bool {
+		return strings.Contains(resp.Error, "projects") && strings.Contains(resp.Error, brokerclient.ProjectsListed) && !strings.Contains(resp.Error, brokerclient.ProjectsSpaced)
+	}
 	for _, projects := range [][]string{{"PRIV CORE"}, {" PRIV"}, {""}, {"PUB", "PRIV PRIV"}, {"PRIV", "PRIV"}} {
 		reg := r.call(t, Request{Op: "register", Projects: projects})
-		if reg.OK || reg.Code != CodeBadRequest || !strings.Contains(reg.Error, "projects") {
-			t.Errorf("register naming the projects %q = %+v; want BAD_REQUEST naming projects", projects, reg)
+		if reg.OK || reg.Code != CodeBadRequest || !said(reg) {
+			t.Errorf("register naming the projects %q = %+v; want BAD_REQUEST naming projects, one key in each element", projects, reg)
 		}
 		key := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "box:1", Thumbprint: "tp", Projects: projects})
-		if key.OK || key.Code != CodeBadRequest || !strings.Contains(key.Error, "projects") {
-			t.Errorf("enroll-session-key naming the projects %q = %+v; want BAD_REQUEST naming projects", projects, key)
+		if key.OK || key.Code != CodeBadRequest || !said(key) {
+			t.Errorf("enroll-session-key naming the projects %q = %+v; want BAD_REQUEST naming projects, one key in each element", projects, key)
 		}
 	}
 	r.callerPID.Store(0)
