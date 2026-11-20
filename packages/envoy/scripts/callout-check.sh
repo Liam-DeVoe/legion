@@ -9,9 +9,10 @@
 #   1. a session subscribes its own delivery channel;
 #   2. a session is refused another session's delivery channel, with nats-server's own
 #      "Permissions Violation for Subscription to ..." naming that channel;
-#   3. a connection with no credential is refused;
-#   4. a token neither of this stack's brokers issued is refused: a stand-in token endpoint, which
-#      answers every trade with a token of its own, plays the other broker;
+#   3. a connection with no credential is refused, with nats-server's own "Authorization
+#      Violation";
+#   4. a token neither of this stack's brokers issued is refused the same way: a stand-in token
+#      endpoint, which answers every trade with a token of its own, plays the other broker;
 #   5. the listener is connected by its own service token: the hub's connection list names a
 #      connection authorized as the listener's service user, listener/<its machine id>;
 #   6. with one of the two brokers killed, a new session is admitted within 2 s of the kill, three
@@ -19,7 +20,8 @@
 #      the auth service's queue group, so no request waits on it. A session opened before the hub
 #      has read that connection's close can be routed to the dead replica and is refused at the
 #      hub's authorization timeout (measured), so the check opens the first session only once the
-#      hub's connection list no longer names the killed replica, inside the first session's 2 s.
+#      hub lists one envoy-broker-callout connection fewer (both replicas carry that name), inside
+#      the first session's 2 s.
 #
 # Each probe is cmd/natsprobe, run with only the variables it needs: as a session, it trades the
 # pod's exchange token for a broker access token under the session the stack registered the pod
@@ -173,10 +175,12 @@ else
   fail "a session is refused another session's delivery channel: natsprobe exit $probe_rc: $probe_out"
 fi
 
-# 3. No credential at all.
+# 3. No credential at all, refused by nats-server in its own words: natsprobe exits 4 only for the
+# hub's Authorization Violation, and this line holds it to those words too, as line 2 does.
+NOT_ADMITTED="Authorization Violation"
 probe "$AGENT_SECRETS_URL" --no-credential --subscribe "$OWN_CHANNEL" --wait 1s
-if [ "$probe_rc" -eq 4 ] && [ -n "$(first_line_with 'not admitted: ')" ]; then
-  pass "a connection with no credential is refused: $(first_line_with 'not admitted: ')"
+if [ "$probe_rc" -eq 4 ] && [ "$(first_line_with 'not admitted: ')" = "$NOT_ADMITTED" ]; then
+  pass "a connection with no credential is refused: $NOT_ADMITTED"
 elif [ -z "$probe_out" ]; then
   unknown "a connection with no credential is refused: natsprobe printed nothing (exit $probe_rc)"
 else
@@ -222,8 +226,8 @@ if [ ! -s "$foreign_port_file" ]; then
   unknown "a token another broker issued is refused: the stand-in token endpoint never started: $(cat "$WORK_DIR/foreign.log")"
 else
   probe "http://127.0.0.1:$(cat "$foreign_port_file")" --subscribe "$OWN_CHANNEL" --wait 1s
-  if [ "$probe_rc" -eq 4 ] && [ -n "$(first_line_with 'not admitted: ')" ]; then
-    pass "a token another broker issued is refused: $(first_line_with 'not admitted: ')"
+  if [ "$probe_rc" -eq 4 ] && [ "$(first_line_with 'not admitted: ')" = "$NOT_ADMITTED" ]; then
+    pass "a token another broker issued is refused: $NOT_ADMITTED"
   elif [ -z "$probe_out" ]; then
     unknown "a token another broker issued is refused: natsprobe printed nothing (exit $probe_rc)"
   else
@@ -232,7 +236,7 @@ else
 fi
 
 # 5. The listener's own connection, as the hub lists it: authorized as listener/<machine id>.
-users="$(curl -sf "$DEV_STACK_NATS_MONITOR_URL/connz?auth=true&limit=1024" | jq -r '.connections[]?.authorized_user // empty' 2>/dev/null || true)"
+users="$(curl -sf --max-time 2 "$DEV_STACK_NATS_MONITOR_URL/connz?auth=true&limit=1024" | jq -r '.connections[]?.authorized_user // empty' 2>/dev/null || true)"
 listener_user="$(printf '%s\n' "$users" | grep '^listener/' | head -n1 || true)"
 if [ -z "$users" ]; then
   unknown "the listener is connected by its service token: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) named no connection"
@@ -243,11 +247,12 @@ else
 fi
 
 # callout_connections prints how many connections the hub's connection list names as the auth
-# service's (natscallout's connectionName), or nothing when the list cannot be read. nats-server
-# marks a connection closed, and so routes nothing more to its subscriptions (client.go,
-# deliverMsg), before it takes the connection off that list (closeConnection, removeClient).
+# service's (natscallout's connectionName), or nothing when the list cannot be read inside 2 s.
+# nats-server marks a connection closed, and so routes nothing more to its subscriptions
+# (client.go, deliverMsg), before it takes the connection off that list (closeConnection,
+# removeClient).
 callout_connections() {
-  curl -sf "$DEV_STACK_NATS_MONITOR_URL/connz?limit=1024" 2>/dev/null |
+  curl -sf --max-time 2 "$DEV_STACK_NATS_MONITOR_URL/connz?limit=1024" 2>/dev/null |
     jq -r '[.connections[]? | select(.name == "envoy-broker-callout")] | length' 2>/dev/null || true
 }
 
@@ -267,22 +272,27 @@ else
     killed=$(date +%s%N)
     kill -KILL "$second_broker"
     dropped=""
-    count=""
+    listed=""
     waited=0
     while :; do
       count="$(callout_connections)"
       waited=$((($(date +%s%N) - killed) / 1000000))
-      if [ -n "$count" ] && [ "$count" -lt "$before" ]; then
-        dropped=$waited
-        break
+      if [ -n "$count" ]; then
+        listed=$count
+        if [ "$count" -lt "$before" ]; then
+          dropped=$waited
+          break
+        fi
       fi
       [ "$waited" -ge 2000 ] && break
       sleep 0.02
     done
-    if [ -z "$dropped" ] && [ -z "$count" ]; then
+    # A list that could not be read at all after the kill says nothing; one read that still named
+    # both connections says the hub kept the killed broker, whatever the reads after it answered.
+    if [ -z "$dropped" ] && [ -z "$listed" ]; then
       unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read after the kill"
     elif [ -z "$dropped" ]; then
-      fail "$killed_property: the hub still listed $count connections named envoy-broker-callout ${waited} ms after the kill"
+      fail "$killed_property: the hub still listed $listed connections named envoy-broker-callout ${waited} ms after the kill"
     else
       slowest=0
       outcome=pass
