@@ -297,9 +297,21 @@ await_start() {
 start_process() {
   local name=$1
   shift
+  start_grouped "${name}_pid" "$evidence/logs/$name.log" "$@"
+}
+
+# start_grouped VAR LOG COMMAND... is start_process's recipe for a process that is no service of
+# its own name: COMMAND, a program or a shell function, starts in the background in a process group
+# of its own with /dev/null on stdin and its output appended to LOG, VAR is set to its pid, and its
+# start is recorded (record_start), or `gone` where it has already exited, so stop_pid, signal_group
+# and stop_tree signal it only while it is still that process (start_process says why each part is
+# there).
+start_grouped() {
+  local _start_var=$1 _start_log=$2
+  shift 2
   set -m
-  "$@" </dev/null >>"$evidence/logs/$name.log" 2>&1 &
-  printf -v "${name}_pid" '%s' "$!"
+  "$@" </dev/null >>"$_start_log" 2>&1 &
+  printf -v "$_start_var" '%s' "$!"
   set +m
   record_start "$!" || started_at[$!]=gone
 }

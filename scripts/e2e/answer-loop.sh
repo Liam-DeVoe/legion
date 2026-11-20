@@ -994,20 +994,16 @@ start_daemon() {
   done
   printf '=== boot at %s (%s)\n' "$(date -u +%FT%TZ)" "$daemon_config" >>"$daemon_log"
   boot_offset=$(stat -c %s "$daemon_log")
-  # Monitor mode is on for the start alone, so the daemon leads a process group of its own, as
-  # lib/rig.sh's start_process gives each service: stop_pid stops it with SIGSTOP first, and a
-  # stopped member of this shell's own group would have the kernel hang up this shell too.
-  set -m
-  python3 "$root/scripts/e2e/lib/held-port.py" exec --from "$work/daemon_keeper.sock" --fd-env LEGION_LISTEN_FD -- \
+  # The daemon leads a process group of its own with its start recorded (lib/rig.sh's
+  # start_grouped, start_process's recipe): stop_pid stops it with SIGSTOP first, and a stopped
+  # member of this shell's own group would have the kernel hang up this shell too.
+  start_grouped daemon_pid "$daemon_log" python3 "$root/scripts/e2e/lib/held-port.py" exec --from "$work/daemon_keeper.sock" --fd-env LEGION_LISTEN_FD -- \
     env -i "LEGION_E2E_RUN=$work" "HOME=$daemon_home" "OMP_PROFILE=$daemon_profile" "PATH=$daemon_path" "TMPDIR=$work/tmp" \
     "TMUX_TMPDIR=$work/tmux" "XDG_STATE_HOME=$work/xdg" "${host_env[@]}" \
     LANG=C.UTF-8 TZ=UTC "USER=$(id -un)" "LOGNAME=$(id -un)" SHELL=/bin/bash TERM=xterm-256color \
     "LEGION_OMP_PATH=$omp_bin" "LEGION_CLAUDE_PATH=$claude_bin" "LEGION_BUN_PATH=$work/realbin/bun" \
     "LEGION_CLAUDE_PLUGIN_DIR=$daemon_plugin_dir" LEGION_LISTEN_FD=3 \
-    "$daemon_bin" start --config "$daemon_config" </dev/null >>"$daemon_log" 2>&1 &
-  daemon_pid=$!
-  set +m
-  record_start "$daemon_pid" || started_at[$daemon_pid]=gone
+    "$daemon_bin" start --config "$daemon_config"
   note "waiting up to 300s for the daemon ($daemon_config) to answer /healthz"
   until curl -fsS --max-time 5 "http://127.0.0.1:$port_daemon/healthz" >/dev/null 2>&1; do
     [ "$(proc_start "$daemon_pid")" = "${started_at[$daemon_pid]:-}" ] ||
@@ -1640,17 +1636,18 @@ note "NATS $port_nats (pid $nats_pid), proxy $port_proxy (pid $proxy_pid), inbox
 register_asker ||
   fail "the listener gave a stand-in no consumer of its own: asker $(cat "$work/registration-$asker_session.json" 2>/dev/null); controller $(cat "$work/registration-$controller_session.json" 2>/dev/null)"
 note "the stand-ins registered with their own consumers: $(jq -c '{session_id, delivery, topics}' "$work/registration-$asker_session.json" "$work/registration-$controller_session.json" | tr '\n' ' ')"
-# In a process group of its own, as start_daemon's daemon is: cleanup's stop_tree stops it with
-# SIGSTOP first. Out of the driver's group a signal to that group no longer reaches it, so it ends
-# of itself once the driver has gone (lib/process-tree.sh's run_marks).
-set -m
-(while kill -0 "$$" 2>/dev/null; do
-  register_asker >/dev/null 2>&1 || true
-  sleep 60
-done) </dev/null &
-asker_heartbeat_pid=$!
-set +m
-record_start "$asker_heartbeat_pid" || started_at[$asker_heartbeat_pid]=gone
+# asker_heartbeat renews the stand-ins' registration every minute while the driver lives. It
+# starts in a process group of its own, as start_daemon's daemon does (lib/rig.sh's
+# start_grouped), since cleanup's stop_tree stops it with SIGSTOP first; out of the driver's group
+# a signal to that group no longer reaches it, so it ends of itself once the driver has gone
+# (lib/process-tree.sh's run_marks).
+asker_heartbeat() {
+  while kill -0 "$$" 2>/dev/null; do
+    register_asker >/dev/null 2>&1 || true
+    sleep 60
+  done
+}
+start_grouped asker_heartbeat_pid "$evidence/logs/asker-heartbeat.log" asker_heartbeat
 # The base daemon's Oh My Pi home: the base commit's plugins (its daemon refuses another contract).
 base_home=$work/base-omp-home
 base_profile=legion-e2eal-base-$$
