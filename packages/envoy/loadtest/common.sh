@@ -89,16 +89,22 @@ usage() {
 # proc_start_into NAME PID: PID's start time (field 22 of /proc/PID/stat) assigned to shell
 # variable NAME, or an empty assignment when PID has left the table. A read that fails while the
 # entry exists fails. Assigning in this shell lets callers distinguish a failed read even when a
-# low descriptor limit makes command substitution report an empty successful result.
+# low descriptor limit makes command substitution report an empty successful result. NAME is
+# reached through a nameref, so it must not be one of this function's own locals (pid, stat,
+# fields, proc_start_into_out). A nameref, not `printf -v "$NAME"`: shellcheck takes a `printf -v`
+# of a name it cannot read, in a file sourced inside a subshell, for a change to `$!` in that
+# subshell, and flags every later `$!` of the sourcing script (SC2031).
 proc_start_into() {
-  local name=$1 pid=$2 stat fields
-  printf -v "$name" ''
+  local -n proc_start_into_out=$1
+  local pid=$2 stat fields
+  proc_start_into_out=''
   if ! read -r stat 2>/dev/null <"/proc/$pid/stat"; then
     [ ! -e "/proc/$pid" ] || return 1
     return 0
   fi
-  read -r -a fields <<<"${stat##*) }" && [ -n "${fields[19]:-}" ] || return 1
-  printf -v "$name" '%s' "${fields[19]}"
+  read -r -a fields <<<"${stat##*) }" || return 1
+  proc_start_into_out=${fields[19]:-}
+  [ -n "$proc_start_into_out" ] || return 1
 }
 
 # proc_start PID: the process's start time (field 22 of /proc/PID/stat, read after the command
