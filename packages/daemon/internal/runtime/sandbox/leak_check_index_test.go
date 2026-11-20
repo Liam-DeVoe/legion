@@ -765,10 +765,11 @@ func TestALaunchStoppedByTheBundleStoreSendsNoStop(t *testing.T) {
 }
 
 // A push the poll began for a launcher connection that has since been replaced goes to the token's
-// current connection, as each slice's request does, and holds the token's one push turn while it
-// runs: a start on the replacement waits for it, finds the index installed, and sends its start
-// alone. The launcher process is the same across the reconnect, so it keeps the slices it took.
-func TestAPushForAReplacedConnectionHoldsTheTokensTurn(t *testing.T) {
+// current connection in the same pod, as each slice's request does, and holds that pod's one push
+// turn for the token while it runs: a start on the replacement waits for it, finds the index
+// installed, and sends its start alone. The launcher process is the same across the reconnect, so
+// it keeps the slices it took.
+func TestAPushForAReplacedConnectionHoldsItsPodsTurn(t *testing.T) {
 	a := testIndex(rigNow)
 	var logs lockedLog
 	d := indexLaunchers(readsOf(a), &logs)
@@ -790,7 +791,7 @@ func TestAPushForAReplacedConnectionHoldsTheTokensTurn(t *testing.T) {
 	go func() {
 		started <- d.start(ctx, workerToken, "uid-pod-reconnect", shimwire.LauncherStart{ID: "start-on-the-replacement", Generation: 1, Argv: []string{"true"}})
 	}()
-	// A start that did not wait for the token's turn would send a slice of its own while the
+	// A start that did not wait for the pod's turn would send a slice of its own while the
 	// push's first is held; it is given the time to before the push goes on.
 	time.Sleep(50 * time.Millisecond)
 	close(l.hold)
