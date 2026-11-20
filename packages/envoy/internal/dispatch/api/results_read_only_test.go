@@ -413,6 +413,29 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		standsAtBasis(t, second.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 61 at %.7s", headCommit))
 		second.callsNone(t)
 	})
+
+	// Tester's red row (round 3 at 7536478f): the first read of a check CI proves, as row 13 sets
+	// it up. That read's read-through learns pull request 5, headed at k1's commit, and the same
+	// answer names that head as k1's basis, so it derives c1 from the run at that head rather than
+	// answering that Dispatch holds no head. Row 13's first read asserts today's order, in which
+	// listCheckResults runs deriveCIResults before comparisonReader.learn.
+	t.Run("15 a check CI proves: the first read derives it at the head that read's read-through learns", func(t *testing.T) {
+		pair := newParityPair(t, appKey)
+		issue := pair.issue(t, "ROL", ciCheckBlock("c1", ciCheckKept)+"\n"+parityBeforeMergeCheck)
+		pair.record(t, issue, "k1", headCommit)
+		pair.github.answersPulls(func(string) string { return parityOpenPull(5, headCommit, issue) })
+		pair.github.listsRuns(headCommit, completedRun(11, ciCheckRun, "success"))
+		atHead := fmt.Sprintf("pull request 5 at %.7s", headCommit)
+
+		first := pair.read(t, issue, "the first read")
+		standsAtBasis(t, first.writer, "k1", pair.writer.ids[0], atHead)
+		derived := checkOf(t, first.writer, "c1")
+		assertCI(t, derived, ciCheckRun, model.CIStatePass, ciConclusionSuccess,
+			ciVerdictLineOf("c1", ciCheckRun, model.CIStatePass, headCommit))
+		assertDerived(t, derived, 11, ciCheckRun, ciConclusionSuccess, model.CIStatePass, headCommit)
+		first.calls(t, parityPulls, 1)
+		first.calls(t, parityCheckRuns, 1)
+	})
 }
 
 // TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter is the results row's state table
