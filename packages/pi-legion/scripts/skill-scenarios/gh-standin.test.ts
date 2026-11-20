@@ -6812,8 +6812,13 @@ const OPERATOR = Object.fromEntries(
 test("a seeded commit carries the identity of the role that made it, and none of the operator's", () => {
   const dir = worldDir("approved_world", "", { env: OPERATOR, threadsCase: "correct" });
   const author = `${rigValue("world_author_name")} <${rigValue("world_author_email")}>`;
+  // Every commit of the world carries one date (rig.sh's fixture_git), so the log is read child
+  // before parent, which a date order leaves to chance.
   expect(
-    git(path.join(dir, "remote.git"), "log", "--all", "--format=%s|%an <%ae>|%cn <%ce>").split("\n")
+    git(
+      path.join(dir, "remote.git"),
+      ...["log", "--all", "--topo-order", "--format=%s|%an <%ae>|%cn <%ce>"]
+    ).split("\n")
   ).toEqual([
     `docs: say what the CLI does with the spaces around the name|${botOf("review")}|${botOf("review")}`,
     `feat: greet(), a greeting helper for the widgets CLI (LWEVAL-1)|${botOf("implement")}|${botOf("implement")}`,

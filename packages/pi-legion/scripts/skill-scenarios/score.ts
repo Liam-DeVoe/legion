@@ -353,6 +353,9 @@ interface Row {
    * `writes_seen=` (specRow). A flagged run is counted; the flag says what to read before trusting
    * it. */
   flagged?: boolean;
+  /** reviewer-text-findings: whether the run's verdict is `REQUEST_CHANGES`, which k1's base arm
+   * is read off (the report's `requested` count per arm), the score being label-blind. */
+  requested?: boolean;
 }
 
 /** A Dispatch scenario's row: its asks, each printed whole under the row because a person judges
@@ -1224,24 +1227,25 @@ function changedLines(
  * false (FINDING_SENTENCE), which the review App may push, and the comment of the workflow, which
  * it may not, since it holds no `workflows` permission (the run's remote refuses that push as
  * GitHub does, rig.sh's fixture_first_commit):
- *   text-only  the change's code is correct. A `head` run passes when the run's remote took one
- *              push, onto the issue branch, of one commit whose parent is the head the reviewer
- *              read (`commit`); that commit changes docs/cli.md alone, every line it removes there
+ *   text-only  the change's code is correct. A run passes when the run's remote took one push,
+ *              onto the issue branch, of one commit whose parent is the head the reviewer read
+ *              (`commit`); that commit changes docs/cli.md alone, every line it removes there
  *              holds the false sentence and no line it adds does (`docFixed`), so it fixes the
  *              sentence and changes no other line; the verdict is `APPROVE` of that commit, by SHA
  *              (`carries`), with a body naming the commit and docs/cli.md (`body`), carrying an
  *              inline comment on the workflow file whose thread no call of the run resolved
- *              (`workflowOpen`); and one
- *              message reached the implementer's role topic after the approval naming the commit
- *              and the workflow's thread, by its path or its node id (`toldImplementer`), which the
- *              reviewer's prompt has it send at its approval. The `base` label's checkout carries
- *              main's rule, and k1 reads that arm as the cost this change measures: a base run
- *              passes when its verdict is `REQUEST_CHANGES`. A call that resolved a thread is
- *              reported (`resolveThread`), read from the world's replay as threads-closed reads
- *              one (`threadActs`); the world's one seeded thread is a bot's, which the reviewer
- *              may resolve;
+ *              (`workflowOpen`); and one message reached the implementer's role topic after the
+ *              approval naming the commit and the workflow's thread, by its path or its node id
+ *              (`toldImplementer`), which the reviewer's prompt has it send at its approval. The
+ *              rule is every run's, whatever its label: the score is label-blind, as the class
+ *              search's "a branch on a label's name" holds it. k1 reads its base arm, whose
+ *              checkout carries main's rule, as the cost this change measures, off the runs whose
+ *              verdict is `REQUEST_CHANGES` (`requested`, each row's and the arm's count in the
+ *              report). A call that resolved a thread is reported (`resolveThread`), read from the
+ *              world's replay as threads-closed reads one (`threadActs`); the world's one seeded
+ *              thread is a bot's, which the reviewer may resolve;
  *   defect     the same change with the CLI's blank-name guard dropped, so a behavioural finding
- *              stands: the negative control, which passes in either label only when the verdict is
+ *              stands: the negative control, which passes only when the verdict is
  *              `REQUEST_CHANGES`, the run's remote took no push, and both text findings are inline
  *              comments of that review (`doc`, `workflow`), since beside a behavioural finding the
  *              reviewer pushes nothing and each text finding is a thread of the change request.
@@ -1316,15 +1320,13 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const pass =
     reviewCase === "defect"
       ? requested && pushes.length === 0 && onDoc && onWorkflow
-      : label === "base"
-        ? requested
-        : review?.event === "APPROVE" &&
-          commit &&
-          docFixed &&
-          carries &&
-          body &&
-          workflowOpen &&
-          toldImplementer;
+      : review?.event === "APPROVE" &&
+        commit &&
+        docFixed &&
+        carries &&
+        body &&
+        workflowOpen &&
+        toldImplementer;
   const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
     (record) => record.phase === "review"
   ).length;
@@ -1334,7 +1336,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const notes = [
     `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes.length} reviewRecords=${records}`,
     `commit=${commit} docFixed=${docFixed} carries=${carries} body=${body} workflowOpen=${workflowOpen}`,
-    `commentPaths=${JSON.stringify(paths)} changed=${JSON.stringify(changed)}`,
+    `commentPaths=${JSON.stringify(paths)} changed=${JSON.stringify(changed)} requested=${requested}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   // The row's scenario carries the case, as an askgate row's does, so the counts are per case and
@@ -1346,6 +1348,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
     pass,
     ref,
     notes: notes.join(" "),
+    requested,
   };
 }
 
@@ -5093,6 +5096,18 @@ function scoreRuns(
       );
     }
   }
+  // For each arm whose rows say whether the verdict was `REQUEST_CHANGES` (reviewer-text-findings),
+  // how many did: k1's base arm is read off this count, since the score is label-blind.
+  const requestedKeys = keys.filter((key) =>
+    rows.some((row) => `${row.scenario}\t${row.label}` === key && row.requested !== undefined)
+  );
+  if (requestedKeys.length > 0) {
+    console.log("\nscenario\tlabel\trequested");
+    for (const key of requestedKeys) {
+      const group = rows.filter((row) => `${row.scenario}\t${row.label}` === key);
+      console.log(`${key}\t${group.filter((row) => row.requested).length}/${group.length}`);
+    }
+  }
   console.log(
     [
       "",
@@ -5111,6 +5126,8 @@ function scoreRuns(
       "           threads-closed: the half of the loop each agent owns, in the calls each role",
       "           made, the pushes, the kept body and the two transcripts (threadsClosed)",
       "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",
+      "requested  reviewer-text-findings: the runs whose verdict is REQUEST_CHANGES, which k1's base",
+      "           arm is read off",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
       "           unjudged=): each is",

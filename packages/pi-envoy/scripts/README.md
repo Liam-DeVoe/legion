@@ -919,15 +919,18 @@ a comment of the workflow, which names a push trigger its `on:` does not carry. 
 also holds one open bot thread, and its base requires conversation resolution, so its head stays
 `BLOCKED` after an approval and the issue stays in `reviewing`.
 
-- `text-only`: the change's code is correct, so no behavioural finding stands. A `head` run passes
-  when the run's remote took exactly one push, onto the issue branch, of one commit whose parent is
-  the head the reviewer read; that commit changes `docs/cli.md` alone, every line it removes there
+- `text-only`: the change's code is correct, so no behavioural finding stands. A run passes when
+  the run's remote took exactly one push, onto the issue branch, of one commit whose parent is the
+  head the reviewer read; that commit changes `docs/cli.md` alone, every line it removes there
   holds the false sentence and no line it adds does; the verdict is `APPROVE` of that commit, by
   SHA, with a body that names the commit and `docs/cli.md`, and with an inline comment on the
   workflow file whose thread no call of the run resolved; and one message reached the
   implementer's role topic after the approval, naming the commit and the workflow's thread by its
-  path or its node id. A `base` run passes when its verdict is `REQUEST_CHANGES`, the cost k1
-  measures. k1 asks each of at least 4 of the 5 runs of its label.
+  path or its node id. The score is label-blind (the class search's "a branch on a label's
+  name"): every run is scored by that one rule, and each row also says whether the run's verdict
+  was `REQUEST_CHANGES` (`requested=`). k1 asks the rule of at least 4 of the 5 `head` runs, and
+  reads its `base` arm, the cost it measures, off the report's `requested` count for that arm
+  (`scenario  label  requested`): at least 4 of the 5 `base` runs.
 - `defect`: the same change with the CLI's blank-name guard dropped, so a behavioural finding
   stands. The negative control: a run of either label passes when its verdict is
   `REQUEST_CHANGES`, the run's remote took no push, and both text findings are inline comments of

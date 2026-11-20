@@ -9953,11 +9953,13 @@ function termsRepo() {
 // body that names its commit, -8 to -10 approve with a body that names neither the commit nor
 // the file, the commit alone, or the file alone, -11 resolves the workflow's thread its approval
 // opened, -12 tells the implementer before its approval, and -13 tells it of the workflow's
-// thread and not of the commit. base-1 approves the head it read and base-2 requests changes,
-// which is base's pass. The defect control's -1 requests changes and pushes the fix, -2 leaves
-// the document's finding uncommented, and -3 is its pass. Catches: a scorer that drops any one
-// of those terms.
-test("k1, term by term: a text-only round short of any one act fails, and a base or defect round on anything but its change request", () => {
+// thread and not of the commit. The score is label-blind (the class search's "a branch on a
+// label's name"): base-1 approves the head it read and base-2 requests changes, and both fail the
+// one rule, base-2 reading `requested=true`, which k1's base arm is read off, as the report's
+// count per arm prints it. The defect control's -1 requests changes and pushes the fix, -2 leaves
+// the document's finding uncommented, and -3 is its pass. Catches: a scorer that drops any one of
+// those terms, and one that scores a base run by another rule than a head run's.
+test("k1, term by term: a round short of any one act fails whatever its label, a change request is counted as requested, and a defect round passes only on its change request", () => {
   const seed = termsRepo();
   const [doc, workflow] = findings as [object, object];
   const defectComment = {
@@ -10117,7 +10119,7 @@ test("k1, term by term: a text-only round short of any one act fails, and a base
       "reviewer-text-findings-defect-head-2": "fail",
       "reviewer-text-findings-defect-head-3": "pass",
       "reviewer-text-findings-text-only-base-1": "fail",
-      "reviewer-text-findings-text-only-base-2": "pass",
+      "reviewer-text-findings-text-only-base-2": "fail",
       "reviewer-text-findings-text-only-head-1": "pass",
       "reviewer-text-findings-text-only-head-2": "fail",
       "reviewer-text-findings-text-only-head-3": "fail",
@@ -10133,6 +10135,16 @@ test("k1, term by term: a text-only round short of any one act fails, and a base
       "reviewer-text-findings-text-only-head-13": "fail",
     },
   });
+  expect(String(stdout)).toMatch(
+    /\nreviewer-text-findings-text-only-base-2\tpass=false\t.* requested=true /
+  );
+  for (const line of [
+    "\nscenario\tlabel\trequested\n",
+    "\nreviewer-text-findings:text-only\thead\t0/13\n",
+    "\nreviewer-text-findings:text-only\tbase\t1/2\n",
+    "\nreviewer-text-findings:defect\thead\t3/3\n",
+  ])
+    expect(String(stdout)).toContain(line);
 }, 120_000);
 
 // k2's accept case. accept-head-1 is the tester's pass; -2 tells the architect it accepts the
