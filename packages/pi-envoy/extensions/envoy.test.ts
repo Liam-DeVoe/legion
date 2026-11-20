@@ -1572,6 +1572,75 @@ async function onTestClock<T>(
   return { value: await watched, elapsedMs };
 }
 
+/** What a row on `onPassClock` holds and moves the test's clock with. */
+interface PassClock {
+  /** Lets the code's own work run on real turns (`settle`), which move no clock, until `done()`
+   *  holds or `turns` of them (10_000 by default) run out. */
+  readonly hold: (done: () => boolean, turns?: number) => Promise<void>;
+  /** Holds as `hold` does until `pending` settles, and answers what it settled to; one that has
+   *  not settled when the turns run out fails here, naming `what`. */
+  readonly run: <T>(what: string, pending: Promise<T> | T, turns?: number) => Promise<T>;
+  /** Each `AbortSignal.timeout` the code armed since the clock was installed, in order, by its
+   *  length: where a bound the row reads starts. */
+  readonly armed: readonly number[];
+  /** Moves the clock and lets what it ended run on real turns. */
+  readonly advance: (ms: number) => Promise<void>;
+  /** The test's clock. */
+  readonly now: () => number;
+}
+
+/**
+ * Runs `body` on the test's clock, for a row that reads how this process's own timers end its
+ * work: a pass's deadline, a start's or a follow's bound and its trade's share, a command's limit
+ * or a token's renewal. On the test's clock they end at the times the code gives them, whatever
+ * the host's speed, while the work between them (restores, dials, requests, reports, in-process
+ * here, or a shell a row starts) runs on real turns, which move no clock. `AbortSignal.timeout`,
+ * which bun 1.4.4's fake clock holds as it holds `setTimeout`, is watched for the bounds the code
+ * arms, because a pass that reaches its `ready` makes no request a row could wait for. `Bun.sleep`
+ * is held too, so a row on this clock waits with `hold` or `run`, never with `until`. Real timers
+ * and `AbortSignal.timeout` come back however `body` ends, so a wait that never ends fails inside
+ * the row rather than at its limit with the fake clock still on (`onTestClock` says why that
+ * matters). Each hold is bounded by 10_000 turns of `settle` unless the row names more, a hang
+ * guard: what can hang is work that never finishes; the most the switch-follow row's pass took
+ * was 105 of them idle and 58 at the 96 rung.
+ */
+async function onPassClock<T>(body: (clock: PassClock) => Promise<T>): Promise<T> {
+  const timeout = AbortSignal.timeout;
+  const armed: number[] = [];
+  const hold = async (done: () => boolean, turns = 10_000): Promise<void> => {
+    for (let turn = 0; turn < turns && !done(); turn += 1) await settle();
+  };
+  jest.useFakeTimers();
+  AbortSignal.timeout = (ms: number) => {
+    armed.push(ms);
+    return timeout.call(AbortSignal, ms);
+  };
+  try {
+    return await body({
+      hold,
+      run: async (what, pending, turns) => {
+        let settled = false;
+        const watched = Promise.resolve(pending).finally(() => {
+          settled = true;
+        });
+        watched.catch(() => undefined);
+        await hold(() => settled, turns);
+        if (!settled) throw new Error(`${what} did not settle with the test's clock held`);
+        return await watched;
+      },
+      armed,
+      advance: async (ms) => {
+        jest.advanceTimersByTime(ms);
+        await settle();
+      },
+      now: () => Date.now(),
+    });
+  } finally {
+    AbortSignal.timeout = timeout;
+    jest.useRealTimers();
+  }
+}
+
 /** The stream id every registration answer and relay frame in this file names. */
 const TEST_STREAM_ID = "stream-test";
 
@@ -10340,61 +10409,95 @@ console.log(JSON.stringify(args));
   // believe it holds a role no live move ever claimed: the session would take that role's tasks
   // while the listener names another session for it.
   test("a settle abandoned mid-hand-back leaves the hold a session event inserted behind it", async () => {
-    // The waits are real: the role move is abandoned on a real timer, read as the move starts.
-    await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 200 }, async () => {
-      const { fixture, live, context, handedBack, roleTool, holdRegistration, gateHandBack, tick } =
-        await gatedRoleFixture("abandoned-settle-keeps-inserted", "ses_ak");
-      const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
-      // A `/new` gives up legion-controller; its pass waits at its registration, so nothing has
-      // handed that hold back yet.
-      const registering = holdRegistration("ses_ak_b");
-      await fixture.handlers.get("session_before_switch")?.({ reason: "new" }, context);
-      const switched = fixture.handlers.get("session_switch")?.(
-        { reason: "new" },
-        live("ses_ak_b", { fresh: true })
-      );
-      await registering.reached;
-      // The model claims another role in the new session, which is what the next pass wants.
-      expect((await roleTool.execute("", { role: "release-captain" })).isError).not.toBe(true);
+    // The role move is abandoned at its pass's 200 ms deadline, on the test's clock
+    // (`onPassClock`), and that is the one timer this row moves: every other pass's deadline,
+    // the second `/new`'s among them, stands still while their work runs on real turns, so a
+    // host slow enough to stretch that work past 200 ms abandons no pass the row did not mean to.
+    await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 200 }, () =>
+      onPassClock(async (clock) => {
+        const {
+          fixture,
+          live,
+          context,
+          handedBack,
+          roleTool,
+          holdRegistration,
+          gateHandBack,
+          tick,
+        } = await clock.run(
+          "the fixture",
+          gatedRoleFixture("abandoned-settle-keeps-inserted", "ses_ak")
+        );
+        // A `/new` gives up legion-controller; its pass waits at its registration, so nothing has
+        // handed that hold back yet.
+        const registering = holdRegistration("ses_ak_b");
+        await clock.run(
+          "the first /new's announcement",
+          fixture.handlers.get("session_before_switch")?.({ reason: "new" }, context)
+        );
+        const switched = fixture.handlers.get("session_switch")?.(
+          { reason: "new" },
+          live("ses_ak_b", { fresh: true })
+        );
+        await clock.run("the first /new's registration", registering.reached);
+        // The model claims another role in the new session, which is what the next pass wants.
+        const moved = await clock.run(
+          "the move to release-captain",
+          roleTool.execute("", { role: "release-captain" })
+        );
+        expect(moved.isError).not.toBe(true);
 
-      // That pass hands the old hold back, and is abandoned at its deadline while the listener
-      // still holds the call.
-      const handingBack = gateHandBack("notifications.role.legion-controller", "ses_ak");
-      tick();
-      await handingBack.reached;
-      await new Promise((resolve) => setTimeout(resolve, 300));
+        // That pass hands the old hold back, and is abandoned at its deadline while the listener
+        // still holds the call. It is queued behind the first `/new`'s pass, held at its
+        // registration, which its own deadline ends 200 ms after the switch: the clock has not
+        // moved since, so it moves those 200 ms, and the tick's pass then reaches the hand-back.
+        const handingBack = gateHandBack("notifications.role.legion-controller", "ses_ak");
+        tick();
+        await clock.advance(200);
+        await clock.run("the hand-back", handingBack.reached);
+        await clock.advance(300);
 
-      // A second `/new` lands while that hand-back is still in flight: it ends release-captain
-      // and inserts its hold behind the abandoned loop's iterator, outside both queues. Its own
-      // pass waits at its registration, so only the abandoned loop could take it.
-      const next = holdRegistration("ses_ak_c");
-      await fixture.handlers.get("session_before_switch")?.({ reason: "new" }, context);
-      const again = fixture.handlers.get("session_switch")?.(
-        { reason: "new" },
-        live("ses_ak_c", { fresh: true })
-      );
-      await next.reached;
-      handingBack.release();
-      for (let step = 0; step < 10; step += 1) await drain();
+        // A second `/new` lands while that hand-back is still in flight: it ends release-captain
+        // and inserts its hold behind the abandoned loop's iterator, outside both queues. Its own
+        // pass waits at its registration, so only the abandoned loop could take it.
+        const next = holdRegistration("ses_ak_c");
+        await clock.run(
+          "the second /new's announcement",
+          fixture.handlers.get("session_before_switch")?.({ reason: "new" }, context)
+        );
+        const again = fixture.handlers.get("session_switch")?.(
+          { reason: "new" },
+          live("ses_ak_c", { fresh: true })
+        );
+        await clock.run("the second /new's registration", next.reached);
+        handingBack.release();
+        await settle();
 
-      // The abandoned loop adopted none of it: this process holds no role, so the next claim
-      // releases none.
-      expect((await roleTool.execute("", { role: "reviewer" })).details).toEqual({
-        role: "reviewer",
-      });
-      // And the hold that event inserted is still pending: the pass that replaced the abandoned
-      // one hands it back as it settles.
-      const settledSoFar = handedBack.length;
-      registering.release();
-      next.release();
-      await switched;
-      await again;
-      for (let step = 0; step < 10; step += 1) await drain();
-      expect(handedBack.slice(settledSoFar)).toContain(
-        "notifications.role.release-captain@ses_ak_b"
-      );
-    });
-  });
+        // The abandoned loop adopted none of it: this process holds no role, so the next claim
+        // releases none.
+        const claimed = await clock.run(
+          "the claim of reviewer",
+          roleTool.execute("", { role: "reviewer" })
+        );
+        expect(claimed.details).toEqual({ role: "reviewer" });
+        // And the hold that event inserted is still pending: the pass that replaced the abandoned
+        // one hands it back as it settles.
+        const settledSoFar = handedBack.length;
+        registering.release();
+        next.release();
+        await clock.run("the first /new", switched);
+        await clock.run("the second /new", again);
+        await settle();
+        expect(handedBack.slice(settledSoFar)).toContain(
+          "notifications.role.release-captain@ses_ak_b"
+        );
+      })
+    );
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or
+    // steps (`onPassClock`). 60_000. Worst measured cost: 8 802.09 ms over 20 runs at 16 busy
+    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:42Z to 20:59Z, so 60_000 is 6.8
+    // times that.
+  }, 60_000);
 
   // A settle abandoned at its deadline mid-hand-back still records the holds whose hand-back
   // failed: while its loop runs they are in neither `pendingHandBacks` nor `abandonedHolds`, and
@@ -13110,73 +13213,86 @@ console.log(JSON.stringify(args));
   // for a whole refresh interval while its pane runs, and every peer that asks for it is told
   // there is no live session: the symptom this issue is about.
   test("a session the host moves to during a stall is registered once its relay subject is open", async () => {
-    // The waits are real: the refresh is decided on a real-clock age, and the interval is long
-    // here on purpose, so the old session's registration is far younger than it when the host
-    // moves and only the session it was accepted for can decide the tick.
-    await withEnvoyTimings({ heartbeatMs: 1000, passDeadlineMs: 5000 }, async () => {
-      const registered: string[] = [];
-      let wedgePass = false;
-      const answered = Promise.withResolvers<void>();
-      globalThis.fetch = async (input, init) => {
-        if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
-          const body = JSON.parse(init?.body?.toString() ?? "{}") as {
-            readonly session_id: string;
-          };
-          registered.push(body.session_id);
-          if (wedgePass) {
-            wedgePass = false;
-            await answered.promise;
+    // The refresh is decided on the age of a registration, read from the clock, and the interval
+    // is long here on purpose, so the old session's registration is far younger than it when the
+    // host moves and only the session it was accepted for can decide the tick. The clock is the
+    // test's (`onPassClock`), and it never moves: the wedged tick's pass would end at its 5 s
+    // deadline, and the passes queued behind it would then register the new session before the
+    // row reads that the backstop could not, so on the real clock a host slow enough to stretch
+    // the row's own steps past 5 s failed it. Held, the wedge lasts until the row clears it.
+    await withEnvoyTimings({ heartbeatMs: 1000, passDeadlineMs: 5000 }, () =>
+      onPassClock(async (clock) => {
+        const registered: string[] = [];
+        let wedgePass = false;
+        let wedged = false;
+        const answered = Promise.withResolvers<void>();
+        globalThis.fetch = async (input, init) => {
+          if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
+            const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+              readonly session_id: string;
+            };
+            registered.push(body.session_id);
+            if (wedgePass) {
+              wedgePass = false;
+              wedged = true;
+              await answered.promise;
+            }
           }
+          return responseWithRegistration(input, init, {});
+        };
+        const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-new-session");
+        const fixture = createPi();
+        const intervals: (() => void)[] = [];
+        const context: SessionContext = {
+          ...sessionContext("ses_stall_moved"),
+          setInterval: (callback) => intervals.push(callback),
+        };
+        envoyExtension(fixture.pi);
+        const switched = Promise.withResolvers<void>();
+        try {
+          await clock.run("the start", fixture.handlers.get("session_start")?.({}, context));
+          expect(registered).toEqual(["ses_stall_moved"]);
+
+          // A tick's pass parks at its registration: the `healing` latch stays set, so the
+          // backstop is what registers from here.
+          wedgePass = true;
+          intervals[0]?.();
+          await clock.hold(() => wedged);
+          expect(wedged).toBe(true);
+
+          // The host opens a new session; its own pass is queued behind the wedged one, so
+          // nothing in it registers the session the pane is now running.
+          void fixture.handlers
+            .get("session_switch")?.({ reason: "new" }, sessionContext("ses_stall_moved_b"))
+            .then(switched.resolve, switched.resolve);
+          await settle();
+          const before = registered.length;
+
+          // The backstop cannot register it yet: the pass that opens the session's relay subject
+          // is queued behind the wedged one, and a registration carrying no relay would leave the
+          // session with no consumer, which the listener refuses.
+          intervals[0]?.();
+          await settle();
+          expect(registered.slice(before)).toEqual([]);
+
+          // The wedge clears: the queued pass opens the relay and registers the session the pane
+          // runs now.
+          answered.resolve();
+          await clock.run("the switch", switched.promise);
+          await clock.hold(() => registered.includes("ses_stall_moved_b"));
+          expect(registered).toContain("ses_stall_moved_b");
+        } finally {
+          answered.resolve();
+          await clock.run("the switch", switched.promise);
+          await settle();
         }
-        return responseWithRegistration(input, init, {});
-      };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-new-session");
-      const fixture = createPi();
-      const intervals: (() => void)[] = [];
-      const context: SessionContext = {
-        ...sessionContext("ses_stall_moved"),
-        setInterval: (callback) => intervals.push(callback),
-      };
-      envoyExtension(fixture.pi);
-      const switched = Promise.withResolvers<void>();
-      try {
-        await fixture.handlers.get("session_start")?.({}, context);
-        expect(registered).toEqual(["ses_stall_moved"]);
-
-        // A tick's pass parks at its registration: the `healing` latch stays set, so the backstop
-        // is what registers from here.
-        wedgePass = true;
-        intervals[0]?.();
-        await new Promise((resolve) => setTimeout(resolve, 20));
-
-        // The host opens a new session; its own pass is queued behind the wedged one, so nothing
-        // in it registers the session the pane is now running.
-        void fixture.handlers
-          .get("session_switch")?.({ reason: "new" }, sessionContext("ses_stall_moved_b"))
-          .then(switched.resolve, switched.resolve);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        const before = registered.length;
-
-        // The backstop cannot register it yet: the pass that opens the session's relay subject
-        // is queued behind the wedged one, and a registration carrying no relay would leave the
-        // session with no consumer, which the listener refuses.
-        intervals[0]?.();
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(registered.slice(before)).toEqual([]);
-
-        // The wedge clears: the queued pass opens the relay and registers the session the pane
-        // runs now.
-        answered.resolve();
-        await switched.promise;
-        for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
-        expect(registered).toContain("ses_stall_moved_b");
-      } finally {
-        answered.resolve();
-        await switched.promise;
-        for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
-      }
-    });
-  });
+      })
+    );
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns
+    // (`onPassClock`). 120_000. Worst measured cost: 19 286.27 ms over 20 runs at 16 busy loops
+    // (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:59Z to 21:16Z, so 120_000 is 6.2
+    // times that.
+  }, 120_000);
 
   test("the first healthy tick after a stall re-asserts the role once as a re-registration", async () => {
     // The listener reaps a role claim whose holder left the session registry, so a stall that
@@ -14956,7 +15072,10 @@ console.log(JSON.stringify(args));
       // host leaves as the command ends", over 20 runs of this describe at 16 busy loops (the 96
       // rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T10:52Z to 11:27Z. One run
       // of "hands the agent no copy when the host moved on with no session event" alone cost
-      // 25 497.91 ms there, which main's 20_000 cut, and 120_000 is 4.7 times that.
+      // 25 497.91 ms there, which main's 20_000 cut, and 120_000 is 4.7 times that. The row
+      // "stops a command past its limit and says when, keeping what it printed" waits on the
+      // test's clock for a count of turns instead (`onPassClock`), and its worst over 20 runs of
+      // it alone at that rung, 2026-11-20T21:16Z to 21:34Z, was 12 889.64 ms.
       setDefaultTimeout(120_000);
       // A bound on work, not a hang guard: the poll below waits at most 1_000 turns for a killed
       // group to end. 60_000. Worst measured cost: 159.52 ms over 81 invocations in 3 runs of this
@@ -15175,20 +15294,45 @@ console.log(JSON.stringify(args));
       });
 
       test("stops a command past its limit and says when, keeping what it printed", async () => {
-        const { agent, delivered, replied, replies } = await bootShellSession(
+        const command = "echo $$ > pid && printf early && : > printed && sleep 600";
+        const { agent, delivered, replied, replies, work } = await bootShellSession(
           "shell-command-stopped",
           {
-            accept: () => ({ accepted: true, body: "!echo $$ > pid && printf early && sleep 600" }),
+            accept: () => ({ accepted: true, body: `!${command}` }),
             limitMs: 1_000,
           }
         );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
-        await delivered(1);
-        await replied(1);
+        // The limit is this process's own timer, so it runs on the test's clock (`onPassClock`),
+        // held until the shell has printed: on the real clock a shell slow enough to start, on a
+        // loaded host, was stopped before it printed, and the row read "printed nothing". Held,
+        // the limit ends the command only once its `printed` file says the output is in the pipe.
+        const stoppedAfterMs = await onPassClock(async (clock) => {
+          const spawnedAt = clock.now();
+          agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
+          // A shell started and printed within 58 held turns over 20 runs at the 96 rung, and
+          // within 2 idle.
+          await clock.hold(() => existsSync(join(work, "printed")));
+          expect(existsSync(join(work, "printed"))).toBe(true);
+          // The shell's own work moved no clock, and the command is still running.
+          expect(clock.now()).toBe(spawnedAt);
+          expect(replies).toHaveLength(0);
+          // One step short of the limit the command runs on: a command stopped there would answer
+          // within the 300 turns held here, since a stop reached the reply within 2 to 27 of them
+          // over 5 idle runs. At the limit it is stopped. The reply's own message names the
+          // configured limit, so the test's clock at the reply is what says when the stop came.
+          await clock.advance(999);
+          await clock.hold(() => replies.length > 0, 300);
+          expect(replies).toHaveLength(0);
+          await clock.advance(1);
+          await clock.run("the reply", replied(1));
+          await clock.run("the delivery", delivered(1));
+          return clock.now() - spawnedAt;
+        });
 
+        expect(stoppedAfterMs).toBe(1_000);
         expect(replies[0]?.body).toMatchObject({
-          body: "!echo $$ > pid && printf early && sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
+          body: `!${command}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
         });
       });
 
@@ -20635,10 +20779,14 @@ console.log(JSON.stringify(args));
   // answering 500 or a malformed token, an unreadable machine token.
   test("a broker that answers no trade: the session's notice names the trade, and no pass is abandoned", async () => {
     // The pass deadline the story above names, 30 s, the deadline's floor (`MIN_PASS_DEADLINE_MS`),
-    // with the heartbeat shortened to it, since a deadline is never shorter than the heartbeat. The
-    // queue's own timer is then the row's bound, on the same loop as the pass: a pass that
-    // outlasts it is abandoned, and the session is told so.
+    // with the heartbeat shortened to it, since a deadline is never shorter than the heartbeat.
+    // Each pass's dial waits for ready within its bound (`startTradeBoundMs`, 20 s of the 30 s),
+    // and that bound and the queue's deadline are this process's timers, so the row reads both
+    // passes on the test's clock (`onPassClock`) rather than leaving their order to how fast the
+    // host runs a pass's work: a pass that outlasts its deadline is abandoned, and the session is
+    // told so instead of the trade.
     const passMs = 30_000;
+    const startBoundMs = 20_000;
     await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
       const tokenFile = join(configDirectory, "projected-token");
       writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
@@ -20646,14 +20794,16 @@ console.log(JSON.stringify(args));
       process.env.AGENT_SECRETS_URL = "http://broker.test";
       process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
       process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+      let answered = 0;
       globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).host !== "broker.test")
           return responseWithRegistration(input, init, []);
         await request.text();
+        answered += 1;
         return new Response("the broker is away", { status: 503 });
       };
-      const notifications: string[] = [];
+      const notifications: { readonly message: string }[] = [];
       const intervals: { callback: () => void; intervalMs: number }[] = [];
       const context: SessionContext = {
         cwd: "/tmp/envoy-omp-test",
@@ -20661,38 +20811,69 @@ console.log(JSON.stringify(args));
         setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
         // The one extra call a failed heartbeat arms is not run: the row reads the heartbeat.
         setTimeout: () => undefined,
-        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+        ui: {
+          ...sessionContext().ui,
+          notify: (message) => notifications.push({ message }),
+        },
       };
       const { default: envoyExtension } = await import("./envoy.ts?broker-answers-no-trade");
       const fixture = createPi();
       envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, context);
-      expect(
-        notifications.some((message) => message.includes("the trade for the session's token"))
-      ).toBe(true);
-      // The next heartbeat pass, while the broker is still away, as a pod's heartbeat runs it: the
-      // heartbeat's own interval, whose tick says what its pass came to, a failure or a pass the
-      // queue abandoned at its deadline. The 15 s retry the start's failure arms says neither, so a
-      // row that ran it saw nothing of its pass.
-      const heartbeat = intervals.find(({ intervalMs }) => intervalMs === passMs);
-      if (heartbeat === undefined) throw new Error("the heartbeat interval was not registered");
-      const before = notifications.length;
-      heartbeat.callback();
-      // Its pass ends inside the queue's 30 s deadline, the trade failing at 20 s, or is abandoned
-      // there and says so: a heartbeat that says nothing has hung, and `until`, which has no
-      // deadline of its own, leaves that to the row's limit, which names the row.
-      await until(
-        () => notifications.length > before,
-        "the heartbeat's notice of what its pass came to"
-      );
-      expect(notifications.slice(before)).toEqual([
+      const trade = (from: number) =>
+        notifications
+          .slice(from)
+          .find(({ message }) => message.includes("the trade for the session's token"));
+      const heartbeatFailed = (from: number) =>
+        notifications
+          .slice(from)
+          .find(({ message }) => message.includes("envoy: registry heartbeat failed"));
+      const { start, from, heartbeat } = await onPassClock(async (clock) => {
+        const start = await readPass(clock, {
+          begin: () => fixture.handlers.get("session_start")?.({}, context),
+          boundMs: startBoundMs,
+          answered: () => answered,
+          said: () => trade(0) !== undefined,
+        });
+        // The next heartbeat pass, while the broker is still away, as a pod's heartbeat runs it:
+        // the heartbeat's own interval, whose tick says what its pass came to, a failure or a pass
+        // the queue abandoned at its deadline. The 15 s retry the start's failure arms says
+        // neither, so a row that ran it saw nothing of its pass.
+        const tick = intervals.find(({ intervalMs }) => intervalMs === passMs);
+        if (tick === undefined) throw new Error("the heartbeat interval was not registered");
+        const from = notifications.length;
+        // It trades no sooner than the retry loop the start's failure left running, so the clock
+        // is held only until it arms its bound: held for a trade of its own as well, it spun out
+        // all 10_000 of its turns with none answered.
+        const heartbeat = await readPass(clock, {
+          begin: () => tick.callback(),
+          boundMs: startBoundMs,
+          said: () => heartbeatFailed(from) !== undefined,
+        });
+        return { start, from, heartbeat };
+      });
+      // Each pass says what its trade came to as its bound ends, with the test's clock standing
+      // at it, and not a step before, and then settles inside its deadline: a ready with no bound
+      // outlives the pass, and a bound grown into the 10 s the pass keeps after it
+      // (`PASS_REST_MS`) waits longer, so neither says so here.
+      for (const read of [start, heartbeat]) {
+        expect(read.early).toBe(false);
+        expect(read.saidMs).toBe(startBoundMs);
+        expect(read.armedMs).toBe(0);
+        expect(read.settled).toBe(true);
+      }
+      expect(trade(0)?.message).toContain("HTTP 503");
+      expect(notifications.slice(from).map(({ message }) => message)).toEqual([
         expect.stringContaining("envoy: registry heartbeat failed"),
       ]);
-      expect(notifications.some((message) => message.includes("did not settle within"))).toBe(
+      expect(notifications.some(({ message }) => message.includes("did not settle within"))).toBe(
         false
       );
       await fixture.handlers.get("session_shutdown")?.({}, context);
     });
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or
+    // steps (`onPassClock`, `readPass`). 90_000. Worst measured cost: 13 026.49 ms over 20 runs
+    // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:24Z to 20:42Z, so
+    // 90_000 is 6.9 times that.
   }, 90_000);
 
   /** A pod whose NATS connection presents its broker token, at a broker that answers each trade
@@ -20741,39 +20922,102 @@ console.log(JSON.stringify(args));
     return { context, notifications };
   }
 
+  /**
+   * Reads one pass on the test's clock (`onPassClock`): `begin` starts it, and its own work up to
+   * the `AbortSignal.timeout` of `boundMs` it arms, and the broker's next answer where the pass
+   * trades at once (`answered`), run with the clock held. The clock then moves in 100 ms steps, which let each retry the loop makes be answered on
+   * real turns: one step short of the bound the pass must have said nothing, and at the bound,
+   * held, it says what its trade came to (`said`). Then it goes on to its end inside its deadline.
+   * Answers, each from `begin` on the test's clock, when the bound was armed and when the pass said
+   * so, whether it had said so a step early, and whether it settled.
+   */
+  async function readPass(
+    clock: PassClock,
+    options: {
+      readonly begin: () => unknown;
+      readonly boundMs: number;
+      /** How many trades the broker has answered, for a pass that trades as it starts. */
+      readonly answered?: () => number;
+      readonly said: () => boolean;
+    }
+  ): Promise<{ armedMs?: number; early: boolean; saidMs?: number; settled: boolean }> {
+    const { begin, boundMs, answered, said } = options;
+    const armedBefore = clock.armed.filter((ms) => ms === boundMs).length;
+    const answeredBefore = answered?.() ?? 0;
+    const started = clock.now();
+    let settled = false;
+    void Promise.resolve(begin()).finally(() => {
+      settled = true;
+    });
+    const armed = () => clock.armed.filter((ms) => ms === boundMs).length > armedBefore;
+    await clock.hold(() => armed() && (answered === undefined || answered() > answeredBefore));
+    const armedMs = armed() ? clock.now() - started : undefined;
+    for (let step = 0; step < boundMs / 100 - 1; step += 1) await clock.advance(100);
+    const early = said();
+    await clock.advance(100);
+    await clock.hold(said);
+    const saidMs = said() ? clock.now() - started : undefined;
+    for (let step = 0; step < 150 && !settled; step += 1) await clock.advance(100);
+    return { armedMs, early, saidMs, settled };
+  }
+
   test("a broker that never grants: the start fails at its 20 s bound, naming the 503, inside its pass", async () => {
-    // The start waits for ready within its bound (`TRADE_DEADLINE_MS`, 20 s), through the retry
-    // loop's retries, and then fails naming what the last trade came to, before the pass's
-    // deadline: a pass abandoned at that deadline names no cause at all. The deadline is its floor
-    // here, 30 s (`MIN_PASS_DEADLINE_MS`, the heartbeat shortened to it), and the queue's own
-    // timer is the row's upper bound, on the same loop as the start's: a start that outlasts it is
-    // abandoned, and the session is told that instead of the trade.
+    // The start waits for ready within its bound (`startTradeBoundMs`: the pass less the 10 s the
+    // rest of it needs, `PASS_REST_MS`, which for a 30 s pass is `TRADE_DEADLINE_MS`, 20 s),
+    // through the retry loop's retries, and then fails naming what the last trade came to, before
+    // the pass's deadline: a pass abandoned at that deadline names no cause at all. The deadline is
+    // its floor here, 30 s (`MIN_PASS_DEADLINE_MS`, the heartbeat shortened to it). Both are this
+    // process's timers, so the row reads them on the test's clock (`onPassClock`), from the start
+    // on, rather than leaving their order to how fast the host runs the pass's work.
     const passMs = 30_000;
+    const startBoundMs = 20_000;
     await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
       brokerPod(() => "503");
+      // How many trades the broker has answered. The pod's fetch is `rowFetch()`, as in the
+      // switch-follow row.
+      const pod = rowFetch();
+      let answered = 0;
+      globalThis.fetch = async (input, init) => {
+        const answer = await pod(input, init);
+        if (new URL(new Request(input, init).url).host === "broker.test") answered += 1;
+        return answer;
+      };
       const { default: envoyExtension } = await import("./envoy.ts?broker-answers-503");
       const fixture = createPi();
       envoyExtension(fixture.pi);
-      // Timed from the start itself, not from before the module loads: a module slow to load on a
-      // loaded machine is no slower start.
       const { context, notifications } = timedContext("ses_broker_503", Date.now());
-      await fixture.handlers.get("session_start")?.({}, context);
-      const notice = notifications.find(({ message }) =>
-        message.includes("the trade for the session's token")
+      const notice = () =>
+        notifications.find(({ message }) => message.includes("the trade for the session's token"));
+      const read = await onPassClock((clock) =>
+        readPass(clock, {
+          begin: () => fixture.handlers.get("session_start")?.({}, context),
+          boundMs: startBoundMs,
+          answered: () => answered,
+          said: () => notice() !== undefined,
+        })
       );
+      // The start names the trade as its bound ends, with the test's clock standing at it, and
+      // not a step before: a start whose ready waits with no bound outlives the pass, and one
+      // whose bound grows into the 10 s the pass keeps after it (`PASS_REST_MS`) waits longer, so
+      // neither names it here.
+      expect(read.early).toBe(false);
       expect(
-        notice,
+        read.saidMs,
         `no notice named the trade: ${notifications.map(({ message }) => message).join(" | ")}`
-      ).toBeDefined();
-      expect(notice?.message).toContain("HTTP 503");
-      // A timer fires no sooner than it is due, so the start waited out its bound however loaded
-      // the machine.
-      expect(notice?.at).toBeGreaterThanOrEqual(19_000);
+      ).toBe(startBoundMs);
+      // The bound was armed with the clock held, where the code arms it.
+      expect(read.armedMs).toBe(0);
+      expect(notice()?.message).toMatch(/the trade for the session's token.*HTTP 503/);
+      expect(read.settled).toBe(true);
       expect(notifications.some(({ message }) => message.includes("did not settle within"))).toBe(
         false
       );
       await fixture.handlers.get("session_shutdown")?.({}, context);
     });
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or
+    // steps (`onPassClock`, `readPass`). 60_000. Worst measured cost: 7 282.53 ms over 20 runs
+    // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T18:13Z to 18:28Z, so
+    // 60_000 is 8.2 times that.
   }, 60_000);
 
   test("a first trade that answers 503 and then grants: the start presents its token in its first pass", async () => {
@@ -20902,66 +21146,49 @@ console.log(JSON.stringify(args));
       const { default: envoyExtension } = await import("./envoy.ts?follow-bound");
       const fixture = createPi();
       envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, before.context);
       const after = timedContext("ses_follow_to", Date.now());
       const all = () => [...before.notifications, ...after.notifications];
       const named = () =>
         all().find(({ message }) => message.includes("could not take the new session's token"));
-      // From the switch on, the test's clock: the pass's deadline, the follow's bound and its
-      // trade's share are all this process's timers, so on it they come at the times the code
-      // gives them, whatever the host's speed. The work between those times (the pass's restores,
-      // its dial, the trade's request and the report of how it ended, all in-process here) comes
-      // on real turns (`settle`), which move no clock, so the clock is held while it runs: until
-      // the follow has traded, and again at the trade's share until the notice is made. Every wait
-      // is bounded by a count of turns or of steps, and real timers come back however the switch
-      // ends, so a wait that never ends fails here rather than at the row's limit with the fake
-      // clock still on (`onTestClock` says why that matters). The bound on held turns is a hang
-      // guard: what can hang is work the pass never finishes. 10_000 turns of `settle`; the most
-      // a run held was 105 of them idle, and 58 over 20 runs at 16 busy loops (the 96 rung) on
-      // the two-CPU, 8 GiB pod of 2026-11-19 18:40Z.
+      // From the boot on, the test's clock (`onPassClock`): the passes' deadlines, the follow's
+      // bound and its trade's share are all this process's timers, so on it they come at the
+      // times the code gives them, whatever the host's speed. The work between those times (the
+      // start's trade and dial, the pass's restores, the follow's trade and the report of how it
+      // ended, all in-process here) comes on real turns, which move no clock, so the clock is held
+      // while it runs: through the boot, until the follow has traded, and again at the trade's
+      // share until the notice is made. A boot on the real clock would race its own 10 s pass
+      // deadline, and a boot past it puts "did not settle within" into the notices this row reads.
       const shareMs = 4_000;
-      const heldTurnsAtMost = 10_000;
-      let heldTurns = 0;
-      let switchedAt = 0;
-      let noticeMs: number | undefined;
-      let earlyNotice: string | undefined;
-      let settled = false;
-      let switching: Promise<unknown> | undefined;
-      const hold = async (done: () => boolean): Promise<void> => {
-        for (let turn = 0; turn < heldTurnsAtMost && !done(); turn += 1) {
-          await settle();
-          heldTurns = Math.max(heldTurns, turn + 1);
-        }
-      };
-      jest.useFakeTimers();
-      try {
-        switchedAt = Date.now();
-        switching = Promise.resolve(fixture.handlers.get("session_switch")?.({}, after.context));
+      const { earlyNotice, noticeMs, settled, switching } = await onPassClock(async (clock) => {
+        const bootedAt = clock.now();
+        await clock.run("the boot", fixture.handlers.get("session_start")?.({}, before.context));
+        // The boot's own work moved no clock.
+        expect(clock.now()).toBe(bootedAt);
+        const switchedAt = clock.now();
+        let settled = false;
+        const switching = Promise.resolve(
+          fixture.handlers.get("session_switch")?.({}, after.context)
+        );
         void switching.finally(() => {
           settled = true;
         });
-        await hold(() => followTraded);
-        // The follow traded with the clock held, so nothing of the pass's own work before it moved
-        // the clock.
+        await clock.hold(() => followTraded);
+        // The follow traded with the clock held, so nothing of the pass's own work before it
+        // moved the clock.
         expect(followTraded).toBe(true);
-        expect(Date.now()).toBe(switchedAt);
+        expect(clock.now()).toBe(switchedAt);
         // Not before the trade's share: one step short of it, the pass has said nothing.
-        jest.advanceTimersByTime(shareMs - 50);
-        await settle();
-        earlyNotice = named()?.message;
+        await clock.advance(shareMs - 50);
+        const earlyNotice = named()?.message;
         // At the share, held until the pass says what the trade came to.
-        jest.advanceTimersByTime(50);
-        await hold(() => named() !== undefined);
-        if (named() !== undefined) noticeMs = Date.now() - switchedAt;
+        await clock.advance(50);
+        await clock.hold(() => named() !== undefined);
+        const noticeMs = named() === undefined ? undefined : clock.now() - switchedAt;
         // The pass goes on after the follow (its subscribes and its registration), inside its
         // own deadline, which a pass that outlived it would say below.
-        for (let step = 0; step < 120 && !settled; step += 1) {
-          jest.advanceTimersByTime(100);
-          await settle();
-        }
-      } finally {
-        jest.useRealTimers();
-      }
+        for (let step = 0; step < 120 && !settled; step += 1) await clock.advance(100);
+        return { earlyNotice, noticeMs, settled, switching };
+      });
       // The notice is made as the trade's share ends, half the follow's 8 s bound of the pass's
       // 10 s, with the test's clock standing at that share: a follow given no bound (m3) has 20 s
       // for its trade and is abandoned with the pass at 10 s, saying nothing, and a follow whose
@@ -20976,9 +21203,11 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("session_shutdown")?.({}, after.context);
     });
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or
-    // steps. 60_000. Worst measured cost: 13 513.21 ms over 20 runs at 16 busy loops (the 96 rung)
-    // on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, so 60_000 is 4.4 times that.
-  }, 60_000);
+    // steps (`onPassClock`). 90_000. Worst measured cost: 13 513.21 ms over 20 runs at 16 busy
+    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T16:06Z to 16:22Z, with the boot on the
+    // real clock, and 12 258.67 ms over 20 runs there with the boot on the test clock,
+    // 2026-11-20T17:58Z to 18:13Z, so 90_000 is 6.7 times the worst.
+  }, 90_000);
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
     // The move to the new session's token fails (its trade is refused outright, a refusal no
@@ -21106,8 +21335,11 @@ console.log(JSON.stringify(args));
     // What the start did is done; from here a reconnect is the keeper's.
     natsState.timeline.length = 0;
     const before = natsState.presented.length;
-    const deadline = Date.now() + 5_000;
-    while (!natsState.timeline.includes("reconnect") && Date.now() < deadline) await Bun.sleep(50);
+    // The keeper renews before the two-second token lapses, and the connection reconnects to
+    // present the new one. The wait has no deadline of its own, so the row's limit below is its
+    // hang guard: a wait on the real clock ended at 5 s failed a correct run on a host slow enough
+    // to stretch the trade and the reconnect past it.
+    await until(() => natsState.timeline.includes("reconnect"), "the keeper's reconnect");
     expect(natsState.timeline).toContain("reconnect");
     expect(natsState.presented.length).toBeGreaterThan(before);
     expect(natsState.presented.at(-1)).not.toBe(natsState.presented[before - 1]);
@@ -21118,7 +21350,11 @@ console.log(JSON.stringify(args));
     await Bun.sleep(2_500);
     expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
     expect(minted).toHaveLength(traded);
-  }, 15_000);
+    // A hang guard, not a bound on work: what can hang is the keeper's reconnect, which `until`
+    // above waits for with no deadline of its own. 90_000. Worst measured cost: 11 803.37 ms
+    // over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T19:53Z
+    // to 20:08Z, so 90_000 is 7.6 times that.
+  }, 90_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
