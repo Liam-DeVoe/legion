@@ -711,6 +711,115 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 	})
 }
 
+// heldFrame is how long the answer and exit rows of
+// TestTheRigWaitsForAFrameTheLauncherIsSlowToSend hold the frame they read: a second past 10 s,
+// which one frame of this package has already taken on a loaded machine (frameDeadline).
+// heldHello is how long its hello row holds the launcher's first pass: a second past 20 s, a span
+// a fixed accept could have, and inside the pass's own bound, gitLockFirstPassBound.
+const (
+	heldFrame = 11 * time.Second
+	heldHello = 21 * time.Second
+)
+
+// What the launcher is slow to send is still read: the daemon end of the connection waits for
+// the launcher's connection and each frame until the test binary's own deadline (frameDeadline),
+// since nothing of the test's bounds what comes before them. Each row holds one frame through
+// something the row owns, and reads the frame when it comes.
+func TestTheRigWaitsForAFrameTheLauncherIsSlowToSend(t *testing.T) {
+	// A start's answer waits for the sweep's first pass over the clone the start names, which
+	// the pod's bundle restore runs after (gitLockSweep.learn). The pass is held where it removes
+	// the clone's one lock, as TestTheFirstPassRunsBeforeTheBundleRestore holds it.
+	t.Run("a start's answer the sweep's first pass holds", func(t *testing.T) {
+		requireRoleNamespaces(t)
+		c := newLockClone(t)
+		lock := c.lock("index.lock", "stale", time.Second)
+		reached := make(chan struct{}, 1)
+		previous := gitLockRemove
+		gitLockRemove = func(path string) error {
+			select {
+			case reached <- struct{}{}:
+			default:
+			}
+			time.Sleep(heldFrame)
+			return os.Remove(path)
+		}
+		// Restored after the launcher's own cleanup, which waits for Run to return, since this
+		// is registered before newFleet registers that one.
+		t.Cleanup(func() { gitLockRemove = previous })
+		t.Chdir(t.TempDir())
+		useSweepingLauncher(t)
+		f := newFleet(t, 5*time.Second, "tester")
+		conn := f.role("tester")
+		sent := time.Now()
+		got := conn.start(roleStart(1, c.dir, nil))
+		took := time.Since(sent)
+		if !got.OK {
+			t.Fatalf("the start answered %#v; the launcher's log:\n%s", got, f.stderr.String())
+		}
+		select {
+		case <-reached:
+		default:
+			t.Fatalf("the start was answered without its pass reaching the removal of %s; the launcher's log:\n%s", lock, f.stderr.String())
+		}
+		if took < heldFrame {
+			t.Fatalf("the start was answered %s after it was sent, inside the pass's hold of %s", took, heldFrame)
+		}
+		if !swept(lock) {
+			t.Fatalf("the start was answered with %s still there; the launcher's log:\n%s", lock, f.stderr.String())
+		}
+		t.Logf("the start was answered %s after it was sent, behind a pass held for %s", took.Round(time.Millisecond), heldFrame)
+	})
+
+	// A generation's exit is reported once its role has ended, and this role sleeps for the hold.
+	t.Run("a generation's exit its role holds", func(t *testing.T) {
+		requireRoleNamespaces(t)
+		f := newFleet(t, 5*time.Second, "tester")
+		conn := f.role("tester")
+		start := roleStart(1, t.TempDir(), nil)
+		start.Argv = []string{"/bin/sleep", strconv.Itoa(int(heldFrame / time.Second))}
+		sent := time.Now()
+		if got := conn.start(start); !got.OK {
+			t.Fatalf("the start answered %#v; the launcher's log:\n%s", got, f.stderr.String())
+		}
+		exit := conn.awaitExit(1)
+		took := time.Since(sent)
+		if exit.Code != 0 {
+			t.Fatalf("the sleeping role exited %#v; the launcher's log:\n%s", exit, f.stderr.String())
+		}
+		if took < heldFrame {
+			t.Fatalf("generation 1's exit was reported %s after its start was sent, inside its role's sleep of %s", took, heldFrame)
+		}
+		t.Logf("generation 1's exit was reported %s after its start was sent, behind a role that slept %s", took.Round(time.Millisecond), heldFrame)
+	})
+
+	// A launcher whose working directory is a workspace runs the sweep's first pass before it
+	// connects (gitLockSweep.serve), so its connection and its hello wait for the pass, which is
+	// held where it removes the clone's one lock.
+	t.Run("a launcher's hello its first pass holds", func(t *testing.T) {
+		c := newLockClone(t)
+		lock := c.lock("index.lock", "stale", time.Second)
+		previous := gitLockRemove
+		gitLockRemove = func(path string) error {
+			time.Sleep(heldHello)
+			return os.Remove(path)
+		}
+		// Restored after the launcher's own cleanup, for the reason the first row's is.
+		t.Cleanup(func() { gitLockRemove = previous })
+		t.Chdir(c.dir)
+		useSweepingLauncher(t)
+		began := time.Now()
+		f := newFleet(t, 2*time.Second, "tester")
+		took := time.Since(began)
+		if !swept(lock) {
+			t.Fatalf("the launcher connected with %s still there; its log:\n%s", lock, f.stderr.String())
+		}
+		if took < heldHello {
+			t.Fatalf("the launcher's hello was read %s after it started, inside its first pass's hold of %s", took, heldHello)
+		}
+		t.Logf("the launcher's hello was read %s after it started, behind a first pass held for %s", took.Round(time.Millisecond), heldHello)
+	})
+}
+
 // An issue pod sets its roles container's working directory to the issue's workspace
 // (internal/runtime/sandbox's podkind), so the launcher needs nothing from the daemon to know
 // which clone is its own: it sweeps before it connects, and a role that starts at once works a

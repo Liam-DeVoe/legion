@@ -158,21 +158,26 @@ func (g *rig) accept() shimwire.LauncherState {
 }
 
 // acceptRole takes one launcher connection up to its hello: the daemon end of the role that
-// hello names, which has not been acknowledged yet.
+// hello names, which has not been acknowledged yet. The accept waits as a frame read does
+// (frameDeadline): before a launcher whose working directory is a workspace connects, it runs
+// the sweep's first pass, for up to gitLockFirstPassBound.
 func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	t.Helper()
 	if tcp, ok := listener.(*net.TCPListener); ok {
-		if err := tcp.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		if err := tcp.SetDeadline(frameDeadline(t)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	conn, err := listener.Accept()
+	if os.IsTimeout(err) {
+		t.Fatalf("no launcher connected while the test waited for one, which an accept waits for until the test binary's deadline less %s: %v", frameMargin, err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	c := &roleConn{t: t, conn: conn, reader: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
-	hello, ok := c.next().(shimwire.LauncherHello)
+	hello, ok := c.nextFor("the launcher's hello").(shimwire.LauncherHello)
 	if !ok || hello.Role == "" || hello.LauncherID == "" {
 		t.Fatalf("hello = %#v", hello)
 	}
@@ -194,21 +199,67 @@ func (g *roleConn) acknowledge() shimwire.LauncherState {
 func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
 	g.t.Helper()
 	g.send(ack)
-	state, ok := g.next().(shimwire.LauncherState)
+	state, ok := g.nextFor("the launcher's state after the acknowledgement").(shimwire.LauncherState)
 	if !ok {
 		g.t.Fatalf("after the acknowledgement: %#v, want the launcher's state", state)
 	}
 	return state
 }
 
+// frameMargin is what frameDeadline leaves of the test binary's deadline: the longest wait the
+// cleanup of a connection's own launcher holds once the case has failed, a fleet's wait for Run
+// to return after its context ends (launcherLeaveBound; a rig's is 5 s), and a second for the
+// failure's own report. So the case ends and prints what it waited for before the binary's own
+// timeout panics, which names no wait and, without -v, prints none of the case's lines.
+const frameMargin = launcherLeaveBound + time.Second
+
+// frameDeadline is when the rig gives up on the launcher's connection (acceptRole) or its next
+// frame (nextFor): the test binary's own deadline less frameMargin, or never when the binary has
+// no deadline (-timeout 0). Each is an event the test waits for, and what the launcher does
+// before it has either no bound at all or a bound of the pod's, not of the test's. A connection
+// waits for the sweep's first pass when the launcher's working directory is a workspace, for up
+// to gitLockFirstPassBound. A start's answer waits for the sweep's first pass over the clone the
+// start names, which only the container's context ends (gitLockSweep.learn), and then for the
+// pod's bundle restore, whose budget is restoreBudget. A generation's exit waits for role-init to
+// make the role's namespaces and for the role to end, which nothing bounds. A fixed span is
+// therefore a guess, and on a loaded machine a guess of 10 s failed a case with its frame on the
+// way (generation 1's exit in TestTheFirstPassRunsBeforeTheBundleRestore, at a load of 256 to
+// 352). The rig waits instead as the package's other waits do (testwait): what is merely slow is
+// read, and what never comes fails, naming what the test waited for, before the binary's timeout
+// does.
+func frameDeadline(t *testing.T) time.Time {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return time.Time{}
+	}
+	return deadline.Add(-frameMargin)
+}
+
+// next is the launcher's next frame, whatever it is.
 func (g *roleConn) next() shimwire.Frame {
 	g.t.Helper()
-	if err := g.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	return g.nextFor("the launcher's next frame")
+}
+
+// nextFor is the launcher's next frame, read until frameDeadline. A read that gives up names
+// what the test waited for, the connection's role and how long the read waited.
+func (g *roleConn) nextFor(what string) shimwire.Frame {
+	g.t.Helper()
+	if err := g.conn.SetReadDeadline(frameDeadline(g.t)); err != nil {
 		g.t.Fatal(err)
 	}
+	began := time.Now()
 	line, err := g.reader.ReadBytes('\n')
 	if err != nil {
-		g.t.Fatal(err)
+		on := "the launcher connection"
+		if g.hello.Role != "" {
+			on = "role " + g.hello.Role + "'s launcher connection"
+		}
+		if os.IsTimeout(err) {
+			g.t.Fatalf("no frame came on %s in %s while the test waited for %s, which a read waits for until the test binary's deadline less %s: %v",
+				on, time.Since(began).Round(time.Millisecond), what, frameMargin, err)
+		}
+		g.t.Fatalf("%s ended while the test waited for %s: %v", on, what, err)
 	}
 	frame, err := shimwire.Decode(line)
 	if err != nil {
@@ -235,14 +286,20 @@ func (g *roleConn) send(frame shimwire.Frame) {
 func (g *roleConn) answer(command shimwire.Frame) shimwire.Frame {
 	g.t.Helper()
 	g.send(command)
-	return g.reply()
+	return g.replyFor("the answer to its " + command.FrameType())
 }
 
 // reply is the next answer the launcher sends, skipping the frames it reports of its own accord.
 func (g *roleConn) reply() shimwire.Frame {
 	g.t.Helper()
+	return g.replyFor("the launcher's next answer")
+}
+
+// replyFor is reply, naming what the test waits for when no answer comes.
+func (g *roleConn) replyFor(what string) shimwire.Frame {
+	g.t.Helper()
 	for {
-		switch frame := g.next(); frame.(type) {
+		switch frame := g.nextFor(what); frame.(type) {
 		case shimwire.LauncherState, shimwire.LauncherRestored:
 		default:
 			return frame
@@ -434,7 +491,7 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unacknowledged.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := unacknowledged.SetReadDeadline(frameDeadline(t)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bufio.NewReader(unacknowledged).ReadBytes('\n'); err != nil {
@@ -614,6 +671,10 @@ func newWorkspace(t *testing.T) string {
 // roleToken is the launcher token a roles directory holds for role.
 func roleToken(role string) string { return "launcher-token-" + role }
 
+// launcherLeaveBound is how long a fleet waits for its launcher's Run to return once the
+// container's context has ended, in the fleet's cleanup and in stop.
+const launcherLeaveBound = 30 * time.Second
+
 // fleet is one multi-role launcher under test — an issue pod's one container, which serves every
 // resident role — and the daemon end of every role's connection.
 type fleet struct {
@@ -707,7 +768,7 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 		cancel()
 		select {
 		case <-f.result:
-		case <-time.After(30 * time.Second):
+		case <-time.After(launcherLeaveBound):
 			t.Errorf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
 		}
 	})
@@ -731,7 +792,7 @@ func (f *fleet) stop() error {
 	case err := <-f.result:
 		f.result <- err
 		return err
-	case <-time.After(testwait.Bounded(f.t, 30*time.Second, time.Second)):
+	case <-time.After(testwait.Bounded(f.t, launcherLeaveBound, time.Second)):
 		f.t.Fatalf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
 		return nil
 	}
@@ -757,7 +818,7 @@ func (f *fleet) roleTmp(role, name string) string {
 func (g *roleConn) awaitExit(generation uint64) shimwire.LauncherExit {
 	g.t.Helper()
 	for g.latest.LastExit == nil || g.latest.LastExit.Generation != generation {
-		g.next()
+		g.nextFor(fmt.Sprintf("the report of generation %d's exit", generation))
 	}
 	return *g.latest.LastExit
 }
