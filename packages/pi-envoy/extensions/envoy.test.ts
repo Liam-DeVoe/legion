@@ -23900,7 +23900,8 @@ describe("an envelope that carries the role field", () => {
 
     expect(await shown("role-field-card-with", withRole)).toEqual(before);
     expect(before.cards[0]?.content).toContain(`id: ${withoutRole.event_id}`);
-    expect(before.cards[0]?.content).toContain("message: Review the plan before noon.");
+    // A session's words come in a block after the card's fields.
+    expect(before.cards[0]?.content).toContain("<message>\nReview the plan before noon.\n</message>");
     expect(JSON.parse(before.inbox ?? "[]")).toEqual([
       {
         event_id: withoutRole.event_id,
