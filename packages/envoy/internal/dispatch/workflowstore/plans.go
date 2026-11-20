@@ -109,7 +109,6 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	}
 	stated = append(stated, attribute{AttributeSource, source, source})
 
-	// A document's half that is "" or 0 states nothing, as a write's empty field does.
 	document := write.Document
 	switch source {
 	case PlanSourceDefault:
@@ -119,8 +118,6 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 		if document.Version != 0 {
 			return "", nil, refusal(ErrPlanInput, "version names the version of the document an owner gave, and a plan of source %s has none", source)
 		}
-		// A default plan holds its document and version empty, so a later write of the same id
-		// that names a document finds both held and sets neither.
 		stated = append(stated,
 			attribute{AttributeArtifactID, "", ""},
 			attribute{AttributeVersion, int64(0), "0"})

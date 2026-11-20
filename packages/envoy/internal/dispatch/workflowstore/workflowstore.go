@@ -109,9 +109,8 @@ const (
 )
 
 // The attributes of a plan beside its issue, its project and its generation: its source, the
-// owner's document and version it was read from (both held empty for the source default, so no
-// later write gives a default plan a document), and its tasks, whose value tuple holds them as
-// JSON text.
+// owner's document and version it was read from (both empty for the source default, whose version
+// 0 an owner's later version replaces), and its tasks, whose value tuple holds them as JSON text.
 const (
 	AttributeSource     = "source"
 	AttributeArtifactID = "artifact_id"
