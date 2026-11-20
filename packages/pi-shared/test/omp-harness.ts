@@ -838,6 +838,16 @@ export function ompNatsGuard(): OmpNatsGuard {
   };
 }
 
+/**
+ * One step of a pane's life that is not the daemon's prompt: what a case does to the running
+ * session from outside it, such as a relay frame of an Envoy message (`sendRelayFrame`) or a push
+ * to the pane's origin. The life awaits the step and then settles as it settles after a prompt, so
+ * a step must start a turn: a session that does nothing after it never settles. The step is given
+ * every request the stand-in has served so far, which hold the session id the session registered
+ * with the listener, the id a relay frame is addressed to.
+ */
+export type PaneStep = (requests: readonly Request[]) => Promise<void>;
+
 /** Which Legion pane `runLegionPane` runs, and what its stand-in answers beyond the runner's routes. */
 export interface LegionPaneOptions {
   /**
@@ -862,8 +872,9 @@ export interface LegionPaneOptions {
   readonly issue: string;
   /** The daemon's assignment, sent as the RPC `prompt`. Several are sent one after another, each
    * once the run the one before it started has settled: a turn a refusal ended starts no
-   * continuation of its own, so a case that needs a second turn names a second assignment. */
-  readonly prompt: string | readonly string[];
+   * continuation of its own, so a case that needs a second turn names a second assignment. A
+   * `PaneStep` among them runs in its place, once the run before it has settled. */
+  readonly prompt: string | readonly (string | PaneStep)[];
   /**
    * False drops every `LEGION_*` variable, so the pane is an ordinary session: the Legion
    * extension stays inert and the Envoy extension's run-end ask nudge is not excluded.
@@ -920,10 +931,13 @@ export interface LegionPane {
    * Runs omp again over this pane's own transcript (`--resume <session>`), in the same scratch
    * root and against the same stand-in, and settles it as the first life settled: what the
    * daemon does when it relaunches a worker whose process is gone. `replies` are appended to the
-   * script the first life left, and `prompt` is the assignment — or assignments — the second
-   * life is given.
+   * script the first life left, and `prompt` is the assignment — or assignments and steps — the
+   * second life is given.
    */
-  readonly resume: (replies: readonly Reply[], prompt: string | readonly string[]) => Promise<void>;
+  readonly resume: (
+    replies: readonly Reply[],
+    prompt: string | readonly (string | PaneStep)[]
+  ) => Promise<void>;
   /** The pane's issue workspace. */
   readonly workspace: string;
 }
@@ -1051,12 +1065,17 @@ export async function runLegionPane(
   /**
    * One life of the pane: omp started with `args` on its command line, given each prompt of
    * `prompts` once the run the one before it started has settled, and left once the last has
-   * settled. A run has settled when the RPC stream reports its terminal agent_end: a continuation
-   * the host scheduled (the follow-up) starts its turn before that, under the same run. A steer
-   * the extension sends from `agent_end` instead starts its continuation after that frame, so
-   * `quietMs` waits for the gateway to fall silent rather than for the frame.
+   * settled. A `PaneStep` among them is awaited in place of a prompt, and the run it starts is
+   * settled as a prompt's is. A run has settled when the RPC stream reports its terminal
+   * agent_end: a continuation the host scheduled (the follow-up) starts its turn before that,
+   * under the same run. A steer the extension sends from `agent_end` instead starts its
+   * continuation after that frame, so `quietMs` waits for the gateway to fall silent rather than
+   * for the frame.
    */
-  const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
+  const live = async (
+    prompts: readonly (string | PaneStep)[],
+    args: readonly string[]
+  ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
     const rpc = spawnRpc(
       binary,
@@ -1106,7 +1125,8 @@ export async function runLegionPane(
       settled = Promise.withResolvers<void>();
       lastAnsweredAt = Date.now();
       const started = served;
-      rpc.send({ type: "prompt", message: prompt });
+      if (typeof prompt === "string") rpc.send({ type: "prompt", message: prompt });
+      else await Promise.race([prompt(requests), rpc.closed]);
       if (options.quietMs === undefined) {
         await Promise.race([settled.promise, rpc.closed]);
       } else {
