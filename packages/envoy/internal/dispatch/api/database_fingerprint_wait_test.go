@@ -6,9 +6,11 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests of a database fingerprint's wait (takeFingerprint, backgroundWrites). Each holds one
@@ -654,25 +657,47 @@ func TestAFingerprintPassesOverEveryWriterAgainAfterAWait(t *testing.T) {
 	assertUnchanged(t, "no request (a writer another writer started)", before, databaseFingerprint(t, served))
 }
 
-// gatedHorizonDB is a Horizon's database that holds each batch writing event_horizon at a gate
-// before it sends it, so the write is held in the Go code, with no statement in the server; every
-// other batch passes. ended is set once a held batch's results are closed: its writer's call has
-// returned, whatever the statement did.
+// gatedHorizonDB is a Horizon's database that holds each batch held picks at a gate before it
+// sends it, so that statement is held in the Go code, with no statement in the server; every other
+// batch passes. entered is closed once a held batch first reaches the gate, and ended is set once a
+// held batch's results are closed: its caller's call has returned, whatever the statement did.
 type gatedHorizonDB struct {
 	events.HorizonDB
+	held    func(*pgx.Batch) bool
 	gate    chan struct{}
 	entered chan struct{}
 	enter   sync.Once
 	ended   atomic.Bool
 }
 
+// newGatedHorizonDB is db with each batch held picks held at a gate the test closes when it ends.
+func newGatedHorizonDB(t *testing.T, db events.HorizonDB, held func(*pgx.Batch) bool) (gated *gatedHorizonDB, open func()) {
+	t.Helper()
+	gated = &gatedHorizonDB{HorizonDB: db, held: held, gate: make(chan struct{}), entered: make(chan struct{})}
+	open = sync.OnceFunc(func() { close(gated.gate) })
+	t.Cleanup(open)
+	return gated, open
+}
+
 func (db *gatedHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	if len(batch.QueuedQueries) == 0 || !strings.Contains(batch.QueuedQueries[0].SQL, "into event_horizon") {
+	if !db.held(batch) {
 		return db.HorizonDB.SendBatch(ctx, batch)
 	}
 	db.enter.Do(func() { close(db.entered) })
 	<-db.gate
 	return &endedBatch{BatchResults: db.HorizonDB.SendBatch(ctx, batch), ended: &db.ended}
+}
+
+// horizonWriteBatch picks the batch that writes a proven horizon to event_horizon
+// (events.Horizon.writePersisted).
+func horizonWriteBatch(batch *pgx.Batch) bool {
+	return len(batch.QueuedQueries) > 0 && strings.Contains(batch.QueuedQueries[0].SQL, "into event_horizon")
+}
+
+// horizonObservationBatch picks an observation's batch (events.Horizon.take): its third statement,
+// after the begin and the setting, reads the snapshot.
+func horizonObservationBatch(batch *pgx.Batch) bool {
+	return len(batch.QueuedQueries) > 2 && strings.Contains(batch.QueuedQueries[2].SQL, "pg_snapshot_xmin")
 }
 
 // endedBatch is a batch's results that set ended once closed.
@@ -693,26 +718,46 @@ func (results *endedBatch) Close() error {
 // its statement reaches the server, where the database's own account of its statements
 // (statementsRunning) cannot see it: the server's horizon is replaced by one whose database holds
 // each write to event_horizon at a gate, and an observation that proves a horizon runs its write
-// into the gate. The fingerprint's reads must not begin before the held write's call has returned,
+// into the gate. A lone observation proves a horizon only when no transaction id of the instance
+// is in progress, and on an instance other tests share, their open transactions can hold a proof
+// back for a while, so the test observes again, as its sister test does, until a write reaches
+// the gate. The fingerprint's reads must not begin before the held write's call has returned,
 // which the gate's database answers.
 func TestAFingerprintWaitsOutAnEventHorizonWriteHeldBeforeItsStatement(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	createInteractionIssue(t, handler, "TEST", "A horizon write held before its statement", "A spec")
 	awaitBackgroundWrites(t, served)
 	<-served.bootMark
-	gated := &gatedHorizonDB{HorizonDB: database.Pool, gate: make(chan struct{}), entered: make(chan struct{})}
-	open := sync.OnceFunc(func() { close(gated.gate) })
-	t.Cleanup(open)
+	gated, open := newGatedHorizonDB(t, database.Pool, horizonWriteBatch)
 	horizon := events.NewHorizon(gated)
 	horizon.PersistProven()
 	served.eventHorizon = horizon
 	ctx, cancel := backgroundContext(t)
 	defer cancel()
-	go func() { _, _ = horizon.Safe(context.Background()) }()
-	select {
-	case <-gated.entered:
-	case <-ctx.Done():
-		t.Fatalf("UNKNOWN: no write to event_horizon reached the gate (%v), so this run shows nothing", context.Cause(ctx))
+	for entered := false; !entered; {
+		observed := make(chan error, 1)
+		go func() {
+			_, err := horizon.Safe(context.Background())
+			observed <- err
+		}()
+		select {
+		case err := <-observed:
+			if err != nil {
+				t.Fatalf("an observation failed: %v", err)
+			}
+			// That observation proved nothing a write followed, or its write is on its way to
+			// the gate: the next look, a poll later, finds which.
+			select {
+			case <-gated.entered:
+				entered = true
+			case <-time.After(testwait.Poll):
+			case <-ctx.Done():
+			}
+		case <-gated.entered:
+			entered = true
+		case <-ctx.Done():
+			t.Fatalf("UNKNOWN: no write to event_horizon reached the gate (%v), so this run shows nothing", context.Cause(ctx))
+		}
 	}
 	before := takeFingerprint(t, served, &heldWriter{
 		name:    "the write to event_horizon held before it sent its statement",
@@ -778,4 +823,252 @@ func TestAFingerprintWaitsOutAHeartbeatResolutionHeldBeforeItsStatement(t *testi
 		ended:   gated.wrote.Load,
 	})
 	assertUnchanged(t, "no request (a heartbeat resolution held before its statement)", before, databaseFingerprint(t, rig.served))
+}
+
+// An observation of the event horizon runs on the goroutine of the caller that started it, and
+// one no request waits for - the last read of an event stream relay generation that stopped while
+// it observed - goes on to write what it proves to event_horizon once it ends. Horizon.Busy counts
+// it from before it sends its statement (its observation in flight). The test holds an observation
+// in the Go code, before its statement reaches the server, where the database's own account of its
+// statements (statementsRunning) cannot see it: the server's horizon is replaced by one whose
+// database holds each observation at a gate. The fingerprint's reads must not begin before the
+// held observation's call has returned, which the gate's database answers; a write it proves after
+// that the second fingerprint, equal to the first, shows waited out too.
+func TestAFingerprintWaitsOutAnEventHorizonObservationHeldBeforeItsStatement(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	createInteractionIssue(t, handler, "TEST", "An observation held before its statement", "A spec")
+	awaitBackgroundWrites(t, served)
+	<-served.bootMark
+	gated, open := newGatedHorizonDB(t, database.Pool, horizonObservationBatch)
+	horizon := events.NewHorizon(gated)
+	horizon.PersistProven()
+	served.eventHorizon = horizon
+	ctx, cancel := backgroundContext(t)
+	defer cancel()
+	go func() { _, _ = horizon.Safe(context.Background()) }()
+	select {
+	case <-gated.entered:
+	case <-ctx.Done():
+		t.Fatalf("UNKNOWN: no observation reached the gate (%v), so this run shows nothing", context.Cause(ctx))
+	}
+	before := takeFingerprint(t, served, &heldWriter{
+		name:    "an observation of the event horizon held before it sent its statement",
+		release: func() { time.AfterFunc(heldWriterLag, open) },
+		ended:   gated.ended.Load,
+	})
+	assertUnchanged(t, "no request (an event horizon observation held before its statement)", before, databaseFingerprint(t, served))
+}
+
+// A lookup of the test server's GitHub App client runs as a fetch of the client's cache that its
+// callers join (githubapp.ttlCache.get), on a context their cancel does not reach, so a caller
+// that leaves before it answers - the caller of readCIRunPages (results_ci.go) among them - leaves
+// it running, and a rate limit GitHub answers it with is recorded in github_rate_limits after the
+// request has answered. The lookup waits on HTTP in the Go code, with no statement in the server,
+// so only the wait's branch for the client's lookups (githubapp.Client.Fetching) can see it. The
+// fake GitHub answers a first lookup at once, and the fingerprint does not wait on it once it has
+// ended; it holds a second lookup, whose caller leaves, until the test lets it go, and then answers
+// it with no requests left. A fingerprint whose bound ends while that lookup is held fails naming
+// the client's lookups, and the fingerprint's reads begin only once github_rate_limits holds the
+// lookup's row.
+func TestAFingerprintWaitsOutAGitHubLookupWhoseCallerLeft(t *testing.T) {
+	gate := make(chan struct{})
+	open := sync.OnceFunc(func() { close(gate) })
+	var held atomic.Int32
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate the App's key: %v", err)
+	}
+	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/legion/held/installation" {
+			http.NotFound(w, r)
+			return
+		}
+		held.Add(1)
+		<-gate
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+	}})
+	_, database, _, served := newRegisteredTestServer(t, testServerOptions{
+		settle:        time.Hour,
+		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))},
+		githubAPIBase: github,
+	})
+	// Registered after the fake GitHub and the server, so it runs before either closes: the fake's
+	// Close waits for the lookup the gate holds.
+	t.Cleanup(open)
+	awaitBackgroundWrites(t, served)
+	limits := func() int {
+		var n int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from github_rate_limits`).Scan(&n); err != nil {
+			t.Fatalf("count the rows of github_rate_limits: %v", err)
+		}
+		return n
+	}
+	ctx, cancel := backgroundContext(t)
+	defer cancel()
+
+	// A lookup whose caller waited for its answer has ended, and the wait must not wait on it: a
+	// count that did not fall with its answer would hold this fingerprint to its bound.
+	if _, err := served.deps.GitHub.RepositoryToken(ctx, "legion", "answered"); err == nil {
+		t.Fatal("the lookup of a repository the fake GitHub does not know answered a token")
+	}
+	started := time.Now()
+	if refused := refusedFingerprint(t, served, 3*time.Second); refused != "" {
+		t.Fatalf("a fingerprint taken once the client's one lookup had answered failed after %s: %s", time.Since(started), refused)
+	}
+	if n := limits(); n != 0 {
+		t.Fatalf("UNKNOWN: github_rate_limits holds %d rows before the held lookup, so this run shows nothing", n)
+	}
+
+	leaving, leave := context.WithCancel(context.Background())
+	defer leave()
+	answered := make(chan error, 1)
+	go func() {
+		_, err := served.deps.GitHub.RepositoryToken(leaving, "legion", "held")
+		answered <- err
+	}()
+	awaitCondition(t, ctx, "the lookup to reach the fake GitHub", func() bool { return held.Load() > 0 })
+	leave()
+	if err := <-answered; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the caller that left was answered %v, want its own cancel", err)
+	}
+	if n := limits(); n != 0 {
+		t.Fatalf("UNKNOWN: github_rate_limits holds %d rows when the fingerprint begins, so this run shows nothing", n)
+	}
+	// The lookup stays held, so a wait that sees it runs to this bound and names it.
+	if refused := refusedFingerprint(t, served, 3*time.Second); !strings.Contains(refused, "GitHub App client's cached lookups") {
+		t.Fatalf("a fingerprint taken while the lookup whose caller left was held answered %q, want its wait to fail at its bound naming the GitHub App client's cached lookups", refused)
+	}
+	before := takeFingerprint(t, served, &heldWriter{
+		name:    "the GitHub App lookup whose caller left (its rate limit's row in github_rate_limits)",
+		release: func() { time.AfterFunc(heldWriterLag, open) },
+		ended:   func() bool { return limits() > 0 },
+	})
+	assertUnchanged(t, "no request (a GitHub App lookup whose caller left)", before, databaseFingerprint(t, served))
+}
+
+// signingInIdentity is the test server's header identity under a type of its own, as a
+// deployment's sign-in identity is (identity.CookieIdentity), whose Login, once writing is on,
+// writes a row of its own each time it resolves a caller, as a sign-in's resolution confirms the
+// person's membership. wrote counts those writes.
+type signingInIdentity struct {
+	identity.Identity
+	database *store.Store
+	writing  atomic.Bool
+	wrote    atomic.Int32
+}
+
+func (s *signingInIdentity) Login(r *http.Request) (string, error) {
+	if s.writing.Load() {
+		if _, err := s.database.Pool.Exec(r.Context(), `insert into people (email) values ('a-sign-in-' || gen_random_uuid() || '@example.com')`); err != nil {
+			return "", err
+		}
+		s.wrote.Add(1)
+	}
+	return s.Identity.Login(r)
+}
+
+// A live socket admitted by a person's sign-in resolves its caller again on every heartbeat
+// (whileCallerResolves), and under any identity but the test server's header one that resolution
+// can write - a sign-in cookie's confirms or ends the person's membership - on the socket's own
+// clock, which no wait can see. The test server's identity here writes a row on each resolution
+// once the socket is open, so its heartbeats write: a fingerprint of the server fails, naming the
+// sign-in. Once the socket has closed, the wait sees its last heartbeat out and two fingerprints
+// agree.
+func TestAFingerprintRefusesAServerWithALiveSocketUnderASignIn(t *testing.T) {
+	signingIn := &signingInIdentity{}
+	rig := newLiveSocketRig(t, testServerOptions{settle: time.Hour, streamHeartbeat: 200 * time.Millisecond, identity: signingIn}, nil)
+	signingIn.Identity, signingIn.database = headerIdentity(rig.database), rig.database
+	ctx, cancel := backgroundContext(t)
+	defer cancel()
+	client := rig.dial(t, asUser("alice"))
+	openLiveSockets(t, ctx, rig.served, 1)
+	signingIn.writing.Store(true)
+	awaitCondition(t, ctx, "a heartbeat's resolution of the socket's caller to write", func() bool { return signingIn.wrote.Load() > 0 })
+	if refused := refusedFingerprint(t, rig.served, backgroundBound); !strings.Contains(refused, "a person's sign-in") {
+		t.Fatalf("a fingerprint taken beside a live socket whose sign-in heartbeat writes answered %q, want it refused naming the sign-in", refused)
+	}
+	_ = client.conn.Close()
+	openLiveSockets(t, ctx, rig.served, 0)
+	assertUnchanged(t, "no request (a live socket under a sign-in that closed)", databaseFingerprint(t, rig.served), databaseFingerprint(t, rig.served))
+}
+
+// runEndlessStatement runs statement, which must not end by itself, on a connection of its own to
+// the database config names, and answers once the database's own account shows it running, with
+// its backend's pid. The statement is cancelled and the connection closed when the test ends.
+func runEndlessStatement(t *testing.T, ctx context.Context, database *store.Store, config *pgx.ConnConfig, statement string) int32 {
+	t.Helper()
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("connect to database %s: %v", config.Database, err)
+	}
+	var pid int32
+	if err := conn.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("read the backend of database %s: %v", config.Database, err)
+	}
+	stop, cancelStatement := context.WithCancel(context.Background())
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		_, _ = conn.Exec(stop, statement)
+	}()
+	t.Cleanup(func() {
+		cancelStatement()
+		<-ended
+		_ = conn.Close(context.Background())
+	})
+	awaitCondition(t, ctx, fmt.Sprintf("%q to run in database %s", statement, config.Database), func() bool { return statementRuns(t, database, pid) })
+	return pid
+}
+
+// statementRuns answers whether the backend pid, of any database of database's server, runs a
+// statement now, by the server's own account (pg_stat_activity), read through database's pool.
+func statementRuns(t *testing.T, database *store.Store, pid int32) bool {
+	t.Helper()
+	var runs bool
+	if err := database.Pool.QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity where pid = $1 and state = 'active')`, pid).Scan(&runs); err != nil {
+		t.Fatalf("read whether backend %d runs a statement: %v", pid, err)
+	}
+	return runs
+}
+
+// The wait for the statements the database still runs (statementsRunning) reads the test's own
+// database alone, so a statement another database of the same server runs holds no fingerprint.
+// A statement of the test's own database that outlasts the wait's bound fails the fingerprint at
+// that bound naming the statement, which the wait's last read before the bound found
+// (awaitStatements): the read that the bound itself ends answers nothing about the statement.
+func TestAFingerprintNamesAStatementOfItsOwnDatabaseThatOutlastsItsBound(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	createInteractionIssue(t, handler, "TEST", "A statement that outlasts the bound", "A spec")
+	awaitBackgroundWrites(t, served)
+	ctx, cancel := backgroundContext(t)
+	defer cancel()
+	elsewhere := database.Pool.Config().ConnConfig.Copy()
+	elsewhere.Database = "postgres"
+	otherPID := runEndlessStatement(t, ctx, database, elsewhere, "select pg_sleep(600) -- a statement of another database")
+	started := time.Now()
+	refused := refusedFingerprint(t, served, 20*time.Second)
+	took := time.Since(started)
+	if refused != "" {
+		t.Fatalf("a fingerprint beside a statement of another database of the same server failed after %s: %s", took, refused)
+	}
+	if !statementRuns(t, database, otherPID) {
+		t.Fatalf("UNKNOWN: the other database's statement had ended when the fingerprint answered (after %s), so this run shows nothing of the wait's scope", took)
+	}
+
+	runEndlessStatement(t, ctx, database, database.Pool.Config().ConnConfig.Copy(), "select pg_sleep(600) -- a statement of the test's own database")
+	const bound = 3 * time.Second
+	started = time.Now()
+	refused = refusedFingerprint(t, served, bound)
+	took = time.Since(started)
+	if !strings.Contains(refused, "the statements the database still runs for this test's database") ||
+		!strings.Contains(refused, "a statement of the test's own database") {
+		t.Fatalf("a fingerprint beside a statement of the test's own database that does not end answered %q after %s, want it to fail naming that statement", refused, took)
+	}
+	if took < bound || took > bound+10*time.Second {
+		t.Fatalf("the fingerprint failed after %s, want about its bound of %s: %s", took, bound, refused)
+	}
 }

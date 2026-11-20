@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -86,7 +85,7 @@ func takeFingerprint(t *testing.T, served *server, held *heldWriter) fingerprint
 }
 
 // fingerprintWithin is takeFingerprint under ctx's bound, failing t: a test of the fingerprint's
-// refusal hands it a fatalRecorder and reads what it failed with (refusedFingerprint).
+// refusal reads what it failed with (refusedFingerprint).
 func fingerprintWithin(t testing.TB, ctx context.Context, served *server, held *heldWriter) fingerprint {
 	t.Helper()
 	var waiting func()
@@ -128,34 +127,14 @@ func fingerprintWithin(t testing.TB, ctx context.Context, served *server, held *
 	return taken
 }
 
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does
-// (refusedFingerprint).
-type fatalRecorder struct {
-	testing.TB
-	message string
-}
-
-func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); runtime.Goexit() }
-func (f *fatalRecorder) Fatalf(format string, args ...any) {
-	f.message = fmt.Sprintf(format, args...)
-	runtime.Goexit()
-}
-
-// refusedFingerprint takes a fingerprint of served within bound, on a goroutine of its own through
-// a fatalRecorder, and answers what it failed with, or "" when it was taken: a test of the
+// refusedFingerprint takes a fingerprint of served within bound, on a goroutine of its own
+// (testwait.FailureOf), and answers what it failed with, or "" when it was taken: a test of the
 // fingerprint's refusal reads the fingerprint's own answer, not the code that decides it.
 func refusedFingerprint(t *testing.T, served *server, bound time.Duration) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeoutCause(context.Background(), bound, fmt.Errorf("the refused fingerprint's bound of %s ended", bound))
 	defer cancel()
-	recorder := &fatalRecorder{TB: t}
-	ended := make(chan struct{})
-	go func() {
-		defer close(ended)
-		fingerprintWithin(recorder, ctx, served, nil)
-	}()
-	<-ended
-	return recorder.message
+	return testwait.FailureOf(t, func(t testing.TB) { fingerprintWithin(t, ctx, served, nil) })
 }
 
 // assertUnchanged fails for each table whose rows differ between two fingerprints of one database,
@@ -237,7 +216,8 @@ func boundedError(ctx context.Context, err error) error {
 //     cancelled by a cancel pgx sends on a connection of its own, which can land late, or never on
 //     a loaded server, and until it does the statement runs on and commits once a lock it waits on
 //     is let go. Every count above falls as its writer's call returns, so this is the one branch
-//     that sees such a statement.
+//     that sees such a statement. Its wait fails naming the statements its last read before the
+//     bound found (awaitStatements).
 //
 // One writer can start another - a detached run that writes a document arms its settlement - so it
 // passes over all of them again after any wait, and returns only from a pass that waited for none.
@@ -294,9 +274,13 @@ func backgroundWrites(t testing.TB, ctx context.Context, srv *server, waiting fu
 			waited = waited || quiet.Waited
 		}
 		if srv.deps.Store != nil {
-			if running := statementsRunning(t, ctx, srv); running != "" {
+			running, err := statementsRunning(ctx, srv)
+			if err != nil {
+				t.Fatalf("read the statements the database runs: %v", boundedError(ctx, err))
+			}
+			if running != "" {
 				waited = true
-				awaitCondition(t, ctx, "the statements the database still runs for this test's database ("+running+")", func() bool { return statementsRunning(t, ctx, srv) == "" })
+				awaitStatements(t, ctx, srv, running)
 			}
 		}
 		if !waited {
@@ -378,17 +362,40 @@ func heartbeatWrite(srv *server, credential *model.Credential) string {
 // database (each test has one, testpg.URL) other than the session that asks, and answers "" when
 // it runs none. It reads the database's own account (pg_stat_activity), so it sees a statement
 // whose client already stopped waiting for it, which no count in the server's code still holds.
-func statementsRunning(t testing.TB, ctx context.Context, srv *server) string {
-	t.Helper()
+func statementsRunning(ctx context.Context, srv *server) (string, error) {
 	var running string
-	if err := srv.deps.Store.Pool.QueryRow(ctx, `
+	err := srv.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce(string_agg(pid || ': ' || left(regexp_replace(query, '\s+', ' ', 'g'), 80), '; ' order by pid), '')
 		from pg_stat_activity
 		where datname = current_database() and pid <> pg_backend_pid()
-			and backend_type = 'client backend' and state in ('active', 'fastpath function call')`).Scan(&running); err != nil {
-		t.Fatalf("read the statements the database runs: %v", boundedError(ctx, err))
+			and backend_type = 'client backend' and state in ('active', 'fastpath function call')`).Scan(&running)
+	return running, err
+}
+
+// awaitStatements waits, within ctx, until the database runs no statement for the test's own
+// database but the asking session's (statementsRunning), reading its account every testwait.Poll,
+// and fails naming running, the statements its last read before ctx ended found. The read runs on
+// ctx, so the read that ctx's end cuts off answers nothing about the statements; were the wait to
+// name that read's error, it would name the read, not the writer it waited for.
+func awaitStatements(t testing.TB, ctx context.Context, srv *server, running string) {
+	t.Helper()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the statements the database still runs for this test's database (%s) did not end: %v", running, context.Cause(ctx))
+		case <-time.After(testwait.Poll):
+		}
+		now, err := statementsRunning(ctx, srv)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			t.Fatalf("the statements the database still runs for this test's database (%s) did not end: %v", running, context.Cause(ctx))
+		case err != nil:
+			t.Fatalf("read the statements the database runs: %v", err)
+		case now == "":
+			return
+		}
+		running = now
 	}
-	return running
 }
 
 // detachedRunning answers whether any of work runs now.
