@@ -130,6 +130,11 @@ type createAgentTokenInput struct {
 // credentialSubjectSQL), read in the insert beside that re-check: an approve by the token names
 // that account as the approving one (approverStanding), never whichever account holds the address
 // when the approve is relayed.
+//
+// The re-check and the recording are the account binding's, and both hold only while it holds
+// (accountsHeld, read in the mint's transaction after the address's lock, which keeps the
+// binding's gate to the commit): beside a build without the binding in the fleet the mint checks
+// and records no account, as that build's mint does.
 func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -176,7 +181,11 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	if actor.Act != nil && actor.Act.TokenID != "" {
 		tokenID = &actor.Act.TokenID
 	}
-	recordsAccounts := s.deps.SignInIssuer != ""
+	recordsAccounts, err := s.accountsHeld(r.Context(), tx)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("create agent token: %w", err))
+		return
+	}
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), mintAgentTokenSQL,
 		actor.ID, input.Name, hash[:], prefix, scopes, projects, cookieLogin, cookieGeneration, tokenID,
 		broker.address, broker.subject, recordsAccounts, broker.created, broker.foreign))
@@ -208,7 +217,8 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 // (BrokerCredentialCreatedAt) and whether that account is of another issuer
 // (BrokerForeignAccount), refused once its account no longer holds the address
 // (brokerAccountReplaced), as its admission is. Each is null, and $14 false, for a caller of
-// another kind. $12 is whether the deployment's sign-in records accounts. The token records the
+// another kind. $12 is whether the account binding holds (accountsHeld): the deployment's sign-in
+// records accounts and no build without the binding is in the fleet. The token records the
 // minting credential's account (credentialSubjectSQL).
 var mintAgentTokenSQL = `
 	insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects, subject)
@@ -223,10 +233,11 @@ var mintAgentTokenSQL = `
 
 // credentialSubjectSQL is the SQL expression of the Google account (`sub`) a caller's own
 // credential is bound to, null for none, over the six values a statement names: the caller's
-// address, of the three credentials the one it presented (the other two null), whether the
-// deployment's sign-in records Google accounts (Deps.SignInIssuer non-empty), and a broker token's
-// credential's creation time. Each is read in the statement that also checks the credential still
-// stands, so it is the credential's account and never another's:
+// address, of the three credentials the one it presented (the other two null), whether the account
+// binding holds (accountsHeld: the deployment's sign-in records Google accounts, Deps.SignInIssuer
+// non-empty, and no build without the binding is in the fleet), and a broker token's credential's
+// creation time. Each is read in the statement that also checks the credential still stands, so it
+// is the credential's account and never another's:
 //
 //   - a session cookie: the address's recorded `sub`, which is the cookie's own while its session
 //     generation stands, since the one write of people.sub (store.PgPeopleStore.SignInSubject) ends
@@ -242,16 +253,40 @@ var mintAgentTokenSQL = `
 // clocks apart): no account that held the address before made it, so what it mints records the
 // holder and the no-account state stops there. One made before is refused (tokenAccountReplaced,
 // brokerAccountReplaced) and binds nothing; one with no recording to compare with is bound to none,
-// as before. Any other caller (an identity of another kind) is bound to none.
+// as before. Any other caller (an identity of another kind) is bound to none, and so is every
+// caller while the binding does not hold: what is minted then records no account, as a build
+// without the binding mints it.
 func credentialSubjectSQL(address, cookieLogin, tokenID, brokerSubject, recordsAccounts, brokerCreatedAt string) string {
 	recordedSince := func(createdAt string) string {
 		return "(select sub from people where email = " + address + " and " + recordsAccounts +
 			" and sub_recorded_at is not null and " + createdAt + " >= sub_recorded_at)"
 	}
 	return "(case when " + cookieLogin + " is not null then (select sub from people where email = " + address + " and " + recordsAccounts + ")" +
-		" when " + tokenID + " is not null then coalesce((select subject from agent_tokens where id = " + tokenID + "), " +
+		" when " + tokenID + " is not null then coalesce((select subject from agent_tokens where id = " + tokenID + " and " + recordsAccounts + "), " +
 		recordedSince("(select created_at from agent_tokens where id = "+tokenID+")") + ")" +
-		" else coalesce(nullif(" + brokerSubject + ", ''), " + recordedSince(brokerCreatedAt+" - "+brokerCredentialMarginSQL) + ") end)"
+		" else coalesce(case when " + recordsAccounts + " then nullif(" + brokerSubject + ", '') end, " + recordedSince(brokerCreatedAt+" - "+brokerCredentialMarginSQL) + ") end)"
+}
+
+// accountsHeld reports, in tx, whether the account binding holds for tx's statements: the
+// deployment's sign-in records Google accounts (Deps.SignInIssuer set) and no build without the
+// binding is in the fleet (store.AccountBindingHolds, read once, which keeps the binding's gate
+// shared to tx's end, so a build without the binding that arrives meanwhile commits its arrival
+// only after tx). A mint and a decision's re-read pass it to every predicate of theirs that holds
+// a credential to an account, and to what they record.
+func (s *server) accountsHeld(ctx context.Context, tx pgx.Tx) (bool, error) {
+	if s.deps.SignInIssuer == "" {
+		return false, nil
+	}
+	return store.AccountBindingHolds(ctx, tx)
+}
+
+// accountsHeldSQL is the SQL expression of whether the account binding holds, for a statement that
+// runs alone (an admission, the membership answer): recordsAccounts, the statement's expression of
+// whether the deployment's sign-in records accounts, and no build without the binding in the fleet
+// (store.AccountBindingHoldsSQL over legacyWindow and markWindow, the statement's parameters of
+// store.AccountBindingWindows). Such a statement reads it in one place, so it reads it once.
+func accountsHeldSQL(recordsAccounts, legacyWindow, markWindow string) string {
+	return "(" + recordsAccounts + " and " + store.AccountBindingHoldsSQL(legacyWindow, markWindow) + ")"
 }
 
 // mintCookie is the login and session generation of the cookie a mint's caller signed in with, or
@@ -587,7 +622,9 @@ const codeTokenOwnerNotAdmitted = "TOKEN_OWNER_NOT_ADMITTED"
 // sign-in records itself for the address, the first recording included (which also revokes the
 // address's tokens that recorded another account, store.PgPeopleStore.SignInSubject), the token is
 // 401 TOKEN_REVOKED, as a revoked token is, since its account is not the address's any more and
-// never will be again under this token.
+// never will be again under this token. That holds while the account binding holds
+// (accountsHeldSQL): beside a build without it in the fleet, which admits the token whatever
+// account it records, the token is admitted here too.
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
@@ -595,14 +632,15 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	var revokedAt *time.Time
 	var memberKind *string
 	var replaced bool
+	legacyWindow, markWindow := store.AccountBindingWindows()
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select agent_tokens.id::text, agent_tokens.name, agent_tokens.owner, agent_tokens.scopes,
 			agent_tokens.projects, agent_tokens.revoked_at, people.member_kind,
-			`+tokenAccountReplaced("$2::boolean")+`
+			`+tokenAccountReplaced(accountsHeldSQL("$2::boolean", "$3", "$4"))+`
 		from agent_tokens
 		left join people on people.email = canonical_login(agent_tokens.owner)
 		where agent_tokens.token_hash = $1
-	`, hash[:], s.deps.SignInIssuer != "").Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind, &replaced)
+	`, hash[:], s.deps.SignInIssuer != "", legacyWindow, markWindow).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind, &replaced)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -636,18 +674,22 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 }
 
 // tokenAccountReplaced is the SQL expression, over the row agent_tokens joined to its owner's
-// people row and whether the deployment's sign-in records accounts (recordsAccounts), that the
-// personal token's account no longer holds the address (personalTokenActor, the mint's and an
-// approve's re-reads). With accounts recorded and people recording one for the address, it is true
-// for a token that recorded another account at its mint, and for one that recorded none and was
-// made before people recorded the address's account (agent_tokens.created_at before
-// people.sub_recorded_at, both from Dispatch's own clock): an account that held the address before
-// may have minted it. A token made after the recording, an address recording no account or no
-// recording time, and a deployment whose sign-in records none are not replaced.
+// people row and whether the account binding holds (recordsAccounts: the deployment's sign-in
+// records accounts and no build without the binding is in the fleet, accountsHeld and
+// accountsHeldSQL), that the personal token's account no longer holds the address
+// (personalTokenActor, the mint's and an approve's re-reads). With accounts held and people
+// recording one for the address, it is true for a token that recorded another account at its mint,
+// and for one that recorded none and was made before people recorded the address's account
+// (agent_tokens.created_at before people.sub_recorded_at, both from Dispatch's own clock): an
+// account that held the address before may have minted it. A token made after the recording, an
+// address recording no account or no recording time, and a deployment whose sign-in records none
+// are not replaced. recordsAccounts comes last, where the executor can leave the fleet unread for a
+// token no account replaced; Postgres fixes no order of evaluation, so nothing rests on it.
 func tokenAccountReplaced(recordsAccounts string) string {
-	return "coalesce(" + recordsAccounts + " and people.sub is not null and (" +
+	return "coalesce(people.sub is not null and (" +
 		"(agent_tokens.subject is not null and agent_tokens.subject <> people.sub)" +
-		" or (agent_tokens.subject is null and people.sub_recorded_at is not null and agent_tokens.created_at < people.sub_recorded_at)), false)"
+		" or (agent_tokens.subject is null and people.sub_recorded_at is not null and agent_tokens.created_at < people.sub_recorded_at))" +
+		" and " + recordsAccounts + ", false)"
 }
 
 // restrictedOwnerAdmitted answers nil while a token acting for a restricted member may act - their

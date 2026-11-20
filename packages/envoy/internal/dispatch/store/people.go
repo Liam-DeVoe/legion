@@ -206,6 +206,14 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // for the next sign-in to revoke again; one that commits is logged at WARN with the address, and
 // with how many tokens it revoked when it replaced an account or revoked another account's tokens.
 //
+// All of that revoking and owing is the account binding's, and it runs only while the binding
+// holds over the fleet (AccountBindingHolds, read under the address's lock, which keeps the
+// binding's gate to the commit): while a build without the binding is in the fleet, which revokes
+// nothing when another account signs in, the sign-in records the account and ends the sessions as
+// that build does (the database's triggers end them, and stamp sub_recorded_at, whichever build
+// changes sub) and revokes and owes nothing, logged at WARN, so no revocation stands on a
+// replacement that build would have recorded without it.
+//
 // A restricted sign-in (an account outside the Workspace) never takes a full member's address
 // (takesAMembersAddress): it writes nothing and returns auth.ErrAddressHeldByMember, read once
 // before the plain token's retirement (refuseAMembersAddress), so the member's token is never
@@ -229,6 +237,10 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if _, err := tx.Exec(ctx, addressLockSQL, email); err != nil {
 		return fmt.Errorf("record sign-in of %q: lock the address: %w", email, err)
 	}
+	binding, err := AccountBindingHolds(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("record sign-in of %q: %w", email, err)
+	}
 	inserted, err := tx.Exec(ctx, `insert into people (email) values ($1) on conflict (email) do nothing`, email)
 	if err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
@@ -246,6 +258,7 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	var tokensRevoked int64
 	var owed []string
 	switch {
+	case !binding:
 	case replaced:
 		tokens, err := tx.Exec(ctx, revokeAddressTokensSQL, email)
 		if err != nil {
@@ -289,6 +302,8 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
 	switch {
+	case !binding && replaced:
+		slog.Warn("dispatch: a sign-in under another Google account ended every session of the address and revoked nothing: a build without the account binding is in the fleet", "email", email)
 	case replaced:
 		slog.Warn("dispatch: a sign-in under another Google account ended every session and revoked every personal token of the address", "email", email, "tokens_revoked", tokensRevoked)
 	case tokensRevoked > 0:

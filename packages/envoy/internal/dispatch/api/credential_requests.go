@@ -246,6 +246,11 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // and for a broker token the refusal its admission would name (brokerReplacedRefusal:
 // BROKER_TOKEN_RECORDS_NO_ACCOUNT, BROKER_TOKEN_NOT_ACTIVE or BROKER_ACCOUNT_NOT_SIGNED_IN), read
 // in the same statement; a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
+//
+// Each account check, and the account it answers, is the account binding's, and holds only while
+// the binding does (accountsHeld, read in the same transaction after the address's lock): beside a
+// build without the binding in the fleet the re-read checks no account and answers none, so the
+// approve is relayed naming no account, as that build relays it.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
@@ -267,6 +272,10 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	if _, err := tx.Exec(r.Context(), store.AddressLockSharedSQL, actor.ID); err != nil {
 		return unread(err)
 	}
+	held, err := s.accountsHeld(r.Context(), tx)
+	if err != nil {
+		return unread(err)
+	}
 	if err := tx.QueryRow(r.Context(), `
 		select exists (select 1 from user_sessions where login = $2::text and generation <> $3::bigint),
 			exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
@@ -275,7 +284,7 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 			`+brokerAccountNamed("$5::text", "$6::text")+`,
 			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$6::text", "$7::boolean", "$8::timestamptz")+`, ''),
 			coalesce((select generation from user_sessions where login = $1::text), 0)
-	`, actor.ID, cookieLogin, cookieGeneration, tokenID, broker.address, broker.subject, s.deps.SignInIssuer != "", broker.created, broker.foreign).
+	`, actor.ID, cookieLogin, cookieGeneration, tokenID, broker.address, broker.subject, held, broker.created, broker.foreign).
 		Scan(&cookieGone, &tokenGone, &brokerReplaced, &brokerNamed, &subject, &generation); err != nil {
 		return unread(err)
 	}
