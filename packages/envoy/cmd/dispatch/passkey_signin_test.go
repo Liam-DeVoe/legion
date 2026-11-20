@@ -291,6 +291,30 @@ func TestTheInvitationIsSingleUseAndExpires(t *testing.T) {
 	}
 }
 
+// TestAFullMembersLinkEnrollsNoPasskey (R5): a link made for a person who has since signed in with
+// Google as a full member (their address on a domain of the Workspace that
+// DISPATCH_SIGNIN_WORKSPACE_DOMAINS does not list) enrolls nothing: its begin is 409 FULL_MEMBER,
+// as the owner's link for that address is now, so the enrollment page says the address signs in
+// with Google rather than asking for a new link.
+//
+// Control: answer a full member's link as one no owner made (invitedPerson returning
+// store.ErrInvitationUnknown), and the begin is 404 INVITATION_UNKNOWN and the row fails.
+func TestAFullMembersLinkEnrollsNoPasskey(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	token := r.invite(t, outsiderEmail)
+	sessionCookieOf(t, outsiderEmail+"'s Google sign-in as a Workspace account", codeFlowSignIn(t, r.handler, r.pool, map[string]any{
+		"sub": "google-outsider", "email": outsiderEmail, "email_verified": true, "hd": "example.com",
+	}))
+	if kind := r.memberKind(t, outsiderEmail); kind != string(model.MemberFull) {
+		t.Fatalf("people.member_kind of %s = %q, want full", outsiderEmail, kind)
+	}
+	wantCode(t, "the enrollment of a link made before its person signed in as a full member", r.beginEnrollment(r.handler, token), http.StatusConflict, "FULL_MEMBER")
+	wantCode(t, "alice's link for a full member", r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/invitations", nil), http.StatusConflict, "FULL_MEMBER")
+	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
+		t.Fatalf("%s holds %d passkeys, want none", outsiderEmail, n)
+	}
+}
+
 // TestAPasskeySignInWithALowerSignCountIsRefused (R5): a sign-in whose signature counter is above
 // the stored one signs in and stores it; one whose counter is lower than the stored one is 401
 // PASSKEY_SIGN_COUNT, sets no cookie and leaves the stored counter.
