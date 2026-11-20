@@ -1582,13 +1582,29 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 // holds no such part; and, in each answered ask block it holds already, the shaped pointers and
 // the readings the conversion gives it. It records the pointer line it took out (pointerLine),
 // which its version's mark names. On a fleet of one build - which the phase runs on alone - the
-// same write takes the server-owned attributes out of every ask block of the spec
-// (withoutStoredAskAttributes), as the first accepted write of the document does (R10). It
-// answers the event of the version it wrote, NoEvent where the spec did not change.
+// same write cuts every ask block of the spec to the attributes a version keeps (writePresent), as
+// the first accepted write of the document does (R10), and gives each restored answered ask's block
+// those of its row (keptAskState). It answers the event of the version it wrote, NoEvent where the
+// spec did not change.
 func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
+	// kept for one release: roll-window-attributes
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
 	if err != nil {
 		return graphstore.NoEvent, err
+	}
+	// Once the fleet is one build, a restored ask's block keeps the state its node holds
+	// (keptAskState, onItsNode).
+	var nodes map[string]askNodeAnswer
+	if !twoBuilds {
+		var ids []string
+		for _, restore := range r.restores {
+			if !restore.joins && !restore.rowless {
+				ids = append(ids, restore.row.ID)
+			}
+		}
+		if nodes, err = askNodeAnswers(ctx, r.tx, ids); err != nil {
+			return graphstore.NoEvent, err
+		}
 	}
 	var added []*pmdoc.Node
 	for _, restore := range r.restores {
@@ -1600,7 +1616,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 		if restore.rowless {
 			block, err = movedBlockOf(restore, twoBuilds)
 		} else {
-			block, err = r.restoredAskBlock(restore)
+			block, err = r.restoredAskBlock(restore, twoBuilds, nodes)
 		}
 		if err != nil {
 			return graphstore.NoEvent, err
@@ -1699,12 +1715,14 @@ func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string
 
 // writePresent writes edits - the shaped pointers and the readings the conversion gives the
 // answered ask blocks a document holds already - into live, the tree of document as its live
-// write holds it, and, on a fleet of one build (twoBuilds false), takes the server-owned
-// attributes out of every ask block of it (withoutStoredAskAttributes). It records each pointer it
-// gave a block that the block did not hold (shapedAdded), which the version's mark names, and each
-// reading it wrote (readingsWritten), and reports whether it changed the tree. It visits every ask
-// block of the tree: pmdoc.Walk stops at the first node its visit answers false for, so the visit
-// answers true at an ask block too, and the blocks after the first are written as well.
+// write holds it, and, on a fleet of one build (twoBuilds false), takes the answer's words and
+// selection, which no version then holds, off every ask block of it (withoutUnkeptAskAttributes),
+// leaving the state, answerer, time and a copy's provenance settlement keeps in step with each ask.
+// It records each pointer it gave a block that
+// the block did not hold (shapedAdded), which the version's mark names, and each reading it wrote
+// (readingsWritten), and reports whether it changed the tree. It visits every ask block of the
+// tree: pmdoc.Walk stops at the first node its visit answers false for, so the visit answers true
+// at an ask block too, and the blocks after the first are written as well.
 func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *presentEdits, twoBuilds bool) bool {
 	changed := false
 	added := map[string][]string{}
@@ -1738,7 +1756,7 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 				changed = true
 			}
 		}
-		if !twoBuilds && withoutStoredAskAttributes(node) {
+		if !twoBuilds && withoutUnkeptAskAttributes(node) {
 			changed = true
 		}
 		return true
@@ -1773,6 +1791,7 @@ func (r *issueRestore) refuseUnwrittenReadings() error {
 // conversion gives that block (writePresent), and its version, in document id order. R9 gives a
 // section's links and reading to the ask's present block wherever it stands in the issue.
 func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
+	// kept for one release: roll-window-attributes
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
 	if err != nil {
 		return err
@@ -1852,10 +1871,12 @@ func withDecisionsPartBlocks(children, blocks []*pmdoc.Node, pointer func(*pmdoc
 
 // restoredAskBlock is the block restore writes into the spec, built from the ask's row - its
 // question and options as the row holds them, urgency and multiple - and its node, which holds
-// the answer: the block shows no answer (R6). It takes the spec blocks the sections that restate
-// it link as its `shaped` pointers, and holds the readings the block it moves held and the ones
-// the conversion writes. It reads back as the row's wording (askBlock.asks), or is refused.
-func (r *issueRestore) restoredAskBlock(restore *restoredBlock) (*pmdoc.Node, error) {
+// the answer: the block shows no answer (R6). On a fleet of one build (twoBuilds false) its opening
+// line keeps the row's state, answerer and time, as every version then keeps them for the release
+// before's readers (keptAskState). It takes the spec blocks the sections that restate it link as
+// its `shaped` pointers, and holds the readings the block it moves held and the ones the
+// conversion writes. It reads back as the row's wording (askBlock.asks), or is refused.
+func (r *issueRestore) restoredAskBlock(restore *restoredBlock, twoBuilds bool, nodes map[string]askNodeAnswer) (*pmdoc.Node, error) {
 	budget := pmdoc.NewWriteBudget()
 	decided := model.NewAskEditPrevious(restore.row)
 	children, err := questionBlocks(normalizeAskQuestion(decided.Question), budget)
@@ -1884,17 +1905,23 @@ func (r *issueRestore) restoredAskBlock(restore *restoredBlock) (*pmdoc.Node, er
 	if err != nil || !read.asks(decided) {
 		return nil, fmt.Errorf("the restored block of ask %s does not read back as the wording its row holds", restore.row.ID)
 	}
+	if !twoBuilds {
+		// kept for one release: stored-ask-state
+		keptAskState(onItsNode(restore.row, nodes), "")(block)
+	}
 	return block, nil
 }
 
 // movedBlockOf is the block the restore writes into the spec for restore, a block of the decisions
 // document no row names: the block as that document's live tree holds it, under the id it takes,
 // read back as the document's own markdown pipeline makes it, and, on a fleet of one build, without
-// the server-owned attributes (withoutStoredAskAttributes), as the spec's write takes them out of
-// every other ask block. No row holds its question to build it from, and none names it to rebind.
+// the server-owned attributes (withoutStoredAskAttributes): no ask's state stands behind them, and
+// the settlement after the write opens its ask and writes that state. No row holds its question to
+// build it from, and none names it to rebind.
 func movedBlockOf(restore *restoredBlock, twoBuilds bool) (*pmdoc.Node, error) {
 	node := &pmdoc.Node{Type: "ask", Attrs: maps.Clone(restore.moved.Attrs), Children: restore.moved.Children}
 	node.Attrs[pmdoc.BlockIDAttr] = restore.id
+	// kept for one release: roll-window-attributes
 	if !twoBuilds {
 		withoutStoredAskAttributes(node)
 	}

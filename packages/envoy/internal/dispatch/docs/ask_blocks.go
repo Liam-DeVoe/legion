@@ -84,6 +84,7 @@ type settlementReconciliation struct {
 	sources askBlockSources
 	// inStep are the ask blocks this settlement wrote an answer's words into while another build
 	// serves (rollWindowAskAttributes), in document order, which withholdAnswersWithoutRoom weighs.
+	// kept for one release: roll-window-attributes
 	inStep []answerInStep
 }
 
@@ -461,6 +462,8 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, s
 // weigh. A block that already held the words its write leaves - one whose repair cleared its
 // `invalid` or moved a copy's provenance - keeps them: they are in the document settlement read
 // and add nothing to it, and the release before weighed only a repair that wrote an answer.
+//
+// kept for one release: roll-window-attributes
 func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID string, twoBuilds bool, ask model.Ask, copied string, event *model.Event) bool {
 	found := maps.Clone(node.Attrs)
 	repair, eventAt := len(r.repairs), len(r.events)
@@ -510,6 +513,8 @@ func wroteAnswerWords(found pmdoc.Attrs, node *pmdoc.Node) bool {
 // document with room for it writes it back. A repair that then changes nothing is dropped with
 // its block.repaired. A document that does not render cannot be weighed, so its answers all stay
 // out, and the settlement that renders it next fails as it would have.
+//
+// kept for one release: roll-window-attributes
 func (r *settlementReconciliation) withholdAnswersWithoutRoom(artifactID string, tree *pmdoc.Node, before string) {
 	if len(r.inStep) == 0 {
 		return
@@ -559,6 +564,8 @@ func (r *settlementReconciliation) withholdAnswersWithoutRoom(artifactID string,
 // them left out of tree, while the document still has room for it, and marks in returned which it
 // gave back. The document is rendered once without them, and each answer is weighed by what it
 // adds to its block's own rendering (grownBy).
+//
+// kept for one release: roll-window-attributes
 func (r *settlementReconciliation) returnAnswersWithRoom(tree *pmdoc.Node, before string, returned []bool) {
 	left, err := renderTree(tree)
 	if err != nil {
@@ -724,19 +731,22 @@ func closeWithdrawn(ask model.Ask) bool {
 //
 // Each ask block is written as the fleet stands at this write (anotherBuildServes): while another
 // build serves, the attributes the release before reads from the block are kept in step with its
-// ask (rollWindowAskAttributes); once the fleet is one build, the seven a version can store are
-// taken out (withoutStoredAskAttributes), from a block settlement reads and from one it cannot read
-// alike, since a block that fails the strict read keeps whatever a browser wrote onto it - a forged
-// state or answerer among them. `invalid` is written into the live tree either way (G1): onto a
-// block that fails the strict read, and off one that reads again, and where the block has an ask
-// row its node holds the reason too, until the block reads again (stateInvalidReasons).
+// ask (rollWindowAskAttributes); once the fleet is one build, the ones a version keeps are kept in
+// step with it and the rest of the seven a version can store taken out (keptAskState). A block
+// settlement cannot read keeps whatever a browser wrote onto it - a forged state or answerer
+// among them - so once the fleet is one build it is given its row's kept state where a row
+// indexes it, and none of the seven where none does. `invalid` is written into the live tree
+// either way (G1): onto a block that fails the strict read, and off one that reads again, and
+// where the block has an ask row its node holds the reason too, until the block reads again
+// (stateInvalidReasons).
 //
 // issueClosed is whether the issue row, as the settlement's transaction locked it, reads closed
 // (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew every ask of
 // the issue, so an ask opened, restored or edited now would contradict the close. A new block
 // opens no ask and is indexed by no row. While another build serves, it is written
 // state="resolved", as the close's own sweep writes such a block (resolveUnindexedAskBlock), and
-// once the fleet is one build it carries no state at all. Its author is recorded in tx
+// once the fleet is one build it keeps none of the seven attributes a version can store, as a block
+// with no ask row and no source keeps none (unindexedAskWrite). Its author is recorded in tx
 // (recordAskAuthors, the first registration winning): this settlement deletes the document's
 // pending row, whose latest edit source would otherwise name the author. The reopen marks the
 // document owed (MarkReopenOwedAskDocuments), and the settlement after it opens the block's
@@ -816,6 +826,28 @@ func (s *Service) reconcileAskBlocks(
 			return settlementReconciliation{}, err
 		}
 	}
+	// Once the fleet is one build, the attributes a version keeps are written from each ask's node,
+	// each one its node holds no value of taken off (keptAskState, onItsNode); an ask whose state
+	// this settlement writes - one it restores - is written as it states it.
+	var nodes map[string]askNodeAnswer
+	if !twoBuilds && len(rows)+len(sources) > 0 {
+		ids := make([]string, 0, len(rows)+len(sources))
+		for _, ask := range rows {
+			ids = append(ids, ask.ID)
+		}
+		for _, source := range sources {
+			ids = append(ids, source.ask.ID)
+		}
+		if nodes, err = askNodeAnswers(ctx, tx, ids); err != nil {
+			return settlementReconciliation{}, err
+		}
+	}
+	shown := func(ask model.Ask) model.Ask {
+		if twoBuilds {
+			return ask
+		}
+		return onItsNode(ask, nodes)
+	}
 	// The sources, with the durable record read above, are what the version this settlement writes
 	// reads the authors of its decisions and readings from (typedSources).
 	reconciled := settlementReconciliation{sources: credit.askSources}
@@ -824,7 +856,8 @@ func (s *Service) reconcileAskBlocks(
 	var unindexed map[string]model.Actor
 	for _, invalid := range invalidBlocks {
 		reason := invalid.reason.Error()
-		if ask, indexed := rows[invalid.id]; indexed {
+		ask, indexed := rows[invalid.id]
+		if indexed {
 			if reconciled.invalid == nil {
 				reconciled.invalid = map[string]string{}
 			}
@@ -845,7 +878,11 @@ func (s *Service) reconcileAskBlocks(
 			))
 		}
 		if !twoBuilds {
-			reconciled.repair(invalid.node, invalid.id, withoutStoredAskAttributes)
+			unread := withoutStoredAskAttributes
+			if indexed {
+				unread = keptAskState(shown(ask), "")
+			}
+			reconciled.repair(invalid.node, invalid.id, unread)
 		}
 	}
 	// Every ask block of the tree, readable or not, names the ask it is a copy of, or none, for
@@ -866,7 +903,7 @@ func (s *Service) reconcileAskBlocks(
 			// A copy is read-only here: its source's state is written into the block, and
 			// nothing this settlement does writes the source's row.
 			if source, copied := sources[block.id]; copied {
-				if reconciled.repairAskInStep(block.node, block.id, twoBuilds, source.ask, source.document, nil) {
+				if reconciled.repairAskInStep(block.node, block.id, twoBuilds, shown(source.ask), source.document, nil) {
 					reconciled.copied = append(reconciled.copied, copiedBlock{blockID: block.id, source: source})
 				}
 				continue
@@ -878,10 +915,9 @@ func (s *Service) reconcileAskBlocks(
 				continue
 			}
 			if issueClosed {
-				// No ask on a closed issue: while another build serves, the block reads resolved,
-				// as the close left the issue's asks, and once the fleet is one build it carries
-				// none of the attributes; either way it keeps its author for the ask the reopen's
-				// settlement opens. An author the durable record holds already stays
+				// No ask on a closed issue: the block reads resolved, as the close left the
+				// issue's asks (unindexedAskWrite), and it keeps its author for the ask the
+				// reopen's settlement opens. An author the durable record holds already stays
 				// (askAuthorsStatement keeps it).
 				reconciled.repair(block.node, block.id, unindexedAskWrite(twoBuilds))
 				if _, stored := credit.askSources.recorded[block.id]; !stored {
@@ -938,13 +974,14 @@ func (s *Service) reconcileAskBlocks(
 		reconciled.readable = append(reconciled.readable, ask.ID)
 		delete(rows, block.id)
 
+		stated := false
 		if settlementRetracted(ask) && !issueClosed {
 			var held graphstore.Uncaused
 			restored, err := restoreRetractedAsk(ctx, tx, ask, actor, &held)
 			if err != nil {
 				return settlementReconciliation{}, err
 			}
-			ask = restored
+			ask, stated = restored, true
 			recordAskBlock(ctx, tx, artifactID, ask)
 			eventType := "ask.opened"
 			if ask.State == "answered" {
@@ -1046,13 +1083,17 @@ func (s *Service) reconcileAskBlocks(
 			actor,
 			model.BlockRepairedEventPayload{BlockID: block.id, DisturbedBy: actor},
 		)
+		kept := ask
+		if !stated {
+			kept = shown(ask)
+		}
 		if reworded {
 			// One block.repaired names both repairs: the wording's, and the server attributes'
 			// when they changed too.
 			reconciled.events = append(reconciled.events, repaired)
-			reconciled.repairAskInStep(block.node, block.id, twoBuilds, ask, "", nil)
+			reconciled.repairAskInStep(block.node, block.id, twoBuilds, kept, "", nil)
 		} else {
-			reconciled.repairAskInStep(block.node, block.id, twoBuilds, ask, "", &repaired)
+			reconciled.repairAskInStep(block.node, block.id, twoBuilds, kept, "", &repaired)
 		}
 	}
 	if err := recordAskAuthors(ctx, tx, artifactID, unindexed); err != nil {
@@ -1645,16 +1686,15 @@ func clearAskInvalidAttribute(node *pmdoc.Node) bool {
 }
 
 // unindexedAskWrite is settlement's write to a readable ask block of a closed issue's document
-// that no row indexes: resolved while another build serves (resolveUnindexedAskBlock), and none of
-// the seven attributes a version can store once the fleet is one build. The block reads, so it
-// carries no `invalid` either way.
+// that no row indexes: resolved while another build serves (resolveUnindexedAskBlock), and none
+// of the seven attributes a version can store once the fleet is one build, as the close's sweep
+// leaves such a block (unindexedAskResolution). The block reads, so it carries no `invalid`
+// either way.
 func unindexedAskWrite(twoBuilds bool) func(*pmdoc.Node) bool {
+	resolve := unindexedAskResolution(twoBuilds)
 	return func(node *pmdoc.Node) bool {
 		changed := clearAskInvalidAttribute(node)
-		if twoBuilds {
-			return resolveUnindexedAskBlock(node) || changed
-		}
-		return withoutStoredAskAttributes(node) || changed
+		return resolve(node) || changed
 	}
 }
 

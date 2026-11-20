@@ -303,7 +303,11 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 		}
 		awaitTextShows(t, handler, issue.PrimaryArtifactID, `the block reading state="resolved"`,
 			contains(`#decision state="resolved"`), nil)
-		requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, before[len(before)-1].Number)
+		// The decline writes one version, the block's kept state (R3): state="resolved" and nothing more.
+		latest := requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, before[len(before)-1].Number, 1)
+		if stored := versionMarkdown(t, handler, issue.PrimaryArtifactID, latest); !strings.Contains(stored, ` state="resolved"}`) {
+			t.Fatalf("the decline's version = %s, want the block's opener showing it resolved", stored)
+		}
 	})
 }
 

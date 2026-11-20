@@ -295,10 +295,13 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	}
 	spec := issue.latest(issue.spec)
 	part := spec[strings.Index(spec, "## Decisions"):]
+	// Each restored ask is answered, so its opener keeps what a version keeps of it on a fleet of
+	// one build - its state, who answered and when (keptAskState) - and none of the answer's words.
 	for _, want := range []string{
-		`#q-store urgency="high" multiple="false" shaped="dispatch://DOC-1/spec#b-r1"}`,
+		`#q-store urgency="high" multiple="false" state="answered" answered_by="alice" answered_at="`,
+		`" shaped="dispatch://DOC-1/spec#b-r1"}`,
 		"we add that it stays small",
-		`#q-format urgency="med" multiple="false"}`,
+		`#q-format urgency="med" multiple="false" state="answered" answered_by="`,
 		`uncertainty="high" uncertainty_reason="a reader who wants a file export would change this."`,
 		"We write no file beside the database",
 		`replaced="true"`,
@@ -308,7 +311,7 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 			t.Errorf("the spec's Decisions part holds no %q:\n%s", want, part)
 		}
 	}
-	for _, gone := range []string{pointer, "Unsure:", "one line  for each", `state="answered"`} {
+	for _, gone := range []string{pointer, "Unsure:", "one line  for each", "selected=", ` answer="`} {
 		if strings.Contains(spec, gone) {
 			t.Errorf("the converted spec still holds %q:\n%s", gone, spec)
 		}

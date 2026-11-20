@@ -422,8 +422,8 @@ func (s *server) describeAsk(
 // last, when it is a session none of those names, and [] when no session owns the ask. It reads
 // in the route's read phase, where the read holds no transaction id and finds the followers
 // committed before this write, but not the follow the write queues for a session that replies
-// (asks.QueueFollowAuthor), which only Ledger.Commit sends: so the replier is added here rather
-// than read.
+// (asks.PlanFollowAuthor's PlannedFollow, queued by its Queue), which only Ledger.Commit sends: so
+// the replier is added here rather than read.
 func askSessions(ctx context.Context, tx pgx.Tx, askID string, author *string, replier model.Actor) ([]string, error) {
 	followers, err := asks.Followers(ctx, tx, askID)
 	if err != nil {

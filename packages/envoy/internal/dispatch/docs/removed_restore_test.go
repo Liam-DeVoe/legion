@@ -73,8 +73,12 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 	versionEvents := map[string]int64{}
 	dropAs := func(id string, authors *model.Actor, kept ...string) {
 		t.Helper()
+		// The drop is the version the upload writes, the one after the latest before it: an
+		// upload resets the server-owned attributes of the asks it keeps, so the settlement after
+		// it writes back what a version keeps of each answered ask (keptAskState) as a version of
+		// its own, which is no drop.
+		number := latestVersionNumber(t, issue.service, issue.spec) + 1
 		issue.replace(issue.spec, spec(kept...))
-		number := latestVersionNumber(t, issue.service, issue.spec)
 		if authors != nil {
 			if _, err := issue.database.Pool.Exec(ctx, `update artifact_versions set authors = jsonb_build_array($3::jsonb) where artifact_id = $1 and number = $2`,
 				issue.spec, number, actorJSON(t, *authors)); err != nil {

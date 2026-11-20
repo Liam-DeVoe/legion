@@ -181,9 +181,9 @@ export async function writeDesign(issue: Tracked, example: Example): Promise<voi
 }
 
 /** Waits until the ask of the example's block reads answered with the example's pick, which is
- *  what the block's card reads to show the answer. A person's answer is held on the ask
- *  alone and writes no version of the spec, so an approval asked for next is asked of the version
- *  the architect wrote. */
+ *  what the block's card reads to show the answer. A person's answer is held on the ask, and the
+ *  one version it writes changes only the block's `state`, answerer and time, so an approval asked
+ *  for next is asked of the text the architect wrote. */
 export async function decisionAnswered(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await expect

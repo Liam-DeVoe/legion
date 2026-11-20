@@ -2113,15 +2113,19 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 }
 
 // KeepAskBlockInStep writes ask's state, as the answer, resolve and decline routes leave it, into
-// the ask's own block, in the transaction ctx joined, while another build serves
-// (anotherBuildServes), whose pages read an ask's state from its block: the attributes the roll
-// window keeps in step with the asks row (rollWindowAskAttributes), as the release before writes
-// them at once rather than at the document's next settlement. An answer the document has no room
-// for, by what one upload may hold (answerHasRoom), is written without its words - the block says
-// who answered and when (rollWindowAskAttributesWithheld) - and the ask keeps it whole, as the
-// release before writes such a block. Once the fleet is one build it writes nothing, and the
-// answer changes no byte of the document. An ask with no block, and a
+// the ask's own block, in the transaction ctx joined, as the release before writes it, at once
+// rather than at the document's next settlement, so the settlement the write arms writes a
+// version showing it. While another build serves (anotherBuildServes), whose pages read an ask's
+// state from its block, it writes the attributes the roll window keeps in step with the asks row
+// (rollWindowAskAttributes); an answer the document has no room for, by what one upload may hold
+// (answerHasRoom), is written without its words - the block says who answered and when
+// (rollWindowAskAttributesWithheld) - and the ask keeps it whole, as the release before writes
+// such a block. Once the fleet is one build it writes the ones a version keeps (keptAskState): the
+// state, and for an answer who answered and when, which the release before's readers of a stored
+// version read the ask's state from, and never the answer's words. An ask with no block, and a
 // block the document no longer holds as an ask, are written nothing.
+//
+// kept for one release: roll-window-attributes
 func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error {
 	if ask.BlockID == nil {
 		return nil
@@ -2137,11 +2141,12 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 	if err != nil {
 		return err
 	}
-	// The fleet guard is the roll-window helper's own: on a fleet of one build it answers no
-	// write, and this writes nothing.
 	keep := rollWindowAskAttributes(twoBuilds, ask, "")
 	if keep == nil {
-		return nil
+		// ask holds what the route states on the ask's node in this transaction, its writes queued
+		// behind this one, so the block is written from the node as the commit leaves it.
+		// kept for one release: stored-ask-state
+		keep = keptAskState(ask, "")
 	}
 	err = s.applyLive(ctx, *ask.BlockArtifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		valid, err := startTree(current, doc)
@@ -2440,21 +2445,22 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 // storableVersionTree is tree, the document a version write takes without settling it first
 // (NamedVersion, SnapshotVersion and so the edit route's version, captureLiveTextAndAuthors and
 // captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
-// ask block holding any of the seven attributes a version can store (storedAskAttributes) has
-// them taken off, as the document's next settlement takes them off the live tree
-// (askReadableWrite). Until that settlement runs, the live tree can still hold what the release
-// before wrote into a block - state="open" on an ask answered since, which an answer on one build
-// leaves in place, since it changes no byte of the document (KeepAskBlockInStep) - and a version
-// rendered from it as it stands would store a stale state, which disagrees with the ask's node, so
-// it would carry no approval (askAgreesWithItsNode) and read open to every reader of the version.
-// Each container on the way to such a block and each such block is a fresh node, and tree itself
-// is left as it is. It is tree where no ask block holds one, and where another build serves, whose
+// ask block holding the answer's words or selection, or an open state, which no version written
+// then holds (withoutUnkeptAskAttributes), has them taken off, as the document's next settlement
+// takes them off the live tree (askReadableWrite), and keeps the state of an ask that is not open,
+// the answerer and time and a copy's provenance as the live tree holds them, which every write of
+// an ask's state keeps in step with it (keptAskState: KeepAskBlockInStep, WriteIssueAskStates,
+// settlement). Each
+// container on the way to such a block and each such block is a fresh node, and tree itself is
+// left as it is. It is tree where no ask block holds one, and where another build serves, whose
 // pages read the attributes, which settlement keeps in step with each ask meanwhile. The fleet is
 // read only for a tree holding one.
+//
+// kept for one release: stored-ask-state
 func storableVersionTree(ctx context.Context, tx pgx.Tx, tree *pmdoc.Node) (*pmdoc.Node, error) {
 	stripped := withAskBlocks(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		taken := attributesOf(node)
-		if !withoutStoredAskAttributes(taken) {
+		if !withoutUnkeptAskAttributes(taken) {
 			return node, false
 		}
 		copied := *node

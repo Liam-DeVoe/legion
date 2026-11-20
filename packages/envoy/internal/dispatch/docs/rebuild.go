@@ -201,14 +201,16 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// from the rows as they stand under the issue's owner lock this transaction holds, and every
 	// readable ask block with no ask row marked resolved. The sweep is written as the fleet stands
 	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
-	// attributes that build's pages read its state from; once the fleet is one build, every reader
-	// reads the state from the store, and each such block has the seven attributes a version can
-	// store taken off instead, so the rebuilt document holds none (readIssueAskStateWrites). The ask
+	// attributes that build's pages read its state from, from the rows; once the fleet is one build,
+	// each gets the ones a version keeps, which the release before's readers of a stored version
+	// read its state from, written from its ask's node, and none of the rest of the seven
+	// (readIssueAskStateWrites, keptAskState, onItsNode). The ask
 	// rows are taken before RebuildTx takes the document's advisory lock, the order the close's own
 	// write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt document
 	// reads as the issue's other documents do.
 	var closedStates *issueAskStateWrites
 	if !open {
+		// kept for one release: roll-window-attributes
 		twoBuilds, err := anotherBuildServes(ctx, tx)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
