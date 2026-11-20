@@ -247,24 +247,59 @@ func firstReadLimitOf(ctx context.Context) time.Duration {
 // in its context (withReadLimit), so that a delay one step's reads measured holds for the next
 // step's first read and a slow server is not learnt again at every step. The reads of a run are made
 // one after the other, never two at once. A read made under a context that carries no run, such as
-// a keeper pass's, starts a run of its own (readLimitOf).
+// a keeper pass's, starts a run of its own (readLimitOf). The same type keeps a run of writes
+// beside it (writeLimitOf), learnt from the answers to writes alone.
 type readLimit struct {
 	first, limit time.Duration
 }
 
-// readLimitKey is the context key of the run of reads withReadLimit puts in a context.
-type readLimitKey struct{}
+// readLimitKey is the context key of the run of reads withReadLimit puts in a context, and
+// writeLimitKey the key of the run of writes it puts beside it.
+type (
+	readLimitKey  struct{}
+	writeLimitKey struct{}
+)
 
-// withReadLimit is ctx carrying a new run of reads, starting at ctx's first read limit
-// (firstReadLimitOf). Each call makes a new run, so two calls under one parent context never share.
+// withReadLimit is ctx carrying a new run of reads and a new run of writes, each starting at ctx's
+// first read limit (firstReadLimitOf). Each call makes new runs, so two calls under one parent
+// context never share.
 func withReadLimit(ctx context.Context) context.Context {
 	first := firstReadLimitOf(ctx)
-	return context.WithValue(ctx, readLimitKey{}, &readLimit{first: first, limit: first})
+	ctx = context.WithValue(ctx, readLimitKey{}, &readLimit{first: first, limit: first})
+	return context.WithValue(ctx, writeLimitKey{}, &readLimit{first: first, limit: first})
 }
 
 // readLimitOf is the run of reads ctx carries (withReadLimit), or a new one when it carries none.
 func readLimitOf(ctx context.Context) *readLimit {
 	if run, ok := ctx.Value(readLimitKey{}).(*readLimit); ok {
+		return run
+	}
+	first := firstReadLimitOf(ctx)
+	return &readLimit{first: first, limit: first}
+}
+
+// writeLimitOf is the run of writes ctx carries (withReadLimit), or a new one when it carries none:
+// the limit each send of a write made from a read is waited for (limitedRead) before it is read
+// back, and sent again only when that read shows it did not land (updateStream, moveLegacyFilter,
+// purgeRoleLane). It is kept apart from the run of reads, and no read's answer sets it, because
+// how soon a server answers a read says nothing of how soon it answers a write. nats-server queues
+// a write on its JetStream API queue and a read on its API info queue, and takes a read only while
+// the write queue is empty (apiDispatch, processJSAPIRoutedRequests, v2.15.1
+// server/jetstream_api.go); and it answers a stream update only from the stream's leader, once
+// the metadata group has committed the assignment its leader proposed and that stream leader has
+// applied it (jsClusteredStreamUpdateRequestLocked, processClusterUpdateStream,
+// server/jetstream_cluster.go), none of which a read waits on. So a write's limit is learnt from
+// the server's answers to writes, by the read limit's rules: it starts at the first read limit,
+// each write the server answers sets the next to three times that write's own time, and each
+// write it leaves unanswered within the limit doubles the next, up to RequestTimeout. A server
+// that answers writes later than the first limit while it answers reads at once then has each
+// write sent again only after a limit twice the last, where a write limit that a read's answer set
+// back sent it again after every read (TestAWriteTheServerAnswersLaterThanItsReadsIsSentAgainOnlyAfterItsOwnLimit).
+// The write is still sent again once its limit passes and the read shows it did not land: a
+// member that is not the metadata leader drops an update without an answer (jsStreamUpdateRequest,
+// server/jetstream_api.go), so an update sent while that leader changes lands nowhere.
+func writeLimitOf(ctx context.Context) *readLimit {
+	if run, ok := ctx.Value(writeLimitKey{}).(*readLimit); ok {
 		return run
 	}
 	first := firstReadLimitOf(ctx)
@@ -392,17 +427,7 @@ func readAgain[T any](ctx context.Context, request string, limit *readLimit, rea
 			if ended := pause(ctx, bucketAppliedInterval); ended != nil {
 				return last, unansweredUntil(sends-1, lastErr, ended)
 			}
-			// Bounded starts send only while ctx has not ended. Writing the line in send therefore
-			// makes each warning name a send that started, while a wait ending in the pause or
-			// before Bounded starts it logs none.
-			// A read limit can abandon send before it finishes logging. Keep its prior error
-			// apart from lastErr, which the caller then replaces for the next send.
-			previousErr := lastErr
-			send = func() (T, error) {
-				slog.Warn("envoy nats stream request unanswered; sending it again",
-					slog.String("request", request), slog.Int("sent", sends-1), slog.String("error", previousErr.Error()))
-				return read()
-			}
+			send = warnedSend(request, sends-1, lastErr, read)
 		}
 		value, wait, answered, err := limitedRead(ctx, limit, send)
 		if !answered && ctx.Err() != nil {
@@ -417,5 +442,20 @@ func readAgain[T any](ctx context.Context, request string, limit *readLimit, rea
 			return value, err
 		}
 		last, lastErr = value, err
+	}
+}
+
+// warnedSend is read with the WARN line that says request is sent again after sent sends that drew
+// no answer, the last of them with previous, written from the send itself. Bounded starts a send
+// only while its context has not ended, so each line names a send that started, and a wait that
+// ends in readAgain's pause or before Bounded starts the send logs none. A read limit can abandon
+// the send before its line is written, while readAgain goes on to replace its own last error for
+// the next send, so the previous send's error is handed in by value and the send cannot reach the
+// caller's error at all (TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend).
+func warnedSend[T any](request string, sent int, previous error, read func() (T, error)) func() (T, error) {
+	return func() (T, error) {
+		slog.Warn("envoy nats stream request unanswered; sending it again",
+			slog.String("request", request), slog.Int("sent", sent), slog.String("error", previous.Error()))
+		return read()
 	}
 }

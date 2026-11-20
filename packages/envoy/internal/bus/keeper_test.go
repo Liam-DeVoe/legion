@@ -148,9 +148,7 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 	deployed.Subjects = slices.Clone(streamCarriedSubjects[:len(streamCarriedSubjects)-1])
 	deployed.Replicas = 1
 	deployed.Metadata = map[string]string{StreamIDMetadataKey: id}
-	if _, err := js.AddStream(&deployed); err != nil {
-		t.Fatalf("deploy the R1 stream with the old subjects: %v", err)
-	}
+	cluster.CreateStream(t, deployed)
 
 	defaults := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	defaultStart := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {

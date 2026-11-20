@@ -215,29 +215,6 @@ const updateAnswerBound = RequestTimeout / 2
 // wait rather than at the test binary's deadline when a start never stops waiting.
 const updateHoldBound = 2 * RequestTimeout
 
-// answeredLeader reads stream through js until a read is answered, each read cut at firstReadLimit
-// as a start's reads are, and returns the leader that answer names ("" for none). A read that draws
-// no answer says nothing of the leader: a read can be lost on a loaded machine, which is why a start
-// has a read limit at all, and a copy that still follows a stopped leader answers no read of the
-// stream until it finds that leader gone. It fails the test when no read is answered in a minute.
-func answeredLeader(t *testing.T, js nats.JetStreamContext, stream string) string {
-	t.Helper()
-	var lost error
-	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); {
-		read, err := js.StreamInfo(stream, nats.MaxWait(firstReadLimit))
-		switch {
-		case err != nil:
-			lost = err
-		case read.Cluster == nil:
-			t.Fatalf("the read of %s names no cluster: %+v", stream, read)
-		default:
-			return read.Cluster.Leader
-		}
-	}
-	t.Fatalf("no read of %s was answered within a minute; the last drew %v", stream, lost)
-	return ""
-}
-
 // A start that sets a bucket's maximum age, as the session registry's start does, while the
 // bucket's stream elects its leader, reads the stream back within its read limit rather than
 // waiting out the JetStream wait for an answer no member gives then, and sends the update again
@@ -251,21 +228,19 @@ func answeredLeader(t *testing.T, js nats.JetStreamContext, stream string) strin
 // one other copy, so the update goes to a group that cannot elect a leader. A server that shuts
 // down hands the leadership of its streams to a copy that is still up, and the copy left running
 // can then lead the group alone for a while and answer the update at once; so the row reads that
-// copy until a read is answered (answeredLeader), goes on only on an answer that names no leader,
-// and when the answer names one it starts both again and chooses anew. It keeps the two stopped
-// until the start has sent its update and stopped waiting on it, and only then starts them again,
-// so the group elects a leader and the start's read-back and its update sent again are answered.
-// A start that waits for the update's answer waits RequestTimeout with the group leaderless, past
+// copy until a read is answered, each read cut at firstReadLimit as a start's reads are
+// (testnats.HoldStreamWithoutLeader), goes on only on an answer that names no leader, and when the
+// answer names one it starts both again and chooses anew. It keeps the two stopped until the start
+// has sent its update and stopped waiting on it, and only then starts them again, so the group
+// elects a leader and the start's read-back and its update sent again are answered. A start that
+// waits for the update's answer waits RequestTimeout with the group leaderless, past
 // updateAnswerBound, in every run; and an update answered while the two were stopped fails the
 // row, which then held nothing.
 func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t *testing.T) {
 	cluster := testnats.StartCluster(t, 5)
-	_, setupJS := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_update_during_election_test"
 	stream := "KV_" + bucket
-	if _, err := setupJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
-		t.Fatalf("create the three-copy bucket: %v", err)
-	}
+	cluster.CreateKeyValue(t, clusterConn(t, cluster), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
 	held := testnats.HoldStreamWithoutLeader(t, cluster, stream, firstReadLimit)
 	conn, js := memberJetStream(t, cluster, held.Kept)
 	done := make(chan error, 1)

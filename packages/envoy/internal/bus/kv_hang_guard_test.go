@@ -131,8 +131,8 @@ func (e heldUnansweredWarningError) Error() string {
 func (heldUnansweredWarningError) Unwrap() error { return nats.ErrTimeout }
 
 // A warning can outlive its own read limit. Its error belongs to that send, not to the
-// mutable last error of the caller that has already continued. The race detector also sees
-// the unsynchronized read and replacement when the warning closes over that mutable error.
+// mutable last error of the caller that has already continued, which warnedSend cannot reach:
+// it is handed the previous send's error by value when readAgain builds the send.
 func TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend(t *testing.T) {
 	logs := captureLogs(t)
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Bounded(t, time.Minute, time.Second))

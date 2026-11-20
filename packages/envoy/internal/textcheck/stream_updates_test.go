@@ -42,17 +42,12 @@ func (u directStreamUpdate) String() string {
 	return fmt.Sprintf("%s:%d %s", u.path, u.line, u.function)
 }
 
-// directStreamUpdates walks the Go files under root (packages/envoy) and returns every reference
-// to a stream update method (streamUpdateMethods), the legacy JetStream context's and the
-// jetstream package's alike, and every raw $JS.API.STREAM.UPDATE request, in a test file or in a
-// test helper (a non-test file of a package whose name begins or ends with "test", as testnats
-// and cmdtest do). It lets two kinds of reference pass. One is testnats.UpdateStream itself, in
-// streamUpdateFixture, and every call to it. The other is a reference in a method named
-// UpdateStream: such a method is a fake JetStream context that a test hands the code under test,
-// and it stands in for the server under that code's own update.
-func directStreamUpdates(root string) ([]directStreamUpdate, error) {
+// testSources calls visit with every Go file under root (packages/envoy) that is a test file or a
+// file of a test helper package (a non-test file of a package whose name begins or ends with
+// "test", as testnats and cmdtest do), parsed, by its slash-separated path from root. It skips
+// testdata, node_modules, vendor and hidden directories.
+func testSources(root string, visit func(rel string, fileSet *token.FileSet, file *ast.File)) error {
 	fileSet := token.NewFileSet()
-	var found []directStreamUpdate
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -74,11 +69,29 @@ func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 		if err != nil {
 			return err
 		}
-		rel = filepath.ToSlash(rel)
 		file, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}
+		visit(filepath.ToSlash(rel), fileSet, file)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("walk %s: %w", root, err)
+	}
+	return nil
+}
+
+// directStreamUpdates walks the test sources under root (testSources) and returns every reference
+// to a stream update method (streamUpdateMethods), the legacy JetStream context's and the
+// jetstream package's alike, and every raw $JS.API.STREAM.UPDATE request. It lets two kinds of
+// reference pass. One is testnats.UpdateStream itself, in streamUpdateFixture, and every call to
+// it. The other is a reference in a method named UpdateStream: such a method is a fake JetStream
+// context that a test hands the code under test, and it stands in for the server under that
+// code's own update.
+func directStreamUpdates(root string) ([]directStreamUpdate, error) {
+	var found []directStreamUpdate
+	err := testSources(root, func(rel string, fileSet *token.FileSet, file *ast.File) {
 		fixtureNames := map[string]bool{}
 		for _, spec := range file.Imports {
 			imported, _ := strconv.Unquote(spec.Path.Value)
@@ -120,34 +133,45 @@ func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 				return true
 			})
 		}
-		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("walk %s: %w", root, err)
-	}
-	return found, nil
+	return found, err
 }
 
 // rawSendMethods are nats.Conn's sends that take their subject as an argument.
 var rawSendMethods = map[string]bool{"Request": true, "RequestWithContext": true, "Publish": true, "PublishRequest": true}
 
-// rawStreamUpdateRequest reports whether call is a send (rawSendMethods) of a literal JetStream
-// stream-update subject. Every such request bypasses testnats.UpdateStream's read-back and its
-// narrowing guard. A watch of that subject, or a test of a string against it, sends nothing.
+// rawStreamUpdateRequest reports whether call is a send (rawSendMethods) of a JetStream
+// stream-update subject (streamUpdateSubject). Every such request bypasses testnats.UpdateStream's
+// read-back and its narrowing guard. A watch of that subject, or a test of a string against it,
+// sends nothing.
 func rawStreamUpdateRequest(call *ast.CallExpr) bool {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || !rawSendMethods[selector.Sel.Name] {
 		return false
 	}
-	for _, argument := range call.Args {
-		literal, ok := argument.(*ast.BasicLit)
-		if !ok || literal.Kind != token.STRING {
-			continue
+	return slices.ContainsFunc(call.Args, streamUpdateSubject)
+}
+
+// streamUpdateSubject reports whether subject is a JetStream stream-update subject as the source
+// spells it: a string literal that begins with rawStreamUpdateSubject, such a literal with more
+// joined after it by +, or a fmt.Sprintf whose format is such a literal. A subject held in a
+// variable is not followed.
+func streamUpdateSubject(subject ast.Expr) bool {
+	switch subject := subject.(type) {
+	case *ast.BasicLit:
+		text, err := strconv.Unquote(subject.Value)
+		return subject.Kind == token.STRING && err == nil && strings.HasPrefix(text, rawStreamUpdateSubject)
+	case *ast.ParenExpr:
+		return streamUpdateSubject(subject.X)
+	case *ast.BinaryExpr:
+		return subject.Op == token.ADD && streamUpdateSubject(subject.X)
+	case *ast.CallExpr:
+		selector, ok := subject.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "Sprintf" || len(subject.Args) == 0 {
+			return false
 		}
-		subject, err := strconv.Unquote(literal.Value)
-		if err == nil && strings.HasPrefix(subject, rawStreamUpdateSubject) {
-			return true
-		}
+		pkg, ok := selector.X.(*ast.Ident)
+		return ok && pkg.Name == "fmt" && streamUpdateSubject(subject.Args[0])
 	}
 	return false
 }
@@ -192,6 +216,7 @@ func fixtureCaller(js natsgo.JetStreamContext, config natsgo.StreamConfig) { Upd
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -228,6 +253,12 @@ func methodValue(js nats.JetStreamContext, cfg nats.StreamConfig) {
 }
 
 func rawRequest(conn *nats.Conn) { _, _ = conn.Request("$JS.API.STREAM.UPDATE.RAW", nil, time.Second) }
+
+func rawJoined(conn *nats.Conn, stream string) { _, _ = conn.Request("$JS.API.STREAM.UPDATE."+stream, nil, time.Second) }
+
+func rawFormatted(conn *nats.Conn, stream string) { _ = conn.Publish(fmt.Sprintf("$JS.API.STREAM.UPDATE.%s", stream), nil) }
+
+func rawNamesTheSubjectElsewhere(conn *nats.Conn, subject string) { _ = conn.Publish(subject, []byte("$JS.API.STREAM.UPDATE.NOT_A_SUBJECT"+subject)) }
 
 func watchesUpdates(conn *nats.Conn) { _, _ = conn.Subscribe("$JS.API.STREAM.UPDATE.>", func(*nats.Msg) {}) }
 
@@ -271,6 +302,8 @@ func TestTheStreamUpdateCheckFindsEveryShapeItNamesAndNothingElse(t *testing.T) 
 		"internal/demo/demo_test.go narrow",
 		"internal/demo/demo_test.go newAPI",
 		"internal/demo/demo_test.go operator",
+		"internal/demo/demo_test.go rawFormatted",
+		"internal/demo/demo_test.go rawJoined",
 		"internal/demo/demo_test.go rawRequest",
 		"internal/demo/demo_test.go refuse",
 		"internal/stacktest/stack.go Start",

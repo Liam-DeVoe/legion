@@ -9,13 +9,23 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
+// updateReturnBound is how long TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead lets
+// UpdateStream take from its call while the stream's group has no leader: half of jetStreamWait.
+// No member answers an update while the group has no leader, so a helper that waits for the
+// update's answer, before its read-back or after it, takes jetStreamWait or more, and one that
+// reads from its send returns at the first read of the copy left running that holds the update, a
+// read cut at updateReadWait; the bound sits far from both, and well below the fixed wait the row
+// exists to exclude.
+const updateReturnBound = jetStreamWait / 2
+
 // An update sent while the stream's group has no leader is answered by no one, and UpdateStream
-// must return from its read-back before the stopped members are recovered. The stream has three
-// copies on a cluster of five, so the metadata group keeps its quorum, and applies the update,
-// when two members stop. The row stops the stream's leader and one other copy, and goes on only
-// once the copy left running answers a read naming no leader; when that copy took the leadership
-// instead, it starts both again and chooses anew. A helper that waits JetStream's fixed wait
-// reaches recovery before its read-back, so it fails this premise directly.
+// must return from its read-back, within updateReturnBound, before the stopped members are
+// recovered. The stream has three copies on a cluster of five, so the metadata group keeps its
+// quorum, and applies the update, when two members stop. The row stops the stream's leader and
+// one other copy, and goes on only once the copy left running answers a read naming no leader;
+// when that copy took the leadership instead, it starts both again and chooses anew. It keeps the
+// two stopped for twice jetStreamWait, past any helper that waits that wait out, so such a helper
+// returns while the group still has no leader and fails the bound by name.
 func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead(t *testing.T) {
 	const stream = "ELECTING"
 	cluster := StartCluster(t, 5)
@@ -27,16 +37,19 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead(t *testing.T) {
 	recorder := &fatalRecorder{TB: t}
 	js := cluster.MemberJetStream(t, held.Kept)
 	var info *natsgo.StreamInfo
+	var took time.Duration
 	returned := make(chan struct{})
+	began := time.Now()
 	go func() {
 		defer close(returned)
 		info = UpdateStream(recorder, js, config)
+		took = time.Since(began)
 	}()
 	returnedBeforeRecovery := false
 	select {
 	case <-returned:
 		returnedBeforeRecovery = true
-	case <-time.After(jetStreamWait + 2*time.Second):
+	case <-time.After(2 * jetStreamWait):
 	}
 	held.Restart(t)
 	settled := AwaitStreamCopies(t, cluster.JetStream(t), stream, 3)
@@ -46,10 +59,15 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead(t *testing.T) {
 		case <-time.After(2 * time.Minute):
 			t.Fatalf("UpdateStream did not return within 2m of the members' start again")
 		}
-		t.Fatalf("UpdateStream did not read back stream %s before its stopped members recovered: it waited JetStream's fixed %s instead", stream, jetStreamWait)
+		t.Fatalf("UpdateStream did not return within %s of its call while stream %s had no leader", 2*jetStreamWait, stream)
 	}
 	if recorder.message != "" || info == nil {
 		t.Fatalf("the update sent while %s had no leader failed: %q", stream, recorder.message)
+	}
+	t.Logf("UpdateStream returned %s after its call, while stream %s had no leader", took.Round(time.Millisecond), stream)
+	if took >= updateReturnBound {
+		t.Fatalf("UpdateStream returned %s after its call while stream %s had no leader, want under %s: an update no member answers is read back from its send, not waited on for JetStream's fixed %s",
+			took.Round(time.Millisecond), stream, updateReturnBound, jetStreamWait)
 	}
 	if info.Config.MaxAge != time.Hour {
 		t.Fatalf("UpdateStream returned %s with age %s, want 1h0m0s", stream, info.Config.MaxAge)
@@ -123,8 +141,14 @@ func TestAnUpdateThatNeverLandsFailsAtTheTestsDeadlineNamingTheStreamAndTheSetti
 
 }
 
+// refusalWait is how long TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal waits for its refusal:
+// the server refuses an update of a stream that does not exist at once, before any read-back.
+const refusalWait = 5 * time.Second
+
 // A refused update fails the test at once with the server's answer, and an answered one returns
-// that answer.
+// that answer. The refusal's recorder has a deadline of refusalWait, so an UpdateStream that no
+// longer fails on a refusal gives up on its read-back at that deadline and the row fails by name,
+// not at go test's own timeout.
 func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
@@ -145,16 +169,16 @@ func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
 	missing := config
 	missing.Name = "MISSING"
 	missing.Subjects = []string{"missing.>"}
-	recorder := &fatalRecorder{TB: t}
 	began := time.Now()
+	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: began.Add(updateMargin + refusalWait)}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		UpdateStream(recorder, js, missing)
 	}()
 	<-done
-	if took := time.Since(began); took > 5*time.Second || !strings.Contains(recorder.message, "refused the update of stream MISSING") || !strings.Contains(recorder.message, "stream not found") {
-		t.Fatalf("an update of a stream that does not exist failed after %s with %q, want at once with the server's refusal", took.Round(time.Millisecond), recorder.message)
+	if took := time.Since(began); took > refusalWait || !strings.Contains(recorder.message, "refused the update of stream MISSING") || !strings.Contains(recorder.message, "stream not found") {
+		t.Fatalf("an update of a stream that does not exist failed after %s with %q, want within %s with the server's refusal", took.Round(time.Millisecond), recorder.message, refusalWait)
 	}
 }
 
@@ -309,8 +333,8 @@ func TestANarrowingWhoseGuardReadNeverAnswersFailsByName(t *testing.T) {
 	case <-time.After(time.Minute):
 		t.Fatalf("the narrowing of stream %s did not fail at the test's deadline", stream)
 	}
-	if !strings.Contains(recorder.message, "stream "+stream) || !strings.Contains(recorder.message, natsgo.ErrTimeout.Error()) {
-		t.Fatalf("the narrowing whose guard read never answered failed with %q, want its stream and %v", recorder.message, natsgo.ErrTimeout)
+	if want := "the update of stream " + stream + " was not sent"; !strings.Contains(recorder.message, want) || !strings.Contains(recorder.message, natsgo.ErrTimeout.Error()) {
+		t.Fatalf("the narrowing whose guard read never answered failed with %q, want %q and %v: UpdateStream's own failure after a send says neither", recorder.message, want, natsgo.ErrTimeout)
 	}
 	if held, err := js.StreamInfo(stream); err != nil || !slices.Equal(held.Config.Subjects, info.Config.Subjects) {
 		t.Fatalf("after the unanswered guard read the stream reads %v (%v), want %v: it was sent", held, err, info.Config.Subjects)

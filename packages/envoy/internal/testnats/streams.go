@@ -178,7 +178,7 @@ func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.Stream
 	until := updateDeadline(t)
 	if slices.Contains(options, ForTheKeeperToPutBack) {
 		if !allowsKeeperRestoration(t) {
-			t.Fatalf("testnats.ForTheKeeperToPutBack is reserved for TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject")
+			t.Fatalf("testnats.ForTheKeeperToPutBack is reserved for %s", keeperRestorationRow)
 		}
 	} else {
 		refuseSubjectsTakenWithNothingInPlace(t, until, js, config)
@@ -250,10 +250,14 @@ type firstUpdateSubjectKey struct {
 	test, stream string
 }
 
-// allowsKeeperRestoration is true only for the keeper row whose assertion is that its own keeper
-// restores a bare narrowing.
+// keeperRestorationRow is the one row that may pass ForTheKeeperToPutBack: the keeper row whose
+// assertion is that its own keeper restores a bare narrowing.
+const keeperRestorationRow = "TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject"
+
+// allowsKeeperRestoration is true only for keeperRestorationRow by its whole name, so a row whose
+// name merely begins with it may not pass the option.
 func allowsKeeperRestoration(t testing.TB) bool {
-	return strings.HasPrefix(t.Name(), "TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject")
+	return t.Name() == keeperRestorationRow
 }
 
 // subjectsBeforeFirstUpdate returns the stream subjects read before t's first update of stream,
@@ -270,9 +274,10 @@ func subjectsBeforeFirstUpdate(t testing.TB, stream string, subjects []string) [
 
 // updateDeadline is the test binary's deadline less updateMargin: the one bound on every read
 // UpdateStream makes, its narrowing guard's among them, so a failed update fails by name before go
-// test's own timeout. It is zero, no bound, when t reports no deadline, as a recorder that embeds
-// testing.TB does not. The test's Context is no such bound: the testing package cancels it before
-// the test's cleanups run, and a cleanup that puts a stream back updates it.
+// test's own timeout. It is zero, no bound, when t reports no deadline: a testing.TB with no
+// Deadline method, such as a benchmark's, or a test run with -timeout 0. The test's Context is no
+// such bound: the testing package cancels it before the test's cleanups run, and a cleanup that
+// puts a stream back updates it.
 func updateDeadline(t testing.TB) time.Time {
 	if test, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
 		if deadline, bounded := test.Deadline(); bounded {

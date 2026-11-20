@@ -153,7 +153,10 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
+// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and t's own
+// deadline, so UpdateStream bounds its reads through a recorder as it bounds them through t
+// (updateDeadline) and a row whose update never settles fails by name rather than at go test's own
+// timeout, which names no row.
 type fatalRecorder struct {
 	testing.TB
 	message string
@@ -163,6 +166,14 @@ func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); ru
 func (f *fatalRecorder) Fatalf(format string, args ...any) {
 	f.message = fmt.Sprintf(format, args...)
 	runtime.Goexit()
+}
+
+// Deadline is the wrapped test's deadline (testing.T.Deadline); a TB that reports none gives none.
+func (f *fatalRecorder) Deadline() (time.Time, bool) {
+	if test, ok := f.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return test.Deadline()
+	}
+	return time.Time{}, false
 }
 
 // A test gets one account however often it asks, so every connection it makes reaches the streams

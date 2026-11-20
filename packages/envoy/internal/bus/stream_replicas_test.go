@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // The tests here run on an in-process three-server cluster (testnats.StartCluster), one per test
@@ -37,43 +40,77 @@ func startClusterJetStream(t *testing.T) (*testnats.Cluster, nats.JetStreamConte
 	return cluster, cluster.JetStream(t)
 }
 
-// A cluster's relay listens on this binary's private loopback address, so a reconnecting client
-// from a binary built before that change cannot reach the port the new cluster reuses and create
-// ENVOY_NOTIFICATIONS before this test's own create does.
+// serverIDAt is the server_id of the NATS server that answers a dial of address: the INFO line a
+// NATS server writes first on every connection it accepts, read with nothing sent, so the dial asks
+// nothing of whatever it reaches. An error says that nothing there answered as a NATS server
+// within serverIDWait.
+func serverIDAt(address string) (string, error) {
+	conn, err := net.DialTimeout("tcp", address, serverIDWait)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(serverIDWait)); err != nil {
+		return "", err
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("read the first line at %s: %w", address, err)
+	}
+	payload, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "INFO ")
+	var info struct {
+		ID string `json:"server_id"`
+	}
+	if !ok || json.Unmarshal([]byte(payload), &info) != nil || info.ID == "" {
+		return "", fmt.Errorf("the first line at %s is %q, not a NATS server's INFO", address, line)
+	}
+	return info.ID, nil
+}
+
+// serverIDWait is a hang guard on serverIDAt's dial and read, not a budget: a server writes its
+// INFO the moment it accepts a connection.
+const serverIDWait = 10 * time.Second
+
+// A cluster's relays listen on this binary's own loopback address (testport.Loopback), so a
+// reconnecting client of a binary built before that change, which dials 127.0.0.1 at a port the
+// system has handed to this cluster, cannot reach it and create ENVOY_NOTIFICATIONS before this
+// test's own create does. What a dial of 127.0.0.1 at a member's port reaches is told by the
+// server_id it answers with (serverIDAt): the system hands out a port on 127.a.b.c with no regard
+// for a socket of another process on 127.0.0.1 at the same number, so the dial can reach another
+// program's NATS server, which is not this cluster, and the row sends that server nothing.
+// Linux serves all of 127.0.0.0/8; another system may serve 127.0.0.1 alone, where
+// testport.Loopback is 127.0.0.1 and no address of this binary's own exists.
 func TestAClusterRejectsAClientOnTheFixedLoopbackBeforeItCreatesTheStream(t *testing.T) {
-	cluster, js := startClusterJetStream(t)
-	member, err := url.Parse(cluster.Servers[0].URL())
-	if err != nil {
-		t.Fatalf("parse member URL: %v", err)
+	if runtime.GOOS != "linux" {
+		t.Skipf("only Linux serves every address of 127.0.0.0/8, and this system is %s", runtime.GOOS)
 	}
-	_, port, err := net.SplitHostPort(member.Host)
-	if err != nil {
-		t.Fatalf("split member address %q: %v", member.Host, err)
+	if testport.Loopback == "127.0.0.1" {
+		t.Fatalf("testport.Loopback = %s on Linux, which serves all of 127.0.0.0/8: want an address of this binary's own", testport.Loopback)
 	}
-	member.Host = net.JoinHostPort("127.0.0.1", port)
-	legacy, err := nats.Connect(member.String(), nats.Timeout(time.Second), nats.NoReconnect())
-	if err == nil {
-		t.Cleanup(legacy.Close)
-		legacyJS, openErr := legacy.JetStream()
-		if openErr != nil {
-			t.Fatalf("open the fixed-loopback client's JetStream: %v", openErr)
+	cluster := testnats.StartCluster(t, 3)
+	for i, server := range cluster.Servers {
+		member, err := url.Parse(server.URL())
+		if err != nil {
+			t.Fatalf("parse member %s's URL: %v", cluster.Name(i), err)
 		}
-		config := deployedClusterStream(func(*nats.StreamConfig) {})
-		if _, createErr := legacyJS.AddStream(&config); createErr != nil {
-			t.Fatalf("the fixed-loopback client create: %v", createErr)
+		own, err := serverIDAt(member.Host)
+		if err != nil {
+			t.Fatalf("read member %s's server id at %s: %v", cluster.Name(i), member.Host, err)
 		}
-		direct := config
-		direct.MaxAge += time.Second
-		if _, createErr := js.AddStream(&direct); createErr == nil {
-			t.Fatalf("a client on %s reached this cluster, created %s, and left the direct create with no collision", member, Stream)
-		} else {
-			t.Fatalf("a client on the reused fixed loopback %s reached this cluster and created %s before the direct create: %v", member, Stream, createErr)
+		_, port, err := net.SplitHostPort(member.Host)
+		if err != nil {
+			t.Fatalf("split member %s's address %q: %v", cluster.Name(i), member.Host, err)
+		}
+		fixed := net.JoinHostPort("127.0.0.1", port)
+		switch reached, err := serverIDAt(fixed); {
+		case err != nil:
+		case reached == own:
+			t.Fatalf("a client on the fixed loopback %s reached member %s of this cluster (server %s), which could create %s before this test does", fixed, cluster.Name(i), own, Stream)
+		default:
+			t.Logf("another process's NATS server %s holds %s, the port of member %s: it is not this cluster, and this row sent it nothing", reached, fixed, cluster.Name(i))
 		}
 	}
-	config := deployedClusterStream(func(*nats.StreamConfig) {})
-	if _, err := js.AddStream(&config); err != nil {
-		t.Fatalf("create %s after the fixed-loopback refusal: %v", Stream, err)
-	}
+	cluster.CreateStream(t, deployedClusterStream(func(*nats.StreamConfig) {}))
 }
 
 // clusterConn is a connection to cluster, closed when the test ends: EnsureKeyValue and
