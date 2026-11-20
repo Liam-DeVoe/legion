@@ -38,7 +38,7 @@ import (
 // (Deps.RepoProjects): such a repository is withheld, and counted, since serving it would hand one
 // project's daemon another's events; a lane shared only among the entry's own projects is served.
 // The guard sees only the rows the mapping answers the broker with: a Dispatch that answers each
-// caller with the rows of the projects it may see (INFRA-3862-private) gives the broker's account,
+// caller with the rows of the projects it may see gives the broker's account,
 // which names no person, the public projects' rows alone, so there it covers lanes shared among
 // public projects, and Dispatch itself refuses every mapping write that would share a lane with a
 // private project (REPOSITORY_LANE_SHARED).
@@ -53,13 +53,13 @@ import (
 // Dispatch is never asked inside a decision: a decision reads only the pass the service holds.
 //
 // A daemon entry held this way is narrowed to natsgrant.WithinProjects(natsgrant.Daemon(), scope),
-// whose consumers are the ones the Legion daemon opens after plan C's t-c-10 (dispatch://INFRA-3884).
+// whose consumers are the ones the Legion daemon opens after plan C's t-c-10.
 // So no deployment may list a daemon entry with "-" until t-c-10's release gate opens: both
 // `packages/envoy/scripts/daemon-release-gate.sh --listeners <the commit that landed t-c-10>` and
 // `daemon-release-gate.sh <that commit>` print GATE OPEN, and the listener leg's GATE OPEN has been
 // read twice, 72 hours apart, because the shared notifications.legion.wake subject keeps other
 // projects' wakes for the stream's 72-hour retention after the last listener moves. Plan E's
-// t-e-23 (dispatch://INFRA-840) is the one change that lists daemon entries, and its merge waits on
+// t-e-23 is the one change that lists daemon entries, and its merge waits on
 // that gate with both readings quoted in its pull request.
 func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
 	switch entry.Kind {
