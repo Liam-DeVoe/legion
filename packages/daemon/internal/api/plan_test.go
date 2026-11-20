@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -143,6 +144,26 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 		t.Fatalf("facts = %#v, want %#v: one for each version taken, the second registration of version 4 being the first's", got, want)
 	}
 	assertProcessedEvent(t, h, "plan:LEGION-208:1:"+planDoc+":4")
+}
+
+// The reader of 201 takes every field of register_plan's answer as optional, since no plugin code
+// reads one (legion-api.ts's LEGION_ANSWER_READS: a field that set does not name is optional). So
+// the reader no longer refuses a task written without `steps`, and the daemon holds that instead:
+// every task of the answer, as shapeAnswer writes it to a caller at OwnerPlanContract, carries
+// `steps` as a list, never null and never absent, a task whose block names none included.
+// TestRegisterPlanTakesAPlanAndRefusesWithReasons holds the same for one task through the route.
+func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
+	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 7,
+		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}}}})}
+	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, OwnerPlanContract, OwnerPlanContract)
+	encoded, err := json.Marshal(shaped)
+	if err != nil {
+		t.Fatalf("marshal the answer: %v", err)
+	}
+	const want = `{"plan":{"version":7,"tasks":[{"id":"a","steps":[]},{"id":"b","steps":["implementer"]}]}}`
+	if string(encoded) != want {
+		t.Errorf("register_plan answers %s, want %s: every task carries `steps`, a list and never null", encoded, want)
+	}
 }
 
 // What register_plan answers for a document it cannot read a plan from, each before anything is

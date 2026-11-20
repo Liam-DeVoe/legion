@@ -91,9 +91,9 @@ func implementerView(t *testing.T, pool *pgxpool.Pool, key string) api.PhaseView
 	var state api.State
 	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
 		var err error
-		state, err = projection.Project(t.Context(), tx, record.NewStore(), "LEGION", nil, nil, []supervise.Claim{
+		state, err = projection.Project(t.Context(), projection.Inputs{Tx: tx, Store: record.NewStore(), Project: "LEGION", Claims: []supervise.Claim{
 			{Token: countedClaim, Issue: key, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_implementer"},
-		}, nil, nil, stepClock)
+		}, Now: stepClock})
 		return err
 	}); err != nil {
 		t.Fatalf("project the state: %v", err)

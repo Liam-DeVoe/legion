@@ -29,10 +29,11 @@ Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .b
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
-**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>:
-<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`) (in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it) (with no reviewer step, the implementer writes the pair half: `thermonuclear pair: not run (no reviewer step in this task)`)
-With no reviewer step, write that form instead of the docs-only or later-round form; do not record a second pair half.
-
+**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
+- `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand
+- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand
+Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them.
+With no reviewer step, the implementer writes the pair as the one line `thermonuclear pair: not run (no reviewer step in this task)` instead of the two rows, whatever the diff touches; do not record a second pair.
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order. Each is the line `dispatch result` printed when the result was recorded, or the
@@ -66,4 +67,4 @@ A stale `Outcome` is a finding against the implementer; the merger rewrites noth
   the `Thermo` line names the count and the fixing commit.
 
 - The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code;
-  the `Thermo` line records the range it read, and earlier rounds' pair halves stay beside it.
+  the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them.

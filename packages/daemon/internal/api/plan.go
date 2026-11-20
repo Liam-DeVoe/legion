@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
@@ -43,10 +44,11 @@ type RegisteredTask struct {
 }
 
 // PlanRefusal is the answer to a plan Legion does not take, 409 PLAN_REFUSED: the code and the
-// sentence every refusal carries, and one reason for each cause (intake.PlanRefused).
+// sentence every refusal carries (Failure), and one reason for each cause (intake.PlanRefused).
+// `reasons` arrived with register_plan at OwnerPlanContract, and a caller below it is served the
+// Failure alone (shaping.go's refusal row), as a PauseFailure is below pauseContract.
 type PlanRefusal struct {
-	Code    string       `json:"code"`
-	Error   string       `json:"error"`
+	Failure
 	Reasons []PlanReason `json:"reasons"`
 }
 
@@ -59,18 +61,25 @@ type PlanReason struct {
 // registerPlanRoute is register_plan as a refusal names it, the operation the caller retries.
 const registerPlanRoute = "register_plan"
 
-// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 190): the
-// routes register_plan and stop_task, a failed step's returnTo on handoff_complete, the hold
-// reasons task-stopped and children in the state's holdReason, and the words of those two holds in
-// `admission.held` (children_before_retro and task_stopped), which a caller below it is served
-// without (stateNarrowings).
-const OwnerPlanContract = 190
+// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 201): the
+// routes register_plan and stop_task with register_plan's answer (answers.go's
+// AnswerPlanRegister) and the `reasons` of its refusal (PlanRefusal), a failed step's returnTo on
+// handoff_complete, the hold reasons task-stopped and children of an issue's holdReason, and the
+// words of those two holds in `admission.held` (children_before_retro and task_stopped). The
+// declared table records the four values at it (answers.go's holdReasons and heldReasons), and
+// the value strips hold each back from a caller below it (shaping.go's valueStrips).
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys and values arrived at stays where it is. It moves
+// only with this change's own number, and it is the last number of SupportedContracts.
+const OwnerPlanContract = 201
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
-// (PlanRefusal), and every other refusal as its code and its sentence (Failure).
-func writeRefusal(w http.ResponseWriter, refusal *intake.Refusal) {
+// (PlanRefusal), and every other refusal as its code and its sentence (writeFailure). Both are
+// the refusal answer, written through the one writer every answer goes through.
+func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *intake.Refusal) {
 	if refusal.Reasons == nil {
-		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
 	if noter, ok := w.(refusalNoter); ok {
@@ -80,7 +89,10 @@ func writeRefusal(w http.ResponseWriter, refusal *intake.Refusal) {
 	for i, reason := range refusal.Reasons {
 		reasons[i] = PlanReason{Task: reason.Task, Reason: reason.Reason}
 	}
-	writeJSON(w, refusal.Status, PlanRefusal{Code: refusal.Code, Error: refusal.Message, Reasons: reasons})
+	s.writeAnswer(w, r, AnswerRefusal, refusal.Status, PlanRefusal{
+		Failure: Failure{Code: refusal.Code, Error: redact.URLCredentials(refusal.Message)},
+		Reasons: reasons,
+	})
 }
 
 // registerPlan is register_plan. It authorizes the owner (planOwner), reads the
@@ -95,7 +107,7 @@ func writeRefusal(w http.ResponseWriter, refusal *intake.Refusal) {
 // a later generation of the issue is a new one.
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID},
 		field{"issue", req.Issue},
 		field{"artifactId", req.ArtifactID},
@@ -103,15 +115,15 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
 	if !validUUID(req.ArtifactID) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ARTIFACT_ID", "artifactId must be a UUID")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ARTIFACT_ID", "artifactId must be a UUID")
 		return
 	}
 	if req.Version < 1 {
-		writeFailure(w, http.StatusBadRequest, "INVALID_VERSION", "version must be positive")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_VERSION", "version must be positive")
 		return
 	}
 	artifactID := strings.ToLower(req.ArtifactID)
@@ -125,7 +137,7 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	// The version is the caller's; only Dispatch's read says the document has it.
 	if req.Version > approval.LatestVersion {
-		writeFailure(w, http.StatusConflict, "VERSION_NOT_IN_DISPATCH", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusConflict, "VERSION_NOT_IN_DISPATCH", fmt.Sprintf(
 			"Dispatch shows %s at version %d, not %d; give register_plan a version that Dispatch has", artifactID, approval.LatestVersion, req.Version))
 		return
 	}
@@ -137,12 +149,12 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// carry out yet, then what no release can.
 	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
 	if len(refusals) > 0 {
-		writeRefusal(w, intake.PlanRefused(refusals))
+		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
 	}
-	s.applyFact(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
+	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
 		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim},
-		PlanRegisterResponse{Plan: registeredPlan(given)})
+		AnswerPlanRegister, PlanRegisterResponse{Plan: registeredPlan(given)})
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
@@ -163,7 +175,7 @@ func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issu
 		return grant, recorded.Generation, true
 	}
 	if s.dispatch == nil {
-		writeFailure(w, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return credential.Grant{}, 0, false
 	}
 	read := s.cachedIssueReader(registerPlanRoute)
@@ -171,14 +183,14 @@ func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issu
 	if !found {
 		return credential.Grant{}, 0, false
 	}
-	if _, ok := treeChain(w, r, issue, unrecorded, grant.Tree, read); !ok {
+	if _, ok := s.treeChain(w, r, issue, unrecorded, grant.Tree, read); !ok {
 		return credential.Grant{}, 0, false
 	}
 	switch unrecorded.Status {
 	case "triage", "backlog", "icebox", "todo":
 		return grant, 0, true
 	}
-	writeFailure(w, http.StatusConflict, "ISSUE_ALREADY_RELEASED", fmt.Sprintf(
+	s.writeFailure(w, r, http.StatusConflict, "ISSUE_ALREADY_RELEASED", fmt.Sprintf(
 		"%s is %s in Dispatch and the daemon holds no record of it; register_plan takes a plan for an issue the daemon has not recorded only while it is triage, backlog, icebox or todo",
 		issue, unrecorded.Status))
 	return credential.Grant{}, 0, false
@@ -203,7 +215,7 @@ type TaskStopRequest struct {
 // changes nothing.
 func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	var req TaskStopRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
 		field{"grantId", req.GrantID},
 		field{"issue", req.Issue},
 		field{"task", req.Task},
@@ -211,7 +223,7 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !claim.IsIssueKey(req.Issue) {
-		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
 	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
@@ -230,15 +242,15 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
 	switch {
 	case errors.Is(err, dispatch.ErrNoBlocks):
-		writeFailure(w, http.StatusBadGateway, "PLAN_UNREADABLE", fmt.Sprintf(
+		s.writeFailure(w, r, http.StatusBadGateway, "PLAN_UNREADABLE", fmt.Sprintf(
 			"Dispatch gave version %d of %s without its blocks, so Legion cannot read a plan from it: that Dispatch predates the plan's blocks. Nothing was recorded; give the plan again once Dispatch is upgraded",
 			version, artifactID))
 		return plan.Plan{}, false
 	case dispatch.Missing(err), err == nil && document.IssueKey != issue:
-		writeFailure(w, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
+		s.writeFailure(w, r, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
 		return plan.Plan{}, false
 	case err != nil:
-		writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s at version %d failed; retry %s", artifactID, version, registerPlanRoute))
+		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s at version %d failed; retry %s", artifactID, version, registerPlanRoute))
 		return plan.Plan{}, false
 	}
 	blocks := make([]plan.Block, len(document.Blocks))
@@ -247,7 +259,7 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	}
 	given, err := plan.FromBlocks(artifactID, version, blocks)
 	if err != nil {
-		writeRefusal(w, intake.PlanRefused([]plan.Refusal{{Reason: err.Error() + "."}}))
+		s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: err.Error() + "."}}))
 		return plan.Plan{}, false
 	}
 	return given, true
