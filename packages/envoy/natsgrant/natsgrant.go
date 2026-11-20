@@ -192,11 +192,14 @@ func KVWrite(bucket string) []string {
 // call. Below, <u> is the machine's durable (bus.ListenerDurable), one subject token for any
 // listener that binds it, since nats.go refuses a consumer name holding a '.' (nats.go@v1.55.0
 // jsm.go, checkConsumerName). Each call is named by its function: paths are packages/envoy's, and
-// nats.go's at v1.55.0 where the text says nats.go. The listener opens the bucket once
-// (cmd/listener/lease_bucket.go, openListenerState), on its lease's connection, and the lease
-// (cmd/listener/main.go, openDeliveryLease), the delivery ledger (main.go, newDeliveryLedger), the
-// last-seen records (main.go's main, session.WithLastSeenBucket) and the bus client's keeper
-// (main.go's main, bus.Client.KeepBucket) share that handle.
+// nats.go's at v1.55.0 where the text says nats.go. The listener opens the bucket once a process,
+// on its lease's connection (cmd/listener/lease_bucket.go, openListenerState): at main's start, or,
+// for a pod whose grant refused the bucket then, at the try of cmd/listener/main.go's
+// joinDeliveryLease that opens it. The lease (main.go, openDeliveryLease, or joinDeliveryLease's
+// own), the delivery ledger (main.go, newDeliveryLedger, or leaseLedger at the join), the last-seen
+// records (main.go's main, session.WithLastSeenBucket, or session.SessionRegistry.SetLastSeenBucket
+// at the join) and the bus client's keeper (main.go's main, bus.Client.KeepBucket) share that
+// handle.
 //
 //   - $JS.API.STREAM.INFO.KV_envoy_listener: the open's lookups and its read of a found bucket
 //     (internal/bus/kv_ensure.go, ensureKeyValue: its lookUpBucket, which awaitBucketApplied
@@ -237,8 +240,8 @@ func KVWrite(bucket string) []string {
 //     dedupe.KV.attempt and after a failed Create.
 //   - seen.* (bus.LastSeenPrefix), one token after the prefix, the session token
 //     (internal/session/lastseen.go, lastSeenKey): written by Put in
-//     session.SessionRegistry.recordSeen, read by Get in session.SessionRegistry.readSeen, for
-//     every session whichever machine registered it.
+//     session.SessionRegistry.recordSeen, read by Get in internal/session/lastseen.go's readSeen,
+//     for every session whichever machine registered it.
 //
 // The listener makes no other call on this bucket. bus.KeyValue offers no Watch, WatchAll,
 // History, Keys or ListKeys (its doc, internal/bus/kv.go), and the listener calls none of its

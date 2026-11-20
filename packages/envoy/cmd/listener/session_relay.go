@@ -1039,18 +1039,19 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 }
 
 // termContext is ctx bounded by the receive term this task serves (setOwned), for a restart of a
-// session's consumer (restart) and for the delete of one by the sweep or the session reaper
-// (sessionDelivery.deleteConsumer): it ends when ctx does, when the term's context does, or at the
-// lease's loss deadline (lease.UntilLoss), whichever comes first, so neither acts once another
-// pod may hold the lease, as each step of a dispatch intake's take-over ends at its hold's loss
-// deadline (heldDurable.retryHeld). The deadline is the lease's at the check, 3 to 4 s ahead on a
-// holder whose renewals land, so it can also come before the restart's call timeout
-// (sessionConsumerCallTimeout). It answers false, and no context, when no term is current: this
-// task serves none, the term's context has ended, or the loss deadline has passed. The lease ends
-// a term (stepDown, a release, a lapse, a give-up) a moment before the receive loop hears it and
-// stops this task's relays (durableReceiver.end), and a session event in that moment starts a
+// session's consumer (restart), for the delete of one by the sweep or the session reaper
+// (sessionDelivery.deleteConsumer), and for the relay's judgement of a role message it pulled,
+// whose ack or give-back acts on the consumer (takeOverFrame): it ends when ctx does, when the
+// term's context does, or at the lease's loss deadline (lease.UntilLoss), whichever comes first, so
+// none acts once another pod may hold the lease, as each step of a dispatch intake's take-over ends
+// at its hold's loss deadline (heldDurable.retryHeld). The deadline is the lease's at the check, 3
+// to 4 s ahead on a holder whose renewals land, so it can also come before the restart's call
+// timeout (sessionConsumerCallTimeout). It answers false, and no context, when no term is current:
+// this task serves none, the term's context has ended, or the loss deadline has passed. The lease
+// ends a term (stepDown, a release, a lapse, a give-up) a moment before the receive loop hears it
+// and stops this task's relays (durableReceiver.end), and a session event in that moment starts a
 // relay all the same (apply), which this check stops at its restart. The caller calls the
-// returned stop once the restart, or the delete, is over.
+// returned stop once the restart, the delete or the judgement is over.
 //
 // What this leaves is a call the restart or the delete had already sent when its context ended:
 // the server can still apply it, since the end of a context stops only what is not sent yet. The
@@ -1239,14 +1240,16 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // When the pull got a message is what tells the two apart. The pull reads its bound as each
 // message arrives, and again as Next hands the message out, and this run publishes a message as
 // a frame as soon as Next hands it out. So a frame is a message that arrived, and was handed out,
-// while the term was current. A message that arrives after the term is over is dropped where it
-// arrives, and one that arrived before and is not handed out stays in the pull. The frames keep
-// the settle a stopped relay gives them (endFrames, settleStoppedFrames): a run whose pull is
-// past its bound does not return, but waits for the term's end to cancel it, reading the bound
-// again every relayTermPoll. Its cancellation then settles its frames, as before, and returns to
-// the server what the pull got during the term and did not hand out (bus.SessionPull.Release).
-// A run whose term is current again, as after a renewal that landed late, starts again at the
-// ack floor at once with a new pull (relayReconnected).
+// while the term was current. A role message among them is judged within the term as well
+// (takeOverFrame): one the term ended before, or under the read of its role's claim or its copy,
+// is left at the consumer, neither sent nor answered. A message that arrives after the term is
+// over is dropped where it arrives, and one that arrived before and is not handed out stays in the
+// pull. The frames keep the settle a stopped relay gives them (endFrames, settleStoppedFrames): a
+// run whose pull is past its bound does not return, but waits for the term's end to cancel it,
+// reading the bound again every relayTermPoll. Its cancellation then settles its frames, as
+// before, and returns to the server what the pull got during the term and did not hand out
+// (bus.SessionPull.Release). A run whose term is current again, as after a renewal that landed
+// late, starts again at the ack floor at once with a new pull (relayReconnected).
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
 	start, pull, outcome := m.restart(ctx, run)
@@ -1367,8 +1370,8 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			return m.pullEnded(sessionID, err)
 		}
 		// A role message whose role another session holds, or none does, is copied to the role's
-		// kept lane rather than sent (takeOverFrame); a gap the restart named stays on the next
-		// frame this run sends.
+		// kept lane rather than sent, under this task's term (takeOverFrame, which bounds itself by
+		// sessionRelays.termContext); a gap the restart named stays on the next frame this run sends.
 		if m.takeOverFrame(ctx, sessionID, msg) {
 			continue
 		}

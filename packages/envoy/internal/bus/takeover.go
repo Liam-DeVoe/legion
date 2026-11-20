@@ -109,7 +109,12 @@ func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record
 // role is empty, sorted by subject: one STREAM.INFO with the lane as its filter, as KeptRoleLanes
 // reads the kept lanes, and one read of the newest message on each subject it names. A record no
 // read can decode is left out, since no pass can act on it. Its errors are the stream's own, named
-// with the lane.
+// with the lane. The STREAM.INFO waits under a watch of the connection it went out on
+// (RequestOnConnection), as each stored-message read waits under its own (requestConfirmed):
+// nats.go fails no request whose connection drops, so a read whose answer was lost with its
+// connection fails at the reconnect with ErrRequestLostWithConnection rather than holding its
+// caller to ctx's end, which for the claim route's handover (cmd/listener's runTakenRoleDrain) is a
+// window of 10 minutes under the role's guard.
 func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTakeoverRecord, error) {
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
@@ -118,7 +123,9 @@ func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTake
 	if role != "" {
 		filter = TakeoverSubjectPrefix + role + ".>"
 	}
-	info, err := c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+	info, err := RequestOnConnection(ctx, c, func(ctx context.Context) (*nats.StreamInfo, error) {
+		return c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("bus: read %s's takeover records: %w", Stream, err)
 	}

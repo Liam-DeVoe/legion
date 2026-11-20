@@ -1067,7 +1067,7 @@ func TestSenderLimitCost(t *testing.T) {
 		lost.requireCount(t, sender, false)
 	})
 
-	t.Run("role send whose receipt times out (504) costs one", func(t *testing.T) {
+	t.Run("role send whose window ends with its forward unacknowledged (504) costs one", func(t *testing.T) {
 		frozen, server := newSenderLimitRigOnServer(t)
 		frozen.limit(4, 1)
 		const sender, holder, role = "ses_cost_timed_out", "ses_cost_timed_out_holder", "cost-timed-out"

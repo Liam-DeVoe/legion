@@ -502,3 +502,84 @@ func TestARelayLeavesAMessageArrivingAfterItsTermEndedForTheNextHolder(t *testin
 	}
 	standIn.none(t, time.Second)
 }
+
+// answerCountingAcker counts every answer a relay gives a frame - an ack, a progress or a nak -
+// and passes each on to the consumer.
+type answerCountingAcker struct {
+	bus.SessionAcker
+	answers atomic.Int32
+}
+
+func (a *answerCountingAcker) Ack() error {
+	a.answers.Add(1)
+	return a.SessionAcker.Ack()
+}
+
+func (a *answerCountingAcker) InProgress() error {
+	a.answers.Add(1)
+	return a.SessionAcker.InProgress()
+}
+
+func (a *answerCountingAcker) NakWithDelay(delay time.Duration) error {
+	a.answers.Add(1)
+	return a.SessionAcker.NakWithDelay(delay)
+}
+
+// A role message the relay pulled while its term was current, and judges (takeOverFrame) once the
+// term has ended, is neither copied to the role's kept lane nor answered: its claim read, its
+// copy and its ack or nak act for this pod, and the pod that holds the lease next may have
+// restarted the session's consumer at its ack floor by then. The frame stays delivered and
+// unanswered at the consumer, which hands it to that pod's relay, and the relay does not send it.
+// No session claims the role, so a judgement under a current term would copy the frame and ack it.
+func TestARoleFrameWhoseTakeOverIsReachedAfterTheTermEndedCopiesAndAcksNothing(t *testing.T) {
+	const role = "relay-term-ended"
+	rig, run := newRestartableRun(t, "ses_take_over_after_term_")
+	termCtx, endTerm := context.WithCancel(context.Background())
+	defer endTerm()
+	rig.relays.term = &relayTerm{ctx: termCtx}
+	var claimReads atomic.Int32
+	setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayClaimRead: func(string) error {
+		claimReads.Add(1)
+		return nil
+	}})
+	subject := contracts.LegacyAgentSubject(run.sessionID)
+	item := listenerTestEnvelope(subject, "relay-after-term-"+id.New())
+	item.Source = "dispatch"
+	item.Role = role
+	stored, err := rig.harness.client.JS().Publish(subject, marshalListenerEnvelope(t, item))
+	if err != nil {
+		t.Fatalf("store a role message on %s: %v", subject, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, pull, outcome := rig.relays.restart(ctx, run)
+	if pull == nil {
+		t.Fatalf("the restart under a current term started no pull (outcome %d):\n%s", outcome, rig.harness.logs.String())
+	}
+	defer pull.Stop()
+	msg, err := pull.Next(ctx)
+	if err != nil || msg.StreamSeq != stored.Sequence {
+		t.Fatalf("the pull handed out seq %d (%v), want the role message at %d", msg.StreamSeq, err, stored.Sequence)
+	}
+	acker := &answerCountingAcker{SessionAcker: msg.SessionAcker}
+	msg.SessionAcker = acker
+
+	endTerm()
+	taken := rig.relays.takeOverFrame(ctx, run.sessionID, msg)
+	if copies := copiesOf(storedEnvelopes(t, rig.harness.client, bus.KeptRoleSubject(role)), item.EventID); copies != 0 {
+		t.Fatalf("the role's kept lane holds %d copies of a role message the relay judged after its term ended, want none: the judgement acted once the next holder may hold the session's consumer", copies)
+	}
+	if answers := acker.answers.Load(); answers != 0 {
+		t.Fatalf("the relay answered the consumer %d times for a role message it judged after its term ended, want none", answers)
+	}
+	if reads := claimReads.Load(); reads != 0 {
+		t.Fatalf("the relay read the role's claim %d times for a role message it judged after its term ended, want none", reads)
+	}
+	if !taken {
+		t.Fatal("the relay left a role message it judged after its term ended to be sent to the session, which holds no claim on its role")
+	}
+	if _, ackPending := consumerCounts(t, rig, run.sessionID); ackPending != 1 {
+		t.Fatalf("%d of the consumer's messages await an ack, want the role message the relay left unanswered", ackPending)
+	}
+}

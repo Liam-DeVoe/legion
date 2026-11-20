@@ -434,12 +434,18 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	if err != nil {
 		return nil, err
 	}
-	// Taken before the pin reads the connection, so every connection event from here on wakes the
-	// wait for the answer.
-	changed := w.client.ConnectionChanged()
 	if err := w.pinToSend(); err != nil {
 		return nil, err
 	}
+	// The life the window pinned, current at the pin, is what the wait for the answer ends on: it
+	// is closed the moment nats.go's report of the connection's loss or reconnect reaches it
+	// (connLife), and a life that ended between the pin and the wait is closed already. A
+	// connection event of the client's (ConnectionChanged) is no such signal: nats.go reports a loss
+	// to the life's status listener and, from another goroutine, to the client's disconnect
+	// callback, and that callback can run first, while the life still reads current. While the
+	// server stays away no later event follows it, so a wait that read the life again only at each
+	// event waited out its whole timeout for a request whose connection was gone.
+	life := w.life
 	inbox := nats.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
@@ -570,14 +576,11 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 				if settled, err := outcome(reply); settled {
 					return err
 				}
-			case <-changed:
+			case <-life:
 				if settled, err := drained(); settled {
 					return err
 				}
-				if !w.current() {
-					return lost()
-				}
-				changed = w.client.ConnectionChanged()
+				return lost()
 			case <-timer.C:
 				// The request is out of time: its answer is the timeout's.
 				if settled, err := drained(); settled {

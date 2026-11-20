@@ -87,26 +87,67 @@ func requireLostAtTheReconnect(t *testing.T, what string, answers <-chan lostAns
 	}
 }
 
-// requireLostWithTheConnection arms relay to drop the next send of its subject, makes call within
-// lostRequestWait on conn's client, cuts relay's links once that send is out, and requires call
-// to answer ErrRequestLostWithConnection within lostRequestAfterReconnect of the reconnect: the
-// order of a request whose bytes reached the socket and then died with it. It suits a call whose
-// request waits on nats.go's response subscription with no flush behind it - a KV read or write,
-// a JetStream publish - which nats.go fails at no cut, so the one thing that can end it early is
-// the connection watch.
-func requireLostWithTheConnection(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn, what string, call func(context.Context) error) {
+// loseWithTheConnection arms relay to drop the next send of its subject, makes call within bound on
+// conn's client, and cuts relay's links once that send is out: the order of a request whose bytes
+// reached the socket and then died with it. It returns when call began, when conn reconnected, and
+// where call's answer comes.
+func loseWithTheConnection(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn, bound time.Duration, call func(context.Context) error) (began, reconnected time.Time, answers <-chan lostAnswer) {
 	t.Helper()
 	relay.Arm(1)
-	ctx, cancel := context.WithTimeout(context.Background(), lostRequestWait)
-	defer cancel()
-	answers := make(chan lostAnswer, 1)
+	began = time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	t.Cleanup(cancel)
+	answered := make(chan lostAnswer, 1)
 	go func() {
 		err := call(ctx)
-		answers <- lostAnswer{err: err, at: time.Now()}
+		answered <- lostAnswer{err: err, at: time.Now()}
 	}()
 	awaitRelaySent(t, relay, 1)
-	reconnected := cutAndAwaitReconnect(t, relay, conn)
+	return began, cutAndAwaitReconnect(t, relay, conn), answered
+}
+
+// requireLostWithTheConnection makes call within lostRequestWait on conn's client, loses its
+// request with the connection (loseWithTheConnection), and requires call to answer
+// ErrRequestLostWithConnection within lostRequestAfterReconnect of the reconnect. It suits a call
+// whose request waits on nats.go's response subscription with no flush behind it - a KV read or
+// write, a JetStream publish - which nats.go fails at no cut, so the one thing that can end it
+// early is the connection watch.
+func requireLostWithTheConnection(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn, what string, call func(context.Context) error) {
+	t.Helper()
+	_, reconnected, answers := loseWithTheConnection(t, relay, conn, lostRequestWait, call)
 	requireLostAtTheReconnect(t, what, answers, reconnected)
+}
+
+// lostReadBound is the bound the reads requireLostBeforeHalfItsBound loses are held to: well above
+// the reconnect the row cuts its connection into (nats.go dials the same server again after its
+// ReconnectWait, 1 s), which the row requires to take at most a quarter of it, so a read that fails
+// before half of it failed at the reconnect and not at its bound. roles.Buckets holds its reads to
+// 2 s (readTimeout), which leaves no such margin over that second; the takeover records and the
+// kept lanes are read within their caller's context, the claim route's handover window of 10
+// minutes among them.
+const lostReadBound = 8 * time.Second
+
+// requireLostBeforeHalfItsBound makes call within bound on conn's client, loses its request with
+// the connection (loseWithTheConnection), and requires the reconnect to come within a quarter of
+// bound from call's start and call to answer ErrRequestLostWithConnection before half of it: a call
+// that fails that soon failed at the reconnect, and one that waited for its bound fails the row.
+func requireLostBeforeHalfItsBound(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn, what string, bound time.Duration, call func(context.Context) error) {
+	t.Helper()
+	began, reconnected, answers := loseWithTheConnection(t, relay, conn, bound, call)
+	if took := reconnected.Sub(began); took > bound/4 {
+		t.Fatalf("the connection reconnected %s after %s began, past a quarter of its %s bound: the row cannot tell a call that failed at the reconnect from one that failed at its bound",
+			took.Round(time.Millisecond), what, bound)
+	}
+	var answer lostAnswer
+	select {
+	case answer = <-answers:
+	case <-time.After(bound + time.Second):
+		t.Fatalf("%s whose connection was cut has not answered %s after it began", what, bound+time.Second)
+	}
+	if took := answer.at.Sub(began); !errors.Is(answer.err, ErrRequestLostWithConnection) || took >= bound/2 {
+		t.Fatalf("%s whose connection was cut under it answered %v, %s after it began and %s after the reconnect; want %v before half its %s bound",
+			what, answer.err, took.Round(time.Millisecond), answer.at.Sub(reconnected).Round(time.Millisecond), ErrRequestLostWithConnection, bound)
+	}
 }
 
 // A consumer call whose request went out, and whose connection is then cut before the answer
@@ -254,19 +295,12 @@ func TestAReadThroughBoundedOnWaitsForNoOtherClientsHeldHandshake(t *testing.T) 
 	}
 }
 
-// roleReadBound is the bound the role read below is held to: well above the reconnect the row cuts
-// its connection into (nats.go dials the same server again after its ReconnectWait, 1 s), which
-// the row requires to take at most a quarter of it, so a read that fails before half of it failed
-// at the reconnect and not at its bound. roles.Buckets holds its reads to 2 s (readTimeout), which
-// leaves no such margin over that second.
-const roleReadBound = 8 * time.Second
-
 // A role read waited for through BoundedOnConnection, the wait roles.Buckets holds each of its
 // reads to (within), fails with ErrRequestLostWithConnection at the reconnect when its connection
 // is cut under it once its watch is taken, rather than waiting out its bound: Dispatch's outbox
 // makes two such reads to resolve a role's holder, and a hub link that drops under one cost the
 // resolution that read's whole bound. The read is the one Buckets makes - a direct get of the
-// role's claim on a handle opened on the client's connection - held to roleReadBound; the relay
+// role's claim on a handle opened on the client's connection - held to lostReadBound; the relay
 // drops its request, and the cut comes once that request is out, by when the watch, which starts
 // beside the call, has read the connection's reconnect count. The reconnect takes at most a
 // quarter of the bound, and the read fails before half of it.
@@ -290,38 +324,81 @@ func TestARoleReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testi
 	if _, err := kv.Put(role, []byte(`{"holder_session_id":"ses_role_read_lost"}`)); err != nil {
 		t.Fatalf("write the claim the row reads: %v", err)
 	}
-	read := func() (nats.KeyValueEntry, bool, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), roleReadBound)
-		defer cancel()
+	read := func(ctx context.Context) (nats.KeyValueEntry, bool, error) {
 		return BoundedOnConnection(ctx, client, func() (nats.KeyValueEntry, error) { return kv.Get(role) })
 	}
 
-	relay.Arm(1)
-	began := time.Now()
-	answers := make(chan lostAnswer, 1)
-	go func() {
-		_, _, err := read()
-		answers <- lostAnswer{err: err, at: time.Now()}
-	}()
-	awaitRelaySent(t, relay, 1)
-	reconnected := cutAndAwaitReconnect(t, relay, client.Connection())
-	if took := reconnected.Sub(began); took > roleReadBound/4 {
-		t.Fatalf("the connection reconnected %s after the read began, past a quarter of its %s bound: the row cannot tell a read that failed at the reconnect from one that failed at its bound",
-			took.Round(time.Millisecond), roleReadBound)
-	}
-	var answer lostAnswer
-	select {
-	case answer = <-answers:
-	case <-time.After(roleReadBound + time.Second):
-		t.Fatalf("a role read whose connection was cut has not answered %s after it began", roleReadBound+time.Second)
-	}
-	if took := answer.at.Sub(began); !errors.Is(answer.err, ErrRequestLostWithConnection) || took >= roleReadBound/2 {
-		t.Fatalf("a role read whose connection was cut under it answered %v, %s after it began and %s after the reconnect; want %v before half its %s bound",
-			answer.err, took.Round(time.Millisecond), answer.at.Sub(reconnected).Round(time.Millisecond), ErrRequestLostWithConnection, roleReadBound)
-	}
+	requireLostBeforeHalfItsBound(t, relay, client.Connection(), "a role read", lostReadBound, func(ctx context.Context) error {
+		_, _, err := read(ctx)
+		return err
+	})
 
 	// The read made again on the connection that came back is answered.
-	if entry, answered, err := read(); err != nil || !answered || entry.Revision() == 0 {
+	ctx, cancel := context.WithTimeout(context.Background(), lostReadBound)
+	defer cancel()
+	if entry, answered, err := read(ctx); err != nil || !answered || entry.Revision() == 0 {
 		t.Fatalf("the role read again after the reconnect = %v, answered %t; want the claim", err, answered)
+	}
+}
+
+// streamInfoThroughRelay connects the stream's owner to the test server directly, so the stream
+// exists, and a client through a relay that drops the stream's STREAM.INFO once armed. The client
+// owns no stream, so no ensure sends a STREAM.INFO of its own at the reconnect, and it reads the
+// deployed subjects at its connect alone, before the row arms the relay.
+func streamInfoThroughRelay(t *testing.T) (*testnats.UnansweredRelay, *Client) {
+	t.Helper()
+	uri := testnats.URL(t)
+	owner, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	relay := testnats.StartUnansweredRelayOn(t, uri, streamInfoSubject)
+	client, err := Connect([]string{relay.URL()}, withStreamSubjectsRefresh(time.Hour))
+	if err != nil {
+		t.Fatalf("connect through the relay: %v", err)
+	}
+	t.Cleanup(client.Close)
+	return relay, client
+}
+
+// A read of the takeover records (Client.TakeoverRecords) fails with ErrRequestLostWithConnection
+// at the reconnect when its connection is cut under its STREAM.INFO, rather than waiting out its
+// bound: the claim route's handover makes that read under the role's guard and within its 10-minute
+// window (cmd/listener's runTakenRoleDrain), and nats.go fails no request its connection drops, so
+// a read whose answer died with the old socket held the guard for that whole window. The relay
+// drops the STREAM.INFO, and the cut comes once it is out. The reconnect takes at most a quarter
+// of the read's bound, and the read fails before half of it.
+func TestATakeoverRecordsReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
+	relay, client := streamInfoThroughRelay(t)
+	requireLostBeforeHalfItsBound(t, relay, client.Connection(), "a read of the takeover records", lostReadBound, func(ctx context.Context) error {
+		_, err := client.TakeoverRecords(ctx, "")
+		return err
+	})
+
+	// The read made again on the connection that came back is answered.
+	ctx, cancel := context.WithTimeout(context.Background(), lostReadBound)
+	defer cancel()
+	if _, err := client.TakeoverRecords(ctx, ""); err != nil {
+		t.Fatalf("the read of the takeover records again after the reconnect = %v, want an answer", err)
+	}
+}
+
+// A read of the kept lanes (Client.KeptRoleLanes), the kept lane's sweep's first read of each pass,
+// fails with ErrRequestLostWithConnection at the reconnect when its connection is cut under its
+// STREAM.INFO, rather than waiting out its bound, as the read of the takeover records does. The
+// reconnect takes at most a quarter of the read's bound, and the read fails before half of it.
+func TestAKeptLanesReadLostWithItsConnectionFailsAtTheReconnectNotAtItsBound(t *testing.T) {
+	relay, client := streamInfoThroughRelay(t)
+	requireLostBeforeHalfItsBound(t, relay, client.Connection(), "a read of the kept lanes", lostReadBound, func(ctx context.Context) error {
+		_, err := client.KeptRoleLanes(ctx)
+		return err
+	})
+
+	// The read made again on the connection that came back is answered.
+	ctx, cancel := context.WithTimeout(context.Background(), lostReadBound)
+	defer cancel()
+	if _, err := client.KeptRoleLanes(ctx); err != nil {
+		t.Fatalf("the read of the kept lanes again after the reconnect = %v, want an answer", err)
 	}
 }

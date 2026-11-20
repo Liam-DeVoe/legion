@@ -205,14 +205,18 @@ func (c *Client) ReadKeptRoleCursor(ctx context.Context, role string) (StoredKep
 // answers an empty list: the state carries a subject only while a message is stored on it.
 //
 // Its errors are the stream's own: nats.ErrStreamNotFound when the stream is gone,
-// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first.
+// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first. The
+// STREAM.INFO waits under a watch of the connection it went out on (RequestOnConnection), since
+// nats.go fails no request whose connection drops: a read whose answer was lost with its
+// connection fails at the reconnect with ErrRequestLostWithConnection, and the sweep reads again
+// at its next pass, rather than holding the sweep's pass to ctx's end.
 func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
 	}
-	info, err := c.JS().StreamInfo(Stream,
-		&nats.StreamInfoRequest{SubjectsFilter: KeptRoleSubject(">")},
-		nats.Context(ctx))
+	info, err := RequestOnConnection(ctx, c, func(ctx context.Context) (*nats.StreamInfo, error) {
+		return c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: KeptRoleSubject(">")}, nats.Context(ctx))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("bus: read %s's kept role lanes: %w", Stream, err)
 	}

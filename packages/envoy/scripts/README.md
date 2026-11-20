@@ -668,10 +668,12 @@ A listener from before LEGION-456 keeps `/v1` closed until its durable binds,
 so during a rolling deploy the replacement answers `/healthz` 200 `starting`
 and `/v1` 503 `service starting` for most of a minute and the run exits 1. A
 listener that opens `/v1` once its caches are warm passes. Since INFRA-557 a
-listener answers `/healthz` 503 `starting` until `/v1` is open, so the probe
-judges none of its starting ticks, and a replacement that waits for the old
-task's deliveries answers 200 `standby` while it serves `/v1`, so it is judged
-like the task it replaces.
+listener answers `/healthz` 503 `starting` until it can serve, its interest
+copy's first complete read of its bucket included, even after a warm-up that
+ran out has opened `/v1` before that read, so the probe judges none of its
+starting ticks, and a replacement that waits for the old task's deliveries
+answers 200 `standby` while it serves `/v1`, so it is judged like the task it
+replaces.
 
 The refilling answer is another cause. A listener answers `GET /v1/sessions`
 `503` with `Retry-After: 5` and code `refilling` (`503:envoy: the agent list is
@@ -680,10 +682,11 @@ its copy of the session or interest bucket: before its first complete read of
 the bucket (its closed `/v1` start gate gives this route the same answer, and a
 cache warm-up that timed out opens `/v1` on a copy still being read), or once a
 re-read has not completed for longer than its bound (2 minutes, or half the
-bucket's `MaxAge` when that is shorter). Its `/healthz` answers 200 all the
-while, except before the interest copy's first complete read, when it answers
-503 `starting`, so the target fails: a client that reached it then was refused the list
-(INFRA-261).
+bucket's `MaxAge` when that is shorter). Before the interest copy's first
+complete read its `/healthz` answers 503 `starting`, so the probe judges none
+of those ticks and a refilling answer then fails nothing. From that read on its
+`/healthz` answers 200, a later re-read included, so a refilling answer fails
+the target: a client that reached it then was refused the list (INFRA-261).
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the

@@ -716,12 +716,48 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // every such frame does. A claim read or a copy that failed has the frame given back to the server
 // with the delay its deliveries earn (relayNakDelayFor), neither sent nor acknowledged, so it is
 // copied or sent once they answer.
+//
+// A role message is judged under the context the relay's restart of the consumer runs on
+// (sessionRelays.termContext), since its ack or its give-back acts on the session's consumer, and a
+// pod that takes the lease next may restart that consumer at its ack floor about a second after
+// this term's loss deadline (relayFormerSettle). So a frame reached once the term is over, or once
+// its loss deadline has passed, is taken and nothing of it starts: it is neither sent, copied,
+// acknowledged nor given back. That context ends with the term or at its loss deadline, so a claim
+// read or a copy still running then is cut off there, and a frame whose term no longer allows an
+// act on the consumer by the time its read or its copy is over is left the same way rather than
+// given back or acknowledged; a copy that stored before the cut is stored once, under its message
+// id (takenFrameMsgID), however many relays make it. A frame left so stays delivered and
+// unanswered at the consumer, and the session's next relay, on this pod or on the one that holds
+// the lease next, is handed it again when it restarts the consumer at its ack floor.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
 	role, mark, ok := decodeRoleMark(msg.Data)
 	if !ok {
 		return false
 	}
+	leave := func() bool {
+		m.logger.Info("listener session relay left a role message to the session's next relay: this pod's receive term is over, or another pod may hold the machine's lease",
+			slog.String("session_id", sessionID),
+			slog.String("role", role),
+			slog.String("event_id", mark.EventID),
+			slog.Uint64("stream_seq", msg.StreamSeq))
+		return true
+	}
+	termCtx, stopTerm, current := m.termContext(ctx)
+	if !current {
+		return leave()
+	}
+	defer stopTerm()
+	// termOver reports whether the term no longer allows an act on the consumer (currentTerm). A
+	// run whose own context ended while the term is still current gives its frame back, as its
+	// release gives back every frame it holds.
+	termOver := func() bool {
+		_, left := m.currentTerm()
+		return left <= 0
+	}
 	giveBack := func(why string, err error) bool {
+		if termOver() {
+			return leave()
+		}
 		nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
 		m.logger.Warn("listener session relay gave a role message back to the server: "+why,
 			slog.String("session_id", sessionID),
@@ -731,7 +767,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 			slog.String("error", errors.Join(err, nakErr).Error()))
 		return true
 	}
-	holder, err := relayClaimHolder(ctx, m.cfg, role)
+	holder, err := relayClaimHolder(termCtx, m.cfg, role)
 	if err != nil {
 		return giveBack("its role's claim could not be read", err)
 	}
@@ -742,8 +778,11 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 	if err := decodeStoredEnvelope(msg.Data, &item); err != nil {
 		return false
 	}
-	if err := relayCopyFrame(ctx, m.cfg, role, item, msg.StreamSeq); err != nil {
+	if err := relayCopyFrame(termCtx, m.cfg, role, item, msg.StreamSeq); err != nil {
 		return giveBack("its copy to the role's kept lane did not store", err)
+	}
+	if termOver() {
+		return leave()
 	}
 	if err := msg.Ack(); err != nil {
 		m.logger.Warn("listener session relay could not acknowledge a role message it copied to the role's kept lane",
