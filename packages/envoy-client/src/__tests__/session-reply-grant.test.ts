@@ -74,7 +74,10 @@ authorization {
     const session = await connect({
       servers: [server.url],
       name: "session-reply-grant",
-      ...natsAuthOptions({ value: seed, source: "the test's session user" }),
+      ...natsAuthOptions({
+        kind: "seed",
+        seed: { value: seed, source: "the test's session user" },
+      }),
       reconnect: false,
     });
     open.push(session);
@@ -86,7 +89,10 @@ authorization {
     })();
     const requester = await connect({
       servers: [server.url],
-      ...natsAuthOptions({ value: requesterSeed, source: "the test's requester user" }),
+      ...natsAuthOptions({
+        kind: "seed",
+        seed: { value: requesterSeed, source: "the test's requester user" },
+      }),
       reconnect: false,
     });
     open.push(requester);
