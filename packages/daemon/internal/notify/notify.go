@@ -435,9 +435,9 @@ func (p *HTTPPublisher) FollowsTopic(ctx context.Context, session, topic string)
 		if err != nil {
 			return false, unreadAnswer("read the topics session "+session+" follows", response.Status, err)
 		}
-		var entry struct {
-			Topics []string `json:"topics"`
-		}
+		// The listener's own wire type of the answer (sessionEntryHandler writes it), as every client
+		// of the listener decodes its answers (envoy's listenerwire, TestListenerClientsUseListenerwire).
+		var entry listenerwire.SessionInfo
 		if err := json.Unmarshal(body, &entry); err != nil {
 			return false, fmt.Errorf("read the topics session %s follows: %w", session, err)
 		}
