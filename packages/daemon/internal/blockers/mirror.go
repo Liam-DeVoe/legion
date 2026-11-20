@@ -11,16 +11,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Mirror writes what each Dispatch issue event says into the mirror table, and decides nothing: it
-// refuses no fact, ever, so the handlers after it see exactly the facts they would have seen
-// without it. It runs before them, inside their transaction, because they read the row it writes.
-// The periodic turn's own re-read of Dispatch rides on the controller tick
-// (intake.ControllerTick.Observed), and is written here through the very same fenced write, so a
-// blocker whose closing event never arrived is repaired before those handlers judge. Each issue's
-// Dispatch claim is mirrored beside its row, behind a fence of its own (record.PutDispatchClaim):
-// from an issue event or a view that shows it, and from Dispatch's issue.claimed and
-// issue.released events (intake.DispatchClaim), which say nothing else of the issue and are kept
-// even when they arrive before the issue's first row.
+// Mirror writes each reading of Dispatch into the daemon's copy of Dispatch's issues, and decides
+// nothing: it refuses no fact, ever, so the handlers after it see exactly the facts they would
+// have seen without it. It runs before them, inside their transaction, because they read the row
+// it writes. Only a reading of Dispatch reaches the copy: an issue event, the release's read of
+// the children it adopts, and the periodic turn's own re-read of Dispatch, which rides on the
+// controller tick (intake.ControllerTick.Observed) and is written here as an event is, so a
+// blocker whose closing event never arrived is repaired before those handlers judge. A reading
+// writes only the values it carries, and each value keeps the sequence of the reading that wrote
+// it: a reading changes it only at a higher sequence, or where no reading wrote it
+// (record.PutDispatchIssue). Each issue's Dispatch claim is mirrored beside its row, behind a
+// fence of its own (record.PutDispatchClaim): from an issue event or a view that shows it, and
+// from Dispatch's issue.claimed and issue.released events (intake.DispatchClaim), which say
+// nothing else of the issue and are kept even when they arrive before the issue's first row.
 //
 // One path it never sees: an intake.ObservedIssue of an issue already recorded whose event was
 // prepared in place of none applies no handler at all (intake.settleObserved sets handlers to
@@ -50,7 +53,7 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	switch fact := fact.(type) {
 	case intake.DispatchIssue:
 		observed := intake.IssueStatus{Key: fact.Key, Project: m.project, Status: fact.Status, Blockers: fact.Blockers,
-			Seq: fact.Seq, ClaimedBy: fact.ClaimedBy, ClaimKnown: fact.ClaimKnown, Parent: fact.Parent}
+			Seq: fact.Seq, ClaimedBy: fact.ClaimedBy, ClaimKnown: fact.ClaimKnown, Parent: fact.Parent, Labels: fact.Labels, Rank: fact.Rank}
 		if err := m.put(ctx, tx, readingOf(observed)); err != nil {
 			return intake.Result{}, err
 		}
@@ -99,13 +102,15 @@ func (m *Mirror) put(ctx context.Context, tx pgx.Tx, reading record.DispatchRead
 	return m.store.PutDispatchIssue(ctx, tx, reading)
 }
 
-// readingOf is observed as a reading of Dispatch at its sequence: it carries the status, the
-// parent and the blockers observed, no parent being one of the things it can have seen, so a
-// child a person took out from under its parent is copied as the issue Dispatch now shows and
-// ends that parent's children-first wait. A claim observed is the claim at that sequence.
+// readingOf is observed as a reading of Dispatch at its sequence: it carries all five values
+// observed, the status, the parent, the blockers, the labels and the rank, no parent being one of
+// the things it can have seen, so a child a person took out from under its parent is copied as
+// the issue Dispatch now shows and ends that parent's children-first wait. A claim observed is the
+// claim at that sequence.
 func readingOf(observed intake.IssueStatus) record.DispatchReading {
 	reading := record.DispatchReading{Key: observed.Key, Project: observed.Project, Seq: observed.Seq,
-		Status: record.Carry(observed.Status), Parent: record.Carry(observed.Parent), Blockers: record.Carry(observed.Blockers)}
+		Status: record.Carry(observed.Status), Parent: record.Carry(observed.Parent), Blockers: record.Carry(observed.Blockers),
+		Labels: record.Carry(observed.Labels), Rank: record.Carry(observed.Rank)}
 	if observed.ClaimKnown {
 		reading.ClaimedBy, reading.ClaimSeq = observed.ClaimedBy, observed.Seq
 	}
@@ -113,24 +118,26 @@ func readingOf(observed intake.IssueStatus) record.DispatchReading {
 }
 
 // Observed is one summary of a Dispatch listing of project as an observation of that issue, the
-// facts a mirror row is written from: the boot's reconcile and the periodic turn's listing both
-// read the project this way, and both write what it returns. A listing is of one project, so
-// project is the project of every summary in it, and the row carries it. A listing always shows
-// the claim, and shows the parent of every issue the project has, recorded by the daemon or not,
-// which is what makes the first listing after a boot the moment the children-first rule is
-// complete.
+// facts a row of the copy is written from: the boot's reconcile and the periodic turn's listing
+// both read the project this way, and both write what it returns. A listing is of one project, so
+// project is the project of every summary in it, and the row carries it. A listing carries all
+// five values, always shows the claim, and shows the parent of every issue the project has,
+// recorded by the daemon or not. Each value it shows replaces one an older reading wrote, so the
+// first listing after a boot leaves every issue of the project under the parent of the newest
+// reading of it, which is what makes that listing the moment the children-first rule is complete.
 func Observed(project string, summary dispatch.IssueSummary) intake.IssueStatus {
 	parent := ""
 	if summary.Parent != nil {
 		parent = *summary.Parent
 	}
 	return intake.IssueStatus{Key: summary.Key, Project: project, Status: summary.Status, Blockers: summary.BlockedBy,
-		Seq: summary.LastSeq, ClaimedBy: summary.ClaimedBy, ClaimKnown: !summary.ClaimUnread, Parent: parent}
+		Seq: summary.LastSeq, ClaimedBy: summary.ClaimedBy, ClaimKnown: !summary.ClaimUnread, Parent: parent,
+		Labels: summary.Labels, Rank: summary.Rank}
 }
 
-// Reconcile mirrors the boot listing: every summary Dispatch returned for project, through the
-// same sequence-fenced write a live event takes, so a listing older than an event already applied
-// changes nothing.
+// Reconcile mirrors the boot listing: every summary Dispatch returned for project, as the same
+// reading of all five values a live event is, so a listing older than an event already applied
+// changes nothing that event wrote.
 func Reconcile(ctx context.Context, tx pgx.Tx, store record.Store, project string, summaries []dispatch.IssueSummary) error {
 	mirror := NewMirror(store, project)
 	for _, summary := range summaries {
