@@ -227,8 +227,8 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 					t.Fatalf("%s's stops ended stopped owing a launch %t = %d, want 1", role, owed, n)
 				}
 			}
-			if hold, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || !held || hold.Pause != pause.ID {
-				t.Fatalf("the pod's hold = %+v, %t, %v; want pause %d's", hold, held, err, pause.ID)
+			if hold, held := standingPodHold(t, st, "LEGION", rootIssue); !held || hold.Pause != pause.ID {
+				t.Fatalf("the pod's hold = %+v, %t; want pause %d's", hold, held, pause.ID)
 			}
 			wantBackstops := 0
 			if tc.backstop {
@@ -428,8 +428,8 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	if err := st.CleanupReservedTree(ctx, "legion", rootIssue, lifecycle.Epoch, &countingReleaser{}); err != nil {
 		t.Fatalf("clean the tree up: %v", err)
 	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || held {
-		t.Fatalf("after the cleanup a hold stands = %t, %v; want it ended", held, err)
+	if _, held := standingPodHold(t, st, "LEGION", rootIssue); held {
+		t.Fatalf("after the cleanup a hold stands = %t; want it ended", held)
 	}
 	if n := pauseCount(t, st, `select count(*) from project_pause_pod_holds where issue = $1 and ended_why = 'deleted'`, rootIssue); n != 1 {
 		t.Fatalf("holds ended as deleted = %d, want 1", n)
@@ -465,12 +465,12 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	if err := st.CleanupReservedTree(ctx, "legion", other, operatorTree.Epoch, &countingReleaser{}); err != nil {
 		t.Fatalf("clean the tree %s up: %v", other, err)
 	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", other); err != nil || held {
-		t.Fatalf("after the cleanup of %s its hold stands = %t, %v; want it ended", other, held, err)
+	if _, held := standingPodHold(t, st, "LEGION", other); held {
+		t.Fatalf("after the cleanup of %s its hold stands = %t; want it ended", other, held)
 	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", recorded); err != nil || !held {
-		t.Fatalf("after the cleanup of %s the hold of %s = %t, %v; want it standing: OTHER's record of %s files no pod of this project under %s",
-			other, recorded, held, err, recorded, other)
+	if _, held := standingPodHold(t, st, "LEGION", recorded); !held {
+		t.Fatalf("after the cleanup of %s the hold of %s = %t; want it standing: OTHER's record of %s files no pod of this project under %s",
+			other, recorded, held, recorded, other)
 	}
 }
 

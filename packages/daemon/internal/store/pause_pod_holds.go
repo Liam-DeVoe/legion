@@ -148,20 +148,6 @@ func validPausePodHoldEnd(issue string, end PausePodHoldEnd) error {
 	return fmt.Errorf("end the pod hold of %s: %q is no reason a hold ends", issue, end)
 }
 
-// PausePodHoldOf is the hold that stands on issue's pod under project's pauses, and whether one
-// does. project is the Dispatch key.
-func (s *Store) PausePodHoldOf(ctx context.Context, project, issue string) (PausePodHold, bool, error) {
-	h, err := scanPausePodHold(s.pool.QueryRow(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
-		where project = $1 and issue = $2 and ended_at is null`, project, issue))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return PausePodHold{}, false, nil
-	}
-	if err != nil {
-		return PausePodHold{}, false, fmt.Errorf("read the pod hold of %s: %w", issue, err)
-	}
-	return h, true, nil
-}
-
 // OpenPausePodHolds is every hold standing on a pod of project, by issue: the pods the resume
 // ends the holds of where a role is live (decision 22), and the pods a project release names when
 // it refuses (departure 1). project is the Dispatch key.
