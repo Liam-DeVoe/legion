@@ -1031,7 +1031,8 @@ export class DispatchApiClient {
   }
 
   /** Gives the project to another full member (`owner`) or sets its visibility; only its owner
-   *  calls it (`403 PROJECT_OWNER_REQUIRED`). Answers the project's access as the write left it. */
+   *  calls it (`403 PROJECT_OWNER_REQUIRED`). Answers the project's access as the write left it.
+   *  This and the four access-list writes below need the `person` and `approve` scopes. */
   patchProjectAccess(
     project: string,
     input: Body<"/api/v1/projects/{key}/access", "patch">,

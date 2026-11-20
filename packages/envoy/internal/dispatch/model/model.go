@@ -17,8 +17,9 @@ import (
 
 // The OAuth scopes a credential can hold. ScopePerson is "this credential acts as its person",
 // which every route a person reaches through the dashboard requires; ScopeApprove is the right to
-// settle what a person settles — an approval, an ask's answer — which no credential holds without
-// ScopePerson, since a credential that does not act as its person has nobody to approve for.
+// settle what a person settles — an approval, an ask's answer, who may see a project — which no
+// credential holds without ScopePerson, since a credential that does not act as its person has
+// nobody to approve for.
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"

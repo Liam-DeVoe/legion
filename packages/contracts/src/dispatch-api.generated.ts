@@ -2527,7 +2527,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT; private is 409 PRIVATE_PROJECTS_OFF while this deployment cannot make a project private. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope. */
+    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT; private is 409 PRIVATE_PROJECTS_OFF while this deployment cannot make a project private. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes. */
     patch: operations["patchApiV1ProjectsByKeyAccess"];
     trace?: never;
   };
@@ -2539,10 +2539,10 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Name a group on a project's access list; a group admits only its members who are full members. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a group no row holds is 404 GROUP_NOT_FOUND; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person scope. */
+    /** @description Name a group on a project's access list; a group admits only its members who are full members. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a group no row holds is 404 GROUP_NOT_FOUND; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
     put: operations["putApiV1ProjectsByKeyAccessGroupsByName"];
     post?: never;
-    /** @description Take a group off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person scope. */
+    /** @description Take a group off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
     delete: operations["deleteApiV1ProjectsByKeyAccessGroupsByName"];
     options?: never;
     head?: never;
@@ -2557,10 +2557,10 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person scope. */
+    /** @description Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
     put: operations["putApiV1ProjectsByKeyAccessPeopleByEmail"];
     post?: never;
-    /** @description Take a person off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person scope. */
+    /** @description Take a person off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
     delete: operations["deleteApiV1ProjectsByKeyAccessPeopleByEmail"];
     options?: never;
     head?: never;
