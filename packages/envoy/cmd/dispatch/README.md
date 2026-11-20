@@ -3588,6 +3588,14 @@ A pointer's allowed targets come from the attribute node once the store answers 
 The reads of the `block_refs` rows themselves, a document's links out (`refs.Edges`) and `refs.BlockLinks`, make the same test of a row that names its node (`refs.blockRefListed`), so no reader lists a link another hides; a row that names no node keeps the `to_types` its index copied.
 `TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue and reads the whole view, the previous release's view over the same rows and each arm on its own before the backfill, after it, beside rows a previous release wrote and after a rollback that deletes and rewrites rows, with every backlink count and the store census beside them.
 
+### Rolling back below the issue room
+
+This release makes the spec, `verification-md` and `plan-md` of each new issue fragments of one issue room, which the issue's `tree` artifact holds, and it gives each new issue a decisions query row.
+A build of the release before reads both rows as documents of the issue.
+So after a rollback, that build lists the tree artifact and the decisions artifact of each converted issue in the project's document list (`GET /api/v1/projects/{key}/artifacts`), and this release leaves both out.
+Every other read that `TestTheStoreCensusReadsZeroDifferences` (build tag `basebuild`) compares between the two builds answers the same, and that test names the two artifacts.
+No issue is born converted while a process of the release before is live (`fleetServesIssueRoom`), so a rolling update lists no such artifact: only a rollback after an issue was born converted does.
+
 ## Stored-order check
 
 `envoy-dispatch stored-order [--artifact <uuid>]... [--since <RFC 3339 time>]` reads, and never writes, whether each document's stored history replays:
