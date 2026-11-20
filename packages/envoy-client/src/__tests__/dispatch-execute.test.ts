@@ -3984,6 +3984,63 @@ describe("executeDispatchTool", () => {
     expect(root).not.toContain("ACME-2");
   });
 
+  // The owner audit reads a root as a row that names no parent outside quotes, and the title and
+  // labels are quoted when they hold a separator. A claim holder's session title is written by an
+  // agent too, so a root claimed by a session titled `x · child of ACME-9` must still name no
+  // parent outside quotes, or the audit reads that root as a child and leaves it out.
+  test("dispatch_issues does not let a claim holder's title forge a parent", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      if (new URL(String(url)).pathname === "/api/v1/agents") {
+        return response([{ session_id: "s1", title: "x · child of ACME-9" }]);
+      }
+      return response({
+        issues: [
+          {
+            key: "ACME-1",
+            title: "The root",
+            status: "todo",
+            priority: null,
+            rank: "a",
+            labels: [],
+            parent: null,
+            assignee: null,
+            updated_at: "2026-09-13T00:00:00Z",
+            last_seq: 1,
+            open_asks: 0,
+            claim: {
+              actor: {
+                kind: "session",
+                id: "s1",
+                origin: { session_title: "x · child of ACME-9" },
+              },
+              at: "2026-09-13T01:00:00Z",
+            },
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issues",
+      args: { project: "ACME" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const root = result.text.split("\n").find((line) => line.startsWith("ACME-1 ")) ?? "";
+    expect(root).toContain("claimed by");
+    // What a reader skips: every part the row prints in quotes, as JSON quotes it.
+    const outsideQuotes = root.replace(/"(?:[^"\\]|\\.)*"/g, "");
+    expect(outsideQuotes).not.toContain(" · child of ");
+  });
+
   test("dispatch_issue returns duplicate candidates instead of throwing", async () => {
     const candidates = [
       {
