@@ -1673,26 +1673,6 @@ func (p *dispatchProcess) call(t *testing.T, method, path, body string, status i
 	return answer.body
 }
 
-// uploadBase is the token an upload of the document owner holds under name names - owner being
-// an issue's or a project's API path, `/api/v1/issues/<key>` or `/api/v1/projects/<key>`: the
-// token that document carries now, read as `dispatch doc-read` reads it, which an upload replacing
-// a document must name. It answers nil where the owner holds no document under that name, whose
-// upload is a first version and replaces nothing.
-func (p *dispatchProcess) uploadBase(t *testing.T, owner, name string) map[string]string {
-	t.Helper()
-	answer := p.send(t, http.MethodGet, owner+"/artifacts/"+url.PathEscape(name)+"/text", "", asUser(dispatchTestLogin))
-	if answer.status == http.StatusNotFound {
-		return nil
-	}
-	var document struct {
-		Token string `json:"token"`
-	}
-	if answer.status != http.StatusOK || json.Unmarshal(answer.body, &document) != nil || document.Token == "" {
-		t.Fatalf("read the token of %s's document %s: %s", owner, name, answer)
-	}
-	return map[string]string{"document": document.Token}
-}
-
 // send is trySend on the test's goroutine: a process it cannot reach fails the test.
 func (p *dispatchProcess) send(t *testing.T, method, path, body string, header http.Header) httpAnswer {
 	t.Helper()

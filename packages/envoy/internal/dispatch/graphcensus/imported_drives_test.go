@@ -290,6 +290,19 @@ func (r *writersRig) serve(method, target string, body any, login, key string) (
 	return response, nil
 }
 
+// uploadBase is the token an upload replacing the document artifact names, the one it carries
+// now: Dispatch refuses a replacement that names none (docs.ErrPreconditionRequired).
+func (r *writersRig) uploadBase(t *testing.T, artifact string) map[string]string {
+	t.Helper()
+	document := decoded[struct {
+		Token string `json:"token"`
+	}](t, r.request(t, http.MethodGet, "/api/v1/artifacts/"+artifact+"/text", nil, "alice", http.StatusOK))
+	if document.Token == "" {
+		t.Fatalf("the document %s answers no token", artifact)
+	}
+	return map[string]string{"document": document.Token}
+}
+
 // decoded decodes body into a T, failing the test where it cannot.
 func decoded[T any](t *testing.T, body []byte) T {
 	t.Helper()
@@ -302,21 +315,6 @@ func decoded[T any](t *testing.T, body []byte) T {
 
 // sessionActor is a body's actor for the session id.
 func sessionActor(id string) map[string]any { return map[string]any{"kind": "session", "id": id} }
-
-// uploadBase is the token an upload replacing the document artifactID names, which every
-// replacement names: the one the document carries now, read as `dispatch doc-read` reads it (GET
-// /api/v1/artifacts/{id}/text). A drive reads it in its Ready step, so the read is no part of what
-// the drive measures.
-func (r *writersRig) uploadBase(t *testing.T, artifactID string) map[string]string {
-	t.Helper()
-	read := decoded[struct {
-		Token string `json:"token"`
-	}](t, r.request(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice", http.StatusOK))
-	if read.Token == "" {
-		t.Fatalf("the read of document %s carries no token", artifactID)
-	}
-	return map[string]string{"document": read.Token}
-}
 
 // awaitTrue waits until query, a select of one boolean over args, answers true, and fails the test
 // naming what once it has waited longer than any of the drives' work takes.

@@ -306,17 +306,20 @@ func seedReadCostHistory(t *testing.T, arm *costArm) *readCostShape {
 }
 
 // costUploadDocumentAs writes one version of a document as another person, so a corpus can hold
-// history that is not the person's whose page is read, and answers its artifact id. A version of
-// a document the issue holds names the token of the version it replaces (uploadBase).
+// history that is not the person's whose page is read, and answers its artifact id. An upload of a
+// name the issue holds replaces that document's version, so it names that version's token.
 func costUploadDocumentAs(t *testing.T, arm *costArm, login, issue, name, content string) string {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
-		"name": name, "content": content, "precondition": arm.server.uploadBase(t, "/api/v1/issues/"+issue, name),
-	})
+	artifacts := "/api/v1/issues/" + issue + "/artifacts"
+	upload := map[string]any{"name": name, "content": content}
+	if base := arm.server.uploadBase(t, artifacts, name); base != nil {
+		upload["precondition"] = base
+	}
+	body, err := json.Marshal(upload)
 	if err != nil {
 		t.Fatalf("encode %s: %v", name, err)
 	}
-	answer := arm.server.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", string(body), asUser(login))
+	answer := arm.server.send(t, http.MethodPost, artifacts, string(body), asUser(login))
 	if answer.status != http.StatusCreated {
 		t.Fatalf("%s: upload %s as %s: status %d: %s", arm.name, name, login, answer.status, answer.body)
 	}

@@ -59,8 +59,7 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// leaves as it was, the project the decisions step converts, and the answered ask an earlier
 	// release rewords.
 	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, unchanged, restoredAsk string
-	// The token of the version of the document an upload leaves as it was, which that upload
-	// replaces and so names.
+	// The token of the version same.md's replacement replaces, read before its drive.
 	var unchangedBase map[string]string
 	const decided = "DECIDE"
 	return []graphcensus.StoreDrive{{
@@ -325,8 +324,7 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
-				"name": "same.md", "content": "# Same\n\nA text the upload writes again.\n",
-				"precondition": unchangedBase,
+				"name": "same.md", "content": "# Same\n\nA text the upload writes again.\n", "precondition": unchangedBase,
 			}, "alice", http.StatusCreated)
 			r.awaitTrue(t, "the upload writing version 2 of same.md", `
 				select exists (select 1 from artifact_versions where artifact_id = $1::uuid and number = 2)

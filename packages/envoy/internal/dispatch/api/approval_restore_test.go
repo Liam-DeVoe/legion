@@ -32,6 +32,13 @@ func restoreSentence(from int) string {
 	return fmt.Sprintf("Carried forward from the approval of version %d: this version's text is that version's, unchanged.", from)
 }
 
+// restoreCarriedSentence is restoreSentence where the approval restored is itself a carry: it names
+// the version the person approved, then the version whose text is restored, the one that approval
+// was carried to (docs' restoreCarriedReason).
+func restoreCarriedSentence(approved, restored int) string {
+	return fmt.Sprintf("Carried forward from the approval of version %d: this version's text is version %d's, unchanged, which that approval was carried to.", approved, restored)
+}
+
 // agentEdit applies ops through the edits route as the asking agent, in one batch that versions
 // the document in the route's own transaction, waits until that version, number, reads, and
 // answers the advice the write came back with.
