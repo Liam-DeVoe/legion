@@ -1724,9 +1724,9 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 			Error redact.RemoteText `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		// The answer's words print with every credential the request carried redacted (its proof
-		// the answer's own request record (the DPoP proof a transport added among them), and
-		// compare as they came (RemoteText.WithoutTokens).
+		// The answer's words print with every credential the request carried redacted, as the
+		// answer's own request record names them (redact.Carried: its Proof header among them, and
+		// the DPoP proof a transport added), and compare as they came (RemoteText.WithoutTokens).
 		carried := redact.Carried(resp)
 		return newBrokerError(resp.StatusCode, e.Code.WithoutTokens(carried...), e.Error.WithoutTokens(carried...), !b.URL.Clean())
 	}
