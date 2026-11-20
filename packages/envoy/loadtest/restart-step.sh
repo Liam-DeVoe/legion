@@ -205,10 +205,18 @@ step_loadgen() {
 # root's lock instead of measuring on alone. SIGTERM goes to `loadgen run`, not to run-step.sh, so
 # the step renders its tables, stops Dispatch and releases the lock as it does for any failed run:
 # to the `loadgen run` below the step this script started, by its pid (step_loadgen), which the
-# stop waits for, every thread of it, before it waits for the step itself.
+# stop waits for, every thread of it, before it waits for the step itself. Whether the step still
+# runs is its own state, by the pid and start this script recorded when it started it (proc_ended):
+# a step that has exited and that this shell has not reaped yet is a zombie, which `kill -0` calls
+# running, and which has nothing left to end. A step whose start could not be read is ended as one
+# that runs, and so is one whose /proc entry is there and cannot be read.
 end_step() {
-  local rc=$? lg lg_start ended
-  if ((rc != 0)) && [ -n "${step:-}" ] && kill -0 "$step" 2>/dev/null; then
+  local rc=$? lg lg_start ended running=1
+  if ((rc != 0)) && [ -n "${step:-}" ] && [ -n "${step_start:-}" ]; then
+    running=0
+    proc_ended "$step" "$step_start" || running=$?
+  fi
+  if ((rc != 0)) && [ -n "${step:-}" ] && ((running != 0)); then
     note "ending the step: this script failed with $rc"
     lg=$(step_loadgen)
     lg_start=""
@@ -237,6 +245,8 @@ rc=0
 "$here/run-step.sh" "$name" --events "$events" --sessions "$sessions" --requests "$requests" \
   --duration "$duration" --out "$out" "${step_args[@]}" &
 step=$!
+step_start=""
+proc_start_into step_start "$step" || step_start=""
 trap end_step EXIT
 
 # The window opens once the sessions have registered; meta.json carries its start from then on.

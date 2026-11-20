@@ -4344,9 +4344,12 @@ pass "proc_start of a pid that has left the table prints nothing and lets a shel
 # thread alone: it reads Z while another thread still runs and still holds the process's port. The
 # stand-in holds that moment still: a process whose main thread has left by the exit system call
 # of that thread alone, while a second thread holds a listening port. proc_ended reads it as not
-# ended (1) while that port takes a connection, and as ended (0) once the SIGKILL has ended the
-# rest, when its port takes none; a zombie of one thread reads as ended at once. A read of an entry
-# that is there and cannot be read is no answer (2), and an entry that has gone is an end (0).
+# ended (1) while that socket is open, and as ended (0) once the SIGKILL has ended the rest, when the
+# socket is closed; a zombie of one thread reads as ended at once. The socket is told by its inode
+# in /proc/net/tcp (socket_inodes, socket_held), never by a connect to its port number, which the
+# machine can give to the next program that binds port 0 once the stand-in has let go of it. A read
+# of an entry that is there and cannot be read is no answer (2), and an entry that has gone is an
+# end (0). The waits are events, each with a backstop of 600 s for a hang.
 command -v python3 >/dev/null || fail "case (hh) needs python3 on PATH for its stand-in of many threads"
 cat >"$fake/threads.py" <<'EOF'
 # threads.py PORT_FILE THREADS [main-exits]: THREADS threads besides the main one, each asleep, and
@@ -4372,31 +4375,33 @@ ended_rc=0
 bash -c '
   source "$1"
   source "$5"
-  takes() { : 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$1"; }
   state() { local s; read -r s 2>/dev/null <"/proc/$1/stat" || return 1; s=${s##*) }; printf "%s\n" "${s%% *}"; }
   python3 "$3" "$4/main-exits.port" 1 main-exits &
   mt=$!
   at=$SECONDS
   until [ -s "$4/main-exits.port" ] && [ "$(state "$mt")" = Z ]; do
-    ((SECONDS - at <= 10)) || { echo "the stand-in of two threads did not reach its zombie main thread in 10 s"; end_process "$mt" || true; exit 1; }
+    ((SECONDS - at <= 600)) || { echo "the stand-in of two threads did not reach its zombie main thread in 600 s, the row'"'"'s backstop for a hang"; end_process "$mt" || true; exit 1; }
     "$2" 0.05
   done
-  mt_start=$(proc_start "$mt") port=$(<"$4/main-exits.port")
+  mt_start=$(proc_start "$mt") socket=$(socket_inodes "$mt")
+  [ -n "$socket" ] || { echo "the stand-in of two threads (pid $mt) showed no socket"; end_process "$mt" || true; exit 1; }
   rc=0
   proc_ended "$mt" "$mt_start" || rc=$?
-  took=no
-  ! takes "$port" || took=yes
-  echo "main thread gone, a thread holding the port: $rc, the port takes a connection: $took"
+  held=no
+  # shellcheck disable=SC2086 # one inode a word
+  ! socket_held $socket || held=yes
+  echo "main thread gone, a thread holding the port: $rc, its socket open: $held"
   kill -KILL "$mt"
   rc=1 at=$SECONDS
-  while ((rc == 1 && SECONDS - at <= 10)); do
+  while ((rc == 1 && SECONDS - at <= 600)); do
     rc=0
     proc_ended "$mt" "$mt_start" || rc=$?
     ((rc == 0)) || "$2" 0.05
   done
-  took=no
-  ! takes "$port" || took=yes
-  echo "every thread killed: $rc, the port takes a connection: $took"
+  held=no
+  # shellcheck disable=SC2086 # one inode a word
+  ! socket_held $socket || held=yes
+  echo "every thread killed: $rc, its socket open: $held"
   wait "$mt" 2>/dev/null || true
   # The one-thread zombie is held under a parent of its own, stopped, which reaps it only once it
   # is continued; this shell would reap a child of its own at once. The parent is seen stopped
@@ -4432,17 +4437,17 @@ bash -c '
   echo "an entry that is there with no stat: $rc"
 ' _ "$cluster" "$real_sleep" "$fake/threads.py" "$fake" "$test_lib" >"$ended_out" 2>&1 || ended_rc=$?
 ((ended_rc == 0)) || fail "the reads of proc_ended ended with $ended_rc: $(cat "$ended_out")"
-grep -qx 'main thread gone, a thread holding the port: 1, the port takes a connection: yes' "$ended_out" ||
+grep -qx 'main thread gone, a thread holding the port: 1, its socket open: yes' "$ended_out" ||
   fail "proc_ended does not read a process whose main thread is a zombie, and whose other thread still holds its port, as not ended (1): $(cat "$ended_out")"
-grep -qx 'every thread killed: 0, the port takes a connection: no' "$ended_out" ||
-  fail "proc_ended does not read that process as ended (0) once every thread of it is gone, or read it so while its port still took a connection: $(cat "$ended_out")"
+grep -qx 'every thread killed: 0, its socket open: no' "$ended_out" ||
+  fail "proc_ended does not read that process as ended (0) once every thread of it is gone, or read it so while its socket was still open: $(cat "$ended_out")"
 grep -qx 'a zombie of one thread: 0' "$ended_out" ||
   fail "proc_ended does not read a zombie of one thread as ended (0): $(cat "$ended_out")"
 grep -qx 'an entry that has gone: 0' "$ended_out" ||
   fail "proc_ended does not read an entry that has gone as ended (0): $(cat "$ended_out")"
 grep -qx 'an entry that is there with no stat: 2' "$ended_out" ||
   fail "proc_ended does not answer 2, no answer, for an entry that is there and that it could not read: $(cat "$ended_out")"
-pass "proc_ended reads a process whose main thread is a zombie as ended only once no other thread of it is left and its port takes no connection, a zombie of one thread and an entry that has gone as ended, and an entry it could not read as no answer"
+pass "proc_ended reads a process whose main thread is a zombie as ended only once no other thread of it is left and its socket is closed, a zombie of one thread and an entry that has gone as ended, and an entry it could not read as no answer"
 
 # The stop's KILL goes to the watcher and to each child whose start it read, and to no other: a
 # child that has left the table by the read of its start is no process, and its pid may name
@@ -4744,6 +4749,58 @@ grep -qE "^freeze=1 |^freeze=0 frozen=.* ${fd_k:-none}:[0-9]+( |$)" "$fd_out" ||
   fail "the freeze under a descriptor limit returned 0 without the watcher's live child (pid ${fd_k:-}) in its record: $(cat "$fd_out")"
 pass "a disk watcher's freeze that a descriptor limit keeps from its reads returns 1, rather than pass over a live child of the watcher as gone"
 
+# A read the freeze cannot make is named. Under `ulimit -n 5` the freeze's read of the watcher's
+# children file cannot be made, and a line names whose children were not read; the live child
+# itself no read at that limit can find. And under `ulimit -n 4` the whole stop still ends the
+# watcher, which is this shell's own child: its TERM, its KILL and the test of whether it runs need
+# no file descriptor, where a builtin's `2>/dev/null` needs one, and bash runs no builtin whose
+# redirection it cannot make. The watcher ignores TERM and has one live child, which this row ends
+# itself. The waits are events, each with a backstop of 600 s for a hang.
+lim_out=$fake/fd-limit-stop.out
+lim_rc=0
+# shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
+bash -c '
+  source "$1"
+  source "$4"
+  rm -f "$3/lim-child"
+  ( trap "" TERM; "$2" 300 & echo "$!" >"$3/lim-child.tmp"; mv -- "$3/lim-child.tmp" "$3/lim-child"; wait ) </dev/null >/dev/null 2>&1 &
+  w=$!
+  at=$SECONDS
+  until [ -s "$3/lim-child" ]; do
+    ((SECONDS - at <= 600)) || { echo "the watcher wrote no child in 600 s, the row'"'"'s backstop for a hang"; exit 1; }
+    "$2" 0.05
+  done
+  printf "tree %s %s\n" "$w" "$(<"$3/lim-child")"
+  PG_DISK_STOPPED_SECONDS=2
+  (
+    ulimit -n 5
+    rc=0
+    pg_disk_freeze "$w" fdfive || rc=$?
+    echo "freeze at limit 5: $rc"
+  ) 2>&1
+  PG_DISK_WATCHER=$w PG_DISK_WATCH_STEP=fdfour PG_DISK_STOP_SECONDS=0
+  (
+    ulimit -n 4
+    pg_disk_watch_stop
+  ) >"$3/lim-stop.out" 2>&1
+  ended=no
+  ! process_ended "$w" || ended=yes
+  echo "the moment the stop at limit 4 returned: the watcher had ended: $ended"
+' _ "$cluster" "$real_sleep" "$fake" "$test_lib" >"$lim_out" 2>&1 || lim_rc=$?
+read -r _ lim_w lim_k < <(grep '^tree ' "$lim_out" || true) || true
+for lim_pid in ${lim_k:-} ${lim_w:-}; do
+  kill -CONT "$lim_pid" 2>/dev/null || true
+  end_process "$lim_pid" || fail "a process of the descriptor-limit stop row (pid $lim_pid) still runs 10 s after its SIGKILL"
+done
+((lim_rc == 0)) || fail "the descriptor-limit stop row ended its shell with $lim_rc: $(cat "$lim_out")"
+grep -qx 'freeze at limit 5: 1' "$lim_out" ||
+  fail "the freeze under ulimit -n 5 did not return 1 for a watcher whose children it could not read: $(cat "$lim_out")"
+grep -qF "step fdfive: the children of a process of the disk watcher's act (pid ${lim_w:-none}) could not be read" "$lim_out" ||
+  fail "the freeze under ulimit -n 5 did not name the watcher (pid ${lim_w:-}) whose children file it could not read: $(cat "$lim_out")"
+grep -qx 'the moment the stop at limit 4 returned: the watcher had ended: yes' "$lim_out" ||
+  fail "the stop under ulimit -n 4 returned with the watcher (pid ${lim_w:-}) not ended: no signal of it went out for want of a file descriptor: $(cat "$lim_out") $(cat "$fake/lim-stop.out" 2>/dev/null)"
+pass "a freeze names a children file a descriptor limit keeps it from reading, and under ulimit -n 4 the stop still ends the watcher it started"
+
 # The stop's KILL reaches every process of the act below the watcher, not its children alone. The
 # act runs kubectl under timeout (kube_for): runner_stop in the watcher's own shell, so the
 # watcher's child is timeout and kubectl a grandchild, and pg_disk's read inside a command
@@ -4753,8 +4810,10 @@ pass "a disk watcher's freeze that a descriptor limit keeps from its reads retur
 # cluster.sh's own kube_for over a kubectl that writes its pid and sleeps, one row each place of
 # the call; in the third row that kubectl is a process of 16 threads that holds a listening port,
 # as kubectl is a Go program of many threads. The moment the stop returns, read with builtins
-# alone, the kubectl has ended (process_ended) and its port takes no connection, or the stop named
-# it as not ended; and the stop's line names it among the processes it killed.
+# alone, the kubectl has ended (process_ended) and its socket is closed (by its inode,
+# socket_held, not by a connect to its port number, which another program may have bound since),
+# or the stop named it as not ended; and the stop's line names it among the processes it killed.
+# The wait for the act is an event, with a backstop of 600 s for a hang.
 act_dir=$fake/act
 mkdir -p "$act_dir/bin"
 cat >"$act_dir/bin/kubectl" <<EOF
@@ -4780,29 +4839,33 @@ for act_row in runner-stop volume-read threads; do
     PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=act PG_DISK_STOP_SECONDS=1
     at=$SECONDS
     until [ -s "$3/kubectl.$ACT_ROW" ] && { [ "$ACT_ROW" != threads ] || [ -s "$3/port.$ACT_ROW" ]; }; do
-      ((SECONDS - at <= 10)) || { echo "the act started no kubectl within 10 s"; end_process "$PG_DISK_WATCHER" || true; exit 1; }
+      ((SECONDS - at <= 600)) || { echo "the act started no kubectl within 600 s, the row'"'"'s backstop for a hang"; end_process "$PG_DISK_WATCHER" || true; exit 1; }
       "$2" 0.05
     done
-    k=$(<"$3/kubectl.$ACT_ROW") port=""
-    [ "$ACT_ROW" != threads ] || port=$(<"$3/port.$ACT_ROW")
+    k=$(<"$3/kubectl.$ACT_ROW") socket=""
+    if [ "$ACT_ROW" = threads ]; then
+      socket=$(socket_inodes "$k")
+      [ -n "$socket" ] || { echo "the kubectl of 16 threads (pid $k) showed no socket"; end_process "$PG_DISK_WATCHER" || true; exit 1; }
+    fi
     printf "kubectl %s\n" "$k"
     pg_disk_watch_stop
-    ended=no took=no
+    ended=no held=no
     ! process_ended "$k" || ended=yes
-    [ -z "$port" ] || ! : 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$port" || took=yes
-    echo "the moment the stop returned: the kubectl had ended: $ended, its port took a connection: $took"
+    # shellcheck disable=SC2086 # one inode a word
+    [ -z "$socket" ] || ! socket_held $socket || held=yes
+    echo "the moment the stop returned: the kubectl had ended: $ended, its socket still open: $held"
   ' _ "$cluster" "$real_sleep" "$act_dir" "$test_lib" "$act_row" >"$act_out" 2>&1 || act_rc=$?
   read -r _ act_k < <(grep '^kubectl ' "$act_out" || true) || true
   [ -z "$act_k" ] || end_process "$act_k" || fail "the act's kubectl (pid $act_k) still runs 10 s after its SIGKILL"
   ((act_rc == 0)) || fail "the stop of a watcher stuck in its act's kubectl ($act_row) ended with $act_rc: $(cat "$act_out")"
   [ -n "$act_k" ] || fail "the act of the stand-in watcher started no kubectl ($act_row): $(cat "$act_out")"
-  grep -qx 'the moment the stop returned: the kubectl had ended: yes, its port took a connection: no' "$act_out" ||
+  grep -qx 'the moment the stop returned: the kubectl had ended: yes, its socket still open: no' "$act_out" ||
     grep -qF "step act: a process of the disk watcher's act (pid $act_k) has not ended 1 s after its SIGKILL" "$act_out" ||
-    fail "the stop of a watcher stuck in its act's kubectl ($act_row) returned with that kubectl (pid $act_k) not ended, or its port still taking a connection, and named nothing of it: $(cat "$act_out")"
+    fail "the stop of a watcher stuck in its act's kubectl ($act_row) returned with that kubectl (pid $act_k) not ended, or its socket still open, and named nothing of it: $(cat "$act_out")"
   grep -qE "step act: the disk watcher did not end within 1 s of its SIGTERM, so it was killed, with the [0-9]+ processes of its act below it \(pids ([0-9]+ )*$act_k( [0-9]+)*\)" "$act_out" ||
     fail "the stop's line does not name the act's kubectl (pid $act_k, $act_row) among the processes it killed: $(cat "$act_out")"
 done
-pass "the stop of the disk watcher kills and waits for every process of its act below the watcher -- the kubectl under timeout in the watcher's own shell and in a command substitution, and a kubectl of 16 threads until each thread of it has gone and its port is free -- and names each"
+pass "the stop of the disk watcher kills and waits for every process of its act below the watcher -- the kubectl under timeout in the watcher's own shell and in a command substitution, and a kubectl of 16 threads until each thread of it has gone and its socket is closed -- and names each"
 
 # A read that fails is no answer. step_gone of a step shell whose /proc entry it could not read --
 # here proc_ended, the reader step_gone and run_command_alive use, answers 2 for that shell's pid,

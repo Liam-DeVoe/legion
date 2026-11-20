@@ -285,15 +285,12 @@ printf '%s\n' "$#" >>"$FAKE_DIR/ssh.words"
 eval "set -- $*"
 printf 'ssh\t%s\t%s\n' "$target" "$*" >>"$FAKE_DIR/actions.log"
 export FAKE_SSH_TARGET=$target
-# A process a case holds against the kills of the load machine (victim_hold): a remote sh script is
-# handed a kill that sends a pid FAKE_DIR/kill-holds names a TERM where the script sends it a KILL.
-# That stand-in ignores TERM, as a process in uninterruptible sleep outlasts a KILL, so the kill's
-# own wait runs out with the process still running.
-if [ -s "$FAKE_DIR/kill-holds" ] && [ "${1:-}" = sh ] && [ "${2:-}" = -c ]; then
-  holds=$(tr '\n' ' ' <"$FAKE_DIR/kill-holds") sent=$(printf %q "$FAKE_DIR/kill-hold-sent")
-  # no-wait: the load machine's script's own signals, which that script waits on (vm.sh remote_kill)
-  hold='kill() { case " '"$holds"'" in *" ${2:-} "*) if [ "$1" = -KILL ]; then command kill -TERM "$2"; : >'"$sent"'; return; fi ;; esac; command kill "$@"; }; '
-  set -- sh -c "$hold$3" "${@:4}"
+# A process a case holds against the kills of the load machine (victim_hold): a remote sh script
+# first sources FAKE_DIR/kill-hold.sh, a kill that sends that process a TERM where the script sends
+# it a KILL. The stand-in ignores TERM, as a process in uninterruptible sleep outlasts a KILL, so the
+# kill's own wait runs out with the process still running.
+if [ -s "$FAKE_DIR/kill-hold.sh" ] && [ "${1:-}" = sh ] && [ "${2:-}" = -c ]; then
+  set -- sh -c ". $(printf %q "$FAKE_DIR/kill-hold.sh"); $3" "${@:4}"
 fi
 if [ -p /dev/stdin ]; then
   cat | setsid -f -w "$@"
@@ -1165,7 +1162,7 @@ record_remote_pid() {
 # a slow reaper on a loaded machine does, or a PID 1 that reaps nothing does for ever. The wait for
 # its pid is a hang's backstop of 600 s, not a clock the stand-in races.
 victim() {
-  rm -f -- "$1" "$tmp/victim" "$fake/kill-holds"
+  rm -f -- "$1" "$tmp/victim" "$fake/kill-hold.sh" "$fake/kill-hold-sent"
   mkdir -p -- "$(dirname -- "$1")"
   # Its standard error goes nowhere: it would only say that the stand-in was killed.
   bash -c '(trap "" TERM; exec "$1" 300) & echo "$!" >"$2"; wait' _ "$REAL_SLEEP" "$tmp/victim" 2>/dev/null &
@@ -1189,18 +1186,27 @@ victim_parent_stop() {
 }
 
 # victim_hold: the stand-in made one that the KILL of a kill of the load machine does not end, as
-# a process in uninterruptible sleep outlasts a KILL: the fake ssh hands each script it runs a kill
-# that sends the pid FAKE_DIR/kill-holds names a TERM in place of a KILL, which the stand-in
-# ignores. So a kill's wait runs out with the process still running. victim_end and victim_fail end
-# it, with the suite's own kill.
+# a process in uninterruptible sleep outlasts a KILL: the fake ssh has each script it runs source
+# FAKE_DIR/kill-hold.sh, a kill that sends the stand-in a TERM in place of a KILL, which the
+# stand-in ignores, and marks FAKE_DIR/kill-hold-sent once it has. So a kill's wait runs out with
+# the process still running. victim_end and victim_fail end it, with the suite's own kill.
 victim_hold() {
-  printf '%s\n' "$VICTIM" >"$fake/kill-holds"
+  cat >"$fake/kill-hold.sh" <<EOF
+kill() {
+  if [ "\$1" = -KILL ] && [ "\${2:-}" = $VICTIM ]; then
+    command kill -TERM "\$2" # no-wait: the load machine's script waits for the process it signals
+    : >$(printf %q "$fake/kill-hold-sent")
+    return
+  fi
+  command kill "\$@" # no-wait: a pass-through; the load machine's script waits for what it signals
+}
+EOF
 }
 
 # victim_fail MESSAGE: fail, with the stand-in and its parent ended first, so neither outlives the
 # case.
 victim_fail() {
-  rm -f -- "$fake/kill-holds"
+  rm -f -- "$fake/kill-hold.sh"
   # no-wait: the case fails below, and its parent, continued next, reaps the stand-in.
   kill -KILL "$VICTIM" 2>/dev/null || true
   kill -CONT "$VICTIM_PARENT" 2>/dev/null || true
@@ -1209,7 +1215,7 @@ victim_fail() {
 
 # victim_end: the stand-in ended, and gone once its parent, continued, has reaped it and left.
 victim_end() {
-  rm -f -- "$fake/kill-holds"
+  rm -f -- "$fake/kill-hold.sh"
   # no-wait: its parent reaps it, and the wait on that parent below returns once it has.
   kill -KILL "$VICTIM" 2>/dev/null || true
   kill -CONT "$VICTIM_PARENT" 2>/dev/null || true
@@ -3608,7 +3614,7 @@ while True:
     time.sleep(0.1)
 EOF
 victim_threads() {
-  rm -f -- "$1" "$tmp/victim" "$tmp/threads-release" "$fake/kill-holds"
+  rm -f -- "$1" "$tmp/victim" "$tmp/threads-release" "$fake/kill-hold.sh" "$fake/kill-hold-sent"
   mkdir -p -- "$(dirname -- "$1")"
   bash -c '( exec python3 "$1" "$2" "$3" ) & wait' _ "$tmp/threads.py" "$tmp/threads-release" "$tmp/victim" 2>/dev/null &
   VICTIM_PARENT=$!
@@ -3765,6 +3771,53 @@ wait "$odd_pid" 2>/dev/null || true
 [ -n "$odd_start" ] && [ "$odd_read" = "$odd_start" ] ||
   fail "the load machine's reader of a start, under sh with an empty PATH, read '$odd_read' for a process named 'a b) c' whose start is $odd_start"
 pass "the load machine's reader of a start needs no command of that machine's, and reads a command name with spaces and a parenthesis in it"
+
+# Under dash, the load machine's /bin/sh on Debian and Ubuntu images, the reader of a start says
+# nothing for a pid that has gone: dash opens a file before it moves standard error, so the read's
+# own error is silenced around the read, or the shell's "cannot open" would land in the kill's
+# output. The same holds for the kill's read of a pid file that is not there.
+dash_sh=$(command -v dash || command -v sh)
+# shellcheck disable=SC2016 # expanded by the sh it starts
+gone_read=$(env -i PATH=/nonexistent "$dash_sh" -c "$real_start_of"'; start_of 999999999; printf "[%s]" "$now"' 2>&1) || true
+[ "$gone_read" = "[]" ] ||
+  fail "the load machine's reader of a start, under $dash_sh, wrote '$gone_read' for a pid that has gone, not nothing"
+rm -f -- "$remote/work/pprof-tunnel.pid"
+run_fn tunnel_kill
+((RC == 0)) || fail "tunnel_kill ended with $RC, not 0, for a pid file that is not there: $(cat "$tmp/out")"
+! grep -qiE 'cannot open|no such file' "$tmp/out" ||
+  fail "tunnel_kill's script on the load machine said that it could not open a pid file that is not there: $(cat "$tmp/out")"
+pass "under dash, the load machine's reader of a start and the kill's read of a pid file that is not there say nothing"
+
+# A start script that could not read its own process's start writes the mark `-` in the start's
+# place, never a start left empty, which a kill would take for a file of the pid alone and end with
+# no start check. A kill refuses a pid recorded with `-` by name: nothing tells it from another
+# process that took that pid since, so nothing is signalled and the file is kept. Here the
+# tunnel's start is given a reader that reads nothing, and the kill after it the driver's own.
+blind_reader="${real_start_of}; start_of() { now= state=; }"
+rm -f -- "$remote/work/pprof-tunnel.pid" "$fake/tunnel-up"
+# shellcheck disable=SC2016 # expanded by the shell run_fn starts, where tunnel_start set it
+run_fn "REMOTE_START_OF=$(printf %q "$blind_reader")" eval 'tunnel_start blind || { printf "refused: %s\n" "$TUNNEL_REFUSAL"; exit 1; }'
+((RC == 0)) || fail "tunnel_start with a reader that reads nothing ended with $RC: $(cat "$tmp/out")"
+blind_pid="" blind_start=""
+read -r blind_pid blind_start <"$remote/work/pprof-tunnel.pid" || true
+[ -n "$blind_pid" ] || fail "tunnel_start with a reader that reads nothing wrote no pid file"
+record_pid "$FAKE_STARTED" "$blind_pid"
+[ "$blind_start" = - ] ||
+  { end_process "$blind_pid" || true; fail "tunnel_start with a reader that reads nothing recorded the start '$blind_start', not the mark -"; }
+run_fn NOT_GONE="" tunnel_kill
+blind_rc=$RC
+blind_signalled=no
+process_ended "$blind_pid" && blind_signalled=yes
+end_process "$blind_pid" || fail "the tunnel of the blind start (pid $blind_pid) still runs 10 s after its SIGKILL"
+((blind_rc == 1)) ||
+  fail "tunnel_kill ended with $blind_rc, not 1, for a pid recorded with no start (pid $blind_pid): $(cat "$tmp/out")"
+[ "$blind_signalled" = no ] ||
+  fail "tunnel_kill signalled pid $blind_pid, recorded with no start, which nothing tells from another process that took it: $(cat "$tmp/out")"
+grep -qF "$remote/work/pprof-tunnel.pid on the generator VM names pid $blind_pid with no start" "$tmp/out" ||
+  fail "tunnel_kill did not name the pid recorded with no start (pid $blind_pid): $(cat "$tmp/out")"
+[ -e "$remote/work/pprof-tunnel.pid" ] || fail "tunnel_kill removed the pid file of a pid recorded with no start"
+rm -f -- "$remote/work/pprof-tunnel.pid" "$fake/tunnel-up"
+pass "a start that could not read its own process's start records the mark -, and a kill refuses a pid recorded with it by name, signalling nothing and keeping the file"
 
 # A process the kill's KILL does not end (victim_hold): the kill's wait, cut to a second here, runs
 # out, and the kill says which process it could not end. The wait is judged on the load
@@ -3992,7 +4045,7 @@ cut_script() {
 }
 # cut_remote FLAG BODY: BODY with FLAG set, or none when FLAG is empty, and the INT sent once the
 # kill on the load machine has sent its KILL to the stand-in (FAKE_DIR/kill-hold-sent, which the
-# fake ssh's kill writes: victim_hold), followed at once by a KILL of the row's own to the stand-in.
+# kill victim_hold writes marks), followed at once by a KILL of the row's own to the stand-in.
 cut_remote() {
   cut_script "$2" < <(
     [ -z "$1" ] || printf '%s=1\n' "$1"

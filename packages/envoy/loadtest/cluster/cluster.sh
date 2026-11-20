@@ -1101,6 +1101,7 @@ stop_daemon() {
     target=-$pid
     # no-wait: a test of whether the daemon leads a process group, not of an end.
     kill -0 -- "$target" 2>/dev/null || target=$pid
+    # no-wait: the loop below waits until every process of target has ended (group_running).
     kill -TERM -- "$target" 2>/dev/null || true
     until=$((EPOCHSECONDS + DAEMON_STOP_SECONDS))
     while :; do

@@ -119,6 +119,36 @@ process_state() {
   printf '%s\n' "${stat%% *}"
 }
 
+# socket_inodes PID: the inode of each socket PID holds, one a line: the "socket:[N]" links among
+# the descriptors of any of its threads, so a process whose main thread has left is read through
+# another thread. A socket is told by its inode, not by its port: once a process has let go of a
+# port, the machine can give that number to the next program that binds port 0, and a connect to
+# the number then reaches that program.
+socket_inodes() {
+  local fd link
+  for fd in "/proc/$1"/task/*/fd/*; do
+    link=$(readlink -- "$fd" 2>/dev/null) || continue
+    case $link in socket:\[*\]) link=${link#socket:[}; printf '%s\n' "${link%]}" ;; esac
+  done | sort -u
+}
+
+# socket_held INODE...: some socket of these inodes still exists: a line of /proc/net/tcp or
+# /proc/net/tcp6 (the asking process's network namespace) names one of them in its inode column.
+# One awk reads the tables: a machine running many programs holds tens of thousands of lines there
+# (31,130 on the box this was written on), which a loop of the shell's read takes minutes to go
+# through. It returns 0 when a table names one, 1 when none does, and 2 when no table could be
+# read or awk failed, since nothing is known then; a caller counts 2 as a socket still held.
+socket_held() {
+  local file tables=() rc=0
+  for file in /proc/net/tcp /proc/net/tcp6; do
+    [ ! -r "$file" ] || tables+=("$file")
+  done
+  ((${#tables[@]})) || return 2
+  awk -v want=" $* " 'index(want, " " $10 " ") { found = 1; exit } END { exit !found }' "${tables[@]}" || rc=$?
+  ((rc <= 1)) || rc=2
+  return "$rc"
+}
+
 record_pid() {
   local start
   start=$(process_start "$2")
