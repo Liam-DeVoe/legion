@@ -131,6 +131,43 @@ func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
 	}
 }
 
+// A claim that records a session id and no file is resumed by that id as `--resume=<id>`, one
+// argv word (agentArgv), in a pod that trades as in one that trades nothing. An id of a shape
+// sessionIDFault names, such as one that begins with `-`, passes in that word as any other does,
+// so a pod that trades either starts it as a pod that trades nothing does, or refuses it naming
+// the session id the claim recorded as the id's source. The refusal never names a file: such a
+// claim records none, and its words "no `--resume <id>` can pass it" describe the two-word form
+// this resume does not use.
+func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *testing.T) {
+	const id = "-" + resumeSessionID
+	untraded := newRig(t, nil, withResumesBySession())
+	first := untraded.spawn(workerSpec(t))
+	spec := byIDSpec(t)
+	spec.ResumeSession = id
+	if _, err := untraded.r.Resume(untraded.ctx, &first, spec); err != nil {
+		t.Fatalf("the control: a pod that trades nothing refuses the resume of session %q: %v", id, err)
+	}
+	if got, want := sessionWords(lastStart(t, untraded, workerToken).Argv), []string{"--resume=" + id}; !slices.Equal(got, want) {
+		t.Fatalf("the control: a pod that trades nothing names its session as %q, want %q", got, want)
+	}
+
+	g := newRig(t, nil, exchangeKeyed(), withResumesBySession())
+	first = g.spawn(workerSpec(t))
+	resumed, err := g.r.Resume(g.ctx, &first, spec)
+	if err != nil {
+		if msg := err.Error(); strings.Contains(msg, "the name of") || !strings.Contains(msg, "the session id its claim recorded") {
+			t.Fatalf("a pod that trades refuses the resume of the recorded session %q naming a file the claim does not record, where it must name the session id the claim recorded: %v", id, err)
+		}
+		return
+	}
+	if got, want := sessionWords(lastStart(t, g, workerToken).Argv), []string{"--resume=" + id}; !slices.Equal(got, want) {
+		t.Errorf("a pod that trades names its session as %q, want %q", got, want)
+	}
+	if session, named := g.r.LaunchSession(resumed); !named || session != id {
+		t.Errorf("LaunchSession of the resumed launch = %q, %t; want the recorded session %s", session, named, id)
+	}
+}
+
 // A claim that recorded a session file and no session id beside it is resumed by the id its
 // file's name gives, `<timestamp>_<id>.jsonl` (the claim's file-id name, supervise.RecordedHolds):
 // its Oh My Pi starts with `--resume <id>`, and the start command still names the file. A recorded
