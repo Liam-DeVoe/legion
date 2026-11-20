@@ -103,7 +103,15 @@ on:
         type: string
         required: true
       check_ci_images_test:
-        description: "ci.yaml's needs.changes.outputs.check_ci_images_test: check-ci-images.test.sh, its two sibling harnesses and what they test."
+        description: "ci.yaml's needs.changes.outputs.check_ci_images_test: check-ci-images.test.sh and what it tests."
+        type: string
+        required: true
+      check_ci_images_rows_test:
+        description: "ci.yaml's needs.changes.outputs.check_ci_images_rows_test: check-ci-images-rows.test.sh and what it tests."
+        type: string
+        required: true
+      check_ci_images_references_test:
+        description: "ci.yaml's needs.changes.outputs.check_ci_images_references_test: check-ci-images-references.test.sh and what it tests."
         type: string
         required: true
       mirror_ci_images_test:
@@ -380,15 +388,15 @@ jobs:
 
       - name: Test the CI image check
         if: inputs.changes-result != 'success' || inputs.check_ci_images_test == 'true'
-        # The check's three harnesses (check-ci-images-test-lib.sh's header says what each tests),
-        # each run whatever an earlier one answered, and the step failing when any of them failed.
-        run: |
-          status=0
-          for harness in .github/scripts/check-ci-images.test.sh .github/scripts/check-ci-images-rows.test.sh \
-            .github/scripts/check-ci-images-references.test.sh; do
-            "$harness" || status=1
-          done
-          exit "$status"
+        run: .github/scripts/check-ci-images.test.sh
+
+      - name: Test the CI image check's rows
+        if: inputs.changes-result != 'success' || inputs.check_ci_images_rows_test == 'true'
+        run: .github/scripts/check-ci-images-rows.test.sh
+
+      - name: Test the CI image check's references
+        if: inputs.changes-result != 'success' || inputs.check_ci_images_references_test == 'true'
+        run: .github/scripts/check-ci-images-references.test.sh
 
       - name: Test the CI image mirror
         if: inputs.changes-result != 'success' || inputs.mirror_ci_images_test == 'true'

@@ -11,7 +11,7 @@
 # reaches the network and why every case names its mode.
 #
 # Run from anywhere: .github/scripts/check-ci-images.test.sh
-# CI runs it in ci.yaml's test job, in one step with the check's other two harnesses.
+# CI runs it in ci.yaml's test job, in its own step, "Test the CI image check".
 set -euo pipefail
 # Every fixture is built inside `root=$(fixture …)`, and bash does not carry errexit into a
 # command substitution on its own: without this, a tree that failed to build is used anyway and
