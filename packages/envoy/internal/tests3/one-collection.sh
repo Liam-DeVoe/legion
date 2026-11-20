@@ -35,13 +35,13 @@
 # things in two helpers only, shell and master, each under a bound of its own, and it waits in
 # one only, within, which ends by its seconds; every check and every wait fails by a message of
 # its own. TestEveryWaitAndCheckOfTheScriptHasACase (waits_test.go) parses this file as POSIX
-# shell and reads every command it runs, wherever it runs it (a function, a substitution, a trap,
-# within's and timeout's command), and fails when a request runs outside those helpers or under
-# no bound above 0, a wait outside within, a sleep other than `sleep 1`, a command outside the
-# list of those that end by themselves (its scriptCommands, with tail only as `tail -n <lines>
-# <file>`), a function that runs itself, an exit outside fail and usage, a return of a status
-# other than "$status", a test whose failure nothing acts on, a message that is the want of no
-# case of TestOneCollectionFailsWhenTheRuleDoesNotHold, or shell that it cannot read.
+# shell, reads every command it runs wherever it runs it (a function, a substitution, a trap,
+# within's and timeout's command), and fails on a request outside those helpers or under no bound
+# above 0, a wait outside within, a sleep but `sleep 1`, a command outside the list of those that
+# end by themselves (its scriptCommands, with tail only as `tail -n <lines> [--] <file>`, a file a
+# variable gives after --), a function that runs itself, is defined twice or takes a listed name,
+# a deadline or seconds set but within's own, an exit outside fail and usage, a return but
+# "$status", a test nothing acts on, a message no case wants, or shell that it cannot read.
 #
 # The log lines this reads are SeaweedFS 3.97's, which .github/ci-images.yaml pins by digest for
 # both images; whoever moves that row reads them again.
@@ -67,7 +67,7 @@ fail() {
     cat "$file"
   done
   echo "--- the last 200 lines of $log"
-  tail -n 200 "$log" 2>/dev/null || echo "(no log at $log)"
+  tail -n 200 -- "$log" 2>/dev/null || echo "(no log at $log)"
   exit 1
 }
 

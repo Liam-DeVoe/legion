@@ -533,16 +533,16 @@ jobs:
         # bound held a store that never answered for 361 s. With prepare's own bounds (its head says
         # how), the step ends by its own name within 10 minutes on any store, before the job's 22.
         # TestEveryWaitAndCheckOfTheScriptHasACase, in packages/envoy/internal/tests3/waits_test.go,
-        # parses this step and the two around it as shell and fails on a command off its list (wget,
-        # tail, weed shell, .), a curl but s3's, an s3 call of 0 seconds or giving curl more than
-        # -o, -X, --data-binary and a URL, a wait but an until after its deadline whose body ends
-        # the step by name, a sleep but `sleep 1`, other loops, and shell it cannot read.
+        # parses this step and the two around it as shell. It fails on a command off its list (wget,
+        # tail, weed shell, .), a curl but s3's (-q: no .curlrc; -g: no URL lists), an s3 call of 0
+        # seconds or giving curl more than -o, -X, --data-binary and one URL (after -- if a variable
+        # gives it), a wait but an until after its deadline, other loops, and shell it cannot read.
         run: |
           # s3 <seconds> <what> <curl argument>...: one request to the store, bounded by seconds.
           s3() {
             seconds=$1 what=$2
             shift 2
-            curl -sf --max-time "$seconds" "$@" && return 0
+            curl -q -g -sf --max-time "$seconds" "$@" && return 0
             status=$?
             if [ "$status" = 28 ]; then
               echo "::error::the file store took the connection for $what and did not answer within $seconds s"
@@ -558,19 +558,19 @@ jobs:
           done
           packages/envoy/internal/tests3/one-collection.sh prepare dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
           store=http://127.0.0.1:18333/dispatch-e2e-files
-          s3 10 "the bucket" -X PUT -o /dev/null "$store" || { echo "::error::the file store made no bucket"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          s3 10 "the bucket" -X PUT -o /dev/null -- "$store" || { echo "::error::the file store made no bucket"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
           # The write is retried: the bucket exists as soon as the filer answers, while the
           # volume server the object lands in can still be coming up behind it.
           deadline=$(( $(date +%s) + 60 ))
-          until s3 15 "the readiness object" -X PUT --data-binary ready -o /dev/null "$store/readiness"; do
+          until s3 15 "the readiness object" -X PUT --data-binary ready -o /dev/null -- "$store/readiness"; do
             [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
             sleep 1
           done
           # Read into a file, not a command substitution, whose subshell would keep s3's exit from
           # ending the step.
-          s3 10 "the readiness object's read" -o "$RUNNER_TEMP/readiness" "$store/readiness" && [ "$(cat "$RUNNER_TEMP/readiness")" = ready ] ||
+          s3 10 "the readiness object's read" -o "$RUNNER_TEMP/readiness" -- "$store/readiness" && [ "$(cat "$RUNNER_TEMP/readiness")" = ready ] ||
             { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
-          s3 10 "the readiness object's delete" -X DELETE -o /dev/null "$store/readiness" ||
+          s3 10 "the readiness object's delete" -X DELETE -o /dev/null -- "$store/readiness" ||
             { echo "::error::the file store did not delete the readiness object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
           packages/envoy/internal/tests3/one-collection.sh check dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)

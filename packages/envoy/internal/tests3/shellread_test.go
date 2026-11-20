@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -22,13 +23,16 @@ import (
 //     shell resolves them, and with where it runs;
 //   - every until, while and for, with the statement before it where it stands in a list of
 //     statements of its own;
-//   - every assignment;
-//   - the file's own functions, and which of them each runs.
+//   - every assignment: name=value, and those a for's variable, arithmetic ($((x = ...)),
+//     $((x += ...)), $((x++))) and a parameter's ${x=...} or ${x:=...} make;
+//   - the file's own functions, each definition of them, and which of them each runs.
 //
-// A word holding an expansion (a variable, a substitution, arithmetic) or a file-name pattern is
-// told apart from a literal word, so no rule reads it as text it is not. What the reader cannot
-// read it answers as refused, by line: a file that does not parse, a kind of shell other than
-// those these files use, and a trap whose command is not plain text.
+// A word holding an expansion of any kind (a variable, a substitution, arithmetic, a leading ~,
+// the $'...' that busybox sh expands as bash does, or the $"..." that bash expands) or a file-name
+// pattern is told apart from a literal word, so no rule reads it as text it is not: its value is
+// one this program cannot know. What the reader cannot read it answers as refused, by line: a
+// file that does not parse, a kind of shell other than those these files use, and a trap whose
+// command is not plain text.
 
 // A shellWord is one word of a command.
 type shellWord struct {
@@ -37,7 +41,8 @@ type shellWord struct {
 	text string
 	// source is the word as written.
 	source string
-	// literal: the word holds no expansion and no file-name pattern, so text is all of it.
+	// literal: the word holds no expansion of any kind and no file-name pattern, so text is all
+	// of it.
 	literal bool
 	// single: the shell gives it as one word, never split or matched to file names: a literal
 	// word, or one whose every expansion stands inside double quotes, "$@" excepted.
@@ -91,7 +96,11 @@ type shellAssign struct {
 	line     int
 	function string
 	name     string
-	value    shellWord
+	// value is the value of name=value; that of any other assignment is not literal, with the
+	// assignment as written as its source.
+	value shellWord
+	// node is the assignment where it is name=value, and nil for any other.
+	node *syntax.Assign
 }
 
 // A shellRefusal is a part of a file the reader cannot read.
@@ -100,9 +109,18 @@ type shellRefusal struct {
 	what string
 }
 
+// A shellDefinition is one definition of an own function, with its line.
+type shellDefinition struct {
+	line int
+	name string
+}
+
 // A shellRead is what the reader found in one file.
 type shellRead struct {
-	functions map[string]*syntax.FuncDecl
+	// functions holds each own function by its name, at its last definition, and definitions
+	// every definition the reader reads, in the order it reads them.
+	functions   map[string]*syntax.FuncDecl
+	definitions []shellDefinition
 	// calls holds, for each own function, the own functions it runs.
 	calls    map[string][]string
 	commands []shellCommand
@@ -236,6 +254,7 @@ func (r *shellRead) stmt(stmt *syntax.Stmt, s shellScope, before *syntax.Stmt) {
 			return
 		}
 		r.loops = append(r.loops, shellLoop{s.line(c), s.function, "for", before, c.Do})
+		r.assigns = append(r.assigns, shellAssign{s.line(c), s.function, iter.Name.Value, shellWord{text: "for", source: "for " + iter.Name.Value}, nil})
 		for _, item := range iter.Items {
 			r.words(item, s.substitution())
 		}
@@ -251,6 +270,7 @@ func (r *shellRead) stmt(stmt *syntax.Stmt, s shellScope, before *syntax.Stmt) {
 	case *syntax.Block:
 		r.list(c.Stmts, s)
 	case *syntax.FuncDecl:
+		r.definitions = append(r.definitions, shellDefinition{s.line(c), c.Name.Value})
 		r.stmt(c.Body, shellScope{function: c.Name.Value, trap: s.trap}, nil)
 	default:
 		r.refuse(s.line(c), "runs a "+strings.TrimPrefix(fmt.Sprintf("%T", c), "*syntax.")+", a kind of shell this program does not read")
@@ -278,7 +298,7 @@ func (r *shellRead) call(c *syntax.CallExpr, s shellScope, background bool) {
 			if a.Value != nil {
 				value = readWord(a.Value)
 			}
-			r.assigns = append(r.assigns, shellAssign{s.line(a), s.function, a.Name.Value, value})
+			r.assigns = append(r.assigns, shellAssign{s.line(a), s.function, a.Name.Value, value, a})
 		}
 	}
 	for _, w := range c.Args {
@@ -361,13 +381,26 @@ func (r *shellRead) trap(words []*syntax.Word, s shellScope) {
 
 // words reads the code that a word, an assignment or a redirection holds: each command
 // substitution in it, wherever it stands (inside quotes, arithmetic, a parameter's default or a
-// here-document), is read as code.
+// here-document), is read as code, and each assignment arithmetic or a parameter makes in it is
+// an assignment of the file's.
 func (r *shellRead) words(node syntax.Node, s shellScope) {
 	syntax.Walk(node, func(n syntax.Node) bool {
 		switch n := n.(type) {
 		case *syntax.CmdSubst:
 			r.list(n.Stmts, s)
 			return false
+		case *syntax.BinaryArithm:
+			if slices.Contains(arithmeticAssigns, n.Op) {
+				r.arithmeticAssign(n, n.X, s)
+			}
+		case *syntax.UnaryArithm:
+			if n.Op == syntax.Inc || n.Op == syntax.Dec {
+				r.arithmeticAssign(n, n.X, s)
+			}
+		case *syntax.ParamExp:
+			if n.Param != nil && n.Exp != nil && (n.Exp.Op == syntax.AssignUnset || n.Exp.Op == syntax.AssignUnsetOrNull) {
+				r.assigns = append(r.assigns, shellAssign{s.line(n), s.function, n.Param.Value, shellWord{text: printed(n), source: printed(n)}, nil})
+			}
 		case *syntax.ProcSubst, *syntax.ExtGlob, *syntax.BraceExp:
 			r.refuse(s.line(n), "holds a "+strings.TrimPrefix(fmt.Sprintf("%T", n), "*syntax.")+", a kind of shell this program does not read")
 			return false
@@ -376,11 +409,27 @@ func (r *shellRead) words(node syntax.Node, s shellScope) {
 	})
 }
 
+// arithmeticAssigns are the operators of arithmetic that assign to the variable on their left.
+var arithmeticAssigns = []syntax.BinAritOperator{
+	syntax.Assgn, syntax.AddAssgn, syntax.SubAssgn, syntax.MulAssgn, syntax.QuoAssgn, syntax.RemAssgn,
+	syntax.AndAssgn, syntax.OrAssgn, syntax.XorAssgn, syntax.ShlAssgn, syntax.ShrAssgn,
+	syntax.AndBoolAssgn, syntax.OrBoolAssgn, syntax.XorBoolAssgn, syntax.PowAssgn,
+}
+
+// arithmeticAssign records the assignment arithmetic n makes to the variable x.
+func (r *shellRead) arithmeticAssign(n syntax.Node, x syntax.ArithmExpr, s shellScope) {
+	name := "an arithmetic expression"
+	if w, ok := x.(*syntax.Word); ok {
+		name = w.Lit()
+	}
+	r.assigns = append(r.assigns, shellAssign{s.line(n), s.function, name, shellWord{text: "$((" + name + " ...))", source: "$((" + name + " ...))"}, nil})
+}
+
 // readWord answers w as a rule reads it.
 func readWord(w *syntax.Word) shellWord {
 	out := shellWord{source: printed(w), literal: true, single: true, word: w}
 	var text strings.Builder
-	for _, part := range w.Parts {
+	for i, part := range w.Parts {
 		switch p := part.(type) {
 		case *syntax.Lit:
 			// An unquoted *, ? or [ makes a pattern the shell matches to file names, but [ alone,
@@ -388,11 +437,15 @@ func readWord(w *syntax.Word) shellWord {
 			if p.Value != "[" && strings.ContainsAny(p.Value, "*?[") {
 				out.literal, out.single = false, false
 			}
-			text.WriteString(unescape(p.Value, false))
-		case *syntax.SglQuoted:
-			if p.Dollar {
+			// A leading ~ is the value of $HOME or of a user's home; a $ right before a quote
+			// makes $'...', which busybox sh expands as bash does ($'\055f' is -f), or $"...",
+			// which bash expands, where this POSIX parse reads a $ and a quoted text (it sets no
+			// SglQuoted.Dollar).
+			if i == 0 && strings.HasPrefix(p.Value, "~") || i+1 < len(w.Parts) && dollarBeforeQuote(p.Value, w.Parts[i+1]) {
 				out.literal = false
 			}
+			text.WriteString(unescape(p.Value, false))
+		case *syntax.SglQuoted:
 			text.WriteString(p.Value)
 		case *syntax.DblQuoted:
 			for _, inner := range p.Parts {
@@ -429,6 +482,21 @@ func unescape(value string, quoted bool) string {
 		b.WriteByte(value[i])
 	}
 	return b.String()
+}
+
+// dollarBeforeQuote answers whether value, an unquoted literal, ends with a $ that no backslash
+// escapes, and next, the part after it, is a quoted text: $'...' or $"...".
+func dollarBeforeQuote(value string, next syntax.WordPart) bool {
+	switch next.(type) {
+	case *syntax.SglQuoted, *syntax.DblQuoted:
+	default:
+		return false
+	}
+	if !strings.HasSuffix(value, "$") {
+		return false
+	}
+	escapes := len(value) - 1 - len(strings.TrimRight(value[:len(value)-1], `\`))
+	return escapes%2 == 0
 }
 
 // printed answers a node as the shell's source text.

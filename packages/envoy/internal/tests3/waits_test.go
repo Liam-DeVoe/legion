@@ -59,10 +59,14 @@ var goBounds = []goBound{
 // command the shell runs, wherever it runs it, with its words as the shell resolves them. What
 // the reader cannot read fails the program by name: a file that does not parse, a kind of shell
 // other than those the files use, a command whose name is not plain text (a variable, a
-// substitution, a file-name pattern), and a trap whose command is not plain text. It does not
-// read what a listed command reads: a cat or a grep given a file that never ends, or no file at
-// all, passes it; both places that run the script and the steps give them a standard input
-// already at its end.
+// substitution, a file-name pattern), and a trap whose command is not plain text. A word whose
+// value this program cannot know (an expansion of any kind, a leading ~ and $'...' among them, or
+// a file-name pattern) is not taken for a file or a URL where it could be an option that keeps a
+// wait from ending: given to tail, or by an s3 call to curl, it fails the program unless it
+// stands after a literal --, or is what -o or --data-binary takes, which curl reads as theirs
+// whatever it holds. It does not read what a listed command reads: a cat or a grep given a file
+// that never ends, or no file at all, passes it; both places that run the script and the steps
+// give them a standard input already at its end.
 //
 //   - The script asks the store things (weed, wget, curl, nc) only in shell and master, each as
 //     the command of `timeout -s KILL <seconds>` with seconds above 0; a timeout by any other
@@ -73,9 +77,16 @@ var goBounds = []goBound{
 //   - The script runs its own functions and the commands of scriptCommands alone, and so do the
 //     commands that within, timeout and a trap run, so a command that can wait with no bound
 //     (`read`, `nc -l`, `.`) is named. A command named by a path is read by its base name. tail
-//     runs only as `tail -n <lines> <file>...`: any other word of it (`-f`, `-F`, `--follow`, or
-//     a word the shell splits or matches to file names, which may give one) can follow a file for
-//     ever. No function runs itself again, at once or through others.
+//     runs only as `tail -n <lines> [--] <file>...`, each file before -- literal text that does
+//     not start with -: any other word of it (`-f`, `-F`, `--follow`, or a word whose value this
+//     program cannot know, which may be one) can follow a file for ever. No function runs itself
+//     again, at once or through others.
+//   - No own function of the script or of the steps takes the name of a command these rules read
+//     (ruledCommand: date, sleep, tail, curl, timeout, kill, [ and the others), and none is
+//     defined twice, since the shell would run its body in place of the one the rules read. Only
+//     the statement right before an until sets deadline, which that until's body reads, and only
+//     within in the script, s3 in the steps, sets seconds, to its first argument; a for's
+//     variable, arithmetic and ${x=...} assign too.
 //   - No check ends the script with no message for a case to want: exit runs only in fail and
 //     usage, return only as `return "$status"`, and no test (`[`, `test`, `grep`) runs where
 //     nothing acts on its failure (an if, until or while, || or &&), which `set -e` turns into an
@@ -94,18 +105,23 @@ var goBounds = []goBound{
 //     and the commands of stepCommands alone, so a request or a wait by any other command
 //     (`wget`, `weed shell`, `tail`, `.`) is named, and no function runs itself again. They ask
 //     the store things only through the wait step's s3, whose one kind of curl is
-//     `curl -sf --max-time "$seconds" "$@"`, where seconds is s3's first argument: every s3 call
-//     gives a whole number of them above 0 (curl's 0 is no limit), and gives curl only -o, -X,
-//     --data-binary and a URL, none of which sets a time. s3 ends the step by name, with exit 1,
-//     on curl's timeout (exit 28). They start weed server only by `nohup weed server ... &`, in
-//     the background of the step that starts the store. They wait only in an until that is a
-//     statement of its own right after `deadline=$(( $(date +%s) + <seconds> ))`, whose body ends
-//     the step by name, with exit 1, once the deadline passes, and sleeps only as `sleep 1`. No
-//     while or for stands anywhere, and no sleep outside such a wait. No case in this package
-//     starts those steps, so these rules are their check.
+//     `curl -q -g -sf --max-time "$seconds" "$@"`: -q, first, reads no .curlrc, which could make
+//     curl try again, and -g makes a URL's [..] and {..} text, not a list of requests. seconds is
+//     s3's first argument, and s3 takes off its first two with `shift 2` before its curl. Every s3
+//     call gives a whole number of seconds above 0 (curl's 0 is no limit), and gives curl -o, -X
+//     and --data-binary, none of which sets a time, and one URL alone, literal text or the word
+//     after --: curl makes a request of each URL, each under its own --max-time. s3 ends the step
+//     by name, with exit 1, on curl's timeout (exit 28). They start weed server only by
+//     `nohup weed server ... &`, in the background of the step that starts the store. They wait
+//     only in an until that is a statement of its own right after
+//     `deadline=$(( $(date +%s) + <seconds> ))`, whose body ends the step by name, with exit 1,
+//     once the deadline passes, and sleeps only as `sleep 1`. No while or for stands anywhere, and
+//     no sleep outside such a wait. No case in this package starts those steps, so these rules are
+//     their check.
 //
 // The last subtest plants each kind of fault and wants this program to name it, so a rule that
-// cannot see what it is for fails too.
+// cannot see what it is for fails too, and plants shell that ends by itself, which it must pass,
+// so a rule that names more than it is for fails as well.
 func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 	cases := caseNames(t, storeCases)
 	source, err := os.ReadFile("seaweedfs.go")
@@ -160,7 +176,8 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			}
 		}
 		const (
-			tail     = "a tail that is not `tail -n <lines> <file>...`"
+			tail     = "a tail that is not `tail -n <lines> [--] <file>...`"
+			unknown  = "a word whose value this program cannot know"
 			waits    = "waits outside within"
 			s3Zero   = "an s3 call whose seconds are not a whole number above 0"
 			s3Curl   = "an s3 call that gives curl "
@@ -168,6 +185,9 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			ends     = `a wait that does not end the step by name`
 			noDue    = "a wait with no deadline"
 			itself   = "a function that runs itself again"
+			ruled    = "which takes the name of a command these rules read"
+			twice    = "defined more than once"
+			deadline = "sets deadline other than right before its until"
 		)
 		// One wait of the wait step, read by the program, after its deadline: shape is what
 		// stands around it.
@@ -193,9 +213,9 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a tail that follows after its lines", inPrepare("  tail -n 200 -f \"$log\" > /dev/null\n"), tail},
 			{"a tail whose follow is quoted", inPrepare("  tail -n 200 \"-f\" \"$log\" > /dev/null\n"), tail},
 			{"a tail whose follow is on the next line", inPrepare("  tail -n 1 \\\n    -f \"$log\" > /dev/null\n"), tail},
-			{"a tail whose follow a variable gives", inPrepare("  follow=-f\n  tail -n 200 $follow \"$log\" > /dev/null\n"), tail},
-			{"a tail whose words \"$@\" gives", inPrepare("  tail -n 200 \"$@\" > /dev/null\n"), tail},
-			{"a tail given a file-name pattern", inPrepare("  tail -n 200 [-]f \"$log\" > /dev/null\n"), tail},
+			{"a tail whose follow a variable gives", inPrepare("  follow=-f\n  tail -n 200 $follow /tmp/weed.log > /dev/null\n"), "a tail given $follow, " + unknown},
+			{"a tail whose words \"$@\" gives", inPrepare("  tail -n 200 \"$@\" > /dev/null\n"), "a tail given \"$@\", " + unknown},
+			{"a tail given a file-name pattern", inPrepare("  tail -n 200 [-]f /tmp/weed.log > /dev/null\n"), "a tail given [-]f, " + unknown},
 			{"a tail that follows by name", inPrepare("  tail -F \"$log\" > /dev/null\n"), tail},
 			{"a tail named by its path", inPrepare("  /usr/bin/tail -f \"$log\" | grep -q -m1 procesing\n"), tail},
 			{"a tail whose word is escaped", inPrepare("  \\tail -f \"$log\" > /dev/null\n"), tail},
@@ -238,9 +258,9 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a request with no deadline", gosource("\n// call sends", "\nfunc ping(c testcontainers.Container) {\n\t_, _, _ = c.Exec(context.Background(), []string{\"true\"})\n}\n\n// call sends"), "ping sends a request with no deadline"},
 			{"a deadline cut", gosource("\tctx, cancel := context.WithTimeout(ctx, deadline)\n\tdefer cancel()\n\tsent, err", "\tsent, err"), "request sends a request with no deadline"},
 			{"a curl with no bound in the wait step", inWait("curl -sf -o /dev/null http://127.0.0.1:18333/\n"), "a curl outside s3"},
-			{"the wait step's s3 with its bound cut", wait(`curl -sf --max-time "$seconds" "$@"`, `curl -sf "$@"`), stepCurl},
-			{"a second curl in s3 with no bound", wait(`curl -sf --max-time "$seconds" "$@"`, `curl -sf --max-time "$seconds" "$@" || curl -sf "$@"`), stepCurl},
-			{"s3's curl with its bound turned off after it", wait(`curl -sf --max-time "$seconds" "$@"`, `curl -sf --max-time "$seconds" "$@" --max-time 0`), stepCurl},
+			{"the wait step's s3 with its bound cut", wait(`curl -q -g -sf --max-time "$seconds" "$@"`, `curl -q -g -sf "$@"`), stepCurl},
+			{"a second curl in s3 with no bound", wait(`curl -q -g -sf --max-time "$seconds" "$@"`, `curl -q -g -sf --max-time "$seconds" "$@" || curl -sf "$@"`), stepCurl},
+			{"s3's curl with its bound turned off after it", wait(`curl -q -g -sf --max-time "$seconds" "$@"`, `curl -q -g -sf --max-time "$seconds" "$@" --max-time 0`), stepCurl},
 			{"s3 that tries again a request that timed out", wait(`if [ "$status" = 28 ]; then`, `if false; then`), "on curl's timeout"},
 			{"an s3 call whose seconds are a variable", wait(`s3 10 "the bucket"`, `s3 "$seconds" "the bucket"`), "an s3 call whose seconds are not a whole number"},
 			{"an s3 call of 0 seconds", wait(`s3 10 "the bucket"`, `s3 0 "the bucket"`), s3Zero},
@@ -268,10 +288,102 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a long sleep in a wait", wait("  sleep 1\ndone\npackages/envoy/internal/tests3/one-collection.sh prepare", "  sleep 100000\ndone\npackages/envoy/internal/tests3/one-collection.sh prepare"), "a sleep in a wait other than its sleep 1"},
 			{"a wait whose done is never found", wait("one-collection.sh check", "one-collection.sh check dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\"\ndeadline=$(( $(date +%s) + 60 ))\nuntil s3 10 \"the root\" -o /dev/null http://127.0.0.1:18333/; do\n  sleep 1\n#"), "does not parse as POSIX shell"},
 			{"a store started in the foreground", start("2>&1 &", "2>&1"), "a nohup that is not `nohup weed server ... &`"},
+			// A word whose value this program cannot know, before --.
+			{"a tail whose follow a quoted variable gives", inPrepare("  follow=-f\n  tail -n 200 \"$follow\" /tmp/weed.log > /dev/null\n"), "a tail given \"$follow\", " + unknown},
+			{"a tail whose follow ~ gives", inPrepare("  HOME=-f\n  tail -n 200 ~ /tmp/weed.log > /dev/null\n"), "a tail given ~, " + unknown},
+			{"a tail whose follow $'...' gives", inPrepare("  tail -n 200 $'\\055f' /tmp/weed.log > /dev/null\n"), "a tail given $'\\055f', " + unknown},
+			{"a tail whose follow $\"...\" gives", inPrepare("  tail -n 200 $\"-f\" /tmp/weed.log > /dev/null\n"), "a tail given $\"-f\", " + unknown},
+			{"a tail with no file after --", inPrepare("  tail -n 200 -- > /dev/null\n"), tail},
+			{"an s3 call whose option a quoted variable gives", inWait("limit=--max-time\ns3 10 \"the readiness object's delete\" \"$limit\" 0 -X DELETE -o /dev/null -- \"$store/readiness\"\n"), s3Curl + "\"$limit\", " + unknown},
+			{"an s3 call whose option ~ gives", inWait("HOME=-m0\ns3 10 \"the root\" ~ -o /dev/null http://127.0.0.1:18333/\n"), s3Curl + "~, " + unknown},
+			{"an s3 call whose option $'...' gives", inWait("s3 10 \"the root\" $'-m0' -o /dev/null http://127.0.0.1:18333/\n"), s3Curl + "$'-m0', " + unknown},
+			// One URL alone, which curl asks for once, under the bound.
+			{"an s3 call given a URL range", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null "$store/[1-999999999]"`), s3Curl + "\"$store/[1-999999999]\", " + unknown},
+			{"an s3 call given a URL list", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null "$store/{a,b,c}"`), s3Curl + "\"$store/{a,b,c}\", " + unknown},
+			{"an s3 call given three URLs", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null "$store" "$store" "$store"`), s3Curl + "\"$store\", " + unknown},
+			{"an s3 call given two URLs", inWait("s3 10 \"the root\" -o /dev/null http://127.0.0.1:18333/a http://127.0.0.1:18333/b\n"), "an s3 call that gives curl 2 URLs, not one"},
+			{"an s3 call given two URLs after --", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null -- "$store" "$store"`), "an s3 call that gives curl 2 words after --"},
+			{"an s3 call given a URL the shell splits after --", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null -- $store`), "after --, which the shell splits"},
+			{"an s3 call given no URL", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null`), "an s3 call that gives curl 0 URLs, not one"},
+			{"an s3 call given \"$@\" after --", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null -- "$@"`), "after --, which the shell splits"},
+			{"s3's curl that reads URL patterns", wait(`curl -q -g -sf --max-time "$seconds" "$@"`, `curl -q -sf --max-time "$seconds" "$@"`), stepCurl},
+			{"s3's curl that reads a .curlrc that tries again", func() []string {
+				curlrc := replaceOnce(t, "the wait step", steps[waitStep], "store=http://", "echo \"retry = 100000\" > \"$HOME/.curlrc\"\nstore=http://")
+				return stepFindings(waitStep, replaceOnce(t, "the wait step", curlrc, `curl -q -g -sf --max-time "$seconds" "$@"`, `curl -g -sf --max-time "$seconds" "$@"`))
+			}, stepCurl},
+			{"s3 that gives curl its what", wait("  shift 2\n", "  shift\n"), "s3 does not take off its seconds and what"},
+			{"s3 that takes off its seconds after its curl", wait("  shift 2\n  curl -q -g -sf --max-time \"$seconds\" \"$@\" && return 0\n", "  curl -q -g -sf --max-time \"$seconds\" \"$@\" && return 0\n  shift 2\n"), "s3 does not take off its seconds and what"},
+			// A command the rules read, or the deadline a wait reads, that the file makes its own.
+			{"a date of the wait step's own", wait("s3() {", "date() {\n  echo 0\n}\ns3() {"), ruled},
+			{"a date of the script's own", script("\nwithin() {\n", "\ndate() {\n  echo 0\n}\n\nwithin() {\n"), ruled},
+			{"a within defined twice", script("\n# 1. A volume server", "\nwithin() {\n  shift 3\n  until \"$@\"; do\n    sleep 1\n  done\n}\n\n# 1. A volume server"), twice},
+			{"a deadline set again in a wait's body", wait("http://127.0.0.1:18333/; do\n", "http://127.0.0.1:18333/; do\n  deadline=$(( $(date +%s) + 60 ))\n"), deadline},
+			{"a deadline set again in s3", wait("  shift 2\n", "  shift 2\n  deadline=$(( $(date +%s) + 60 ))\n"), deadline},
+			{"a deadline set in a wait's condition", wait(`until s3 10 "the S3 port's first request"`, `until deadline=$(( $(date +%s) + 60 )); s3 10 "the S3 port's first request"`), deadline},
+			{"a deadline set again by arithmetic", wait("http://127.0.0.1:18333/; do\n", "http://127.0.0.1:18333/; do\n  echo $(( deadline = $(date +%s) + 60 )) > /dev/null\n"), deadline},
+			{"a deadline set again by a parameter", wait("http://127.0.0.1:18333/; do\n", "http://127.0.0.1:18333/; do\n  echo \"${deadline:=0}\" > /dev/null\n"), deadline},
+			{"a deadline set again by ++", wait("http://127.0.0.1:18333/; do\n", "http://127.0.0.1:18333/; do\n  echo $(( deadline++ )) > /dev/null\n"), deadline},
+			{"a deadline set again in within's wait", script("    [ \"$(date +%s)\" -lt \"$deadline\" ]", "    deadline=$(( $(date +%s) + 60 ))\n    [ \"$(date +%s)\" -lt \"$deadline\" ]"), deadline},
+			{"a deadline set again by a for", script("    [ \"$(date +%s)\" -lt \"$deadline\" ]", "    for deadline in 99999999999; do echo; done\n    [ \"$(date +%s)\" -lt \"$deadline\" ]"), deadline},
+			{"within's seconds set again", script("  shift 3\n  deadline=", "  shift 3\n  seconds=100000\n  deadline="), "within takes its seconds from other than its first argument"},
+			// Each part of the reader, so a part made blind leaves its fault unnamed.
+			{"a sleep in a case's word", inPrepare("  case $(sleep 100000) in *) echo x ;; esac\n"), waits},
+			{"a sleep in a case's pattern", inPrepare("  case x in $(sleep 100000)) echo x ;; esac\n"), waits},
+			{"a tail in a case's arm", inPrepare("  case x in x) tail -f \"$log\" ;; esac\n"), tail},
+			{"a tail in an if's condition", inPrepare("  if tail -f \"$log\"; then echo x; fi\n"), tail},
+			{"a tail in an if's then", inPrepare("  if [ -d / ]; then tail -f \"$log\"; fi\n"), tail},
+			{"a tail in an if's else", inPrepare("  if [ -d / ]; then echo x; else tail -f \"$log\"; fi\n"), tail},
+			{"a tail in an elif's condition", inPrepare("  if [ -d / ]; then echo x; elif tail -f \"$log\"; then echo y; fi\n"), tail},
+			{"a sleep in a for's items", inPrepare("  for x in $(sleep 100000); do echo \"$x\"; done\n"), waits},
+			{"a tail in a for's body", inPrepare("  for x in a; do tail -f \"$log\"; done\n"), tail},
+			{"an s3 call of 0 seconds in a wait's condition", wait(`until s3 10 "the S3 port's first request"`, `until s3 0 "the S3 port's first request"`), s3Zero},
+			{"a function that runs itself through another", script("\nprepare() {\n", "\npoll() {\n  again\n}\n\nagain() {\n  poll\n}\n\nprepare() {\n"), "poll → again → poll"},
+			{"a trap whose command does not parse", script(`trap 'rm -rf "$work"' EXIT`, `trap 'if' EXIT`), "a trap whose command does not parse as POSIX shell"},
+			{"a tail given to eval", inPrepare("  eval \"tail -f \\\"$log\\\"\"\n"), "runs eval, which is not in scriptCommands"},
+			{"an alias that follows the log", inPrepare("  alias poll=\"tail -f \\\"$log\\\"\"\n  poll\n"), "runs alias, which is not in scriptCommands"},
+			{"a tail given to a within whose seconds are unquoted arithmetic", inPrepare("  within $((60)) rule \"$work/rule.txt\" tail -f \"$log\"\n"), tail},
+			// The lists of bounds, each held to the files and to the cases.
+			{"a bound that occurs twice", script("  registered 60\n", "  registered 60\n  registered 60\n"), "occurs 2 times, not once"},
+			{"a bound whose case does not exist", func() []string {
+				bounds := slices.Clone(scriptBounds)
+				bounds[0].caseName = "no such case"
+				return scriptFindings(oneCollection, storeCases, bounds, cases)
+			}, `names a case that does not exist: "no such case"`},
+			{"seaweedfs.go that does not parse", gosource("\npackage tests3\n", "\npackage tests3\n{\n"), "seaweedfs.go: parse:"},
+			{"a deadline listed that seaweedfs.go does not set", func() []string {
+				return goFindings(string(source), append(slices.Clone(goBounds), goBound{"noSuchFunction", "TestARequestThatIsNeverAnsweredEndsAtItsDeadline"}), cases)
+			}, "goBounds lists noSuchFunction, which sets no deadline"},
+			{"a deadline whose case does not exist", func() []string {
+				bounds := slices.Clone(goBounds)
+				bounds[1].caseName = "no such case"
+				return goFindings(string(source), bounds, cases)
+			}, `the deadline of request names a case that does not exist: "no such case"`},
 		} {
 			findings := c.findings()
 			if !slices.ContainsFunc(findings, func(f string) bool { return strings.Contains(f, c.want) }) {
 				t.Errorf("%s: the program found %q, want a finding saying %q", c.name, findings, c.want)
+			}
+		}
+		// Shell that ends by itself, which the program must pass: the shell acts on the failure of
+		// a negated test, of a pipe's left side, of a wait's condition and of a substitution in an
+		// assignment before a command; tail reads every word after -- as a file, a quoted literal
+		// path is no option, and an s3 call of one URL is one request.
+		for _, c := range []struct {
+			name     string
+			findings func() []string
+		}{
+			{"a negated test", inPrepare("  ! grep -q x \"$log\"\n")},
+			{"a count on a pipe's left side", inPrepare("  grep -c x \"$log\" | tr -d \" \" > \"$work/n\"\n")},
+			{"a tail of a file after --", inPrepare("  tail -n 200 -- \"$log\" > /dev/null\n")},
+			{"a tail of a quoted literal path", inPrepare("  tail -n 200 \"/tmp/weed.log\" > /dev/null\n")},
+			{"an s3 call of one URL after --", inWait("s3 30 \"the root\" -o /dev/null -- \"$url\"\n")},
+			{"an s3 call of one literal URL", inWait("s3 10 \"the root\" -o /dev/null http://127.0.0.1:18333/\n")},
+			{"a wait on one line whose deadline ends it", inWait("deadline=$(( $(date +%s) + 60 ))\n" + readyWait + "\n")},
+			{"a test as a wait's condition", script("  until \"$@\"; do\n", "  until grep -q x \"$seen\"; do\n")},
+			{"a test in an assignment before a command", inPrepare("  n=\"$(grep -c x \"$log\")\" echo > /dev/null\n")},
+		} {
+			if findings := c.findings(); len(findings) > 0 {
+				t.Errorf("%s: the program found %q, want no finding", c.name, findings)
 			}
 		}
 	})
@@ -339,7 +451,7 @@ func caseNames(t *testing.T, cases []storeCase) map[string]bool {
 // scriptCommands are the commands one-collection.sh may run besides its own functions: shell
 // builtins, and programs that read what they are given and end, or that run under a bound the
 // rules above hold (timeout, sleep). A command that can wait with no bound is left out, so the
-// program names it wherever the script runs it; tail is held to `tail -n <lines> <file>...`,
+// program names it wherever the script runs it; tail is held to `tail -n <lines> [--] <file>...`,
 // sleep to `sleep 1`, exit to fail and usage and return to `return "$status"`, by rules of their
 // own.
 var scriptCommands = map[string]bool{
@@ -366,19 +478,78 @@ func killTimeout(args []shellWord) bool {
 	return len(args) > 3 && args[0].is("-s") && args[1].is("KILL") && args[2].literal && wholeSeconds.MatchString(args[2].text)
 }
 
-// tailReadsLines answers whether the words of a tail are -n <lines> <file>..., and no others: any
-// other option of tail (-f, -F, --follow) can follow a file for ever, and so can a word the
-// shell splits, which may give one.
-func tailReadsLines(args []shellWord) bool {
+// tailFinding answers what is wrong with the words of a tail, or "" when nothing is. They must be
+// -n <lines> [--] <file>...: any other option of tail (-f, -F, --follow) can follow a file for
+// ever, and so can a word before -- whose value this program cannot know (an expansion of any
+// kind, ~ and $'...' among them, or a file-name pattern), which may be one. tail reads every word
+// after -- as a file.
+func tailFinding(args []shellWord) string {
+	const form = "a tail that is not `tail -n <lines> [--] <file>...`, which can follow a file for ever"
 	if len(args) < 3 || !args[0].is("-n") || !args[1].literal || !digits.MatchString(args[1].text) {
-		return false
+		return form
+	}
+	if args[2].is("--") {
+		if len(args) == 3 {
+			return form
+		}
+		return ""
 	}
 	for _, file := range args[2:] {
-		if !file.single || strings.HasPrefix(file.text, "-") {
-			return false
+		switch {
+		case !file.literal:
+			return "a tail given " + file.source + ", a word whose value this program cannot know, before --, so it may be an option that follows a file for ever"
+		case strings.HasPrefix(file.text, "-"):
+			return form
 		}
 	}
-	return true
+	return ""
+}
+
+// ruledCommand answers whether name is a command these rules read by its name: one of
+// scriptCommands, stepCommands or storeRequests, or kill, test or wait. An own function of the
+// script or of the steps may not take such a name, since the shell then runs it in that
+// command's place: a date of the file's own that answers 0 keeps a wait's deadline from passing.
+func ruledCommand(name string) bool {
+	return scriptCommands[name] || stepCommands[name] || storeRequests[name] || name == "kill" || name == "test" || name == "wait"
+}
+
+// ownFindings answers, by line, what read's own functions and assignments break: a function
+// that takes the name of a command these rules read (ruledCommand), or that is defined more than
+// once, so the body the rules read is not the one every call runs; an assignment to deadline
+// other than the statement right before an until, whose body reads it, so the wait's end moves;
+// and an assignment to seconds other than function's own `seconds=$1` (within's in the script,
+// s3's in the steps), so no call's seconds say its bound.
+func ownFindings(read *shellRead, function string) []shellRefusal {
+	var found []shellRefusal
+	defined := map[string]int{}
+	for _, d := range read.definitions {
+		if ruledCommand(d.name) {
+			found = append(found, shellRefusal{d.line, "a function named " + d.name + ", which takes the name of a command these rules read, so the shell runs it in that command's place"})
+		}
+		if defined[d.name]++; defined[d.name] == 2 {
+			found = append(found, shellRefusal{d.line, "a function named " + d.name + ", defined more than once, so the body the rules read is not the one every call runs"})
+		}
+	}
+	beforeUntil := map[*syntax.Assign]bool{}
+	for _, loop := range read.loops {
+		if loop.kind != "until" || loop.before == nil {
+			continue
+		}
+		if call, ok := loop.before.Cmd.(*syntax.CallExpr); ok && len(call.Args) == 0 {
+			for _, a := range call.Assigns {
+				beforeUntil[a] = true
+			}
+		}
+	}
+	for _, a := range read.assigns {
+		switch {
+		case a.name == "deadline" && !beforeUntil[a.node]:
+			found = append(found, shellRefusal{a.line, "sets deadline other than right before its until, so the wait's end moves where its body reads it"})
+		case a.name == "seconds" && (a.function != function || a.value.source != "$1"):
+			found = append(found, shellRefusal{a.line, function + " takes its seconds from other than its first argument, so no call's seconds say its bound"})
+		}
+	}
+	return found
 }
 
 // boundSeconds answers the word of a bound that gives its seconds, timeout's, within's or
@@ -474,6 +645,9 @@ func scriptFindings(script string, cases []storeCase, bounds []scriptBound, name
 	for _, name := range slices.Sorted(maps.Keys(selfRunning)) {
 		finding(int(read.functions[name].Pos().Line()), "a function that runs itself again ("+selfRunning[name]+"), so nothing but a bound ends it")
 	}
+	for _, own := range ownFindings(read, "within") {
+		finding(own.line, own.what)
+	}
 	for _, loop := range read.loops {
 		if loop.kind != "for" && loop.function != "within" {
 			finding(loop.line, "waits outside within, which ends by its seconds")
@@ -499,8 +673,8 @@ func scriptFindings(script string, cases []storeCase, bounds []scriptBound, name
 			finding(c.line, "exits outside fail and usage, so with no message for a case to want")
 		case name == "return" && (len(c.args) != 1 || c.args[0].source != `"$status"`):
 			finding(c.line, `returns a status other than "$status", which under set -e ends the script with no message for a case to want`)
-		case name == "tail" && !tailReadsLines(c.args):
-			finding(c.line, "a tail that is not `tail -n <lines> <file>...`, which can follow a file for ever")
+		case name == "tail" && tailFinding(c.args) != "":
+			finding(c.line, tailFinding(c.args))
 		case !scriptCommands[name] && read.functions[name] == nil:
 			finding(c.line, "runs "+name+", which is not in scriptCommands, so it may wait with no bound")
 		}
@@ -610,11 +784,11 @@ const (
 var storeSteps = []string{"Start an S3-compatible server for uploaded files", waitStep, "Check that no write grew the file store"}
 
 // stepCommands are the commands the store steps may run besides their own function s3: each
-// ends by itself, or under a bound a rule of stepFindings reads. curl runs only in s3, under
-// --max-time "$seconds"; one-collection.sh's own waits are held by the script's rules; nohup only
-// starts weed server in the background, in the step that starts the store; sleep runs only as a
-// wait's sleep 1. Any other command is named, so a request or a wait by any other command
-// (wget, nc, tail, weed shell, .) fails the program.
+// ends by itself, or under a bound a rule of stepFindings reads. curl runs only in s3, as
+// `curl -q -g -sf --max-time "$seconds" "$@"`; one-collection.sh's own waits are held by the
+// script's rules; nohup only starts weed server in the background, in the step that starts the
+// store; sleep runs only as a wait's sleep 1. Any other command is named, so a request or a wait
+// by any other command (wget, nc, tail, weed shell, .) fails the program.
 var stepCommands = map[string]bool{
 	"[": true, "cat": true, "curl": true, "date": true, "echo": true, "exit": true, "mkdir": true,
 	"nohup": true, "one-collection.sh": true, "return": true, "shift": true, "sleep": true,
@@ -652,16 +826,23 @@ func storeStepRuns(t *testing.T) map[string]string {
 	return runs
 }
 
-// s3Curl answers whether the words of a curl are s3's own: -sf --max-time "$seconds" "$@".
+// s3Curl answers whether the words of a curl are s3's own: -q -g -sf --max-time "$seconds" "$@".
+// -q, which curl reads only as its first word, keeps it from reading a .curlrc, which could make
+// it try again (retry = 100000); -g makes [..] and {..} in a URL text, not a list of requests.
 func s3Curl(args []shellWord) bool {
-	want := []string{"-sf", "--max-time", `"$seconds"`, `"$@"`}
+	want := []string{"-q", "-g", "-sf", "--max-time", `"$seconds"`, `"$@"`}
 	return slices.EqualFunc(args, want, func(w shellWord, form string) bool { return w.form() == form })
 }
 
-// s3CurlWord answers the first word of an s3 call (s3 <seconds> <what> <curl word>...) that it
-// gives curl and that is none of -o <file>, -X <method>, --data-binary <data> and a URL, so it
-// may set curl's time (--max-time 0, -m 0, --retry); ok is true when there is none.
-func s3CurlWord(args []shellWord) (word string, ok bool) {
+// s3CurlFinding answers what is wrong with the words an s3 call (s3 <seconds> <what> <word>...)
+// gives curl, or "" when nothing is. They must be -o <file>, -X <method> and --data-binary
+// <data>, none of which sets a time, and one URL alone: literal text that does not start with -,
+// or the one word after --, which curl reads as a URL whatever it holds. curl makes a request of
+// each URL, each under its own --max-time, so two URLs are two bounds. A word before -- whose
+// value this program cannot know (an expansion of any kind, ~ and $'...' among them) may be an
+// option that turns the bound off (--max-time 0, -m 0, --retry) or a second URL.
+func s3CurlFinding(args []shellWord) string {
+	urls := 0
 	for i := 2; i < len(args); i++ {
 		w := args[i]
 		switch {
@@ -669,13 +850,47 @@ func s3CurlWord(args []shellWord) (word string, ok bool) {
 			i++
 		case w.is("-X") && i+1 < len(args) && args[i+1].literal:
 			i++
-		case w.single && !strings.HasPrefix(w.text, "-"):
-			// a URL
+		case w.is("--"):
+			rest := args[i+1:]
+			if len(rest) != 1 {
+				return fmt.Sprintf("an s3 call that gives curl %d words after --, where one URL alone is one request", len(rest))
+			}
+			if !rest[0].single {
+				return "an s3 call that gives curl " + rest[0].source + " after --, which the shell splits into any number of URLs"
+			}
+			urls++
+			i = len(args)
+		case w.literal && !strings.HasPrefix(w.text, "-"):
+			urls++
+		case !w.literal:
+			return "an s3 call that gives curl " + w.source + ", a word whose value this program cannot know, before --, so it may be an option that turns the bound off or a second URL"
 		default:
-			return w.form(), false
+			return "an s3 call that gives curl " + w.text + ", which is none of -o, -X, --data-binary and a URL, so it may turn the bound off"
 		}
 	}
-	return "", true
+	if urls != 1 {
+		return fmt.Sprintf("an s3 call that gives curl %d URLs, not one: curl makes a request of each, each under its own --max-time", urls)
+	}
+	return ""
+}
+
+// shiftsTwo answers whether s3 takes off its seconds and what, and no more, before its curl: one
+// `shift 2` in s3, before every curl of it, so the words of a call after its first two are
+// curl's.
+func shiftsTwo(read *shellRead) bool {
+	var shifts, curls []shellCommand
+	for _, c := range read.commands {
+		if c.function == "s3" && c.name.is("shift") {
+			shifts = append(shifts, c)
+		}
+		if c.function == "s3" && c.name.is("curl") {
+			curls = append(curls, c)
+		}
+	}
+	if len(shifts) != 1 || len(shifts[0].args) != 1 || !shifts[0].args[0].is("2") {
+		return false
+	}
+	return !slices.ContainsFunc(curls, func(c shellCommand) bool { return c.offset < shifts[0].offset })
 }
 
 // isDeadline answers whether stmt is deadline=$(( $(date +%s) + <seconds> )), alone.
@@ -779,10 +994,11 @@ func stepFindings(name, run string) []string {
 			finding(loop.line, "a wait that does not end the step by name, with exit 1, once its deadline passes")
 		}
 	}
-	for _, a := range read.assigns {
-		if a.name == "seconds" && (a.function != "s3" || a.value.source != "$1") {
-			finding(a.line, "s3 takes its seconds from other than its first argument, so no call's seconds say its bound")
-		}
+	for _, own := range ownFindings(read, "s3") {
+		finding(own.line, own.what)
+	}
+	if s3 := read.functions["s3"]; s3 != nil && !shiftsTwo(read) {
+		finding(int(s3.Pos().Line()), "s3 does not take off its seconds and what with one `shift 2` before its curl, so curl is given words of each call that are not its own")
 	}
 	for _, c := range read.commands {
 		if !c.name.literal {
@@ -794,14 +1010,14 @@ func stepFindings(name, run string) []string {
 			if len(c.args) == 0 || !c.args[0].literal || !wholeSeconds.MatchString(c.args[0].text) {
 				finding(c.line, "an s3 call whose seconds are not a whole number above 0, while curl's --max-time 0 is no limit")
 			}
-			if word, ok := s3CurlWord(c.args); !ok {
-				finding(c.line, "an s3 call that gives curl "+word+", which is none of -o, -X, --data-binary and a URL, so it may turn the bound off")
+			if what := s3CurlFinding(c.args); what != "" {
+				finding(c.line, what)
 			}
 		case read.functions[command] != nil:
 		case !stepCommands[command]:
 			finding(c.line, "runs "+command+", which is not in stepCommands, so it may ask the store or wait with no bound")
 		case command == "curl" && (c.function != "s3" || !s3Curl(c.args)):
-			finding(c.line, `a curl outside s3, or other than s3's own curl -sf --max-time "$seconds" "$@", so with no bound or one turned off`)
+			finding(c.line, `a curl outside s3, or other than s3's own curl -q -g -sf --max-time "$seconds" "$@", so with no bound, one turned off, a .curlrc or a URL pattern`)
 		case command == "nohup" && (name != storeSteps[0] || !c.background || len(c.args) < 2 || !c.args[0].is("weed") || !c.args[1].is("server")):
 			finding(c.line, "a nohup that is not `nohup weed server ... &` in the step that starts the store, so it may hold the step")
 		case command == "sleep" && !c.waiting:
