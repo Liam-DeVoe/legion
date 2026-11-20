@@ -65,6 +65,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { test as base } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
+import { deleteArchitectureSource, listArchitectureSources } from "./api";
 import {
   type DeliveryPlace,
   deleteDeliveryRowsBut,
@@ -272,6 +273,9 @@ type DispatchFixtures = {
   /** The broadcasts the row sent taken out again once it ends. It is automatic and carries no
    *  value: its work is its teardown. */
   ownBroadcasts: undefined;
+  /** The architecture sources the row added taken out again once it ends. It is automatic and
+   *  carries no value: its work is its teardown. */
+  ownArchitectureSources: undefined;
   /** The row's own place in the delivery tables (`DeliveryPlace`, e2e/delivery-seed.ts), on the
    *  delivery settings the worker wrote: what a delivery row hands its fixtures, and reads its
    *  numbers, its day and its window from. What the row wrote there is taken out again once it
@@ -341,6 +345,27 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
       const kept = await broadcastIds();
       await use(undefined);
       await deleteBroadcastsBut(kept);
+    },
+    { auto: true },
+  ],
+  // The teardown is the `finally` of every row that adds an architecture source, through the
+  // Settings page or through e2e/api.ts alike: every source the stack holds at the row's end
+  // that it did not hold at its start, each removed by Dispatch's own route, which takes the
+  // components it projected with it. The list of every project's sources
+  // (`GET /api/v1/settings/architecture-sources`, the Settings page's Architecture sources
+  // table) is the stack's, not a project's, and a row that reads it whole - "No architecture
+  // sources yet." once it has deleted its own - reads it back only if each row takes its own out
+  // again. Rows of one worker run one at a time on that worker's own stack, so what the end
+  // holds beyond the start is this row's.
+  ownArchitectureSources: [
+    async ({ freshDatabase: _resetFirst }, use) => {
+      const kept = new Set(
+        (await listArchitectureSources()).map(({ project, repo }) => `${project}\n${repo}`)
+      );
+      await use(undefined);
+      for (const { project, repo } of await listArchitectureSources()) {
+        if (!kept.has(`${project}\n${repo}`)) await deleteArchitectureSource(project, repo);
+      }
     },
     { auto: true },
   ],

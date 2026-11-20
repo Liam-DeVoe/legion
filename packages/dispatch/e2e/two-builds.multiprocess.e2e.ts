@@ -242,11 +242,13 @@ async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
   });
   // The priorities page draws its table only where a priority is written, and a priority's own
   // page draws the work advancing it, so one priority is written with an issue in flight under
-  // it; the two fault lists of the page are drawn whatever they hold.
+  // it; the two fault lists of the page are drawn whatever they hold. Its title carries the
+  // row's own key, so its id, which the server derives from the title and refuses a second time
+  // (`PRIORITY_EXISTS`), is the row's own too.
   const priority = await createPriority({
     description: "Every page is served from either build while a release overlaps the two.",
     owner: "alice",
-    title: "Serve every page from both builds",
+    title: `Serve every page from both builds (${core})`,
   });
   const advancing = await createIssue({ project: core, title: "Pin assets to one process" });
   await patchIssue(advancing.key, { advances: [priority.id], status: "in_progress" });

@@ -142,7 +142,10 @@ test("the Agents heading folds rows that are exactly the person's pinned agents 
     await expect(fold).toHaveAttribute("aria-controls", RAIL_AGENTS_ID);
     await fold.click();
     await expect(railAgents(page)).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "Agents" })).toHaveAttribute("href", "/agents");
+    // The heading's link is the one whose name starts with the word: the rail also lists every
+    // project of the stack, and a project another row named "Agents" is a link whose name holds
+    // it after its key ("AGTKQZVM Agents").
+    await expect(page.getByRole("link", { name: /^Agents\b/ })).toHaveAttribute("href", "/agents");
 
     await fold.click();
     await expect(fold).toHaveAttribute("aria-expanded", "true");
@@ -303,7 +306,8 @@ test("a person with no pins sees the Agents heading and one line saying where th
     await expect(railAgents(page)).toHaveText(NO_PINS_TEXT);
     await expect(page.locator(`#${RAIL_AGENTS_ID}`)).toHaveJSProperty("tagName", "P");
 
-    await page.getByRole("link", { name: "Agents" }).click();
+    // The heading's link, by a name that starts with the word, as in the first row above.
+    await page.getByRole("link", { name: /^Agents\b/ }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
     await expect(railAgents(page)).toHaveText(NO_PINS_TEXT);
   } finally {

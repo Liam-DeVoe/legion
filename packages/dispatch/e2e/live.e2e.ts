@@ -390,11 +390,14 @@ test("live: new events on the open issue appear in Conversation and mark it read
 // @pr: The live socket: the stream has to recover after the connection drops.
 test("live: the stream recovers after the connection drops @pr", async ({ browser }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Reconnect target" });
+  // "Nothing needs you" is said of the reader's whole list: a person of the row's own, whose
+  // issue it is, so the question asked on it during the outage waits on them and their list
+  // draws it.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Reconnect target" }, { login: me });
 
-  // "Nothing needs you" is said of the reader's whole list: a person of the row's own.
-  const alice = await asUser(browser, rowPerson("alice"));
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   const socketOpened = page.waitForEvent(
     "websocket",

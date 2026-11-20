@@ -362,13 +362,16 @@ test("an agent sets and clears the issue assignee from the command", async ({ br
   await patchIssue(closed.key, { status: "done" }, asker);
 
   const home = mkdtempSync(join(tmpdir(), "dispatch-asked-of-cli-"));
+  // bob's Inbox is read whole ("Nothing needs you", then exactly the one row the command put
+  // there): a person of the row's own, whom the command names once his sign-in has recorded him.
+  const bobLogin = rowPerson("bob");
   const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  const bob = await asUser(browser, bobLogin);
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
     const assignee = page.getByLabel(`Assignee of ${issue.key}`);
-    await expect(assignee).toHaveValue("carol");
+    await expect(assignee).toHaveValue(carolLogin);
 
     const bobPage = await bob.newPage();
     await bobPage.goto("/?group=waiting-on");
@@ -377,11 +380,11 @@ test("an agent sets and clears the issue assignee from the command", async ({ br
     // 1. The command names a person who has signed in: the page shows the new assignee with no
     // reload, and the question nobody handed on moves to that person's Inbox with it.
     const assigned = await runDispatch(
-      ["issue-update", "--issue", issue.key, "--assignee", "bob"],
+      ["issue-update", "--issue", issue.key, "--assignee", bobLogin],
       home
     );
     expect(assigned.code, `${assigned.stdout}${assigned.stderr}`).toBe(0);
-    await expect(assignee).toHaveValue("bob");
+    await expect(assignee).toHaveValue(bobLogin);
     await expect(inboxRow(bobPage, ask.id)).toBeVisible();
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
 
@@ -411,12 +414,12 @@ test("an agent sets and clears the issue assignee from the command", async ({ br
     // 4. The same call on a closed issue is refused too: a closed issue takes no assignee until
     // somebody reopens it.
     const onClosed = await runDispatch(
-      ["issue-update", "--issue", closed.key, "--assignee", "bob"],
+      ["issue-update", "--issue", closed.key, "--assignee", bobLogin],
       home
     );
     expect(onClosed.code).not.toBe(0);
     expect(`${onClosed.stdout}${onClosed.stderr}`).toContain("ISSUE_CLOSED");
-    expect((await getIssue(closed.key)).assignee).toBe("carol");
+    expect((await getIssue(closed.key)).assignee).toBe(carolLogin);
   } finally {
     await alice.close();
     await bob.close();

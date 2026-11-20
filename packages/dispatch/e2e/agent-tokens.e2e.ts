@@ -1,5 +1,5 @@
 import { baseUrl, createIssue, createProject } from "./api";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 async function createAskWithToken(issue: string, token: string): Promise<Response> {
@@ -18,10 +18,16 @@ test("a personal agent token attributes its ask, remains private, and is revoked
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Agent token attribution" });
-  const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  // The two people are the row's own (`rowPerson`): a token, the Settings list of them and the
+  // Inbox the token's ask lands in are each one person's, so each holds this row's alone.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Agent token attribution" },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
+  const bob = await asUser(browser, rowPerson("bob"));
   const alicePage = await alice.newPage();
   const bobPage = await bob.newPage();
 
@@ -51,7 +57,7 @@ test("a personal agent token attributes its ask, remains private, and is revoked
     expect(created.status).toBe(201);
 
     await alicePage.goto("/");
-    await expect(alicePage.getByText("Architect (for alice)")).toBeVisible();
+    await expect(alicePage.getByText(`Architect (for ${me})`)).toBeVisible();
 
     await bobPage.goto("/settings");
     await expect(bobPage.getByRole("cell", { name: tokenPrefix })).toHaveCount(0);

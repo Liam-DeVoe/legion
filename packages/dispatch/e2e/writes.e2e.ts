@@ -7,7 +7,7 @@ import {
   putIssueState,
 } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -23,7 +23,9 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
   await createProject({ key: wr, name: "Writes" });
   const issue = await createIssue({ project: wr, title: "Pin me" });
 
-  const context = await asUser(browser, "alice");
+  // The sidebar's Pinned group is the reader's own pins: a person of the row's own
+  // (`rowPerson`), who has pinned nothing until this row's pin lands.
+  const context = await asUser(browser, rowPerson("alice"));
   const page = await context.newPage();
   let putAttempts = 0;
   let retryRequests = 0;

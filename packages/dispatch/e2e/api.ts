@@ -1218,6 +1218,22 @@ export function putArchitectureSource(
   );
 }
 
+/** `DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`: removes one of
+ *  `project`'s architecture sources and the components it projected. */
+export function deleteArchitectureSource(project: string, repo: string, options: ApiOptions = {}) {
+  return del(
+    "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+    { params: { key: project, ...repoParams(repo) } },
+    options
+  );
+}
+
+/** `GET /api/v1/settings/architecture-sources`: every project's architecture sources, the list
+ *  the Settings page draws whole. */
+export function listArchitectureSources(options: ApiOptions = {}) {
+  return get("/api/v1/settings/architecture-sources", {}, options);
+}
+
 /** Moves the person a project's unowned new issues fall to, and whom a question on an issue
  *  nobody holds reaches. A project always names somebody: an assignee that is absent, null or
  *  blank is refused `400 INVALID_PROJECT`, so nothing here clears a default. */

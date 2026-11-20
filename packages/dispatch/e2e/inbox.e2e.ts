@@ -21,6 +21,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { clearedInbox, expectDrawn } from "./inbox-drawn";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -407,12 +408,19 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
 
 test("a quote-anchored inbox ask names and opens its document", async ({ browser }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({
-    project: core,
-    spec: "A quoted passage.",
-    title: "Anchored decision",
-  });
+  // The reader is a person of the row's own (`rowPerson`): from 1280 px the Inbox draws a card
+  // for the selected row alone, its first, which is this row's question only in a list that
+  // holds no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: "A quoted passage.",
+      title: "Anchored decision",
+    },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     { anchor: { artifact: "spec", quote: "quoted passage" }, question: "What does this mean?" },
@@ -423,7 +431,7 @@ test("a quote-anchored inbox ask names and opens its document", async ({ browser
   }
   const documentHref = `/issues/${issue.key}/spec#b-${encodeURIComponent(ask.anchor.block_id)}`;
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   try {
     await page.goto("/");
@@ -735,12 +743,16 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
 
 test("the Inbox sets its question's issue priority in place", async ({ browser }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Needs a priority" });
+  // The reader is a person of the row's own (`rowPerson`): the reading column shows the first
+  // row, and the question moves to the P0 band at the pick, which in a list of no other row's
+  // questions it heads, so the column still shows it there and after the reload.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Needs a priority" }, { login: me });
   await patchIssue(issue.key, { priority: 2 });
   const ask = await createAsk(issue.key, { question: "How urgent is this?" }, session);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -1373,24 +1385,33 @@ test("an agent's issue reaches the Inbox of the person its own project names, an
 }, testInfo) => {
   const core = rowKey("CORE");
   const ops = rowKey("OPS");
+  // The two readers are people of the row's own (`rowPerson`): from 1280 px each Inbox draws a
+  // card for its first row alone, which is the row's question only in a list that holds no
+  // other row's.
+  const aliceLogin = rowPerson("alice");
+  const bobLogin = rowPerson("bob");
   // Two projects, each naming a different person: every project names one, so there is no
   // project whose issue reaches nobody and the other project's person is the control.
-  await createProject({ key: core, name: "Core" });
-  await createProject({ key: ops, name: "Ops" }, { login: "bob" });
-  await putProjectDefaultAssignee(core, { assignee: "alice" }, { as: "user", login: "alice" });
-  await putProjectDefaultAssignee(ops, { assignee: "bob" }, { as: "user", login: "bob" });
+  await createProject({ key: core, name: "Core" }, { login: aliceLogin });
+  await createProject({ key: ops, name: "Ops" }, { login: bobLogin });
+  await putProjectDefaultAssignee(
+    core,
+    { assignee: aliceLogin },
+    { as: "user", login: aliceLogin }
+  );
+  await putProjectDefaultAssignee(ops, { assignee: bobLogin }, { as: "user", login: bobLogin });
 
   // The shared token holds nothing and names nobody: only each project's default can assign
   // these, and the two defaults are two different people.
   const hers = await createIssue({ project: core, title: "Core issue" }, session);
-  expect(hers.assignee).toBe("alice");
+  expect(hers.assignee).toBe(aliceLogin);
   const hersAsk = await createAsk(hers.key, { question: "Core decision" }, session);
   const his = await createIssue({ project: ops, title: "Ops issue" }, session);
-  expect(his.assignee).toBe("bob");
+  expect(his.assignee).toBe(bobLogin);
   const hisAsk = await createAsk(his.key, { question: "Ops decision" }, session);
 
-  const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  const alice = await asUser(browser, aliceLogin);
+  const bob = await asUser(browser, bobLogin);
   try {
     const alicePage = await alice.newPage();
     await alicePage.goto("/");
@@ -1515,11 +1536,12 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
   browser,
 }) => {
   const core = rowKey("CORE");
-  // CORE names carol, so the question on the issue nobody holds and the document's both reach
-  // her rather than the reader. She is a person of the row's own, whom the row's end takes off
-  // the people list again (`rowPerson`).
+  // The reader is a person of the row's own (`rowPerson`): her own list holds this row's
+  // question alone. CORE names carol, so the question on the issue nobody holds and the
+  // document's both reach her rather than the reader. She is a person of the row's own too.
+  const me = rowPerson("alice");
   await createProject({ key: core, name: "Core" }, { login: rowPerson("carol") });
-  const hers = await createIssue({ project: core, title: "Alice's issue" });
+  const hers = await createIssue({ project: core, title: "Alice's issue" }, { login: me });
   const hersAsk = await createAsk(hers.key, { question: "Alice's decision" }, session);
   const carols = await createIssue({ project: core, title: "Carol's issue" }, session);
   const carolsAsk = await createAsk(carols.key, { question: "Anyone's decision" }, session);
@@ -1533,8 +1555,13 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
     { question: "Does this design need review?" },
     session
   );
+  // The cleared filter lists every open question of the stack, every earlier row's beside
+  // these three, so what it draws is read from the server and banded by the Inbox's own rules
+  // (`clearedInbox`); these three are the newest of their band, so it draws them.
+  const cleared = await clearedInbox(me);
+  expect(cleared.rows).toEqual(expect.arrayContaining([hersAsk.id, carolsAsk.id, documentAsk.id]));
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -1548,7 +1575,7 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
     for (const ask of [hersAsk, carolsAsk, documentAsk]) {
       await expect(inboxRow(page, ask.id)).toBeVisible();
     }
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(3);
+    await expectDrawn(page, cleared);
 
     // The default list re-opened holds only hers.
     await page.goto("/");
@@ -1564,7 +1591,7 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
     // And no row offers to be taken, wherever it is listed: "Assign to me" is what a row nobody
     // holds carries, and there is none.
     await navigateInApp(page, "/?assignee=everyone");
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(3);
+    await expectDrawn(page, cleared);
     for (const ask of [hersAsk, carolsAsk, documentAsk]) {
       await expect(
         (await askControls(page, ask.id)).getByRole("button", { name: /^Assign / })
@@ -1584,20 +1611,25 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
 }) => {
   const core = rowKey("CORE");
   await setLiveSessions([{ session_id: session.actor.id, title: "e2e-session-title" }]);
-  // CORE names carol: a person's own new issue is still theirs, and the agent's falls to her,
-  // so neither of the two counts below is moved by a question the reader does not hold. She is
-  // a person of the row's own, whom the row's end takes off the people list again (`rowPerson`).
+  // The reader is a person of the row's own (`rowPerson`), whose counts and own list hold this
+  // row's questions alone. CORE names carol: a person's own new issue is still theirs, and the
+  // agent's falls to her, so neither of the two counts below is moved by a question the reader
+  // does not hold. She is a person of the row's own too.
+  const me = rowPerson("alice");
   await createProject({ key: core, name: "Core" }, { login: rowPerson("carol") });
-  const first = await createIssue({ project: core, title: "Alice's first" });
+  const first = await createIssue({ project: core, title: "Alice's first" }, { login: me });
   await createAsk(first.key, { question: "First decision" }, session);
-  const second = await createIssue({ project: core, title: "Alice's second" });
+  const second = await createIssue({ project: core, title: "Alice's second" }, { login: me });
   await createAsk(second.key, { question: "Second decision" }, session);
   const theirs = await createIssue({ project: core, title: "Bob's issue" }, { login: "bob" });
   await createAsk(theirs.key, { question: "Bob's decision" }, session);
   const carols = await createIssue({ project: core, title: "Carol's issue" }, session);
   await createAsk(carols.key, { question: "Anyone's decision" }, session);
+  // Widened, the list is every open question of the stack, every earlier row's beside these
+  // four: what it draws is read from the server and banded by the Inbox's own rules.
+  const cleared = await clearedInbox(me);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     // One count in the shell, wherever this width draws it: the sidebar's Inbox entry, or the
@@ -1613,7 +1645,7 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
     // Widened to every question: twice the rows, the same two counts.
     await clearAssigneeFilter(page);
     await closeAssigneeFilter(page);
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(4);
+    await expectDrawn(page, cleared);
     await expectInboxCount(page, 2);
     await expect(page.getByText(/^Blocked on you: 2 items/)).toBeVisible();
 
@@ -1624,7 +1656,7 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
     await expectInboxCount(page, 2);
 
     // One more issue assigned to her moves all three together.
-    await patchIssue(theirs.key, { assignee: "alice" });
+    await patchIssue(theirs.key, { assignee: me });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(card.getByRole("link", { name: "Needs you 3" })).toBeVisible();
     await expectInboxCount(page, 3);
@@ -1639,8 +1671,11 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
 test("a mentioned session's callback reply reaches the open ask card", async ({ browser }) => {
   const core = rowKey("CORE");
   await setLiveSessions([{ capabilities: ["btw", "steer"], session_id: "planner", title: "P" }]);
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Callback ask thread" });
+  // The reader is a person of the row's own (`rowPerson`): from 1280 px the Inbox draws a card
+  // for its first row alone, which is this row's question only in a list holding no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Callback ask thread" }, { login: me });
   const ask = await createAsk(issue.key, { question: "Which approach?" }, session);
   // A clarification in the ask's thread that pulls in a session; the session answers through
   // the delivery it was handed, not through POST .../comments.
@@ -1651,10 +1686,10 @@ test("a mentioned session's callback reply reaches the open ask card", async ({ 
       body: "Say more, @session:planner.",
       mentions: [{ target: "session:planner" }],
     },
-    { login: "alice" }
+    { login: me }
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -1682,15 +1717,28 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const visibleIssue = await createIssue({ project: core, title: "Visible Inbox ask" });
-  const hiddenIssue = await createIssue({ project: core, title: "Hidden Inbox ask" });
+  // The reader is a person of the row's own (`rowPerson`): her own list holds the visible
+  // question alone, so the reading column draws its card, and the Inbox body the page is held
+  // to is the one the server answers her.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const visibleIssue = await createIssue(
+    { project: core, title: "Visible Inbox ask" },
+    { login: me }
+  );
+  const hiddenIssue = await createIssue(
+    { project: core, title: "Hidden Inbox ask" },
+    { login: me }
+  );
   await patchIssue(hiddenIssue.key, { assignee: "bob" });
   const visibleAsk = await createAsk(visibleIssue.key, { question: "Visible question" }, session);
   const hiddenAsk = await createAsk(hiddenIssue.key, { question: "Hidden question" }, session);
-  const snapshot = await getInbox();
+  const snapshot = await getInbox({ login: me });
+  // Widened below, the list is every open question of the stack: the hidden one is the newest
+  // of its band, so the page draws it among every earlier row's (`clearedInbox`).
+  expect((await clearedInbox(me)).rows).toContain(hiddenAsk.id);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   let askReads = 0;
   page.on("request", (request) => {

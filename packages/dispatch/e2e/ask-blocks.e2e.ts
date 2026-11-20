@@ -21,7 +21,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { navigateInApp } from "./sends";
-import { type Browser, expect, type Locator, type Page, rowKey, test } from "./test";
+import { type Browser, expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /** The shared ask card a decision block hosts once the server has indexed the block: the same
@@ -195,12 +195,18 @@ test("a reader asks back from a decision block: the question threads under the b
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({
-    project: core,
-    spec: "## Specification\n\nContext before the decision.\n",
-    title: "Ask back in a spec",
-  });
+  // The reader is a person of the row's own (`rowPerson`): at 1280 px the Inbox draws a card for
+  // its first row alone, which is this row's question only in a list that holds no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: "## Specification\n\nContext before the decision.\n",
+      title: "Ask back in a spec",
+    },
+    { login: me }
+  );
   await editArtifact(
     issue.primary_artifact_id,
     {
@@ -219,7 +225,7 @@ test("a reader asks back from a decision block: the question threads under the b
   // Written as a reader writes: a question, a list, and a fenced command.
   const question = `Ship to staging first, or straight to production?\n\n- staging has the new schema\n- prod does not\n\n\`\`\`sh\nlegion status ${core}\n\`\`\``;
   const questionLead = "Ship to staging first, or straight to production?";
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });

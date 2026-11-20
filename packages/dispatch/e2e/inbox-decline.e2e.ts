@@ -77,44 +77,52 @@ async function conversationCard(page: Page, issueKey: string, askId: string): Pr
 }
 
 // SLOW(>=2s): two page loads - the Inbox and the issue page - with a decline written through
-// the dialog between them.
-test("a question declined from the Inbox with a note leaves the list and reads declined on the issue page", async ({
-  page,
-}) => {
-  const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Rollout order" });
-  const ask = await createAsk(
-    issue.key,
-    { options: shipOrHold, question: "Which service moves first?" },
-    session
-  );
-  const note = "The release owner decides this one.";
+// the dialog between them. "Nothing needs you" is said of the reader's whole Inbox, so the
+// default context is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox holds
+// this one question and no other row's, and the record names that person.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  await page.goto("/");
-  const card = await askCard(page, ask.id);
-  await expect(card).toContainText("Which service moves first?");
-  await decline(page, card, note);
+  test("a question declined from the Inbox with a note leaves the list and reads declined on the issue page", async ({
+    page,
+  }) => {
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "Rollout order" }, { login: me });
+    const ask = await createAsk(
+      issue.key,
+      { options: shipOrHold, question: "Which service moves first?" },
+      session
+    );
+    const note = "The release owner decides this one.";
 
-  // The row goes the moment the person presses, as an answered row does, and the Inbox is empty.
-  await expect(inboxRow(page, ask.id)).toHaveCount(0);
-  await expect(page.getByText("Nothing needs you")).toBeVisible();
-  await expect
-    .poll(async () => (await getAsk(ask.id)).ask.resolution, {
-      intervals: [50, 50, 100, 200, 500],
-    })
-    .toMatchObject({ kind: "declined", reason: note });
+    await page.goto("/");
+    const card = await askCard(page, ask.id);
+    await expect(card).toContainText("Which service moves first?");
+    await decline(page, card, note);
 
-  // The issue page reads the closed question as the act the person took: declined, by them, with
-  // what they wrote. It is none of the other three ways a question closes.
-  const record = await conversationCard(page, issue.key, ask.id);
-  await expect(record.getByTestId("ask-resolution-badge")).toHaveText("Declined");
-  await expect(record).toContainText("alice declined to answer");
-  await expect(record).toContainText(note);
-  await expect(record).not.toContainText("Withdrawn");
-  await expect(record).not.toContainText("Retracted by");
-  await expect(record).not.toContainText("Resolved by");
-  await expect(declineControl(record)).toHaveCount(0);
+    // The row goes the moment the person presses, as an answered row does, and the Inbox is
+    // empty.
+    await expect(inboxRow(page, ask.id)).toHaveCount(0);
+    await expect(page.getByText("Nothing needs you")).toBeVisible();
+    await expect
+      .poll(async () => (await getAsk(ask.id)).ask.resolution, {
+        intervals: [50, 50, 100, 200, 500],
+      })
+      .toMatchObject({ kind: "declined", reason: note });
+
+    // The issue page reads the closed question as the act the person took: declined, by them,
+    // with what they wrote. It is none of the other three ways a question closes.
+    const record = await conversationCard(page, issue.key, ask.id);
+    await expect(record.getByTestId("ask-resolution-badge")).toHaveText("Declined");
+    await expect(record).toContainText(`${me} declined to answer`);
+    await expect(record).toContainText(note);
+    await expect(record).not.toContainText("Withdrawn");
+    await expect(record).not.toContainText("Retracted by");
+    await expect(record).not.toContainText("Resolved by");
+    await expect(declineControl(record)).toHaveCount(0);
+  });
 });
 
 // SLOW(>=2s): the reading column drawn at its own width, a decline written in it, and the issue

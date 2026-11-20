@@ -23,11 +23,14 @@ import { asUser } from "./users";
 // What this spec reads is the explicit path - the person types, the bar offers, the person
 // accepts - which is the same "nothing is written until the person accepts".
 
-/** Words no seeded item holds, which is what makes the bar offer them as a new issue. They name
- *  the row's own project key (`rowKey`, e2e/test.ts): the bar searches every project of the
- *  stack, and the issue an earlier row made from its words holds those words. */
+/** Words no seeded item holds, which is what makes the bar offer them as a new issue. Each is a
+ *  key of the row's own (`rowKey`, e2e/test.ts): the bar searches every project of the stack,
+ *  the issue an earlier row made from its words holds those words, and a query whose words all
+ *  match nothing together is answered by its rarest words one at a time (`searchRarestWords`,
+ *  packages/envoy/internal/dispatch/api/search.go), so a word another row's issue also holds
+ *  would answer this query with that issue. */
 function words(): string {
-  return `the sextant rota of ${rowKey("CORE")} is nowhere written down`;
+  return `the ${rowKey("SEXTANT")} ${rowKey("ROTA")} of ${rowKey("CORE")}`;
 }
 
 /** The label and the session this Dispatch files such words under. A deployment sets them in

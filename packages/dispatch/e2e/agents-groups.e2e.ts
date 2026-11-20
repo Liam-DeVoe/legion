@@ -21,7 +21,7 @@ import {
 } from "./api";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -310,18 +310,22 @@ test("an ended session that replied is under Replied, no longer connected and in
 test("each filter on the Agents page is a multi-select with a text box, a count and a clear", async ({
   browser,
 }) => {
+  // Sessions of the row's own (`rowSessionId`, e2e/test.ts): which group a session is in is
+  // read off its Dispatch activity, which Dispatch keeps by the session's id for every person
+  // at once, so under an id another row wrote with a quiet session is `Active`.
+  const silent = rowSessionId("silent");
   await setLiveSessions([
-    session(SILENT, "Silent"),
-    session(DOZING, "Dozing", 5 * 60_000),
-    session(SLEEPER, "Sleeper", 60 * 60_000),
-    session(TALKER, "Talker", 60 * 60_000),
+    session(silent, "Silent"),
+    session(rowSessionId("dozing"), "Dozing", 5 * 60_000),
+    session(rowSessionId("sleeper"), "Sleeper", 60 * 60_000),
+    session(rowSessionId("talker"), "Talker", 60 * 60_000),
   ]);
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    await expect(agentRow(page, SILENT)).toBeVisible();
+    await expect(agentRow(page, silent)).toBeVisible();
 
     // The group filter: its own text box narrows the four group names to the one typed.
     await openFilter(page, "group");

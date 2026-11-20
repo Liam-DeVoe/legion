@@ -1,6 +1,7 @@
 import { setLiveSessions } from "./agents";
 import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
 import { recordClipboard } from "./clipboard";
+import { clearedInbox, expectDrawn } from "./inbox-drawn";
 import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import {
   hasReadingPane,
@@ -25,7 +26,7 @@ import {
   openPane,
   rowSnooze,
   seedInbox,
-  seedPane,
+  seedPaneAhead,
   session,
 } from "./keyboard-inbox";
 import { expect, type Page, rowKey, rowPerson, test } from "./test";
@@ -232,6 +233,13 @@ test.describe("inbox selection", () => {
     const theirs = await createIssue({ project: core, title: "Bob answers this" }, { login: me });
     await patchIssue(theirs.key, { assignee: "bob" });
     const hidden = await createAsk(theirs.key, { question: "Wait on it?" }, session);
+    // The cleared filter lists every open question of the stack, every earlier row's beside
+    // these three, so what it draws is read from the server and banded by the Inbox's own rules
+    // (`clearedInbox`). The three are the newest of their band, newest first, so the row ticked
+    // there is this row's, and the row `j` steps on to from it is this row's too.
+    const cleared = await clearedInbox(me);
+    const at = cleared.rows.indexOf(hidden.id);
+    expect(cleared.rows.slice(at, at + 3)).toEqual([hidden.id, takenAsk.id, refusedAsk.id]);
     const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
@@ -253,7 +261,7 @@ test.describe("inbox selection", () => {
       // filter is driven rather than navigated to: a reload would lose the mark this is about.
       await page.goto("/?assignee=everyone");
       const rows = page.locator("[data-inbox-row]");
-      await expect(rows).toHaveCount(3);
+      await expectDrawn(page, cleared);
       await checkbox(hidden.id).check();
       // Ticking a row also selects it where the reading column is on, and the list keeps the
       // row that column is showing: the reader moves on before the filter narrows, so the mark
@@ -445,8 +453,9 @@ test.describe("inbox selection", () => {
     const deferred = await createAsk(first.key, { question: "Which release?" }, session);
     const second = await createIssue({ project: core, title: "Still open" }, { login: me });
     const live = await createAsk(second.key, { question: "Ship it?" }, session);
+    // A snooze is the reader's own, so its moment is read off the server's answer to her.
     const moment = async (askId: string) =>
-      (await getInbox()).find((row) => row.id === askId)?.snoozed_until ?? null;
+      (await getInbox({ login: me })).find((row) => row.id === askId)?.snoozed_until ?? null;
     const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
@@ -594,19 +603,28 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
   browser,
 }) => {
   const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`): her Inbox holds this row's question
+  // and her two threads, and no other row's.
+  const me = rowPerson("alice");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: core, name: "Core" });
-  const asked = await createIssue({ project: core, title: "Lease handover" });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const asked = await createIssue({ project: core, title: "Lease handover" }, { login: me });
   const ask = await createAsk(asked.key, { question: "Ship the lease handover?" }, session);
-  const threadIssue = await createIssue({ project: core, title: "Replay budget" });
+  const threadIssue = await createIssue({ project: core, title: "Replay budget" }, { login: me });
   const thread = await seedCommentThread(
     threadIssue.key,
     "How far back does a replay go?",
-    "One hour, then it gives up."
+    "One hour, then it gives up.",
+    THREAD_SESSION,
+    me
   );
-  const agent = await seedAgentThread({ body: "What is the rollout status?", replies: ["Green."] });
+  const agent = await seedAgentThread({
+    body: "What is the rollout status?",
+    login: me,
+    replies: ["Green."],
+  });
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     const copied = await recordClipboard(page);
@@ -714,11 +732,16 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
 test("l moves the focus into the reading pane, the keyboard scrolls the document there, and Escape returns to the row l was pressed on", async ({
   browser,
 }) => {
-  const seed = await seedPane(rowKey("PANE"));
+  // The cleared filter lists every open question of the stack, every earlier row's beside these
+  // two, so the two are put at its head (`seedPaneAhead`), where the keys below walk, and what
+  // the list draws is read from the server and banded by the Inbox's own rules (`clearedInbox`).
+  const seed = await seedPaneAhead(rowKey("PANE"));
+  const cleared = await clearedInbox("alice");
+  expect(cleared.rows.slice(0, 2)).toEqual([seed.approvalAskId, seed.cardAskId]);
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await openPane(page, seed);
+    await openPane(page, seed, cleared);
     const rows = page.locator("[data-inbox-row]");
     await goToRow(page, 0);
 

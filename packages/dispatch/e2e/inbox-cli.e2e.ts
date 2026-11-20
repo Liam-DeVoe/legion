@@ -73,8 +73,11 @@ const worker: FakeSession = {
   title: "Worker",
 };
 
-/** How the person's own agent is named everywhere its acts are read. */
-const actingThrough = `alice, acting through session ${cliSession}`;
+/** How the person's own agent is named everywhere its acts are read: `person` is the login the
+ *  row signed in as and minted the token under, the row's own (`rowPerson`). */
+function actingThrough(person: string): string {
+  return `${person}, acting through session ${cliSession}`;
+}
 
 /** One heading of `dispatch inbox`: the number it carries, and the lines printed under it. */
 interface CommandSection {
@@ -475,7 +478,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       text: "Read DISPATCH_INBOX_FLAG.",
     });
     expect(answered.status, await answered.text()).toBe(200);
-    await expect(card).toContainText(`Answered by ${actingThrough}`);
+    await expect(card).toContainText(`Answered by ${actingThrough(me)}`);
     await expect(card).toContainText("Read DISPATCH_INBOX_FLAG.");
 
     // The answers page says the same of it. Its rows are the person's own list, so no row names
@@ -489,7 +492,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     const answerCard = page.locator(`[data-answer-card="${seeded.ordinaryAsk}"]`);
     await expect(answerCard.getByLabel("Your answer")).toHaveValue("Read DISPATCH_INBOX_FLAG.");
     await answerCard.getByRole("button", { name: "Cancel" }).click();
-    await expect(answerCard).toContainText(`Answered by ${actingThrough}`);
+    await expect(answerCard).toContainText(`Answered by ${actingThrough(me)}`);
 
     // 4. A review made with the token is the person's review, with the agent beside it.
     const reviewed = await withToken(
@@ -501,7 +504,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     await page.goto(`/issues/${seeded.reviewedIssue}`);
     await page.getByRole("button", { name: "Approved v1" }).click();
     await expect(page.getByRole("dialog", { name: "Reviews" })).toContainText(
-      `${actingThrough} approved v1`
+      `${actingThrough(me)} approved v1`
     );
 
     // 5. A message sent with the token reaches the session, and the Agents page shows it as a
@@ -521,7 +524,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       name: `Conversation with ${worker.title}`,
     });
     await expect(conversation).toContainText("Pause the backfill until the flag lands.");
-    await expect(conversation).toContainText(actingThrough);
+    await expect(conversation).toContainText(actingThrough(me));
 
     // 6. The Approve box on the token's own row is what lets it settle an approval. Cleared, the
     // approval request is refused for want of the scope; ticked again, the same answer lands.

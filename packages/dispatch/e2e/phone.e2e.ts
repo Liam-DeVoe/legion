@@ -26,7 +26,7 @@ import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowNumber, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -431,8 +431,12 @@ test("an inline link keeps its line and grows its hit box without covering its n
   // The settle proof below is bounded at 20 s and two trial clicks at 5 s each stand after it,
   // all of them failure budget: a passing run spends none of it.
   test.setTimeout(60_000);
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Inline links" });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): the Inbox below is read
+  // by every link it draws, and draws this row's questions alone only in a list holding no other
+  // row's - an earlier run of this row asks the same question, with the same links.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Inline links" }, { login: me });
   const ask = await createAsk(
     issue.key,
     { question: "Which transport?" },
@@ -476,7 +480,7 @@ test("an inline link keeps its line and grows its hit box without covering its n
     { actor: { id: "e2e-session", kind: "session" }, as: "agent" }
   );
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   try {
     // The `view` link is an event line's - "<author> replied to … view" - and the event lines
@@ -782,11 +786,14 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
   // A passing run is seconds; the budget is for a failing one, where each `expect.soft` below
   // burns the 15 s expect timeout before the next is tried.
   test.setTimeout(60_000);
-  const longName =
-    "legion-go-coordinator-stage-4b-sandbox-tree-runbook-with-every-checkpoint-and-the-evidence-each-one-left-on-the-production-cluster.md";
+  // The document's name and the external link's address are the row's own: the cleared Inbox
+  // below lists every open question of the stack, an earlier run of this row's among them under
+  // the same name, and an address names one external link of the whole stack
+  // (`EXTERNAL_LINK_TAKEN`). Each stays as long as it was, so each is still cut.
+  const longName = `${core.toLowerCase()}-legion-go-coordinator-stage-4b-sandbox-tree-runbook-with-every-checkpoint-and-the-evidence-each-one-left-on-the-production-cluster.md`;
   const longQuestion =
     "Which checkpoint gates the sandbox tree before the daemon restarts mid-tree: the fence, the node release, or the linger close that follows both of them?";
-  const longUrl = `https://docs.example.com/runbooks/legion/go-coordinator/stage-4b/${"sandbox-tree-".repeat(4)}checkpoints`;
+  const longUrl = `https://docs.example.com/runbooks/legion/go-coordinator/stage-4b/${"sandbox-tree-".repeat(4)}checkpoints/${rowNumber("runbook")}`;
   const longRoute = "role:merge-queue-controller-for-legion";
   // A label's 40-character cap is still wider than the label picker's 256 px popover.
   const longLabel = "sandbox-tree-checkpoint-evidence-runbook";

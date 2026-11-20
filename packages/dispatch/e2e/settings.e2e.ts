@@ -414,6 +414,13 @@ test("a person sets and changes a project's default assignee, and no write clear
 }, testInfo) => {
   const coreKey = rowKey("CORE");
   const opsKey = rowKey("OPS");
+  // Every project names somebody, and the list below is every project of the stack, every
+  // earlier row's beside this row's two: it is read before this row writes, so what it holds at
+  // the end is that and these two, each naming the person written last.
+  const before = (await listProjectDefaultAssignees({ as: "user", login: "alice" })).map((row) => [
+    row.project,
+    row.assignee,
+  ]);
   await createProject({ key: coreKey, name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control,
   // and OPS names him from the moment it exists: every project names somebody.
@@ -484,10 +491,9 @@ test("a person sets and changes a project's default assignee, and no write clear
     await page.reload();
     await expect(core).toHaveValue("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.map((row) => [row.project, row.assignee]).sort()).toEqual([
-      [coreKey, "alice"],
-      [opsKey, "bob"],
-    ]);
+    expect(defaults.map((row) => [row.project, row.assignee]).sort()).toEqual(
+      [...before, [coreKey, "alice"], [opsKey, "bob"]].sort()
+    );
   } finally {
     await context.close();
   }

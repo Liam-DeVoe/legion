@@ -17,6 +17,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
+import { clearedInbox, expectDrawn } from "./inbox-drawn";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { expect, type Locator, rowKey, rowNumber, rowPerson, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -552,8 +553,10 @@ test("closing an issue removes its asks from the inbox and pinning stays private
   await createProject({ key: core, name: "Core" }, { login: me });
   const issue = await createIssue({ project: core, title: "First decision" }, { login: me });
   const otherIssue = await createIssue({ project: core, title: "Second decision" }, { login: me });
-  await createAsk(issue.key, { question: "First ask" }, session);
-  await createAsk(otherIssue.key, { question: "Second ask" }, session);
+  // The questions name the row's key: the cleared filter below lists every open question of the
+  // stack, so its text is this row's own only when no other row writes it.
+  const firstAsk = await createAsk(issue.key, { question: `First ask of ${core}` }, session);
+  const secondAsk = await createAsk(otherIssue.key, { question: `Second ask of ${core}` }, session);
 
   const alice = await asUser(browser, me);
   const page = await alice.newPage();
@@ -574,19 +577,26 @@ test("closing an issue removes its asks from the inbox and pinning stays private
       });
     await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
     await expect(inbox.locator("[data-inbox-row]")).toHaveCount(1);
-    await expect(inbox.getByText("First ask", { exact: true })).toHaveCount(0);
+    await expect(inbox.getByText(`First ask of ${core}`, { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Pin issue" }).click();
     await expect(page.getByRole("button", { name: "Unpin issue" })).toBeEnabled();
     await page.reload();
     await expect(page.getByRole("heading", { name: "Pinned" })).toBeVisible();
-    const bob = await asUser(browser, rowPerson("bob"));
+    const bobLogin = rowPerson("bob");
+    const bob = await asUser(browser, bobLogin);
     const bobPage = await bob.newPage();
     try {
       // Alice's issues are nobody else's own work; the closed one is gone from the cleared
-      // filter too.
+      // filter too. That filter lists every open question of the stack, every earlier row's
+      // beside this one's, so what it draws is read from the server and banded by the Inbox's
+      // own rules (`clearedInbox`): the open question is the newest of its band, so it is drawn,
+      // and the closed one is on neither the server's list nor the page.
+      const cleared = await clearedInbox(bobLogin);
+      expect(cleared.rows).not.toContain(firstAsk.id);
       await bobPage.goto("/?assignee=everyone");
-      await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
-      await expect(bobPage.getByText("First ask", { exact: true })).toHaveCount(0);
+      await expectDrawn(bobPage, cleared);
+      await expect(bobPage.locator(`[data-inbox-row="${secondAsk.id}"]`)).toHaveCount(1);
+      await expect(bobPage.getByText(`First ask of ${core}`, { exact: true })).toHaveCount(0);
       await expect(bobPage.getByRole("heading", { name: "Pinned" })).toHaveCount(0);
     } finally {
       await bob.close();
