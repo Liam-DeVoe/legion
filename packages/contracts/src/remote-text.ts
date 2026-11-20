@@ -213,6 +213,18 @@ export function redactRemoteText(field: string, carried: readonly string[] = [])
  *  so the box's one storage is the field. */
 const carriedOf = new WeakMap<RemoteText, readonly string[]>();
 
+/** The boxes {@link withheldRemoteText} made: each compares as it came and prints nothing. */
+const withheldBoxes = new WeakSet<RemoteText>();
+
+/** A box for a field whose words must not print at all, a library error's that no request record
+ *  covers: {@link RemoteText.equals} and its kin still read it as it came, so a branch decided by a
+ *  refusal's code is decided as before, and every way it prints prints the empty string. */
+export function withheldRemoteText(text: string): RemoteText {
+  const box = new RemoteText(text);
+  withheldBoxes.add(box);
+  return box;
+}
+
 /**
  * One field another party wrote, held so that it redacts itself: every way JavaScript prints it
  * prints {@link redactRemoteText} of it, never the field, with each of the credentials it was given
@@ -237,6 +249,7 @@ export class RemoteText {
   /** The field as a message may print it: {@link redactRemoteText} of it, with each credential it
    *  was given redacted. */
   toString(): string {
+    if (withheldBoxes.has(this)) return "";
     return redactRemoteText(this.#text, carriedOf.get(this));
   }
 
@@ -291,6 +304,7 @@ export class RemoteText {
     isKnown: (reading: string) => boolean,
     scrub: (reading: string) => string
   ): string | undefined {
+    if (withheldBoxes.has(this)) return undefined;
     const reading = redactRemoteText(this.#text);
     if (!isKnown(reading)) return undefined;
     const carried = carriedOf.get(this) ?? [];
@@ -335,8 +349,12 @@ export class LibraryError extends Error {
     super(covered ? redactRemoteText(message, carried) : withheldClass(thrown, status));
     this.name = error !== undefined && /^\w+$/.test(error.name) ? error.name : "Error";
     this.status = status;
-    this.code = new RemoteText(covered ? code : "", carried);
-    this.description = new RemoteText(covered ? description : "", carried);
+    // With no record, the words print nothing (a withheld box) and the code still compares as it
+    // came, so a branch on the refusal's code takes the path it took before, as Go's RefusalCode.
+    this.code = covered ? new RemoteText(code, carried) : withheldRemoteText(code);
+    this.description = covered
+      ? new RemoteText(description, carried)
+      : withheldRemoteText(description);
     this.thrownClass = errorClass(thrown);
     const cause = error?.cause;
     this.causeClass = cause instanceof Error ? errorClass(cause) : "";
