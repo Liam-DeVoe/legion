@@ -1215,9 +1215,9 @@ func (m *Machine) liveGrantPolicy(ctx context.Context, requestID string) (rulesV
 
 // endMatchingLiveGrants checks every live grant for these exact names before Create can refuse
 // the new request. It uses each grant's own lifetime and ends every grant whose current policy has
-// a permanent cause. It answers, for reuseLiveGrant, the pause of each grant it left live, keyed
-// by grant id: a grant the map does not hold was not checked, and one whose pause is nil was
-// checked and may be handed back.
+// a permanent cause. It answers, for reuseLiveGrant, each grant it left live, keyed by grant id,
+// with its pause, nil where it found none. The map holds no other grant: none this check ended,
+// and none made after its lookup, which it never saw.
 func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, sorted []string, set *policy.Set) (map[string]error, error) {
 	matches, err := m.liveGrantsWithNames(ctx, enr, sorted)
 	if err != nil {
@@ -1258,8 +1258,10 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 // It ended each grant those checks end. So a reuse never has an end of its own to make.
 //
 // The lookup runs again here, for each grant's request, lifetime and order, and so that a grant
-// revoked or expired since the end pass is not handed back. Every exact, reusable match whose
-// grant the end pass checked (checked holds its id) is a candidate, newest grant first.
+// revoked or expired since the end pass is not handed back. Every exact, reusable match the end
+// pass left live (checked holds its id) is a candidate, newest grant first: a grant the pass
+// ended is no longer live, so this lookup does not find it, and one made after the pass is not
+// in checked, so it is passed over (below).
 // A candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
 // at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
 // adopt), so a session that moved here from a broker of another BROKER_PUBLIC_URL sharing this
@@ -1268,9 +1270,11 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 // Postgres may answer the old grant first on any call, which would ask a person or the judge
 // again on each until the old grant expired. Newest first, the grant the session was given last
 // is the one handed back, and an older one is checked, and its failed chain logged, only when
-// every newer one was passed over. A pause from the end pass stops at that candidate, as before:
-// ErrGrantNotLive answers no reusable grant, and any other pause is returned. A matching grant
-// made after the end pass has no check, so it is not handed back and Create asks afresh.
+// every newer one was passed over. A pause from the end pass stops at that candidate, as before,
+// so an older grant with no pause is not handed back in its place
+// (TestAPauseOnTheNewestGrantStopsTheReuse): ErrGrantNotLive answers no reusable grant, and any
+// other pause is returned. A matching grant made after the end pass has no check, so it is not
+// handed back and Create asks afresh.
 //
 // An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
 // longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),

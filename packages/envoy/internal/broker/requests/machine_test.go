@@ -1019,6 +1019,75 @@ func TestAGrantEndedAfterTheEndPassIsNotHandedBack(t *testing.T) {
 	}
 }
 
+// TestAPauseOnTheNewestGrantStopsTheReuse: two live grants of the same names and lifetime, the
+// older one approved by the operator and the newer one by alice, while the secret was hers.
+// Create's check (endMatchingLiveGrants) keeps each grant it leaves live with its pause, and
+// reuseLiveGrant stops at the pause of the newest candidate. Once the secret is the operator's
+// again, the newer grant's approver no longer decides it, so the request is handed neither grant
+// and waits for an approval, though the older grant still releases. Once the secret is shared,
+// neither grant pauses and the newer one is handed back, which makes the first row's refusal the
+// pause's doing.
+func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
+	deel := func(owner string) secrets.LocalSecret {
+		return policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1")
+	}
+	for _, c := range []struct {
+		name   string
+		owner  string
+		reused bool
+	}{
+		{name: "the secret is the operator's again, which pauses the newer grant", owner: fixtureOperator},
+		{name: "the secret is shared, which pauses neither grant", owner: policy.OwnerShared, reused: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, approver := newFixture(t)
+			ctx := context.Background()
+			grant := func(reason, decider string) string {
+				t.Helper()
+				req, err := m.Create(ctx, enr, signRequest(t, m, key, reason, "DEEL_API_KEY"), "", nil)
+				if err != nil || req.State != "pending" || req.RecordID == nil {
+					t.Fatalf("Create(%q) = %+v, %v; want a request pending on %s", reason, req, err, decider)
+				}
+				dec, err := m.ApplyDecision(ctx, *req.RecordID, true, decider)
+				if err != nil || dec.GrantID == "" {
+					t.Fatalf("ApplyDecision by %s = %+v, %v; want a grant", decider, dec, err)
+				}
+				return dec.GrantID
+			}
+			older := grant("need it", approver)
+			retag(t, m, deel(otherPerson))
+			newer := grant("need it while alice owns it", otherPerson)
+			if newer == older {
+				t.Fatalf("setup made one grant %s; want two", older)
+			}
+			retag(t, m, deel(c.owner))
+
+			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "DEEL_API_KEY"), "", nil)
+			if err != nil {
+				t.Fatalf("Create once %s: %v", c.name, err)
+			}
+			handed := "no grant"
+			if again.GrantID != nil {
+				handed = "grant " + *again.GrantID
+			}
+			if c.reused && (again.GrantID == nil || *again.GrantID != newer) {
+				t.Fatalf("Create once %s = state %q with %s; want the newer grant %s handed back", c.name, again.State, handed, newer)
+			}
+			if !c.reused && (again.State != "pending" || again.GrantID != nil) {
+				t.Fatalf("Create once %s = state %q with %s; want no grant handed back, neither the newer %s nor the older %s, and a request pending", c.name, again.State, handed, newer, older)
+			}
+			if release, err := m.Values(ctx, older, enr, nil, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" {
+				t.Fatalf("Values of the older grant once %s = %v, %v; want it released, so it was a grant the reuse could hand back", c.name, release.Values, err)
+			}
+			for _, id := range []string{older, newer} {
+				if by, _ := endedForGood(t, m, id); by != "" {
+					t.Fatalf("grant %s once %s: revoked_by %q; want it live, since a pause ends nothing", id, c.name, by)
+				}
+			}
+		})
+	}
+}
+
 // TestValuesHoldsNoPooledConnectionWhileReadingSecrets pins that Values reads a grant's names into
 // memory before fetching the first value, so no cursor (and its pooled connection) stays open
 // across a Secrets Manager read.
