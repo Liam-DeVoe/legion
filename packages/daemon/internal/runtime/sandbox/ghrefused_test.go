@@ -119,10 +119,10 @@ func ghVolumeDrift(g *rig, loc runtime.Locator, role claim.Role) []string {
 // asked for, the daemon would read the pod as drifted at every sweep, open an update round, task
 // every worker in the pod but a failed one and one that has left the round's pod with the steps
 // of its update message (supervise.UpdateTask), replace the pod, and mint the pod that replaces it
-// a bundle lacking that directory again: a pod replaced for ever over an owner no mint can
-// produce (INFRA-513). The record the mints write and the directory set reads is what keeps the
-// two answers one (appauth.LeftOut). Once GitHub answers for that owner again, a mint clears the
-// record and the pod is replaced once, which is right.
+// a bundle lacking that directory again: a pod replaced for
+// ever over an owner no mint can produce (INFRA-513). The record the mints write and the
+// directory set reads is what keeps the two answers one (appauth.LeftOut). Once GitHub answers for
+// that owner again, a mint clears the record and the pod is replaced once, which is right.
 func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) {
 	var refuse atomic.Bool
 	refuse.Store(true)

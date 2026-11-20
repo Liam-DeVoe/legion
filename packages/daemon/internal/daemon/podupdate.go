@@ -29,10 +29,10 @@ import (
 // (pod_update_grace_minutes after the round opened, roundBound) whatever the roles said and
 // whatever runs (replacementDue). A role's own push is what keeps its work: what it has not pushed
 // when the pod goes is lost with the pod. An answer from every role but a failed one and one that
-// has left the round's pod ends the round early once no turn and no reported background work
-// holds it (dispatch://INFRA-4203 R1); no answer holds it past the bound. An operator's suspension
-// of a claim (heldByOperator) is the one wait that outlasts the bound, and only over a pod that is
-// there: a gone pod ends its round whatever the hold (readReplacement).
+// has left the round's pod ends the round early once no turn and no reported background
+// work holds it (dispatch://INFRA-4203 R1); no answer holds it past the bound. An operator's
+// suspension of a claim (heldByOperator) is the one wait that outlasts the bound, and only over a
+// pod that is there: a gone pod ends its round whatever the hold (readReplacement).
 //
 // The round is the issue's, not the locator's: a suspended claim's locator is nil (supervise's
 // letGo), and before the bound no pod disk may be deleted before every worker in it but a failed
@@ -506,9 +506,9 @@ const (
 	waitsForTurn
 	// waitsForBackground is a claim with a process in the round's own pod whose activity report
 	// names background work that runs, or that has sent no report since its last turn started
-	// (backgroundClaims, dispatch://INFRA-4203 R1), read only before the round's bound: a failed
-	// claim and one that has left the round's pod hold nothing here. It is read once no turn runs,
-	// so it is what holds a round whose roles have all answered, but a failed one and one that has
+	// (backgroundClaims, dispatch://INFRA-4203 R1), read only before the round's bound. It is read
+	// once no turn runs. A failed claim and one that has left the round's pod hold nothing here, so
+	// it is what holds a round whose roles have all answered, but a failed one and one that has
 	// left the round's pod, and whose turns have all ended while a subagent or a background job of
 	// a role may still run in the pod.
 	waitsForBackground
@@ -559,10 +559,11 @@ type roundEnd struct {
 // session but a failed one and one that has left the round's pod (waitingClaims), the roles
 // whose turns run, and the claims with a process in the round's pod whose report names
 // background work that runs or that have sent no report since their last turn started; past the
-// bound nothing. It is the one statement of that rule: dispatch://INFRA-2981 R2, as
-// dispatch://INFRA-4203 R1 changes it. The walk's reading (readReplacement) and the last word
-// under the pod's launch turn (replacementDue) read it here. The line of a replacement the bound
-// made (bounded) reads the same three fields, unanswered, working and background, past the bound.
+// bound nothing. It is
+// the one statement of that rule: dispatch://INFRA-2981 R2, as dispatch://INFRA-4203 R1 changes
+// it. The walk's reading (readReplacement) and the last word under the pod's launch turn
+// (replacementDue) read it here. The line of a replacement the bound made (bounded) reads the
+// same three fields, unanswered, working and background, past the bound.
 func (e roundEnd) holding() (unanswered []supervise.Claim, working []string, background backgroundHold) {
 	if e.past {
 		return nil, nil, backgroundHold{}
@@ -794,11 +795,11 @@ type podReplacement struct {
 // answered, a turn ran, or a claim's report named background work or was missing, when the last
 // word let it through — is logged on a second line of its own, `supervise pod update replaced at
 // the bound`, naming the claims that answered and the claims it waited for that did not, the
-// turns that ran, and apart from them the roles whose reports held the round
-// (dispatch://INFRA-2981 R8, whose production check reads those words; dispatch://INFRA-4203 R4).
-// That line is written only where the last word ran and let the replacement through. A runtime
-// that found no pod to replace and returned nil without asking the last word replaced nothing, so
-// the bound replaced nothing either.
+// turns that ran, and apart from them the
+// roles whose reports held the round (dispatch://INFRA-2981 R8, whose production check reads
+// those words; dispatch://INFRA-4203 R4). That line is written only where the last word ran and
+// let the replacement through. A runtime that found no pod to replace and returned nil without
+// asking the last word replaced nothing, so the bound replaced nothing either.
 //
 // The call is bounded to one sweep interval. The bound costs the round nothing. The
 // suspension that displaces the pod has already landed when it hits, so the next sweep reads the

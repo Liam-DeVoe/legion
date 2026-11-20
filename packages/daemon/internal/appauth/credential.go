@@ -233,8 +233,8 @@ func installedLayout(ctx context.Context, installations OwnerInstallations, appR
 // no bundle holds the directory, so no pod projects it, while the comparison names it at every
 // sweep (sandbox's movedGhDirs), an update round asks every worker in the pod but a failed one
 // and one that has left the round's pod to do the steps of its update message
-// (supervise.UpdateTask), the pod is replaced, and its new bundle lacks the directory again — for
-// ever (INFRA-513).
+// (supervise.UpdateTask), the pod is replaced, and its new bundle lacks the
+// directory again — for ever (INFRA-513).
 //
 // It is sticky, not timed: a directory stays recorded left out until a mint of it answers, which
 // clears it, and the comparison then names it once and the pod is replaced once, which is right.

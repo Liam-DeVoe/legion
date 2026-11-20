@@ -360,10 +360,10 @@ func (r *fleetRig) awaitRound(issue string, role claim.Role) supervise.Claim {
 // After the answer, signal writes the activity report that the answering turn's end sends in
 // production: nothing of the worker's own runs, onto the claim's current launch through the
 // store's own call. In production every answer comes from a turn whose end sends such a report,
-// and before its bound a round waits for a claim with a process in its pod that has sent no
-// report since its last turn started, unless it is a failed claim (backgroundClaims,
-// dispatch://INFRA-4203 R1). Without the report, every round this rig's answers end early would
-// hold to its bound.
+// and before its bound a round waits for a claim with a process in its pod, unless it is a failed
+// claim, that has sent no
+// report since its last turn started (backgroundClaims, dispatch://INFRA-4203 R1). Without the
+// report, every round this rig's answers end early would hold to its bound.
 func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 	r.t.Helper()
 	m := r.machineOf(issue, role)

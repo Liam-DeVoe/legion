@@ -71,14 +71,15 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // Such a pod is replaced by an update round, which first asks every role in it but a failed one
 // and one that has left the round's pod to do the steps of its update message
 // (supervise.UpdateTask) and answer, and then ends the pod (ReplacePod): replacing it at a launch
-// would end every role's turn in it and delete the issue's disk with everything unpushed on it
-// (INFRA-484). A launch into a drifted pod is therefore an ordinary launch, the install of a
-// stale-plugin pair (spec.Plugins, LEGION-164) included, which brings this launch's agent onto the
-// current plugin without a fresh pod. Its role is started as the kept pod was built, from the
-// volumes and mounts of that pod's own stored template (keptBy, keptPod) and not from the
-// configuration as it now reads: two of those drift facets, the broker's enrollment and the role's
-// overlays, are named in the role's own start command, and a process started against what its pod
-// cannot carry refuses to run, never registers, and so never answers the round that is to replace
+// would end every role's turn in it and delete the issue's disk with
+// everything unpushed on it (INFRA-484). A launch into a drifted pod is therefore an ordinary
+// launch, the install of a stale-plugin pair (spec.Plugins, LEGION-164) included, which brings
+// this launch's agent onto the current plugin without a fresh pod. Its role is started as the
+// kept pod was built, from the volumes and mounts of that pod's own stored template (keptBy,
+// keptPod) and not from the configuration as it now reads: two of those drift facets, the
+// broker's enrollment and the role's overlays, are named in the role's own start command, and a
+// process started against what its pod cannot carry refuses to run, never registers, and so
+// never answers the round that is to replace
 // that pod. A pod whose template says nothing this daemon can read is replaced at the launch
 // instead, as every drifted pod was before the round.
 //
