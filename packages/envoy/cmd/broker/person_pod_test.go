@@ -180,12 +180,14 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 // names her, and ELSE's does not. Each project holds a shared agent-tier secret, which owner and
 // tier alone would give her pod at once, so only the project rule keeps it.
 //
-// Ada's pod run as `enroll --pod` with no project is refused PROJECTS_REQUIRED, and the refusal
-// says to set AGENT_SECRETS_PROJECTS. The same pod run again with AGENT_SECRETS_PROJECTS=PRIV
-// enrols, `agent-secrets self` prints PRIV, and the pod reads PRIV's secret. It is denied ELSE's
-// secret project-not-named, and the command it would run never runs. Another pod of her account
-// that names ELSE with --projects is refused PROJECT_NOT_VISIBLE. So the pod sees what her own
-// session naming PRIV sees, and no more.
+// Ada's pod run as `enroll --pod` with no project is refused PROJECTS_REQUIRED, and the line the
+// pod prints says to set AGENT_SECRETS_PROJECTS: this is the one row in which a person reads that
+// refusal as the CLI prints it, and its words lead to the next run. The same pod run again with
+// AGENT_SECRETS_PROJECTS=PRIV enrols, `agent-secrets self` prints PRIV, and the pod reads PRIV's
+// secret. It is denied ELSE's secret project-not-named, and the command it would run never runs.
+// So the pod sees what her own session naming PRIV sees, and no more. The other refusals of a
+// pod's list are enroll.Service.Create's (internal/broker/enroll/person_pod_test.go), each
+// answered by its own code (internal/broker/api/enroll_projects_test.go).
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
@@ -230,14 +232,13 @@ func TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 
 	// enrol runs the real client as ada's pod podUID: `enroll --pod` with the pod's projected
 	// token mounted as a file, into a key directory of its own, with env added to the pod's
-	// environment and args added to the command. It answers the pod's session and the run's exit
-	// code and stderr.
-	enrol := func(podUID string, env []string, args ...string) (requesterSession, int, string) {
+	// environment. It answers the pod's session and the run's exit code and stderr.
+	enrol := func(podUID string, env []string) (requesterSession, int, string) {
 		t.Helper()
 		tokenPath := filepath.Join(t.TempDir(), podUID+"-token")
 		writeWhole(t, tokenPath, mintPodToken(t, issuer, clusterKey, personPodAdaAccount, personPodAudience, podUID))
 		session := requesterSession{name: podUID, runtimeID: podUID, person: personPodPerson, keyDir: filepath.Join(t.TempDir(), podUID)}
-		cmd := exec.Command(cli, append([]string{"enroll", "--pod", "--service", personPodAdaService, "--pod-token-file", tokenPath, "--out", session.keyDir}, args...)...)
+		cmd := exec.Command(cli, "enroll", "--pod", "--service", personPodAdaService, "--pod-token-file", tokenPath, "--out", session.keyDir)
 		cmd.Env = append(agentSecretsEnv(base, session.keyDir), env...)
 		var out, errs strings.Builder
 		cmd.Stdout, cmd.Stderr = &out, &errs
@@ -274,11 +275,6 @@ func TestARestrictedMembersPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 	if code != cliExitDenied || strings.Contains(stdout, "ran") || !strings.Contains(stderr, elseKey+": "+policy.ReasonProjectNotNamed) {
 		t.Fatalf("agent-secrets %s as ada's pod naming PRIV exited %d with stdout %q, want %d (denied %s) and nothing run\nstderr: %s",
 			elseKey, code, stdout, cliExitDenied, policy.ReasonProjectNotNamed, stderr)
-	}
-
-	t.Log("--- another pod of ada's account naming ELSE with --projects: refused PROJECT_NOT_VISIBLE")
-	if _, code, stderr := enrol("ada-pod-2", nil, "--projects", elseProject); code == 0 || !strings.Contains(stderr, "PROJECT_NOT_VISIBLE") {
-		t.Fatalf("enroll --pod --projects %s as ada's pod exited %d, want a refusal PROJECT_NOT_VISIBLE\nstderr: %s", elseProject, code, stderr)
 	}
 	if dispatch.Calls() == 0 {
 		t.Fatal("the broker asked Dispatch nothing, so no answer above read a project: the run is blind")

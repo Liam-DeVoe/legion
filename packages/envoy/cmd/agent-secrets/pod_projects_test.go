@@ -129,6 +129,56 @@ func TestEnrollPodNamesTheProjectsItsSessionNames(t *testing.T) {
 	}
 }
 
+// TestEnrollPodNamesTheSettingARefusedListCameFrom: the broker refuses a list from any pod but a
+// person's 400 PROJECTS_NEED_A_PERSON, in words of its own that do not say where the command read
+// the list. So the line enroll --pod prints for that refusal names the setting: the variable when
+// no --projects was given, saying to unset it for a service's pod, and --projects over the
+// variable, saying to enrol without it. Each row names its own setting and not the other's, and
+// the line never prints the list.
+func TestEnrollPodNamesTheSettingARefusedListCameFrom(t *testing.T) {
+	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/launcher-credentials/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"credential_id": "credential-for-the-pod", "expires_at": time.Now().Add(time.Hour)})
+		case "/v1/enrollments":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"code": "PROJECTS_NEED_A_PERSON", "error": "only a session or a pod that acts for a person names projects"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(broker.Close)
+	const variableList, flagList = "QZV7K3", "QZW8M4"
+	for _, c := range []struct {
+		name    string
+		args    []string
+		says    []string
+		notSays string
+	}{
+		{"the variable", nil, []string{"came from " + brokerclient.ProjectsVar, "unset it"}, "--projects"},
+		{"--projects over the variable", []string{"--projects", flagList}, []string{"came from --projects", "without --projects"}, brokerclient.ProjectsVar},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("AGENT_SECRETS_URL", broker.URL)
+			t.Setenv(brokerclient.ProjectsVar, variableList)
+			args := append([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", t.TempDir()}, c.args...)
+			var stdout, stderr bytes.Buffer
+			code := cmdEnroll(args, &stdout, &stderr)
+			line := stderr.String()
+			if code != 1 || !strings.Contains(line, "PROJECTS_NEED_A_PERSON") || strings.Contains(line, c.notSays) || strings.Contains(line, variableList) || strings.Contains(line, flagList) {
+				t.Fatalf("enroll %q refused PROJECTS_NEED_A_PERSON: exit %d, stderr %q; want exit 1 naming the code, not %s, and no list", args, code, line, c.notSays)
+			}
+			for _, want := range c.says {
+				if !strings.Contains(line, want) {
+					t.Errorf("enroll %q refused PROJECTS_NEED_A_PERSON: stderr %q; want it to say %q", args, line, want)
+				}
+			}
+		})
+	}
+}
+
 // asList is v as a JSON array, failing t when it is none.
 func asList(t *testing.T, v any) []any {
 	t.Helper()
