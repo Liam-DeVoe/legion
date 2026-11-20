@@ -39,9 +39,10 @@ func TestAFailingExampleCountsFromTheCommitThatItsFaultWasPlantedOn(t *testing.T
 	atEach := func(line string) map[string]string { return map[string]string{"c1": line, "c2": line, "m2": line} }
 	// results changes carry's results.json by change; fault sets the members of set on carry's
 	// failing example, result 2, and takes out each member whose value is nil; paths sets its
-	// fault_paths; later adds a second failing example of the check, planted on c1 in a fault f2 of
-	// its own after carry's caught one, on which the test missed its fault, with the members of set.
-	// fault and later read back each member that they write.
+	// fault_paths, and each path row reads those paths back from the row itself; later adds a second
+	// failing example of the check, planted on c1 in a fault f2 of its own after carry's caught one,
+	// on which the test missed its fault, with the members of set. fault and later read back each
+	// member that they write.
 	results := func(change func(r []map[string]any) []map[string]any) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) {
 			var r []map[string]any
@@ -124,11 +125,53 @@ func TestAFailingExampleCountsFromTheCommitThatItsFaultWasPlantedOn(t *testing.T
 			}
 			writeJSONFile(t, filepath.Join(dir, "ties.json"), ties)
 			paths(sender)(t, dir)
+			readsBack(t, dir, 1, map[string]any{"fault_paths": []string{sender}})
 			read := readScenario(t, dir)
 			for _, c := range []string{"c1", "c2"} {
 				if tie := read.Ties[c][check]; !tie.Known || tie.Covers(sender) != slices.Contains(commits, c) {
 					t.Fatalf("the tie at %s as the reader reads it: known %t, covers %s %t", c, tie.Known, sender, tie.Covers(sender))
 				}
+			}
+		}
+	}
+	// refusedAt adds CI's refusal of the check at commit and reads it back as the command's reader
+	// reads it.
+	refusedAt := func(commit string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			var uncited map[string]map[string]string
+			readJSONFile(t, filepath.Join(dir, "uncited.json"), &uncited)
+			if uncited[commit] == nil {
+				uncited[commit] = map[string]string{}
+			}
+			uncited[commit][check] = "test-not-in-code"
+			writeJSONFile(t, filepath.Join(dir, "uncited.json"), uncited)
+			if got := readScenario(t, dir).Uncited[commit][check]; got != "test-not-in-code" {
+				t.Fatalf("the reader reads CI's refusal of %s at %s as %q", check, commit, got)
+			}
+		}
+	}
+	then := func(changes ...func(t *testing.T, dir string)) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			for _, change := range changes {
+				change(t, dir)
+			}
+		}
+	}
+	run := func(t *testing.T, change func(t *testing.T, dir string), want map[string]string) {
+		t.Helper()
+		dir := copyScenario(t, "carry")
+		withSubjectAtC1(t, dir)
+		if change != nil {
+			change(t, dir)
+		}
+		got := runBinary(t, binary, "", "state", "--scenario", dir)
+		if got.code != 0 || got.stderr != "" {
+			t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+		}
+		for _, commit := range slices.Sorted(maps.Keys(want)) {
+			line := "  check " + check + ": " + want[commit]
+			if lines := subjectLines(got.stdout, subjects[commit]); !slices.Contains(lines, line) {
+				t.Errorf("at subject %s: %q, want the line %q", subjects[commit], lines, line)
 			}
 		}
 	}
@@ -142,25 +185,13 @@ func TestAFailingExampleCountsFromTheCommitThatItsFaultWasPlantedOn(t *testing.T
 		{"a pass and a failure at one commit read unknown, and not true", results(func(r []map[string]any) []map[string]any {
 			return append(r, withMembers(r[0], map[string]any{"outcome": "fail", "at": "2026-11-12T10:10:00Z", "seq": 5}))
 		}), atEach("unknown (disagree)")},
-		{"the fault path is the test's own _test.go file", paths("packages/envoy/cmd/listener/restart_test.go"), atEach(none)},
-		{"the fault path is a source file under testdata, a directory of the tie that starts with test", paths("packages/envoy/cmd/listener/testdata/fault.go"), atEach(none)},
-		{"the fault path is a source file outside the tie", paths(sender), atEach(none)},
-		{"the fault path is a file of the tie that is no source file", paths("packages/contracts/fixtures/dispatch-targeted-delivery.json"), atEach(none)},
-		{"one of two fault paths is the test's own _test.go file", paths("packages/envoy/cmd/listener/main.go", "packages/envoy/cmd/listener/restart_test.go"), atEach(none)},
-		{"the record names no fault path", paths(), atEach("unknown (no_fault_paths)")},
 		{"the record leaves fault_paths out", fault(map[string]any{"fault_paths": nil}), atEach("unknown (no_fault_paths)")},
-		{"the one fault path of the record is a space, which is no path", paths(" "), atEach("unknown (no_fault_paths)")},
-		{"one of two fault paths is a tab, which is no path", paths("packages/envoy/cmd/listener/main.go", "\t"), atEach("unknown (blank_fault_path)")},
-		{"control: the fault path is a source file of the tie with a space in its name", paths("packages/envoy/cmd/listener/main two.go"), atEach(fromC1)},
 		{"the record names no planted_on", fault(map[string]any{"planted_on": nil}), atEach("unknown (no_planted_on)")},
 		{"the record names no planted_on, and c1 as its commit", fault(map[string]any{"planted_on": nil, "commit": "c1"}), atEach("unknown (no_planted_on)")},
 		{"the record names c1, where the fault was planted, as its commit, the commit that CI tested", fault(map[string]any{"commit": "c1"}), atEach("unknown (planted_on_tested_commit)")},
 		{"the record names m2 as its commit and as its planted_on", fault(map[string]any{"commit": "m2", "planted_on": "m2"}), atEach("unknown (planted_on_tested_commit)")},
 		{"the subject is f1, the commit that CI tested, and the history gives f1 the tree of c1", atF1,
 			map[string]string{"f1": none, "c1": fromC1, "c2": fromC1, "m2": fromC1}},
-		{"the fault path is a .tsx source file of the tie", paths("packages/envoy/cmd/listener/view.tsx"), atEach(fromC1)},
-		{"the fault path is a .ts source file of the tie", paths("packages/envoy/cmd/listener/client.ts"), atEach(fromC1)},
-		{"two fault paths, each a source file of the tie", paths("packages/envoy/cmd/listener/main.go", "packages/envoy/cmd/listener/store.go"), atEach(fromC1)},
 		{"the tie at c1, where the fault was planted, does not cover its path, and the tie at c2 does", tiedAt("c2"), map[string]string{"c1": none, "c2": none}},
 		{"control: the ties at c1 and at c2 cover the fault's path", tiedAt("c1", "c2"), map[string]string{"c1": fromC1, "c2": fromC1}},
 		{"control: a later failing example planted on c1 that missed its fault", later(nil), atEach("unknown (failing_example_missed)")},
@@ -169,6 +200,16 @@ func TestAFailingExampleCountsFromTheCommitThatItsFaultWasPlantedOn(t *testing.T
 		{"a later failing example planted on c1 that missed its fault names one fault path, a space", later(map[string]any{"fault_paths": []string{" "}}), atEach("unknown (no_fault_paths)")},
 		{"a later failing example planted on c1 that missed its fault names its fault path and a space", later(map[string]any{"fault_paths": []string{"packages/envoy/cmd/listener/main.go", " "}}), atEach("unknown (blank_fault_path)")},
 		{"a later failing example planted on c1 that missed its fault names c1 as its commit", later(map[string]any{"commit": "c1"}), atEach("unknown (planted_on_tested_commit)")},
+		{"a later failing example with no fault path, planted on c3 where CI refused the check", then(later(map[string]any{"planted_on": "c3", "commit": "f-c3", "fault_paths": nil}), refusedAt("c3")), atEach("unknown (no_fault_paths)")},
+		{"a later failing example planted on c3, its own commit, where CI refused the check", then(later(map[string]any{"planted_on": "c3", "commit": "c3"}), refusedAt("c3")), atEach("unknown (planted_on_tested_commit)")},
+		{"a later failing example with no planted_on, at f2 where CI refused the check", then(later(map[string]any{"planted_on": nil}), refusedAt("f2")), atEach("unknown (no_planted_on)")},
+		{"a later failing example with no fault path, at f2 where CI refused the check", then(later(map[string]any{"fault_paths": nil}), refusedAt("f2")), atEach("unknown (no_fault_paths)")},
+		{"a later failing example with a blank fault path, at f2 where CI refused the check", then(later(map[string]any{"fault_paths": []string{"packages/envoy/cmd/listener/main.go", " "}}), refusedAt("f2")), atEach("unknown (blank_fault_path)")},
+		{"a later failing example planted on f2, its own commit, where CI refused the check", then(later(map[string]any{"planted_on": "f2"}), refusedAt("f2")), atEach("unknown (planted_on_tested_commit)")},
+		{"control: CI's refusal at f2 does not take out a later failing example planted on c1", then(later(nil), refusedAt("f2")), atEach("unknown (failing_example_missed)")},
+		{"a later failing example that missed its fault planted on c9, no commit of the history", later(map[string]any{"planted_on": "c9"}), atEach("unknown (planted_on_outside_history c9)")},
+		{"a later failing example that missed its fault planted on f1, no commit of the history", later(map[string]any{"planted_on": "f1"}), atEach("unknown (planted_on_outside_history f1)")},
+		{"control: a later failing example that missed its fault planted on c3, which does not carry to c1, c2 or m2", later(map[string]any{"planted_on": "c3", "commit": "f-c3"}), atEach(fromC1)},
 		{"a second fault, planted on c3 and tested at f3, makes the check true at c3", results(func(r []map[string]any) []map[string]any {
 			return append(r, withMembers(r[1], map[string]any{"commit": "f3", "planted_on": "c3", "at": "2026-11-13T10:05:00Z", "seq": 5}))
 		}), map[string]string{"c1": fromC1, "c2": fromC1, "m2": fromC1, "c3": "true (passed, counted from c3)"}},
@@ -181,21 +222,33 @@ func TestAFailingExampleCountsFromTheCommitThatItsFaultWasPlantedOn(t *testing.T
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			dir := copyScenario(t, "carry")
-			withSubjectAtC1(t, dir)
-			if row.change != nil {
-				row.change(t, dir)
-			}
-			got := runBinary(t, binary, "", "state", "--scenario", dir)
-			if got.code != 0 || got.stderr != "" {
-				t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
-			}
-			for _, commit := range slices.Sorted(maps.Keys(row.want)) {
-				want := "  check " + check + ": " + row.want[commit]
-				if lines := subjectLines(got.stdout, subjects[commit]); !slices.Contains(lines, want) {
-					t.Errorf("at subject %s: %q, want the line %q", subjects[commit], lines, want)
-				}
-			}
+			run(t, row.change, row.want)
+		})
+	}
+	for _, row := range []struct {
+		name  string
+		paths []string
+		want  map[string]string
+	}{
+		{"the fault path is the test's own _test.go file", []string{"packages/envoy/cmd/listener/restart_test.go"}, atEach(none)},
+		{"the fault path is a source file under testdata, a directory of the tie that starts with test", []string{"packages/envoy/cmd/listener/testdata/fault.go"}, atEach(none)},
+		{"the fault path is a source file outside the tie", []string{sender}, atEach(none)},
+		{"the fault path is a file of the tie that is no source file", []string{"packages/contracts/fixtures/dispatch-targeted-delivery.json"}, atEach(none)},
+		{"one of two fault paths is the test's own _test.go file", []string{"packages/envoy/cmd/listener/main.go", "packages/envoy/cmd/listener/restart_test.go"}, atEach(none)},
+		{"the record names no fault path", []string{}, atEach("unknown (no_fault_paths)")},
+		{"the one fault path of the record is a space, which is no path", []string{" "}, atEach("unknown (no_fault_paths)")},
+		{"one of two fault paths is a tab, which is no path", []string{"packages/envoy/cmd/listener/main.go", "\t"}, atEach("unknown (blank_fault_path)")},
+		{"control: the fault path is a source file of the tie with a space in its name", []string{"packages/envoy/cmd/listener/main two.go"}, atEach(fromC1)},
+		{"the fault path is a .tsx source file of the tie", []string{"packages/envoy/cmd/listener/view.tsx"}, atEach(fromC1)},
+		{"the fault path is a .ts source file of the tie", []string{"packages/envoy/cmd/listener/client.ts"}, atEach(fromC1)},
+		{"two fault paths, each a source file of the tie", []string{"packages/envoy/cmd/listener/main.go", "packages/envoy/cmd/listener/store.go"}, atEach(fromC1)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			run(t, func(t *testing.T, dir string) {
+				paths(row.paths...)(t, dir)
+				readsBack(t, dir, 1, map[string]any{"fault_paths": row.paths})
+			}, row.want)
 		})
 	}
 }

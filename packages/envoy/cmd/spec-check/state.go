@@ -176,13 +176,17 @@ func statementText(s specgraph.StatementState, checks map[string]specgraph.Check
 	return fmt.Sprintf("%s (%s %s)", stateWords(s.State), s.Reason, s.Detail)
 }
 
-// checkText is the state of a check as a line of text says it.
+// checkText is the state of a check as a line of text says it. A failing example whose planted_on
+// names no commit of the history also names that commit.
 func checkText(c specgraph.CheckState) string {
 	switch c.State {
 	case "true":
 		return fmt.Sprintf("true (passed, counted from %s)", c.From)
 	case "false":
 		return fmt.Sprintf("false (failed, counted from %s)", c.From)
+	}
+	if c.Reason == "planted_on_outside_history" {
+		return fmt.Sprintf("%s (%s %s)", c.State, c.Reason, c.Detail)
 	}
 	return fmt.Sprintf("%s (%s)", c.State, c.Reason)
 }

@@ -399,6 +399,60 @@ func TestCheckState(t *testing.T) {
 		{name: "R9, a later failing example that missed its fault and names its own commit as planted_on: unknown (planted_on_tested_commit)", change: func(c *checkCase) {
 			c.Results = append(c.Results, laterMissed(func(r *Result) { r.Commit = r.PlantedOn }))
 		}, want: CheckState{State: "unknown", Reason: "planted_on_tested_commit"}},
+		{name: "R48, a refusal at planted_on does not take out a later record with no fault path", change: func(c *checkCase) {
+			c.commit("c3", "c1", "docs/x.md")
+			c.Results = append(c.Results, laterMissed(func(r *Result) {
+				r.PlantedOn, r.Commit, r.FaultPaths = "c3", "f-c3", nil
+			}))
+			c.Uncited = map[string]map[string]string{"c3": {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "no_fault_paths"}},
+		{name: "R48, a refusal at planted_on does not take out a later record planted at its tested commit", change: func(c *checkCase) {
+			c.commit("c3", "c1", "docs/x.md")
+			c.Results = append(c.Results, laterMissed(func(r *Result) {
+				r.PlantedOn, r.Commit = "c3", "c3"
+			}))
+			c.Uncited = map[string]map[string]string{"c3": {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "planted_on_tested_commit"}},
+		// R48 takes out a failing example by the commit that it counts from. A later record that does
+		// not say where its fault was planted counts from no commit, so CI's refusal at its own commit,
+		// which CI tested, leaves its reason.
+		{name: "R48, a refusal at its own commit does not take out a later record with no planted_on", change: func(c *checkCase) {
+			later := laterMissed(func(r *Result) { r.PlantedOn = "" })
+			c.Results = append(c.Results, later)
+			c.Uncited = map[string]map[string]string{later.Commit: {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "no_planted_on"}},
+		{name: "R48, a refusal at its own commit does not take out a later record with no fault path", change: func(c *checkCase) {
+			later := laterMissed(func(r *Result) { r.FaultPaths = nil })
+			c.Results = append(c.Results, later)
+			c.Uncited = map[string]map[string]string{later.Commit: {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "no_fault_paths"}},
+		{name: "R48, a refusal at its own commit does not take out a later record with a blank fault path", change: func(c *checkCase) {
+			later := laterMissed(func(r *Result) { r.FaultPaths = append(r.FaultPaths, " ") })
+			c.Results = append(c.Results, later)
+			c.Uncited = map[string]map[string]string{later.Commit: {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "blank_fault_path"}},
+		{name: "R48, a refusal at its own commit does not take out a later record planted at that commit", change: func(c *checkCase) {
+			later := laterMissed(func(r *Result) { r.PlantedOn = r.Commit })
+			c.Results = append(c.Results, later)
+			c.Uncited = map[string]map[string]string{later.Commit: {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "planted_on_tested_commit"}},
+		{name: "control: a refusal at its own commit does not take out a later missed record planted on c1", change: func(c *checkCase) {
+			later := laterMissed(func(*Result) {})
+			c.Results = append(c.Results, later)
+			c.Uncited = map[string]map[string]string{later.Commit: {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
+		// A missed failing example whose planted_on names no commit of the history cannot be placed,
+		// so it cannot let an older caught one make the check true.
+		{name: "R9, a later missed failing example planted on c9, no commit of the history", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn = "c9" }))
+		}, want: CheckState{State: "unknown", Reason: "planted_on_outside_history", Detail: "c9"}},
+		{name: "R9, a later missed failing example planted on f-c1, no commit of the history", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn = "f-c1" }))
+		}, want: CheckState{State: "unknown", Reason: "planted_on_outside_history", Detail: "f-c1"}},
+		{name: "control: a later missed failing example planted on c3, a commit of the history that does not carry to c1", change: func(c *checkCase) {
+			c.commit("c3", "c1", "packages/envoy/cmd/listener/main.go")
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn, r.Commit = "c3", "f-c3" }))
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
 		{name: "control: the later failing example that missed its fault, planted on c1 with its path: unknown (failing_example_missed)", change: func(c *checkCase) {
 			c.Results = append(c.Results, laterMissed(func(*Result) {}))
 		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},

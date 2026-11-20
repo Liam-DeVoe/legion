@@ -71,8 +71,10 @@ func notRepoPaths(path string) []string {
 // (test_commit), a query of the graph at the transaction of its subject (graph_tx), and a run of a
 // job that has not ended. So each member that a rule reads is in a record of some scenario, and
 // each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases),
-// and it reads back each value that it writes (treeWithRead), so that a sweep that writes nothing
-// fails by name. One right, which sweepInputs gives the input where it writes it: a repository path
+// and it reads back each value that it writes, each kind through its own path: a string or an added
+// member (treeWithRead), null or a member or element left out (treeChangedRead), and a key renamed
+// (treeRenamedRead), so that a sweep that writes nothing fails by name. One right, which
+// sweepInputs gives the input where it writes it: a repository path
 // of a tree written " " is a real path, since git holds a file of that name (git ls-tree of a tree
 // that holds one lists the path " "), so the tree changed at a path that a tie covers, and a result
 // there, a failure among them, carries no more across it (R8: "A result at one commit also counts
@@ -253,6 +255,23 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, c Check, comm
 	return states
 }
 
+// plantedOnElsewhere is the right of a planted_on added to a failing example where it names a commit
+// of the history: R8 decides whether that record counts at a subject, and where it does not, the
+// older evidence decides, as with no such record.
+const plantedOnElsewhere = `a planted_on that names a commit of the history counts only where R8 carries it; elsewhere older evidence decides`
+
+// withoutResult is the states of base with result i of results.json taken out.
+func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
+	t.Helper()
+	fsys := maps.Clone(base)
+	editTree(t, fsys, "results.json", func(v any) any { return treeChangedRead(t, v, []string{strconv.Itoa(i)}, true) })
+	states, err := sweepStates(fsys)
+	if err != nil {
+		t.Fatalf("the base with result %d taken out: %v", i+1, err)
+	}
+	return states
+}
+
 // countedCommit is the commit where the result r of the check c counts (CheckStates, steps 2 and
 // 7): for a failing example of a program check of the code, the commit that the step planted its
 // fault on, and else the commit where its job ran (resultCommit).
@@ -287,7 +306,11 @@ var addableMembers = map[string]struct {
 // (CountsAtACommit); and a commit on a result of a check of production or of the graph is refused.
 // A planted_on alone, or fault_paths alone, on a failing example of a program check of the code
 // that no step planted moves no state: it counts from planted_on only with both, and with one of
-// the two it reads unknown with the reason that names the other (CheckStates, step 7).
+// the two it reads unknown with the reason that names the other (CheckStates, step 7). A planted_on
+// that names a commit of the history has one right: where R8 does not carry that commit to a
+// subject, the record counts nowhere there and the base without that record decides
+// (plantedOnElsewhere). A planted_on that names no commit of the history has none: such a record
+// reads unknown, planted_on_outside_history.
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -295,6 +318,10 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
+			s, err := ReadScenario(base)
+			if err != nil {
+				t.Fatalf("the base: %v", err)
+			}
 			names := namesOf(t, base)
 			values := map[string][]any{"attempt": {2}}
 			for kind, other := range map[string]string{"commit": "c9", "deploy": "d9", "graph_tx": "g9", "job": "other-job", "author": "other-author", "path": "packages/envoy/cmd/other/main.go"} {
@@ -327,7 +354,13 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 						for _, v := range values[m[1]] {
 							fsys := maps.Clone(base)
 							fsys[file] = &fstest.MapFile{Data: encodeTree(t, treeWithRead(t, tree, append(slices.Clone(place), m[0]), v))}
-							inputs = append(inputs, sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys})
+							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
+							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
+								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
+									in.right, in.allowed = plantedOnElsewhere, withoutResult(t, base, i)
+								}
+							}
+							inputs = append(inputs, in)
 						}
 					}
 				}
@@ -448,9 +481,9 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 				paths := slices.ContainsFunc(sweepPaths[name].keysOf, func(p []string) bool { return placeMatches(p, at) })
 				for _, key := range slices.Sorted(maps.Keys(v)) {
 					place := append(slices.Clone(at), key)
-					with(name+" "+treePointer(place)+" as null", name, encodeTree(t, treeChanged(tree, place, false)))
+					with(name+" "+treePointer(place)+" as null", name, encodeTree(t, treeChangedRead(t, tree, place, false)))
 					if !entries {
-						with(name+" "+treePointer(place)+" left out", name, encodeTree(t, treeChanged(tree, place, true)))
+						with(name+" "+treePointer(place)+" left out", name, encodeTree(t, treeChangedRead(t, tree, place, true)))
 					}
 					var renames []string
 					if entries {
@@ -461,7 +494,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 					}
 					for _, renamed := range renames {
 						if _, taken := v[renamed]; !taken {
-							in := with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, encodeTree(t, treeRenamed(tree, place, renamed)))
+							in := with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, encodeTree(t, treeRenamedRead(t, tree, place, renamed)))
 							if paths && renamed == " " {
 								in.right = pathOfOneSpace
 							}
@@ -472,7 +505,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 			case []any:
 				for i, x := range v {
 					place := append(slices.Clone(at), strconv.Itoa(i))
-					with(name+" "+treePointer(place)+" as null", name, encodeTree(t, treeChanged(tree, place, false)))
+					with(name+" "+treePointer(place)+" as null", name, encodeTree(t, treeChangedRead(t, tree, place, false)))
 					walk(x, place)
 				}
 			case string:
@@ -651,7 +684,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 			r.setup(t, base)
 		}
 		without := maps.Clone(base)
-		editTree(t, without, r.file, func(v any) any { return treeChanged(v, r.place, true) })
+		editTree(t, without, r.file, func(v any) any { return treeChangedRead(t, v, r.place, true) })
 		for _, read := range []struct {
 			fsys fstest.MapFS
 			want string
@@ -725,6 +758,37 @@ func treeChanged(v any, place []string, leftOut bool) any {
 	panic(fmt.Sprintf("no value at %q", place))
 }
 
+// treeChangedRead is treeChanged(v, place, leftOut), read back: the copy holds null at place, or,
+// with leftOut, its object or list equals the one before with that member or element taken out, so
+// that a sweep whose writer of null or of a left-out value writes nothing fails by name.
+func treeChangedRead(t *testing.T, v any, place []string, leftOut bool) any {
+	t.Helper()
+	c := treeChanged(v, place, leftOut)
+	if !leftOut {
+		if got, held := treeAt(c, place); !held || got != nil {
+			t.Fatalf("the sweep wrote null at %s, and the tree holds %v there (held %t)", treePointer(place), got, held)
+		}
+		return c
+	}
+	parent := place[:len(place)-1]
+	before, _ := treeAt(v, parent)
+	after, held := treeAt(c, parent)
+	var want any
+	switch p := before.(type) {
+	case map[string]any:
+		w := maps.Clone(p)
+		delete(w, place[len(place)-1])
+		want = w
+	case []any:
+		i, _ := strconv.Atoi(place[len(place)-1])
+		want = slices.Delete(slices.Clone(p), i, i+1)
+	}
+	if !held || !reflect.DeepEqual(after, want) {
+		t.Fatalf("the sweep left out %s, and the tree holds %s there", treePointer(place), encodeTree(t, after))
+	}
+	return c
+}
+
 // treeWith is a copy of the JSON tree v with x at place.
 func treeWith(v any, place []string, x any) any {
 	if len(place) == 0 {
@@ -796,6 +860,24 @@ func treeRenamed(v any, place []string, renamed string) any {
 	c[renamed] = c[place[len(place)-1]]
 	delete(c, place[len(place)-1])
 	return treeWith(v, place[:len(place)-1], c)
+}
+
+// treeRenamedRead is treeRenamed(v, place, renamed), read back: the new key holds the old value, the
+// old key is gone, and the object has as many members as before, so that a sweep whose writer of a
+// renamed key writes nothing fails by name.
+func treeRenamedRead(t *testing.T, v any, place []string, renamed string) any {
+	t.Helper()
+	c := treeRenamed(v, place, renamed)
+	parent, old := place[:len(place)-1], place[len(place)-1]
+	before, _ := treeAt(v, parent)
+	after, held := treeAt(c, parent)
+	beforeObject, _ := before.(map[string]any)
+	afterObject, object := after.(map[string]any)
+	_, oldHeld := afterObject[old]
+	if !held || !object || oldHeld || len(afterObject) != len(beforeObject) || !reflect.DeepEqual(afterObject[renamed], beforeObject[old]) {
+		t.Fatalf("the sweep renamed %s to %q, and the tree holds %s there", treePointer(place), renamed, encodeTree(t, after))
+	}
+	return c
 }
 
 // treePointer is the JSON pointer of place.

@@ -267,13 +267,16 @@ func expectEachComparisonNamed(t *testing.T, bash string, files []bashFile, cont
 
 // firstArguments runs each of scripts in bash and answers, for each, the first argument of each
 // call of spec-check that it makes. A bash that defines spec-check as a function, and exports it to
-// a nested bash, runs each script with eval, which parses and runs a text in the shell as . runs
-// the text of a file, as a CI step's bash reads its run: value, and a spec-check on PATH and in
-// ./bin records the calls of a nested sh and of a path. The scripts run in batches, one bash for
-// each, which reads them on its standard input, each script's number and then its text, each with
-// a NUL after it, so that no script is a file to write and remove, and a batch costs the processes
-// that its scripts start. Before each script's calls it writes a byte 1, the script's number and a
-// byte 1, and each call's first argument with a NUL after it.
+// a nested bash, reads the scripts on its standard input and runs each one as (eval -- "$s"): the
+// subshell keeps the exported function, the recorder on file descriptor 3 and the batch's PATH, and
+// gives each script /dev/null as its standard input. It keeps no variable, function, alias, option,
+// trap or working directory that one script sets for the next. It does not run a script as . runs
+// a file: $0 and BASH_SOURCE name the driver, LINENO is a line of the driver, there are no
+// positional parameters, and a top-level return is an error after which the script goes on. A
+// spec-check on PATH and in ./bin records the calls of a nested sh and of a path. The scripts run
+// in batches, one bash for each, so that no script is a file to write and remove. Before each
+// script's calls the driver writes a byte 1, the script's number and a byte 1, and each call's first
+// argument with a NUL after it.
 func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 	t.Helper()
 	dir := t.TempDir()
@@ -285,7 +288,7 @@ func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 		t.Fatal(err)
 	}
 	driver := filepath.Join(dir, "driver.sh")
-	writeFile(t, driver, []byte("spec-check() { printf '%s\\0' \"$1\" >&3; }\nexport -f spec-check\nwhile IFS= read -r -d '' n && IFS= read -r -d '' s; do printf '\\001%s\\001' \"$n\"; eval -- \"$s\" 3>&1 </dev/null >/dev/null 2>&1; done\nexit 0\n"))
+	writeFile(t, driver, []byte("spec-check() { printf '%s\\0' \"$1\" >&3; }\nexport -f spec-check\nwhile IFS= read -r -d '' n && IFS= read -r -d '' s; do printf '\\001%s\\001' \"$n\"; (eval -- \"$s\") 3>&1 </dev/null >/dev/null 2>&1; done\nexit 0\n"))
 	batches := make([][]byte, min(runtime.NumCPU(), 16))
 	for n, s := range scripts {
 		if strings.Contains(s, "\x00") {
@@ -334,4 +337,44 @@ func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 		t.Fatalf("bash wrote the calls of %d of %d scripts", ran, len(scripts))
 	}
 	return calls
+}
+
+// Each script of a batch runs in its own subshell. A script at the start of the batch sets a
+// variable, and each of the next sixteen scripts reads it: whatever the number of batches, one of
+// them is in the first script's batch, after it, so a driver that runs the scripts in one shell
+// fails here. The same batch keeps the cases that the driver's doc names: $0 is the driver, standard
+// input is empty, an unclosed quote and an unfinished here-document make no call, a top-level return
+// goes on, and an exit ends only its script.
+func TestFirstArgumentsRunsEachScriptInItsOwnShell(t *testing.T) {
+	t.Parallel()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+	}
+	scripts := []string{"batch_state=present"}
+	want := [][]string{nil}
+	for range 16 {
+		scripts = append(scripts, `if [[ ${batch_state-} == present ]]; then spec-check compare; else spec-check tree; fi`)
+		want = append(want, []string{"tree"})
+	}
+	for _, c := range []struct {
+		script string
+		want   []string
+	}{
+		{`case "$0" in */driver.sh) spec-check compare ;; *) spec-check tree ;; esac`, []string{"compare"}},
+		{`if IFS= read -r line; then spec-check compare; else spec-check tree; fi`, []string{"tree"}},
+		{`spec-check compare --dir "unterminated`, nil},
+		{"cat <<'EOF'\nspec-check compare\n", nil},
+		{"return\nspec-check tree", []string{"tree"}},
+		{"exit 3", nil},
+		{"spec-check tree", []string{"tree"}},
+	} {
+		scripts = append(scripts, c.script)
+		want = append(want, c.want)
+	}
+	for i, got := range firstArguments(t, bash, scripts) {
+		if !slices.Equal(got, want[i]) {
+			t.Errorf("script %d %q calls %q, want %q", i, scripts[i], got, want[i])
+		}
+	}
 }
