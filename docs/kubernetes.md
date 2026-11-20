@@ -2495,7 +2495,7 @@ The record is keyed by the pod's uid, so it says nothing of a role recorded in a
 A route change the plugin calls is a contract bump by `version.go`'s rule, and since LEGION-164 a contract bump is brought in place at the daemon's first boot on it, with no pod replacement and no runbook step:
 the boot pass ("Contract discipline" below) brings every registered claim whose recorded contract differs from the daemon's onto the current plugin, and the relaunched role loads the release's published plugins installed in its pod:
 every such claim is asked nothing and is relaunched through the moved-address relaunch path, logging `supervise: the process speaks another plugin contract; relaunching it onto the current plugin` once per claim, and the relaunch keeps the pod and the disk, so a worker loses only the turn it was in.
-What the text above keeps is the release that changes what the pod's own `legion` binary speaks (the launcher, the shim, `workspace-init`):
+What the text above keeps is the release that changes what the pod's own `legion` binary speaks (the launcher, the shim, `workspace-init`, and `legion merge`, which a role runs for every merge of two commits):
 an install refreshes no binary, so only a new image carries that change, and the pod's own update round is what carries it
 — each issue pod is replaced once every role in it has answered, or at the round's bound.
 

@@ -321,6 +321,9 @@ A host's git wrapper script can run a different `git`, and `legion git` does not
 of that `git`. When that different `git` is older than 2.32, it refuses the two `--trailer`
 options with its unknown-option error, so the commit fails, although the same commit succeeds
 without `bin/git`.
+`legion merge`, which a role runs for every merge of two commits, needs git 2.38 or later, the
+first git with `git merge-tree --write-tree`. It reads the version that `git version` prints
+through the `git` first on `PATH`, and refuses an older one with exit 3, naming that version.
 Every `git` command of a pane runs through `legion git`, so `git` can die of a signal that its
 caller ignores.
 The Go runtime puts its own handler over an ignore that the caller set, for each signal that it
