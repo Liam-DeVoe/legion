@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -182,11 +183,12 @@ const outboxHangGuard = 60 * time.Second
 // backOffDue is how long the back-off of the row below is due in, and the one bound the row puts
 // on the outbox's own work: the insert's notification must reach the holder, and the scan it
 // wakes must read next_attempt_at, inside it. A scan later than that finds the back-off already
-// due and publishes it there and then, arming no wait at all, which the row catches where it
-// requires exactly one wait armed between the insert and the publish - so it still fails on what
-// happened rather than on a clock, but it would be failing for the machine's slowness and not
-// the outbox's, which is why this is ten seconds against the single-digit milliseconds that work
-// takes on an idle pod.
+// due and publishes it there and then, arming no wait at all, or reads the next back-off only once
+// it is due and arms a wait of zero. Ten seconds against the single-digit milliseconds that work
+// takes on an idle pod leaves one thing that can make the scan that late: a stall of the test
+// process, or a failure of the database, that holds the outbox from the insert until the
+// back-off falls due. So the row accepts either only when its heartbeat or its witness saw one,
+// and fails it otherwise, on what happened rather than on a clock.
 const backOffDue = 10 * time.Second
 
 // The words of the log lines heldScans reads: a renewal of a hold the database left unanswered
@@ -208,6 +210,23 @@ const (
 	witnessPeriod = 50 * time.Millisecond
 	witnessBound  = 500 * time.Millisecond
 )
+
+// witnessLate is how far past its witnessBound a question that got no answer may end and still be
+// a failure of the database's (databaseWitness.record). It separates two kinds of question. One
+// that failed within its own bound ends past it only by the witness's own scheduling: its
+// goroutine reads the bound's end at its next turn on the CPU. One that was in flight when the
+// test process stopped ends past its bound by at least the stop's length less witnessBound, since
+// the stop began after the question was sent, and the database may have answered it in time. The
+// judgment must see as the process's every stop the heartbeat records as a stall: a gap longer than
+// shortestStall, so a stop longer than shortestStall less one witnessPeriod, the heartbeat's own
+// step. Each such stop delays a question it lands on by more than shortestStall - witnessPeriod -
+// witnessBound (450 ms), and witnessLate is half of that, so the stop the judgment must catch is
+// past it twice over. The witness's own scheduling sits far below it: on a dev box at a load of
+// 180 to 400, plain and under -race, no question a frozen database left unanswered ended more than
+// 2 ms past its bound, and no question left more than 38 ms after the moment the witness's loop
+// asked for it. The row logs the largest of each that it saw in each run (databaseWitness.report).
+// passedRenewal allows the outbox's own goroutines the same scheduling.
+var witnessLate = (shortestStall - witnessPeriod - witnessBound) / 2
 
 // renewalStatement and takeStatement are how the statements of a hold's renewal (duty.Hold's
 // renew) and of its take (duty.TryHold) begin. The publisher hold is the one hold an outbox takes
@@ -290,9 +309,10 @@ func (w failureWindow) holds(at time.Time) bool {
 // publisher hold held back by a lock a session other than the outbox's holds. A failure the row
 // leaves out must fall in such a window (heldScans), so the row leaves out what the database did,
 // and never a failure the outbox made itself: a connection it closed, a renewal or a statement it
-// cut short, a lock its own pool holds. It records the spans in which a lock of the outbox's own
-// held a renewal back apart, so that the row names that lock when it counts the scan after it. In
-// the forced cases it reaches the database through the same proxy as the outbox.
+// cut short, a lock its own pool holds - nor a question the test process itself held past its
+// bound (witnessLate). It records the spans in which a lock of the outbox's own held a renewal
+// back apart, so that the row names that lock when it counts the scan after it. In the forced
+// cases it reaches the database through the same proxy as the outbox.
 type databaseWitness struct {
 	mu sync.Mutex
 	// windows is every window that has closed, and open the one still open, if one is.
@@ -307,6 +327,50 @@ type databaseWitness struct {
 	// question was sent.
 	lastSent time.Time
 	asked    []time.Time
+	// heldBack is every question that got no answer and ended more than witnessLate past its
+	// bound, from the moment it was sent to the moment it ended: the test process's, not the
+	// database's, so it opens no window and closes none (record).
+	heldBack []failureWindow
+	// The witness's own lateness (report): ended is when the last question ended, sendLate the
+	// most any question left after the moment the loop asked for it - witnessPeriod after the
+	// question before it, or that question's end when later - and failLate the most any question
+	// that failed within witnessLate of its bound ended past the bound, of failed such questions.
+	ended              time.Time
+	sendLate, failLate time.Duration
+	failed             int
+}
+
+// witnessReportEnv names the file to which the row appends the line databaseWitness.report logs,
+// when it is set: go test prints nothing of a package that passes, so CI's envoy-go job sets it
+// and prints the file, and each run there shows the witness's own lateness beside witnessLate.
+const witnessReportEnv = "OUTBOX_IDLE_WITNESS_REPORT"
+
+// report logs the witness's own lateness over the run, the scheduling witnessLate must sit far
+// above, and appends the same line to the file witnessReportEnv names, when it names one.
+func (w *databaseWitness) report(t *testing.T) {
+	t.Helper()
+	w.mu.Lock()
+	failed := "no question failed by the end of its bound and witnessLate"
+	if w.failed > 0 {
+		failed = fmt.Sprintf("%d questions failed by the end of their bound and witnessLate, the latest of them %s after it was sent (witnessBound %s)",
+			w.failed, (witnessBound + w.failLate).Round(time.Microsecond), witnessBound)
+	}
+	line := fmt.Sprintf("%s: the witness's own lateness over %d questions: the latest left %s after the moment its loop asked for it; %s; questions that ended later, held past their bound by the test process: %d; witnessLate is %s",
+		t.Name(), len(w.asked), w.sendLate.Round(time.Microsecond), failed, len(w.heldBack), witnessLate)
+	w.mu.Unlock()
+	t.Log(line)
+	path := os.Getenv(witnessReportEnv)
+	if path == "" {
+		return
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err == nil {
+		_, err = fmt.Fprintln(file, line)
+		err = errors.Join(err, file.Close())
+	}
+	if err != nil {
+		t.Errorf("write the witness's lateness to %s=%s: %v", witnessReportEnv, path, err)
+	}
 }
 
 // watchDatabase starts the witness on database's own database, until the test ends, and waits for
@@ -322,6 +386,7 @@ func watchDatabase(t *testing.T, database *store.Store) *databaseWitness {
 		w.watch(ctx, config)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(func() { w.report(t) })
 	w.answeredAfter(t, time.Time{}, "the witness's first answer from the database")
 	return w
 }
@@ -341,7 +406,7 @@ func (w *databaseWitness) watch(ctx context.Context, config *pgx.ConnConfig) {
 		if ctx.Err() != nil {
 			return
 		}
-		w.record(sent, time.Now(), got)
+		w.record(sent, got.at, got)
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Until(sent.Add(witnessPeriod))):
@@ -352,8 +417,12 @@ func (w *databaseWitness) watch(ctx context.Context, config *pgx.ConnConfig) {
 // answer is what one question of the witness's met: err when no answer came within witnessBound,
 // and otherwise the locks the answer showed holding a renewal of the publisher hold back, those a
 // session other than the outbox's holds (locks) and those the outbox's own pool holds (own), ""
-// for none.
-type answer struct{ err, locks, own string }
+// for none. at is the moment the question ended, its answer or its failure in, before ask closes
+// a connection the failure left, which can take a witnessBound more against a frozen database.
+type answer struct {
+	err, locks, own string
+	at              time.Time
+}
 
 // failure is the failure of the database the answer shows, "" for none.
 func (a answer) failure() string {
@@ -376,16 +445,17 @@ func ask(ctx context.Context, conn *pgx.Conn, config *pgx.ConnConfig) (*pgx.Conn
 	if conn == nil {
 		dialled, err := pgx.ConnectConfig(bounded, config)
 		if err != nil {
-			return nil, answer{err: "dial: " + err.Error()}
+			return nil, answer{err: "dial: " + err.Error(), at: time.Now()}
 		}
 		conn = dialled
 	}
 	var held, own *string
 	if err := conn.QueryRow(bounded, witnessQuestion, renewalStatement, outboxApplication).Scan(nil, nil, &held, &own); err != nil {
+		got := answer{err: err.Error(), at: time.Now()}
 		closeWithin(conn, witnessBound)
-		return nil, answer{err: err.Error()}
+		return nil, got
 	}
-	var got answer
+	got := answer{at: time.Now()}
 	if held != nil {
 		got.locks = *held
 	}
@@ -405,12 +475,32 @@ func closeWithin(conn *pgx.Conn, bound time.Duration) {
 
 // record writes down one question, sent at sent and ended at at, with what it met. A failure
 // before the first answer with none opens no window: until then the witness has not reached the
-// database at all, and the outbox has not started (watchDatabase).
+// database at all, and the outbox has not started (watchDatabase). Nor does a question that got no
+// answer and ended more than witnessLate past its bound: the test process held it there, so its
+// failure says nothing of the database. It is kept apart (heldBack), and leaves an open window
+// open: the next question the database fails or answers says which it was.
 func (w *databaseWitness) record(sent, at time.Time, got answer) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.asked = append(w.asked, sent)
+	if n := len(w.asked); n > 0 {
+		planned := w.asked[n-1].Add(witnessPeriod)
+		if w.ended.After(planned) {
+			planned = w.ended
+		}
+		w.sendLate = max(w.sendLate, sent.Sub(planned))
+	}
+	w.asked, w.ended = append(w.asked, sent), at
 	failure := got.failure()
+	if got.err != "" && at.Sub(sent) > witnessBound+witnessLate {
+		w.heldBack = append(w.heldBack, failureWindow{from: sent, to: at, err: got.err})
+		return
+	}
+	if got.err != "" {
+		if late := at.Sub(sent) - witnessBound; w.failed == 0 || late > w.failLate {
+			w.failLate = late
+		}
+		w.failed++
+	}
 	switch {
 	case failure != "" && w.open == nil && !w.lastSent.IsZero():
 		w.open = &failureWindow{from: w.lastSent, err: failure}
@@ -435,11 +525,11 @@ func (w *databaseWitness) record(sent, at time.Time, got answer) {
 }
 
 // witnessed is what the witness had recorded by one moment: the windows that had closed, every span
-// of a lock of the outbox's own (one still open runs to that moment), and when it sent each
-// question.
+// of a lock of the outbox's own (one still open runs to that moment), when it sent each question,
+// and each question the test process held past its bound.
 type witnessed struct {
-	windows, ownLocks []failureWindow
-	asked             []time.Time
+	windows, ownLocks, heldBack []failureWindow
+	asked                       []time.Time
 }
 
 // answeredAfter waits until the database has answered a question the witness sent after since, so
@@ -453,7 +543,7 @@ func (w *databaseWitness) answeredAfter(t *testing.T, since time.Time, what stri
 		if !w.lastSent.After(since) {
 			return false
 		}
-		seen = witnessed{windows: slices.Clone(w.windows), ownLocks: slices.Clone(w.ownLocks), asked: slices.Clone(w.asked)}
+		seen = witnessed{windows: slices.Clone(w.windows), ownLocks: slices.Clone(w.ownLocks), heldBack: slices.Clone(w.heldBack), asked: slices.Clone(w.asked)}
 		if w.ownOpen != nil {
 			open := *w.ownOpen
 			open.to = time.Now()
@@ -497,10 +587,15 @@ type heldScan struct {
 	failed   string
 	failedAt time.Time
 	cause    cause
-	// listen is the catch-up of a LISTEN connection that came up while the outbox held no hold,
-	// when this is the first scan of the hold taken next: the connection's wake waited for a
-	// holder (Outbox.listen), and the take's scan takes it beside the take's own. nil otherwise.
+	// listen is the catch-up of a LISTEN connection that came up with no claim between it and the
+	// take, before or after the take's line, when this is the first scan of the hold taken then:
+	// the connection's wake reaches the take's scan beside the take's own (heldScans.waited). nil
+	// otherwise.
 	listen *cause
+	// cut is whether serve never waited after the scan: the loss of its hold ended it, and the take
+	// of the next hold followed it (heldScans.waited). serve arms no wait after such a scan
+	// (Outbox.serve).
+	cut bool
 }
 
 // judgedScan is a heldScan judged against what the row saw. fault is the reason the row leaves the
@@ -525,12 +620,12 @@ type evidence struct {
 // starts: a scan reads one batch at once, and another only when a batch published or filled, or
 // when a wake reaches it while batches run, an owner a batch gave back early among them
 // (Outbox.scan, lanes.releaseEarly). So the first scan of a hold taken back explains one batch,
-// and one more when a LISTEN connection that came up while no hold was held left its catch-up
-// wake to it (listen); a wake queued as the hold was lost or taken back is taken by that scan and
-// reads a batch more, which the row counts. The count is exact where no batch publishes, fills or
-// holds an owner back: in the idle window, where nothing is written and the row asserts that
-// nothing is claimed. Elsewhere a scan's own publishes can read more batches, which the row counts
-// with the wakes.
+// and one more when a LISTEN connection that came up with no claim between it and the take left
+// its catch-up wake to it (listen); a wake queued as the hold was lost or taken back is taken by
+// that scan and reads a batch more, which the row counts. The count is exact where no batch
+// publishes, fills or holds an owner back: in the idle window, where nothing is written and the
+// row asserts that nothing is claimed. Elsewhere a scan's own publishes can read more batches,
+// which the row counts with the wakes.
 func (s heldScan) judge(saw evidence) judgedScan {
 	judged := judgedScan{heldScan: s}
 	fault, woken := s.cause.judge(saw)
@@ -714,8 +809,9 @@ type start struct {
 //     connection before it: the claims that started after its LISTEN succeeded (listenTrace), to
 //     the end of the scan the first of them is in. The listener sends the catch-up's wake only
 //     after the LISTEN succeeds, so a scan that started before then is no catch-up. A connection
-//     that comes up while the outbox holds no hold leaves its wake to the next take's scan, which
-//     reads the take's batch and the connection's (heldScan.listen), or to the scan after it;
+//     that comes up with no claim between it and a take, before or after the take's line, leaves
+//     its wake to the take's scan, which reads the take's batch and the connection's
+//     (heldScan.listen), or to the scan after it;
 //   - the one scan after a scan that armed its retry and logged a failed statement in a window of
 //     the witness's.
 //
@@ -744,7 +840,7 @@ type heldScans struct {
 	starts []start
 	// At the holder's last wait: the claims made by then, the hold it held, whether a wake was
 	// queued, whether the scan it ended armed a wait, and the catch-up of a LISTEN connection that
-	// came up while no hold was held, when its wake was the one queued (waited).
+	// came up with no claim between it and a take, when its wake was the one queued (waited).
 	lastClaims int64
 	lastHold   *duty.Hold
 	lastQueued bool
@@ -758,11 +854,13 @@ type heldScans struct {
 	lost    string
 	lostAt  time.Time
 	// renewFailures is every renewal of the publisher hold the database left unanswered, and
-	// windowsLogged and stallsLogged how many of the witness's windows and of the heartbeat's
-	// stalls the row has logged.
+	// windowsLogged, stallsLogged and heldLogged how many of the witness's windows, of the
+	// heartbeat's stalls and of the questions the test process held past their bound the row has
+	// logged.
 	renewFailures []renewFailure
 	windowsLogged int
 	stallsLogged  int
+	heldLogged    int
 }
 
 // install sets h's hooks on outbox, before Run starts it, and makes h's handler the default
@@ -802,7 +900,7 @@ func (h *heldScans) listened() {
 	defer h.mu.Unlock()
 	h.listens++
 	catchUp := cause{what: "the LISTEN connection's first catch-up", reason: true}
-	back := "the catch-up wake of the first LISTEN connection, which came up before the first take"
+	back := "the catch-up wake of the first LISTEN connection, which came up at the first take with no claim between them"
 	if h.listens > 1 {
 		catchUp = cause{
 			what:   fmt.Sprintf("a new LISTEN connection's catch-up, after the last one was lost (%s)", h.lost),
@@ -816,7 +914,7 @@ func (h *heldScans) listened() {
 // listenBackWhat names the catch-up of a LISTEN connection dialled again after the last one was
 // lost with lost, read in the scan of the take that came after it (heldScan.listen).
 func listenBackWhat(lost string) string {
-	return fmt.Sprintf("the catch-up wake of a LISTEN connection that came back before the take, after the last one was lost (%s)", lost)
+	return fmt.Sprintf("the catch-up wake of a LISTEN connection that came back at the take with no claim between them, after the last one was lost (%s)", lost)
 }
 
 // listening runs once a LISTEN connection is up, after the catch-up wake it sends. The holder can
@@ -890,10 +988,13 @@ func (h *heldScans) reason() cause {
 // claims after it are the take's first scan or the connection's catch-up. A start no claim has
 // followed yet is left to the scan that follows it. It records a rest when nothing is left to do.
 //
-// A LISTEN that succeeded with no claim after it before a take sent its catch-up wake while no
-// scan could take it - no hold was held, or the last scan of the hold the take follows had ended
-// - so the wake waited in the holder's queue for the take's scan (Outbox.listen), and that scan
-// reads the connection's catch-up beside the take's own (heldScan.listen). When the take's scan
+// A take and a LISTEN that succeeded with no claim between them, in either order, share the scan
+// that follows them: the take's cause is that scan's, and the connection's catch-up is its listen
+// (heldScan.listen). A LISTEN before the take sent its catch-up wake while no scan could take it
+// - no hold was held, or the last scan of the hold the take follows had ended - so the wake waited
+// in the holder's queue for the take's scan (Outbox.listen). A LISTEN after the take's line and
+// before the take's first claim sent its wake while that scan was starting or running: the scan
+// takes it while its batches run, or leaves it queued for the scan after it. When the take's scan
 // read only its own batch and left a wake queued, the wake is the connection's, and the scan after
 // it is the catch-up (reason).
 func (h *heldScans) waited() {
@@ -903,6 +1004,8 @@ func (h *heldScans) waited() {
 	from, held := h.lastClaims, h.lastHold
 	current := h.reason()
 	var listen, back *cause
+	// taking is whether current is a take's cause with no claim since the take's start.
+	taking := false
 	var later []start
 	for _, next := range h.starts {
 		if next.claims >= claims {
@@ -910,15 +1013,19 @@ func (h *heldScans) waited() {
 			continue
 		}
 		if next.claims > from {
-			h.scans = append(h.scans, heldScan{claims: next.claims - from, upTo: next.claims, cause: current, listen: listen})
-			from, listen, back = next.claims, nil, nil
+			h.scans = append(h.scans, heldScan{claims: next.claims - from, upTo: next.claims, cause: current, listen: listen, cut: next.hold != nil})
+			from, listen, back, taking = next.claims, nil, nil, false
 		}
-		current = next.cause
 		if next.hold == nil {
-			back = &cause{what: next.back, reason: next.cause.reason, failedAt: next.cause.failedAt}
+			catchUp := &cause{what: next.back, reason: next.cause.reason, failedAt: next.cause.failedAt}
+			if taking {
+				listen = catchUp
+				continue
+			}
+			current, back = next.cause, catchUp
 			continue
 		}
-		current, listen, back = h.took(held), back, nil
+		current, listen, back, taking = h.took(held), back, nil, true
 		held = next.hold
 	}
 	h.starts = later
@@ -992,23 +1099,27 @@ func (h *heldScans) mark() int {
 	return len(h.scans)
 }
 
-// judged is the scans that ended after mark, judged against what the row saw. It first waits for
-// the database to answer a question the witness sent after the call, so every window open while
-// those scans ran has closed, and for the heartbeat to beat after the call, so every stall of the
-// test process in that time is recorded, and it logs each window and each stall the row has not
-// logged yet, under part.
-func (h *heldScans) judged(t *testing.T, part string, mark int) []judgedScan {
+// judged is the scans that ended after mark, judged against what the row saw, and what the row
+// saw. It first waits for the database to answer a question the witness sent after the call, so
+// every window open while those scans ran has closed, and for the heartbeat to beat after the
+// call, so every stall of the test process in that time is recorded, and it logs each window and
+// each stall the row has not logged yet, under part.
+func (h *heldScans) judged(t *testing.T, part string, mark int) ([]judgedScan, evidence) {
 	t.Helper()
 	asked := time.Now()
 	saw := evidence{witnessed: h.witness.answeredAfter(t, asked, "the witness's answer after "+part)}
 	saw.stalls, saw.statements = h.process.beatAfter(t, asked, "the heartbeat's beat after "+part)
 	h.mu.Lock()
 	scans := slices.Clone(h.scans[mark:])
-	windows, stalls := h.windowsLogged, h.stallsLogged
-	h.windowsLogged, h.stallsLogged = len(saw.windows), len(saw.stalls)
+	windows, stalls, heldBack := h.windowsLogged, h.stallsLogged, h.heldLogged
+	h.windowsLogged, h.stallsLogged, h.heldLogged = len(saw.windows), len(saw.stalls), len(saw.heldBack)
 	h.mu.Unlock()
 	for _, window := range saw.windows[windows:] {
 		t.Logf("%s: the witness saw the database fail %s", part, window)
+	}
+	for _, question := range saw.heldBack[heldBack:] {
+		t.Logf("%s: the witness's question %s ended %s past its bound, held there by the test process, and opened no window",
+			part, question, question.to.Sub(question.from)-witnessBound)
 	}
 	for _, stall := range saw.stalls[stalls:] {
 		t.Logf("%s: the heartbeat saw the test process stall %s", part, stall)
@@ -1017,7 +1128,23 @@ func (h *heldScans) judged(t *testing.T, part string, mark int) []judgedScan {
 	for i, scan := range scans {
 		judged[i] = scan.judge(saw)
 	}
-	return judged
+	return judged, saw
+}
+
+// holding names a stall of the test process the heartbeat saw, or a failure of the database the
+// witness saw, that began before by and lasted past past, and is "" when the row saw neither.
+func (saw evidence) holding(by, past time.Time) string {
+	for _, stall := range saw.stalls {
+		if stall.from.Before(by) && past.Before(stall.to) {
+			return "the heartbeat saw the test process stall " + stall.String()
+		}
+	}
+	for _, window := range saw.windows {
+		if window.from.Before(by) && past.Before(window.to) {
+			return "the witness saw the database fail " + window.String()
+		}
+	}
+	return ""
 }
 
 // heldScansLog writes every record on, and gives heldScans each one first.
@@ -1120,7 +1247,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// A scan is read once it has ended, so one still running as the window closes is read at the
 	// rest that follows it.
 	held.atRest(t, "the outbox resting at the end of its idle window")
-	idle := held.judged(t, "the idle window", idleFrom)
+	idle, _ := held.judged(t, "the idle window", idleFrom)
 	if claims, woken := withoutFault(idle); claims != 0 {
 		t.Fatalf("an idle outbox ran %d claims in 12 s, want 0: %s", claims, strings.Join(woken, "; "))
 	}
@@ -1143,16 +1270,25 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// other process's event is marked published, while the batch that published it has still to
 	// start the batch that follows it and the scan has still to arm whatever comes of that.
 	held.atRest(t, "the outbox resting after the other process's event")
-	logFaults(t, "the other process's event", held.judged(t, "the other process's event", freshFrom))
+	freshScans, _ := held.judged(t, "the other process's event", freshFrom)
+	logFaults(t, "the other process's event", freshScans)
 
 	// A back-off due in backOffDue, committed by the other process: its insert wakes the outbox,
 	// whose scan finds nothing due and arms its one retry timer to the back-off's own moment, and
 	// the timer's scan is the one that publishes it.
 	backOffFrom := held.mark()
+	// fellFrom is the moment, on the local clock, the last reading below that put the back-off
+	// still ahead was sent, and until one does, the moment before the insert was sent. The database
+	// answers each reading on its own clock after the loop sent it, so the back-off fell due after
+	// fellFrom: only the order of real moments is read here, never one clock against the other.
+	fellFrom := time.Now()
 	// due is the moment the database computed for this back-off; every assertion about it below is
 	// made against that value, on the database's own clock.
 	backedOff, due := appendBackedOffEvent(t, other, backOffDue)
-	// A local clock for this loop's hang guard and the readings below alone: no assertion reads it.
+	// The moment the insert's commit returned, on the local clock: this loop's hang guard, the
+	// readings below, and the start of the span a stall must hold to explain a scan that came only
+	// once the back-off was due (holding), read against the heartbeat's and the witness's own
+	// local moments.
 	inserted := time.Now()
 	var published time.Time
 	// The claims the outbox had made at the last reading taken while the back-off was still ahead:
@@ -1163,19 +1299,21 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		// claims, then the database's answer, whose now() is therefore no earlier than every claim
 		// read.
 		claims := outbox.claims.Load()
+		sent := time.Now()
 		at, beforeDue := backOffState(t, database, backedOff.ID)
+		if beforeDue {
+			startedBeforeDue, fellFrom = claims, sent
+		}
 		if at != nil {
 			published = *at
 			break
-		}
-		if beforeDue {
-			startedBeforeDue = claims
 		}
 		// The one clock left in this loop is a hang guard, 60 s against the backOffDue the work
 		// waits out, so no load reaches it: it fires only when nothing was published at all. A
 		// hang guard needs no agreement between clocks, so the local one serves.
 		if time.Since(inserted) > outboxHangGuard {
-			plain, faulted := armedIn(held.judged(t, "the back-off", backOffFrom))
+			scans, _ := held.judged(t, "the back-off", backOffFrom)
+			plain, faulted := armedIn(scans)
 			t.Fatalf("the back-off due in %s was never published: %s after its insert the outbox had armed %v, and %v after a failure",
 				backOffDue, time.Since(inserted).Round(time.Millisecond), plain, faulted)
 		}
@@ -1186,7 +1324,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	publishedAfter := time.Since(inserted)
 	// Every scan up to the publish is read once it has ended.
 	held.atRest(t, "the outbox resting after it published the back-off")
-	scans := held.judged(t, "the back-off", backOffFrom)
+	scans, saw := held.judged(t, "the back-off", backOffFrom)
 	logFaults(t, "the back-off", scans)
 	// Nothing but the insert's own notification wakes the outbox before the back-off falls due,
 	// failures apart: one scan with no reason that started while the back-off was ahead. A scan
@@ -1195,37 +1333,81 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// cannot be one of them: the timer fires no sooner than the due moment, and the loop read each
 	// claims count before a database answer that put the due moment still ahead.
 	var early []string
+	stillHeld := 0
 	for _, scan := range scans {
 		if scan.plain() && scan.upTo-scan.claims < startedBeforeDue {
 			early = append(early, fmt.Sprintf("%d by %s", scan.claims, scan.woken))
+			if !scan.cut {
+				stillHeld++
+			}
 		}
 	}
 	if len(early) > 1 {
 		t.Fatalf("the outbox started %d scans after the back-off's insert and before it fell due, want only the one its insert woke: %s",
 			len(early), strings.Join(early, "; "))
 	}
+	// late names what held the outbox from the insert until the back-off was due: a stall of the
+	// test process the heartbeat saw, or a failure of the database the witness saw, that began
+	// within witnessBound of the insert's commit and lasted past the last reading that put the
+	// back-off still ahead (fellFrom). It is "" when the row saw neither. A running outbox reads
+	// the insert's notification and scans within milliseconds - this row's runs arm their wait 2
+	// to 3 ms after the insert - so a scan that reads the back-off only once it is due needs the
+	// outbox held from about the insert to the due moment; witnessBound, the witness's own bound
+	// on an answer, is a hundred times that work. A stall that began later left the outbox time to
+	// scan, and one that ended before fellFrom left it time to scan before the back-off fell due.
+	late := saw.holding(inserted.Add(witnessBound), fellFrom)
+	span := fmt.Sprintf("that began by %s, within witnessBound of the insert's commit, and lasted past %s, the last moment the row read the back-off still ahead or sent the insert",
+		inserted.Add(witnessBound).UTC().Format("15:04:05.000"), fellFrom.UTC().Format("15:04:05.000"))
 	// One wait armed, by the scan the insert woke. A failure can arm another in that scan's place -
 	// a hold taken back reads the back-off afresh and arms the wait the lost one had, and a failed
 	// statement arms its retry - but nothing else arms one.
 	plain, faulted := armedIn(scans)
-	if len(plain) > 1 || len(plain)+len(faulted) == 0 {
+	if len(plain) > 1 {
 		t.Fatalf("the outbox armed %d waits between the back-off's insert and its publish, and %d more after a failure, want 1 in all: %v %v",
 			len(plain), len(faulted), plain, faulted)
+	}
+	// A scan that ran only once the back-off was due publishes it there and then and arms no wait,
+	// and a scan that was held between its claim and its reading of the next back-off reads it due
+	// and arms a wait of zero (nextRetry clamps a back-off already due to zero). Either is the
+	// outbox's right answer only when the scan came that late: when a stall or a failure held the
+	// outbox from the insert until the back-off was due (late), and no scan that started before it
+	// fell due ended with its hold still held and armed nothing. A scan the loss of its hold cut
+	// short arms nothing, as serve returns from it (heldScan.cut). Without such a stall or
+	// failure, the scan that came late or armed nothing was the outbox's own doing. The row knows
+	// that a scan started before the back-off fell due only from a reading of the loop above taken
+	// after the scan's first claim, every 5 ms, so a scan whose process stopped within those 5 ms of
+	// its claim, to past the due moment, reads as one that started after the stop: an outbox that
+	// armed no wait after such a scan passes here, though it fails every run with no such stop.
+	if len(plain)+len(faulted) == 0 {
+		switch {
+		case stillHeld > 0:
+			t.Fatalf("the outbox armed no wait between the back-off's insert and its publish, want 1: a scan that started while the back-off was still ahead ended with its hold held and armed none (%s)",
+				strings.Join(early, "; "))
+		case late == "":
+			t.Fatalf("the outbox armed no wait between the back-off's insert and its publish, want 1: the heartbeat saw no stall of the test process and the witness no failure of the database %s, so nothing held the insert's scan until the back-off was due",
+				span)
+		}
+		t.Logf("the back-off: the outbox armed no wait for it, its scan coming only once it was due: %s, a stall or failure %s", late, span)
 	}
 	// The wait is a value the database computed from its own next_attempt_at, not an elapsed time
 	// this test measured, so a loaded runner can only make it smaller: the only way past
 	// backOffDue is a wait armed for something that is not this back-off. The lower end is the
-	// cheaper half of the same statement: nextRetry clamps a back-off already due to zero, so a
-	// wait of zero is a timer armed to fire at once, which is not the timer this row is about.
-	// A scan so late that the back-off is already due does not arm even that - it publishes the
-	// back-off in that scan and arms nothing - and the assertion above, a wait armed at all, is
-	// what catches that. A wait a failure armed may be zero, since a hold taken back just as the
-	// back-off fell due arms the zero the clamp gives it, and is held to the same upper end: a
-	// failed statement's retry, retry.BaseDelay, is below it too.
+	// cheaper half of the same statement: a wait of zero is a timer armed to fire at once, which
+	// is not the timer this row is about unless a stall or a failure held the outbox from the
+	// insert until the back-off was due (late). A wait a failure armed may be zero, since a hold
+	// taken back just as the back-off fell due arms the zero the clamp gives it, and is held to the
+	// same upper end: a failed statement's retry, retry.BaseDelay, is below it too.
 	for _, armed := range plain {
-		if armed.wait <= 0 || armed.wait > backOffDue {
+		if armed.wait < 0 || armed.wait > backOffDue {
 			t.Fatalf("the outbox armed a %s wait for a back-off due in %s, want one above zero and no more than %s",
 				armed.wait, backOffDue, backOffDue)
+		}
+		if armed.wait == 0 && late == "" {
+			t.Fatalf("the outbox armed a wait of zero for a back-off due in %s, want one above zero: the heartbeat saw no stall of the test process and the witness no failure of the database %s, so nothing held its scan until the back-off was due",
+				backOffDue, span)
+		}
+		if armed.wait == 0 {
+			t.Logf("the back-off: the outbox armed a wait of zero for it, its scan reading the next back-off only once it was due: %s, a stall or failure %s", late, span)
 		}
 	}
 	for _, armed := range faulted {
@@ -1243,10 +1425,12 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 			published, due.Sub(published).Round(time.Millisecond), due)
 	}
 	// A reading for the record, not an assertion.
-	first := slices.MinFunc(append(plain, faulted...), func(a, b armedWait) int { return a.at.Compare(b.at) })
-	t.Logf("the outbox armed a %s wait %s after the insert, and the back-off was published %s after it and %s after the database made it due",
-		first.wait.Round(time.Millisecond), first.at.Sub(inserted).Round(time.Millisecond),
-		publishedAfter.Round(time.Millisecond), published.Sub(due).Round(time.Millisecond))
+	if armed := append(plain, faulted...); len(armed) > 0 {
+		first := slices.MinFunc(armed, func(a, b armedWait) int { return a.at.Compare(b.at) })
+		t.Logf("the outbox armed a %s wait %s after the insert, and the back-off was published %s after it and %s after the database made it due",
+			first.wait.Round(time.Millisecond), first.at.Sub(inserted).Round(time.Millisecond),
+			publishedAfter.Round(time.Millisecond), published.Sub(due).Round(time.Millisecond))
+	}
 }
 
 // appendBackedOffEvent commits an event on database whose next attempt is due after wait on the
