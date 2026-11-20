@@ -208,7 +208,8 @@ func TestAHandoversReportsRunAsTheyAreOwedAndQueueNothing(t *testing.T) {
 // record ends with no claim (keptCopyEnd), once the claim is no longer outstanding - whose kept and
 // claim are the confirm's own: the settle does not take it for the confirm, so the copy's forward is
 // not reported beside that walk's report of it, and the copy counts once. A confirm that did land is
-// settled as landed, and reported.
+// settled as landed, and reported. The other walk's write is {"kept":9,"claiming":0}, byte for byte
+// what a listener built before the token writes, so the row stands for that listener's walk too.
 //
 // The control is the settle at 7eb4320b67, which compared the cursor's kept and claim alone: it
 // takes the other walk's {kept} for its confirm, and the row fails at its count of the first

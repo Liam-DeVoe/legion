@@ -68,12 +68,15 @@ func TestAKeptCopysRefusalIsReportedBeforeTheForwardsThatFollowIt(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 	defer cancel()
-	if err := drainKeptRole(ctx, cfg, role, time.Now); err != nil {
-		t.Fatalf("the handover answered %v", err)
-	}
+	err = drainKeptRole(ctx, cfg, role, time.Now)
 
+	// The order is read first: a handover that held the report while its forward waited for it
+	// runs out its walk's window there, and its answer says only that.
 	if !reported.Load() {
-		t.Fatalf("the refused copy's exception had not gone out when the next copy was forwarded, by the test's deadline; log:\n%s", harness.logs.String())
+		t.Fatalf("the refused copy's exception had not gone out when the next copy was forwarded, by the test's deadline (the handover answered %v); log:\n%s", err, harness.logs.String())
+	}
+	if err != nil {
+		t.Fatalf("the handover answered %v", err)
 	}
 	logs := harness.logs.String()
 	refusal := strings.Index(logs, keptRoleRefusalLines.modeUnadvertised)
