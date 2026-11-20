@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -29,11 +30,12 @@ var (
 )
 
 // reserveForAuthor writes the store's node of kind and id reserved for privateAuthor, through the
-// store's own writer and the one rule that answers whether a credential may reserve a node
-// (graphstore.VisibilityFor), as a write that asked for `author` would.
+// store's own writer and the visibility a write that asked for `author` would get
+// (graphstoretest.VisibilityFor), handed the one rule that answers whether a credential may
+// reserve a node (graphstore.ProvesAuthor).
 func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 	t.Helper()
-	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, privateAuthor)
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(privateAuthor))
 	if err != nil {
 		t.Fatalf("reserve %s %s for its author: %v", kind, id, err)
 	}
