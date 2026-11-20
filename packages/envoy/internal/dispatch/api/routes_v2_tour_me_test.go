@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )

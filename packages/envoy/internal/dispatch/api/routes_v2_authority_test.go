@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -163,7 +163,7 @@ func TestV2DeclaredAuthority(t *testing.T) {
 		const scoped, unscoped = "a-broker-token-for-one-project", "a-broker-token-for-no-one-project"
 		tour.brokerTokens.Says(scoped, liveNamedToken(caller.jkt))
 		person := liveNamedToken(caller.jkt)
-		person.ProjectScope, person.Projects = brokertoken.ProjectScopePerson, nil
+		person.ProjectScope, person.Projects = ciphertoken.ProjectScopePerson, nil
 		tour.brokerTokens.Says(unscoped, person)
 		for _, write := range []struct {
 			name    string

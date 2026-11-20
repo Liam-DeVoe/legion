@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -43,7 +43,7 @@ func TestEachLayersRefusalIsAmongItsOperationsCodes(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		return request
 	}
-	brokerToken := func(t *testing.T, says func(jkt string) brokertoken.Introspection) (*brokerCaller, string) {
+	brokerToken := func(t *testing.T, says func(jkt string) ciphertoken.Introspection) (*brokerCaller, string) {
 		t.Helper()
 		caller := newBrokerCaller(t)
 		token := "layer-token-" + uuid.NewString()

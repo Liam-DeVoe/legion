@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { BROKER_VARIABLES } from "@legion/broker-client/environment"
-import { METADATA_HOST_VAR } from "@legion/broker-client/metadata-identity"
+import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
+import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
@@ -22,9 +22,9 @@ import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod
 import pkg from "../package.json" with { type: "json" }
 import { CODEX_ENVOY_USER_AGENT, codexDispatchClient } from "../src/codex/codex-server"
 import {
-  CLAUDE_ENVOY_USER_AGENT,
   type ChannelNotifier,
   type ChannelSession,
+  CLAUDE_ENVOY_USER_AGENT,
   createChannelDelivery,
   MCP_SERVER_INFO,
   postDispatchReply,

@@ -275,7 +275,7 @@ export default function legionExtension(pi: PiApi): void {
     armTimer: (callback, delayMs) => paneContext?.setTimeout(callback, delayMs),
     saveEntry: (entry) => pi.appendEntry(PHASE_STALL_ENTRY, entry),
     claim: paneClaim,
-    readState: (signal) => roleDaemon().state({ signal }),
+    readRecord: (issue, signal) => roleDaemon().record(issue, { signal }),
     publisher,
     project: process.env.LEGION_PROJECT,
     limits,
@@ -379,8 +379,12 @@ export default function legionExtension(pi: PiApi): void {
 
   let daemonClient: LegionDaemonClient | undefined;
   const roleDaemon = (): LegionDaemonClient => {
+    // This build's own `legion.daemonApiVersion`, read from the manifest of the module this
+    // process loaded, as the claim's registration reads it. The daemon serves each answer in
+    // the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
-      requiredEnvironment(process.env, "LEGION_DAEMON_URL")
+      requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
+      { pluginContract: pkg.legion.daemonApiVersion }
     );
     return daemonClient;
   };
@@ -457,7 +461,7 @@ export default function legionExtension(pi: PiApi): void {
         session: () => session,
         claim: paneClaim,
         project: process.env.LEGION_PROJECT,
-        readState: (signal) => roleDaemon().state({ signal }),
+        readRecord: (issue, signal) => roleDaemon().record(issue, { signal }),
         publisher,
         appendEntry: (customType, data) => pi.appendEntry(customType, data),
         log: logger,

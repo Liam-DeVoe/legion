@@ -19,7 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -45,8 +45,8 @@ type routeTour struct {
 	github *tourGitHub
 	// secrets is the secrets broker the credential pages relay to.
 	secrets *tourSecretsBroker
-	// brokerTokens decides a broker-issued token a step presents (brokertokentest).
-	brokerTokens *brokertokentest.StubBroker
+	// brokerTokens decides a broker-issued token a step presents (ciphertokentest).
+	brokerTokens *ciphertokentest.StubBroker
 	// personToken and scopelessToken are alice's personal tokens, one holding the person scope
 	// and one holding no scope: an agent of alice's acting with and without her authority.
 	personToken, scopelessToken string
@@ -64,7 +64,7 @@ func newRouteTour(t *testing.T) *routeTour {
 	github := &tourGitHub{answers: map[string]http.HandlerFunc{}}
 	githubURL := githubtest.Server(t, githubtest.Spec{Handle: github.serve})
 	secrets := newTourSecretsBroker(t)
-	brokerTokens := brokertokentest.NewStubBroker(t)
+	brokerTokens := ciphertokentest.NewStubBroker(t)
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate the App's key: %v", err)

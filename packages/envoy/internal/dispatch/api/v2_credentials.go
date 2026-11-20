@@ -17,10 +17,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/broker/wire"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -248,7 +248,7 @@ type signInRevokedV2 struct {
 // /api/v1 relays it (relayBrokerResponse). The broker answers every id it holds no record of 404
 // NOT_FOUND, a sign-in of anyone else's among them.
 func relayBrokerRefusalV2(w http.ResponseWriter, r *http.Request, err error, missing apicode.Code, object string) {
-	var brokerErr *agentsecrets.Error
+	var brokerErr *cipher.Error
 	if errors.As(err, &brokerErr) && brokerErr.Status == http.StatusNotFound && brokerErr.Code == "NOT_FOUND" {
 		writeError(w, r, missing, fmt.Sprintf("the secrets broker holds no %s %s", object, r.PathValue("id")))
 		return
@@ -364,7 +364,7 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 	if input.State == "approved" {
 		decide = client.Approve
 	}
-	decided, err := decide(r.Context(), id, agentsecrets.Decision{Approver: login, Code: input.Code})
+	decided, err := decide(r.Context(), id, cipher.Decision{Approver: login, Code: input.Code})
 	if err != nil {
 		relayBrokerRefusalV2(w, r, err, apicode.CredentialRequestNotFound, "credential request")
 		return
@@ -396,7 +396,7 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 // request already dismissed is answered 200 as it stands. The broker's 404 of an id it holds no
 // request of is the route's CREDENTIAL_REQUEST_NOT_FOUND, and every other refusal - 403
 // NOT_APPROVER, 409 RECORD_PENDING, 409 RECORD_TERMINAL - is relayed as /api/v1 relays it.
-func dismissCredentialRequestV2(w http.ResponseWriter, r *http.Request, client *agentsecrets.Client, login string) {
+func dismissCredentialRequestV2(w http.ResponseWriter, r *http.Request, client *cipher.Client, login string) {
 	dismissed, err := client.Dismiss(r.Context(), r.PathValue("id"), login)
 	if err != nil {
 		relayBrokerRefusalV2(w, r, err, apicode.CredentialRequestNotFound, "credential request")
@@ -429,13 +429,13 @@ func (s *server) writeBrokerLookupError(w http.ResponseWriter, r *http.Request, 
 // record and its bytes as the broker answered them, or neither where the broker holds no login of
 // that code (404 NO_SUCH_CODE). A failed call of the broker is a brokerLookupError, and any other
 // error Dispatch's own.
-func lookupMachineRecord(ctx context.Context, client *agentsecrets.Client, code string) (wire.RecordResponse, json.RawMessage, error) {
+func lookupMachineRecord(ctx context.Context, client *cipher.Client, code string) (wire.RecordResponse, json.RawMessage, error) {
 	request, err := json.Marshal(wire.MachineLookupRequest{Code: code})
 	if err != nil {
 		return wire.RecordResponse{}, nil, fmt.Errorf("encode a machine-login lookup: %w", err)
 	}
 	raw, err := client.MachineLookup(ctx, request)
-	var brokerErr *agentsecrets.Error
+	var brokerErr *cipher.Error
 	if errors.As(err, &brokerErr) && brokerErr.Status == http.StatusNotFound && brokerErr.Code == "NO_SUCH_CODE" {
 		return wire.RecordResponse{}, nil, nil
 	}

@@ -5,7 +5,7 @@
 // with the code the person typed; it relays a person's dismissal of an expired request; and it
 // relays a person's revoke of a grant or a machine login. Every handler does the same five things:
 // require a human caller, require the broker to be configured, resolve or read its input, call
-// the matching agentsecrets.Client method, and forward the broker's exact status and body — the
+// the matching cipher.Client method, and forward the broker's exact status and body — the
 // broker decides. Without a broker, /api/v1's pending list answers null and the capabilities read
 // of both versions answers machine_code_page false (getCredentialCapabilities), rather than 404
 // FEATURE_OFF.
@@ -27,8 +27,8 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -53,7 +53,7 @@ func noteActingAgent(r *http.Request, actor model.Actor) {
 // (DISPATCH_AGENT_SECRETS_URL unset); every credential route of both versions needs it after
 // actingPerson but /api/v1's pending list, which answers null, and the capabilities read, which
 // answers for a Dispatch with no broker (getCredentialCapabilities).
-func (s *server) requireAgentSecrets(w http.ResponseWriter, r *http.Request) (*agentsecrets.Client, bool) {
+func (s *server) requireAgentSecrets(w http.ResponseWriter, r *http.Request) (*cipher.Client, bool) {
 	if s.deps.AgentSecrets == nil {
 		writeError(w, r, apicode.FeatureOff, "agent-secrets is not configured on this Dispatch")
 		return nil, false
@@ -62,7 +62,7 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter, r *http.Request) (*a
 }
 
 // relayBrokerResponse writes the broker's answer verbatim: its raw JSON body on success, its
-// exact status and body for a *agentsecrets.Error (the browser must see the broker's own status
+// exact status and body for a *cipher.Error (the browser must see the broker's own status
 // and code, e.g. 409 RECORD_TERMINAL — Dispatch never re-wraps it), 500
 // AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at Dispatch's own ServiceAccount
 // token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
@@ -70,14 +70,14 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter, r *http.Request) (*a
 // the log line naming the file is the operator's only pointer to it.
 func relayBrokerResponse(w http.ResponseWriter, r *http.Request, body json.RawMessage, err error) {
 	if err != nil {
-		var brokerErr *agentsecrets.Error
+		var brokerErr *cipher.Error
 		if errors.As(err, &brokerErr) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(brokerErr.Status)
 			_, _ = w.Write(brokerErr.Body)
 			return
 		}
-		var tokenErr *agentsecrets.AccountTokenError
+		var tokenErr *cipher.AccountTokenError
 		if errors.As(err, &tokenErr) {
 			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "path", tokenErr.Path, "error", tokenErr.Err)
 			writeError(w, r, apicode.AgentSecretsAccountTokenUnreadable, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
@@ -129,25 +129,25 @@ type credentialDecisionInput struct {
 // caller's canonical login, and the one field read from the browser's body is a machine login's
 // typed code. Any other field the browser sends, an approver among them, is ignored, never
 // forwarded. An empty body is a decision with no code.
-func (s *server) decisionFor(w http.ResponseWriter, r *http.Request, actor model.Actor) (agentsecrets.Decision, bool) {
+func (s *server) decisionFor(w http.ResponseWriter, r *http.Request, actor model.Actor) (cipher.Decision, bool) {
 	body, ok := s.readRelayBody(w, r)
 	if !ok {
-		return agentsecrets.Decision{}, false
+		return cipher.Decision{}, false
 	}
 	var input credentialDecisionInput
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &input); err != nil {
 			writeError(w, r, apicode.InvalidDecision, "request body must be a JSON object")
-			return agentsecrets.Decision{}, false
+			return cipher.Decision{}, false
 		}
 	}
-	return agentsecrets.Decision{Approver: model.CanonicalLogin(actor.ID), Code: input.Code}, true
+	return cipher.Decision{Approver: model.CanonicalLogin(actor.ID), Code: input.Code}, true
 }
 
 // --- GET /api/v1/credential-requests ---
 
 // listCredentialPending answers the viewer's list, the requests still pending and then the expired
-// ones nobody has dismissed (agentsecrets.Client.Pending asks the broker for both), or null when
+// ones nobody has dismissed (cipher.Client.Pending asks the broker for both), or null when
 // this Dispatch has no broker. Every page reads this list (the Needs-you badge counts it), and a
 // deployment without a broker is an ordinary one, so "no broker" is an answer here rather than the
 // 404 FEATURE_OFF the other credential routes give: a 404 made every page of such a deployment log
@@ -374,7 +374,7 @@ func (s *server) revokeSignIn(w http.ResponseWriter, r *http.Request) {
 type credentialCapabilities struct {
 	// Whether the page where a person types a machine's code is worth serving: whether, that
 	// is, this broker still serves RFC 8628's device grant, read from its RFC 8414 metadata
-	// (agentsecrets.Client.ServesDeviceGrant). False for a Dispatch with no broker at all,
+	// (cipher.Client.ServesDeviceGrant). False for a Dispatch with no broker at all,
 	// where no code is ever printed for anyone to type.
 	MachineCodePage bool `json:"machine_code_page"`
 }

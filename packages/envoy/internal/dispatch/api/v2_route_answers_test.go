@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 )
 
 // PUT /api/v2/credential-requests/{id}/state answers the request as the broker records it once
