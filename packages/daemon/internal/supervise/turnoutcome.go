@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // TurnOutcome is one turn of a claim's agent as the backend's producer reported it when that turn
@@ -84,7 +87,8 @@ func compareTurnOutcomes(a, b TurnOutcome) int { return compareKeys(a.key(), b.k
 
 // maxRefusalMessage bounds, in runes, the provider's message a report carries. The message reaches
 // the claim's failure, which is read back in notices and in every state answer, so a provider that
-// returns a page of diagnostics leaves a sentence rather than a page in the store.
+// returns a page of diagnostics leaves a sentence rather than a page in the store. A message past
+// the bound keeps its first maxRefusalMessage-1 runes and "…" (redact.Runes).
 const maxRefusalMessage = 500
 
 // turnOutcomeWindow is how many reports a claim keeps: the launch failure limit
@@ -292,9 +296,14 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // was decided against the claim as the first attempt found it, and the take that first attempt
 // took back reaches no ladder any more. A report whose write fails is marked as never applied
 // (TurnOutcome.Unapplied), so the producer's repeat of it still does what it says of the task.
+//
+// The message is the provider's text, so it is kept as the daemon keeps a far side's text
+// (storetext.FarSideText: made valid, then read whole by the URL rule) before redact.Runes cuts
+// it, so the window in memory is the window the store holds, and the cut cannot leave half a
+// credential.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
-	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Message: boundRunes(r.Message, maxRefusalMessage), Task: r.Task}
+	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Message: redact.Runes(storetext.FarSideText(r.Message), maxRefusalMessage), Task: r.Task}
 	if pe := r.ProviderError; pe != nil {
 		o.ProviderError, o.ProviderErrorStatus = true, pe.Status
 	}

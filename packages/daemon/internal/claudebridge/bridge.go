@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -206,7 +207,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.
 	stop := make(chan struct{})
 	defer close(stop)
-	b := &bridge{cfg: cfg, log: log.New(logOut, "[claude-bridge] ", 0), requests: requests, stop: stop,
+	// The bridge's own lines pass the URL rule: a turn report's failure quotes the daemon's URL,
+	// its user name among it. Claude Code's stderr is logOut itself, below, so a file stays the
+	// file Claude Code writes to and exec's Wait copies nothing.
+	b := &bridge{cfg: cfg, log: log.New(redact.Writer(logOut), "[claude-bridge] ", 0), requests: requests, stop: stop,
 		takeAnswers: make(chan takeAnswer), refusedReports: make(chan uint64), seen: map[pair]bool{}, asked: map[pair]bool{}}
 	b.frames = shimwire.NewWriter(&b.encoded)
 	b.daemon = dialDaemon(cfg, b.log)

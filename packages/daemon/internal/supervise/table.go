@@ -2033,12 +2033,15 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 
 // register records the session the agent became, once every name of it is held to this claim
 // (holdRecorded): a session another claim recorded first, by its id or by its file, is refused
-// before anything of the registration is recorded or enrolled. The boot intervals end with the
+// before anything of the registration is recorded or enrolled. The session id and the file arrive
+// as the store keeps them, as every event's text does (Handle), so the hold, the claim in memory
+// and the stored claim name the same session, and a restart reads back what was held: a session
+// id or a file holding a NUL is held as it is stored. The boot intervals end with the
 // registration, but not the deadline: it is armed again at its base bound, and only the agent's
 // ready ends it. A registration whose answer never reached its agent leaves a claim no ready will
 // ever come for, and from here that looks exactly like an agent slow to boot. A registration whose
-// plugin still differs from the daemon's is relaunched at once and refused (staleRegistration): the
-// agent that just registered is not the one that relaunch starts.
+// plugin still differs from the daemon's is relaunched at once and refused (staleRegistration):
+// the agent that just registered is not the one that relaunch starts.
 //
 // The process that registers reads its value afresh (CurrentTask) and has seen and asked nothing
 // at any revision of it, so the seen report and the take the record kept are the process before
@@ -2355,7 +2358,7 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // listener no longer names it as the claim's role holder (mayForget).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
-	if request.Session != m.claim.Session {
+	if !m.claim.HoldsSession(request.Session) {
 		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
@@ -2513,12 +2516,14 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // openPodUpdate records this claim's update round (PodUpdateOpen). The daemon's sweep posts the
 // event at every tick while the round runs, so the action is idempotent.
 //
-// A round the claim is not in yet starts its clock here — UpdateOpenedAt — with the reasons the
-// post carries, and clears what an earlier round left: the ask it published, the signal it got,
-// the head that signal reported, and the notice it wrote. The same round again changes nothing,
-// its reasons included: the round's terms are fixed when it opens (dispatch://INFRA-2981 R9), so
-// the ask the sweep publishes and the record an operator reads name the same reasons for one
-// round id, however the drift the sweep reads moves while the round runs.
+// A round the claim is not in yet starts its clock here — UpdateOpenedAt — with the round's id
+// and the reasons the post carries, as the store keeps them, as every event's text is (Handle: the
+// reasons quote what the runtime read of the pod, so the claim the operator's answers read holds
+// the reasons the store holds), and clears what an earlier round left: the ask it published, the
+// signal it got, the head that signal reported, and the notice it wrote. The same round again
+// changes nothing, its reasons included: the round's terms are fixed when it opens
+// (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
+// the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
@@ -2760,6 +2765,8 @@ func (m *Machine) clearUpdate() {
 // The line it logs is the one durable record of the head: the claim's UpdateHead goes with the
 // round that ends (clearUpdate), and the answer is what an operator reads the replacement back
 // against — `git ls-remote` of each head a worker reported says whether the work survived the pod.
+// The head is the worker's word, and the claim holds it as the store keeps it, as it holds every
+// event's text (Handle), so the operator's answers read the head the store holds.
 func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 	signal := ev.(PodUpdateSignalled)
 	if signal.Round != m.claim.UpdateRound {

@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -587,36 +588,44 @@ func adoptedTooLate(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // refusedAdoption is a take whose adoption of the working copy failed. It is recorded on the
-// delivery (Delivery.SendFailures and its two companions, scrubbed), and only some failures cost
-// budget: a refused adoption is the shim's own answer about this workspace and is charged
-// (chargePrompt), so it cannot repeat without bound — the third charge retires the process —
-// while a role identity the daemon could not mint and a transport that lost the call are no
-// answer at all and charge nothing. The take is refused with the adoption's hold either way; the
-// value is written again once no hold stands, at the next sweep, hello or ready (offerPending).
+// delivery (Delivery.SendFailures and its two companions), and only some failures cost budget: a
+// refused adoption is the shim's own answer about this workspace and is charged (chargePrompt), so
+// it cannot repeat without bound — the third charge retires the process — while a role identity
+// the daemon could not mint and a transport that lost the call are no answer at all and charge
+// nothing. The take is refused with the adoption's hold either way; the value is written again
+// once no hold stands, at the next sweep, hello or ready (offerPending).
+//
+// The text is the far side's own — a refused adoption carries the wedged command's whole stderr —
+// so the delivery holds it, in memory as in the store, as the daemon keeps any far side's error
+// text (storetext.FarSideError), a text the store takes whatever the far side wrote: the text the
+// failure's line carries, which logFarSideError writes and returns, so the line, the record and
+// the charge's own sentence carry one text. That is why the line is chosen before the record is
+// written. The whole text follows the line under a message of its own (logFarSideError).
 //
 // The record's write is carried past rather than returned when it fails, so the charge is always
 // made (the delivery is left unsaved, and settle writes it again).
 func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err error) error {
 	p := m.claim.Pending
+	// The line that names this failure, and for a charged one the words its charge puts before
+	// the far side's text ("" for a failure charged nothing).
+	msg, charge := "supervise: the adoption of the working copy was lost to the transport; the take is refused and the task waits", ""
+	switch {
+	case errors.Is(err, runtime.ErrAdoptRefused):
+		msg, charge = "supervise: the shim refused to adopt the working copy; the take is refused", "the working copy was not adopted: "
+	case errors.Is(err, runtime.ErrIdentityUnavailable):
+		msg = "supervise: the role's GitHub App identity could not be minted; the take is refused and the task waits"
+	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
-	p.LastSendError = scrubSendError(err.Error())
+	p.LastSendError = m.logFarSideError(ctx, slog.LevelWarn, msg, err, "task", p.Number)
 	if err := m.putPending(ctx); err != nil {
 		m.log.Warn("supervise: the failed adoption was not recorded on the delivery; settle writes it again and the charge goes on",
 			"task", p.Number, "error", err)
 	}
 	m.claim.recordTake(request, TakeRefused)
 	m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldAdoption})
-	switch {
-	case errors.Is(err, runtime.ErrAdoptRefused):
-		m.log.Warn("supervise: the shim refused to adopt the working copy; the take is refused", "task", p.Number, "error", err)
-		return m.chargePrompt(ctx, WaitAdoption, "the working copy was not adopted: "+err.Error())
-	case errors.Is(err, runtime.ErrIdentityUnavailable):
-		m.log.Warn("supervise: the role's GitHub App identity could not be minted; the take is refused and the task waits",
-			"task", p.Number, "error", err)
-	default:
-		m.log.Warn("supervise: the adoption of the working copy was lost to the transport; the take is refused and the task waits",
-			"task", p.Number, "error", err)
+	if charge != "" {
+		return m.chargePrompt(ctx, WaitAdoption, charge+p.LastSendError)
 	}
 	return m.persist(ctx)
 }
