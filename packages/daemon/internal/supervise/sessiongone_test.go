@@ -532,12 +532,10 @@ func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
 // bounds the wait; a wait that gave up sooner, on a time of its own, would start the relaunch
 // while a slow listener had still not answered the stop's read, and the relaunch would register
 // before it, which is the order the wait exists to prevent. The other relaunch tests end the stop
-// the moment the launch says it waits, so none of them sees such a wait. Here the stop stays in
-// flight for an hour on both clocks a wait can read: the synctest bubble's, which the time
-// package reads, and the machine's own (Deps.Clock, on which a machine times its waits), which
-// the harness moves only when a test advances it. The bubble's hour passes at once, and the
-// machine's clock is then advanced an hour, so a timer the wait set for itself on either clock, of
-// any length under the hour, fires in it.
+// the moment the launch says it waits, so none of them sees such a wait. Here the bubble's clock,
+// which the time package reads, moves an hour, the machine's own (Deps.Clock) moves an hour, and
+// the bubble's moves an hour more. A timer that gives up within an hour on either clock, or a poll
+// paced by either clock that reads the other, therefore gives up while the stop is still in flight.
 func TestARelaunchWaitsForTheCleanStopHoweverLongItRuns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, _ := sessionStops(t)
@@ -561,10 +559,12 @@ func TestARelaunchWaitsForTheCleanStopHoweverLongItRuns(t *testing.T) {
 		synctest.Wait()
 		h.clock.Advance(time.Hour)
 		synctest.Wait()
+		time.Sleep(time.Hour)
+		synctest.Wait()
 		if resumes := h.calls("Resume"); len(resumes) != 0 {
 			close(stopping)
 			<-died
-			t.Fatalf("the relaunch resumed the session %d times while the clean stop had been in flight for an hour on the bubble's clock and the machine's: the wait for the stop ended before the stop did", len(resumes))
+			t.Fatalf("the relaunch resumed the session %d times while the clean stop had been in flight for two hours on the bubble's clock and an hour on the machine's: the wait for the stop ended before the stop did", len(resumes))
 		}
 		close(stopping)
 		if err := <-died; err != nil {

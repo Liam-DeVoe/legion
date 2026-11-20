@@ -265,11 +265,14 @@ func (l heldListener) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // The clean stop's read and delete have one bound, the context the daemon's stop gives them (its
 // budget, sessionStop.send in packages/daemon/internal/daemon/daemon.go), and none of the client's
-// own: requestTimeout bounds a publish and a role lookup alone. So a listener that answers past
-// requestTimeout but inside the budget is waited for, and one that answers after the budget is
-// given up at the budget. The budget is a day, longer than any a test of the daemon gives its
-// stops, so a fixed client timeout of any length under it, the 10 s requestTimeout or a minute
-// alike, ends the second row's request before the budget does, and fails it. Each row runs in a
+// own: requestTimeout bounds a publish and a role lookup alone. The production client has neither
+// a timeout nor its own transport. DefaultTransport has no response-header timeout, and its idle
+// timeout closes only pooled idle connections, so replacing the transport below hides no bound on a
+// held answer. A listener that answers past requestTimeout but inside the budget is waited for, and
+// one that answers after the budget is given up at the budget. The budget is a day, longer than any
+// a test of the daemon gives its stops, so a fixed client timeout of any length under it, the 10 s
+// requestTimeout or a minute alike, ends the second row's request before the budget does, and fails
+// it; a transport of its own fails the check above before the row replaces it. Each row runs in a
 // synctest bubble, whose clock moves only while every goroutine in it waits, so the holds and the
 // budget are times on that clock, not on the run's, and the day costs the run nothing.
 func TestTheCleanStopsReadAndDeleteEndAtTheirContextAlone(t *testing.T) {
@@ -294,6 +297,9 @@ func TestTheCleanStopsReadAndDeleteEndAtTheirContextAlone(t *testing.T) {
 			t.Run(fmt.Sprintf("%s, answered after %s", request.name, hold), func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					p := New("http://listener.invalid", "envoy-bearer")
+					if p.stops.Timeout != 0 || p.stops.Transport != nil {
+						t.Fatalf("the clean stop's client has a timeout of %s and a transport %T of its own, want neither: its context is the read's and the delete's one bound", p.stops.Timeout, p.stops.Transport)
+					}
 					p.stops.Transport = heldListener{hold: hold, body: request.body}
 					ctx, cancel := context.WithTimeout(context.Background(), budget)
 					defer cancel()

@@ -180,9 +180,12 @@ type HTTPPublisher struct {
 	client  *http.Client
 	// stops sends the clean stop's registry read and session delete (ReadSessionRegistration,
 	// DeleteSession) with no timeout of its own, so the caller's context is their one bound: the
-	// daemon gives both one budget (sessionStop.send in packages/daemon/internal/daemon/daemon.go),
-	// and a timeout of the client's own would end them where that budget is the longer, as
-	// requestTimeout did for a test that holds the read past it.
+	// daemon gives both one budget (sessionStop.send in packages/daemon/internal/daemon/daemon.go).
+	// Its nil Transport selects Go's DefaultTransport, whose fixed limits are a 30 s dial and a 10 s
+	// TLS handshake. The transport detaches both from the request's cancellation to reuse a later
+	// connection, so the stop's context ends the request's wait rather than those operations. Both
+	// limits are after production's 5 s stop context, so neither can end the stop first. A
+	// response-header bound would instead end a held read, so this client keeps no transport of its own.
 	stops *http.Client
 }
 

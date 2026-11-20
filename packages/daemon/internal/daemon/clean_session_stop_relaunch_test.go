@@ -369,6 +369,9 @@ func TestAStopThatLandsAfterTheRelaunchsRegistrationKeepsIt(t *testing.T) {
 			r.answered("the request that relaunched the claim", answered)
 			r.await("the relaunch came up", r.rt.resumed)
 			ended := r.stopEndedOn(stopUnconfirmedLine)
+			if e, _ := ended["error"].(string); !strings.Contains(e, context.Canceled.Error()) {
+				t.Fatalf("the clean stop ended with %q, want the end the row gave it (sessionStopOverrides.end), %q: a stop that ran on to its budget; log:\n%s", e, context.Canceled, r.logs)
+			}
 			envoy.releaseDelete()
 			r.await("the stop's delete was judged", envoy.settled)
 

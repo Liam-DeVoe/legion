@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -676,6 +678,61 @@ func TestCleanSessionStopFitsTwiceInTheStopBudget(t *testing.T) {
 	if 2*cleanSessionStopBudget > stopBudget {
 		t.Fatalf("cleanSessionStopBudget is %s, more than half of stopBudget's %s: a clean stop sent in the first half of the daemon's stop budget could still be in flight when that budget runs out",
 			cleanSessionStopBudget, stopBudget)
+	}
+}
+
+// The clean stop's context must end before the standard HTTP transport's TLS handshake limit:
+// otherwise that fixed client-side limit, rather than cleanSessionStopBudget, can end the stop.
+func TestCleanSessionStopDeadlinePrecedesDefaultTransportTLSHandshake(t *testing.T) {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		t.Fatalf("http.DefaultTransport = %T, want *http.Transport", http.DefaultTransport)
+	}
+	if timeout := transport.TLSHandshakeTimeout; timeout != 0 && timeout <= cleanSessionStopBudget {
+		t.Fatalf("http.DefaultTransport TLS handshake timeout %s is not after cleanSessionStopBudget %s", timeout, cleanSessionStopBudget)
+	}
+}
+
+// A listener that accepts TCP and then sends no TLS bytes leaves the default transport's
+// handshake pending. cleanSessionStop must report its own context deadline before that
+// transport deadline; closing the accepted connection then lets the detached dial clean up.
+func TestCleanSessionStopContextEndsBeforeDefaultTransportTLSHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	var inFlight sessionStopsInFlight
+	var logged bytes.Buffer
+	stop := cleanSessionStop(&inFlight, "https://"+listener.Addr().String(), "envoy-token", sessionStopOverrides{}, bufferedLogger(&logged))
+	ended := stop("ses_dead")
+	var conn net.Conn
+	select {
+	case conn = <-accepted:
+		t.Cleanup(func() { _ = conn.Close() })
+	case err := <-acceptErr:
+		t.Fatalf("accept: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("the clean stop did not reach the TLS listener")
+	}
+	select {
+	case <-ended:
+	case <-time.After(cleanSessionStopBudget + time.Second):
+		t.Fatalf("the clean stop did not return within its %s context deadline", cleanSessionStopBudget)
+	}
+	if !strings.Contains(logged.String(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("logged %q, want the clean stop's context deadline before the default transport's TLS handshake timeout", logged.String())
 	}
 }
 
