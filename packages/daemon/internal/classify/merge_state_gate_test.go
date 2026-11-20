@@ -55,3 +55,35 @@ func TestTheMergeStateReadGateAsksForEachReasonAlone(t *testing.T) {
 		})
 	}
 }
+
+// The read a base push owes an issue that stands in merging is one read (MergeStateReadOnce): its
+// pull request sits in GitHub's merge queue, where GitHub answers `unknown` for the head. Every
+// other read the gate owes is a ladder: a base push in testing through retro, and a head move in
+// merging too. A hold from merging is read as merging.
+func TestTheMergeStateReadIsOneReadForABasePushInMerging(t *testing.T) {
+	in := func(at phase.Phase) record.Issue { return record.Issue{Key: "LEGION-208", Phase: at} }
+	heldFrom := func(at phase.Phase) record.Issue {
+		return record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: at}}
+	}
+	for _, tc := range []struct {
+		name  string
+		issue record.Issue
+		fact  MergeStateFact
+		want  bool
+	}{
+		{"a base push in merging", in(phase.Merging), MergeStateFactBasePush, true},
+		{"a base push of an issue held from merging", heldFrom(phase.Merging), MergeStateFactBasePush, true},
+		{"a base push in testing", in(phase.Testing), MergeStateFactBasePush, false},
+		{"a base push in reviewing", in(phase.Reviewing), MergeStateFactBasePush, false},
+		{"a base push in accepting", in(phase.Accepting), MergeStateFactBasePush, false},
+		{"a base push in retro", in(phase.Retro), MergeStateFactBasePush, false},
+		{"a head move in merging", in(phase.Merging), MergeStateFactHeadMove, false},
+		{"a settlement in merging", in(phase.Merging), MergeStateFactOther, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MergeStateReadOnce(tc.issue, tc.fact); got != tc.want {
+				t.Fatalf("MergeStateReadOnce = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

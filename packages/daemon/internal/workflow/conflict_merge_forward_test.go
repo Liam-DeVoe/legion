@@ -616,10 +616,16 @@ func landsMergeForward(t *testing.T, pool *pgxpool.Pool) {
 
 // readingEngine is the engine of these tests (mergingEngineAt, at the first conflicting read) with
 // a reader of GitHub's merge state, which appends the issue of each read the engine asks for to
-// asked once the fact's transaction commits (Config.ReadMergeState).
+// asked once the fact's transaction commits (Config.ReadMergeState), followed by " once" when the
+// request is for one read rather than a ladder (classify.MergeStateReadOnce).
 func readingEngine(asked *[]string) *Engine {
 	engine := mergingEngineAt(firstConflictRead)
-	engine.cfg.ReadMergeState = func(issue string) { *asked = append(*asked, issue) }
+	engine.cfg.ReadMergeState = func(issue string, once bool) {
+		if once {
+			issue += " once"
+		}
+		*asked = append(*asked, issue)
+	}
 	return engine
 }
 
@@ -841,7 +847,9 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 // request while it computes that (dispatch://INFRA-4374 R0, R4). So a base push reads the merge
 // state of each open pull request on the base whose issue stands in testing through merging, an
 // issue past its review among them, where the merge is next; an issue in implementing is read
-// for at its next head push instead, and a base push reads nothing for it.
+// for at its next head push instead, and a base push reads nothing for it. In merging the read is
+// one read rather than a ladder (classify.MergeStateReadOnce): the head sits in the merge queue,
+// where GitHub answers `unknown`.
 func TestAConflictKeepsPhaseWhenABasePushReadsAnIssuePastReview(t *testing.T) {
 	for _, tc := range []struct {
 		at     phase.Phase
@@ -851,6 +859,7 @@ func TestAConflictKeepsPhaseWhenABasePushReadsAnIssuePastReview(t *testing.T) {
 		{phase.Testing, "testing", []string{"LEGION-208"}},
 		{phase.Reviewing, "needs_review", []string{"LEGION-208"}},
 		{phase.Accepting, "needs_review", []string{"LEGION-208"}},
+		{phase.Merging, "retro", []string{"LEGION-208 once"}},
 		{phase.Implementing, "in_progress", []string{}},
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {

@@ -1684,7 +1684,9 @@ An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging`
 conflicts with its base is waiting on the daemon's merge forward or on nothing at all. GitHub sends
 no event when a head starts conflicting, so after each push onto the base the daemon reads GitHub's
 merge state for every open pull request on that base whose issue is in one of those phases, and
-reads it again while GitHub answers `unknown`. The daemon reads the pull request's mergeability
+reads it again while GitHub answers `unknown`. An issue in `merging` is read once for the push: its
+pull request sits in the merge queue, where GitHub answers `unknown` for the head, and that answer
+asks for no further read. The daemon reads the pull request's mergeability
 twice, at least a minute apart, and acts only on a conflict
 both reads report, and only when the next step needs a mergeable head: the issue stands past its
 review, a check the base requires has no green result on the head, the base requires a current

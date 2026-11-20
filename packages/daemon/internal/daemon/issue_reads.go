@@ -242,7 +242,7 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		if err == nil {
 			if computing {
 				w.log.Info("github: the start read found GitHub's merge state unknown; a ladder reads the pull request again", "issue", issue)
-				w.queueMergeState(issue)
+				w.queueMergeState(issue, false)
 			}
 			continue
 		}
