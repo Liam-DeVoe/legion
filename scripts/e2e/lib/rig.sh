@@ -88,6 +88,10 @@ until_true() {
     fi
     sleep 0.5
   done
+  # One poll at the bound itself, so a wait whose condition holds when the time is up, or whose
+  # deadline had passed before it began, still succeeds rather than failing unread.
+  polls=$((polls + 1))
+  if "$@" >/dev/null 2>&1; then return 0; fi
   if [ -n "$timeout_hook" ]; then "$timeout_hook" || true; fi
   fail "timed out after ${limit}s ($polls polls) waiting for $what"
 }

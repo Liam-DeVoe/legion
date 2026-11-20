@@ -1,4 +1,4 @@
-import { afterEach, expect, onTestFinished, test } from "bun:test";
+import { afterEach, expect, onTestFinished, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { release } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,18 @@ import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
 import { scriptFunctions } from "./script-functions";
+
+// Each wait of a row's shell (until_true) ends on the event it waits for, and is bounded only by
+// rowWaitSeconds from the shell's start, never by the wait's own seconds: on a loaded host the
+// kernel's end of a signalled process can take longer than a proof's bound. The file sets its rows'
+// bound itself (rowBoundMs), first, so every row and every runner reads it, whatever its command
+// line; Bun ends a row at its bound and kills what the row's shell left running, so a shell's wait
+// must give up first to name what it waited for: 20 s before the row's bound. 200 s is about twice
+// the slowest row of this directory measured with 8 busy loops on the two CPUs it ran on (98.5 s,
+// 2026-11-20).
+const rowBoundMs = 200_000;
+setDefaultTimeout(rowBoundMs);
+const rowWaitSeconds = rowBoundMs / 1000 - 20;
 
 // Every walk of the rig helpers that cannot read the processes it walks must say why and fail, so
 // no caller reads a walk that saw nothing as one that found nothing: a proc root that lists no
@@ -197,14 +209,6 @@ walk stop_tree stop_tree 4242`,
 // recorded start that is not the process's own stands in for a daemon that ended and whose pid
 // another process took since. stop_pid and signal_group send that process nothing. The shell sources
 // lib/rig.sh as a proof does, so the row reads the stop_pid a proof calls.
-//
-// Each wait of a row's shell (until_true) ends on the event it waits for, and is bounded only by
-// rowWaitSeconds from the shell's start, never by the wait's own seconds: Bun.spawnSync holds the
-// runner, so Bun's own row timeout cannot end the shell, and on a loaded host the kernel's end of a
-// signalled process can take longer than a proof's bound. 180 s ends a wait 20 s before the 200 s
-// bound of the step that runs this directory (ci-job-test.yaml), so a wait that gives up names
-// what it waited for.
-const rowWaitSeconds = 180;
 const rigPrelude = `root=${JSON.stringify(root)} work=$(mktemp -d) timeout_hook=
 evidence=$work
 note() { :; }
@@ -401,7 +405,7 @@ unspawn "$daemon_pid"`;
     expect(stderr).toBe("");
     expect(stdout).toBe("stranger alive\n");
   },
-  120_000
+  rowBoundMs
 );
 
 // run runs BODY in a bash with lib/rig.sh sourced as a proof sources it (rigPrelude), its $work
@@ -527,10 +531,11 @@ printf '%s %s\\n' ${stranger.pid} ${start} >"$work/agent/helper.pid"
 (cleanup)
 until_true 10 "the helper to end" gone ${stranger.pid}
 echo "cleanup, the helper itself: $(state ${stranger.pid})"`);
+  // stderr first: a wait that gave up names what it waited for there.
+  expect(r.err).toBe("");
   expect(r.out).toBe(
     "cleanup, a stranger given the helper's pid: running\ncleanup, the helper itself: gone\n"
   );
-  expect(r.err).toBe("");
   const rig = readFileSync(join(root, "docs/site/media/broker/rig.sh"), "utf8");
   expect(rig).toMatch(/"\$record_pid_sh" "\$work\/agent\/helper\.pid"/);
   expect(rig).toMatch(
@@ -578,8 +583,8 @@ echo "after stop_agent: member $(state "$member")"`
     )
   );
   killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
-  expect(r.out.replace(/^pids .*\n/m, "")).toBe("after stop_agent: member gone\n");
   expect(r.err).toBe("");
+  expect(r.out.replace(/^pids .*\n/m, "")).toBe("after stop_agent: member gone\n");
 });
 test("the clean-session-stop stop_agent leaves an agent's member that outlives its TERM to the cleanup sweep, and both agents' cleanups run the sweep", () => {
   const r = run(
@@ -593,10 +598,10 @@ echo "after the sweep: member $(state "$member")"`
     )
   );
   killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
+  expect(r.err).toBe("");
   expect(r.out.replace(/^pids .*\n/m, "")).toBe(
     "after stop_agent: member running\nsweep 0\nafter the sweep: member gone\n"
   );
-  expect(r.err).toBe("");
   for (const cleanup of [states("cleanup"), cleanStop("cleanup")]) {
     expect(cleanup).toMatch(/^\s+stop_marked_processes "\$work"/m);
   }

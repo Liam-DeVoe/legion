@@ -39,12 +39,13 @@ beforeAll(() => {
 // test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
 //
 // Each wait of a row's shell (until_true) ends on the event it waits for, and is bounded only by
-// rowWaitSeconds from the shell's start, never by the wait's own seconds: Bun.spawnSync holds the
-// runner, so Bun's own row timeout cannot end the shell, and a loaded host took more than 10 s to
-// deliver a zombie (2026-11-20, main d36289cb84, 8 busy loops on two CPUs). 180 s ends a wait 20 s
-// before the 200 s bound of the step that runs this directory (ci-job-test.yaml), so a wait that
-// gives up names what it waited for.
-const rowWaitSeconds = 180;
+// rowWaitSeconds from the shell's start, never by the wait's own seconds: a loaded host took more
+// than 10 s to deliver a zombie (2026-11-20, main d36289cb84, 8 busy loops on two CPUs). Every row
+// passes `slow` as its own bound, which every runner reads whatever its command line; Bun ends a
+// row at its bound and kills what the row's shell left running, so a shell's wait gives up 20 s
+// before the row's bound, to name what it waited for.
+const slow = 60_000;
+const rowWaitSeconds = slow / 1000 - 20;
 function run(body: string) {
   const script = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
@@ -100,7 +101,7 @@ async function gone(pid: number): Promise<boolean> {
   return false;
 }
 
-const slow = 60_000;
+
 
 describe.skipIf(skip)("record_pid_sh and recorded_pid", () => {
   test(
