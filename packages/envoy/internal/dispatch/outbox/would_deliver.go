@@ -34,10 +34,11 @@ const wouldDeliverRoutingSQL = `
 // a role's topic. It is answered by eventDestinations itself, over the routing a batch would read
 // of the event's owner now and the recipients the batch's lookups would read, with the payload
 // decoded from JSON as the batch decodes the stored event's, so the two cannot disagree. Notify is
-// set as broker sets it at the event's append (events.Broker.Notify). It writes nothing: a new
+// set as broker sets it at the event's append (events.Broker.Notify). It writes nothing:
+// eventDestinations lists the fallback rows the batch would hold without writing them, and a new
 // comment's mentions are left out of the payload, as their own sends reach the sessions they name
-// and their settle writes, so no mention is read. An event that names no issue, document or project
-// reaches nobody.
+// and their settle writes, so no mention is read and no copy is left to such a row. An event that
+// names no issue, document or project reaches nobody.
 func WouldDeliver(ctx context.Context, database *store.Store, broker *events.Broker, event model.Event) (bool, error) {
 	if event.IssueKey == nil && event.ArtifactID == nil && event.ProjectKey == nil && event.Project == "" {
 		return false, nil
@@ -71,12 +72,12 @@ func WouldDeliver(ctx context.Context, database *store.Store, broker *events.Bro
 		item.item = envelope
 	}
 	want := newWanted()
-	_, _, _ = eventDestinations(ctx, Deps{Store: database}, item, want)
+	_, _, _, _ = eventDestinations(ctx, Deps{Store: database}, item, want)
 	found, err := loadLookups(ctx, database.Pool, want)
 	if err != nil {
 		return false, fmt.Errorf("read the recipients of a %s event: %w", event.Type, err)
 	}
-	list, _, err := eventDestinations(ctx, Deps{Store: database}, item, found)
+	list, _, _, err := eventDestinations(ctx, Deps{Store: database}, item, found)
 	if err != nil {
 		return false, fmt.Errorf("list the destinations of a %s event: %w", event.Type, err)
 	}
