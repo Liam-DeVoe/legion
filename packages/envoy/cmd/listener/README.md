@@ -228,6 +228,7 @@ On SIGTERM or SIGINT, once `/v1` serves (`shutdownListener`):
 
 The process exits 1.
 A runtime must allow about 28 s after SIGTERM; give it 30 s.
+The hub's listener pod gives it 40 s, the 5 s pre-stop wait included (`terminationGracePeriodSeconds` in `infra/gcp/testdata/clustered-hub-listener-pod.golden`).
 A lease left unreleased (the budget ran out) is taken by a standby once it expires, as after a hard stop.
 
 ## Start: what ends it and what it waits out
