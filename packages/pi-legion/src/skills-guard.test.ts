@@ -163,6 +163,30 @@ test("no skill or prompt promises an update round no daemon can open", () => {
   }
 });
 
+// R20: the controller relays nothing. Where a tree owns a clear defect, its reply under the
+// finder's comment or ask names the owner, and the finder writes to that owner itself. So every
+// `Not filed:` reply of the controller's that names a role is one the finder's findings.md acts
+// on, word for word but its placeholders, and no reply says the controller wrote to the owner.
+test("every Not filed reply the controller writes that names an owner is one the finder acts on", () => {
+  // Both files are read by one map, so the two sides are parsed alike.
+  const [controller = new Set<string>(), finder = new Set<string>()] = [
+    "legion-controller/references/finding-asks.md",
+    "legion-worker/references/findings.md",
+  ].map(
+    (file) =>
+      new Set(
+        [
+          ...readFileSync(path.join(staged, file), "utf8").matchAll(
+            /`(Not filed: [^`]*role:[^`]*)`/g
+          ),
+        ].map((match) => (match[1] ?? "").replace(/<[^>]*>/g, "<>"))
+      )
+  );
+  expect(controller.size).toBeGreaterThan(0);
+  expect([...controller].filter((form) => !finder.has(form))).toEqual([]);
+  expect([...controller].filter((form) => /written to/.test(form))).toEqual([]);
+});
+
 // The controller's `gh` acts as the review App (LEGION-668): the skill must say how it checks a
 // pull request's state, and nothing anywhere in the sweep's roots may still claim the controller
 // (or any role) cannot read GitHub. The commands live in the two references SKILL.md sends the

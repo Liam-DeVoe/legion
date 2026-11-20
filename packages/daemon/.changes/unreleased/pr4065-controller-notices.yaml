@@ -4,8 +4,8 @@ body: |-
   of a notice that the issue's architect already gets. It no longer sends `awaiting-person` or
   `unslotted`. The controller reads a root that waits on a person, or that left the workflow, with
   its `legion` tool's `read_state`. It no longer copies to the controller a `held` whose budget ran
-  out, a `session-lost` or `session-forgotten`, or the `worker-died` of a tree's architect whose
-  root is `done`. It copies
+  out, a `session-lost` or `session-forgotten` (copies legion-v22.17.2 added, #4581), or the
+  `worker-died` of a tree's architect whose root is `done`. It copies
   the `worker-stalled` of a tree's architect only where the stall failed that architect's claim
   and the runtime did not confirm the stop of the stalled process. A failed claim whose stop the
   runtime confirmed reaches the controller as its `worker-died` alone. An escalated `held`, the

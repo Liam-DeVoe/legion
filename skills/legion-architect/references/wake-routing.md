@@ -4,7 +4,7 @@ Read this when a wake reaches you. A wake about an issue reaches its own archite
 its role, else the nearest one above that does. A `child-status` or `child-closed`, and a
 `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the
 child. A root architect's own stall takes the same two finding asks as a child's own architect's
-(`worker-stalled`). Your role prompt describes each notice. When a wake leaves an issue in
+(`worker-stalled`). Your prompt or its row describes each notice. When a wake leaves an issue in
 `accepting` waiting on no child, run its last round.
 "Section N" is that section of `skill://legion-architect`. Where a row says to ask a person, a
 child's own architect asks the architect above it.
@@ -14,7 +14,7 @@ child's own architect asks the architect above it.
 | `catch-up` | Start or resume from it as your role prompt says. Accept each issue its `reason` names as waiting for you (section 6), a parent only after its last round. |
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
 | `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in `skill://legion-architect/references/design-gate.md`) and end your turn. A late one for an older version: answer its reason if the latest does not. |
-| `carried-gate-opened` | The gate this root carried opened. Start and release nothing for it. |
+| `carried-gate-opened` | The gate this root carried opened. Start and release nothing. |
 | `phase-finished` | The next phase already started. Read the finished handoff (`dispatch handoff-read`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). A reviewer's `APPROVED`: section 6. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
 | `pr-blocked` | Decide in this turn, as "A capped pull request" below says. |
 | `checks-red` | The daemon asked the implementer to merge the base forward; the issue stays in the phase the notice names. Start nothing; in `accepting`, wait for the reviewer's approval of the new head ("A conflicting head" in acceptance.md). |

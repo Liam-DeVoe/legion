@@ -2152,7 +2152,8 @@ export const dispatchToolSpecs = [
       "List a project's issues for a roadmap or backlog pass: every issue in one project, each carrying " +
       "its status, priority, parent, labels, open-ask count, progress (its spec's task-list items and " +
       "its direct children, each done of total, as `tasks 3/7 · children 2/5`, each only when it has " +
-      "any), and route with whether it reaches anyone, " +
+      "any), and route with whether it reaches anyone (a row's text names a route only when it " +
+      "reaches nobody or cannot be judged; `details` carry every route), " +
       "so you can see backlog shape without opening every issue. Optionally filter by status, parent, " +
       "label, priority, route status, or how recently it changed; priority takes one or more of 0-3 " +
       "(P0-P3) and null for an issue with no priority, so an owner's P0/P1 audit is priority [0, 1]. " +
