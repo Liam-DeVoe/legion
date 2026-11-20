@@ -902,6 +902,12 @@ every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md
 the root's and the nested ones among them, so a text there that states the
 replaced rule must start this job. The recordings under packages/dispatch/e2e
 start it too, though the row leaves them out: this filter takes no `!` pattern.
+The CLI guide, packages/envoy/cmd/dispatch/README.md, is in the filter because
+the same file's `states the rule` row (`src/__tests__/dispatch-who-waits.test.ts:765,769`)
+reads its sentence on an assignee move, which must name the project's default
+assignee. packages/envoy/internal/bus/testdata/private-stream-subjects.json is in
+it because `src/__tests__/stream-topics.test.ts:113,120` reads the listener's own
+cases of which topics reach a private stream subject from that file.
 
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
