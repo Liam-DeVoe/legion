@@ -97,22 +97,69 @@ jobs:
         timeout-minutes: 2
         run: &end-cut-checkout |
           # The git and git-remote-http a cut checkout leaves run in the workspace, so the ones
-          # working there are ended, and nothing else of the runner's. Each is waited for until
-          # kill -0 finds it gone, which is once its last thread has exited and it is reaped,
-          # up to 20 s, before the workspace is emptied under it; one still there fails the step,
-          # named. scripts/e2e/lib/wait-gone.sh holds this wait for the scripts, and the checkout
-          # that failed may have left no copy of it here. This shell works outside the workspace.
+          # working there are ended, and nothing else of the runner's. The walk, the kill and the
+          # wait share one bound, 100 s from the step's start and inside its own 2 minutes, so a
+          # walk or a wait that runs long is named here rather than cut by the runner with nothing
+          # said: the walk reads the bound before each process, and reads each one's working
+          # directory with cd -P, a builtin, so it starts no process per entry. Each process found
+          # is read with its start time (stat field 22), all are sent SIGKILL at once, and each is
+          # waited for until it is gone: its stat missing, naming another start time (another
+          # process on a reused pid), or a zombie whose task directory lists no thread but the
+          # main one, which holds no directory and is reaped in its parent's own time.
+          # scripts/e2e/lib/wait-gone.sh's process_start holds this rule for the scripts, and the
+          # checkout that failed may have left no copy of it here. One still there at the bound
+          # fails the step, named, before the workspace is emptied under it. This shell works
+          # outside the workspace.
           cd /
+          bound=100
+          deadline=$((EPOCHSECONDS + bound))
+          declare -A start=()
+          # all_gone PID... succeeds once every PID is gone by that rule. The command name, stat
+          # field 2, may hold spaces and a `) `, so the fields are read after its last `) `.
+          all_gone() {
+            local pid stat
+            local -a f tasks
+            for pid in "$@"; do
+              stat=
+              { IFS= read -r -d '' stat <"/proc/$pid/stat"; } 2>/dev/null || :
+              if [ -z "$stat" ]; then
+                # There but unreadable is not known to be gone.
+                [ ! -e "/proc/$pid" ] || return 1
+                continue
+              fi
+              read -r -a f <<<"${stat##*) }"
+              [ "${f[19]:-}" = "${start[$pid]}" ] || continue
+              [ "${f[0]}" = Z ] || return 1
+              tasks=("/proc/$pid/task/"*)
+              [ "${#tasks[@]}" -le 1 ] || return 1
+            done
+          }
           left=()
           for p in /proc/[0-9]*; do
-            case "$(readlink "$p/cwd" 2>/dev/null)/" in "$GITHUB_WORKSPACE"/*) left+=("${p#/proc/}") ;; esac
+            [ "$EPOCHSECONDS" -lt "$deadline" ] || { echo "::error::the walk of /proc had not ended $bound s after the step began, its bound, at $p, so no process was ended and the workspace is left as it is"; exit 1; }
+            cd -P "$p/cwd" 2>/dev/null || continue
+            here=$PWD/
+            cd /
+            case "$here" in "$GITHUB_WORKSPACE"/*) ;; *) continue ;; esac
+            stat=
+            { IFS= read -r -d '' stat <"$p/stat"; } 2>/dev/null || :
+            [ -n "$stat" ] || continue
+            read -r -a fields <<<"${stat##*) }"
+            left+=("${p#/proc/}")
+            start[${p#/proc/}]=${fields[19]}
           done
           echo "working in the workspace: ${left[*]:-none}"
-          for pid in "${left[@]}"; do
-            kill -KILL "$pid" 2>/dev/null || true
-            for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
-            ! kill -0 "$pid" 2>/dev/null || { echo "::error::pid $pid ($(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)) is still there 20 s after its SIGKILL"; exit 1; }
-          done
+          if [ "${#left[@]}" -gt 0 ]; then
+            kill -KILL -- "${left[@]}" 2>/dev/null || true
+            until all_gone "${left[@]}" || [ "$EPOCHSECONDS" -ge "$deadline" ]; do sleep 0.2; done
+            all_gone "${left[@]}" || {
+              for pid in "${left[@]}"; do
+                ! all_gone "$pid" || continue
+                echo "::error::pid $pid ($(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)) is still there at the step's bound, $bound s after it began"
+              done
+              exit 1
+            }
+          fi
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
       - name: Check out again, after a first attempt that did not complete
         if: steps.checkout.outcome != 'success'
