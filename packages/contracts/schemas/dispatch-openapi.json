@@ -5071,7 +5071,7 @@
     },
     "/api/v1/github/app-installation/{owner}/{repo}": {
       "get": {
-        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository that a private project hidden from the caller owns, or, for a caller that is not an open viewer, that no project the caller sees owns, answers as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is not asked.",
+        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure.",
         "operationId": "getApiV1GithubAppInstallationByOwnerByRepo",
         "parameters": [
           {
