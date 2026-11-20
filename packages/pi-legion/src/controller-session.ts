@@ -21,7 +21,7 @@ import {
   markStartupTurnSent,
 } from "@legion/pi-shared/startup-turn";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { type ClaimTaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
+import { type ClaimTaskTake, type TaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import {
@@ -57,20 +57,13 @@ export interface ControllerSession {
   readonly startCommand: (context: CommandContext) => Promise<void>;
   readonly isClaimedSession: (sessionID: string) => boolean;
   readonly mintGrant: (sessionID: string) => Promise<LegionGrant>;
-  /** A run of `sessionID` started (`agent_start`): the daemon-launched controller's take of its
-   * start task no longer finds the host idle, and the first run after its accepted take is the
-   * start task's turn. Another session's run changes nothing. */
-  readonly runStarted: (sessionID: string) => void;
-  /** That run ended (`agent_end`): the number of the task whose turn it was, which the turn's
-   * outcome report names, or undefined for a run of no task, another session's, or an
-   * operator's controller, which takes no task. `providerError` is whether that report carries
-   * the provider's failure; without one the take holds the task finished (`TaskTake.runEnded`). */
-  readonly runEnded: (sessionID: string, providerError: boolean) => number | undefined;
-  /** The daemon refused with a 4xx the report of a turn of `sessionID` that named task `number`
-   * with no provider error (`src/turn-outcome.ts`): the daemon-launched controller's take holds
-   * the number finished no longer, since the record still owes it (`TaskTake.reportRefused`).
-   * Another session's report changes nothing. */
-  readonly reportRefused: (sessionID: string, number: number) => void;
+  /** The daemon-launched controller's take of its start task (`@legion/pi-shared/task-take`),
+   * whose hooks `legion.ts` calls for a run of `sessionID` (`agent_start` and `agent_end`) and for
+   * the daemon's refusal of that run's report (`src/turn-outcome.ts`): the first run after its
+   * accepted take is the start task's turn, and its end the report naming that task's number.
+   * Undefined for another session than the one the take was made for, and for an operator's
+   * controller, which takes no task. */
+  readonly take: (sessionID: string) => TaskTake | undefined;
   /** The claim whose turns `sessionID` reports (`src/turn-outcome.ts`): the daemon-launched
    * controller's, for the session its take was made for, so the end of its start task's turn
    * names that task's number, which is what finishes it, and a provider error on it reaches the
@@ -675,14 +668,7 @@ export function createControllerSession(deps: {
     startCommand,
     isClaimedSession,
     mintGrant,
-    runStarted: (sessionID) => {
-      if (taking?.caller.sessionId === sessionID) taking.take.runStarted();
-    },
-    runEnded: (sessionID, providerError) =>
-      taking?.caller.sessionId === sessionID ? taking.take.runEnded(providerError) : undefined,
-    reportRefused: (sessionID, number) => {
-      if (taking?.caller.sessionId === sessionID) taking.take.reportRefused(number);
-    },
+    take: (sessionID) => (taking?.caller.sessionId === sessionID ? taking.take : undefined),
     reportedClaim: (sessionID) =>
       taking?.caller.sessionId === sessionID
         ? { caller: taking.caller, role: "controller" }

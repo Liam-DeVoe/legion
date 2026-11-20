@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import {
   createLegionDaemonClient,
   DAEMON_ANSWER_TIMEOUT_MS,
-  DAEMON_RESEND_FIRST_DELAY_MS,
+  DAEMON_RESTART_FIRST_DELAY_MS,
 } from "@legion/pi-shared/daemon-client";
 import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
@@ -286,7 +286,7 @@ test("a report whose first two attempts meet an uncoded 504 and a DNS failure is
   expect(posted[0]).toMatchObject({ sequence: 1, outcome: "clean", task: 4 });
   expect(posted[1]).toEqual(posted[0]);
   expect(posted[2]).toEqual(posted[0]);
-  expect(waits).toEqual([DAEMON_RESEND_FIRST_DELAY_MS, DAEMON_RESEND_FIRST_DELAY_MS * 2]);
+  expect(waits).toEqual([DAEMON_RESTART_FIRST_DELAY_MS, DAEMON_RESTART_FIRST_DELAY_MS * 2]);
   expect(debugged).toEqual(["legion: reported a turn's outcome"]);
   expect(warned).toEqual([
     "legion: claims/turn-outcome failed; it is sent again until the daemon answers it",

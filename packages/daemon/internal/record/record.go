@@ -2377,11 +2377,9 @@ type QueuedSupervise struct {
 // stepped (step_at, turn_started_at), what its own session last reported it was doing
 // (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
 // none, with the task's delivery id, generation, phase, entry, the moments it was queued and
-// confirmed, whether a let-go took it back from a turn (interrupted), whether a text its accepted
-// take was answered with stands (taken_text: the task's TakenText holds only that text's first
-// character, or nothing, so a reader may ask it whether a text stands and never read it as the
-// text) and whether that take's turn started (turn_started). The id is
-// what says the task is the daemon's own delivery of a relaunch's record
+// confirmed, whether a let-go took it back from a turn (interrupted) and whether that take's turn
+// started (turn_started), and not the text the take was answered with. The id is what says the
+// task is the daemon's own delivery of a relaunch's record
 // (supervise.Delivery.Relaunch), which a reader of a run reads as no work of the claim's
 // (supervise.HoldsTask: workflow's owed and readyWorkerTask).
 type RoleClaim struct {

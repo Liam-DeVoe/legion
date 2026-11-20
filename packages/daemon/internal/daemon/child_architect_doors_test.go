@@ -88,7 +88,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 		{Token: mustClaimToken(t, doorRoot, claim.RoleImplementer), Project: "legion", Tree: doorRoot, TreeEpoch: 1, Issue: doorRoot, Role: claim.RoleImplementer,
 			State: supervise.StateWorking, Generation: 1, Session: "ses-root-implementer", SessionFile: "/sessions/root-implementer.jsonl",
 			Pending: &supervise.Delivery{ID: "outbox:1", Task: "Continue root. Issue: LEGION-1. Phase: implementing.", Generation: 1,
-				Phase: phase.Implementing, QueuedAt: time.Now(), ConfirmedAt: time.Now()}},
+				Phase: phase.Implementing, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TurnStarted: true}},
 	} {
 		if err := st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("seed the claim %s: %v", c.Token, err)

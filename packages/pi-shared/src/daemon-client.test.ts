@@ -5,12 +5,15 @@ import { LegionReadyRequest } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   createLegionDaemonClient,
+  DAEMON_ANSWER_TIMEOUT_MS,
+  DAEMON_RESTART_FIRST_DELAY_MS,
   daemonUnreachable,
   LegionDaemonApiError,
   type LegionDaemonClient,
   LegionDaemonContractError,
   type ReadyInput,
   retryWhileDaemonRestarts,
+  sendUntilAnswered,
 } from "./daemon-client";
 import { type ClaimCapability, executePhaseOp } from "./legion-phase-ops";
 
@@ -793,4 +796,54 @@ test("reports a task value seen and takes it, reading every take answer the daem
   await expect(talkative.take(taken)).rejects.toBeInstanceOf(LegionDaemonContractError);
   // A request the contract does not describe never leaves the pane.
   expect(() => client.take({ ...taken, number: 0 })).toThrow();
+});
+
+// A request sent until it is answered reads the same failures of the network and of timeouts as
+// the ready's retry does, one list of them: a fetch's NetworkError, which names no code, is no
+// answer from the daemon, so it is sent again after the first wait of the one back-off pair. A
+// refusal that names a code is the daemon's answer and is handed back, sent once.
+test("a request sent until it is answered is sent again after a NetworkError, and a coded refusal is handed back", async () => {
+  const send = async (failure: Error) => {
+    const waits: number[] = [];
+    let attempts = 0;
+    const answer = await sendUntilAnswered(
+      "claims/take",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw failure;
+        return "answered";
+      },
+      {
+        stop: new AbortController().signal,
+        warn: () => undefined,
+        // Each attempt's bound passes only when its attempt is aborted; a wait between attempts
+        // passes at once.
+        wait: (ms, signal) => {
+          if (ms === DAEMON_ANSWER_TIMEOUT_MS) {
+            const bound = Promise.withResolvers<boolean>();
+            signal.addEventListener("abort", () => bound.resolve(false), { once: true });
+            return bound.promise;
+          }
+          waits.push(ms);
+          return Promise.resolve(true);
+        },
+      }
+    ).catch((error: unknown) => error);
+    return { answer, attempts, waits };
+  };
+
+  const networkError = Object.assign(new Error("Network request failed"), { name: "NetworkError" });
+  expect(await send(networkError)).toEqual({
+    answer: "answered",
+    attempts: 2,
+    waits: [DAEMON_RESTART_FIRST_DELAY_MS],
+  });
+  const coded = new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/claims/take",
+    409,
+    "TASK_NOT_OWED",
+    "refused"
+  );
+  expect(await send(coded)).toEqual({ answer: coded, attempts: 1, waits: [] });
 });

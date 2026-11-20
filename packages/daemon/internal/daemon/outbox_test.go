@@ -1753,7 +1753,7 @@ func TestAResumeStartDeliversItsTaskUnlessTheClaimHoldsTheOneItResumes(t *testin
 		{name: "a held task of an earlier generation", claim: supervise.Claim{State: supervise.StateQueued,
 			Pending: &supervise.Delivery{ID: "outbox:30", Task: "Run the retro.", Generation: 0, Phase: phase.Retro}}},
 		{name: "a confirmed task on an uncertain launch", claim: supervise.Claim{State: supervise.StateLaunchUncertain, Session: "ses_impl", SessionFile: "/sessions/impl.jsonl",
-			Pending: &supervise.Delivery{ID: "outbox:30", Task: "Run the retro.", Generation: 1, Phase: phase.Retro, ConfirmedAt: confirmed}}},
+			Pending: &supervise.Delivery{ID: "outbox:30", Task: "Run the retro.", Generation: 1, Phase: phase.Retro, ConfirmedAt: confirmed, TurnStarted: true}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -1847,7 +1847,7 @@ func TestAResumeStartHoldsBackItsTaskForTheTurnTheClaimIsWorking(t *testing.T) {
 	}
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleImplementer,
 		State: supervise.StateWorking, Session: "ses_impl", SessionFile: "/sessions/impl.jsonl",
-		Pending: &supervise.Delivery{ID: "outbox:30", Task: "Run the retro.", Generation: 1, Phase: phase.Retro, ConfirmedAt: time.Now().Add(-time.Minute)}}, "")
+		Pending: &supervise.Delivery{ID: "outbox:30", Task: "Run the retro.", Generation: 1, Phase: phase.Retro, ConfirmedAt: time.Now().Add(-time.Minute), TurnStarted: true}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

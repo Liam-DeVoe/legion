@@ -3,12 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/spf13/pflag"
 
 	configpkg "github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
+
+// takeBound is the first bound a reading judges by when --take-timeout is not given:
+// worker_take_timeout_seconds's default.
+const takeBound = 300 * time.Second
 
 // taskCostLog is three lines of a daemon's log, as its JSON handler writes them: a task's value
 // written, its take accepted, and its turn started.
@@ -54,7 +62,7 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z", "--claim", "legion-infra-infra-2811-tester"},
 		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z", "--claim", "legion-infra-infra-2811-implementer"},
 	} {
-		parsed, err := supervise.ParseTaskCostArgs(args)
+		parsed, err := parseTaskCostArgs(args)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -193,9 +201,52 @@ func TestTaskCostTakeTimeoutDefaultsToTheSetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := supervise.ParseTaskCostArgs([]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"})
+	parsed, err := parseTaskCostArgs([]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"})
 	if err != nil || parsed.Take != defaults.WorkerTakeTimeout {
 		t.Fatalf("legion task-cost with no --take-timeout judges by %s (%v), want worker_take_timeout_seconds's default %s",
 			parsed.Take, err, defaults.WorkerTakeTimeout)
+	}
+}
+
+// The reading's arguments are the window, both ends RFC 3339 times with the second after the
+// first, optionally one claim, and optionally the first bound, a positive number of seconds that
+// is the setting's default when not given; nothing else is taken, and a help flag is the command's
+// usage.
+func TestParseTaskCostArgsReadsTheLogWindow(t *testing.T) {
+	from, to := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC), time.Date(2026, 11, 14, 9, 30, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		args []string
+		want supervise.TaskCostArgs
+	}{
+		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z"}, supervise.TaskCostArgs{From: from, To: to, Take: takeBound}},
+		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--claim", "legion-infra-infra-2811-tester"},
+			supervise.TaskCostArgs{From: from, To: to, Claim: "legion-infra-infra-2811-tester", Take: takeBound}},
+		{[]string{"--to=2026-11-14T10:30:00+01:00", "--from=2026-11-14T09:00:00.000Z", "--take-timeout=240"},
+			supervise.TaskCostArgs{From: from, To: to, Take: 4 * time.Minute}},
+	} {
+		got, err := parseTaskCostArgs(tc.args)
+		if err != nil || !got.From.Equal(tc.want.From) || !got.To.Equal(tc.want.To) || got.Claim != tc.want.Claim || got.Take != tc.want.Take {
+			t.Errorf("parseTaskCostArgs(%q) = %+v, %v; want %+v", tc.args, got, err, tc.want)
+		}
+	}
+	for _, args := range [][]string{
+		{"--to", "2026-11-14T09:30:00Z"},
+		{"--from", "2026-11-14T09:00:00Z"},
+		{"--from", "yesterday", "--to", "2026-11-14T09:30:00Z"},
+		{"--from", "2026-11-14T09:30:00Z", "--to", "2026-11-14T09:30:00Z"},
+		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "daemon.log"},
+		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--take-timeout", "0"},
+		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--take-timeout", "-300"},
+		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--take-timeout", "5m"},
+		{"--since", "30m"},
+	} {
+		if got, err := parseTaskCostArgs(args); err == nil || errors.Is(err, pflag.ErrHelp) {
+			t.Errorf("parseTaskCostArgs(%q) = %+v, %v; want a refusal", args, got, err)
+		}
+	}
+	for _, help := range []string{"-h", "-help", "--help"} {
+		if _, err := parseTaskCostArgs([]string{help}); !errors.Is(err, pflag.ErrHelp) {
+			t.Errorf("parseTaskCostArgs(%q) = %v, want pflag.ErrHelp", help, err)
+		}
 	}
 }

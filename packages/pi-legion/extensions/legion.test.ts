@@ -2524,12 +2524,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One
-    // timer is armed all the same: the task the refused turn carried ended with it, and below
-    // `launch_failure_limit` the daemon counts the turn rather than failing the claim, so without
-    // it a single transient refusal would leave the issue idle with nothing to wake it. By the
-    // time the timer fires the daemon has had every refusal of the run reported, and at the limit
-    // the claim it reads is failed and the reminder is dropped — which is what ends the reminding
-    // of a session the provider refuses for ever.
+    // timer is armed all the same: a refused turn that carried no task leaves nothing else to wake
+    // the worker, and below `launch_failure_limit` the daemon counts the turn rather than failing
+    // the claim, so without it a single transient refusal would leave the issue idle. A task's
+    // refused turn is woken by the daemon as well, whose provider-error wait keeps the task and
+    // writes its value again once the wait is over. By the time the timer fires the daemon has had
+    // every refusal of the run reported, and at the limit the claim it reads is failed and the
+    // reminder is dropped — which is what ends the reminding of a session the provider refuses for
+    // ever.
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2610,8 +2612,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     // The worker has already had the continuation and done nothing about it, so this run must
-    // settle — the daemon sees the turn end, delivers a queued task, lands a held suspension —
-    // and the reminder comes from the host's own timer instead.
+    // settle — the daemon sees the turn end, the idle worker takes a task the daemon wrote for it,
+    // a held suspension lands — and the reminder comes from the host's own timer instead.
     test("the settle after the continuation arms a timer, and firing it steers one reminder that starts a turn", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);

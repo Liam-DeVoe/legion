@@ -195,7 +195,7 @@ test("a turn settling on an open phase is blocked once, with the reminder, and t
     expect(await record()).toEqual({ state: "open", count: 1, ...said })
 
     // The second settle of the run lets the turn end and carries its reminder from the timer, so
-    // the daemon sees the turn end and can deliver a queued task.
+    // the daemon sees the turn end and the idle worker can take a task the daemon wrote for it.
     expect(
       await endpoint.handle({
         event: "Stop",

@@ -90,9 +90,11 @@ type keptTelling struct {
 	prompt bool
 	hears  bool
 	// retold is whether this telling is one the machine's own take-back made a second time: an
-	// accepted take of a delivery an earlier accepted take of which the machine took back, under
-	// the same delivery id, since a take-back keeps it (supervise's interrupted). It is the one
-	// extra telling to an architect the invariant accepts (held).
+	// accepted take of a delivery an earlier accepted take of which the machine took back after
+	// that take's turn had started, under the same delivery id, since a take-back keeps it
+	// (supervise's interrupted). A take given back before its turn started is told again, not
+	// retold (keptTake.again). It is the one extra telling to an architect the invariant accepts
+	// (held).
 	retold bool
 	// afterFailedWrite is whether this telling repeats, to the same architect, a catch-up whose own
 	// telling write failed (keptForgetStore.tellingFailed): the publish reached the architect and
@@ -2560,7 +2562,7 @@ func (r *keptRun) turnEnabled(tree *keptTree) bool {
 	if pending == nil {
 		return false
 	}
-	if !pending.ConfirmedAt.IsZero() && pending.TakenText != "" && !pending.TurnStarted {
+	if !pending.ConfirmedAt.IsZero() && !pending.TurnStarted {
 		return true
 	}
 	return held.State == supervise.StateWorking && !pending.ConfirmedAt.IsZero()
@@ -2592,7 +2594,7 @@ func (r *keptRun) turn(tree *keptTree) {
 func (r *keptRun) endTurn(tree *keptTree, machine *supervise.Machine) {
 	pending := machine.Claim().Pending
 	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})
-	if pending != nil && !pending.ConfirmedAt.IsZero() && (pending.TakenText == "" || pending.TurnStarted) {
+	if pending != nil && !pending.ConfirmedAt.IsZero() && pending.TurnStarted {
 		r.handle(machine, supervise.RequestTurnOutcome{Claim: tree.token, Generation: machine.Claim().Generation,
 			Sequence: turnSequence.Add(1), Task: pending.Number})
 	}
@@ -2725,7 +2727,7 @@ func (r *keptRun) awaitingItsTurn(tree *keptTree) bool {
 		return false
 	}
 	pending := held.Pending
-	return pending != nil && !pending.ConfirmedAt.IsZero() && pending.TakenText != "" && !pending.TurnStarted
+	return pending != nil && !pending.ConfirmedAt.IsZero() && !pending.TurnStarted
 }
 
 // retold is whether the machine took back a take of the delivery id whose turn had started and
@@ -3055,14 +3057,16 @@ func (r *keptRun) report() {
 // too: a person's decision is never lost, and told twice is the lesser fault. Any other telling
 // to another tree's architect, and any second telling to one architect, is a fault.
 //
-// A task the machine itself took back is the one second telling to one architect that is accepted
-// (retold), and at most one: the worker takes the task again under the same delivery id, naming
-// the same decisions, and the architect that already ran it runs it again. The daemon takes back
-// a take whose turn it cannot vouch for — one given back before its turn started (a compaction,
-// the second wait, a let-go of a take that awaited its turn), and one whose turn the death of its
-// process ended — and telling it again is the lesser fault there too. Zero tellings is never one
-// of them: the second take is excused only beside a telling that stands, so a decision the
-// machine lost between the two is a fault all the same.
+// A task the machine itself took back from a turn that had started is the one second telling to
+// one architect that is accepted (retold), and at most one: the worker takes the task again under
+// the same delivery id, naming the same decisions, and the architect that already ran it runs it
+// again. The daemon takes back a take whose turn it cannot vouch for, one whose turn the death of
+// its process ended among them, and telling it again is the lesser fault there too. A take given
+// back before its turn started (a compaction, the second wait, a let-go of a take that awaited
+// its turn) is no second telling at all: its worker never ran the text, and the take that follows
+// tells only what it did not name (keptTake.again). Zero tellings is never one of them: the second
+// take is excused only beside a telling that stands, so a decision the machine lost between the
+// two is a fault all the same.
 //
 // A catch-up after one whose own telling write failed is counted the same way (afterFailedWrite):
 // the first publish reached the architect and its forget did not commit, so the decision stood
@@ -3304,15 +3308,17 @@ func (r *keptRun) architectToHear(key string) bool {
 // left, so where the debt stands is read once the run has quiesced (held).
 //
 // One second telling to one architect is accepted per cause, and only these: the task it was
-// already told is one the machine took back — a take given back before its turn started, or one
-// whose turn its process died in — and its worker took again under the same delivery id
-// (retold); or the catch-up that told it failed its own telling write (afterFailedWrite: its
-// forget did not commit, so the decision stood kept and a later catch-up named it again), which
-// the architect ruled acceptable (https://github.com/sjawhar/legion/pull/2163#issuecomment-6542200410).
+// already told is one the machine took back after its turn had started (the death of its process
+// cut that turn, for one) and its worker took again under the same delivery id (retold); or the
+// catch-up that told it failed its own telling write (afterFailedWrite: its forget did not commit,
+// so the decision stood kept and a later catch-up named it again), which the architect ruled
+// acceptable (https://github.com/sjawhar/legion/pull/2163#issuecomment-6542200410). A take given
+// back before its turn started is no second telling: its worker never ran the text, and the take
+// that follows tells it again (keptTake.again), not a second time.
 // The daemon cannot know what of the first the agent ran, or the write that would have recorded
 // the telling did not commit, so telling it again is the lesser fault. Every other repeat is a
 // fault: a telling repeats an earlier one only once, and only where that earlier telling's own
-// write failed or its task was taken back.
+// write failed or its task was taken back from a turn that had started.
 func (r *keptRun) tell(telling keptTelling) {
 	var earlier, excused int
 	var first keptTelling
@@ -3624,15 +3630,15 @@ func (r *keptRun) waitsForItsSlot(tree *keptTree) bool {
 
 // waitMachines waits for every decision each architect's machine started to have been made,
 // records whether the turn of the take each claim holds has started (keptRun.ran, as
-// supervise's Delivery reads a take's turn started: its turn's start recorded, or a confirmed take
-// whose text no record kept), and then has each architect's worker take the task its claim holds
+// supervise's Delivery reads a take's turn started: its turn's start recorded, TurnStarted), and
+// then has each architect's worker take the task its claim holds
 // where it may (workerTakes), which is what makes a take part of the step that queued its task.
 // Every step that starts a turn waits right after it, so no take's turn starts unread.
 func (r *keptRun) waitMachines() {
 	for _, tree := range r.roots {
 		if machine, found := r.sup.Machine(tree.token); found {
 			machine.Wait()
-			if p := machine.Claim().Pending; p != nil && !p.ConfirmedAt.IsZero() && (p.TakenText == "" || p.TurnStarted) {
+			if p := machine.Claim().Pending; p != nil && !p.ConfirmedAt.IsZero() && p.TurnStarted {
 				r.ran[p.ID] = true
 			}
 			r.workerTakes(tree, machine)

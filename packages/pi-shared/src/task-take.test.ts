@@ -10,8 +10,8 @@ import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
 import {
   type ClaimCaller,
   DAEMON_ANSWER_TIMEOUT_MS,
-  DAEMON_RESEND_FIRST_DELAY_MS,
-  DAEMON_RESEND_MAX_DELAY_MS,
+  DAEMON_RESTART_FIRST_DELAY_MS,
+  DAEMON_RESTART_MAX_DELAY_MS,
   LegionDaemonApiError,
 } from "./daemon-client";
 import { createTaskTake } from "./task-take";
@@ -473,7 +473,7 @@ test("a take whose accepted answer was lost is answered again during a run that 
 
   // A run starts while the take waits to be sent again, and the re-sent take is answered then.
   take.runStarted();
-  await advance(DAEMON_RESEND_FIRST_DELAY_MS);
+  await advance(DAEMON_RESTART_FIRST_DELAY_MS);
   expect(routed("take")).toEqual([body(4, 12), body(4, 12)]);
   expect(ran).toEqual([]);
 
@@ -603,7 +603,7 @@ for (const [name, attempt] of [
     expect(routed("take")).toEqual(Array(failures + 1).fill(body(4, 12)));
     expect(waits).toEqual(
       Array.from({ length: failures }, (_, n) =>
-        Math.min(DAEMON_RESEND_FIRST_DELAY_MS * 2 ** n, DAEMON_RESEND_MAX_DELAY_MS)
+        Math.min(DAEMON_RESTART_FIRST_DELAY_MS * 2 ** n, DAEMON_RESTART_MAX_DELAY_MS)
       )
     );
     expect(ran).toEqual([TEXT]);
@@ -653,7 +653,7 @@ test("a newer revision ends the re-sending of the older take and seen report, an
   takes.push({ answer: ACCEPTED });
   seens.splice(0);
   take.relayed(put(4, 13));
-  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESTART_MAX_DELAY_MS);
 
   expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
   expect(routed("task-seen")).toEqual([body(4, 12), body(4, 13)]);
@@ -667,7 +667,7 @@ test("a deleted value ends the re-sending of its take", async () => {
   take.relayed(put(4, 12));
   await advance(0);
   take.relayed({ claim: caller.claimToken, epoch: EPOCH, revision: 13, op: "delete" });
-  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESTART_MAX_DELAY_MS);
 
   expect(routed("take")).toEqual([body(4, 12)]);
   expect(marks).toEqual([true, false]);
@@ -692,7 +692,7 @@ test("a closed take sends nothing more, drops an answer that still arrives, clea
   expect(marks).toEqual([true, false]);
   // The seen report's re-sending stops, and the take's answer, arriving now, runs nothing.
   late.resolve(ACCEPTED);
-  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESTART_MAX_DELAY_MS);
   expect(routed("task-seen")).toEqual([body(4, 12)]);
   expect(ran).toEqual([]);
 

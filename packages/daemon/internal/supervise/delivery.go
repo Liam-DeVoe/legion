@@ -40,11 +40,12 @@ type CheckLook struct {
 // turn has started. The text stays for as long as the take does, through its turn, so a take of
 // the number sent again after its answer was lost is answered it whenever it comes. So the three
 // readings of a pending task are: ConfirmedAt zero, a task no take holds — queued, or taken back
-// under its number; ConfirmedAt set with TakenText and TurnStarted false, a take accepted whose
-// turn has not started (awaitsTurn); ConfirmedAt set with TurnStarted true, or with no TakenText,
-// a take whose turn has started and which nothing has finished yet (turnStarted). A confirmed
-// take with no text is one whose text no record kept — the release before the take cleared it at
-// the turn's start, and a migration filled its confirmed rows with none — and its turn started.
+// under its number; ConfirmedAt set and TurnStarted false, a take accepted whose turn has not
+// started (awaitsTurn); ConfirmedAt set and TurnStarted true, a take whose turn has started and
+// which nothing has finished yet (turnStarted). TakenText is the text alone and says nothing of
+// the turn: a confirmed take with no text is one whose text no record kept, which the migration
+// that added the column filled its confirmed rows with, and that migration set those rows'
+// TurnStarted (turn_started = confirmed_at is not null) before any other fill.
 // A task lives until it is finished — by the turn-outcome report that names its number, or by
 // the end of its turn with no report after it (finishTask) — or until the record drops it.
 //
@@ -87,9 +88,10 @@ type Delivery struct {
 	Origin string
 	// TakenText is the text the daemon's accepted take of this task was answered with, and ""
 	// while no take of it stands accepted, or for a confirmed take whose text no record kept (see
-	// above). A take of the same number sent again after its answer was lost is answered this same
-	// text, before the take's turn starts and after, across a daemon restart too, so it is
-	// persisted, and it goes only with the take (interrupted, clearTake).
+	// above): it is never read for where the take stands, which TurnStarted says. A take of the
+	// same number sent again after its answer was lost is answered this same text, before the
+	// take's turn starts and after, across a daemon restart too, so it is persisted, and it goes
+	// only with the take (interrupted, clearTake).
 	TakenText string
 	// TurnStarted is whether the turn of the accepted take has started (startTakesTurn): false
 	// while no take stands accepted or the accepted take awaits its turn. A turn whose report then
@@ -188,26 +190,25 @@ func (d Delivery) taken() bool { return !d.ConfirmedAt.IsZero() }
 // awaitsTurn is whether a take of the task was accepted and its turn has not started: the
 // window in which the claim counts as in a turn for another role's adoption (Claim.InTurn) and
 // R5's second wait is on the take (secondWaitNow).
-func (d Delivery) awaitsTurn() bool { return d.taken() && d.TakenText != "" && !d.TurnStarted }
+func (d Delivery) awaitsTurn() bool { return d.taken() && !d.TurnStarted }
 
 // turnStarted is whether the task's accepted take has had its turn start: the turn is running,
-// or it has ended and nothing has finished the task yet (finishTask). A confirmed take whose text
-// no record kept reads so whatever TurnStarted says (Delivery).
-func (d Delivery) turnStarted() bool { return d.taken() && (d.TakenText == "" || d.TurnStarted) }
+// or it has ended and nothing has finished the task yet (finishTask).
+func (d Delivery) turnStarted() bool { return d.taken() && d.TurnStarted }
 
 // TakenWith is whether c's worker took this task: the claim's last accepted take is this task's
 // number. It stays true after the task is taken back, since the worker read the task and may be
 // carrying on its work (Claim.ServingRun).
 func (d Delivery) TakenWith(c Claim) bool { return d.Number != 0 && c.TaskTaken == d.Number }
 
-// maxSendErrorRunes bounds the text of a failed send kept on a delivery (scrubSendError). What a
-// reader of that record needs is why the send failed: the first line of the far side's answer and
-// enough of what follows to name the failure — the shim's words name the stale lock's path and
-// its age within the first two hundred characters — so this is more room than the diagnosis asks
-// for and far less than the text can be. What it cuts is the rest of a relayed command's output:
-// a refused adoption carries the wedged command's whole stderr, measured at about a megabyte
-// (INFRA-1480), which would otherwise be stored on every failed send of the task and served
-// again in every operator listing of the claim.
+// maxSendErrorRunes bounds the text of a failed adoption of the working copy kept on a delivery
+// (scrubSendError). What a reader of that record needs is why the adoption failed: the first line
+// of the far side's answer and enough of what follows to name the failure — the shim's words name
+// the stale lock's path and its age within the first two hundred characters — so this is more room
+// than the diagnosis asks for and far less than the text can be. What it cuts is the rest of a
+// relayed command's output: a refused adoption carries the wedged command's whole stderr, measured
+// at about a megabyte (INFRA-1480), which would otherwise be stored on every failed adoption of
+// the task and served again in every operator listing of the claim.
 const maxSendErrorRunes = 2048
 
 // scrubSendError is the text of a failed adoption as a delivery may hold it. The text is the far

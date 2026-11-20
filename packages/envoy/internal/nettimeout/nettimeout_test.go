@@ -9,6 +9,7 @@ import (
 	"os"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // InChain finds a timeout at any depth of the chain, through both forms of Unwrap, and in both
@@ -36,6 +37,39 @@ func TestInChainFindsATimeoutAnywhereInTheChain(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := InChain(tc.err); got != tc.want {
 				t.Fatalf("InChain(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// InChain reads context.DeadlineExceeded wherever errors.Is finds it, which is what lets a caller
+// ask InChain alone whether a failure timed out: the sentinel's own Timeout answers true, so the
+// sentinel, a context's error once its deadline passed, and either of them wrapped with %w, under
+// the client's *url.Error or inside errors.Join, is a timeout to both. A cancelled context's
+// error is neither's.
+func TestInChainReadsContextDeadlineExceededWhereverErrorsIsFindsIt(t *testing.T) {
+	expired, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer cancel()
+	cancelled, stop := context.WithCancel(context.Background())
+	stop()
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"the sentinel", context.DeadlineExceeded, true},
+		{"a context's error once its deadline passed", expired.Err(), true},
+		{"the sentinel wrapped", fmt.Errorf("mint the token: %w", context.DeadlineExceeded), true},
+		{"the sentinel under *url.Error", &url.Error{Op: "Post", URL: "http://broker/v1/mint", Err: context.DeadlineExceeded}, true},
+		{"the sentinel inside errors.Join", errors.Join(errors.New("close the response body"), context.DeadlineExceeded), true},
+		{"a cancelled context's error", cancelled.Err(), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if is := errors.Is(tc.err, context.DeadlineExceeded); is != tc.want {
+				t.Fatalf("errors.Is(%v, context.DeadlineExceeded) = %t, want %t: the case's premise", tc.err, is, tc.want)
+			}
+			if got := InChain(tc.err); got != tc.want {
+				t.Fatalf("InChain(%v) = %t, want %t, as errors.Is answers", tc.err, got, tc.want)
 			}
 		})
 	}

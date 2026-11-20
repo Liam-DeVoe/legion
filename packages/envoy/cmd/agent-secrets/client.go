@@ -207,7 +207,7 @@ func unreachable(base brokeraddr.Address, method, callURL string, err error) err
 		return failed("the broker's host " + host + " name resolution failed")
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return failed("nothing answered at " + host + ": the connection was refused")
-	case errors.Is(err, context.DeadlineExceeded) || nettimeout.InChain(err):
+	case nettimeout.InChain(err):
 		return failed("the broker at " + host + " did not answer in time")
 	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH),
 		errors.As(err, &op) && op.Op == "dial":

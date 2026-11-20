@@ -49,8 +49,9 @@
 {"time":"2026-11-14T09:39:30.000Z","level":"INFO","msg":"supervise: a take was answered","claim":"legion-infra-infra-2811-tester","task":4,"revision":150,"outcome":"accepted","hold":"","repeat":false}
 {"time":"2026-11-14T09:40:00.000Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-infra-infra-2811-tester","generation":2,"task":4}
 {"time":"2026-11-14T09:41:00.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"task":2}
-{"time":"2026-11-14T09:41:05.000Z","level":"INFO","msg":"supervise: a task was finished","claim":"legion-infra-infra-2811-implementer","task":2,"by":"end-frame"}
-{"time":"2026-11-14T09:41:05.000Z","level":"INFO","msg":"supervise: a task value was deleted","claim":"legion-infra-infra-2811-implementer","task":2,"cause":"finished"}
+{"time":"2026-11-14T09:41:00.100Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-implementer","generation":1,"sequence":3,"refused":false,"refusedRun":0,"limit":3}
+{"time":"2026-11-14T09:41:00.200Z","level":"INFO","msg":"supervise: a task was finished","claim":"legion-infra-infra-2811-implementer","task":2,"by":"report"}
+{"time":"2026-11-14T09:41:00.200Z","level":"INFO","msg":"supervise: a task value was deleted","claim":"legion-infra-infra-2811-implementer","task":2,"cause":"finished"}
 {"time":"2026-11-14T09:45:00.000Z","level":"INFO","msg":"supervise: a task value was written","claim":"legion-infra-infra-2811-implementer","task":3,"origin":"notice","finished":true,"session":"ses_implementer_a","epoch":"2026-11-14T08:00:00.123456789Z","revision":154,"cause":"queued"}
 {"time":"2026-11-14T09:50:00.000Z","level":"INFO","msg":"supervise: nobody reported seeing the claim's latest value within the first bound; it is written again under its number, and nobody is charged","claim":"legion-infra-infra-2811-implementer","task":3,"epoch":"2026-11-14T08:00:00.123456789Z","revision":154,"bound":300000000000}
 {"time":"2026-11-14T09:50:00.000Z","level":"INFO","msg":"supervise: a task value was written","claim":"legion-infra-infra-2811-implementer","task":3,"origin":"notice","finished":false,"session":"ses_implementer_a","epoch":"2026-11-14T08:00:00.123456789Z","revision":156,"cause":"unseen"}

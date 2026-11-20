@@ -495,7 +495,7 @@ func class(err error, server string) string {
 		return "name resolution failed"
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return "connection refused"
-	case errors.Is(err, context.DeadlineExceeded) || nettimeout.InChain(err):
+	case nettimeout.InChain(err):
 		return "timed out"
 	case tlsFailure(err):
 		return "TLS failed"

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -38,11 +40,11 @@ exits 1 when any verdict prints "no evidence", and 0 when it judges all three, a
 var taskCostStdin io.Reader = os.Stdin
 
 // newTaskCostCommand is `legion task-cost`, the documentation site's cost reading
-// (docs/site/src/content/docs/legion/task-delivery-cost.md): it takes the flags the daemon's own
-// reader defines (supervise.AddTaskCostFlags), reads the log with that reader
-// (supervise.ReadTaskCost), and prints what the reader answers, adding nothing of its own. Its exit
-// status is 2 for arguments it cannot take, as every command's usage error is, and 1 where it
-// gives no reading a check can pass: a log it could not read, and a window that does not judge
+// (docs/site/src/content/docs/legion/task-delivery-cost.md): it takes the reading's flags
+// (addTaskCostFlags), reads the log with the daemon's own reader (supervise.ReadTaskCost), and
+// prints what the reader answers, adding nothing of its own. Its exit status is 2 for arguments
+// it cannot take, as every command's usage error is, and 1 where it gives no reading a check can
+// pass: a log it could not read, and a window that does not judge
 // every verdict (TaskCost.EveryVerdictJudged), where one prints "no evidence" — a window with no
 // daemon line, or with daemon lines but no task value written and no take answered, whose only
 // evidence, if any, is a fail proved from the state carried into the window, which judges its own
@@ -58,7 +60,7 @@ func newTaskCostCommand(stdout, stderr io.Writer) *cobra.Command {
 		Example: "  kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost --from <from> --to <to>",
 		Args:    noArguments,
 	}
-	given := supervise.AddTaskCostFlags(cmd.Flags())
+	given := addTaskCostFlags(cmd.Flags())
 	cmd.RunE = runs(func(context.Context, []string) int {
 		parsed, err := given.Args()
 		if err != nil {
@@ -76,4 +78,72 @@ func newTaskCostCommand(stdout, stderr io.Writer) *cobra.Command {
 		return 0
 	})
 	return cmd
+}
+
+// taskCostTakeTimeout is --take-timeout's default, in seconds: worker_take_timeout_seconds's own
+// (config's key table), which TestTaskCostTakeTimeoutDefaultsToTheSetting holds it to.
+const taskCostTakeTimeout = 300
+
+// taskCostFlags are `legion task-cost`'s flags on the flag set addTaskCostFlags registered them
+// on, and Args reads what they were given.
+type taskCostFlags struct {
+	from, to, claim *string
+	take            *int
+}
+
+// addTaskCostFlags registers `legion task-cost`'s flags on flags: --from <RFC 3339>, --to <RFC
+// 3339>, --claim <token> and --take-timeout <seconds>. The command's own flag set holds them
+// (newTaskCostCommand), and parseTaskCostArgs parses a command line with them, so the command and
+// the page's examples are read by one definition.
+func addTaskCostFlags(flags *pflag.FlagSet) taskCostFlags {
+	return taskCostFlags{
+		from:  flags.String("from", "", "the window's start, an RFC 3339 time, included (required)"),
+		to:    flags.String("to", "", "the window's end, an RFC 3339 time after --from, not included (required)"),
+		claim: flags.String("claim", "", "read the lines of this claim alone"),
+		take: flags.Int("take-timeout", taskCostTakeTimeout,
+			"the deployment's first bound in seconds, worker_take_timeout_seconds, which the numbers no take reached are judged by"),
+	}
+}
+
+// Args is what the flags were given: both times are required, To must be after From, and the
+// first bound is a positive number of seconds, 300 when not given.
+func (f taskCostFlags) Args() (supervise.TaskCostArgs, error) {
+	var parsed supervise.TaskCostArgs
+	for _, bound := range []struct {
+		name, value string
+		into        *time.Time
+	}{{"from", *f.from, &parsed.From}, {"to", *f.to, &parsed.To}} {
+		if bound.value == "" {
+			return supervise.TaskCostArgs{}, fmt.Errorf("--%s is required", bound.name)
+		}
+		at, err := time.Parse(time.RFC3339, bound.value)
+		if err != nil {
+			return supervise.TaskCostArgs{}, fmt.Errorf("--%s %q is not an RFC 3339 time", bound.name, bound.value)
+		}
+		*bound.into = at
+	}
+	if !parsed.To.After(parsed.From) {
+		return supervise.TaskCostArgs{}, fmt.Errorf("--to %s is not after --from %s", *f.to, *f.from)
+	}
+	if *f.take <= 0 {
+		return supervise.TaskCostArgs{}, fmt.Errorf("--take-timeout %d is not a positive number of seconds", *f.take)
+	}
+	parsed.Claim, parsed.Take = *f.claim, time.Duration(*f.take)*time.Second
+	return parsed, nil
+}
+
+// parseTaskCostArgs parses `legion task-cost`'s arguments with the command's flags
+// (addTaskCostFlags) as the command's own parse reads them: a flag may follow a word, and a word
+// is refused. A help flag answers pflag.ErrHelp.
+func parseTaskCostArgs(args []string) (supervise.TaskCostArgs, error) {
+	flags := pflag.NewFlagSet("task-cost", pflag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	given := addTaskCostFlags(flags)
+	if err := flags.Parse(args); err != nil {
+		return supervise.TaskCostArgs{}, err
+	}
+	if flags.NArg() > 0 {
+		return supervise.TaskCostArgs{}, fmt.Errorf("unexpected argument %q", flags.Arg(0))
+	}
+	return given.Args()
 }

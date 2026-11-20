@@ -2614,36 +2614,36 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	})
 }
 
-// RoleClaims reads whether a text an accepted take was answered with stands, not the text: its
-// readers ask only that (supervise's Delivery.StillWorked), and the text stays on the row through
-// the take's turn, so a read of the whole of it would carry every running task's text on every
-// admission pass. The task's TakenText is that text's first character, and StillWorked answers
-// from the read as it answers from the record: a take awaiting its turn still works the task on
-// an idle claim, and a take whose turn started does not.
+// RoleClaims reads whether an accepted take's turn started, and not the text the take was
+// answered with: its readers ask only where the take stands (supervise's Delivery.StillWorked),
+// which turn_started says alone, and the text stays on the row through the take's turn, so a read
+// of it would carry every running task's text on every admission pass. StillWorked answers from
+// the read as it answers from the record: a take awaiting its turn still works the task on an
+// idle claim, and a take whose turn started does not, whether its text stands or no record kept
+// it — a confirmed row the task numbers' migration filled with no text, whose turn_started it set.
 //
-// The negative control is the read of the whole column (the taken_text select without left): the
-// task then reads back the whole text.
-func TestRoleClaimsReadsWhetherATakenTextStandsAndNotTheText(t *testing.T) {
+// The negative control is the read of the text put back (taken_text selected into the task's
+// TakenText): the task then reads back a text the reader has no use for.
+func TestRoleClaimsReadsWhetherATakesTurnStartedAndNotItsText(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	const text = "Your last turn was interrupted.\n\nTest it. Issue: LEGION-208. Phase: testing."
 	for _, tc := range []struct {
-		name        string
+		name, text  string
 		turnStarted bool
+		role        claim.Role
 	}{
-		{name: "a take awaiting its turn"},
-		{name: "a take whose turn started", turnStarted: true},
+		{name: "a take awaiting its turn", text: text, role: claim.RoleTester},
+		{name: "a take whose turn started", text: text, turnStarted: true, role: claim.RoleImplementer},
+		{name: "a migrated take whose turn started, its text kept by no record", turnStarted: true, role: claim.RoleReviewer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			token := claim.Token("legion-legion-legion-208-tester")
-			if tc.turnStarted {
-				token = "legion-legion-legion-208-implementer"
-			}
+			token := claim.Token("legion-legion-legion-208-" + string(tc.role))
 			held := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
-				Role: claim.RoleTester, Generation: 1, State: supervise.StateIdle, TaskWritten: 1, TaskTaken: 1}
+				Role: tc.role, Generation: 1, State: supervise.StateIdle, TaskWritten: 1, TaskTaken: 1}
 			task := supervise.Delivery{ID: "outbox:17", Task: "Test it.", Generation: 1, Phase: phase.Testing,
-				Number: 1, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TakenText: text, TurnStarted: tc.turnStarted}
+				Number: 1, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TakenText: tc.text, TurnStarted: tc.turnStarted}
 			if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
 				t.Fatalf("record the claim and the task its take holds: %v", err)
 			}
@@ -2656,8 +2656,9 @@ func TestRoleClaimsReadsWhetherATakenTextStandsAndNotTheText(t *testing.T) {
 				if read == nil || read.Pending == nil {
 					t.Fatalf("the claim reads %+v, want it holding the task the fixture wrote", read)
 				}
-				if read.Pending.TakenText != text[:1] {
-					t.Fatalf("the task's taken text reads %q, want only its first character, %q: the read says whether a text stands", read.Pending.TakenText, text[:1])
+				if read.Pending.TakenText != "" || read.Pending.TurnStarted != tc.turnStarted {
+					t.Fatalf("the task reads taken text %q and turn started %v, want no text and turn started %v: the read says where the take stands and carries no text",
+						read.Pending.TakenText, read.Pending.TurnStarted, tc.turnStarted)
 				}
 				if got, want := read.Pending.StillWorked(1, phase.Testing, read.State), task.StillWorked(1, phase.Testing, held.State); got != want {
 					t.Fatalf("StillWorked over the read = %v, want %v, as over the record", got, want)

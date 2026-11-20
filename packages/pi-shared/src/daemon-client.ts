@@ -331,10 +331,14 @@ export interface DaemonRestartRetry {
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
-/** How long a call waits for a restarting daemon, and its backoff from first to longest wait. */
+/** How long a call waits for a restarting daemon. */
 export const DAEMON_RESTART_BUDGET_MS = 10 * 60_000;
-const DAEMON_RESTART_FIRST_DELAY_MS = 500;
-const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
+
+/** The first wait before a request the daemon gave no answer to is sent again; each wait after it
+ * doubles, up to `DAEMON_RESTART_MAX_DELAY_MS`. Both `retryWhileDaemonRestarts` and
+ * `sendUntilAnswered` back off by this pair. */
+export const DAEMON_RESTART_FIRST_DELAY_MS = 500;
+export const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
 
 /** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent);
  * `dropped` may have reached it (a connection reset or closed before a response, or a 502 or 503
@@ -378,21 +382,7 @@ export async function retryWhileDaemonRestarts<T>(
 ): Promise<T> {
   const { signal } = options;
   const now = options.now ?? Date.now;
-  const sleep =
-    options.sleep ??
-    ((ms: number, abort?: AbortSignal) => {
-      const wait = Promise.withResolvers<void>();
-      const timer = setTimeout(wait.resolve, ms);
-      abort?.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          wait.resolve();
-        },
-        { once: true }
-      );
-      return wait.promise;
-    });
+  const sleep = options.sleep ?? timerWait;
   const deadline = now() + DAEMON_RESTART_BUDGET_MS;
   let delay = DAEMON_RESTART_FIRST_DELAY_MS;
   let told = false;
@@ -439,11 +429,6 @@ export async function retryWhileDaemonRestarts<T>(
  * same request is sent again. */
 export const DAEMON_ANSWER_TIMEOUT_MS = 5 * 60_000;
 
-/** The first wait before `sendUntilAnswered` sends a request again; each wait after it doubles,
- * up to `DAEMON_RESEND_MAX_DELAY_MS`, and nothing limits the attempts. */
-export const DAEMON_RESEND_FIRST_DELAY_MS = 500;
-export const DAEMON_RESEND_MAX_DELAY_MS = 30_000;
-
 /** An attempt the daemon did not answer within `DAEMON_ANSWER_TIMEOUT_MS`. */
 class DaemonAnswerTimeout extends Error {
   constructor(what: string) {
@@ -454,35 +439,27 @@ class DaemonAnswerTimeout extends Error {
 
 /**
  * Whether `error` is an attempt the daemon gave no answer to (dispatch://INFRA-2811, the plan's
- * departure 7): a refused, reset or closed connection, an unreachable host or network, a connect
- * or read timeout, a DNS failure, no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or
- * 504 that names no Legion error code, which a proxy in front of the daemon answers. Every
- * refusal the daemon itself gives names a code or is a 4xx, and is an answer.
+ * departure 7): a refused, reset or closed connection (`daemonUnreachable`), any failure of the
+ * network or timeout the ready's retry reads too (`isNetworkOrTimeoutError`: an unreachable host
+ * or network, a connect or read timeout, a DNS failure, a fetch's `NetworkError`), no answer
+ * within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion error code, which a
+ * proxy in front of the daemon answers. Every refusal the daemon itself gives names a code or is
+ * a 4xx, and is an answer.
  */
 function daemonGaveNoAnswer(error: unknown): boolean {
   if (error instanceof DaemonAnswerTimeout || daemonUnreachable(error) !== undefined) return true;
   if (error instanceof LegionDaemonApiError) {
     return error.status === 504 && error.code === undefined;
   }
-  if (!(error instanceof Error)) return false;
-  // Bun's fetch names a read that timed out by the error's name alone (a DOMException).
-  if (error.name === "TimeoutError") return true;
-  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
-  return (
-    code === "ENOTFOUND" ||
-    code === "EAI_AGAIN" ||
-    code === "EHOSTUNREACH" ||
-    code === "ENETUNREACH" ||
-    code === "ETIMEDOUT" ||
-    code === "ConnectionTimeout"
-  );
+  return isNetworkOrTimeoutError(error);
 }
 
 /** Resolves `true` once `ms` have passed, or `false` as soon as `signal` aborts: a timer that
- * keeps no process alive. */
-function timerWait(ms: number, signal: AbortSignal): Promise<boolean> {
+ * keeps no process alive. The one wait between attempts, `retryWhileDaemonRestarts`'s and
+ * `sendUntilAnswered`'s, unless a test passes its own clock. */
+function timerWait(ms: number, signal?: AbortSignal): Promise<boolean> {
   const { promise, resolve } = Promise.withResolvers<boolean>();
-  if (signal.aborted) {
+  if (signal?.aborted) {
     resolve(false);
     return promise;
   }
@@ -491,11 +468,11 @@ function timerWait(ms: number, signal: AbortSignal): Promise<boolean> {
     resolve(false);
   };
   const timer = setTimeout(() => {
-    signal.removeEventListener("abort", stop);
+    signal?.removeEventListener("abort", stop);
     resolve(true);
   }, ms);
   timer.unref?.();
-  signal.addEventListener("abort", stop, { once: true });
+  signal?.addEventListener("abort", stop, { once: true });
   return promise;
 }
 
@@ -519,8 +496,8 @@ export interface SendUntilAnswered {
  * report (`src/task-take.ts`) and the turn-outcome report (`packages/pi-legion/src/turn-outcome.ts`,
  * which also sends a 500 again, `alsoSendAgain`). Each attempt is bounded by
  * `DAEMON_ANSWER_TIMEOUT_MS` and gets its own abort signal; a failure `daemonGaveNoAnswer` names is
- * sent again, the same request, after a wait that doubles from `DAEMON_RESEND_FIRST_DELAY_MS` to
- * `DAEMON_RESEND_MAX_DELAY_MS`, with no attempt limit, until the daemon answers or `stop` aborts.
+ * sent again, the same request, after a wait that doubles from `DAEMON_RESTART_FIRST_DELAY_MS` to
+ * `DAEMON_RESTART_MAX_DELAY_MS`, with no attempt limit, until the daemon answers or `stop` aborts.
  * It resolves the daemon's answer; a failure the daemon answered, and the stop, reject.
  */
 export async function sendUntilAnswered<T>(
@@ -530,7 +507,7 @@ export async function sendUntilAnswered<T>(
 ): Promise<T> {
   const { stop } = options;
   const wait = options.wait ?? timerWait;
-  let delay = DAEMON_RESEND_FIRST_DELAY_MS;
+  let delay = DAEMON_RESTART_FIRST_DELAY_MS;
   let told = false;
   for (;;) {
     stop.throwIfAborted();
@@ -553,7 +530,7 @@ export async function sendUntilAnswered<T>(
       attempt.abort();
     }
     await wait(delay, stop);
-    delay = Math.min(delay * 2, DAEMON_RESEND_MAX_DELAY_MS);
+    delay = Math.min(delay * 2, DAEMON_RESTART_MAX_DELAY_MS);
   }
 }
 

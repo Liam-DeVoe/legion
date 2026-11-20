@@ -33,9 +33,9 @@ var (
 	ErrFrameTooLarge = errors.New("shimwire: frame exceeds the reassembly limit")
 )
 
-// MaxChunkCount is the most chunks a sequence may declare: the reassembly limit in full
+// maxChunkCount is the most chunks a sequence may declare: the reassembly limit in full
 // payloads (worker-rpc.ts:260).
-const MaxChunkCount = MaxReassembledBytes / ChunkPayloadBytes
+const maxChunkCount = MaxReassembledBytes / ChunkPayloadBytes
 
 // maxChunkIDBytes bounds the sequence identifier (worker-rpc.ts:251).
 const maxChunkIDBytes = 128
@@ -197,17 +197,32 @@ func (r *Reassembler) drop() {
 	r.payload = r.payload[:0]
 }
 
-// validate is every rule the shipped decoder applies to a chunk's own numbers before it looks at
-// the sequence (worker-rpc.ts:248-267).
-func (c RPCChunk) validate() error {
+// Placement is the rules the shipped decoder applies to where a chunk sits in its sequence, before
+// it reads the chunk's declared length (worker-rpc.ts:248-260): an id of one to maxChunkIDBytes
+// bytes, a count from two to maxChunkCount, and an index inside that count. It answers
+// ErrChunkMetadata naming the rule a chunk breaks, and nil for a chunk at a place the decoder
+// takes. The daemon's reader asks it of every chunk first (validate), and the shim's pump asks it
+// alone before it holds a chunk with its sequence (shim's chunkHold), so the two never differ on
+// where a chunk may sit.
+func (c RPCChunk) Placement() error {
 	switch {
 	case c.ChunkID == "" || len(c.ChunkID) > maxChunkIDBytes:
 		return fmt.Errorf("%w: chunk id of %d bytes", ErrChunkMetadata, len(c.ChunkID))
-	case c.Count < 2 || c.Count > MaxChunkCount:
+	case c.Count < 2 || c.Count > maxChunkCount:
 		return fmt.Errorf("%w: a sequence of %d chunks", ErrChunkMetadata, c.Count)
 	case c.Index < 0 || c.Index >= c.Count:
 		return fmt.Errorf("%w: chunk %d of %d", ErrChunkMetadata, c.Index, c.Count)
-	case c.ByteLength < MaxFrameBytes || c.ByteLength > MaxReassembledBytes:
+	}
+	return nil
+}
+
+// validate is every rule the shipped decoder applies to a chunk's own numbers before it looks at
+// the sequence (worker-rpc.ts:248-267): its place (Placement), then its declared length.
+func (c RPCChunk) validate() error {
+	if err := c.Placement(); err != nil {
+		return err
+	}
+	if c.ByteLength < MaxFrameBytes || c.ByteLength > MaxReassembledBytes {
 		return fmt.Errorf("%w: a declared length of %d bytes", ErrChunkMetadata, c.ByteLength)
 	}
 	return nil

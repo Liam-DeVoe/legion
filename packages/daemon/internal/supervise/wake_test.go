@@ -621,7 +621,7 @@ func TestTheControllersStalePluginIsRelaunchedWhereItIsFound(t *testing.T) {
 			c.State = state
 			if state == StateWorking {
 				c.TaskWritten, c.TaskTaken = 1, 1
-				c.Pending = &Delivery{ID: "delivery-1", Number: 1, Task: "Legion controller start", QueuedAt: epoch, ConfirmedAt: epoch}
+				c.Pending = &Delivery{ID: "delivery-1", Number: 1, Task: "Legion controller start", QueuedAt: epoch, ConfirmedAt: epoch, TurnStarted: true}
 			}
 			controller := h.machineFor(c)
 

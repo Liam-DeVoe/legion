@@ -184,7 +184,14 @@ const legionStepView = z.object({
  * list to `fixtures/daemon-api/failure-causes.json`, and `legion-api.test.ts` holds this list
  * equal to the file, so a word added on either side alone fails a test. It matters because the
  * enum below is strict: a cause this list does not name refuses the whole state body at every
- * plugin that reads it. */
+ * plugin that reads it.
+ *
+ * `never_reconnected` is the eighth word, which contract 174 added: the shim of a claim a daemon
+ * start restored never said hello again, and the relaunches that followed ran out. The `held`
+ * and `worker-died` notices carry it raw, as the claim holds it, whatever plugin reads them
+ * (the workflow's `noticeFailure`); only the state body narrows it (below). Beside
+ * `never_registered`, it is a cause the relaunch a release makes does not meet again: the
+ * relaunched process is a new one, whose shim says hello to the daemon that launched it. */
 export const LEGION_FAILURE_CAUSES = [
   "launch_refused",
   "died",

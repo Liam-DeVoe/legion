@@ -353,6 +353,15 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 		t.Errorf("the claim whose task's turn started reads back holding %+v, want its take to have told the let-go's record and not the abandoned session",
 			c.Pending)
 	}
+	// The confirmed row's take reads as one whose turn started, with no text kept, as it read when
+	// a confirmed take with no text was read so: the fill set its turn_started, which is all the
+	// claim reads of where the take stands (supervise's Delivery.turnStarted). On an idle claim
+	// such a take no longer works its task; one awaiting its turn would.
+	if c := claims[started]; c.Pending == nil || c.Pending.TakenText != "" || !c.Pending.TurnStarted ||
+		c.Pending.StillWorked(c.Pending.Generation, c.Pending.Phase, supervise.StateIdle) {
+		t.Errorf("the claim whose task's turn started reads back holding %+v, want its take's turn started with no text kept, so an idle claim no longer works it",
+			c.Pending)
+	}
 	// The next process of each of these takes the task afresh: the claim read holds it as a task no
 	// take holds, so the take is decided by the claim's machine and not answered from the record.
 	for _, token := range []claim.Token{"legion-LEGION-307-implementer", "legion-LEGION-308-implementer",

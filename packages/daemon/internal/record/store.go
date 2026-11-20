@@ -3335,14 +3335,13 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 //
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
 // delivery was written, confirmed when the claim's worker's take of it was accepted — whether a
-// let-go took it back from a turn (interrupted), whether a text its accepted take was answered
-// with stands (taken_text, of which only the first character is read: Delivery.TakenText holds
-// that character or nothing, never the text, since what its readers ask of it is whether one
-// stands) and whether that take's turn has started (turn_started, which with that read is what
-// supervise's Delivery.StillWorked reads), with the moment the claim's agent last said it was
-// ready (last_ready) and the claim's own handshake of the last entry it was queued a task of
-// (handshake_*), whose queued moment is when that entry's task was first queued, however many
-// times it was queued again.
+// let-go took it back from a turn (interrupted) and whether that take's turn has started
+// (turn_started, which is what supervise's Delivery.StillWorked reads), with the moment the
+// claim's agent last said it was ready (last_ready) and the claim's own handshake of the last
+// entry it was queued a task of (handshake_*), whose queued moment is when that entry's task was
+// first queued, however many times it was queued again. The text the take was answered with
+// (taken_text) is not read: no reader of a role run asks it, and it stays on the row through the
+// take's turn, so a read of it would carry every running task's text on every admission pass.
 // Those are what say an architect took nothing — the task of the entry its row names, standing
 // unconfirmed, counted from that entry's first queueing, and for a task a let-go took back from
 // the relaunched agent's ready where that is later — which the admission pass reads of every root
@@ -3354,7 +3353,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at,
-		coalesce(d.interrupted, false), left(coalesce(d.taken_text, ''), 1), coalesce(d.turn_started, false)
+		coalesce(d.interrupted, false), coalesce(d.turn_started, false)
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -3388,7 +3387,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 			&ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
 			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
 			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted,
-			&task.TakenText, &task.TurnStarted); err != nil {
+			&task.TurnStarted); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		held.TaskWritten, held.TaskFinished = uint64(written), uint64(finished)

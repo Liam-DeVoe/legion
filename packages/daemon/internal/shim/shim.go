@@ -537,14 +537,14 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 // outbox as one frame. So a connection that breaks under it leaves the whole sequence, from its
 // chunk 0, for the next, and nothing the shim sends of its own (a bundle result's sequence,
 // toDaemonChunked) lands between two of its chunks. A line that does not continue the sequence —
-// one that is not a chunk, a chunk at a place the daemon's reader refuses (RPCChunk's validate: a
-// count under two or over shimwire.MaxChunkCount, an index under zero or at or past its count), a
-// chunk of another sequence, or an index that is not the next — sends what is held first, as one
+// one that is not a chunk, a chunk at a place the daemon's reader refuses (shimwire's
+// RPCChunk.Placement, the check that reader makes first: an id empty or over its bound, a count
+// under two or over the most a sequence may declare, an index under zero or at or past its count),
+// a chunk of another sequence, or an index that is not the next — sends what is held first, as one
 // frame, and so does the pump's end: the daemon's reader drops that broken sequence as it would
 // have, and nothing changes order. The first two go alone after it, as every line went before the
 // pump held sequences. So the pump holds one sequence at most, which OMP writes back to back, and
-// no more of it than a sequence may declare: shimwire.MaxChunkCount lines, each under the line
-// limit.
+// no more of it than a sequence may declare, each line under the line limit.
 type chunkHold struct {
 	out   *outbox
 	lines [][]byte
@@ -562,9 +562,10 @@ type lineHead struct {
 }
 
 // forward sends one of OMP's lines to the outbox, or holds it with the rest of its sequence when
-// it is a chunk at a place the daemon's reader takes, which head reads.
+// it is a chunk at a place the daemon's reader takes (RPCChunk.Placement), which head reads.
 func (h *chunkHold) forward(line []byte, head lineHead, chunk bool) {
-	if !chunk || head.Count < 2 || head.Count > shimwire.MaxChunkCount || head.Index < 0 || head.Index >= head.Count {
+	place := shimwire.RPCChunk{ChunkID: head.ChunkID, Index: head.Index, Count: head.Count}
+	if !chunk || place.Placement() != nil {
 		h.release()
 		h.out.send(line)
 		return

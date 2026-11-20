@@ -10,7 +10,7 @@ import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { type ClaimTaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
+import { type ClaimTaskTake, type TaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
@@ -23,20 +23,13 @@ export interface ClaimSession {
   /** The claim `sessionID` registered, or undefined: before its registration, and for any other
    * session. */
   readonly capability: (sessionID: string) => ClaimCapability | undefined;
-  /** A run of this pane's session started (`legion.ts` calls it from `agent_start`, never for a
-   * `task` subagent's event): the claim's take no longer finds the host idle, and the first run
-   * after an accepted take is that task's turn (`@legion/pi-shared/task-take`). It does nothing
-   * before the claim is registered. */
-  readonly runStarted: () => void;
-  /** That run ended (`agent_end`): the number of the task whose turn it was, which the turn's
-   * outcome report names, or undefined for a run of no task or a session with no claim.
-   * `providerError` is whether that report carries the provider's failure; without one the take
-   * holds the task finished (`TaskTake.runEnded`). */
-  readonly runEnded: (providerError: boolean) => number | undefined;
-  /** The daemon refused with a 4xx the report of a turn of task `number` that carried no provider
-   * error (`src/turn-outcome.ts`): the take holds the number finished no longer, since the record
-   * still owes it (`TaskTake.reportRefused`). It does nothing before the claim is registered. */
-  readonly reportRefused: (number: number) => void;
+  /** The take of this pane's claim (`@legion/pi-shared/task-take`), whose hooks `legion.ts` calls
+   * for a run of this pane's session (`agent_start` and `agent_end`, never a `task` subagent's
+   * event) and for the daemon's refusal of that run's report (`src/turn-outcome.ts`): the first
+   * run after an accepted take is that task's turn, and its end the report naming its number.
+   * Every session of this pane is its claim's, so `sessionID` selects nothing. Undefined before
+   * the claim is registered. */
+  readonly take: (sessionID: string) => TaskTake | undefined;
 }
 
 /**
@@ -176,8 +169,6 @@ export function createClaimSession(deps: {
   return {
     bootstrap,
     capability: (sessionID) => (capability?.sessionID === sessionID ? capability : undefined),
-    runStarted: () => taking?.take.runStarted(),
-    runEnded: (providerError) => taking?.take.runEnded(providerError),
-    reportRefused: (number) => taking?.take.reportRefused(number),
+    take: () => taking?.take,
   };
 }

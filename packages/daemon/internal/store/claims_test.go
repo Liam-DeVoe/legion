@@ -202,14 +202,14 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 	}
 }
 
-// The text of a failed send is the far side's own: the wedged command's stderr, relayed by the
-// shim, or Oh My Pi's `error` decoded from JSON, where a `\u0000` becomes a NUL byte. This column
-// takes only what its server encoding can read, so supervise scrubs the text before it is stored
+// The text of a failed adoption of the working copy is the far side's own: the wedged command's
+// stderr, relayed by the shim, where a `\u0000` in it can become a NUL byte. This column takes
+// only what its server encoding can read, so supervise scrubs the text before it is stored
 // (scrubSendError) and the rule it holds is valid UTF-8 with no NUL.
 //
 // Both halves of that are pinned here, against the real server. The raw text is refused outright,
 // which is what made the record's write fail; that failure used to return before the refused
-// adoption was charged, so the send was re-sent with no bound (INFRA-1480). The same words
+// adoption was charged, so the adoption was tried again with no bound (INFRA-1480). The same words
 // without the NUL — the text the daemon stores — round-trip whole, so the diagnosis an operator
 // reads survives a restart.
 func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {

@@ -22,7 +22,7 @@ import (
 
 // The re-send of the seen report, the take and the turn-outcome report (dispatch://INFRA-2811),
 // with the numbers Oh My Pi's daemon client uses (packages/pi-shared/src/daemon-client.ts:
-// DAEMON_ANSWER_TIMEOUT_MS, DAEMON_RESEND_FIRST_DELAY_MS, DAEMON_RESEND_MAX_DELAY_MS), so both
+// DAEMON_ANSWER_TIMEOUT_MS, DAEMON_RESTART_FIRST_DELAY_MS, DAEMON_RESTART_MAX_DELAY_MS), so both
 // harnesses wait out a daemon that is not serving alike.
 const (
 	// taskAnswerTimeout bounds one attempt: an attempt with no answer by then is sent again.

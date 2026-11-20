@@ -282,7 +282,7 @@ func fixture(state ClaimState) Claim {
 		c.Session, c.SessionFile = session, sessionFile
 	}
 	if state == StateWorking {
-		c.Pending.ConfirmedAt, c.TaskTaken = epoch, 1
+		c.Pending.ConfirmedAt, c.Pending.TurnStarted, c.TaskTaken = epoch, true, 1
 	}
 	return c
 }

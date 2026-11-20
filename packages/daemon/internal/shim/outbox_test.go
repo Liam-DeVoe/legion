@@ -357,27 +357,32 @@ func TestThePumpReadsALinesTypeWhateverItsOtherMembersHold(t *testing.T) {
 	}
 }
 
-// A chunk line whose place the daemon's reader refuses (RPCChunk's validate: a count under two or
-// over shimwire.MaxChunkCount, an index under zero or at or past its count) starts no sequence the
-// pump holds: it goes to the outbox as it is read, a frame of its own after what is held, as every
-// line went before the pump held sequences. So a child that writes such lines, which no splitter
-// does, makes the shim hold none of them, while a sequence of as many chunks as one may declare is
-// still held whole.
+// A chunk line whose place the daemon's reader refuses (shimwire's RPCChunk.Placement: an id empty
+// or over its bound, a count under two or over the most a sequence may declare, an index under
+// zero or at or past its count) starts no sequence the pump holds: it goes to the outbox as it is
+// read, a frame of its own after what is held, as every line went before the pump held sequences.
+// So a child that writes such lines, which no splitter does, makes the shim hold none of them,
+// while a sequence of as many chunks as one may declare is still held whole.
 func TestAChunkLineTheDaemonRefusesByItsPlaceGoesAloneAndIsNeverHeld(t *testing.T) {
 	chunk := func(id string, index, count int) []byte {
 		return fmt.Appendf(nil, `{"type":"rpc_chunk","chunkId":%q,"index":%d,"count":%d,"byteLength":%d,"data":""}`,
 			id, index, count, shimwire.MaxFrameBytes)
 	}
+	// The most chunks a sequence may declare: the reassembly limit in full payloads.
+	ceiling := shimwire.MaxReassembledBytes / shimwire.ChunkPayloadBytes
 	// Each line but a group's last continues the one before it, so a hold that took them would keep
 	// the whole group: past the ceiling, more chunks than any sequence may have.
 	var refused [][]byte
-	for index := range shimwire.MaxChunkCount + 1 {
-		refused = append(refused, chunk("over-the-ceiling", index, shimwire.MaxChunkCount+1))
+	for index := range ceiling + 1 {
+		refused = append(refused, chunk("over-the-ceiling", index, ceiling+1))
 	}
+	overLongID := strings.Repeat("i", 129)
 	refused = append(refused,
 		chunk("past-its-count", 3, 3), chunk("past-its-count", 4, 3),
 		chunk("under-two", 0, 1), chunk("under-two", 1, 1),
 		chunk("under-zero", -1, 3), chunk("under-zero", 0, 0),
+		chunk("", 0, 3), chunk("", 1, 3),
+		chunk(overLongID, 0, 3), chunk(overLongID, 1, 3),
 	)
 	for _, line := range refused {
 		frame, err := shimwire.Decode(line)
@@ -391,8 +396,8 @@ func TestAChunkLineTheDaemonRefusesByItsPlaceGoesAloneAndIsNeverHeld(t *testing.
 		}
 	}
 	var atTheCeiling [][]byte
-	for index := range shimwire.MaxChunkCount {
-		atTheCeiling = append(atTheCeiling, chunk("at-the-ceiling", index, shimwire.MaxChunkCount))
+	for index := range ceiling {
+		atTheCeiling = append(atTheCeiling, chunk("at-the-ceiling", index, ceiling))
 	}
 
 	s, _ := outboxShim() // no connection: what the pump hands the outbox waits in its backlog

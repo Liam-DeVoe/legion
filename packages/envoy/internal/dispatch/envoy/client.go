@@ -758,7 +758,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 // a caller can ask the same question again. Either way no listener answered, so both are
 // ErrUnreachable.
 func sendTransportError(err error, requestWritten bool) error {
-	timedOut := errors.Is(err, context.DeadlineExceeded) || nettimeout.InChain(err)
+	timedOut := nettimeout.InChain(err)
 	if requestWritten && timedOut {
 		return unreachable(fmt.Errorf("%w: %w: POST /v1/messages/send: %w", ErrUnavailable, ErrReceiptTimeout, err))
 	}

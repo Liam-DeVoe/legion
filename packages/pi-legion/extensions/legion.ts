@@ -58,6 +58,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
+import type { TaskTake } from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   type CapabilityBudgets,
@@ -769,13 +770,13 @@ export default function legionExtension(pi: PiApi): void {
     clearStartupTurn(context.sessionManager.getSessionId());
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
-    // A turn of this session has started, whatever started it: the claim's take, and the
-    // daemon-launched controller's, no longer find the host idle, and the first run after an
-    // accepted take is that task's turn (`@legion/pi-shared/task-take`). A `task` subagent's
+    // A turn of this session has started, whatever started it: the take of the session's claim,
+    // or of the daemon-launched controller, no longer finds the host idle, and the first run after
+    // an accepted take is that task's turn (`@legion/pi-shared/task-take`). A `task` subagent's
     // event is not a turn of this session (`subagentEvent`).
     if (!subagentEvent(context)) {
-      claimSession.runStarted();
-      controllerSession.runStarted(context.sessionManager.getSessionId());
+      const sessionID = context.sessionManager.getSessionId();
+      (claimSession.take(sessionID) ?? controllerSession.take(sessionID))?.runStarted();
     }
   });
   pi.on("session_shutdown", async (_event, context) => {
@@ -889,29 +890,27 @@ export default function legionExtension(pi: PiApi): void {
   // naming the task whose turn it was, the claim's or the daemon-launched controller's. The host
   // does not await this handler and nothing of the turn waits on the report, which is sent until
   // the daemon answers it, but the report is awaited inside it all the same, so its failure is the
-  // handler's own promise rather than a floating one, and the reporter never rejects. The takes
-  // hear the end before the report goes, with whether the report carries a provider error
-  // (`reportsProviderError`): a task's turn reported without one is finished by that report, so
-  // its take holds the number finished from here on; a take the end of the run allows is asked at
-  // once, and a text a take held for the end of this run is sent now, to start the task's own turn.
+  // handler's own promise rather than a floating one, and the reporter never rejects. The
+  // session's take, its claim's or the daemon-launched controller's, hears the end before the
+  // report goes, with whether the report carries a provider error (`reportsProviderError`): a
+  // task's turn reported without one is finished by that report, so the take holds the number
+  // finished from here on; a take the end of the run allows is asked at once, and a text the take
+  // held for the end of this run is sent now, to start the task's own turn.
   // The report's answer settles that mark: a 2xx finished the number in the record, so it stays,
   // and a 4xx refusal of a report that would have finished it applied nothing, so the take holds
   // the number finished no longer (`reportRefused`), and takes a newer revision of it as owed.
   pi.on("agent_end", async (event, context) => {
     const sessionID = context.sessionManager.getSessionId();
+    let take: TaskTake | undefined;
     let task: number | undefined;
     let providerError = false;
     if (!subagentEvent(context)) {
       providerError = reportsProviderError(event);
-      const claimed = claimSession.runEnded(providerError);
-      const controlled = controllerSession.runEnded(sessionID, providerError);
-      task = claimed ?? controlled;
+      take = claimSession.take(sessionID) ?? controllerSession.take(sessionID);
+      task = take?.runEnded(providerError);
     }
     const answer = await turnOutcomes.report(sessionID, event, task);
-    if (answer === "refused" && task !== undefined && !providerError) {
-      claimSession.reportRefused(task);
-      controllerSession.reportRefused(sessionID, task);
-    }
+    if (answer === "refused" && task !== undefined && !providerError) take?.reportRefused(task);
   });
 
   // The run is about to settle with nothing left for the host to continue: a phase still open

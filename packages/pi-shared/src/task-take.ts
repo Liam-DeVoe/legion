@@ -51,12 +51,13 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
  * gave no answer to — a refused, reset or closed connection, an unreachable host or network, a
- * connect or read timeout, a DNS failure, no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502,
- * 503 or 504 that names no Legion error code — is sent again, the same request, after a doubling
- * wait with no attempt limit, until the daemon answers it or a newer value replaces it: a take the
- * daemon never received would otherwise be lost, since the worker asks once per revision. Such a
- * re-send is the same ask, not a second one, and the daemon answers a take repeated for the number
- * it accepted with the same text until that task finishes, whether or not its turn has started.
+ * connect or read timeout, a DNS failure, a fetch's network error, no answer within
+ * `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion error code — is sent
+ * again, the same request, after a doubling wait with no attempt limit, until the daemon answers
+ * it or a newer value replaces it: a take the daemon never received would otherwise be lost,
+ * since the worker asks once per revision. Such a re-send is the same ask, not a second one, and
+ * the daemon answers a take repeated for the number it accepted with the same text until that
+ * task finishes, whether or not its turn has started.
  * Every refusal of these routes names a code, so a coded refusal is an answer and is not sent
  * again.
  *
@@ -150,6 +151,28 @@ interface Sending {
   readonly stop: AbortController;
 }
 
+/**
+ * Where the take the daemon last accepted stands: none; its text held until the run going when
+ * it was accepted has ended (`during` is the number of the task whose turn that run is, where it
+ * is one's); its text sent, its turn not started; or its turn running.
+ */
+type Accepted =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "held";
+      readonly number: number;
+      readonly text: string;
+      readonly during: number | undefined;
+    }
+  | { readonly kind: "sent"; readonly number: number }
+  | { readonly kind: "running"; readonly number: number };
+
+const NONE: Accepted = { kind: "none" };
+
+/** The number of the task whose turn is running. */
+const turnRunning = (state: Accepted): number | undefined =>
+  state.kind === "running" ? state.number : state.kind === "held" ? state.during : undefined;
+
 const keyOf = (value: { readonly epoch: string; readonly revision: number }): string =>
   `${value.epoch} ${value.revision}`;
 
@@ -168,12 +191,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const asked = new Set<string>();
   let armed = false;
   let busy = false;
-  // The number of the take the daemon accepted whose turn has not started, and of the task whose
-  // turn is running; and the text of an accepted take held until the run going when it was
-  // accepted has ended.
-  let accepted: number | undefined;
-  let running: number | undefined;
-  let heldText: string | undefined;
+  // Where the take the daemon last accepted stands (`Accepted`).
+  let accepted: Accepted = NONE;
   let seeing: Sending | undefined;
   let taking: Sending | undefined;
   let marked = false;
@@ -230,13 +249,28 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
         // finishes, whether or not its turn has started: a take sent again at a newer revision
         // of the same number, before the task's turn, during it, or after its end was reported
         // with no provider error (`runEnded`) and until that report is refused, runs nothing more.
-        if (!owed(value) || accepted === value.number || running === value.number) return;
-        accepted = value.number;
+        if (
+          !owed(value) ||
+          ((accepted.kind === "held" || accepted.kind === "sent") &&
+            accepted.number === value.number) ||
+          turnRunning(accepted) === value.number
+        ) {
+          return;
+        }
         // Nothing goes into a busy worker: a text accepted while a run is going waits for that
         // run's end and starts a run of its own then (`runEnded`), and that run is the task's
         // turn. Sent now, it goes to an idle host (`run`).
-        if (busy) heldText = answer.text;
-        else deps.run(answer.text);
+        if (busy) {
+          accepted = {
+            kind: "held",
+            number: value.number,
+            text: answer.text,
+            during: turnRunning(accepted),
+          };
+        } else {
+          accepted = { kind: "sent", number: value.number };
+          deps.run(answer.text);
+        }
         return;
       case "dropped":
         if (held?.number === value.number) held = undefined;
@@ -287,7 +321,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       reading > 0 ||
       (owed(held) && key !== undefined && !asked.has(key)) ||
       taking !== undefined ||
-      accepted !== undefined;
+      accepted.kind === "held" ||
+      accepted.kind === "sent";
     if (pending === marked) return;
     marked = pending;
     deps.setPending(pending);
@@ -359,27 +394,26 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       // The first run that starts after an accepted take's text was sent is the task's turn. A
       // text still held waits for the end of a run that started before it was accepted, so a run
       // that starts before that end is not its turn.
-      if (accepted !== undefined && heldText === undefined) {
-        running = accepted;
-        accepted = undefined;
-      }
+      if (accepted.kind === "sent") accepted = { kind: "running", number: accepted.number };
       settle();
     },
     runEnded: (providerError) => {
       if (closed) return undefined;
       busy = false;
-      const ended = running;
-      running = undefined;
+      const ended = turnRunning(accepted);
       // That run's report names the task with no provider error, which finishes it on the
       // daemon: the number is owed nothing from here on, before the report has even landed, and
       // until the daemon refuses it (`reportRefused`).
       if (ended !== undefined && !providerError) finishing = Math.max(finishing, ended);
       // A text accepted during the run that just ended: that run was not the task's turn, so its
-      // end names no task (`ended` is undefined), and the text starts the next run, the task's.
-      if (heldText !== undefined) {
-        const text = heldText;
-        heldText = undefined;
+      // end names no task (`ended` is that run's own task, if any), and the text starts the next
+      // run, the task's.
+      if (accepted.kind === "held") {
+        const { text } = accepted;
+        accepted = { kind: "sent", number: accepted.number };
         deps.run(text);
+      } else if (accepted.kind === "running") {
+        accepted = NONE;
       }
       settle();
       return ended;

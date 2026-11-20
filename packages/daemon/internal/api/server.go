@@ -965,9 +965,10 @@ type stateNarrowing struct {
 // word inside such a field: supervise.TaskTakeContract's never_reconnected row serves
 // never_registered in `failure.cause` and `pendingCause`, two keys recordFieldsContract's row drops
 // whole, so a caller below 75 is served neither key whichever runs first, and a caller from 75 to
-// 167 both with the older word. One that puts a key back, or reads what an earlier row left, is
-// not, and this table is the wrong shape for it. The order is kept beyond that so a reader of this
-// table and a reader of version.go walk the contracts the same way.
+// supervise.TaskTakeContract-1 (173) both with the older word. One that puts a key back, or
+// reads what an earlier row left, is not, and this table is the wrong shape for it. The order is
+// kept beyond that so a reader of this table and a reader of version.go walk the contracts the
+// same way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},

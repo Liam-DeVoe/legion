@@ -12,8 +12,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/spf13/pflag"
 )
 
 // The cost reading (R7 and R9 of dispatch://INFRA-2811): what a window of the daemon's own log
@@ -30,7 +28,8 @@ import (
 //
 // The page's command pipes the current container's whole log, from its start, and not the window
 // alone: a number written and seen before the window that no take reaches inside it writes no line
-// in the window, so a reading cut at the window's start would never see the stranded number the
+// in the window that names it — the charge its first bound's passing writes (promptFailureLine)
+// names no number — so a reading cut at the window's start would never see the stranded number the
 // never-taken figure exists to catch. So the lines before From are read for one thing only, where
 // each claim and each of its numbers stands at From — its clock, its turn, its latest write and
 // seen report, its accepted take — and From and To bound everything counted: every figure counts
@@ -180,74 +179,6 @@ type TaskCostArgs struct {
 	To    time.Time
 	Claim string
 	Take  time.Duration
-}
-
-// taskCostTakeTimeout is --take-timeout's default, in seconds: worker_take_timeout_seconds's own
-// (config's key table), which cmd/legion's task-cost test holds it to.
-const taskCostTakeTimeout = 300
-
-// TaskCostFlags are `legion task-cost`'s flags on the flag set AddTaskCostFlags registered them
-// on, and Args reads what they were given.
-type TaskCostFlags struct {
-	from, to, claim *string
-	take            *int
-}
-
-// AddTaskCostFlags registers `legion task-cost`'s flags on flags: --from <RFC 3339>, --to <RFC
-// 3339>, --claim <token> and --take-timeout <seconds>. The command's own flag set holds them
-// (cmd/legion), and ParseTaskCostArgs parses a command line with them, so the command and the
-// page's examples are read by one definition.
-func AddTaskCostFlags(flags *pflag.FlagSet) TaskCostFlags {
-	return TaskCostFlags{
-		from:  flags.String("from", "", "the window's start, an RFC 3339 time, included (required)"),
-		to:    flags.String("to", "", "the window's end, an RFC 3339 time after --from, not included (required)"),
-		claim: flags.String("claim", "", "read the lines of this claim alone"),
-		take: flags.Int("take-timeout", taskCostTakeTimeout,
-			"the deployment's first bound in seconds, worker_take_timeout_seconds, which the numbers no take reached are judged by"),
-	}
-}
-
-// Args is what the flags were given: both times are required, To must be after From, and the
-// first bound is a positive number of seconds, 300 when not given.
-func (f TaskCostFlags) Args() (TaskCostArgs, error) {
-	var parsed TaskCostArgs
-	for _, bound := range []struct {
-		name, value string
-		into        *time.Time
-	}{{"from", *f.from, &parsed.From}, {"to", *f.to, &parsed.To}} {
-		if bound.value == "" {
-			return TaskCostArgs{}, fmt.Errorf("--%s is required", bound.name)
-		}
-		at, err := time.Parse(time.RFC3339, bound.value)
-		if err != nil {
-			return TaskCostArgs{}, fmt.Errorf("--%s %q is not an RFC 3339 time", bound.name, bound.value)
-		}
-		*bound.into = at
-	}
-	if !parsed.To.After(parsed.From) {
-		return TaskCostArgs{}, fmt.Errorf("--to %s is not after --from %s", *f.to, *f.from)
-	}
-	if *f.take <= 0 {
-		return TaskCostArgs{}, fmt.Errorf("--take-timeout %d is not a positive number of seconds", *f.take)
-	}
-	parsed.Claim, parsed.Take = *f.claim, time.Duration(*f.take)*time.Second
-	return parsed, nil
-}
-
-// ParseTaskCostArgs parses `legion task-cost`'s arguments with the command's flags
-// (AddTaskCostFlags) as the command's own parse reads them: a flag may follow a word, and a word
-// is refused. A help flag answers pflag.ErrHelp.
-func ParseTaskCostArgs(args []string) (TaskCostArgs, error) {
-	flags := pflag.NewFlagSet("task-cost", pflag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	given := AddTaskCostFlags(flags)
-	if err := flags.Parse(args); err != nil {
-		return TaskCostArgs{}, err
-	}
-	if flags.NArg() > 0 {
-		return TaskCostArgs{}, fmt.Errorf("unexpected argument %q", flags.Arg(0))
-	}
-	return given.Args()
 }
 
 // TaskCost is what one window of the daemon's log says the claims' tasks cost (ReadTaskCost).

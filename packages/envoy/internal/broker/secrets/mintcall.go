@@ -351,7 +351,7 @@ func transportFailure(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		return "was cancelled before it answered"
-	case errors.Is(err, context.DeadlineExceeded) || nettimeout.InChain(err):
+	case nettimeout.InChain(err):
 		return "did not answer in time"
 	case errors.As(err, &dns):
 		return "could not be resolved"
