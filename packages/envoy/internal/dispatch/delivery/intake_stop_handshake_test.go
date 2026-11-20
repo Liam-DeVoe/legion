@@ -257,8 +257,10 @@ func (r *stopRow) reconnect(t *testing.T) {
 //   - an unsubscribe while a write holds the lock: the stop drained on a moving link and its drain
 //     did not end, and the unsubscribe that ends it, once the stop's context ends, meets the lock;
 //   - a hand-back while a write holds the lock: the connected read before the first hand-back the
-//     rule lets through answers, and a write then takes nats.go's lock before that hand-back's
-//     publish, from inside the hand-back (beforeHandBackPublish);
+//     rule lets through answers, and that hand-back then waits before its publish
+//     (beforeHandBackPublish) until a write holds nats.go's lock. The subtest's own goroutine takes
+//     the lock, so the hand-back reaching its publish and the write taking the lock each have a
+//     bound of their own;
 //   - a drain the lock holds: the stop drained on a moving link and waits for its drain to end, with
 //     a message still buffered, under a context that never ends; a write then holds nats.go's lock,
 //     under which nats.go ends no drain, and the stop and a second StopDelivering return while it is
@@ -398,22 +400,33 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 
 	t.Run("a hand-back while a write holds the lock", func(t *testing.T) {
 		row := startGivenUpRow(t)
-		var holding sync.Once
-		published := make(chan struct{})
+		// The hand-back waits in its hook, before its publish, until the subtest holds the write
+		// lock. Every wait and every failure is on the subtest's goroutine, not the handler's, so
+		// the hand-back reaching its publish and the write taking the lock each have a bound and a
+		// message of their own. ended, closed by a cleanup that runs before the row's own, lets a
+		// hand-back still held there go on when the subtest ends early.
+		reached := make(chan struct{})
+		held := make(chan struct{})
+		ended := make(chan struct{})
+		t.Cleanup(func() { close(ended) })
+		var reaching sync.Once
 		hook := func() {
-			holding.Do(func() {
-				row.hold.HoldWriteLock(t, row.conn)
-				close(published)
-			})
+			reaching.Do(func() { close(reached) })
+			select {
+			case <-held:
+			case <-ended:
+			}
 		}
 		row.delivery().beforeHandBackPublish.Store(&hook)
 		// The stop gives the handler up at its start, and the handler hands its message back.
 		stopped := row.stopUnder(cancelled())
 		select {
-		case <-published:
+		case <-reached:
 		case <-time.After(30 * time.Second):
 			t.Fatal("control: no hand-back reached its publish within 30 s")
 		}
+		row.hold.HoldWriteLock(t, row.conn)
+		close(held)
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped)
 	})
 
