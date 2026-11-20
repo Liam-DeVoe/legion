@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -141,7 +142,7 @@ func requireBaseAttributes(t *testing.T, database *store.Store, written []graphs
 			t.Errorf("%s %s carries visibility %q and state %q on its row, want both", node.Kind, node.ID,
 				read.Visibility, read.State)
 		}
-		for _, attribute := range graphstore.BaseAttributes() {
+		for _, attribute := range graphstoretest.BaseAttributes() {
 			value, ok, err := graphstore.CurrentValue(ctx, database.Pool, node.Kind, node.ID, attribute)
 			if err != nil {
 				t.Fatalf("read the %s of %s %s: %v", attribute, node.Kind, node.ID, err)

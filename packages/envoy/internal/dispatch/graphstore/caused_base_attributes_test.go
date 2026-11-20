@@ -72,7 +72,7 @@ func requireOneCause(t *testing.T, database *store.Store, kind, id string, cause
 	if node != cause {
 		t.Errorf("the node row of %s/%s names event %d, want the event that caused the write, %d", kind, id, node, cause)
 	}
-	for _, attribute := range BaseAttributes() {
+	for _, attribute := range baseAttributes {
 		rows, err := database.Pool.Query(ctx, `
 			select source_event from graph_tuples
 			where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4

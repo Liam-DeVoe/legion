@@ -23,25 +23,6 @@ import (
 // nodes a node write made or moved, which the node rows themselves carry until the statement that
 // states those facts reads them (nodeMarks).
 
-// writeFunctions are the functions a write of graph_nodes and graph_tuples from outside this
-// package goes through: Write and Caused in a caller's transaction, and QueueWrite, QueueNodes and
-// QueueCaused, the same writes queued on a write phase's batch; WriteArms and WriteArmsUncaused
-// spliced into a caller's statement; QueueAuthored, QueueReached and QueueSessionRecorded, which
-// queue those arms for the writers that record an author, a reached session and a session an ask
-// names; and EraseNode, the erase's delete of a node and its tuples. Each is a function of the
-// package, never a method, so a call of one is named by the package wherever it is made.
-var writeFunctions = [...]string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
-	"QueueWrite", "QueueNodes", "QueueCaused",
-	"QueueAuthored", "QueueReached", "QueueSessionRecorded",
-	"EraseNode"}
-
-// WriteFunctions is the name of every function of this package a write of the store from outside
-// it goes through (writeFunctions), a fresh slice for each caller. It is the one list the source
-// scans that hold the store's writers read: this package's register of their call sites
-// (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
-// (TestNoProjectionRowIsWrittenWithoutTheStore).
-func WriteFunctions() []string { return slices.Clone(writeFunctions[:]) }
-
 // LatestEvent is the cause of a write whose event its write phase appends right before the
 // write's own statements: no Go code reads that event's id before the batch is sent, so the
 // statements name it as the events id sequence left it (store.LatestEventID), and nothing between
@@ -216,18 +197,16 @@ const (
 	AttributeState      = "state"
 )
 
-// baseAttributes is the set BaseAttributes answers and IsBaseAttribute reads, held once.
+// baseAttributes is the set IsBaseAttribute reads, held once. No other attribute's values may be
+// stored under one of these kinds: a value tuple of one of them out of a node reads as that node's
+// own visibility or state, whoever wrote it, so an attribute a type declares under one of these
+// names is stored under another name (the store name the supertag seed writes, migration
+// 20261109051232_graph_supertags). Tests outside this package read a copy
+// (graphstoretest.BaseAttributes), which TestGraphstoretestBaseAttributesAreTheStoresOwn holds
+// equal to this.
 var baseAttributes = [...]string{AttributeVisibility, AttributeState}
 
-// BaseAttributes is the tuple kind of every base attribute, a fresh slice for each caller. No
-// other attribute's values may be stored under one of these kinds: a value tuple of one of them
-// out of a node reads as that node's own visibility or state, whoever wrote it, so an attribute a
-// type declares under one of these names is stored under another name
-// (pmdoc/schemanodes.StoreName).
-func BaseAttributes() []string { return slices.Clone(baseAttributes[:]) }
-
-// IsBaseAttribute is whether kind is the tuple kind of a base attribute (BaseAttributes), asked
-// without building the list.
+// IsBaseAttribute is whether kind is the tuple kind of a base attribute (baseAttributes).
 func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:], kind) }
 
 // The base attributes a node write states for one node, as its mark carries them (nodeMarks).

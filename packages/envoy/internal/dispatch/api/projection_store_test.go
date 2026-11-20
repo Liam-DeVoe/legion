@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -130,15 +131,15 @@ var (
 )
 
 // storeWriters are the store's own writers as a call names them: every function of graphstore a
-// write of graph_nodes and graph_tuples from outside it goes through (graphstore.WriteFunctions),
-// the one list graphstore's register of the store's write sites reads too
-// (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row follows
-// (Write, QueueWrite, QueueNodes), the append of what a write stated under its event (Caused,
-// QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's delete of a
-// node and its tuples (EraseNode), beside which the erase deletes the node's rows.
+// write of graph_nodes and graph_tuples from outside it goes through
+// (graphstoretest.WriteFunctions), the one list graphstore's register of the store's write sites
+// reads too (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row
+// follows (Write, QueueWrite, QueueNodes), the append of what a write stated under its event
+// (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's delete
+// of a node and its tuples (EraseNode), beside which the erase deletes the node's rows.
 var storeWriters = func() []string {
 	var calls []string
-	for _, name := range graphstore.WriteFunctions() {
+	for _, name := range graphstoretest.WriteFunctions() {
 		calls = append(calls, "func:graphstore."+name)
 	}
 	return calls

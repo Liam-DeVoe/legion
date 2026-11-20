@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -724,8 +725,8 @@ func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Sto
 	t.Helper()
 	// The arm table declares a kind for each node kind the registry resolves and for no other, so
 	// its kinds are the node kinds this build reads, the list refs binds where the statement
-	// binds $3.
-	kinds := refs.BacklinkKinds()
+	// binds $3, read from refstest's copy of the table's keys, which refs' own test holds to it.
+	kinds := refstest.BacklinkKinds()
 	counts := make(map[string]map[string]int, len(kinds))
 	for _, kind := range kinds {
 		ids := backlinkTargets(t, database, kind)

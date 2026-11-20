@@ -11,7 +11,7 @@ import "maps"
 func StoreWriteCallSites() map[string]string { return maps.Clone(storeWriteCallSites) }
 
 // storeWriteCallSites is every function outside the tests that calls one of graphstore's writers
-// (graphstore.WriteFunctions), named as docs' register names a pass: the file, from
+// (graphstoretest.WriteFunctions), named as docs' register names a pass: the file, from
 // internal/dispatch where it lives under it, and the function, without its receiver. Beside each
 // site is the test that drives its lock steps against the order written on api/inbox_read.go's
 // markInboxReadThreads, as "<package dir>#<Test>": the package's directory, named as a site's
