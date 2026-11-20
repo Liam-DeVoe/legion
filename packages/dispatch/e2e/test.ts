@@ -66,7 +66,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { test as base } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import { deleteArchitectureSource, listArchitectureSources } from "./api";
+import { deleteArchitectureSource } from "./api";
 import {
   type DeliveryPlace,
   deleteDeliveryRowsBut,
@@ -268,6 +268,15 @@ export async function emptyDatabase(): Promise<void> {
   emptied += 1;
 }
 
+/** Every architecture source the stack holds, `<project>\t<repo>` each, read from the store's
+ *  own table (migrations 0036 and 0117): the pair Dispatch's delete route names one by. */
+async function architectureSourcesHeld(): Promise<string[]> {
+  const held = await sql(
+    "SELECT project_key || E'\\t' || repo FROM architecture_sources ORDER BY project_key, repo"
+  );
+  return held === "" ? [] : held.split("\n");
+}
+
 /** What a spec may set with `test.use`. */
 type DispatchOptions = {
   /** The login Playwright's own `context` is signed in as, `own(login)` for the row's own
@@ -368,15 +377,18 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   // table) is the stack's, not a project's, and a row that reads it whole - "No architecture
   // sources yet." once it has deleted its own - reads it back only if each row takes its own out
   // again. Rows of one worker run one at a time on that worker's own stack, so what the end
-  // holds beyond the start is this row's.
+  // holds beyond the start is this row's. Both reads are the store's own table, not the route
+  // the page reads, so a row on a stack that signs nobody in through the dev route (the OIDC
+  // stacks of signin.multiprocess.e2e.ts) makes no request here; only a source the row added is
+  // taken out through the route.
   ownArchitectureSources: [
     async ({ freshDatabase: _resetFirst }, use) => {
-      const kept = new Set(
-        (await listArchitectureSources()).map(({ project, repo }) => `${project}\n${repo}`)
-      );
+      const kept = new Set(await architectureSourcesHeld());
       await use(undefined);
-      for (const { project, repo } of await listArchitectureSources()) {
-        if (!kept.has(`${project}\n${repo}`)) await deleteArchitectureSource(project, repo);
+      for (const held of await architectureSourcesHeld()) {
+        if (kept.has(held)) continue;
+        const [project = "", repo = ""] = held.split("\t");
+        await deleteArchitectureSource(project, repo);
       }
     },
     { auto: true },
