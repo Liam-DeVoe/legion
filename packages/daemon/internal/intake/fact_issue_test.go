@@ -67,6 +67,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"DaemonBooted":             DaemonBooted{},
 		"CutoverMergerRepair":      CutoverMergerRepair{},
 		"ListenerWake":             ListenerWake{},
+		"ProviderErrorsDeadLetter": ProviderErrorsDeadLetter{Copy: "copy-1", Reason: "expired"},
 	}
 	for name, fact := range namesOne {
 		if got, ok := IssueOf(fact); got != issue || !ok {
