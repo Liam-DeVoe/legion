@@ -482,30 +482,34 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   );
 
   // Every form a person or an agent cites the project's items by, each in the member's own row
-  // (an OWN item of their inbox): inside prose it names no row of the project and the run is no
-  // FAIL, and as the whole value the server writes it is a row, which names its key. The prose
-  // rows are the control of the whole-value rows, and the whole-value rows of the prose rows.
-  const forms: { form: string; text: string; marker: string }[] = [
-    { form: "a plain issue key", text: tgt.issue, marker: tgt.issue },
-    { form: "a reference", text: `${scheme}${tgt.issue}`, marker: tgt.issue },
-    { form: "an issue path", text: `/issues/${tgt.issue}`, marker: tgt.issue },
-    { form: "a project path", text: "/projects/TGT", marker: "TGT" },
+  // (an OWN item of their inbox). Where a person wrote it - inside prose of a `body`, or as the
+  // whole `body` and `title` of an OWN comment whose whole text, or first line, is the link - it
+  // names no row of the project and the run is no FAIL; only the plain key, which is itself a
+  // marker, counts there, and only whole. As the whole value of a member the server writes
+  // (`member`: a `ref`, an `href`, a `url`) each form is a row, which names its key. The rows of
+  // the two kinds are each other's controls.
+  const forms: { form: string; text: string; marker: string; member: string }[] = [
+    { form: "a plain issue key", text: tgt.issue, marker: tgt.issue, member: "ref" },
+    { form: "a reference", text: `${scheme}${tgt.issue}`, marker: tgt.issue, member: "ref" },
+    { form: "an issue path", text: `/issues/${tgt.issue}`, marker: tgt.issue, member: "href" },
+    { form: "a project path", text: "/projects/TGT", marker: "TGT", member: "href" },
     {
       form: "a dashboard URL",
       text: `https://dispatch.example/issues/${tgt.issue}`,
       marker: tgt.issue,
+      member: "url",
     },
   ];
-  /** The member's own inbox item, OWN's, whose body is `body`. */
-  const ownItem = (body: string) => [
-    { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", issue_key: "OWN-1", body },
+  /** The member's own inbox item, OWN's, with `fields` beside its id and issue key. */
+  const ownItem = (fields: Record<string, string>) => [
+    { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", issue_key: "OWN-1", ...fields },
   ];
 
   test.each(forms)(
     "$form inside prose of the member's own row is no FAIL",
     async ({ text }) => {
       const body = `This follows ${text}, the target plan.`;
-      const { stdout } = await sweep([at("/api/v1/inbox", 200, ownItem(body))], {
+      const { stdout } = await sweep([at("/api/v1/inbox", 200, ownItem({ body }))], {
         rows: ["/api/v1/inbox"],
       });
       expect(failures(stdout)).toEqual([]);
@@ -514,14 +518,44 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     rowLimit("short")
   );
 
-  test.each(forms)(
-    "$form as the whole value of the member's row is a FAIL naming it",
-    async ({ text, marker }) => {
-      const { code, stdout } = await sweep([at("/api/v1/inbox", 200, ownItem(text))], {
+  test.each(forms.filter(({ form }) => form !== "a plain issue key"))(
+    "$form as the whole body and title a person wrote is no FAIL",
+    async ({ text }) => {
+      const { stdout } = await sweep(
+        [at("/api/v1/inbox", 200, ownItem({ title: text, body: text }))],
+        { rows: ["/api/v1/inbox"] }
+      );
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain("\nok      GET /api/v1/inbox: 200, no row of TGT (can fail)\n");
+    },
+    rowLimit("short")
+  );
+
+  // The plain key is a marker itself, so the whole body a person wrote counts when it is the key.
+  test(
+    "a plain issue key as the whole body a person wrote is a FAIL naming it",
+    async () => {
+      const item = ownItem({ body: tgt.issue });
+      const { code, stdout } = await sweep([at("/api/v1/inbox", 200, item)], {
         rows: ["/api/v1/inbox"],
       });
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/inbox: the member is answered 200 holding ${marker}, a row of TGT: ${JSON.stringify(ownItem(text))}`,
+        `GET /api/v1/inbox: the member is answered 200 holding ${tgt.issue}, a row of TGT: ${JSON.stringify(item)}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  test.each(forms)(
+    "$form as the whole value of a member the server writes is a FAIL naming it",
+    async ({ text, marker, member }) => {
+      const item = ownItem({ [member]: text });
+      const { code, stdout } = await sweep([at("/api/v1/inbox", 200, item)], {
+        rows: ["/api/v1/inbox"],
+      });
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/inbox: the member is answered 200 holding ${marker}, a row of TGT: ${JSON.stringify(item)}`,
       ]);
       expect(code).toBe(1);
     },

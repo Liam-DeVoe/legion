@@ -366,11 +366,16 @@ async function seed(
       : "";
   const prefix = ref.slice(0, ref.indexOf(`${first}/`));
   if (prefix === "") throw new Error(`the remark's node names no reference of ${first}: ${ref}`);
-  await send(origin, asCarol, "POST", "/api/v1/issues/OWN-1/comments", 201, {
-    body:
-      `This follows ${prefix}${first}, the target plan, and ${first} itself. ` +
+  for (const body of [
+    `This follows ${prefix}${first}, the target plan, and ${first} itself. ` +
       `See https://dispatch.example/issues/${first} and /projects/${target} for the plan.`,
-  });
+    // A comment whose whole body is a link, and one whose first line is: the people pages title a
+    // comment by its first line.
+    `https://dispatch.example/issues/${first}`,
+    `${prefix}${first}\nThe plan is there.`,
+  ]) {
+    await send(origin, asCarol, "POST", "/api/v1/issues/OWN-1/comments", 201, { body });
+  }
   await send(origin, agent, "POST", `/api/v1/issues/${first}/comments`, 201, {
     body: "An agent remark.",
     actor,

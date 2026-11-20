@@ -883,9 +883,10 @@ or one that holds no row of the project; any answer for the project's object (a 
 other than 403 and 404) where a missing one is answered otherwise is a row of it too, since it
 says the object exists, and a proxy read must answer as a repository the App is not installed on
 does. A string an answer holds is a row when it is, whole, the project's key, an issue key of it
-or an object the lookup found; a string with no whitespace (a reference, a path, a URL) is one
-too when such a key or object stands in it as a whole part between `/ : # ? & =`, and prose
-counts only whole, since a member's own comment may cite the project's items. A session or a
+or an object the lookup found. A string a person wrote (a `body`, `title`, `snippet` and the like)
+counts only so, since a member's own comment may cite the project's items, even as its whole
+body; any other string with no whitespace (a reference, a path, a URL) is one too when such a key
+or object stands in it as a whole part between `/ : # ? & =`. A session or a
 person the lookup read in the project that works in no project the member sees is a row of it as
 well. It also holds both sockets: the
 member is not admitted to the room of the project's document, while the same probe admits them to

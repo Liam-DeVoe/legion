@@ -36,10 +36,11 @@
 # project's key or a marker: an issue key of the project, an id the lookup found, the title of the
 # issue the lookup filled with, or a session or a person of the project, one the lookup read as an
 # author in the project that the full member finds in none of the projects the member sees, nor
-# is the member. A string with no whitespace, a value the server wrote, is one too when the key,
-# an issue key or a marker stands in it as a whole part between separators: a reference, a path,
-# a URL. A string with whitespace is prose, which counts only whole: a member's own comment may
-# cite the project's items, and the route index names example keys. A body that is not JSON is
+# is the member. A string a person wrote (a `body`, `title`, `snippet` and the like) counts only
+# whole: a member's own comment may cite the project's items, its whole body a link, and the route
+# index names example keys. Any other string with no whitespace, a value the server wrote, is one
+# too when the key, an issue key or a marker stands in it as a whole part between separators: a
+# reference, a path, a URL; a string with whitespace counts only whole. A body that is not JSON is
 # read line by line by the same rule, and a socket's refused upgrade is read by the body the
 # server wrote. Each answer is read for them once the values the path was filled with are masked,
 # since an answer may echo what it was asked, and before it is compared with anything, so an
@@ -648,8 +649,8 @@ if [ -n "$conversation_session" ]; then
 fi
 [ -z "$issue_title" ] || [ "${#issue_title}" -lt 8 ] || printf '%s\n' "$issue_title" >>"$work/values"
 # write_markers: the markers file marker_in reads: the project's key, the found values (`values`,
-# one a line) by value, and each found value that holds a separator, with its regex spelling, for
-# the one rule that reads a value inside a reference.
+# one a line) by value, each found value that holds a separator, with its regex spelling, for the
+# rule that reads a value inside a reference, and the member names whose strings a person writes.
 write_markers() {
   jq -Rn --arg key "$project" '
     [inputs | select(length > 0)] as $found
@@ -658,27 +659,31 @@ write_markers() {
        separator: "[/:#?&=]",
        values: (($found | map({(.): true}) | add) // {}),
        multi: [$found[] | select(test("[/:#?&=]") and (test("\\s") | not))
-         | {value: ., re: gsub("(?<c>[.*+?^${}()|\\[\\]\\\\])"; "\\\(.c)")}]}' \
+         | {value: ., re: gsub("(?<c>[.*+?^${}()|\\[\\]\\\\])"; "\\\(.c)")}],
+       text: (["body", "title", "snippet", "text", "markdown", "content", "question", "description",
+         "words", "summary", "name"] | map({(.): true}) | add)}' \
     "$work/values" >"$work/markers.json" || unknown 'jq could not write the markers'
 }
 write_markers
 
 # The one rule that says whether a string an answer holds is a row of the project, as a jq
-# function of the string and the markers file. A string is one when it is, whole, the project's
-# key or a value the lookup found (an id, the issue's title, a session of the project alone). A
-# string with no whitespace in it is a value the server wrote - a key, an id, a reference, a
-# path or a URL - and it is one too when the key, an issue key of the project or a found value
-# stands in it as a whole part between separators (`/ : # ? & =`) or its ends: `KEY-12`,
-# `KEY-12/spec`, a reference prefix and `KEY-12`, `/issues/KEY-12`, `/projects/KEY`, a dashboard
-# URL, `session:<id>`. A string with whitespace in it is prose, and only a whole match counts
-# there: the route index's own text names example keys of any project, and a member's own
-# comment may cite the project's items by any of those forms.
+# function of the string, the markers file and whether a person wrote the string. A string is
+# one when it is, whole, the project's key or a value the lookup found (an issue key, an id, the
+# issue's title, a session of the project alone). A string a person wrote - the value of a member
+# such as `body`, `title` or `snippet` (`text` in the markers file) - counts only so: a member's
+# own comment may cite the project's items by any form, its whole body a link or its first line
+# one, and the route index's own text names example keys of any project. Any other string with no
+# whitespace in it is a value the server wrote - a key, an id, a reference, a path or a URL - and
+# it is one too when the key, an issue key of the project or a found value stands in it as a whole
+# part between separators (`/ : # ? & =`) or its ends: `KEY-12/spec`, a reference prefix and
+# `KEY-12`, `/issues/KEY-12`, `/projects/KEY`, a dashboard URL, `session:<id>`. A member this
+# rule does not name as a person's is read as the server's, so a new text member fails closed.
 # shellcheck disable=SC2016 # the `$` names in it are jq's variables, never the shell's
 readonly row_rule='
-  def row($m):
+  def row($m; $written):
     . as $s
     | if $s == $m.key or $m.values[$s] != null then $s
-      elif ($s | test("\\s")) then empty
+      elif $written or ($s | test("\\s")) then empty
       else first(
           ($s | splits($m.separator)
             | select(. == $m.key or $m.values[.] != null
@@ -689,19 +694,25 @@ readonly row_rule='
       end;'
 
 # marker_in FILE prints the first string FILE holds that `row_rule` names a row of the project.
-# A JSON body (a stream is read in full; false and null are JSON too) is read as each of its member
-# names and string values. A body jq cannot read as JSON is read as each of its lines and each
-# double-quoted string in them, by the same rule. An answer no jq reads is recorded as unproven,
-# never as clean. One jq a body: the sweep reads thousands.
+# A JSON body (a stream is read in full; false and null are JSON too) is read as each string value,
+# with the member name it stands under, and each member name. A body jq cannot read as JSON is read
+# as each of its lines and each double-quoted string in them, as the server's, by the same rule. An
+# answer no jq reads is recorded as unproven, never as clean. One jq a body: the sweep reads
+# thousands.
 marker_in() {
   jq -r -s --slurpfile m "$work/markers.json" "$row_rule"'
-    $m[0] as $m | first(.[] | .. | ((objects | keys[]), strings) | row($m)) // empty' "$1" 2>/dev/null &&
+    $m[0] as $m
+    | first(
+        (paths(type == "string") as $p
+          | ([$p[] | strings] | last // "") as $member
+          | getpath($p) | row($m; $m.text[$member] != null)),
+        (.. | objects | keys[] | row($m; false))) // empty' "$1" 2>/dev/null &&
     return
   jq -r -R -s --slurpfile m "$work/markers.json" "$row_rule"'
     $m[0] as $m
     | first(splits("\n") | select(length > 0)
         | (., (split("\"") as $parts | $parts | keys[] | select(. % 2 == 1) | $parts[.]))
-        | row($m)) // empty' "$1" 2>/dev/null ||
+        | row($m; false)) // empty' "$1" 2>/dev/null ||
     printf 'an answer the markers could not be read in: %s\n' "$(head_of "$1" 120)" >>"$work/unknown"
 }
 
