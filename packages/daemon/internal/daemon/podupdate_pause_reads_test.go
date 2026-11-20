@@ -179,6 +179,59 @@ func TestPodUpdateAReplacementReadsALetOutThePacingSetsWhileTheWalkWaits(t *test
 	}
 }
 
+// The pause whose hold of the pod ended takes the pod again while the replacement waits for the
+// pod's launch turn, after the sweep's top and the replacement's own read, and before the daemon's
+// last word (replacementDue). The bound has come, and a hold that has just begun moves it by
+// nothing yet, so only the hold itself can keep the pod: the last word reads the holds again,
+// finds the hold standing, and refuses the replacement. A hold that ends in the same wait, 10
+// seconds after it began and before the last word, keeps the pod no longer: it moves the bound by
+// its 10 seconds, the clock has moved with it, and the pod is replaced once.
+func TestPodUpdateAPauseThatTakesThePodInItsLaunchTurnHoldsTheReplacement(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		ended bool
+	}{
+		{name: "the hold stands at the last word"},
+		{name: "the hold ended before the last word", ended: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig, pod, h, bound := pastAnEndedHold(t)
+			project := rig.s.cfg.Project
+			var takenAt time.Time
+			rig.rt.HoldReplacePod(func() {
+				if !takenAt.IsZero() {
+					return
+				}
+				takenAt = rig.clock.Now()
+				holdProjectPod(t, rig.sup.store, h.pause, project, h.issue, takenAt)
+				if !row.ended {
+					return
+				}
+				rig.clock.advance(10 * time.Second)
+				if done, err := rig.sup.store.EndPausePodHold(rig.ctx, project, h.issue, store.PausePodHoldReady, rig.clock.Now()); err != nil || !done {
+					t.Fatalf("end the pause's hold of %s's pod at %s = %t, %v; want it ended", h.issue, rig.clock.Now().Format(time.RFC3339), done, err)
+				}
+			})
+			rig.tick()
+			if takenAt.IsZero() {
+				t.Fatalf("the sweep at %s made no replacement call, so no launch turn was waited for", rig.clock.Now().Format(time.RFC3339))
+			}
+			replaced, refused := len(rig.replacementsOf(pod)), len(rig.rt.CallsOf("ReplacePodNotDue"))
+			if row.ended {
+				if replaced != 1 || refused != 0 {
+					t.Errorf("the sweep at %s replaced the pod %d times and the last word refused it %d times, want one replacement: the pause's hold of it that began at %s ended 10 seconds later, before the last word, and the bound it moved, %s, has come",
+						rig.clock.Now().Format(time.RFC3339), replaced, refused, takenAt.Format(time.RFC3339), bound.Add(10*time.Second).Format(time.RFC3339))
+				}
+				return
+			}
+			if replaced != 0 || refused != 1 {
+				t.Errorf("the sweep at %s replaced the pod, with its disk, %d times and the last word refused it %d times, want one refusal and no replacement: a pause took the pod at %s while the replacement waited its turn, and its hold still stands; the bound, %s, does not let a replacement through a hold",
+					rig.clock.Now().Format(time.RFC3339), replaced, refused, takenAt.Format(time.RFC3339), bound.Format(time.RFC3339))
+			}
+		})
+	}
+}
+
 // A pause holds the later issue's pod from before the sweep, so the sweep reads the hold, and no
 // round opens over the pod.
 func TestPodUpdateNoRoundOpensOverAPodAPauseHeldBeforeTheSweep(t *testing.T) {
