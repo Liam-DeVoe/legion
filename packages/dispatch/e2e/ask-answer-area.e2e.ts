@@ -310,6 +310,15 @@ test("a session picked in an Inbox ask's answer area goes out on Ask back, and n
       .poll(() => getSentMessages())
       .toMatchObject([{ target_session: planner.session_id }]);
     await expect(field).toHaveValue("");
+
+    // And the same box, its mention gone, answers: `answers` is the list this page's answers
+    // land in, so its empty read above is Answer's refusal and not a watch on an address the
+    // page never posts to.
+    await field.fill("Ship it.");
+    await field.press("ControlOrMeta+Enter");
+    await expect
+      .poll(() => answers.map((write) => write.input))
+      .toEqual([{ expected_edited_at: null, selected: [], text: "Ship it." }]);
   } finally {
     await alice.close();
   }
@@ -474,6 +483,24 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
     expect(answers).toEqual([]);
     expect(comments).toEqual([]);
 
+    // And the same card, given words, answers: `answers` is the list this page's answers land
+    // in, so its empty read above is Answer's refusal and not a watch on an address the page
+    // never posts to. The answer is waited for as well as its request, so the page below loads
+    // with no write of this one's still out; it posts no comment, so `comments` reads on as it
+    // did.
+    const field = card.getByLabel("Your answer");
+    await field.fill("Ship it.");
+    const landed = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === `/api/v1/asks/${ask.id}/answer`
+    );
+    await field.press("ControlOrMeta+Enter");
+    await expect
+      .poll(() => answers.map((write) => write.input))
+      .toEqual([{ expected_edited_at: null, selected: [], text: "Ship it." }]);
+    await landed;
+
     await page.goto(`/issues/${issue.key}/conversation`);
     const turn = conversationTurn(page, decided.id);
     await turn.getByRole("button", { name: "Write a reply" }).click();
@@ -504,6 +531,15 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
     // to post this reply would have posted it in.
     await page.waitForTimeout(500);
     expect(comments).toEqual([]);
+
+    // And the box, given words, posts its reply: `comments` is the list this page's comments
+    // land in, so both of its empty reads above are refusals - Ask back's and Reply's - and not
+    // a watch on an address the page never posts to.
+    await turn.getByLabel("Reply").fill("The right one.");
+    await turn.getByLabel("Reply").press("ControlOrMeta+Enter");
+    await expect
+      .poll(() => comments.map((write) => write.input))
+      .toEqual([{ ask_id: decided.id, body: "The right one." }]);
   } finally {
     await alice.close();
   }

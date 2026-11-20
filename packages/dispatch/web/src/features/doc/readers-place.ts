@@ -229,8 +229,8 @@ export function putTheBoxAt(scroller: HTMLElement | null, top: number): void {
 /** The band of the page's own coordinates `scroller` - the page where null - places an element
  *  in: the scrollport (`scrollportTop`, `scrollportHeight`), less its `scroll-padding`, which is
  *  the part of the box a scroll is allowed to land content in (`html { scroll-padding-bottom:
- *  5rem }` under 1280px, `styles.css`, which holds the fixed review sheet's height clear of
- *  whatever the page scrolls to). */
+ *  5rem }` under Tailwind's `xl`, `theme(--breakpoint-xl)`, 80rem, `styles.css`, which holds the
+ *  fixed review sheet's height clear of whatever the page scrolls to). */
 function placingPort(scroller: HTMLElement | null): { bottom: number; top: number } {
   const style = window.getComputedStyle(scroller ?? document.documentElement);
   const top = scrollportTop(scroller);

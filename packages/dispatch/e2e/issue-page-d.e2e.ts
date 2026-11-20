@@ -9,6 +9,7 @@ import {
   createProject,
   createProjectDocument,
 } from "./api";
+import { expectRootFont, LARGE_FONT, setDefaultFont } from "./default-font";
 import {
   closeDetails,
   contentsPane,
@@ -333,18 +334,18 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await expect(iconRail(page), "a rail at 767 px").toHaveCount(0);
     // `md` is in `rem`, as the page's room for the rail (`md:pl-14`) is: at a 20 px default font
     // it is 960 px, so there is no rail at 900 px and the page is no wider than the window.
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Page.setFontSizes", { fontSizes: { standard: 20 } });
+    await setDefaultFont(page, LARGE_FONT);
     try {
       await page.setViewportSize(viewportAt(900));
       await gotoIssue(page, presetPath(key, "spec"));
+      await expectRootFont(page, LARGE_FONT, "at 900 px under a 20 px default font");
       await expect(iconRail(page), "a rail at 900 px under a 20 px default font").toHaveCount(0);
       await assertPageFits(page);
       await page.setViewportSize(viewportAt(1000));
       await expect(iconRail(page), "no rail at 1000 px under a 20 px default font").toHaveCount(1);
     } finally {
-      await cdp.send("Page.setFontSizes", { fontSizes: { standard: 16 } });
-      await cdp.detach();
+      // Back to the browser's own 16 px for the rest of the row.
+      await setDefaultFont(page, 16);
     }
     // Below 1280 px the frame lifts the page's scroll padding for the compact bar it does not
     // draw.

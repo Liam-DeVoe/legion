@@ -17,6 +17,9 @@ const NARROWEST = 216;
  *  header its host draws wider is swept to its own width. */
 const WIDEST = 960;
 const STEP = 4;
+/** The fewest widths a sweep reads a header at: every `STEP` from `NARROWEST` while under
+ *  `WIDEST`, and `WIDEST` itself. A header its host draws wider is read at more. */
+const SWEPT_WIDTHS = Math.ceil((WIDEST - NARROWEST) / STEP) + 1;
 
 /** How many lines a row draws, by the header's width: each band is `[from, least, most]`, read
  *  from the widest down, and the first whose `from` the width reaches decides. */
@@ -412,16 +415,6 @@ function failuresOf(readings: readonly Reading[]): Failure[] {
   return readings.flatMap(({ failures, width }) => failures.map((message) => ({ message, width })));
 }
 
-/** Sweeps `header` through its own width and returns every failure it draws. */
-async function sweep(header: Locator, drawn: Drawn): Promise<Failure[]> {
-  return failuresOf(
-    await header.evaluate(readHeader, {
-      drawn,
-      widths: { from: NARROWEST, step: STEP, widest: WIDEST },
-    })
-  );
-}
-
 /** A sweep's failures as the row reports them: each failure once, with the widths it was read
  *  at as runs, so a control's report says where it reddened. */
 function byWidth(failures: readonly Failure[]): string[] {
@@ -445,10 +438,32 @@ function byWidth(failures: readonly Failure[]): string[] {
   });
 }
 
+/** The count a row's "no failure at any width" is read over: `readings` holds a reading at each
+ *  of the `least` widths, at the fewest, the row reads the header named `what` at. A header read
+ *  at no width draws no failure, so a row whose widths came to nothing would go green holding
+ *  its header to nothing; a row that asks for no width is refused, as `expectNoneOf` refuses
+ *  one (`e2e/none-of.ts`). */
+function readAtEach(readings: readonly Reading[], least: number, what: string): void {
+  if (least < 1) {
+    throw new Error(
+      `${what} is read at no width, which holds its header to nothing: name the widths it is ` +
+        "read at."
+    );
+  }
+  expect
+    .soft(readings.length, `${what}: the widths its header was read at`)
+    .toBeGreaterThanOrEqual(least);
+}
+
 /** Sweeps one header and holds it to its place, as one reported check of the row. */
 export async function holds(header: Locator, drawn: Drawn, what: string): Promise<void> {
   await expect(header).toBeVisible();
-  expect.soft(byWidth(await sweep(header, drawn)), what).toEqual([]);
+  const readings = await header.evaluate(readHeader, {
+    drawn,
+    widths: { from: NARROWEST, step: STEP, widest: WIDEST },
+  });
+  readAtEach(readings, SWEPT_WIDTHS, what);
+  expect.soft(byWidth(failuresOf(readings)), what).toEqual([]);
 }
 
 /** Reads `header` at each of `widths` alone, as a sweep reads it at each of its own, and holds it
@@ -462,5 +477,6 @@ export async function holdsAt(
 ): Promise<void> {
   await expect(header).toBeVisible();
   const readings = await header.evaluate(readHeader, { drawn, widths: { at: widths } });
+  readAtEach(readings, widths.length, what);
   expect.soft(byWidth(failuresOf(readings)), what).toEqual([]);
 }

@@ -203,6 +203,15 @@ const clockRowsOwned: Readonly<Record<string, Readonly<Record<string, number>>>>
   "webkit-alone": { "heavy-bodies.e2e.ts": 16 },
 };
 
+/** How many rows `clockRowsOwned` says the wall-clock projects run in the files `pattern`
+ *  matches: the fewest a test over that pattern picks out of their listing. */
+function rowsOwnedIn(pattern: RegExp): number {
+  return Object.values(clockRowsOwned)
+    .flatMap((files) => Object.entries(files))
+    .filter(([file]) => pattern.test(file))
+    .reduce((sum, [, rows]) => sum + rows, 0);
+}
+
 // What a wall-clock row's quiet machine rests on, now that the file is the selector: that each
 // of those projects runs the rows of its own files, and that no other project runs any of
 // them. Until sjawhar/legion#2697 three of these projects picked their rows out of
@@ -216,12 +225,41 @@ const clockRowsOwned: Readonly<Record<string, Readonly<Record<string, number>>>>
 test(
   "each wall-clock project runs the rows of its own files, and no other project runs one",
   async () => {
+    // The two clauses below range over the default selection's rows, each picking out by a test
+    // of its own the rows no project of that selection may list. Neither says anything of a
+    // listing read as empty - a report `rowsOfListing` no longer reads - or of a test that picks
+    // out nothing: a pattern that matches no file, or a phone leg the configurations do not
+    // hold, which the phone test reads as no row at all. So the listing holds rows, and, where
+    // the run declares the wall-clock projects, each test picks out of their own listing at
+    // least the rows `clockRowsOwned` says they run in the files it matches.
+    const listed = rowsOfListing(await realListing);
+    const clockRows = clockListing === undefined ? undefined : rowsOfListing(await clockListing);
+    const configurations = projectConfigurations(realConfig, harnessProcessCount);
+    const phoneLeg = configurations.get("iphone-long-build-alone");
+    const inAClockFile = (row: ListedRow) => clockSpecPattern.test(row.file);
+    const inThePhoneLeg = (row: ListedRow) =>
+      phoneAloneSpecPattern.test(row.file) &&
+      phoneLeg !== undefined &&
+      configurations.get(row.project) === phoneLeg;
+    expect(listed.length, "the default selection's listing holds no row").toBeGreaterThan(0);
+    if (clockRows !== undefined) {
+      expect(
+        clockRows.filter(inAClockFile).length,
+        "the wall-clock projects' rows that `clockSpecPattern` picks out of their own listing"
+      ).toBeGreaterThanOrEqual(rowsOwnedIn(clockSpecPattern));
+      expect(
+        clockRows.filter(inThePhoneLeg).length,
+        "the rows of `iphone-long-build-alone`'s configuration that the phone-half test picks " +
+          "out of the wall-clock listing"
+      ).toBeGreaterThanOrEqual(rowsOwnedIn(phoneAloneSpecPattern));
+    }
+
     // No project of the default selection holds a row of a wall-clock file. This is read of
     // the listing rather than of the config's `testIgnore`, so a project added later with no
     // `testIgnore` of its own - which inherits this config's, holding no wall-clock file - is
     // caught by the rows it lists.
-    const parallel = rowsOfListing(await realListing)
-      .filter((row) => clockSpecPattern.test(row.file))
+    const parallel = listed
+      .filter(inAClockFile)
       .map((row) => `${row.project} runs ${row.file} › ${row.title}`)
       .sort();
     expect(
@@ -239,15 +277,8 @@ test(
     // desktop half is `chromium`'s, a configuration of its own, and stays in the listing. The
     // duplicate check above would catch `iphone` taking it back as a repeat; this says which
     // leg it was moved to and why.
-    const configurations = projectConfigurations(realConfig, harnessProcessCount);
-    const phoneLeg = configurations.get("iphone-long-build-alone");
-    const phoneHalf = rowsOfListing(await realListing)
-      .filter(
-        (row) =>
-          phoneAloneSpecPattern.test(row.file) &&
-          phoneLeg !== undefined &&
-          configurations.get(row.project) === phoneLeg
-      )
+    const phoneHalf = listed
+      .filter(inThePhoneLeg)
       .map((row) => `${row.project} runs ${row.file} › ${row.title}`)
       .sort();
     expect(
@@ -258,9 +289,9 @@ test(
         "took them out of: name `phoneAloneSpecPattern` in that project's `testIgnore`."
     ).toEqual([]);
 
-    if (clockListing === undefined) return;
+    if (clockRows === undefined) return;
     const owned: Record<string, Record<string, number>> = {};
-    for (const row of rowsOfListing(await clockListing)) {
+    for (const row of clockRows) {
       owned[row.project] ??= {};
       const files = owned[row.project] ?? {};
       files[row.file] = (files[row.file] ?? 0) + 1;

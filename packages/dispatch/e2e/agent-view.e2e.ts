@@ -857,6 +857,13 @@ test("the live view's slash list offers each delivery mode, and a pick sets Send
 
     // Nothing went out: the pick is a choice, not a message.
     expect(await getSentMessages()).toEqual([]);
+    // And the box, given words, sends them: the record read empty above is the one this
+    // session's sends land in, so its emptiness is the pick's and not a record nothing reaches.
+    await input.fill("note the flaky test for later");
+    await input.press("Enter");
+    await expect
+      .poll(async () => (await getSentMessages()).map((sent) => sent.message))
+      .toEqual(["note the flaky test for later"]);
   } finally {
     await context.close();
   }

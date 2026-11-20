@@ -666,9 +666,9 @@ const aloneProjects = [
   // 20.7 s they took at one reading on CI (run 43098661012, the `alone (iphone-alone)` leg at
   // head f79cb07f), which is more than the whole of `iphone-alone`'s leg. Raising that leg's
   // budget would have moved the bound for the timer row and the decision row, which nothing
-  // changed; this way each leg's budget is derived from its own measurement, and
-  // .github/workflows/dispatch-browser.yaml prints both derivations
-  // (dispatch://INFRA-341).
+  // changed; this way each leg's budget is derived from its own measurement, and both
+  // derivations are in .github/ci-notes/dispatch-browser.md, "The alone job's measured steps
+  // and its budget" (dispatch://INFRA-341).
   {
     name: "iphone-measure-alone",
     default: false,
@@ -688,7 +688,8 @@ const aloneProjects = [
   // was, four workers wide.
   // One worker and no retry, as every project of this list: the build-time row holds two builds'
   // own times to a ratio, which a second attempt would only blur. The leg's budget is derived from
-  // these rows' own measurement in .github/workflows/dispatch-browser.yaml (dispatch://INFRA-341).
+  // these rows' own measurement in .github/ci-notes/dispatch-browser.md, "The alone job's measured
+  // steps and its budget" (dispatch://INFRA-341).
   {
     name: "iphone-long-build-alone",
     default: false,
