@@ -698,12 +698,14 @@ func (r *w5Run) guardRelaunches() {
 // rig never stopped, its registrations stopped with the first block's: its plugin sends its
 // activity report in its turn every 5 minutes (and on a build whose wait returns, the wait is
 // called again), so relaunch 25 minutes after the block is refused as a claim whose process still
-// runs its turn, its process keeps running, and it is charged nothing. It records each report the
-// twelfth sent in its turn and each step its worker stream carried, with their times, the step
-// record the daemon stores and its mark, then lets its registrations through again.
+// runs its turn, by either rule of the guard that reads one (twelfthRefusedInItsTurn), its process
+// keeps running, and it is charged nothing. It records each report the twelfth sent in its turn and
+// each step its worker stream carried, with their times, the step record the daemon stores and its
+// mark, then lets its registrations through again.
 func (r *w5Run) twelfthRelaunch() {
 	c := r.c("twelfth")
 	var steps []string
+	var stepTimes []time.Time
 	var turnAt time.Time
 	for _, launch := range r.runtime.launchesOf(c.token) {
 		for _, conn := range r.relay.connsOf(launch.spec.BootToken) {
@@ -713,6 +715,7 @@ func (r *w5Run) twelfthRelaunch() {
 				}
 				if !f.at.Before(r.t0) && (f.typ == "tool_execution_start" || f.typ == "tool_execution_end" || f.typ == "agent_start" || f.typ == "agent_end") {
 					steps = append(steps, clockAt(f.at)+" "+f.typ)
+					stepTimes = append(stepTimes, f.at)
 				}
 			}
 		}
@@ -736,8 +739,8 @@ func (r *w5Run) twelfthRelaunch() {
 	r.record("twelfth: %d worker-stream steps from the block: %v", len(steps), steps)
 	r.record("twelfth: the daemon's step record: at %s, tool %q, started %s, ended %s; marked unreachable at %s",
 		clockAtPtr(stepAt), tool, clockAtPtr(started), clockAtPtr(ended), clockAtLine(mark))
-	r.check("at-25m-relaunch-refuses-the-twelfth-whose-process-still-runs-its-turn", answer.status == http.StatusConflict && answer.code == "RELAUNCH_GUARD" &&
-		strings.Contains(answer.body, "its session sent an activity report at") && strings.Contains(answer.body, "so its process still runs that turn"),
+	r.check("at-25m-relaunch-refuses-the-twelfth-whose-process-still-runs-its-turn",
+		twelfthRefusedInItsTurn(answer.status, answer.code, answer.body, answer.at, stepTimes),
 		"relaunch answered %s", answer)
 	r.check("twelfth-keeps-running", launch != nil && launch.running() && r.runtime.current(c.token) == launch,
 		"its process (generation %d) still runs: %t, the claim's current launch unchanged: %t", launch.spec.Generation, launch.running(), r.runtime.current(c.token) == launch)

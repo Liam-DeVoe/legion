@@ -112,6 +112,7 @@ rig_files=(
   packages/daemon/internal/daemon/rig_runtime_live_test.go
   packages/daemon/internal/daemon/w5_rig_live_test.go
   packages/daemon/internal/daemon/w5_unreachable_live_test.go
+  packages/daemon/internal/daemon/w5_twelfth_refusal_test.go
   scripts/e2e/lib/live-rig-grants.go
 )
 
