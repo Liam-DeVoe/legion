@@ -3860,8 +3860,9 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 A read route of kind *answers* takes `as_of`, a past time, and answers what existed at that time, the cut, from the records that Dispatch keeps.
 `as_of` is an RFC 3339 time with a date, a time and an offset, with or without a fraction of a second, such as `2026-11-10T12:00:00Z`.
 Dispatch rounds it down to the microsecond, the precision of PostgreSQL (`asof.ParseCut`).
-The description of each route in `GET /api/v1` and in the OpenAPI document says how the route answers `as_of` and a token that carries a cut.
-For a route of kind answers it also says what the route answers at a cut, and names each member that its answer can leave out (`asOfAtACut` and `asOfDescription`, `internal/dispatch/api/routes_table.go`).
+The description of each GET row in `GET /api/v1` and in the OpenAPI document says how the route answers `as_of` and a token that carries a cut (`asOfDescription`, `internal/dispatch/api/routes_table.go`).
+For a route of kind answers it also says what the route answers at a cut, and names each member that its answer can leave out (`asOfAtACut`).
+A route that is not a GET row says nothing of `as_of`, and refuses it (below).
 
 **Each GET row has one of three kinds** (`readEntry.AsOf`, `internal/dispatch/api/read_classes.go`).
 `register` refuses to mount a GET row whose entry leaves the kind unset, as it refuses a row with no read class.
@@ -3879,10 +3880,11 @@ For a route of kind answers it also says what the route answers at a cut, and na
   The reference graph (`GET /api/v1/references`, `GET /api/v1/issues/{key}/references`), an issue's coverage, the live sessions (`GET /api/v1/agents`), the credential requests, the read marks (`GET /api/v1/me/replies`) and the search coverage are of this kind, because no record keeps their past.
 
 - *Caller* (`asOfCaller`): `GET /api/v1/whoami` alone.
-  It describes the caller now, and refuses `as_of` with `400 AS_OF_NOT_SERVED`.
+  It describes the caller now, and refuses `as_of` with `400 AS_OF_NOT_SERVED`, except from a read-only token that carries a cut, whose `as_of` Dispatch does not read.
   It answers a read-only token that carries a cut, and its `cut` member names that cut.
 
-A route that is not a GET row refuses `as_of` with `400 AS_OF_NOT_SERVED` too.
+A route of the route table that is not a GET row refuses `as_of` with `400 AS_OF_NOT_SERVED` too.
+`GET /ws/live` and `/ws/doc/{room}` are not rows of the table, and `asOfGate` does not read their `as_of`.
 A token that may read a route may send `as_of` to it, a read-only token with no cut included.
 
 **How a read at a cut runs.**
@@ -3892,7 +3894,8 @@ On a route of kind answers it reads the database's `now()` once, and refuses a c
 It resolves the caller before it puts the cut on the context, because a resolution can write the caller's own bookkeeping.
 The route then runs its present statements under the cut (`asof.WithCut`), and the store binds each statement to the cut (`store.Pool` and `asof.Bind`, `internal/dispatch/store/README.md`).
 So a read at a cut applies the filters, the joins, the order and the pages of the read at the present, and the `person` scope holds it in the same way.
-The store refuses each write at a cut, so a read at a cut writes nothing that a read of the present does not write.
+Each statement that the shared pool binds at a cut must be a read: `asof.Bind` refuses any other statement, and the pool refuses at a cut each connection that it hands out and each copy (`RefusedAtCutError`).
+The separate pools `Rooms`, `RoomAppends`, `Compaction` and `Horizon` check no cut, and send their SQL as the caller wrote it (`internal/dispatch/store/README.md`).
 At a cut, `GET /api/v1/issues/{key}/results` also reads nothing from GitHub, and writes no pull request head, no branch commit and no event.
 
 **The headers of an answer at a cut.**
@@ -3900,13 +3903,15 @@ Each answer (a `2xx` or a `304`) of a route of kind answers to a request at a cu
 A refusal carries no such header.
 A build before this change ignores a query parameter that it does not know, and answers the present with no `Dispatch-As-Of`.
 So a client refuses an answer to a request with `as_of` that does not carry the header (`AsOfNotAnswered`, `packages/envoy-client/src/dispatch-http.ts`).
-An answer that leaves out members names each one once in `Dispatch-As-Of-Absent` (`contracts.DispatchAsOfAbsentHeader`), for example `/route_status,/open_asks/*/referenced_by_count`.
+An answer that leaves out members names each one once in `Dispatch-As-Of-Absent` (`contracts.DispatchAsOfAbsentHeader`), sorted, for example `/open_asks/*/referenced_by_count,/route_status` (`asof.HeaderValue`).
+An answer that leaves out no member carries no such header.
 The value is a comma-separated list of RFC 6901 JSON Pointers, in which `*` stands for each member of an array.
 The answer leaves such a member out of its object, and never writes it as `null`, because `null` already means "none" on these answers.
 A member whose payload key an older event does not have, because its column held nothing at that time, is not left out: the answer gives its default.
 
 **The members an answer can leave out at a cut**, by route.
-`asof.AbsentFields` (`internal/dispatch/asof/absent.go`) holds them, each with its reason, and a route names no other member (`asof.ValidAbsent`).
+`asof.AbsentFields` (`internal/dispatch/asof/absent.go`) holds them, each with its reason.
+A route names no other member: `asof.WriteHeaders` finds the pointer of each member that a handler leaves out (`asof.AbsentPointer`), and a member that the table does not hold for the route is a programming error, which a test fails on and a server logs, sending the answer whole with no `Dispatch-As-Of-Absent` (`misnamedAbsent`, `internal/dispatch/api/as_of_answer.go`).
 `TestTheGuideNamesTheMembersEachAnswersRouteCanLeaveOut` holds this list to that table.
 An answer names a member only when it leaves that member out.
 
@@ -3958,6 +3963,8 @@ The reasons, which `asof.AbsentFields` gives for each member:
 
 - No event records the field: the design gates, the snoozes, a block's token, embedding and place, the id of an untyped block of a version that `document_indexed_versions` does not hold, the ids of a table's rows and cells, a document version's token where Dispatch stored none (all before 2026-11-03), and the state of a delivery attempt that no receipt or reply event dates.
 
+- A check's version and digest, and whether a check's words moved after a result, come from the block index: no event records them for a version of the Verification document that `document_indexed_versions` does not hold.
+
 - Part ids and revisions stand only for an ask that did not change after the cut.
 
 - The person an ask waits on comes from a project default from before the first event of that default.
@@ -4000,13 +4007,15 @@ The meaning legs use the window of an item only when the item did not change aft
 A post deleted after the cut gives no hit and no snippet.
 A search at a cut does not broaden a query that matches nothing, because the term statistics count only the present text.
 Before the fill of the keyword table reaches the cut, a search at that cut is `409 AS_OF_SEARCH_NOT_FILLED`, and it reads no row.
-Its message names the time that the fill reached, and so does the `Dispatch-As-Of-Filled-Through` header (`contracts.DispatchAsOfFilledThroughHeader`), where the fill reached a time.
+Where the fill has reached a time, its message names that time, and so does the `Dispatch-As-Of-Filled-Through` header (`contracts.DispatchAsOfFilledThroughHeader`).
+Where the fill has reached no time yet, its message says so, and the answer carries no such header.
 While the fill's cursor row records rules older than `store.TextVersionsRules` (2), the fill has reached no time: the fill first reads again the `message.edited`, `comment.deleted` and `message.deleted` events that the first rules passed.
 
 **Windows count from the cut.**
 At a cut, `GET /api/v1/agents/{session_id}/answers` takes `since` as 72 hours before the cut when the request sends none.
 It refuses a `since` more than 7 days before the cut with `400 INVALID_QUERY`, and answers no item for a `since` after the cut.
-So an agent host's own poll under a token that carries a cut gets an empty answer, and no refusal.
+An agent host's own poll sends `since` 72 hours before the present (`packages/envoy-client/src/session-answers.ts`).
+So under a token that carries a cut, that poll gets the items from that time to the cut, which are none when the cut is more than 72 hours old, and it is never refused.
 At a cut, `GET /api/v1/asks/open` counts each `age_seconds` from the cut.
 
 **Two members already named `as_of`** keep their meaning: the database time at which the answer stands.
@@ -4021,16 +4030,18 @@ So the cut compares the time at which the transaction of each record began: `eve
 Dispatch answers a cut at or before the database's `now()` whatever transactions are still open, so a write that began before the cut and committed after it reads as made at its start.
 A priority tuple's `at` is its handler's clock, a time later than the start of its transaction, so its error is the length of that transaction.
 Three measurements of production (INFRA-4620's plan, 2026-11-19) bound the error of a cut by the length of one write transaction.
-The longest write request in the access log from 2026-11-16 to 2026-11-19 took 46,578 ms (`POST /api/v1/issues/{key}/results`), and a request's time bounds its transaction's time.
+The longest write request in a sample of the access log took 46,578 ms (`POST /api/v1/issues/{key}/results`), and a request's time bounds its transaction's time.
+The sample was the write requests of at least 1 s from 2026-11-16 00:55Z to 2026-11-19 21:22Z, 20,000 lines, which is the most that Cloud Logging gives one read.
 In the whole event log, the largest amount by which an event was older than an event with a lower id was 249 s (2026-10-26, `artifact.version`).
 Within one issue, the largest amount by which an event was older than an event with a lower `seq` was 8.9 s.
 
 **What a read at a cut costs.**
 `TestAsOfCostOnACorpusCopy` (`internal/dispatch/api/as_of_cost_test.go`) times the statements of the past-time reads against a copy of production's events, and skips unless `DISPATCH_ASOF_CORPUS_URL` names one.
-On a copy of 843,238 events in a gVisor pod, 13 of the figures stayed under 2 s.
+On a copy of 843,238 events in a gVisor pod, 13 of the past-time figures were within their bounds: 2 s for a read, and for a search the time of the same search at the present plus 3 s.
 The listing of every issue at a cut took 3.9 s at 2026-11-10T00:00Z and 8.5 s at the copy's newest event, where the present listing took 1.6 s in the same pod.
 The listing names `issues` in about 11 places, and each reads the state of every issue through the shadow.
-A search for the commonest word took 5.8 s at 2026-11-10T00:00Z and 13.5 s at the newest event, and a search for a common word took 7.1 s at the newest event.
+A search for the commonest word took 5.8 s at 2026-11-10T00:00Z, against a bound of 5.68 s, and 13.5 s at the newest event.
+A search for a common word took 7.1 s at the newest event, against a bound of 4.18 s.
 Each match joins the state of its item at the cut, 0.5 to 0.8 ms for each match, and a filter of status, author, project or time needs those joins before the first page.
 Meaning search was not timed, because a copy of the events holds no embeddings, and the document leg was timed on empty text.
 

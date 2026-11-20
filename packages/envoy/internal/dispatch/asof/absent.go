@@ -70,7 +70,8 @@ const (
 // result is not here: a past-time search draws each snippet tree from the headline of the text at
 // the cut, so it never leaves one out. A route that the plan lists with no field has an empty
 // list. A past-time answer names a member in the Dispatch-As-Of-Absent header only when it leaves
-// that member out, and it names only members this table holds for its route (ValidAbsent).
+// that member out, and it names only members this table holds for its route (WriteHeaders, which
+// tests check with ValidAbsent).
 var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/issues/{key}": {
 		{"/route_status", reasonLiveness},

@@ -32,14 +32,14 @@ It also serves the web app's build, `packages/dispatch/web/dist`; the web app ha
   `asOfAnswers` answers `as_of` and the cut of a read-only token.
   `asOfNoHistory` answers the present only and refuses `as_of` with `400 AS_OF_NOT_SERVED`.
   Such a read refuses a read-only token that carries a cut with `403 AS_OF_TOKEN_NOT_SERVED`, and such a GET that writes refuses each read-only token with `403 READ_ONLY_TOKEN`.
-  `asOfCaller` is `GET /api/v1/whoami` alone: it describes the caller now, refuses `as_of`, and names the cut of a token.
+  `asOfCaller` is `GET /api/v1/whoami` alone: it describes the caller now, names the cut of a token, and refuses `as_of` from every caller but a token that carries a cut, whose `as_of` it does not read.
   Every row that is not a GET row refuses `as_of` with `400 AS_OF_NOT_SERVED`.
 
 - A token that carries a cut reads at its cut on each route of kind answers, whatever `as_of` the request sends.
   Every other read and `GET /ws/live` refuse it with `403 AS_OF_TOKEN_NOT_SERVED`, naming the cut.
 
 - A route of kind answers runs its present statements under the cut, and the store binds each statement to the shadows of `internal/dispatch/asof` (`asof.Bind`).
-  A table that such a route reads needs a shadow, or an entry in `asof.MachineryTables` or `asof.CutReadTables` with its reason: `TestAPastTimeStatementReadsNoShadowedTableDirectly` fails on any other table.
+  Such a route reads a table outside the shadows only where the table is a base table that a shadow reads, or has an entry in `asof.MachineryTables` or `asof.CutReadTables` with its reason: `TestAPastTimeStatementReadsNoShadowedTableDirectly` fails on any other table.
   A source that is not SQL (the live document room, the route roster, the Envoy listener, GitHub, the embedder) is read at a cut only through a branch of that route.
 
 - An answer at a cut carries `Dispatch-As-Of: <cut>`.
@@ -51,4 +51,6 @@ It also serves the web app's build, `packages/dispatch/web/dist`; the web app ha
 - A route of kind answers declares `as_of` on its query struct (`routes_shapes.go`), but `GET /api/v1/search`, whose search at a cut goes to `GET /api/v1/search/results`.
   Its row says what it answers at a cut in `asOfAtACut` (`routes_table.go`): `TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument` fails on a route of kind answers that does not do both.
 
-- A search at a cut that the keyword table's fill has not reached is refused with `409 AS_OF_SEARCH_NOT_FILLED` and `Dispatch-As-Of-Filled-Through`, never answered from the present text.
+- A search at a cut that the keyword table's fill has not reached is refused with `409 AS_OF_SEARCH_NOT_FILLED`, never answered from the present text.
+  Where the fill has reached a time, the refusal names it in its message and in `Dispatch-As-Of-Filled-Through`.
+  Where the fill has reached no time yet, the refusal carries no such header.

@@ -36,11 +36,13 @@ The reach is the latest time at or before which every event has its rows, an eve
 The fill imports `events`, for the horizon and the reset check, and `sessionanswers`, for the pause.
 
 `internal/dispatch/asof` is the reader of Dispatch at a past time, the cut, and it imports no part of the store or of the API: the store imports it.
-It holds a shadow for each table that a read at a cut reads: a SQL definition, from `events` and the append-only tables, of the table's columns as they stood at the cut, with the cut as a `timestamptz` literal and each base table named with the schema `public`.
+It holds a shadow for each table that a read at a cut reads: a SQL definition of the table's columns as they stood at the cut, from `events`, the append-only tables, `post_body_history` and the present rows of the shadowed tables, each kept only where it existed at the cut, with the cut as a `timestamptz` literal and each base table named with the schema `public`.
 Under a context that carries a cut (`asof.WithCut`), `store.Pool` binds each statement it sends to the cut (`asof.Bind`): a statement of `Query`, `QueryRow`, `Exec` or `SendBatch`, and each statement of a transaction that `Begin` or `BeginTx` opens and of its savepoints.
 `Bind` puts the shadow of each table that the statement names in front of it, as a `WITH <table> AS NOT MATERIALIZED (…)` member of the same name, which PostgreSQL resolves before the table.
 So a route that answers `as_of` runs its present statements unchanged, with their filters, joins, order and pages, and a store that gives the same relations can replace the shadows and nothing else.
-`Bind` refuses a statement that is not a read and a string that holds two statements, and the pool refuses at a cut each way to send SQL that it cannot bind (`RefusedAtCutError`), so a read at a cut writes nothing.
+`Bind` refuses a statement that is not a read and a string that holds two statements.
+At a cut the pool also refuses each connection it hands out (`Acquire`, `AcquireFunc`, `Listener`, `Dedicated`) and each copy (`RefusedAtCutError`), so the shared pool sends no insert, update, delete or merge at a cut.
+The separate pools that `Rooms`, `RoomAppends`, `Compaction` and `Horizon` hand out check no cut, and send each statement as the caller wrote it.
 `asof.MachineryTables` and `asof.CutReadTables` name, each with its reason, the tables that a read at a cut reads with no shadow.
 `asof.AbsentFields` holds, by route, the members that an answer at a cut can leave out, each with its reason.
 Eleven migrations, each one marked `-- pgmigrate:non-transactional` `CREATE INDEX CONCURRENTLY IF NOT EXISTS` on `events` with a `select 0` census, give the shadows' reads their indexes (`20261120004315`, `20261120004316`, `20261120004317` and `20261120140001` to `20261120140008`), and `internal/dispatch/store/README.md` names the read of each.

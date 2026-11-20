@@ -654,8 +654,9 @@ func goingCatalogueDescription() string {
 // carries a cut. It is written once here for every row of a kind, so the route index, the OpenAPI
 // document and each client generated from it say the same of each such row. The members that the
 // answer of a row can leave out at a cut are read from asof.AbsentFields, the table that the
-// answer is held to (asof.ValidAbsent), so the description cannot name another list. What a row
-// of kind answers answers at a cut is the row's own sentence (asOfAtACut).
+// answer's Dispatch-As-Of-Absent is held to (asof.WriteHeaders), so the description cannot name
+// another list. What a row of kind answers answers at a cut is the row's own sentence
+// (asOfAtACut).
 func asOfDescription(name string, entry readEntry) string {
 	switch entry.AsOf {
 	case asOfAnswers:
@@ -678,12 +679,15 @@ const asOfAnswersDescription = "as_of is an RFC 3339 time with an offset, which 
 	"A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. " +
 	"An answer at a cut names the cut in the " + contracts.DispatchAsOfHeader + " header, in UTC with six fractional digits."
 
-// asOfCutErrorDescription is the error of every cut, measured on production by INFRA-4620's plan
-// ("What the plan measured"): a row at a cut reads each record by the time its transaction began
-// (events.created_at is the transaction's now()), and nothing records when a transaction committed.
+// asOfCutErrorDescription is the error of every cut: a row at a cut reads each record by the time
+// its transaction began (events.created_at is the transaction's now()), and nothing records when
+// a transaction committed. Its figures are production's, measured on 2026-11-19: the longest
+// write request in a sample of the access log, and the largest gap between the id order of the
+// event log and its created_at order.
 const asOfCutErrorDescription = "Dispatch dates each write by the start of its transaction, and records no time at which a write committed. " +
 	"So a write that began before the cut and committed after it reads as made at its start. " +
-	"On production the longest write request took 47 s, and the event log held an event 249 s older than an event with a lower id."
+	"In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. " +
+	"Production's event log held an event 249 s older than an event with a lower id."
 
 // asOfAbsentDescription names the members that the answer of the route named name can leave out
 // at a cut, in the order of asof.AbsentFields.
@@ -704,7 +708,7 @@ func asOfAbsentDescription(name string) string {
 // asOfCallerDescription is what GET /api/v1/whoami (asOfCaller) says of as_of and of a read-only
 // token that carries a cut (asOfGate, refuseReadOnlyToken).
 const asOfCallerDescription = "This route describes the caller now and keeps no history. " +
-	"It refuses as_of with 400 " + contracts.DispatchAsOfNotServed + ". " +
+	"It refuses as_of with 400 " + contracts.DispatchAsOfNotServed + ", except from a read-only token that carries a cut, whose as_of Dispatch does not read. " +
 	"It answers a read-only token that carries a cut, and its cut member names that cut. " +
 	"A route that answers as_of answers such a token as of its cut. " +
 	"Every other read of the read class, and GET /ws/live, refuse it with 403 " + contracts.DispatchAsOfTokenNotServed + "."
@@ -736,15 +740,36 @@ const asOfEventLogAtACut = "A post deleted after the cut answers its own events 
 	"A preview of it that another post's event holds keeps its text."
 
 // asOfDeletedCommentAtACut and asOfDeletedMessageAtACut are what a thread read answers at a cut
-// for a post deleted after the cut (INFRA-4620's decision 14).
+// for a post that its author deleted after the cut: the post reads as deleted, as the present
+// read gives it, and the body that the present read gives empty is left out and named absent.
 const (
-	asOfDeletedCommentAtACut = "A comment deleted after the cut reads as deleted, with no body, as it reads now."
-	asOfDeletedMessageAtACut = "A message deleted after the cut reads as deleted, with no body, as it reads now."
+	asOfDeletedCommentAtACut = "A comment deleted after the cut reads as deleted, with its deleted_at, and the answer leaves out its body and names it in " +
+		contracts.DispatchAsOfAbsentHeader + "."
+	asOfDeletedMessageAtACut = "A message deleted after the cut reads as deleted, with its deleted_at, and the answer leaves out its body and names it in " +
+		contracts.DispatchAsOfAbsentHeader + "."
 )
+
+// asOfRemovedDocumentAtACut is what a read of one document or file answers at a cut for one that
+// did not exist then.
+const asOfRemovedDocumentAtACut = "A document made after the cut, or removed after it, is 404 ARTIFACT_NOT_FOUND: a removal keeps no row of the document."
+
+// asOfRemovedDocumentNotListed is what a list of documents answers at a cut for one removed after
+// the cut.
+const asOfRemovedDocumentNotListed = "A document removed after the cut is not listed: a removal keeps no row of the document."
 
 // asOfDocumentAtACut is what a read of one document answers at a cut.
 const asOfDocumentAtACut = "At a cut the route reads the document as it stood at the cut: its name, its versions made by then and its approval at the cut. " +
-	"A document made after the cut, or removed after it, is 404 ARTIFACT_NOT_FOUND: a removal keeps no row of the document."
+	asOfRemovedDocumentAtACut
+
+// asOfBlocksAtACut is what both block routes answer at a cut.
+const asOfBlocksAtACut = "At a cut the route answers the blocks of the document's newest version at the cut."
+
+// asOfPostHistoryAtACut is what the history route of a post of kind post ("comment" or
+// "message") answers at a cut.
+func asOfPostHistoryAtACut(post string) string {
+	return "At a cut the route answers only the entries that the " + post + "'s edits and deletes at or before the cut wrote, newest first, paged by ?before= as now. " +
+		"deleted_at and deleted_by are the " + post + "'s present values, so a " + post + " deleted after the cut answers as a deleted " + post + " answers now."
+}
 
 // asOfCommentListAtACut is what both comment lists answer at a cut (answerCommentList,
 // writePastListAnswer).
@@ -760,20 +785,18 @@ var asOfAtACut = map[string]string{
 	"GET /api/v1/issues/{key}": "At a cut the route reads the issue from its newest state event at or before the cut, with the asks, the documents and the children that existed then. " +
 		"progress.tasks counts the task items of the primary document's newest version at the cut. An issue made after the cut is 404.",
 	"GET /api/v1/issues": "At a cut the route lists the issues that existed then, each as it stood, under the same filters, order and pages as now. " +
-		"With as_of, route_status and pinned are 400 " + contracts.DispatchAsOfNotServed + " whatever their value, because the route roster and a person's pins keep no history.",
+		"At a cut, from as_of or from a token, route_status and pinned are 400 " + contracts.DispatchAsOfNotServed + " whatever their value, because the route roster and a person's pins keep no history.",
 	"GET /api/v1/issues/resolve": "At a cut the route resolves owner/repo#n by the external links that the issues held at the cut.",
 	"GET /api/v1/issues/{key}/events": "At a cut the route pages only the events written at or before the cut, under an ETag over the cut and the answer's own bytes. " +
 		asOfEventLogAtACut,
 	"GET /api/v1/artifacts/{id}/events": "At a cut the route pages only the events written at or before the cut. " + asOfEventLogAtACut,
-	"GET /api/v1/events/log": "At a cut the route pages only the events written at or before the cut, and a page ends at the largest id among them. " +
+	"GET /api/v1/events/log": "At a cut the route pages only the events written at or before the cut, and no page reaches past the largest id among them. " +
 		asOfEventLogAtACut,
 	"GET /api/v1/issues/{key}/comments":   asOfCommentListAtACut,
 	"GET /api/v1/artifacts/{id}/comments": asOfCommentListAtACut,
 	"GET /api/v1/comments/{id}":           "At a cut the route reads the comment and its thread as they stood at the cut. " + asOfDeletedCommentAtACut,
-	"GET /api/v1/comments/{id}/history": "At a cut the route answers only the entries that the comment's edits and deletes at or before the cut wrote, newest first, paged by ?before= as now. " +
-		"deleted_at and deleted_by are the comment's present values, so a comment deleted after the cut answers as a deleted comment answers now.",
-	"GET /api/v1/messages/{id}/history": "At a cut the route answers only the entries that the message's edits and deletes at or before the cut wrote, newest first, paged by ?before= as now. " +
-		"deleted_at and deleted_by are the message's present values, so a message deleted after the cut answers as a deleted message answers now.",
+	"GET /api/v1/comments/{id}/history":   asOfPostHistoryAtACut("comment"),
+	"GET /api/v1/messages/{id}/history":   asOfPostHistoryAtACut("message"),
 	"GET /api/v1/issues/{key}/messages": "At a cut the route lists the message threads that existed then, each message with the text that it had at the cut. " +
 		asOfDeletedMessageAtACut,
 	"GET /api/v1/issues/{key}/messages/{id}": "At a cut the route reads the message and its replies as they stood at the cut, each with the text that it had then. " +
@@ -791,20 +814,21 @@ var asOfAtACut = map[string]string{
 	"GET /api/v1/agents/{session_id}/answers": "At a cut the window counts from the cut: since defaults to 72 hours before the cut, a since more than 7 days before the cut is 400 INVALID_QUERY, and a since after the cut answers no items. " +
 		"Each item has its words at the cut.",
 	"GET /api/v1/issues/{key}/artifacts": "At a cut the route lists the documents and files that the issue held then, each with its name, its versions and its approval at the cut. " +
-		"A document removed after the cut is not listed: a removal keeps no row of the document.",
+		asOfRemovedDocumentNotListed,
 	"GET /api/v1/projects/{key}/artifacts": "At a cut the route lists the documents that the project held then, each with its name, its versions and its approval at the cut. " +
-		"A document removed after the cut is not listed: a removal keeps no row of the document.",
-	"GET /api/v1/issues/{key}/artifacts/{slug}":          asOfDocumentAtACut,
-	"GET /api/v1/projects/{key}/artifacts/{slug}":        asOfDocumentAtACut,
-	"GET /api/v1/agents/{session_id}/artifacts/{slug}":   asOfDocumentAtACut,
+		asOfRemovedDocumentNotListed,
+	"GET /api/v1/issues/{key}/artifacts/{slug}":   asOfDocumentAtACut,
+	"GET /api/v1/projects/{key}/artifacts/{slug}": asOfDocumentAtACut,
+	"GET /api/v1/agents/{session_id}/artifacts/{slug}": "At a cut the route reads the conversation's file or image as it stood at the cut: its name and the versions made by then. " +
+		"One made after the cut, or removed after it, is 404 ARTIFACT_NOT_FOUND: a removal keeps no row of it.",
 	"GET /api/v1/artifacts/{id}":                         asOfDocumentAtACut,
 	"GET /api/v1/artifacts/{id}/text":                    "At a cut the route answers the markdown and the document token of the document's newest version at the cut, and with ?blocks=true the blocks of that version.",
 	"GET /api/v1/artifacts/{id}/versions/{number}":       "At a cut a version made after the cut is 404, as JSON and as a download.",
-	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks":   "At a cut the route answers the blocks of the document's newest version at the cut.",
-	"GET /api/v1/projects/{key}/artifacts/{slug}/blocks": "At a cut the route answers the blocks of the document's newest version at the cut.",
+	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks":   asOfBlocksAtACut,
+	"GET /api/v1/projects/{key}/artifacts/{slug}/blocks": asOfBlocksAtACut,
 	"GET /api/v1/issues/{key}/results": "At a cut the route reads the checks of the Verification document's newest version at the cut, with the results and the retractions recorded by then. " +
 		"It reads nothing from GitHub and writes nothing. So it leaves out the GitHub currency of each check and result, and the result that CI derives (ci-run:…). " +
-		"With as_of, ?at= is 400 " + contracts.DispatchAsOfNotServed + ".",
+		"At a cut, from as_of or from a token, ?at= is 400 " + contracts.DispatchAsOfNotServed + ".",
 	"GET /api/v1/search":         asOfSearchAtACut,
 	"GET /api/v1/search/results": asOfSearchAtACut,
 }

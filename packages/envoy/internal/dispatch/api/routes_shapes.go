@@ -93,8 +93,8 @@ type routeShape struct {
 
 // asOfQuery is the query of a route that answers as_of (asOfAnswers, read_classes.go) and reads no
 // other key. Each query struct of a route that answers as_of declares the same AsOf field, but
-// searchRouteQuery (its comment says why), and no struct of another route declares it
-// (TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument).
+// searchRouteQuery (its comment says why). TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument
+// holds the GET rows to this: each that answers as_of declares it, and no other GET row does.
 type asOfQuery struct {
 	// AsOf is the past time that the route answers as of, the cut: RFC 3339 with an offset, with
 	// or without a fraction of a second, rounded down to the microsecond. asOfGate reads it, and
@@ -479,7 +479,9 @@ type sessionAnswersQuery struct {
 	Since string `query:"since"`
 	// MaxChars bounds how much of each item's text the answer carries.
 	MaxChars int `query:"max_chars"`
-	// AsOf is the cut the route answers as of (asOfQuery). At a cut Since counts from the cut.
+	// AsOf is the cut the route answers as of (asOfQuery). At a cut the window counts from the
+	// cut: an absent Since is 72 hours before the cut, one more than 7 days before the cut is
+	// 400 INVALID_QUERY, and one after the cut answers no items.
 	AsOf string `query:"as_of"`
 }
 

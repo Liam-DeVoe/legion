@@ -213,8 +213,8 @@ func committedOpenAPI(t testing.TB) []byte {
 // declares it. A client written from the document would otherwise send no cut to a route that
 // answers one, or offer a cut to a route that refuses it 400 AS_OF_NOT_SERVED. The read class
 // gives each row its kind, so a row that later joins the routes that answer as_of fails here until
-// its query struct declares the parameter. Each such operation's description also says what the
-// route answers at a cut (asOfAtACut), and no other row's says it answers one.
+// its query struct declares the parameter. Each such operation's description also holds the
+// sentence asOfAtACut gives the route, and asOfAtACut gives no sentence to a row of another kind.
 //
 // GET /api/v1/search answers as_of and does not declare it, on purpose: searchRouteQuery names
 // only the four members every build has served. A build released before GET /api/v1/search/results
@@ -267,8 +267,8 @@ func TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument(t *testing.T) {
 		}
 		if sibling, elsewhere := declaredElsewhere[name]; elsewhere {
 			if kind != asOfAnswers || declared {
-				t.Errorf("%s is to answer as_of and leave its declaration to %s: its kind is %d and it declares as_of %v",
-					name, sibling, kind, declared)
+				t.Errorf("%s is to answer as_of and leave its declaration to %s: its kind is %s and it declares as_of %v",
+					name, sibling, asOfKindName(kind), declared)
 			}
 			if other := get(sibling); other == nil || !slices.Contains(other.Parameters, asOf) {
 				t.Errorf("%s answers as_of, and neither it nor %s declares the parameter", name, sibling)

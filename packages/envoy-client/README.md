@@ -1029,6 +1029,11 @@ Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: �
 Under a cut, each of the seven read commands reads Dispatch as of the cut, and the cut replaces
 any `--as-of` the call gives (Reads at a past time, below). Any other read of a route that holds
 no past answer prints Dispatch's refusal (`AS_OF_TOKEN_NOT_SERVED: …`) and exits 1.
+`dispatch issues` is not one of the seven: it reads no whoami first, sends no `as_of` and checks
+no `Dispatch-As-Of`. `GET /api/v1/issues` answers a token that carries a cut as of that cut, so
+under such a token `dispatch issues` lists the issues as they stood at the cut, with no
+`Left out at` line. A line of an issue whose route the listing leaves out names the route and says
+that the listing does not say whether it reaches anyone.
 
 ### The `dispatch` command
 
@@ -1088,24 +1093,27 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ### Reads at a past time
 
-`read`, `doc-read`, `search`, `answers`, `open-asks`, `inbox` and `results` take `--as-of <time>`,
+`read`, `doc-read`, `search`, `answers`, `open-asks`, `inbox` and `results` take `--as-of <text>`,
 an RFC 3339 time such as `2026-11-10T12:00:00Z`. The flag comes from the `as_of` field of each of
-the seven specs (`dispatch-tools.ts`), so `--as-of-file` and the help come with it. Each of the
-seven reads `GET /api/v1/whoami` before any other request, with or without `--as-of`
-(`readAtCut`, `dispatch-commands/as-of.ts`). A token whose answer names a cut reads at that cut,
-and its cut replaces any `--as-of` the call gives.
+the seven specs (`packages/contracts/src/dispatch-tools.ts`), so `--as-of-file` and the help come
+with it. Each of the seven reads `GET /api/v1/whoami` before any other request, with or without
+`--as-of` (`readAtCut`, `dispatch-commands/as-of.ts`). A token whose answer names a cut reads at
+that cut, and its cut replaces any `--as-of` the call gives.
 
 At a cut the command sends `as_of` to each route it calls that answers it (`AsOfRead`, which
 `DispatchClient`'s `#url` adds as `as_of`). It calls no route that holds no history: the reference
 graph (`GET /api/v1/references`), an issue's references and coverage, whether a session runs
 (`GET /api/v1/agents`), and the Inbox's unread threads (`GET /api/v1/me/replies`) and credential
-requests. A block read (`--ref …#b-…`) reads its block from the document, the comment or the ask
-at the cut. `search` sends a search at a cut to `GET /api/v1/search/results`, because
+requests. A block read (`--ref …#b-…`) reads its block from the document, the ask, the comment or
+the message at the cut. `search` sends a search at a cut to `GET /api/v1/search/results`, because
 `everyBuildReadsSearch` sends there each member beyond the ones every build reads.
 
 At a cut the first line of the output is always `Left out at <cut>: …`. It names each part that
 the command did not read, and each field that an answer named in `Dispatch-As-Of-Absent`, in words
-(`absentFieldWords`), or it says `nothing`. A field with no words of its own is named by its JSON
+(`absentFieldWords`), or it says `nothing`. `ABSENT_FIELD_WORDS` holds words for each member that
+`asof.AbsentFields` (`packages/envoy/internal/dispatch/asof/absent.go`) names, and a test of
+`dispatch-as-of.test.ts` reads that file and fails on a member with no words and on words for no
+member. A member that a newer Dispatch names and this table does not is named by its JSON
 Pointer. Every age and window counts from the cut. `answers` lists what people wrote in the 72
 hours before the cut, and says so. `open-asks` counts each age from the cut. `inbox` counts its
 bands and ages from the cut, and leaves out its `Later` band, because no event records a snooze.
@@ -1113,12 +1121,13 @@ bands and ages from the cut, and leaves out its `Later` band, because no event r
 
 A Dispatch older than `as_of` ignores the parameter and answers the present. So the command uses
 nothing of an answer to a call that sent `as_of` with no `Dispatch-As-Of` header, and exits 1
-naming the route (`AsOfNotAnswered`). `results --at` with a cut is refused before any request,
-with exit 2: `--at` compares each check with one commit through GitHub now, and a read at a cut
-reads nothing from GitHub. Dispatch's refusals of a read at a cut print in words before
-Dispatch's own message, and keep their code and status: `AS_OF_NOT_SERVED`, `INVALID_AS_OF`,
-`AS_OF_TOKEN_NOT_SERVED`, and `AS_OF_SEARCH_NOT_FILLED` with the time that the keyword table
-reaches (`Dispatch-As-Of-Filled-Through`).
+naming the route (`AsOfNotAnswered`). `results --at` with a cut is refused with exit 2: beside
+`--as-of` before any request, and under a token that carries a cut after the whoami read alone.
+`--at` compares each check with one commit through GitHub now, and a read at a cut reads nothing
+from GitHub. Dispatch's refusals of a read at a cut print in words before Dispatch's own message,
+and keep their code and status: `AS_OF_NOT_SERVED`, `INVALID_AS_OF`, `AS_OF_TOKEN_NOT_SERVED`, and
+`AS_OF_SEARCH_NOT_FILLED`, which names the time that the keyword table reaches where Dispatch
+sends it (`Dispatch-As-Of-Filled-Through`), and otherwise says that the table reaches no time yet.
 
 ### The `dispatch` command's token files
 

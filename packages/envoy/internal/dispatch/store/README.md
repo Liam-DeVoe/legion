@@ -49,13 +49,16 @@ Under such a context `Pool` binds each statement before it sends it (`asof.Bind`
 `Bind` puts the shadow of each shadowed table that the statement names in front of the statement, as a `WITH <table> AS NOT MATERIALIZED (…)` member of the same name.
 PostgreSQL resolves the table's name to that member before the table, so the statement reads the table as it stood at the cut.
 So a read at a cut runs the filters, the joins, the order and the pages of the read at the present.
-A shadow answers the columns of its table at the cut from `events` and from the append-only tables (`asof.ShadowedTables`, `TestEveryShadowAnswersEveryColumnOfItsTable`).
+A shadow answers the columns of its table at the cut (`asof.ShadowedTables`, `TestEveryShadowAnswersEveryColumnOfItsTable`).
+It reads `events`, the append-only tables, `post_body_history`, `schema_migrations`, and the present rows of `issues`, `issue_links`, `issue_components`, `priority_tuples`, `projects`, `repo_projects`, `asks`, `comments`, `messages`, `comment_deliveries`, `message_deliveries` and `artifacts`.
+It keeps a present row only where the row existed at the cut, and takes the row's values at the cut from the events where they record them.
 The cut is a `timestamptz` literal in each shadow, written from the parsed time and never from the text of a request.
 Each base table in a shadow is named with the schema `public`, so no shadow reads another shadow.
 `Bind` refuses a statement that is not a read, and a string that holds more than one statement, so the pool sends nothing and returns the refusal (`*asof.RefusedError`).
 A batch that begins its own transaction (`pgx.Batch.BeginTx`) queues a `begin`, which `Bind` refuses.
-Under a cut the pool refuses each way to send SQL that it cannot bind (`RefusedAtCutError`).
-`Acquire`, `AcquireFunc`, `CopyFrom` and a transaction's `CopyFrom` and `Prepare` return that error, a transaction's `Conn` and `LargeObjects` panic with it, and `AcquireAllIdle` takes no connection.
+Under a cut the pool refuses each connection that it hands out and each copy, because a connection sends statements that nothing binds, and a copy writes (`RefusedAtCutError`).
+`Acquire`, `AcquireFunc`, `Listener`, `Dedicated`, `CopyFrom` and a transaction's `CopyFrom` and `Prepare` return that error, a transaction's `Conn` and `LargeObjects` panic with it, and `AcquireAllIdle` takes no connection.
+The separate pools that `Rooms`, `RoomAppends`, `Compaction` and `Horizon` hand out check no cut: a statement sent through one of them is sent as the caller wrote it, under a cut too.
 Under a context with no cut, the pool sends each statement as the caller wrote it.
 A table that a read at a cut reads with no shadow is in `asof.MachineryTables`, the state of Dispatch's own machinery read as it is now, or in `asof.CutReadTables`, read under a predicate of its own that holds the read to the cut, each with its reason.
 
@@ -65,7 +68,8 @@ Each holds one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, which the census exemp
 The build takes `SHARE UPDATE EXCLUSIVE` on `events`, which no ordinary read or write of `events` waits on.
 Each header names the size of the index on a copy of production's event log and the read that it serves.
 The predicate of each partial index is its shadow's list of types, word for word, because the planner uses a partial index only when the read's condition implies its predicate.
-`asof.TestTheAskStateIndexNamesTheTypesTheAsksShadowReads` and `asof.TestEachEventIndexNamesTheTypesItsShadowReads` compare the two lists, and `asof.TestTheShadowsUseTheirIndexes` reads the plans.
+`asof.TestEachEventIndexNamesTheTypesItsShadowReads` compares the list of types of each index whose predicate is `type in (…)` or `type not in (…)` with its shadow's list: each index below but `events_created_at`, which has no predicate, and `events_repo_project` and `events_artifact_renamed`, whose predicate names one type.
+`asof.TestTheShadowsUseTheirIndexes` reads the plan of a read through each shadow at a cut, and holds each of the eleven indexes to the read it serves.
 A build that fails leaves an invalid index, which the planner does not use, and the next boot drops it and builds it again.
 Reads at a cut stay correct until then, and slower.
 

@@ -49,7 +49,11 @@ var queryKeyExceptions = map[string]string{
 // `limit`, `offset` and `max_chars`, and parseQueryBool with `keywords_only`, which both
 // searchResultsRouteQuery and the related route's query struct declare. searchRouteQuery, the
 // other search route's, declares it no longer: the five members a build released before them
-// drops are declared on GET /api/v1/search/results alone (routes_shapes.go).
+// drops are declared on GET /api/v1/search/results alone (routes_shapes.go). server.go also reads
+// one key through a constant, asOfGate's `query[asOfParameter]`, which the last entry pins.
+// issue_as_of.go holds refuseParameterAtCut, which reads its key as `Has(parameter)`: it is
+// called with `route_status` and `pinned`, which issueListQuery declares, and with `at`, which
+// issueResultsQuery declares (results_as_of.go).
 var queryKeysReadThroughAHelper = []string{
 	// multipartJSONField reads one named JSON field of an upload's form: `actor` and
 	// `precondition`, each a field of the multipart body the upload routes declare.
@@ -58,9 +62,11 @@ var queryKeysReadThroughAHelper = []string{
 	`delivery.go: Has(name)`,
 	`server.go: query[field]`,
 	`server.go: query[field]`,
+	`issue_as_of.go: Has(parameter)`,
 	// asOfGate reads as_of on every row through the constant asOfParameter. The query struct of
-	// each route that answers as_of names it, and no other struct does, as
-	// TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument holds.
+	// each GET route that answers as_of names it, but GET /api/v1/search's (searchRouteQuery), and
+	// no other GET route's struct does, as TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument
+	// holds.
 	`server.go: query[asOfParameter]`,
 }
 

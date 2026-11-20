@@ -161,9 +161,10 @@ func logRefusal() {
 // sends to the cut (asof.Bind) before it sends it: a statement of Query, QueryRow, Exec or
 // SendBatch, and each statement of a transaction that Begin or BeginTx opens and of its
 // savepoints. A statement that Bind refuses is not sent, and the call returns the refusal. The
-// pool refuses each way to send SQL that it cannot bind (RefusedAtCutError): a connection that
-// it hands out (Acquire, AcquireFunc, Listener, Dedicated) and a copy. Under a context with no
-// cut, the pool sends each statement as the caller wrote it.
+// pool refuses a connection that it hands out (Acquire, AcquireFunc, Listener, Dedicated) and a
+// copy (RefusedAtCutError). The separate pools that Rooms, RoomAppends, Compaction and Horizon
+// hand out check no cut: a statement sent through one of them goes as the caller wrote it. Under
+// a context with no cut, the pool sends each statement as the caller wrote it.
 type Pool struct {
 	pool *pgxpool.Pool
 	// mu guards each separate pool's creation against this pool's close: one lock, so a

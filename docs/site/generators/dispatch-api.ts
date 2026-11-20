@@ -90,7 +90,7 @@ function render(routes: Route[]): string {
     "",
     "## Reads at a past time",
     "",
-    "A route that answers `as_of` takes an RFC 3339 time and answers what existed at that time, the cut. Its answer names the cut in the `Dispatch-As-Of` header, and names each member that it leaves out in `Dispatch-As-Of-Absent`. Every other route refuses `as_of` `400 AS_OF_NOT_SERVED`. The description of each route below says which of the two it does, and how it answers a read-only token that carries a cut.",
+    "A GET route that answers `as_of` takes an RFC 3339 time and answers what existed at that time, the cut. Its answer names the cut in the `Dispatch-As-Of` header, and names each member that it leaves out in `Dispatch-As-Of-Absent` where it leaves out any. Every other route below refuses `as_of` `400 AS_OF_NOT_SERVED`. The description of each GET route below says which of the two it does, and how it answers a read-only token that carries a cut.",
     "",
   ];
   for (const resource of [...groups.keys()].sort()) {
