@@ -36,9 +36,20 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // second suspend — joins the hold as one asked during the turn does (holdSuspension) and is
 // answered ErrSuspendHeld. Stopped here, the process would take with it the report the hold waits
 // for, and settle would take back as a cut turn a task whose turn ran whole.
+//
+// So is a claim idle over a take whose turn ended with that report still to come and no hold yet
+// (reportSettles): the first suspension to reach it in that window — an operator's, a daemon
+// row's, a pause's stop, or the one its row asks again after a restart forgot the hold the first
+// ask made — is held for the report as one that met the turn's end is (holdForReport), bounded by
+// its own deadline (suspendAtTimeout), and the report's finish runs it (afterTurn). A pause's stop
+// then reads the task the report left, and owes the role a launch only for a task it holds
+// (putStop, holdsTask).
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	if m.held != nil && m.heldForReport {
 		return holdSuspension(m, ctx, ev)
+	}
+	if m.held == nil && m.reportSettles() {
+		return m.holdForReport(ctx, ev)
 	}
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -47,9 +58,23 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 	return m.suspendNow(ctx, request, false)
 }
 
-// holdSuspension is a suspension that arrives while the agent is in a turn, or while a held
-// suspension waits past the end of its take's turn for that turn's report (suspend), and this is
-// the one statement of what a held suspension (Machine.held) does.
+// holdForReport holds a suspension that reaches an idle claim over a take whose turn ended with
+// its report still to come (suspend, reportSettles), as turnEnded holds one asked during that turn:
+// the hold is made (holdSuspension) and waits for the report (Machine.heldForReport). A suspension
+// holdSuspension decides where it arrives, or refuses, holds nothing.
+func (m *Machine) holdForReport(ctx context.Context, ev Event) error {
+	err := holdSuspension(m, ctx, ev)
+	if m.held != nil && errors.Is(err, ErrSuspendHeld) {
+		m.heldForReport = true
+		m.log.Info(heldForReportLine, "task", m.claim.Pending.Number, "by", m.held.By, "deadline", m.held.Deadline)
+	}
+	return err
+}
+
+// holdSuspension is a suspension that arrives while the agent is in a turn, or while the claim
+// waits past the end of its take's turn for that turn's report, a held suspension's or none yet
+// (suspend, holdForReport), and this is the one statement of what a held suspension
+// (Machine.held) does.
 //
 // A worker's issue can close, or an operator suspend it, while it is in a turn: the production
 // check's sign-off, say, arriving while the implementer's report of the check is still a tool call
@@ -132,8 +157,11 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// too, nor hold a request whose asker reports a refusal as nothing having happened.
 	if ev.(RequestSuspend).NeverHold {
 		reason := "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"
-		if m.heldForReport {
+		switch {
+		case m.heldForReport:
 			reason = "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"
+		case m.claim.State != StateWorking:
+			reason = "the turn of the claim's task ended with its report still to come, and this suspension is not one that is held for that report"
 		}
 		return &RefusedError{State: m.claim.State, Request: "suspend", Reason: reason}
 	}

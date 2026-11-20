@@ -70,9 +70,11 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // suspension that arrives in a turn (holdSuspension). The compaction ran and its end was the
 // claim's own, so this is neither ErrCompactProcessGone nor a store that would not write
 // (ErrCompactNotEnded); what it is is a claim the end did not give back. The hold runs there
-// and the claim is suspended, or the claim is working for a turn Oh My Pi started under the
-// compaction and the hold runs at that turn's end instead (compactEnded). Either way the task
-// the claim owes was not sent.
+// and the claim is suspended; or the claim is working for a turn Oh My Pi started under the
+// compaction and the hold runs at that turn's end instead; or the claim is idle over a take whose
+// turn ended before the compaction with its report still to come, and the hold runs at that
+// report's finish or at its deadline (compactEnded). Each way the task the claim owes was not
+// sent.
 //
 // What becomes of that task is the hold's own, and settle is what decides it. A suspension by
 // a source that resumes this same claim in the same phase — an operator's hold, and a
@@ -392,10 +394,15 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // A suspension held over the claim is the one end that gives the claim back to nothing, and it
 // says so to whoever asked for the compaction (ErrCompactSuspended). The hold runs here, as
 // the turn's end runs it, and leaves the claim suspended with its process stopped; where a
-// turn is running it is left to that turn's end, and the claim is working for it. Neither is a
-// claim back on the task it owes, and that task is unsent either way, so an answer of nil —
+// turn is running it is left to that turn's end, and the claim is working for it; and where the
+// compaction began after a take's turn had ended with its report still to come, it waits for that
+// report as at the turn's end (reportSettles, Machine.heldForReport): the claim goes back idle
+// holding it, and the report's finish runs it (reportedTask, afterTurn), or its deadline
+// (suspendAtTimeout). Run here, its stop would come before that report, which the suspended claim
+// ignores, and settle would take back as a cut turn a task whose turn ran whole. None of these is
+// a claim back on the task it owes, and that task is unsent each way, so an answer of nil —
 // which its caller reads as the claim back and its task gone again (Machine.Compact, api's
-// CompactResponse) — would be false of both. The hold that runs here stops a process in no
+// CompactResponse) — would be false of each. The hold that runs here stops a process in no
 // turn, so what its let-go records reads the claim in the state the compaction gives it back
 // in (compacting.back, suspendHeldAtEnd), and the next process is not told a turn was cut off.
 func compactEnded(m *Machine, ctx context.Context, ev Event) error {
@@ -421,6 +428,14 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	if m.held != nil {
+		if m.reportSettles() {
+			m.claim.State, m.heldForReport = run.back, true
+			m.log.Info(heldForReportLine, "task", m.claim.Pending.Number, "by", m.held.By, "deadline", m.held.Deadline)
+			if err := m.persist(ctx); err != nil {
+				return err
+			}
+			return ErrCompactSuspended
+		}
 		// A suspension that arrived while the compaction ran was held for it, as one that
 		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
 		if err := m.suspendHeldAtEnd(ctx, run.back); err != nil {

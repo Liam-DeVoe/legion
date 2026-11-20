@@ -734,8 +734,8 @@ describe("in the startup phase", () => {
 // The Legion controller's start message must be its session's first turn, ahead of any card. The
 // Legion entry names that session in the start-turn mark until the start turn's `agent_start`:
 // the operator's controller in a terminal from its `session_start` with the start unsent, sent
-// once `/legion-controller-start` sends it, and the daemon's in RPC mode sent right before the
-// daemon writes the prompt.
+// once `/legion-controller-start` sends it, and the daemon's in RPC mode sent right before it
+// reports ready, at which the daemon writes the start task the controller takes as its value.
 describe("while the start-turn mark names the session", () => {
   const oneCard = "1 Envoy message above arrived with no turn to read it: read it and act on it.";
   const twoCards =
@@ -925,7 +925,8 @@ describe("while the start-turn mark names the session", () => {
     host.markSent(host.clock());
     host.setIdle(true);
     host.message(host.card("rpc-owed").message);
-    // The daemon's start prompt starts its turn before the check the card armed runs.
+    // The start task the daemon's controller takes starts its turn before the check the card
+    // armed runs.
     host.setIdle(false);
     host.run();
     host.clearMark();
@@ -1034,7 +1035,7 @@ describe("while the start-turn mark names the session", () => {
       test(`sends no wake for an owed startup card when ${by} ends the start turn (${mode}), and the next run reads it with none after`, async () => {
         const host = harness({ mode });
         // The operator's controller in a terminal marks its start unsent at `session_start`; the
-        // daemon's in RPC mode marks it sent before the daemon's prompt.
+        // daemon's in RPC mode marks it sent before it takes the daemon's start task.
         if (mode === "tui") host.markUnsent();
         else host.markSent(host.clock());
         host.setIdle(true);

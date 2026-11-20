@@ -1194,13 +1194,17 @@ func (f BundleWorkspaceResult) Validate() error {
 	return nil
 }
 
-// Validate refuses a bundle slice the launcher could not place in its sequence.
+// Validate refuses a bundle slice the launcher could not place in its sequence, or one whose
+// count asks it to hold more than the sequence's bound.
 func (f LauncherBundle) Validate() error {
 	switch {
 	case f.ID == "":
 		return fmt.Errorf("%w: launcher_bundle carries no id", ErrMalformedFrame)
 	case f.Count <= 0:
 		return fmt.Errorf("%w: launcher_bundle count is %d", ErrMalformedFrame, f.Count)
+	case f.Count > maxLauncherSlices:
+		return fmt.Errorf("%w: launcher_bundle count is %d, which could pass the %d bytes a sequence carries",
+			ErrMalformedFrame, f.Count, MaxWorkspaceBundleBodyBytes)
 	case f.Index < 0 || f.Index >= f.Count:
 		return fmt.Errorf("%w: launcher_bundle index %d of %d", ErrMalformedFrame, f.Index, f.Count)
 	case f.Release <= 0:

@@ -517,6 +517,55 @@ func TestTurnOutcomeSentAgainAfterItLeftTheWindowIsARepeat(t *testing.T) {
 	}
 }
 
+// A report never applied — its first attempt lost on the way, so no daemon saw it — that the
+// worker's plugin sends again only after newer reports of the same generation pushed the window
+// past its key is applied all the same: the window's watermark covers only keys below which every
+// report of the generation was applied (recordTurnOutcome), and the window keeps each applied
+// report above it. The take's turn k ends with its report lost; reports k+1 to k+4, of turns no
+// take started, land; report k, naming the take's number, then finishes the task once, in the
+// daemon that saw the others and in one restarted over what the store holds. The window is back
+// at its bound once the gap is filled.
+//
+// The negative control is the watermark raised to every key the bound drops (recordTurnOutcome
+// before this change): report k reads as a repeat of a report already applied, the task stays
+// unfinished, and a relaunch would give it again to a worker that ran it whole.
+func TestTurnOutcomeSentAgainAfterNewerOnesFilledTheWindowIsAppliedWhenItWasNever(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the same daemon", true: "after a restart"}[restart], func(t *testing.T) {
+			h := newHarnessOf(t, queuedClaim(), currentPlugin)
+			h.reach(StateReady)
+			h.takesTurnEndsWithItsReportToCome()
+			number := h.pending().Number
+			h.worker.sequence++
+			lost := RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence, Task: number}
+			for range testLimits().LaunchFailures + 1 {
+				h.must(StreamTurnStart{Claim: h.token})
+				h.mustQuiet(StreamTurnEnd{Claim: h.token})
+				if err := h.reportTurn(0, nil); err != nil {
+					t.Fatalf("report a turn no take started: %v", err)
+				}
+			}
+			if p := h.pending(); p.Number != number || !p.turnStarted() {
+				t.Fatalf("after the newer reports the claim holds %+v, want task %d's turn still waiting for its report", p, number)
+			}
+			if restart {
+				h.restart()
+				h.connect()
+			}
+
+			h.repeatReport(lost)
+
+			if p := h.claim().Pending; p != nil {
+				t.Fatalf("pending %+v after report %d came, want task %d finished", p, lost.Sequence, number)
+			}
+			h.wantFinishedOnce(finishedByReport)
+			if kept := h.claim().TurnOutcomes; len(kept) != testLimits().LaunchFailures {
+				t.Errorf("the window keeps %+v once the gap is filled, want %d reports", kept, testLimits().LaunchFailures)
+			}
+		})
+	}
+}
+
 // A report whose first attempt the store did not write is applied in full when the worker's
 // plugin sends it again: the failed write ended the decision before it reached the task, so the
 // report sent again is its first application, not a repeat. That holds in the daemon whose write

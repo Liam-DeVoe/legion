@@ -46,8 +46,9 @@ type CheckLook struct {
 // the turn: a confirmed take with no text is one whose text no record kept, which the migration
 // that added the column filled its confirmed rows with, and that migration set those rows'
 // TurnStarted (turn_started = confirmed_at is not null) before any other fill.
-// A task lives until it is finished — by the turn-outcome report that names its number, or by
-// the end of its turn with no report after it (finishTask) — or until the record drops it.
+// A task lives until it is finished — by the turn-outcome report that names its number, or, for a
+// plugin below TaskTakeContract or a finish the store refused, by the end of its turn with no
+// report after it (finishTask, endFrameFinishes) — or until the record drops it.
 //
 // The id is the daemon's and never changes: an outbox delivery id, an operator's minted one, or
 // the round an update round's ask is of (updateTaskPrefix, updateRoundOf), which is what names
@@ -205,7 +206,9 @@ func (d Delivery) TakenWith(c Claim) bool { return d.Number != 0 && c.TaskTaken 
 // run in phase p: it is that run's task for that phase, and its turn is still to come — queued, a
 // task taken back included, or taken and awaiting its turn — or running in the turn the claim is
 // working. A task whose turn started on a claim not working is over: what finishes it is the
-// turn's report, or the end of that turn (finishTask).
+// turn's report, or, for a plugin below TaskTakeContract, the end of that turn (finishTask), and
+// a take of a plugin that names its number whose report never comes is taken back as a cut turn
+// (interrupted), its turn over all the same.
 func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState) bool {
 	return d.Generation == generation && d.Phase == p && (!d.turnStarted() || state == StateWorking)
 }

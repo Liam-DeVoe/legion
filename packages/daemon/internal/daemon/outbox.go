@@ -2834,9 +2834,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 // work: one whose turn is still to come — untaken, taken back, or taken and awaiting its turn; a
 // failed claim keeps the task it held, and a death in a turn takes the task back — or one whose
 // turn the claim is working (supervise.Delivery.StillWorked). A task whose turn started on a claim
-// not working is over: its report, or the end of its turn, finishes it. A start naming no phase
-// holds none, which is what a production check's look is: each look's task is delivered whatever
-// the claim holds.
+// not working is over: its report finishes it, or the end of its turn for a plugin below
+// supervise.TaskTakeContract, and a take whose report never comes goes back as a cut turn. A start
+// naming no phase holds none, which is what a production check's look is: each look's task is
+// delivered whatever the claim holds.
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)

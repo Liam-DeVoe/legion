@@ -60,19 +60,25 @@
 -- again since; nothing dates its acknowledgement, so its row is left owed too. Where the row is
 -- confirmed — the turn it was sent for started — its worker took it, so task_taken is 1 as well
 -- and the row's turn_started is true. A claim holding no pending row that served a task, a run
--- (serving_generation <> 0) or a phase entry (served_entry > 0), took and finished task 1 in the
--- session it holds, so task_written, task_taken and task_finished are 1 and task_finished_session
--- is that session. Every other claim was given nothing and stays at 0 throughout. The epochs and
--- revisions start empty, because no value in the bucket is the record's yet, so the first boot
--- writes every owed value once. origin starts empty, which names no source: the task was queued
--- before the record kept one. taken_text is the row's own text on a row filled as a take and
--- empty on every other, since no take of those was ever answered; a confirmed row's take is
--- therefore one a take sent again is refused in-turn, not answered (supervise's
--- answeredFromRecord). take_told names each of the claim's two records whose toldBy is the row's
--- delivery id: that release marked a record told at the confirmation of the prompt that carried
--- it, under the delivery's id, and gave the delivery a new id at every take-back, so a record
--- naming the row's id was told by the turn that confirmed the row, which is the take the row
--- holds now, and by nothing else. A row no turn confirmed is named by none.
+-- (serving_generation <> 0) or a phase entry (served_entry > 0), took and finished task 1, so
+-- task_written, task_taken and task_finished are 1, and task_finished_session is the session it
+-- holds — or, where that session is a new one that has taken nothing yet, the session it
+-- abandoned. That is the claim whose abandoned_session is recorded and not told: that release
+-- marked the abandoned session told at the confirmation of the first prompt the new session took,
+-- so an untold one says the session the claim holds has finished nothing, and the task was
+-- finished in the session it abandoned, the newest it can have been. Filled with the session it
+-- holds, the claim would read as finished in that new session, and the resume rule would give it
+-- no task (workflow's finishedInItsSession). Every other claim was given nothing and stays at 0
+-- throughout. The epochs and revisions start empty, because no value in the bucket is the
+-- record's yet, so the first boot writes every owed value once. origin starts empty, which names
+-- no source: the task was queued before the record kept one. taken_text is the row's own text on
+-- a row filled as a take and empty on every other, since no take of those was ever answered; a
+-- confirmed row's take is therefore one a take sent again is refused in-turn, not answered
+-- (supervise's answeredFromRecord). take_told names each of the claim's two records whose toldBy
+-- is the row's delivery id: that release marked a record told at the confirmation of the prompt
+-- that carried it, under the delivery's id, and gave the delivery a new id at every take-back,
+-- so a record naming the row's id was told by the turn that confirmed the row, which is the take
+-- the row holds now, and by nothing else. A row no turn confirmed is named by none.
 --
 -- The take the fill makes confirms its claim's handshake as an accepted take does (supervise's
 -- EntryHandshake.confirmed): where the handshake names the row's entry and run and records no
@@ -360,9 +366,15 @@ update claims c set task_written = 1, task_taken = case when d.confirmed_at is n
 from pending_task_deliveries d
 where d.claim_token = c.token;
 
--- A claim holding no pending row that served a run or a phase entry took and finished task 1, in
--- the session it holds.
-update claims c set task_written = 1, task_taken = 1, task_finished = 1, task_finished_session = c.session
+-- A claim holding no pending row that served a run or a phase entry took and finished task 1: in
+-- the session it holds, unless that session has taken nothing since the claim abandoned the one
+-- before it (abandoned_session recorded and not told), which then finished it.
+update claims c set task_written = 1, task_taken = 1, task_finished = 1,
+  task_finished_session = case
+    when coalesce(c.abandoned_session ->> 'session', '') <> ''
+      and not coalesce((c.abandoned_session ->> 'told')::boolean, false)
+    then c.abandoned_session ->> 'session'
+    else c.session end
 where (c.serving_generation <> 0 or c.served_entry > 0)
   and not exists (select 1 from pending_task_deliveries d where d.claim_token = c.token);
 

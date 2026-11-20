@@ -149,6 +149,11 @@ const (
 	// no process of its own waits launching until it fires; one whose process runs waits as the
 	// gate found it.
 	TimerPause TimerKind = "pause"
+	// TimerReportWait is the bound of a stale-plugin relaunch's wait for the report of the pending
+	// take's turn, which ended with that report still to come (relaunchWaitsForReport): the stop
+	// timeout, the bound the operator's suspension has. When it passes the task is taken back with
+	// the note of a cut turn and the relaunch runs (reportWaitOver). Armed on the pending task's id.
+	TimerReportWait TimerKind = "report_wait"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -713,6 +718,8 @@ const (
 	onTurnStartTimer eventKind = timerPrefix + eventKind(TimerTurnStart)
 	// The gate's own stop of a launch it held while the project is paused (pauseGate).
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
+	// The bound of a stale-plugin relaunch's wait for a take's report (relaunchWaitsForReport).
+	onReportWaitTimer eventKind = timerPrefix + eventKind(TimerReportWait)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1132,6 +1139,16 @@ func fillTable(t *builder) {
 	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
 
+	// The bound of a stale-plugin relaunch's wait for the report of the take's turn. It is armed
+	// only over a claim whose agent is ready, idle or working, and goes with the task (the fence
+	// on its delivery) and with the process (letGo). Where it takes the task back the relaunch
+	// runs, or the held suspension that waits for the same report, or the turn running runs them
+	// at its end.
+	t.row(onReportWaitTimer, "the stale-plugin relaunch's wait for the take's report is over: take the task back with the note of a cut turn, then relaunch", reportWaitOver,
+		[]ClaimState{StateLaunching, StateSuspended, StateFailed}, StateReady, StateIdle, StateWorking)
+	t.ignore(onReportWaitTimer, "no take's turn awaits its report", unready...)
+	t.ignore(onReportWaitTimer, "no take's turn awaits its report", gone...)
+
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
@@ -1201,7 +1218,7 @@ func fillTable(t *builder) {
 	t.ignore(onReady, failedClaim, StateFailed)
 	t.ignore(onReady, retiredClaim, StateRetired)
 
-	t.row(onSuspend, "suspend: stop the process, keep the session, unless a held suspension waits for the report of the claim's last turn: the request joins that hold",
+	t.row(onSuspend, "suspend: stop the process, keep the session, unless the take's turn ended with its report still to come: the request is held for that report, or joins the hold that waits for it",
 		suspend, []ClaimState{StateSuspended}, StateRegistered, StateReady, StateIdle)
 	t.row(onSuspend, "a suspension of a claim in a turn is held for that turn's end, since stopping the agent now would cut its turn off, unless no process stands behind the claim: that one is suspended here",
 		holdSuspension, []ClaimState{StateSuspended}, StateWorking)
@@ -1461,8 +1478,10 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 //     that its turn is running — and the relaunch is held for that turn's end (refreshPlugin,
 //     holdStaleRelaunch), where the task is settled first (turnEnded, afterTurn);
 //   - an agent in no turn is relaunched now, every turn the replay showed already applied, so a
-//     take whose turn started and ended in the replay is settled by its contract where the
-//     relaunch lets the process go (interrupted), and one no turn ran is given back with no note.
+//     take whose turn started and ended in the replay is settled by its contract: for a plugin
+//     below TaskTakeContract where the relaunch lets the process go (interrupted), and for one
+//     that names its number by the report of that turn, which the relaunch waits for
+//     (refreshPlugin, relaunchWaitsForReport); one no turn ran is given back with no note.
 //
 // The reconnect deadline the unanswered ask armed goes with the answer. Any other answer — to the
 // ask a restored working claim makes (askTurnOver), or one arriving after the relaunch was decided
@@ -1859,8 +1878,13 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	if finishes {
 		// The task's turn is over and its report is what finishes it, or the end-frame bound
 		// for a plugin that names no number; what is held for the turn runs at its finish
-		// instead (finishTask, reportedTask, finishAtTurnsEnd).
+		// instead (finishTask, reportedTask, finishAtTurnsEnd). A stale-plugin relaunch held for
+		// the turn of a task only its report settles now waits for that report, under the bound
+		// such a wait has (relaunchWaitsForReport).
 		m.armEndFrameBound(p.ID)
+		if held := m.staleRelaunch; held != nil && m.reportSettles() {
+			m.relaunchWaitsForReport(*held)
+		}
 		return nil
 	}
 	return m.afterTurn(ctx)
@@ -1880,16 +1904,16 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // leaves it.
 //
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
-// the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
-// reaches refreshPlugin with none and asks the gate at that guard, which is where every
-// uncredited relaunch of this lane asks and which states why the ask lives there rather than
-// here. The claim here is never the controller's, which that guard spares: m.staleRelaunch is
-// written by holdStaleRelaunch alone, and that is reached under StateWorking and no controller.
+// the claim took no credit while its turn ran, or while the relaunch waited for the report of
+// its take's turn (holdStaleRelaunch, relaunchWaitsForReport), so the relaunch run here reaches
+// refreshPlugin with none and asks the gate at that guard, which is where every uncredited
+// relaunch of this lane asks and which states why the ask lives there rather than here. That
+// guard spares the controller's claim, whose relaunch only the wait for a report holds.
 // Refused, the relaunch is left to the next sweep, which posts StalePlugin for a claim that is
 // idle by then and relaunches it on the first credit that comes free — a minute at the rate the
 // lane is held to, against the hours a lane with no gate costs every other wake of the daemon.
-// The mark is not re-armed for that: it waits for a turn, and this turn has ended. The offer does
-// not wait on the answer either: it runs whichever way the gate answered.
+// The mark is not re-armed for that: it waits for a turn or a report, and both are over. The
+// offer does not wait on the answer either: it runs whichever way the gate answered.
 func (m *Machine) afterTurn(ctx context.Context) error {
 	if m.held != nil && m.heldForReport {
 		m.heldForReport = false
@@ -2158,9 +2182,15 @@ func finishReady(m *Machine, ctx context.Context) error {
 // reready persists the in-memory ready state before answering an agent retry: a prior ready's
 // claim write may have failed after the machine made the transition. A retained launch-time
 // suspension still wins: the retry completes that suspension instead of publishing ready and
-// releasing notices to a claim the operator or workflow is stopping.
+// releasing notices to a claim the operator or workflow is stopping. A held suspension that waits
+// past the end of its take's turn for the report that settles the task does not: run here, its
+// stop would come before that report, and settle would take back as a cut turn a task whose turn
+// ran whole (Machine.heldForReport). The report's finish runs it (afterTurn), or its deadline
+// (suspendAtTimeout), and the ready is answered as any other is meanwhile, the take the hold
+// refuses refused still (claimHold). pi-legion sends its ready again from its capability schedule
+// while its session is idle, which is exactly that window.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil {
+	if m.held != nil && !m.heldForReport {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)

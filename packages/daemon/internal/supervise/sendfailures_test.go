@@ -25,10 +25,10 @@ const staleLockRefusal = "Command failed (exit 1): jj metaedit: the git lock " +
 	"/legion/workspaces/acme/widgets/legion-480/.git/index.lock was last written 31m ago"
 
 // staleLockRefusalWithNUL is that same answer with a NUL byte in it, which is what reaches the
-// daemon when the far side's JSON holds a `\u0000`: Oh My Pi decodes it into the `error` string,
-// and the shim relays the wedged command's own bytes whatever they are. PostgreSQL refuses a NUL in
-// text ("invalid byte sequence for encoding \"UTF8\": 0x00"), so the record holds U+FFFD in its
-// place, as every text the daemon stores does (storetext.FarSideError).
+// daemon when the wedged command printed one: the Go shim relays the command's own bytes whatever
+// they are. PostgreSQL refuses a NUL in text ("invalid byte sequence for encoding \"UTF8\":
+// 0x00"), so the record of failed working-copy adoptions holds U+FFFD in its place, as every text
+// the daemon stores does (storetext.FarSideError).
 const staleLockRefusalWithNUL = "Command failed (exit 1): jj metaedit: the git lock " +
 	"/legion/workspaces/acme/widgets/legion-480/.git/index.lock\x00 was last written 31m ago"
 

@@ -134,8 +134,10 @@ func relaunchSentence(ended EndedWork, task bool) string {
 
 // inFrontOf is the record as the sentence in front of task d tells it (Delivery.message). The
 // turn of the claim's task the record says was cut off (EndedWork.TaskTurn) is d's own only where
-// d is the task the let-go took back from that turn (Delivery.Interrupted, interrupted): a let-go
-// that takes nothing back leaves a task whose turn ran to be finished (settle, finishTask), and a
+// d is the task the let-go took back from that turn (Delivery.Interrupted, interrupted): a task
+// whose turn ran and that no let-go took back is finished (settle, finishTask) — by its end frame
+// for a plugin below TaskTakeContract, by its report for one that names its number — or, where
+// no report comes for such a plugin, taken back as a cut turn and so Interrupted after all; and a
 // finished task is never taken again. So any other task was never in that turn: the operator's
 // retry of a worker a stop cut off in its task's turn is the case, since the stop retires that
 // task and the retry gives the claim a new task of its phase (api's retryStart). In front of such
@@ -221,7 +223,8 @@ func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relau
 //
 // The delivery is a numbered task like any other, of origin notice (OriginNotice): queue gives it
 // the claim's next number and writes the claim's value, the worker takes it, and the report that
-// names its number or the end of its turn finishes it (finishTask). So it is queued only where the
+// names its number finishes it, or the end of its turn for a plugin below TaskTakeContract
+// (finishTask, endFrameFinishes). So it is queued only where the
 // record shows the let-go ended work that was running — a turn, the task's turn, or background
 // work a report named (EndedWork.ranWork) — and never for a record that says only that the
 // daemon holds no report of the process (dispatch://INFRA-2811, departure D2): a value written

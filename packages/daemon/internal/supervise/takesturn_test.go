@@ -125,25 +125,36 @@ func TestTurnReportNamingNoTaskGivesTheTakeItsTurnBack(t *testing.T) {
 //
 // The first case is the report of the run given the take landing after the take's own run
 // started. The take is accepted, and the run R1 that starts next is given it; the worker holds the
-// text and runs it as R2 as soon as R1 ends. R1's report, naming no task, lands while R2 runs and
-// gives the take its turn back; R2's report, naming the take's number, lands after R2's end frame
-// and finishes the task. R2's start was seen, so none is left to come for it, and the next task's
+// text and runs it as R2 as soon as R1 ends, before it sends R1's report (pi-legion's agent_end
+// hook starts the held text, then reports). R1's report, naming no task, lands while R2 runs: R1
+// was not the take's turn, and R2, the turn after it, is, so the take's turn stays started, moved
+// to R2 (notTheTakesTurn); R2's report, naming the take's number, lands after R2's end frame and
+// finishes the task. R2's start was seen, so none is left to come for it, and the next task's
 // turn is that task's: its start line names it, and its take's turn is started (startTakesTurn).
-// The second case is a run's report sent late, after the take's own turn started: the take was
-// accepted after R1 ended, R2 is its turn, and R1's report naming no task lands while R2 runs. It
-// is of an earlier turn than the take's and gives nothing back. The third case is the second with
-// R1 run and ended before the agent said ready, an end the machine cannot number
-// (turnEndedBeforeReady): its late report gives nothing back either.
+// The second case is the first with a suspension held over R2: R2's end leaves the hold waiting
+// for R2's report (reportSettles), which finishes the task once before the stop. The third is R1's
+// report landing only after R2 ended: R2 ran the take whole, so the take's turn is R2's and over,
+// and a suspension then waits for R2's report. The fourth case is a run's report sent late, after
+// the take's own turn started: the take was accepted after R1 ended, R2 is its turn, and R1's
+// report naming no task lands while R2 runs. It is of an earlier turn than the take's and gives
+// nothing back. The fifth case is the fourth with R1 run and ended before the agent said ready, an
+// end the machine cannot number (turnEndedBeforeReady): its late report gives nothing back either.
 //
 // The negative controls: a mark set for a report whatever its turn (startedUnseen marking any
 // ready or idle claim) names the finished task in the next task's start line and leaves that
-// task's take awaiting its turn while the turn runs; a put-back by any report of the claim's
-// generation (notTheTakesTurn with no sequence) gives the second case's take its turn back while
+// task's take awaiting its turn while the turn runs; a put-back by R1's report while a later run
+// runs or has run (notTheTakesTurn before this change) leaves the take awaiting a turn it already
+// had, so the suspension at R2's end, or after it, stops the claim before R2's report and gives
+// the task back as never run, to run again on resume; a put-back by any report of the claim's
+// generation (notTheTakesTurn with no sequence) gives the fourth case's take its turn back while
 // that turn runs; and a turn's end before ready ignored with the count still known (the table's
-// ignore before this change) gives R1's turn to the take in the third case, and R1's report then
+// ignore before this change) gives R1's turn to the take in the fifth case, and R1's report then
 // gives the take its turn back while that turn runs.
 func TestTurnReportReachesTheTakeOnlyFromTheTurnItWasGiven(t *testing.T) {
-	t.Run("a put-back while the take's run runs, then its report after its end", func(t *testing.T) {
+	// givenR1RunningR2 is the take accepted, R1 given it and ended, and R2, the take's own run,
+	// started; it answers the task's number.
+	givenR1RunningR2 := func(t *testing.T) (*harness, uint64) {
+		t.Helper()
 		h := newHarnessOf(t, queuedClaim(), currentPlugin)
 		h.manualTakes()
 		h.reach(StateReady)
@@ -153,11 +164,18 @@ func TestTurnReportReachesTheTakeOnlyFromTheTurnItWasGiven(t *testing.T) {
 		h.must(StreamTurnStart{Claim: h.token})
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		h.must(StreamTurnStart{Claim: h.token})
+		return h, number
+	}
+	t.Run("R1's report while the take's run runs, then its report after its end", func(t *testing.T) {
+		h, number := givenR1RunningR2(t)
 		if err := h.reportTurn(0, nil); err != nil {
 			t.Fatalf("report R1 as no task's: %v", err)
 		}
-		if p := h.pending(); !p.awaitsTurn() {
-			t.Fatalf("after R1's report the task is %+v, want its take awaiting its turn again", p)
+		if p := h.pending(); !p.turnStarted() {
+			t.Fatalf("after R1's report the task is %+v, want its take's turn still started, moved to R2", p)
+		}
+		if lines := h.logs.lines(notTheTakesTurnLine); len(lines) != 0 {
+			t.Fatalf("logged %q, want no turn given back while the take's own run runs", lines)
 		}
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		if err := h.reportTurn(number, nil); err != nil {
@@ -181,6 +199,47 @@ func TestTurnReportReachesTheTakeOnlyFromTheTurnItWasGiven(t *testing.T) {
 		if p := h.claim().Pending; p != nil {
 			t.Fatalf("pending %+v after the next task's turn was reported, want task %d finished", p, next)
 		}
+	})
+	t.Run("R1's report while the take's run runs, a suspension held over that run", func(t *testing.T) {
+		h, number := givenR1RunningR2(t)
+		if err := h.reportTurn(0, nil); err != nil {
+			t.Fatalf("report R1 as no task's: %v", err)
+		}
+		holdsTheSuspension(h)
+		stops := len(h.calls("Suspend"))
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.wantStillAwaitingItsReport(number, stops)
+
+		if err := h.reportTurn(number, nil); err != nil {
+			t.Fatalf("report R2 as task %d's: %v", number, err)
+		}
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		h.wantFinishedOnce(finishedByReport)
+		h.wantTakenNoMore(number, resumedByTheOperator)
+	})
+	t.Run("R1's report after the take's run ended, a suspension before its report", func(t *testing.T) {
+		h, number := givenR1RunningR2(t)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		if err := h.reportTurn(0, nil); err != nil {
+			t.Fatalf("report R1 as no task's: %v", err)
+		}
+		stops := len(h.calls("Suspend"))
+		h.wantStillAwaitingItsReport(number, stops)
+		if err := h.handle(operatorSuspension(h)); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the suspension after R1's late report answered %v, want it held for R2's report", err)
+		}
+		h.wantStillAwaitingItsReport(number, stops)
+
+		if err := h.reportTurn(number, nil); err != nil {
+			t.Fatalf("report R2 as task %d's: %v", number, err)
+		}
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		h.wantFinishedOnce(finishedByReport)
+		h.wantTakenNoMore(number, resumedByTheOperator)
 	})
 	t.Run("a run's report sent after the take's turn started", func(t *testing.T) {
 		h := newHarnessOf(t, queuedClaim(), currentPlugin)
@@ -531,6 +590,266 @@ func TestASuspensionAskedAgainWhileTheHoldWaitsForTheReportJoinsTheHold(t *testi
 			h.wantFinishedOnce(finishedByReport)
 		})
 	}
+}
+
+// reportToComeOfACurrentPlugin is a claim whose plugin names its task's number, idle over the task
+// whose take's turn ran and ended with its report still to come (takesTurnEndsWithItsReportToCome).
+// It answers the task's number and the stops the runtime was asked for until then.
+func reportToComeOfACurrentPlugin(t *testing.T) (h *harness, number uint64, stops int) {
+	t.Helper()
+	h = newHarnessOf(t, queuedClaim(), currentPlugin)
+	h.reach(StateReady)
+	h.takesTurnEndsWithItsReportToCome()
+	return h, h.pending().Number, len(h.calls("Suspend"))
+}
+
+// wantStillAwaitingItsReport holds that the let-go asked of the claim waits for the report of the
+// take's turn: the claim is idle over the task whose turn ran, and the runtime was asked for
+// stops stops and no launch.
+func (h *harness) wantStillAwaitingItsReport(number uint64, stops int) {
+	h.t.Helper()
+	h.wantState(StateIdle)
+	h.wantCalls("Suspend", stops)
+	h.wantCalls("Resume", 0)
+	if p := h.pending(); p.Number != number || !p.turnStarted() {
+		h.t.Fatalf("the claim holds %+v, want task %d's turn still waiting for its report", p, number)
+	}
+}
+
+// wantTakenBackWithItsNote holds that the task whose take's turn ran was taken back with the note
+// of a cut turn, its report never having come, and finished by nothing.
+func (h *harness) wantTakenBackWithItsNote(number uint64) {
+	h.t.Helper()
+	if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
+		h.t.Fatalf("the claim holds %+v, want task %d taken back with the note of a cut turn", p, number)
+	}
+	if finished := h.records.of(finishedLine); len(finished) != 0 {
+		h.t.Fatalf("%q was logged %d times, want none: no report finished the task", finishedLine, len(finished))
+	}
+}
+
+// wantTakenOnceMore holds that the process next taking work, brought up by next, takes the task
+// once, behind the note of a cut turn.
+func (h *harness) wantTakenOnceMore(number uint64, next func(*harness)) {
+	h.t.Helper()
+	sent := len(h.prompts())
+	next(h)
+	var again []taken
+	for _, took := range h.prompts()[sent:] {
+		if took.Number == number {
+			again = append(again, took)
+		}
+	}
+	if len(again) != 1 {
+		h.t.Fatalf("the next process took task %d %d times (%+v), want once", number, len(again), again)
+	}
+	wantSays(h.t, again[0].Message, saysTaskTurn)
+}
+
+// wantTakenNoMore holds that the process next taking work, brought up by next, takes nothing of
+// the task its report finished.
+func (h *harness) wantTakenNoMore(number uint64, next func(*harness)) {
+	h.t.Helper()
+	sent := len(h.prompts())
+	next(h)
+	for _, took := range h.prompts()[sent:] {
+		if took.Number == number {
+			h.t.Fatalf("the next process took %+v, want nothing of task %d, which its report finished", took, number)
+		}
+	}
+}
+
+// A suspension that reaches an idle claim whose take's turn has ended with its report still to
+// come, and finds no hold, waits for that report as a suspension held over the turn does
+// (suspend, holdSuspension, Machine.heldForReport): the report finishes the task once, and the
+// stop runs after it. That includes the daemon's suspension its row asks again after a restart,
+// which forgot the hold the first ask made. With no report by the suspension's own deadline the
+// stop runs then, and takes the task back with the note of a cut turn first.
+//
+// The negative control is the idle row deciding the suspension at once (suspend before this
+// change): the stop comes before the report, the suspended claim ignores the report, and settle
+// takes back as a cut turn a task whose turn ran whole, so it runs again on resume.
+func TestASuspensionOfAClaimWhoseReportIsToComeWaitsForIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		restart bool
+		ask     func(h *harness) RequestSuspend
+	}{
+		{"the operator's suspension", false, operatorSuspension},
+		{"the daemon's suspension asked again after a restart", true, func(h *harness) RequestSuspend {
+			return RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "the issue left the workflow"}
+		}},
+	} {
+		t.Run(tc.name+", then the report", func(t *testing.T) {
+			h, number, stops := reportToComeOfACurrentPlugin(t)
+			if tc.restart {
+				h.restart()
+				h.connect()
+			}
+
+			if err := h.handle(tc.ask(h)); !errors.Is(err, ErrSuspendHeld) {
+				t.Fatalf("the suspension of the claim whose report is to come answered %v, want it held for the report", err)
+			}
+			h.wantStillAwaitingItsReport(number, stops)
+			h.mustReport(nil)
+
+			h.wantState(StateSuspended)
+			h.wantCalls("Suspend", stops+1)
+			if p := h.claim().Pending; p != nil {
+				t.Fatalf("pending %+v after the report, want task %d finished", p, number)
+			}
+			h.wantFinishedOnce(finishedByReport)
+		})
+	}
+	t.Run("the operator's suspension and no report by its deadline", func(t *testing.T) {
+		h, number, stops := reportToComeOfACurrentPlugin(t)
+		if err := h.handle(operatorSuspension(h)); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the suspension of the claim whose report is to come answered %v, want it held for the report", err)
+		}
+		h.advance(testStop - time.Second)
+		h.wantStillAwaitingItsReport(number, stops)
+
+		h.advance(time.Second)
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		h.wantTakenBackWithItsNote(number)
+		h.wantTakenOnceMore(number, resumedByTheOperator)
+	})
+}
+
+// A ready the agent sends again while a held suspension waits past its take's turn for the report
+// leaves that hold waiting (reready, Machine.heldForReport): the report finishes the task once, and
+// the stop runs after it; with no report, the hold's deadline stops the claim and takes the task
+// back with the note of a cut turn first. pi-legion sends its ready again from its capability
+// schedule while its session is idle.
+//
+// The negative control is reready running every held suspension (reready before this change): the
+// ready stops the process before the report, which the suspended claim ignores, and settle takes
+// back as a cut turn a task whose turn ran whole.
+func TestAReadySentAgainLeavesTheHoldWaitingForTheReport(t *testing.T) {
+	readyAgain := func(h *harness) {
+		h.t.Helper()
+		h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: session})
+	}
+	t.Run("then the report", func(t *testing.T) {
+		h, number, stops := heldOverATakesTurn(t)
+		readyAgain(h)
+		h.wantStillAwaitingItsReport(number, stops)
+
+		h.mustReport(nil)
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		h.wantFinishedOnce(finishedByReport)
+		h.wantTakenNoMore(number, resumedByTheOperator)
+	})
+	t.Run("no report by the hold's deadline", func(t *testing.T) {
+		h, number, stops := heldOverATakesTurn(t)
+		readyAgain(h)
+		h.wantStillAwaitingItsReport(number, stops)
+
+		h.advance(testStop)
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		h.wantTakenBackWithItsNote(number)
+		h.wantTakenOnceMore(number, resumedByTheOperator)
+	})
+}
+
+// A suspension held over a compaction that started after the take's turn ended waits at the
+// compaction's end for the report of that turn (compactEnded, reportSettles), as one held over the
+// turn waits at the turn's end: the claim is given back idle, held, and the compaction is answered
+// that the hold took it (ErrCompactSuspended); the report finishes the task once and the stop runs
+// after it; with no report, the hold's deadline stops the claim and takes the task back with the
+// note of a cut turn first.
+//
+// The negative control is compactEnded running the hold at once (before this change): the stop
+// comes before the report, which the suspended claim ignores, and settle takes back as a cut turn
+// a task whose turn ran whole.
+func TestACompactionsEndLeavesTheHoldWaitingForTheReport(t *testing.T) {
+	compactedUnderAHold := func(t *testing.T) (*harness, uint64, int) {
+		t.Helper()
+		h, number, stops := reportToComeOfACurrentPlugin(t)
+		release, compacted := h.compactHeld()
+		holdsTheSuspension(h)
+		release()
+		if err := <-compacted; !errors.Is(err, ErrCompactSuspended) {
+			t.Fatalf("the compaction a held suspension met at its end answered %v, want ErrCompactSuspended", err)
+		}
+		h.m.Wait()
+		return h, number, stops
+	}
+	t.Run("then the report", func(t *testing.T) {
+		h, number, stops := compactedUnderAHold(t)
+		h.wantStillAwaitingItsReport(number, stops)
+
+		h.mustReport(nil)
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		h.wantFinishedOnce(finishedByReport)
+		h.wantTakenNoMore(number, resumedByTheOperator)
+	})
+	t.Run("no report by the hold's deadline", func(t *testing.T) {
+		h, number, stops := compactedUnderAHold(t)
+		h.wantStillAwaitingItsReport(number, stops)
+
+		h.advance(testStop)
+
+		h.wantState(StateSuspended)
+		h.wantCalls("Suspend", stops+1)
+		h.wantTakenBackWithItsNote(number)
+		h.wantTakenOnceMore(number, resumedByTheOperator)
+	})
+}
+
+// The stale-plugin relaunch of a claim whose take's turn ended with its report still to come, on a
+// plugin that names its task's number, waits for that report (refreshPlugin, reportSettles), and a
+// sweep that posts it again meanwhile changes nothing: the report finishes the task once, and the
+// relaunch runs after it. With no report by the stop timeout (TimerReportWait, the bound the
+// operator's suspension has), the task is taken back with the note of a cut turn and the relaunch
+// runs, and the relaunched process takes the task once behind that note. A claim is stale on a
+// plugin at TaskTakeContract only once a later daemon raises its contract, which is the daemon
+// here.
+//
+// The negative control is refreshPlugin relaunching an idle claim at once (before this change):
+// the relaunch takes the task back as a cut turn before its report, and the relaunched process
+// runs a task whose turn ran whole.
+func TestAStalePluginRelaunchWaitsForTheReportOfItsTakesTurn(t *testing.T) {
+	staleOverAReportToCome := func(t *testing.T) (*harness, uint64, int) {
+		t.Helper()
+		h, number, stops := reportToComeOfACurrentPlugin(t)
+		h.deps.PluginContract, h.m.deps.PluginContract = TaskTakeContract+1, TaskTakeContract+1
+		h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+		h.wantStillAwaitingItsReport(number, stops)
+		return h, number, stops
+	}
+	t.Run("then the report", func(t *testing.T) {
+		h, number, stops := staleOverAReportToCome(t)
+		h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+		h.wantStillAwaitingItsReport(number, stops)
+
+		h.mustReport(nil)
+
+		h.wantState(StateLaunching)
+		h.wantCalls("Resume", 1)
+		h.wantFinishedOnce(finishedByReport)
+		h.wantTakenNoMore(number, relaunchedToReady)
+	})
+	t.Run("no report by the bound", func(t *testing.T) {
+		h, number, stops := staleOverAReportToCome(t)
+		h.advance(testStop - time.Second)
+		h.wantStillAwaitingItsReport(number, stops)
+
+		h.advance(time.Second)
+
+		h.wantState(StateLaunching)
+		h.wantCalls("Resume", 1)
+		h.wantTakenBackWithItsNote(number)
+		h.wantTakenOnceMore(number, relaunchedToReady)
+	})
 }
 
 // An end report sent again after its first attempt finished its task — the worker heard no

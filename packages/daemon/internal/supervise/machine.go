@@ -1442,10 +1442,12 @@ type Machine struct {
 	// rather than a field of the request, because the request is the event the daemon posts and
 	// carries nothing a caller may not set.
 	heldLaunch bool
-	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, naming the pass
-	// that found the claim ("boot", "sweep"); nil for none. Relaunching a stale claim where it
-	// stands would end a turn whose worker the stale-plugin lane asked nothing of, so the relaunch
-	// waits for the turn (refreshPlugin, turnEnded). It is memory only, as the held suspension's
+	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, or for the
+	// report of the take's turn that ended (relaunchWaitsForReport), naming the pass that found
+	// the claim ("boot", "sweep", "wake"); nil for none. Relaunching a stale claim where it stands
+	// would end a turn whose worker the stale-plugin lane asked nothing of, or take back as a cut
+	// turn a task whose turn ran whole, so the relaunch waits for the turn and for that report
+	// (refreshPlugin, turnEnded, afterTurn). It is memory only, as the held suspension's
 	// deadline timer is: the daemon's boot pass and every orphan sweep post StalePlugin again for
 	// a claim still stale (refreshStalePlugins in internal/daemon), so a restart that forgets this
 	// mark finds the same claim again, and letGo drops it with the process it was made for.
@@ -2629,12 +2631,13 @@ func (m *Machine) fence(ev Event) (bool, error) {
 
 // timesADelivery is whether a timer of kind waits on one delivery rather than on the claim or
 // its process: the end-frame bound a task's turn's end arms (finishTask), the ladder's wait a
-// provider error arms (providererror.go), and R5's two bounds (waits.go). Each is fenced on the
+// provider error arms (providererror.go), R5's two bounds (waits.go), and the bound of a
+// stale-plugin relaunch's wait for a take's report (relaunchWaitsForReport). Each is fenced on the
 // claim's pending delivery as well as on the id the arming recorded, so one that fires after the
 // task it was armed for was replaced decides nothing about the task that replaced it.
 func timesADelivery(kind TimerKind) bool {
 	switch kind {
-	case TimerFinish, TimerPromptRetry, TimerTake, TimerTurnStart:
+	case TimerFinish, TimerPromptRetry, TimerTake, TimerTurnStart, TimerReportWait:
 		return true
 	default:
 		return false

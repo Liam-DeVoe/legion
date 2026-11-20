@@ -396,6 +396,18 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
+		if m.heldForReport {
+			// The hold waits past the end of its take's turn for the report that settles the
+			// task (Machine.heldForReport): ended here, its stop would come before that report,
+			// and settle would take back as a cut turn a task whose turn ran whole. So the wake
+			// is spent into the hold, whose stop, at that report's finish or at its deadline,
+			// owes a pause's role the launch this wake was, as endHeld would here (heldLaunch,
+			// suspendedFor). A hold dropped unrun meanwhile leaves the launch to whoever raised
+			// it: the stale-plugin pass, or the runtime's next report of the process.
+			m.log.Info(wakeIntoReportHoldLine, "kind", waiting.kind, "task", m.claim.Pending.Number, "by", m.held.By)
+			m.heldLaunch = true
+			return nil
+		}
 		return m.endHeld(ctx, true, stopOwed)
 	}
 	if pause, holds := m.pauseHolds(); holds {
@@ -403,6 +415,11 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	}
 	return m.runWake(ctx, waiting, true)
 }
+
+// wakeIntoReportHoldLine is the line of a wake whose turn came while a held suspension waits for
+// the report of the take's turn (wakeNow), at Info, with the wake's kind, the task's number and
+// the hold's source: the wake is spent into the hold, whose stop owes its launch.
+const wakeIntoReportHoldLine = "supervise: this claim's wake came due while a held suspension waits for the report of the take's turn; the wake's launch goes to the hold, which stops the process once that report settles the task"
 
 // runWake is everything a wake does once it is off the machine: the lifecycle recheck and the
 // take-back a launch makes first, the one line the wake writes, and the work itself. Its two
@@ -480,6 +497,16 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 		m.log.Info("supervise: the fact this claim's plugin refresh was raised for is gone; its relaunch is left to the next stale-plugin pass",
 			"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
 		m.watchAgain()
+		return nil
+	}
+	// A take's turn that ran in the wait and ended with its report still to come is the turn the
+	// refresh's own relaunch waits for the report of, as a relaunch decided now would
+	// (refreshPlugin, relaunchWaitsForReport): let go now, the process would take that report with
+	// it, and the take-back below would mark the task a cut turn. The wake is spent and the
+	// relaunch waits on the machine for the report, which runs it through refreshPlugin.
+	if waiting.kind == WakePluginRefresh && m.reportSettles() {
+		m.watchAgain()
+		m.relaunchWaitsForReport("wake")
 		return nil
 	}
 	// Every kind a machine parks today starts a process (StartsProcess), so both steps are taken

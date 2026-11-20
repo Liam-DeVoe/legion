@@ -118,9 +118,14 @@ func taskNumbersMoment(minute int) *time.Time {
 // standing process acknowledged (task 1 written and owed, nothing of it taken), one holding a task
 // whose turn started (task 1 written and taken, its turn started), one holding none that served a
 // task — a run, or only a phase entry — (task 1 written, taken and finished in the session it
-// holds), and one that was given nothing (no number at all). The pending claim that has also
-// served a run is the case that tells the two rules apart: the row it holds is its task, so its
-// finished number stays 0. The acknowledged task is read back through the store's own claim read
+// holds), one holding none that served a run and then abandoned that session for one that has
+// taken nothing yet (task 1 written, taken and finished in the session it abandoned, since the
+// session it holds finished nothing), and one that was given nothing (no number at all). The
+// pending claim that has also served a run is the case that tells the two rules apart: the row it
+// holds is its task, so its finished number stays 0. The claim whose new session has taken a task
+// already — the session it abandoned is told, which only an accepted take of the new session
+// marks — finished task 1 in the session it holds, as every other served claim does. The
+// acknowledged task is read back through the store's own claim read
 // too, where the claim counts as in a turn (supervise.Claim.InTurn) while it is ready: the take
 // awaits its turn, so the turn the old process starts is that take's and a relaunch before one
 // gives the take back. The acknowledged tasks no standing process acknowledged are six: on a claim
@@ -143,7 +148,10 @@ func taskNumbersMoment(minute int) *time.Time {
 // statement for acknowledged rows, under which that task reads as nobody's take, which is how a
 // prompt the old worker held came to run twice; for the acknowledged tasks no standing process
 // acknowledged, the fill without its condition on the claim, under which each of them reads as a
-// take accepted at the acknowledgement; and for the records told, the fill without its statement
+// take accepted at the acknowledgement; for the claim whose new session has taken nothing, the
+// fill of every served claim's finish in the session it holds, under which that claim reads as
+// finished in its new session, so the resume rule gives that session no task (workflow's
+// finishedInItsSession); and for the records told, the fill without its statement
 // for take_told, under which the take that told the record marks nothing, so a give-back of it
 // after the cutover untells nothing and the sentence is never told again. After the migration the
 // three read marks of the push path are gone, so a reader of this record finds one model and not
@@ -176,6 +184,8 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 		{"legion-LEGION-310-implementer", "LEGION-310", "implementer", "ses_unlocated", "ready", 0, 0, false, 4},
 		{"legion-LEGION-311-implementer", "LEGION-311", "implementer", "ses_relaunched", "ready", 0, 0, true, 6},
 		{"legion-LEGION-312-implementer", "LEGION-312", "implementer", "ses_undated", "idle", 0, 0, true, 0},
+		{"legion-LEGION-313-implementer", "LEGION-313", "implementer", "ses_fresh", "idle", 2, 0, false, 4},
+		{"legion-LEGION-314-implementer", "LEGION-314", "implementer", "ses_fresh_told", "idle", 2, 0, false, 4},
 	} {
 		var locator []byte
 		if seed.process {
@@ -222,6 +232,18 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 		abandoned_session = '{"session": "ses_old", "why": "forget-session", "at": "2026-11-13T09:00:00Z", "told": true, "toldBy": "5ZK7XQ3V4YVBXNQ6"}'
 		where token = 'legion-LEGION-302-implementer'`); err != nil {
 		t.Fatalf("record what the confirmed task's claim told before the migration: %v", err)
+	}
+	// The session each of the last two claims abandoned: the first claim's new session has taken
+	// nothing, so that record is untold; the second's has taken a task, whose accepted take told it.
+	if _, err := store.pool.Exec(ctx, `update claims set
+		abandoned_session = '{"session": "ses_abandoned", "why": "forget-session", "at": "2026-11-13T09:00:00Z"}'
+		where token = 'legion-LEGION-313-implementer'`); err != nil {
+		t.Fatalf("record the untold abandoned session before the migration: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `update claims set
+		abandoned_session = '{"session": "ses_abandoned", "why": "forget-session", "at": "2026-11-13T09:00:00Z", "told": true, "toldBy": "outbox:44"}'
+		where token = 'legion-LEGION-314-implementer'`); err != nil {
+		t.Fatalf("record the told abandoned session before the migration: %v", err)
 	}
 
 	_, err := store.pool.Exec(ctx, "update claims set task_written = 1")
@@ -278,6 +300,10 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 			"a claim that served a run and holds no task finished task 1 in the session it holds"},
 		{"legion-LEGION-304-tester", taskNumbersLine(1, 1, 1, "ses_entry"),
 			"a claim that served a phase entry and holds no task finished task 1 in the session it holds"},
+		{"legion-LEGION-313-implementer", taskNumbersLine(1, 1, 1, "ses_abandoned"),
+			"a claim that served a run and then abandoned that session for one that has taken nothing finished task 1 in the session it abandoned, so the new session is owed its resume task"},
+		{"legion-LEGION-314-implementer", taskNumbersLine(1, 1, 1, "ses_fresh_told"),
+			"a claim whose new session has taken a task since it abandoned the old one finished task 1 in the session it holds"},
 		{"legion-LEGION-305-reviewer", taskNumbersLine(0, 0, 0, ""),
 			"a claim that was given nothing has no number"},
 		{"legion-LEGION-307-implementer", taskNumbersLine(1, 0, 0, ""),
