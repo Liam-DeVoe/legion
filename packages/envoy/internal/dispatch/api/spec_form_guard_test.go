@@ -22,7 +22,7 @@ import (
 
 // The route census of the form gate (spec_form.go) holds only while every way to a person's
 // approval passes one of its two call sites: an approval request opens or is handed back in
-// requestArtifactApproval, a person's review is written in writeApprovalReviews, and a reopen or
+// requestArtifactApproval, a person's review is queued in queueApprovalReviews, and a reopen or
 // the repair pass opens a withdrawn request again in prepareRestoration. This test holds the code
 // to that census.
 
@@ -278,7 +278,7 @@ func plantedSource(t *testing.T, code string) moduleSource {
 }
 
 // Every statement of the module that opens an ask is one of the six writers of the census, and only
-// requestArtifactApproval opens or hands back an approval request, and only writeApprovalReviews
+// requestArtifactApproval opens or hands back an approval request, and only queueApprovalReviews
 // writes a person's review, each beside its call of the form gate. A scan that read nothing names
 // fewer than six and fails; each control plants one writer the census must name, or one the
 // patterns must leave out, or a second caller that the caller part must refuse.

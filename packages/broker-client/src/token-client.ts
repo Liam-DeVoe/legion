@@ -696,10 +696,10 @@ export class BrokerTokenClient {
           cause: error,
         });
       }
-      form.actor_token = holdSecret(actor.token, heldUntil(actor.token));
+      form["actor_token"] = holdSecret(actor.token, heldUntil(actor.token));
       // The same token under the type that says what it proves here: not who is asking, but which
       // box the person is asking from.
-      form.actor_token_type =
+      form["actor_token_type"] =
         actor.tokenType === SUBJECT_TOKEN_TYPE_GOOGLE ? ACTOR_TOKEN_TYPE_MACHINE : actor.tokenType;
     }
     const endpoint = this.#brokerUrl + TOKEN_PATH;
@@ -833,7 +833,9 @@ export class BrokerTokenClient {
       );
     }
     const expiresAtText =
-      typeof answered.credential_expires_at === "string" ? answered.credential_expires_at : "";
+      typeof answered["credential_expires_at"] === "string"
+        ? answered["credential_expires_at"]
+        : "";
     let credentialExpiresAt: Date | null = null;
     if (expiresAtText !== "") {
       credentialExpiresAt = new Date(expiresAtText);
@@ -848,7 +850,7 @@ export class BrokerTokenClient {
       accessToken: holdSecret(answered.access_token, Date.now() + seconds * 1000),
       tokenType,
       expiresAt: new Date(this.#now() + seconds * 1000),
-      credentialId: typeof answered.credential_id === "string" ? answered.credential_id : "",
+      credentialId: typeof answered["credential_id"] === "string" ? answered["credential_id"] : "",
       credentialExpiresAt,
     };
   }

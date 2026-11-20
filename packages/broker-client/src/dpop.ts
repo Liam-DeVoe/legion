@@ -106,9 +106,9 @@ function dpopKey(privateKey: KeyObject, publicJwk: JWK): DpopKey {
       htu,
       iat: Math.floor(Date.now() / 1000),
     };
-    if (nonce !== undefined && nonce !== "") claims.nonce = nonce;
+    if (nonce !== undefined && nonce !== "") claims["nonce"] = nonce;
     if (accessToken !== undefined && accessToken !== "") {
-      claims.ath = createHash("sha256").update(accessToken).digest("base64url");
+      claims["ath"] = createHash("sha256").update(accessToken).digest("base64url");
     }
     const signingInput = `${header}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}`;
     const signature = sign("sha256", Buffer.from(signingInput), {

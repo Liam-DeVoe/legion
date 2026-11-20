@@ -791,6 +791,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/retry/*'
               - 'packages/envoy/internal/dispatch/routes/*'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
+              # The form of The Spec, which the approval routes judge (api/spec_form.go), and its
+              # port of ste-lint's hard rules with the word lists and the notice it embeds.
               - 'packages/envoy/internal/dispatch/specform/*'
               - 'packages/envoy/internal/dispatch/specform/ste/*'
               - 'packages/envoy/internal/dispatch/startup/*'
@@ -1327,6 +1329,8 @@ jobs:
               # tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, and tsc
               # puts that file in this job's program.
               - 'packages/pi-shared/test/daemon-state.ts'
+              # tests/packed-skills.test.ts:5 imports the reader of the skill names in the shared
+              # Dispatch text, which reads contracts' tool specs and envoy-client's commands.
               - 'packages/pi-shared/test/shared-dispatch-text.ts'
               # tests/envoy-channel-server.test.ts holds the marketplace entry to this package's
               # own name, to no `version` of its own, and to a source range that leaves out the
@@ -1881,6 +1885,8 @@ jobs:
               - 'scripts/sessions/**'
               # The approval-eval statistics: its lint, typecheck and test steps read it.
               - 'scripts/approval-eval/**'
+              # The statement review evaluation: its lint, typecheck and test steps read it, and
+              # its typecheck compiles the Dispatch stack that its run.ts starts.
               - 'scripts/spec-review-eval/**'
               - 'packages/envoy-client/test/dispatch-stack.ts'
               - 'packages/envoy-client/test/envoy-stack.ts'
@@ -3344,6 +3350,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
+              # The form of The Spec and its port of ste-lint, testdata included, which the tests
+              # of the server this job compiles read.
               - 'packages/envoy/internal/dispatch/specform/**'
               - 'packages/envoy/internal/dispatch/store/*'
               - 'packages/envoy/internal/dispatch/store/migrations/**'
@@ -4087,6 +4095,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/retry/*'
               - 'packages/envoy/internal/dispatch/sessionanswers/*'
+              # The form of The Spec, which the approval routes judge, and its port of ste-lint
+              # with the word lists and the notice it embeds.
               - 'packages/envoy/internal/dispatch/specform/*'
               - 'packages/envoy/internal/dispatch/specform/ste/*'
               - 'packages/envoy/internal/dispatch/store/*'

@@ -854,7 +854,7 @@ function formatCheckResults(results: IssueCheckResults, brief = false): string {
  *  print, since that line is Dispatch's to write and a copy written here would be a second
  *  grammar. Every other dry run, a retraction's included, prints the arguments and sends nothing. */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_result" && args.retract === undefined;
+  return tool === "dispatch_result" && args["retract"] === undefined;
 }
 
 /** `dispatch result`: record one result of one check of an issue's Verification document, or, as

@@ -540,7 +540,7 @@ export function carriedItem(
         ? ("message" as const)
         : undefined;
   if (resource === undefined || !isObject(event.payload)) return undefined;
-  const id = event.payload.id;
+  const id = event.payload["id"];
   if (typeof id !== "string" || id === "") return undefined;
   return { resource, id, issueKey: event.issue_key };
 }
@@ -549,7 +549,7 @@ export function carriedItem(
  *  with its long fields dropped, except the few it keeps whole (`payload_omitted`, whose doc in
  *  `@legion/contracts` names them). */
 function payloadWasOmitted(payload: unknown): boolean {
-  return isObject(payload) && payload.payload_omitted === true;
+  return isObject(payload) && payload["payload_omitted"] === true;
 }
 
 /** Whether an event payload says the body on it is not the item's body whole: the first part of
@@ -557,7 +557,7 @@ function payloadWasOmitted(payload: unknown): boolean {
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (isObject(payload) && payload.body_truncated === true) || payloadWasOmitted(payload);
+  return (isObject(payload) && payload["body_truncated"] === true) || payloadWasOmitted(payload);
 }
 
 /** The Dispatch route that answers the whole item an event names. */

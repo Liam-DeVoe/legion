@@ -383,6 +383,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	case closing:
 		closingAsks, err = s.prepareWithdrawal(documentCtx, tx, key, actor)
 	case reopening:
+		// A withdrawn approval request whose text breaks the form of The Spec stays resolved,
+		// with the findings as its reason (prepareRestoration), and the reopen still answers 200.
 		if reopenedAsks, leftResolvedAsks, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
 			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopenedAsks, leftResolvedAsks, actor)
 		}
@@ -599,13 +601,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			payload.ThreadLogins = movedLogins(nil, movedAssignees...)
 		}
 	}
+	// A reparent that brings covered documents under a root of The Spec changes the order of the
+	// root's list of terms (spec_form.go, approvedSpecTexts), which reads the move from this event.
+	// It takes the lock of the list it joins before its event, whose id then orders the arrival
+	// among the list's approvals.
 	if parentChanged {
 		if err := s.lockSpecTermsOfMove(r.Context(), tx, before.Parent, after.Parent); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
-
 	event, err := s.queueLoggedEvent(ledger, issueOwner(key).event(eventType, actor, payload), logins, "", "")
 	if err != nil {
 		s.writeHandlerError(w, err)

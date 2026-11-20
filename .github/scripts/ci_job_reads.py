@@ -453,7 +453,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
-        ("packages/pi-shared/test/shared-dispatch-text.ts", "packages/claude-envoy/tests/packed-skills.test.ts imports it, and it reads the Dispatch tool specs and command handlers"),
+        ("packages/pi-shared/test/shared-dispatch-text.ts", "packages/claude-envoy/tests/packed-skills.test.ts:5 imports it, and it reads packages/contracts/src/dispatch-tools.ts and packages/envoy-client/src/dispatch-commands/*.ts"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
@@ -2683,8 +2683,8 @@ GATES = [
          f"{at('test', 'Test the approval-eval statistics')}: scripts/approval-eval/never-decide.ts:184 reads "
          "it, through refusals.ts:725, which __tests__/refusals.test.ts:165-177 runs"),
         ("scripts/spec-review-eval/**", f"{at('test', 'Lint the statement review evaluation')}, typecheck and test"),
-        ("packages/envoy-client/test/dispatch-stack.ts", "scripts/spec-review-eval/run.ts imports it for the real Dispatch stack"),
-        ("packages/envoy-client/test/envoy-stack.ts", "packages/envoy-client/test/dispatch-stack.ts imports it"),
+        ("packages/envoy-client/test/dispatch-stack.ts", "scripts/spec-review-eval/run.ts:62-65 imports it (tsc -p scripts/spec-review-eval)"),
+        ("packages/envoy-client/test/envoy-stack.ts", "packages/envoy-client/test/dispatch-stack.ts:6-14 imports it"),
         (f"{FIX}/daemon-api/**", "scripts/e2e/lib/stage4b-boot-capabilities.test.ts:17"),
         (f"{DAEMON}/internal/daemon/controller.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:344-345 reads it as text"),
         (f"{DAEMON}/internal/controller/liveness.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:347"),
@@ -2851,10 +2851,10 @@ GATES = [
         (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
         (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:19, legion-claim-core.test.ts:12, legion-phase-ops.test.ts:22"),
-        ("skills/**", "packages/pi-shared/test/skills-partition.test.ts:22,33-36,53-54 reads every skills/ directory and stages both partitions"),
+        ("skills/**", "packages/pi-shared/test/skills-partition.test.ts:23,34-37,54-55 reads every skills/ directory and stages both partitions"),
         ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34 runs scripts/pi-plugin-prepack.sh --stage-skills"),
-        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-shared/test/skills-partition.test.ts:70-76 reads every .md under packages/daemon/internal/prompts"),
-        (".github/workflows/release.yaml", "packages/pi-shared/test/skills-partition.test.ts:95"),
+        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-shared/test/skills-partition.test.ts:71-77 reads every .md under packages/daemon/internal/prompts"),
+        (".github/workflows/release.yaml", "packages/pi-shared/test/skills-partition.test.ts:107"),
         (f"{DAEMON}/internal/workspace/stale-git-lock-note.txt",
          "packages/pi-shared/src/git-lock.test.ts:63-64 reads it and holds git-lock.ts's copy to it"),
     ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "

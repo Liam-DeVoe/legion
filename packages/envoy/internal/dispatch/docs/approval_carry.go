@@ -151,16 +151,21 @@ func CarriedFromVersion(reason string) (int, bool) {
 // itself, so the sentence and its reader (CarriedFromVersion) cannot drift apart.
 const reopenReason = CarriedReviewReasonPrefix + "%d: this version's text is that version's, with the questions it showed resolved open again."
 
-// FormGate is the form gate of The Spec that a carried approval asks before it writes an approval
-// in a person's name. The API supplies its gate; a document service without one has no roots of
-// The Spec to judge.
+// FormGate is the form gate of The Spec (R49) as a carry asks it: whether a text of version
+// of artifactID breaks the form, judged as a person's approval of that version is. The API
+// package's gate is the one implementation (api.FormGate), and it reads nothing more for a
+// document that no root of The Spec covers. A carry writes no approval in the person's name to a
+// version that breaks the form, and answers no open request with Approve: the person's own
+// Approve then gets the gate's refusal.
 type FormGate func(ctx context.Context, tx pgx.Tx, artifactID string, version int) (bool, error)
 
-// SetFormGate sets the gate each carried approval asks.
+// SetFormGate is the gate each carry of this service's version writes asks before it writes an
+// approval (writeCarriedReview).
 func (s *Service) SetFormGate(gate FormGate) {
 	s.formGate.Store(&gate)
 }
 
+// gate is the form gate SetFormGate set, or nil.
 func (s *Service) gate() FormGate {
 	if gate := s.formGate.Load(); gate != nil {
 		return *gate
@@ -296,7 +301,8 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // rows are the rows this transaction's own queued writes leave (loadAskBlocks). Its reads run
 // where it is called, the route's read phase, and its writes are queued there, as carryApproval's
 // are; the events it appends reach the ledger of the transaction it runs in (eventSink), which
-// publishes them after its Commit, beside the version move's own.
+// publishes them after its Commit, beside the version move's own. gate judges the version's form,
+// as every carry's (writeCarriedReview).
 func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
@@ -463,6 +469,8 @@ func withOpenBlocksResolved(node *pmdoc.Node, blocks map[string]model.Ask) *pmdo
 // names its kind, and a review that names none is a person's, as the column's default says. It
 // holds no document service: every write it makes is a package function over tx and the broker,
 // which is what the restore's own caller outside this package holds (CarryRestoredApproval).
+// Every kind of carry writes here, so the form gate judges the version first: a version whose
+// text breaks the form carries nothing, and nothing is written in anyone's name.
 func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
 	if gate != nil {
 		if breaks, err := gate(ctx, tx, artifactID, number); err != nil || breaks {

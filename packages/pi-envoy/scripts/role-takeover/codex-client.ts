@@ -101,7 +101,7 @@ interface Hook {
   readonly timeout?: number;
 }
 
-const codexHome = process.env.CODEX_HOME ?? "";
+const codexHome = process.env["CODEX_HOME"] ?? "";
 if (codexHome === "") throw new Error("codex: CODEX_HOME is required");
 const queueDirectory = join(codexHome, "ncs-standin", "queue");
 /** Which process takes the queue: the session's `codex` process, by its pid and its start, so a
@@ -217,7 +217,7 @@ const manifest = JSON.parse(
     }
   >;
 };
-const declared = manifest.mcpServers?.envoy;
+const declared = manifest.mcpServers?.["envoy"];
 if (declared === undefined) {
   throw new Error(`codex: ${pluginRoot}'s manifest declares no envoy server`);
 }
@@ -229,7 +229,7 @@ for (const name of [...CODEX_DEFAULT_ENV, ...(declared.env_vars ?? [])]) {
   const value = process.env[name];
   if (value !== undefined) serverEnv[name] = value;
 }
-const serverCommand = Bun.which(declared.command, { PATH: serverEnv.PATH ?? "" });
+const serverCommand = Bun.which(declared.command, { PATH: serverEnv["PATH"] ?? "" });
 if (serverCommand === null) throw new Error(`codex: ${declared.command} is not on PATH`);
 
 const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn(

@@ -26,7 +26,7 @@ import (
 // one definition of each term (approvedSpecTexts), and a covered document that defines a term of
 // the list again is refused. Three calls refuse: refuseSpecForm, at the two call sites, the
 // opening or hand-back of an approval request (requestArtifactApproval) and a person's approval
-// (writeApprovalReviews); and carryBreaksForm, which the carry of an approval to a new version
+// (queueApprovalReviews); and carryBreaksForm, which the carry of an approval to a new version
 // asks before it writes that approval in the person's name (docs.FormGate), and which carries
 // nothing over a break. A person's approval decides against the list and then changes it, so it
 // takes the lock of the root's list before it reads the list (lockSpecTerms), and two approvals
