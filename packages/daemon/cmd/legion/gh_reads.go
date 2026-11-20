@@ -14,10 +14,11 @@ import (
 const ghCheckedOnlyVisibility = "checked-only"
 
 // ghNoRulesVisibility is the call log's visibility for a call that skipped the private-name step
-// because the deployment names no rule file (leakguard.GhReadNoRules): the shared check read
-// it, and nothing read its repository's visibility, since without a rule there is nothing the
-// visibility would decide. It is neither checked-only, which is a read the shared check alone
-// clears whatever rules are named, nor the empty value of a call that named no repository.
+// because the deployment names no rule file (leakguard.GhReadNoRules): the shared check read it,
+// where one runs, and nothing read its repository's visibility, since without a rule there is
+// nothing the visibility would decide. It is neither checked-only, which is a read the shared
+// check alone clears whatever rules are named, nor the empty value of a call that named no
+// repository.
 const ghNoRulesVisibility = "no-rules"
 
 // ghReadsProvenCheck is the shared check ghWritesNothing's rule was proven against: its tag,

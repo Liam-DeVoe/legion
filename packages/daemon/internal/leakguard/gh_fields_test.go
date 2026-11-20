@@ -30,6 +30,15 @@ func ghFieldCall(t *testing.T, req GhRequest) error {
 	return err
 }
 
+// stdinParse is the GhSent a caller's parse hands for a call whose one option of standard input
+// is option, named with use (field, the name of the field the input is the value of, "" for any
+// other option): what cmd/legion's ghSentFiles builds for it, by the rule of GhSent.Names.
+func stdinParse(option, field string, use StdinUse) *GhSent {
+	sent := &GhSent{}
+	sent.Names(option, "-", field, use)
+	return sent
+}
+
 // cleared fails the test unless err is nil.
 func cleared(t *testing.T, err error) {
 	t.Helper()
@@ -99,10 +108,9 @@ func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
 	})
 	t.Run("two fields of standard input the caller names --input pass", func(t *testing.T) {
 		cleared(t, ghFieldCall(t, GhRequest{
-			Args:     []string{"api", endpoint, "--input", "-"},
-			Stdin:    strings.NewReader(apart),
-			Files:    []GhFile{},
-			StdinUse: StdinRequestBody,
+			Args:  []string{"api", endpoint, "--input", "-"},
+			Stdin: strings.NewReader(apart),
+			Sent:  stdinParse("--input", "", StdinRequestBody),
 		}))
 	})
 	t.Run("one field of --input <file> is refused", func(t *testing.T) {
@@ -142,23 +150,22 @@ func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
 	})
 	t.Run("standard input the caller names --body-file is read as text", func(t *testing.T) {
 		err := ghFieldCall(t, GhRequest{
-			Args:     []string{"pr", "comment", "1", "--body-file", "-"},
-			Stdin:    strings.NewReader(apart),
-			Files:    []GhFile{},
-			StdinUse: StdinText,
+			Args:  []string{"pr", "comment", "1", "--body-file", "-"},
+			Stdin: strings.NewReader(apart),
+			Sent:  stdinParse("--body-file", "", StdinText),
 		})
 		reports(t, refusal(t, err).Lines, "the gh call's standard input: "+leakguardtest.PairClass)
 	})
 	// A caller that parsed the call but names no option of its standard input knows nothing of
 	// it, and the table is not consulted for it: the input is read both ways.
 	t.Run("standard input nothing names is read raw", func(t *testing.T) {
-		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(apart), Files: []GhFile{}})
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(apart), Sent: &GhSent{}})
 		reports(t, refusal(t, err).Lines, "the gh call's standard input: "+leakguardtest.PairClass)
 	})
 	t.Run("standard input nothing names is read decoded", func(t *testing.T) {
 		// The name with its l written as a JSON escape, so that the raw read does not match.
 		escaped := `{"body":"the ` + strings.Replace(leakguardtest.PairName, "l", `\u006c`, 1) + ` and the ` + leakguardtest.PairWord + `"}`
-		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(escaped), Files: []GhFile{}})
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", "-"}, Stdin: strings.NewReader(escaped), Sent: &GhSent{}})
 		reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .body: "+leakguardtest.PairClass)
 	})
 }
@@ -166,72 +173,120 @@ func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
 // `gh workflow run <workflow> --json` reads the run's inputs from standard input as one JSON
 // object (cmd/legion/testdata/gh-help/workflow_run.txt), and GitHub keeps each input apart, so a
 // bare argv's reader names that input a request body as `legion gh`'s parse does: two inputs
-// holding the fixture's two words pass, and one input holding both is refused, the report naming
-// it by its JSON path. --json is a boolean whose last value counts, so `--json=false` names no
-// input; and beside a field of standard input it is a second use, so the use is unknown. Either
-// way the input is read raw too, and the two inputs on its one line are refused.
+// holding the fixture's two words pass, and gh is handed the input the guard read; one input
+// holding both is refused, the report naming it by its JSON path. --json is a boolean whose last
+// value counts, so `--json=false` names no input; and beside a field of standard input it is a
+// second use, so the use is unknown. Either way an input the guard reads is read raw too, and the
+// two inputs on its one line are refused.
+//
+// Each of these holds for a call whose caller handed its parse (GhRequest.Sent) and for a bare
+// argv, under a check that asks for the call's standard input, as ghFieldCall's does, and under
+// one that clears the call without asking (Passes), since the guard reads the input a call sends
+// whichever check ran (GhRequest.Sent). The shared check an INFRA issue pod installed,
+// leak-check-v15, measured on 2026-11-20, clears `gh workflow run <w> --json=true` without asking
+// for its standard input: under a guard that read only what the check asked for, the call's one
+// input naming the fixture's pair reached GitHub, which answered 404 for the invented workflow.
+// Under a check that does not ask, a run whose --json ends false sends no input, and nothing
+// reads it.
 func TestGhWorkflowRunJSONReadsItsInputsOneFieldAtATime(t *testing.T) {
 	apart := `{"name":"` + leakguardtest.PairName + `","greeting":"` + leakguardtest.PairWord + `"}`
 	together := `{"name":"the ` + leakguardtest.PairName + ` and the ` + leakguardtest.PairWord + `","greeting":"hello"}`
 	refusedWhole(t, apart)
-	run := func(t *testing.T, stdin string, options ...string) error {
-		t.Helper()
-		return ghFieldCall(t, GhRequest{Args: append([]string{"workflow", "run", "triage.yml", "-R", "acme/widgets"}, options...), Stdin: strings.NewReader(stdin)})
+	// parsed is the GhSent `legion gh`'s parse hands for a run (cmd/legion's ghSentFiles):
+	// standard input named by each field given `@-`, and as a request body where --json ends
+	// true (body).
+	parsed := func(body bool, fields ...string) *GhSent {
+		sent := &GhSent{}
+		for _, field := range fields {
+			sent.Names("--field", "-", field, StdinField)
+		}
+		if body {
+			sent.UsesStdin(StdinRequestBody)
+		}
+		return sent
 	}
-	t.Run("two inputs pass", func(t *testing.T) {
-		cleared(t, run(t, apart, "--json"))
-	})
-	t.Run("two inputs of a last --json=true pass", func(t *testing.T) {
-		cleared(t, run(t, apart, "--json=false", "--json=true"))
-	})
-	t.Run("one input holding both is refused", func(t *testing.T) {
-		reports(t, refusal(t, run(t, together, "--json")).Lines, "the gh call's standard input, JSON .name: "+leakguardtest.PairClass)
-	})
-	for _, options := range [][]string{{"--json=false"}, {"--json", "--json=false"}, {"--json", "-F", "notes=@-"}, {"-F", "notes=@-", "--json"}} {
-		t.Run("the input of "+strings.Join(options, " ")+" is read raw", func(t *testing.T) {
-			reports(t, refusal(t, run(t, apart, options...)).Lines, "the gh call's standard input: "+leakguardtest.PairClass)
-		})
-	}
-}
-
-// A call that sends its standard input to GitHub as content (GhRequest.StdinSent) has that input
-// read by the private-name pass whether or not the shared check asked for it. The pinned shared
-// check of an INFRA issue pod clears `gh workflow run <w> --json=true` without asking for its
-// standard input (measured on 2026-11-20 with legion c3a4c997 and the pod's
-// /legion/scratch/leak-check/public-leak-check.sh: the call's one input naming the fixture's pair
-// reached GitHub, which answered 404 for the invented workflow), so a guard that reads the input
-// only where the check buffered it lets the rule file's names through. Here the check is a
-// stand-in that clears every call without asking (Passes): two inputs holding the pair's two
-// words still pass, and gh is handed the input the guard read; one input holding both is refused,
-// named by its JSON path. The same holds for a call whose caller parsed it and for a bare argv.
-func TestGhStandardInputSentAsContentIsReadWhereTheCheckDidNotAskForIt(t *testing.T) {
-	apart := `{"name":"` + leakguardtest.PairName + `","greeting":"` + leakguardtest.PairWord + `"}`
-	together := `{"name":"the ` + leakguardtest.PairName + ` and the ` + leakguardtest.PairWord + `","greeting":"hello"}`
-	refusedWhole(t, apart)
-	args := []string{"workflow", "run", "triage.yml", "-R", "acme/widgets", "--json=true"}
-	for _, tc := range []struct {
-		name  string
-		files []GhFile
+	// bodies are the runs whose input is a request body: --json ends true, and nothing else
+	// names the input. sent is the caller's parse of options.
+	bodies := []struct {
+		options []string
+		sent    *GhSent
 	}{
-		{"named by the caller's parse", []GhFile{}},
-		{"read out of a bare argv", nil},
+		{[]string{"--json"}, parsed(true)},
+		{[]string{"--json=true"}, parsed(true)},
+		{[]string{"--json=false", "--json=true"}, parsed(true)},
+	}
+	// raw are the runs whose input is of no known use, read raw as well as decoded wherever it
+	// is read; sends is whether the run sends it at all.
+	raw := []struct {
+		options []string
+		sent    *GhSent
+		sends   bool
+	}{
+		{[]string{"--json=false"}, parsed(false), false},
+		{[]string{"--json", "--json=false"}, parsed(false), false},
+		{[]string{"--json", "-F", "notes=@-"}, parsed(true, "notes"), true},
+		{[]string{"-F", "notes=@-", "--json"}, parsed(true, "notes"), true},
+	}
+	for _, check := range []struct {
+		name, script string
+		asks         bool
+	}{
+		{"a check that asks for standard input", leakguardtest.Reading(0, ""), true},
+		{"a check that clears without asking", passes, false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			call := func(stdin string) (GhAnswer, error) {
-				req := GhRequest{Args: args, Stdin: strings.NewReader(stdin), Files: tc.files, Repo: "invented-org/invented-repo"}
-				if tc.files != nil {
-					req.StdinUse, req.StdinSent = StdinRequestBody, true
+		for _, parse := range []bool{true, false} {
+			caller := "a bare argv"
+			if parse {
+				caller = "the caller's parse"
+			}
+			t.Run(check.name+", "+caller, func(t *testing.T) {
+				// call is GhCall's answer to the run of options whose standard input is stdin,
+				// handed sent where the caller parsed it.
+				call := func(t *testing.T, sent *GhSent, stdin string, options ...string) (GhAnswer, error) {
+					t.Helper()
+					req := GhRequest{
+						Args:  append([]string{"workflow", "run", "triage.yml", "-R", "acme/widgets"}, options...),
+						Stdin: strings.NewReader(stdin),
+						Repo:  "invented-org/invented-repo",
+					}
+					if parse {
+						req.Sent = sent
+					}
+					return guardWith(t, leakguardtest.Write(t, t.TempDir(), check.script), Public).GhCall(bound(t), req)
 				}
-				return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public).GhCall(bound(t), req)
-			}
-			answer, err := call(apart)
-			cleared(t, err)
-			if string(answer.Stdin) != apart {
-				t.Errorf("gh is handed %q, want the input the guard read, %q", answer.Stdin, apart)
-			}
-			_, err = call(together)
-			reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .name: "+leakguardtest.PairClass)
-		})
+				for _, tc := range bodies {
+					spelled := strings.Join(tc.options, " ")
+					t.Run("two inputs of "+spelled+" pass", func(t *testing.T) {
+						answer, err := call(t, tc.sent, apart, tc.options...)
+						cleared(t, err)
+						if string(answer.Stdin) != apart {
+							t.Errorf("gh is handed %q, want the input the guard read, %q", answer.Stdin, apart)
+						}
+					})
+					t.Run("one input of "+spelled+" holding both is refused", func(t *testing.T) {
+						_, err := call(t, tc.sent, together, tc.options...)
+						reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .name: "+leakguardtest.PairClass)
+					})
+				}
+				for _, tc := range raw {
+					spelled := strings.Join(tc.options, " ")
+					if !tc.sends && !check.asks {
+						t.Run("the input of "+spelled+", which it does not send, is not read", func(t *testing.T) {
+							answer, err := call(t, tc.sent, apart, tc.options...)
+							cleared(t, err)
+							if answer.Stdin != nil {
+								t.Errorf("the guard read %q, an input the call does not send and the check did not ask for", answer.Stdin)
+							}
+						})
+						continue
+					}
+					t.Run("the input of "+spelled+" is read raw", func(t *testing.T) {
+						_, err := call(t, tc.sent, apart, tc.options...)
+						reports(t, refusal(t, err).Lines, "the gh call's standard input: "+leakguardtest.PairClass)
+					})
+				}
+			})
+		}
 	}
 }
 
@@ -508,8 +563,8 @@ func TestGhJSONGraphQLStringsReadOneFieldAtATime(t *testing.T) {
 	t.Run("a query file the caller parsed lexes", func(t *testing.T) {
 		query := fieldFile(t, "query.graphql", together)
 		err := ghFieldCall(t, GhRequest{
-			Args:  []string{"api", "graphql", "--field", "query=@" + query},
-			Files: []GhFile{{Option: "--field", Path: query, Field: "query"}},
+			Args: []string{"api", "graphql", "--field", "query=@" + query},
+			Sent: &GhSent{Files: []GhFile{{Option: "--field", Path: query, Field: "query"}}},
 		})
 		reports(t, refusal(t, err).Lines, query+", GraphQL string 3: "+leakguardtest.PairClass)
 	})
@@ -589,15 +644,15 @@ func TestGhJSONGraphQLQueryOnStandardInputReadsOneFieldAtATime(t *testing.T) {
 		t.Fatalf("the query %q spells the name in its own bytes, so it proves nothing", escaped)
 	}
 	for _, tc := range []struct {
-		name     string
-		stdinUse StdinUse
+		name string
+		sent *GhSent
 	}{
-		{"read out of the argv", StdinUnknown},
-		{"named by the caller's parse", StdinField},
+		{"read out of the argv", nil},
+		{"named by the caller's parse", stdinParse("--field", graphQLQuery, StdinField)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := func(query string) GhRequest {
-				return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), StdinUse: tc.stdinUse}
+				return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), Sent: tc.sent}
 			}
 			cleared(t, ghFieldCall(t, call(apart)))
 			reports(t, refusal(t, ghFieldCall(t, call(escaped))).Lines, "the gh call's standard input, GraphQL string 2: "+leakguardtest.PairClass)

@@ -48,7 +48,7 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 			Visibility: answers(Public, &asked),
 			Env:        withRules(t, fixtureenv.Isolated(t.TempDir())),
 		})
-		answer, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven})
+		answer, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Sent: &GhSent{}, WritesNothing: writesNothing, ProvenCheck: proven})
 		return asked, answer, err
 	}
 	t.Run("a read the check clears", func(t *testing.T) {
@@ -238,9 +238,9 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 	}
 }
 
-// A body option whose value is `-` is standard input, which the shared check's exit-4 handshake
-// buffers and the guard records already (TestTheGhShapeScansWhatItBuffered): there is no file of
-// that name to open, and a guard that tried would turn every such call into a setup failure.
+// A body option whose value is `-` is standard input, which the guard reads as GhRequest.Sent
+// says (TestTheGhShapeScansWhatItBuffered): there is no file of that name to open, and a guard
+// that tried would turn every such call into a setup failure.
 func TestAGhCallsBodyFileOfStandardInputOpensNoFile(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	if _, err := guard.GhCall(bound(t), GhRequest{
@@ -302,7 +302,7 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 // input they name. The entries that answer nothing are the tables' boundary, and each is a call
 // that must not be refused over a file nobody named. A file option given `-` and a field given
 // `@-` name no file but standard input, which the tables answer apart (sent, GhSent.StdinSent),
-// for the guard to read itself wherever the shared check did not buffer it (GhRequest.StdinSent).
+// for the guard to read as GhRequest.Sent says.
 func TestTheFilesAGhCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -439,7 +439,7 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "a gist's positional files", args: []string{"gist", "create", "note.md"}},
 		{name: "a short option whose own value is F", args: []string{"gist", "create", "-dF", "note.md"}},
 		// The shape this reader cannot tell apart from a call that names no file, and the reason
-		// `legion gh` hands the files it parsed instead (GhRequest.Files): a short cluster's last
+		// `legion gh` hands its own parse instead (GhRequest.Sent): a short cluster's last
 		// letter is the option in `gh pr create` (`--draft --body-file`) and the value of the
 		// option before it in `gh gist create` (`--desc F`), and only the leaf's own help says
 		// which.
@@ -458,10 +458,10 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 }
 
 // The files the caller parsed are the files read, and the table is not consulted for a caller
-// that handed any: `legion gh` reads the command with gh's own help of the leaf, which knows
-// shapes the table cannot (cmd/legion's ghSentFiles), and two readers of one argv would be two
-// answers to one question. A caller that hands none at all — nil, which is what a bare argv is
-// — still gets the table.
+// that handed its parse: `legion gh` reads the command with gh's own help of the leaf, which
+// knows shapes the table cannot (cmd/legion's ghSentFiles), and two readers of one argv would be
+// two answers to one question. A caller that hands no parse at all — a nil GhRequest.Sent, which
+// is what a bare argv is — still gets the table.
 func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	dir := t.TempDir()
 	named := filepath.Join(dir, "named.md")
@@ -476,9 +476,9 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 		// --body-file <path>` to gh, and the caller hands the file it read out of that.
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 		_, err := guard.GhCall(bound(t), GhRequest{
-			Args:  []string{"pr", "create", "-dF", unnamed},
-			Repo:  "invented-org/invented-repo",
-			Files: []GhFile{{Option: "--body-file", Path: unnamed}},
+			Args: []string{"pr", "create", "-dF", unnamed},
+			Repo: "invented-org/invented-repo",
+			Sent: &GhSent{Files: []GhFile{{Option: "--body-file", Path: unnamed}}},
 		})
 		if report := refusal(t, err); !strings.Contains(report.Error(), leakguardtest.RulesHostClass) {
 			t.Fatalf("the refusal does not name the class: %v", report)
@@ -487,9 +487,9 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	t.Run("a caller that parsed no file reads none", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 		if _, err := guard.GhCall(bound(t), GhRequest{
-			Args:  []string{"pr", "comment", "1", "--body-file", named},
-			Repo:  "invented-org/invented-repo",
-			Files: []GhFile{},
+			Args: []string{"pr", "comment", "1", "--body-file", named},
+			Repo: "invented-org/invented-repo",
+			Sent: &GhSent{},
 		}); err != nil {
 			t.Fatalf("a call whose caller parsed no file: %v", err)
 		}
@@ -518,7 +518,7 @@ func TestAShortClusterOutsideGhAPIIsNoField(t *testing.T) {
 			t.Fatalf("readGhArgv(%q) made the field record %q", args, record.Label)
 		}
 	}
-	err := ghFieldCall(t, GhRequest{Args: args, Files: []GhFile{{Option: "--body-file", Path: body}}})
+	err := ghFieldCall(t, GhRequest{Args: args, Sent: &GhSent{Files: []GhFile{{Option: "--body-file", Path: body}}}})
 	reports(t, refusal(t, err).Lines, body+": "+leakguardtest.PairClass)
 }
 
@@ -552,8 +552,8 @@ func TestGhAPIShortClusterQueryReadsOneLiteralAtATime(t *testing.T) {
 // refused, since that input is a body and no query. A query and another field both of standard
 // input are one input gh reads into one of them, so it is read both ways, raw and one literal at
 // a time: the two words apart are refused by the raw record, and a name escaped inside one literal
-// by that literal. A query of standard input that a caller's parse names no option for, where
-// the argv names the field, is read one literal at a time.
+// by that literal. A query of standard input whose use the caller's parse does not know, where
+// the parse names the field, is read one literal at a time.
 func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
 	apart := graphQLMutation("the "+leakguardtest.PairName+" notes", "a "+leakguardtest.PairWord+" aside")
 	escaped := graphQLMutation("the "+strings.Replace(leakguardtest.PairName, "l", `\u006c`, 1)+" and the "+leakguardtest.PairWord, "a clean body")
@@ -563,14 +563,14 @@ func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
 	}
 	const stdin = "the gh call's standard input"
 	for _, tc := range []struct {
-		name     string
-		stdinUse StdinUse
+		name string
+		sent *GhSent
 	}{
-		{"read out of the argv", StdinUnknown},
-		{"named by the caller's parse", StdinField},
+		{"read out of the argv", nil},
+		{"named by the caller's parse", stdinParse("--field", "body", StdinField)},
 	} {
 		t.Run("another field's input is text, "+tc.name, func(t *testing.T) {
-			err := ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "-F", "body=@-"}, Stdin: strings.NewReader(apart), StdinUse: tc.stdinUse})
+			err := ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "-F", "body=@-"}, Stdin: strings.NewReader(apart), Sent: tc.sent})
 			reports(t, refusal(t, err).Lines, stdin+": "+leakguardtest.PairClass)
 		})
 	}
@@ -582,8 +582,10 @@ func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
 		reports(t, refusal(t, err).Lines, stdin+", GraphQL string 2: "+leakguardtest.PairClass)
 	})
 	t.Run("a query no option is known for", func(t *testing.T) {
+		// A parse that names the field and no use, as one naming two uses of the input does.
+		sent := &GhSent{stdinNamed: true, stdinFields: []string{graphQLQuery}}
 		call := func(query string) GhRequest {
-			return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), Files: []GhFile{}}
+			return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), Sent: sent}
 		}
 		cleared(t, ghFieldCall(t, call(apart)))
 		reports(t, refusal(t, ghFieldCall(t, call(escaped))).Lines, stdin+", GraphQL string 2: "+leakguardtest.PairClass)
@@ -624,7 +626,7 @@ func TestGhStandardInputIsReadAsTheCommandUsesIt(t *testing.T) {
 		})
 	}
 	t.Run("the same document of no known use is read decoded", func(t *testing.T) {
-		err := ghFieldCall(t, GhRequest{Args: []string{"pr", "create", "-F", "-"}, Stdin: strings.NewReader(escaped), Files: []GhFile{}})
+		err := ghFieldCall(t, GhRequest{Args: []string{"pr", "create", "-F", "-"}, Stdin: strings.NewReader(escaped), Sent: &GhSent{}})
 		reports(t, refusal(t, err).Lines, stdin+", JSON .body: "+leakguardtest.PairClass)
 	})
 }
@@ -744,21 +746,61 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 	})
 }
 
-// The standard input the check asks for is bounded as a named file is: the bytes are held in
-// memory and scanned there. Input past the bound is a setup failure, which refuses the call,
-// never a truncated buffer handed to gh as though the guard had read the whole.
+// The standard input the guard reads is bounded as a named file is: the bytes are held in memory
+// and scanned there. Input past the bound is a setup failure, which refuses the call, never a
+// truncated buffer handed to gh as though the guard had read the whole: for a public destination
+// under a check that asks for the input, under one that clears the call without asking, and under
+// no shared check. A private destination runs no rule pass, and the guard reads no input there
+// that the check did not ask for (GhRequest.Sent): under a check that clears without asking and
+// under no check, the same call to it is cleared, nothing comes back, and the caller's input is
+// still whole for gh. A check that asks reads the input in its handshake, before any visibility
+// answer, so the bound refuses the call to a private destination there too.
 func TestStandardInputPastTheBoundIsASetupFailure(t *testing.T) {
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
-	answer, err := guard.GhCall(bound(t), GhRequest{
-		Args:  []string{"pr", "create", "--body-file", "-"},
-		Stdin: bytes.NewReader(bytes.Repeat([]byte("a"), maxGhFile+1)),
-		Repo:  "invented-org/invented-repo",
-	})
-	failed := setupFailure(t, err)
-	if !strings.Contains(failed.Error(), "standard input is longer than") {
-		t.Fatalf("the failure is %q, want it to name the bound", failed)
-	}
-	if answer.Stdin != nil {
-		t.Errorf("the caller got %d bytes back of an input the guard never read whole", len(answer.Stdin))
+	const size = maxGhFile + 1
+	for _, tc := range []struct {
+		name string
+		// check is the stand-in shared check, "" for a deployment that runs none.
+		check      string
+		visibility Visibility
+		// refused is whether the call is refused for its input; one that is not is cleared with
+		// that input unread.
+		refused bool
+	}{
+		{"a check that asks, to a public destination", leakguardtest.Reading(0, ""), Public, true},
+		{"a check that asks, to a private destination", leakguardtest.Reading(0, ""), Private, true},
+		{"a check that clears without asking, to a public destination", passes, Public, true},
+		{"a check that clears without asking, to a private destination", passes, Private, false},
+		{"no shared check, to a public destination", "", Public, true},
+		{"no shared check, to a private destination", "", Private, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// No check named and none on PATH is a deployment that runs no shared check.
+			check, extra := "", []string{"PATH=" + t.TempDir()}
+			if tc.check != "" {
+				check, extra = leakguardtest.Write(t, t.TempDir(), tc.check), nil
+			}
+			stdin := bytes.NewReader(bytes.Repeat([]byte("a"), size))
+			answer, err := guardWith(t, check, tc.visibility, extra...).GhCall(bound(t), GhRequest{
+				Args:  []string{"pr", "create", "--body-file", "-"},
+				Stdin: stdin,
+				Repo:  "invented-org/invented-repo",
+			})
+			if !tc.refused {
+				if err != nil || answer.Stdin != nil || answer.Read != GhReadWhole {
+					t.Fatalf("GhCall = %d bytes back, read %v, %v; want it cleared by the whole guard with its input unread", len(answer.Stdin), answer.Read, err)
+				}
+				if stdin.Len() != size {
+					t.Errorf("the guard took %d bytes of the caller's input, want it whole for gh", size-stdin.Len())
+				}
+				return
+			}
+			failed := setupFailure(t, err)
+			if !strings.Contains(failed.Error(), "standard input is longer than") {
+				t.Fatalf("the failure is %q, want it to name the bound", failed)
+			}
+			if answer.Stdin != nil {
+				t.Errorf("the caller got %d bytes back of an input the guard never read whole", len(answer.Stdin))
+			}
+		})
 	}
 }

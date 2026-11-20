@@ -501,8 +501,8 @@ var theChecker = strings.Repeat("5e", 32)
 // write for the check's absence: with no check named anywhere, a push, a text and a gh call each
 // pass the guard with no shared check run, and the deployment's private-name rules (here the
 // fixture rule file, withRules) still read each — the gh call's body on standard input among
-// them, which the guard buffers itself where no check's handshake asks for it, and hands back for
-// gh. A broken setup is refused whatever the deployment runs, naming the path it is broken at
+// them, which the guard reads itself (GhRequest.Sent) and hands back for gh. A broken setup is
+// refused whatever the deployment runs, naming the path it is broken at
 // (BrokenAt): a check named and not there, a file of the check's name on PATH that is no
 // executable (a dangling link, no execute bit), and a pointer file that names nothing or cannot be
 // read as a file.
@@ -537,7 +537,7 @@ func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
 	t.Run("the rules refuse a gh call's body on standard input", func(t *testing.T) {
 		for _, req := range []GhRequest{
 			{Args: []string{"pr", "create", "--body-file", "-"}},
-			{Args: []string{"pr", "create", "--body-file", "-"}, Files: []GhFile{}, StdinSent: true},
+			{Args: []string{"pr", "create", "--body-file", "-"}, Sent: stdinParse("--body-file", "", StdinText)},
 		} {
 			req.Stdin, req.Repo = strings.NewReader("a body naming "+leakguardtest.RulesHost+"\n"), "invented-org/invented-repo"
 			_, err := noCheck(t).GhCall(bound(t), req)
@@ -552,7 +552,7 @@ func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
 			Visibility: answers(Public, &asked),
 			Env:        withRules(t, append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir())),
 		})
-		answer, err := guard.GhCall(bound(t), GhRequest{Args: []string{"pr", "list"}, Repo: "invented-org/invented-repo", Files: []GhFile{}, WritesNothing: true})
+		answer, err := guard.GhCall(bound(t), GhRequest{Args: []string{"pr", "list"}, Repo: "invented-org/invented-repo", Sent: &GhSent{}, WritesNothing: true})
 		if err != nil || answer.Read != GhReadWhole || len(asked) != 1 {
 			t.Fatalf("a read = %+v, %v after %d visibility reads; want it cleared by the whole guard, one read", answer, err, len(asked))
 		}
@@ -811,7 +811,7 @@ func TestAGuardUnderACheckerRunsOnlyTheCheckItNames(t *testing.T) {
 			}{
 				{"a text", func(g *Guard) error { return g.Text(bound(t), text) }},
 				{"a gh call", func(g *Guard) error {
-					_, err := g.GhCall(bound(t), GhRequest{Args: []string{"pr", "list"}, Repo: "invented-org/invented-repo", Files: []GhFile{}})
+					_, err := g.GhCall(bound(t), GhRequest{Args: []string{"pr", "list"}, Repo: "invented-org/invented-repo", Sent: &GhSent{}})
 					return err
 				}},
 			} {

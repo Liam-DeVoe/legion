@@ -18,33 +18,36 @@ type GhRequest struct {
 	// Args is the whole argv the caller would hand gh, gh's own name aside.
 	Args []string
 	// Stdin is what the caller would hand gh on its standard input, nil for nothing. It is read
-	// where the shared check asks for it and, where a rule is named (Guard.rules), wherever the
-	// call sends it as content (StdinSent), and what is read comes back from GhCall for the
-	// caller to hand gh in its place.
+	// where the shared check asks for it and where the guard reads it itself (Sent says where),
+	// and what is read comes back from GhCall for the caller to hand gh in its place.
 	Stdin io.Reader
-	// StdinUse is what the call makes of its standard input, as the caller read it from the
-	// option whose value named that input (`-`, or `@-` for a field), or from `gh workflow run
-	// --json`: a JSON request body, the value of a field, or text GitHub stores as it stands,
-	// which says how the input is read (stdinRecords). StdinUnknown is a caller that does not
-	// know. Where such a caller also handed no Files, the guard reads the use out of the argv
-	// (readGhArgv); where nothing knows, it reads the input both ways.
-	StdinUse StdinUse
 	// Repo is the destination repository, as "owner/name". Empty where the caller knows no
 	// destination, which the guard reads as public (Guard.scanThrough).
 	Repo string
-	// Files are the files this call would send to GitHub as content, read by a caller that
-	// parses the argv as gh does. `legion gh` is that caller: it reads the command's own help
-	// for every option's arity before it reaches the guard (cmd/legion's ghTargetOf), so it
-	// knows a `-dF <file>` and a `-F=<file>` for what they are, which a reader of the argv
-	// alone cannot.
+	// Sent is what this call would send to GitHub beside its argv (GhSent): the files it sends
+	// as content, the use it makes of standard input, whether it sends that input at all and the
+	// fields whose value it is, read by a caller that parses the argv as gh does. `legion gh` is
+	// that caller: it reads the command's own help for every option's arity before it reaches
+	// the guard (cmd/legion's ghTargetOf), so it knows a `-dF <file>` and a `-F=<file>` for what
+	// they are, which a reader of the argv alone cannot. Every one of those answers is the
+	// caller's where Sent is not nil, and the argv's tables are consulted for none of them.
 	//
-	// Nil is a caller that parsed none, and the guard then reads the argv with tables of its
-	// own (readGhArgv). `legion gh` hands nil only from the answers of its parse that send
-	// nothing (`--version`, a group with no leaf, `--help`), so in this binary the tables are
-	// the fail-closed answer for a future caller that hands the guard bare arguments, not a path
-	// any write takes today. An empty, non-nil slice is a caller that parsed and found no file,
-	// and the tables are not consulted for its files or for the use of its standard input.
-	Files []GhFile
+	// Nil is a caller that parsed nothing, and the guard then reads all of it from the argv with
+	// tables of its own (readGhArgv). `legion gh` hands nil only from the answers of its parse
+	// that send nothing (`--version`, a group with no leaf, `--help`), so in this binary the
+	// tables are the fail-closed answer for a future caller that hands the guard bare arguments,
+	// not a path any write takes today.
+	//
+	// A call that sends its standard input as content (GhSent.StdinSent), as a file option given
+	// `-`, a field given `@-` and `gh workflow run --json` do, has that input read by the guard
+	// itself, where a rule is named (Guard.rules) and the destination is public, wherever the
+	// shared check's handshake did not buffer it already (askAgain): under a deployment that runs
+	// no shared check (sharedCheck), and under a check that cleared the call without asking for
+	// it, as a check need not ask for an input it clears. So the private-name pass reads what the
+	// call publishes whichever check ran, and gh is handed the bytes that pass read. A private or
+	// internal destination runs no rule pass, so there the guard reads no input the check did not
+	// ask for, and gh reads the caller's own.
+	Sent *GhSent
 	// WritesNothing is a call its caller found sends no text into any repository: a read, which
 	// `legion gh` admits only by a grammar in its code of the words the call is typed with, one
 	// the shared check reads as a read too (cmd/legion's ghWritesNothing holds the rule). Where
@@ -62,16 +65,6 @@ type GhRequest struct {
 	// hashed from the bytes the guard read before the run — so a check of another version, or one
 	// edited under the same tag, gets the whole guard, and so does every call where it is empty.
 	ProvenCheck string
-	// StdinSent is a call that sends its standard input to GitHub as content: a file option
-	// given `-`, a field given `@-`, or `gh workflow run --json` (GhSent.StdinSent). A caller that
-	// parsed the command (Files not nil) says so; for a bare argv the guard reads it from the argv
-	// (readGhArgv). Where a rule is named (Guard.rules), the guard reads such a call's input
-	// itself unless the shared check's handshake has buffered it already (askAgain), so the
-	// private-name pass reads the body the call publishes whichever check ran, or none. The
-	// check's asking is not what decides it: a check need not ask for an input it clears, and the
-	// pinned one clears `gh workflow run --json=true` without asking, so a guard that read only
-	// what the check asked for would let a rule's name through to GitHub.
-	StdinSent bool
 }
 
 // StdinUse is what a gh call makes of its standard input, which says how the guard reads that
@@ -170,11 +163,8 @@ const whatGhCall = "the gh call"
 // the check itself refuses a pipe for that reason. The bytes come back so the caller can hand
 // them to gh, because by then this package has read the caller's standard input and the caller
 // cannot read it again; a nil Stdin means standard input was never read and the caller's own is
-// still whole. Where a rule is named, the guard reads the standard input a call sends as content
-// itself wherever the check did not buffer it (GhRequest.StdinSent): under a deployment that runs
-// no shared check (sharedCheck), and under a check that cleared the call without asking for its
-// input, as a check may for an input it clears. So the private-name pass reads what the call
-// publishes whichever check ran, and gh is handed the bytes that pass read.
+// still whole. Where the check did not buffer the input, the guard reads it itself as
+// GhRequest.Sent says.
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	var answer GhAnswer
 	check, err := g.sharedCheck(whatGhCall)
@@ -206,24 +196,6 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		answer.Read = GhReadNoRules
 		return answer, nil
 	}
-	// The argv is read once (readGhArgv). The files, the use of standard input and whether the
-	// call sends that input as content are the caller's parse where it handed one and the argv's
-	// tables where it did not.
-	call := readGhArgv(req.Args)
-	stdinSent := req.StdinSent
-	if req.Files == nil {
-		stdinSent = call.sent.StdinSent()
-	}
-	if answer.Stdin == nil && stdinSent {
-		// Nothing has read the input the call sends as content: no shared check ran, or the one
-		// that ran cleared the call without asking for it (askAgain answers a buffer, empty or
-		// not, whenever the check asked, so nil is an input nobody read and the caller's is still
-		// whole). The guard reads it itself, and the private-name pass reads the body the call
-		// publishes.
-		if answer.Stdin, err = readStdin(req); err != nil {
-			return answer, err
-		}
-	}
 	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
 	if err != nil {
 		return answer, err
@@ -232,27 +204,34 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		return answer, nil
 	}
 	// What the call would send, read here and not before the visibility answer: a private or
-	// internal destination runs no rule pass, and reading its files would cost the opens for
-	// nothing.
-	files, use := req.Files, req.StdinUse
-	if files == nil {
+	// internal destination runs no rule pass, so its files are never opened and its standard
+	// input goes to gh as the check left it. The argv is read once (readGhArgv), and what the call
+	// sends is the caller's parse where it handed one and the argv's tables where it did not
+	// (GhRequest.Sent).
+	call := readGhArgv(req.Args)
+	sent := req.Sent
+	if sent == nil {
 		if call.upload != "" {
 			return answer, &SetupFailure{
 				What: whatGhCall,
 				Why:  call.upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
 			}
 		}
-		files = call.sent.Files
-		if use == StdinUnknown {
-			use = call.sent.StdinUse
+		sent = &call.sent
+	}
+	if answer.Stdin == nil && sent.StdinSent() {
+		// askAgain answers a buffer, empty or not, whenever the check asked, so nil is an input
+		// nobody has read and the caller's is still whole (GhRequest.Sent says why it is read).
+		if answer.Stdin, err = readStdin(req); err != nil {
+			return answer, err
 		}
 	}
 	records := call.records
 	if len(answer.Stdin) > 0 {
 		stdin := Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}
-		records = append(records, stdinRecords(stdin, use, call.sent.stdinFields, call.graphQL)...)
+		records = append(records, stdinRecords(stdin, sent.StdinUse, sent.stdinFields, call.graphQL)...)
 	}
-	for _, named := range files {
+	for _, named := range sent.Files {
 		text, err := readGhFile(named)
 		if err != nil {
 			return answer, err
@@ -298,10 +277,9 @@ type ghArgv struct {
 	// records are the records of the argv, in the order it writes them.
 	records []Record
 	// sent is what the argv's options name for gh to send, in the order the argv writes them
-	// (GhSent): the files and the use of standard input; and upload is the first option of
-	// ghUnreadUploads it names, "" for none. These are the fallback, for a caller that hands the
-	// guard a bare argv (GhRequest.Files nil). The names of the fields whose value is standard
-	// input, which sent holds too (GhSent.stdinFields), are read for every call (stdinRecords).
+	// (GhSent): the files, the use of standard input, whether it is sent and the fields whose
+	// value it is; and upload is the first option of ghUnreadUploads it names, "" for none. These
+	// are the fallback, for a caller that hands the guard a bare argv (GhRequest.Sent nil).
 	sent   GhSent
 	upload string
 }
@@ -629,7 +607,7 @@ func (argv *ghArgv) field(args []string, at int, option, value string, typed boo
 // has. A `-F` anywhere but the front of a short argument is not read: it is the value of the
 // option before it in `gh gist create` (`-dF` is `--desc F`), and reading it as a file would
 // refuse a call over a file nobody named, while in `gh pr create` `-dF` is `--draft --body-file`,
-// which only the leaf's own help can say, and `legion gh` reads it so (GhRequest.Files).
+// which only the leaf's own help can say, and `legion gh` reads it so (GhRequest.Sent).
 //
 // No other option's arity is known here, so an option's value that itself begins with `-F` (a
 // `--body` whose first word is `-Fixed`) is read as a -F of its own and refuses the call, naming a
@@ -675,25 +653,23 @@ func (argv *ghArgv) readOther(args []string) {
 }
 
 // GhSent is what a gh call's options name for gh to send to GitHub beside its argv: the files it
-// sends as content, and the use it makes of standard input. Its two methods are the one rule for
-// what a value an option names is (Names, UsesStdin): a path a file named once, `-` standard
-// input with the use its option makes of it, and two uses that differ no known use. Both readers
-// of a gh call keep to it: this package's own, over a bare argv in the argv's order
-// (readGhArgv), and cmd/legion's, over its parse of the command by gh's help, in the order the
-// options' names sort (its ghSentFiles). So the two name what one option's value sends the same
-// way.
+// sends as content, the use it makes of standard input, whether it sends that input at all, and
+// the fields whose value it is. Its two methods are the one rule for what a value an option
+// names is (Names, UsesStdin): a path a file named once, `-` standard input with the use its
+// option makes of it, and two uses that differ no known use. Both readers of a gh call keep to
+// it: this package's own, over a bare argv in the argv's order (readGhArgv), and cmd/legion's,
+// over its parse of the command by gh's help, in the order the options' names sort (its
+// ghSentFiles). So the two name what one option's value sends the same way.
 //
 // Finding the values is each reader's own work — which options a call names, and the `<path>` of
 // a field's `<name>=@<path>` — and the two read some calls apart: `gh pr create -dF <path>` is
 // `--draft --body-file <path>` to cmd/legion, which reads the leaf's help, and no file to this
-// package's reader, which cannot tell it from `gh gist create`'s `--desc F` (readOther). The files
-// and the use of standard input of a call whose caller handed its parse are that parse's alone
-// (GhRequest.Files), so this package's reading of them decides only where no caller parsed the
-// call.
+// package's reader, which cannot tell it from `gh gist create`'s `--desc F` (readOther). What a
+// call whose caller handed its parse sends is that parse's alone (GhRequest.Sent), so this
+// package's reading decides it only where no caller parsed the call.
 //
-// The zero GhSent has named nothing, and its Files stay nil until a file is named: a caller that
-// must tell a parse that found no file from no parse at all (GhRequest.Files) starts it with
-// empty, non-nil Files.
+// The zero GhSent has named nothing, which is the parse of a call that sends nothing beside its
+// argv.
 type GhSent struct {
 	// Files are the files named, each once, in the order they were named.
 	Files []GhFile
@@ -716,10 +692,8 @@ type GhSent struct {
 // which is named once, since a second record of one file is a second open and a second line of
 // the same report.
 //
-// Standard input is no file to open: the shared check's exit-4 handshake buffers that input and
-// GhCall records it already (askAgain), and where no check buffered it — none ran, or the one
-// that ran did not ask — GhCall reads it itself (GhRequest.StdinSent, StdinSent). What is kept is
-// the use the option makes of it (UsesStdin), and the field's name.
+// Standard input is no file to open: GhCall reads it as GhRequest.Sent says. What is kept is that
+// it is named (StdinSent), the use the option makes of it (UsesStdin), and the field's name.
 func (sent *GhSent) Names(option, path, field string, use StdinUse) {
 	switch path {
 	case "":
@@ -749,8 +723,8 @@ func (sent *GhSent) UsesStdin(use StdinUse) {
 	}
 }
 
-// StdinSent is whether any use of standard input is named (UsesStdin): the call sends its
-// standard input to GitHub as content, which is what GhRequest.StdinSent says of a call.
+// StdinSent is whether any use of standard input is named (UsesStdin): whether the call sends its
+// standard input to GitHub as content, which decides whether GhCall reads it (GhRequest.Sent).
 func (sent *GhSent) StdinSent() bool {
 	return sent.stdinNamed
 }
@@ -838,7 +812,7 @@ const jsonInputsOption = "--json"
 // workflow run` reads too — `gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F
 // body=@body.md` is how a Legion role writes a pull request's body.
 //
-// These are the fallback, for a caller that hands the guard a bare argv (GhRequest.Files nil).
+// These are the fallback, for a caller that hands the guard a bare argv (GhRequest.Sent nil).
 // The caller that can do better does: `legion gh` parses the command with gh's own help of the
 // leaf, so it knows every option's arity and reads a shape no table can — a short cluster whose
 // last letter is the option (`-dF <path>`, which is `--draft --body-file <path>` in `gh pr
@@ -884,7 +858,7 @@ var ghFileOptions = map[string]bool{
 // spelling, and `gh api` and `gh workflow run` have none of them. The fallback refuses a call
 // naming one, in its separate or its attached spelling (`--attach=<path>`), before a bare `--`
 // (ghArgv.upload), rather than read a file of that kind and size; `legion gh`, which hands the
-// guard the files it parsed, refuses it before the guard runs.
+// guard its parse (GhRequest.Sent), refuses it before the guard runs.
 var ghUnreadUploads = map[string]bool{"--attach": true}
 
 // readGhFile is the text of one file a gh call would send, read to maxGhFile (readBounded). A

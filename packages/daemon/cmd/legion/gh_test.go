@@ -2179,7 +2179,7 @@ func TestGhRefusalShowsMatch(t *testing.T) {
 }
 
 // `legion gh` hands the guard the use the call makes of standard input, read out of its parse
-// from the option that named that input (leakguard.GhRequest.StdinUse), so the guard reads that
+// from the option that named that input (leakguard.GhRequest.Sent), so the guard reads that
 // input as what it is. A JSON request body on `gh api --input -` whose one field holds the fixture
 // pair's name and another field its word is read one string at a time and cleared, and gh runs it
 // with the input the guard read; read raw as well, as it is where no use is known, the two would
@@ -3034,23 +3034,27 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 }
 
 // The files a call would send to GitHub as content are read out of the same parse that reads the
-// owner, so the leak guard reads each file's text (leakguard.GhRequest.Files) and needs no second
+// owner, so the leak guard reads each file's text (leakguard.GhRequest.Sent) and needs no second
 // reader of the argv. The parse knows each option's arity from the leaf's own help, which is what
 // a table of option names cannot: `-F` is --body-file in `gh pr create` and --field in `gh api`,
 // a short cluster gives its last letter the next argument (`-dF <path>` is `--draft --body-file
 // <path>`), and an attached value may carry an `=` of its own (`-F=<path>`). A file a field names
 // carries the field's name. A value of `-`, an `@-`, a field given a literal and a raw field name
-// no file to open; a `-` and an `@-` are standard input instead, and the parse answers the use the
-// option that named it makes of it (leakguard.GhRequest.StdinUse), or none where two options with
-// different uses did. `gh workflow run --json`, at a last value of true, names it as a request
-// body; `--json` of any other command takes the fields to print and names none.
+// no file to open; a `-` and an `@-` are standard input instead, which the parse answers is sent,
+// with the use the option that named it makes of it, or none where two options with different
+// uses did. `gh workflow run --json`, at a last value of true, names it as a request body;
+// `--json` of any other command takes the fields to print and names none. Each command here has a
+// leaf, so its answer is never nil, a command that sends nothing among them: the guard then reads
+// nothing of it from the argv again.
 func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		argv []string
 		want []leakguard.GhFile
-		// stdin is the use of standard input the parse answers, leakguard.StdinUnknown for none.
+		// stdin is the use of standard input the parse answers, leakguard.StdinUnknown for none,
+		// and sent whether it answers that the call sends standard input at all.
 		stdin leakguard.StdinUse
+		sent  bool
 	}{
 		{
 			name: "a short cluster whose last letter is the option",
@@ -3092,36 +3096,49 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			argv:  []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinText,
+			sent:  true,
 		},
 		{
 			name:  "a short option whose value is standard input",
 			argv:  []string{"pr", "create", "-R", "acme/widgets", "-F", "-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinText,
+			sent:  true,
 		},
 		{
 			name:  "a field read from standard input",
 			argv:  []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinField,
+			sent:  true,
 		},
 		{
 			name:  "gh workflow run's field read from standard input",
 			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "-F", "notes=@-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinField,
+			sent:  true,
 		},
 		{
 			name:  "gh api's request body on standard input",
 			argv:  []string{"api", "repos/acme/widgets/pulls", "--input", "-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinRequestBody,
+			sent:  true,
 		},
 		{
 			name:  "gh workflow run's inputs as JSON on standard input",
 			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinRequestBody,
+			sent:  true,
+		},
+		{
+			name:  "gh workflow run's --json=true, which sends standard input as its inputs",
+			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json=true"},
+			want:  []leakguard.GhFile{},
+			stdin: leakguard.StdinRequestBody,
+			sent:  true,
 		},
 		{
 			name:  "gh workflow run's --json whose last value is false",
@@ -3134,6 +3151,7 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "-F", "notes=@-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinUnknown,
+			sent:  true,
 		},
 		{
 			name:  "another command's --json, which names the fields to print",
@@ -3146,12 +3164,14 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			argv:  []string{"api", "repos/acme/widgets/pulls/1", "-F", "title=@-", "-F", "body=@-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinField,
+			sent:  true,
 		},
 		{
 			name:  "two different options naming standard input",
 			argv:  []string{"api", "repos/acme/widgets/pulls/1", "--input", "-", "-F", "body=@-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinUnknown,
+			sent:  true,
 		},
 		{
 			name: "the same file named twice",
@@ -3164,11 +3184,14 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ghTargetOf(%q) = %v", tc.argv, err)
 			}
-			if !slices.Equal(target.files, tc.want) {
-				t.Fatalf("ghTargetOf(%q) read the files %v, want %v", tc.argv, target.files, tc.want)
+			if target.sent == nil {
+				t.Fatalf("ghTargetOf(%q) handed no parse of what the call sends, so the guard would read the argv again", tc.argv)
 			}
-			if target.stdinUse != tc.stdin {
-				t.Errorf("ghTargetOf(%q) read standard input as used %v, want %v", tc.argv, target.stdinUse, tc.stdin)
+			if !slices.Equal(target.sent.Files, tc.want) {
+				t.Fatalf("ghTargetOf(%q) read the files %v, want %v", tc.argv, target.sent.Files, tc.want)
+			}
+			if target.sent.StdinUse != tc.stdin || target.sent.StdinSent() != tc.sent {
+				t.Errorf("ghTargetOf(%q) read standard input as used %v, sent %t; want %v, sent %t", tc.argv, target.sent.StdinUse, target.sent.StdinSent(), tc.stdin, tc.sent)
 			}
 		})
 	}

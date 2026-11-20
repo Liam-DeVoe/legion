@@ -109,7 +109,8 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 
 // leakCheckReport prints one answer of the guard and is the status to exit with. A cleared write
 // prints nothing here, and so does one cleared with no rule file named: the guard then ran the
-// shared check alone, and the daemon's boot has said once that the deployment names no rule file.
+// shared check alone, where one runs, and the daemon's boot has said once that the deployment
+// names no rule file.
 // A refusal prints the guard's own report. One by the private-name rules — the deployment's rule
 // file, which LEGION_PRIVATE_NAME_RULES_FILE names — shows, for each finding, the record, the
 // rule's description, the text that matched and the line it stands on: the agent about to make

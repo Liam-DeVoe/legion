@@ -280,9 +280,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// whole. The checker a role is told (leakguard.CheckerVar) plays no part in it. Every other
 	// call is guarded whole, the visibility read and the private-name pass included, where the
 	// deployment names its rule file (LEGION_PRIVATE_NAME_RULES_FILE, leakguard.RulesFileVar).
-	// Where it names none, the guard runs the shared check alone, reads no visibility and no file
-	// the call sends, and says so (leakguard.GhReadNoRules): the log line says no-rules, and
-	// standard error holds nothing of it, so that a script reading gh's output reads gh's alone.
+	// Where it names none, the guard runs the shared check alone, where one runs, reads no
+	// visibility and no file the call sends, and says so (leakguard.GhReadNoRules): the log line
+	// says no-rules, and standard error holds nothing of it, so that a script reading gh's output
+	// reads gh's alone.
 	//
 	// A *leakguard.Refusal, a *leakguard.SetupFailure and a *leakguard.NotFound each refuse the
 	// call: a check that did not run has cleared nothing, and neither has a visibility read GitHub
@@ -293,16 +294,15 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// agent that runs this command wrote that text, so there is nothing in it to hide from the
 	// agent the refusal is shown to.
 	//
-	// The files the call would send go with it, read out of the parse above, which knew each
-	// option's arity from the leaf's own help (ghSentFiles): the guard reads the text of each,
-	// and needs no second reader of the argv for a call this command checked. So does the use
-	// the call makes of standard input (leakguard.GhRequest.StdinUse), which says whether that
-	// input is a JSON request body (`gh api --input -`, `gh workflow run --json`), the value of
-	// fields, or text GitHub stores as it stands; where two options name it with different uses,
-	// the parse hands none and the guard reads the input both ways. So does whether the call
-	// sends its standard input as content at all, which the guard reads itself wherever the shared
-	// check has not buffered it already (leakguard.GhRequest.StdinSent): a check need not ask for
-	// an input it clears, and the private-name pass must read what the call publishes.
+	// What the call would send goes with it, read out of the parse above, which knew each
+	// option's arity from the leaf's own help (ghSentFiles), as one answer
+	// (leakguard.GhRequest.Sent): the files, whose text the guard reads, so it needs no second
+	// reader of the argv for a call this command checked; the use the call makes of standard
+	// input, which says whether that input is a JSON request body (`gh api --input -`, `gh
+	// workflow run --json`), the value of fields, or text GitHub stores as it stands, and where
+	// two options name it with different uses the parse hands none and the guard reads the input
+	// both ways; and whether the call sends its standard input as content at all, by which the
+	// guard reads that input as leakguard.GhRequest.Sent says.
 	var buffered []byte
 	// read is how much of the guard the call had (leakguard.GhRead), whole for a mode that runs
 	// no guard.
@@ -325,9 +325,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			Args:          args,
 			Stdin:         os.Stdin,
 			Repo:          repo,
-			Files:         target.files,
-			StdinUse:      target.stdinUse,
-			StdinSent:     target.stdinSent,
+			Sent:          target.sent,
 			WritesNothing: mode == ghReadCall,
 			ProvenCheck:   ghReadsProvenCheck.sha256,
 		})
@@ -756,22 +754,21 @@ func ghWrapperFile(path string) (bool, error) {
 // the selectors named no owner or two; and repo, that repository's name keyed as gh reads a name
 // of it where every selector of the command named that one repository of that owner and "" where
 // they named more than one, where one named the owner alone, and where none named a repository
-// at all. command is the resolved command path with no arguments. files are the files the
-// command would send to GitHub as content (ghSentFiles), which the leak guard reads the text of;
-// stdinUse is the use the command makes of standard input, leakguard.StdinUnknown where no
-// option names it (a file option's `-`, a field's `@-`, `gh workflow run --json`) or two name it
-// with different uses (ghSentFiles), which tells the guard what that input is; and stdinSent is
-// whether any of them names it, so that the command sends its standard input as content as well.
-// writesNothing is whether the call is in a read grammar (ghWritesNothing), so that under the
-// shared check that rule was proven against the guard runs that check alone for it (runGh's
+// at all. command is the resolved command path with no arguments. sent is what the command would
+// send to GitHub beside its argv (ghSentFiles), the leak guard's to read: the files it sends as
+// content, the use it makes of standard input, leakguard.StdinUnknown where no option names it (a
+// file option's `-`, a field's `@-`, `gh workflow run --json`) or two name it with different
+// uses, and whether any of them names it, so that the command sends its standard input as
+// content as well. It is never nil for a command that has a leaf, so the guard reads none of it
+// out of the argv again (leakguard.GhRequest.Sent), and nil in the zero target of one that has
+// none. writesNothing is whether the call is in a read grammar (ghWritesNothing), so that under
+// the shared check that rule was proven against the guard runs that check alone for it (runGh's
 // ghReadCall). Such a call sends no file: no grammar names an option of ghSentFileOptions
 // (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type ghTarget struct {
 	dir, owner, repo string
 	command          string
-	files            []leakguard.GhFile
-	stdinUse         leakguard.StdinUse
-	stdinSent        bool
+	sent             *leakguard.GhSent
 	writesNothing    bool
 }
 
@@ -792,37 +789,36 @@ var ghSentFileOptions = map[string]leakguard.StdinUse{
 	"field":      leakguard.StdinField,
 }
 
-// ghSentFiles is what the parsed command would send to GitHub beside its argv (leakguard.GhSent):
-// the files it sends as content, each named once and each named by the option it came from, for
-// the leak guard to read the text of (leakguard.GhRequest.Files), the use the command makes of
-// standard input (leakguard.GhRequest.StdinUse), and whether it sends that input as content at all
-// (leakguard.GhRequest.StdinSent). command is the leaf's path. What each option's value names is
-// leakguard.GhSent's rule, the one the guard's own reader of a bare argv keeps to, so the two
-// readers name what one option's value sends the same way. Finding the values is this parse's
-// reading by the leaf's help, which reads calls the guard's own reader cannot, such as `gh pr
-// create -dF <path>` (`--draft --body-file <path>`), and the guard takes these files and this use
-// in place of its own reading. The files are never nil, so a command that sends no file is a
-// command the guard reads no file of, rather than one it reads the argv of again with tables of
-// its own. A file a field names (`-F <name>=@<path>` in `gh api`) carries the field's name
-// (leakguard.GhFile.Field), which is what tells the guard that the file of a `gh api graphql`
-// call's `query` field is a GraphQL query.
+// ghSentFiles is what the parsed command would send to GitHub beside its argv (leakguard.GhSent),
+// for the leak guard to read as one answer (leakguard.GhRequest.Sent): the files it sends as
+// content, each named once and each named by the option it came from, whose text the guard
+// reads; the use the command makes of standard input; and whether it sends that input as content
+// at all. command is the leaf's path. What each option's value names is leakguard.GhSent's rule,
+// the one the guard's own reader of a bare argv keeps to, so the two readers name what one
+// option's value sends the same way. Finding the values is this parse's reading by the leaf's
+// help, which reads calls the guard's own reader cannot, such as `gh pr create -dF <path>`
+// (`--draft --body-file <path>`), and the guard takes this answer in place of its own reading.
+// The answer is never nil, so a command that sends nothing is a command the guard reads nothing
+// of, rather than one it reads the argv of again with tables of its own. A file a field names
+// (`-F <name>=@<path>` in `gh api`) carries the field's name (leakguard.GhFile.Field), which is
+// what tells the guard that the file of a `gh api graphql` call's `query` field is a GraphQL
+// query.
 //
-// A value of `-`, and an `@-`, is standard input, which is no file to open: the guard reads it
-// through the shared check's own handshake where the check asks for it, and reads it itself
-// wherever the check did not, since a check need not ask for an input it clears
-// (leakguard.GhRequest.StdinSent). What is answered for it instead is the use the option that
-// named it makes of it (ghSentFileOptions), since that says what the input is: `gh api --input -`
-// makes it a JSON request body, a `--field <name>=@-` the value of a field, and each other option
-// text GitHub stores as it stands. `gh workflow run --json`, where its last value is true
-// (ghArgs.booleans), names it too (leakguard.GhSent.UsesStdin): gh reads the run's inputs from it
-// as one JSON object (testdata/gh-help/workflow_run.txt), and GitHub keeps each input apart, so it
-// is a JSON request body, read one string at a time. Only the command path says so, since `--json`
-// takes the names of fields to print in every other gh command. (leakguard.GhSent.UsesStdin says
-// what two options naming it with different uses answer.) The options are read in the order their
-// names sort, since a parse holds each option's values together and not the argv's order across
-// options, and a report that named two files must name them the same way twice.
-func ghSentFiles(command []string, parsed ghArgs) leakguard.GhSent {
-	sent := leakguard.GhSent{Files: []leakguard.GhFile{}}
+// A value of `-`, and an `@-`, is standard input, which is no file to open, and which the guard
+// reads as leakguard.GhRequest.Sent says. What is answered for it instead is that it is sent and
+// the use the option that named it makes of it (ghSentFileOptions), since that says what the
+// input is: `gh api --input -` makes it a JSON request body, a `--field <name>=@-` the value of
+// a field, and each other option text GitHub stores as it stands. `gh workflow run --json`, where
+// its last value is true (ghArgs.booleans), names it too (leakguard.GhSent.UsesStdin): gh reads
+// the run's inputs from it as one JSON object (testdata/gh-help/workflow_run.txt), and GitHub
+// keeps each input apart, so it is a JSON request body, read one string at a time. Only the
+// command path says so, since `--json` takes the names of fields to print in every other gh
+// command. (leakguard.GhSent.UsesStdin says what two options naming it with different uses
+// answer.) The options are read in the order their names sort, since a parse holds each option's
+// values together and not the argv's order across options, and a report that named two files
+// must name them the same way twice.
+func ghSentFiles(command []string, parsed ghArgs) *leakguard.GhSent {
+	sent := &leakguard.GhSent{}
 	for _, name := range slices.Sorted(maps.Keys(ghSentFileOptions)) {
 		use, option := ghSentFileOptions[name], "--"+name
 		for _, value := range parsed.values[name] {
@@ -988,7 +984,7 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 		return ghTarget{}, err
 	}
 	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: command,
-		files: sent.Files, stdinUse: sent.StdinUse, stdinSent: sent.StdinSent(), writesNothing: writesNothing}, nil
+		sent: sent, writesNothing: writesNothing}, nil
 }
 
 // cannotPlace is ghTargetOf's refusal of an argument it cannot place: what it is and why, and how
