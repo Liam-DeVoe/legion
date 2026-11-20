@@ -1065,7 +1065,10 @@ for (const kept of ["typed", "refused", "stopped"] as const) {
 // its author then deletes - holding words of the reader's own, or a save Dispatch refused - is
 // not left open on an empty body: the comment reads as deleted where its body was, and the edit
 // waits under it as the reader's own, never as the comment's text, until Discard my edit drops it
-// where it is kept.
+// where it is kept. By the architect's ruling the edit is drawn from the browser's own store and
+// never sent again, under the deleted line with the label that says it is the reader's, with no
+// editor and no Save - Discard my edit is its one action - and with no word of the comment the
+// edit was written over: the body the editor opened on is not drawn anywhere in the card.
 for (const kept of ["typed", "refused"] as const) {
   test(`an edit ${heldDraftWords[kept]} over a comment deleted since closes, and waits under the deleted line until discarded`, async () => {
     const user = userEvent.setup();
@@ -1078,9 +1081,9 @@ for (const kept of ["typed", "refused"] as const) {
       indexed: false,
       item: graphNode({ id: root.id, issue_key: "CORE-1", kind: "comment" }),
     });
-    const onEdit = async () => {
+    const onEdit = jest.fn(async () => {
       throw new ApiError(409, { code: "POST_DELETED", error: "the comment was deleted" });
-    };
+    });
     const tree = (current: Thread) => (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
@@ -1106,25 +1109,48 @@ for (const kept of ["typed", "refused"] as const) {
     const card = () => screen.getByTestId(`margin-comment-${root.id}`);
     const editKey = ["comment-edit", root.id];
     const edit = `An edit ${heldDraftWords[kept]}`;
+    // The label the kept edit is drawn under, which says it is the reader's own.
+    const lead =
+      "This comment was deleted, and Dispatch saves no edit of a deleted comment. Your edit is kept here:";
 
     try {
       const [rootEdit] = within(card()).getAllByRole("button", { name: "Edit" });
       if (rootEdit === undefined) throw new Error("The root comment has no Edit button.");
       await user.click(rootEdit);
-      await user.click(screen.getByLabelText("Edit comment"));
+      const field = screen.getByLabelText("Edit comment");
+      // The body the editor opens on, which the edit is written over: the root's own words.
+      const started = field instanceof HTMLTextAreaElement ? field.value : undefined;
+      await user.click(field);
       await user.keyboard("{Control>}a{/Control}");
       await user.paste(edit);
       if (kept === "refused") {
         await user.click(screen.getByRole("button", { name: "Save" }));
         await waitFor(() => expect(heldSends(queryClient).get(editKey)?.status).toBe("refused"));
       }
+      // The refused edit's one save is the reader's own press, before the delete.
+      const saves = onEdit.mock.calls.length;
 
       view.rerender(tree(thread({ root: { comment: deletedRoot, kind: "comment" } })));
       await within(card()).findByRole("button", { name: "Discard my edit" });
+      // The card's words outside its replies, its controls and its times: the words of the
+      // document the comment is anchored to, the deleted line, the root's byline, the label and
+      // the edit, and nothing of the comment the edit was written over.
+      const words = card().cloneNode(true);
+      if (words instanceof Element) {
+        for (const part of words.querySelectorAll('ol[aria-label="Replies"], button, time')) {
+          part.remove();
+        }
+      }
+      const offer = within(card()).getByRole("status").parentElement;
       const offered = {
+        actions: [...(offer?.querySelectorAll("button") ?? [])].map((press) => press.textContent),
+        body: card().textContent?.includes(root.body),
         deleted: card().textContent?.includes("Deleted by alice"),
+        editor: within(card()).queryByLabelText("Edit comment") !== null,
         field: screen.queryByLabelText("Edit comment") !== null,
         lines: statusLines(card()),
+        save: within(card()).queryByRole("button", { name: "Save" }) !== null,
+        words: words.textContent,
       };
       await user.click(within(card()).getByRole("button", { name: "Discard my edit" }));
 
@@ -1135,15 +1161,22 @@ for (const kept of ["typed", "refused"] as const) {
           lines: statusLines(card()),
         },
         offered,
+        saves: { after: onEdit.mock.calls.length - saves, before: saves },
+        started,
       }).toEqual({
         discarded: { held: false, kept: false, lines: [] },
         offered: {
+          actions: ["Discard my edit"],
+          body: false,
           deleted: true,
+          editor: false,
           field: false,
-          lines: [
-            `This comment was deleted, and Dispatch saves no edit of a deleted comment. Your edit is kept here:${edit}`,
-          ],
+          lines: [`${lead}${edit}`],
+          save: false,
+          words: `${root.anchor?.quote}Deleted by alice · alice · ${lead}${edit}`,
         },
+        saves: { after: 0, before: kept === "refused" ? 1 : 0 },
+        started: root.body,
       });
       expect(card()).not.toHaveTextContent("Root comment");
     } finally {
