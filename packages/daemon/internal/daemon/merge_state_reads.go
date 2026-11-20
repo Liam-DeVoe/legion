@@ -29,13 +29,15 @@ import (
 // (queueMergeState's once, classify.MergeStateReadOnce), whose `unknown` asks for nothing more.
 // The reads are held in memory, as the climb is: no row waits in the outbox, and a restart ends
 // them; the daemon's start reads every issue's pull request again and queues a ladder again for
-// each one GitHub still answers `unknown` for (readIssuesAtStart), which climbs and follows in
-// turn. `unknown` is no answer about the head, so nobody is told of it. Every other answer the
-// ladder gets is recorded, and an approval left standing on a head GitHub answers with a state it
-// would not merge from tells the architect that owns the issue and the reviewer, once for that
-// head and state, in the review-stuck notice the round writes - but only once the CI settlement
-// standing for the head says every check GitHub reported on it has concluded, since until then the
-// state says no more than that a check is running (workflow's reviewRound, stuckMergeState).
+// each one GitHub still answers `unknown` for (readIssuesAtStart, ladderAtStart), which climbs and
+// follows in turn - but for an issue in merging, for which that start read was its one read
+// (classify.MergeStateReadOnce). `unknown` is no answer about the head, so nobody is told of it.
+// Every other answer the ladder gets is recorded, and an approval left standing on a head GitHub
+// answers with a state it would not merge from tells the architect that owns the issue and the
+// reviewer, once for that head and state, in the review-stuck notice the round writes - but only
+// once the CI settlement standing for the head says every check GitHub reported on it has
+// concluded, since until then the state says no more than that a check is running (workflow's
+// reviewRound, stuckMergeState).
 //
 // mergeStateLadderReads and mergeStateLadderWait have two more users, the outbox's reads of one
 // pull request: the merge-queue read (merge_queue_removal.go's mergeQueueRead), which reads a pull
@@ -59,8 +61,8 @@ const (
 // and, by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue in
 // implementing through merging and a push to the base of an issue in testing through merging,
 // each of which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon's
-// start asks for it too, for each issue whose start read GitHub answered `unknown`
-// (readIssuesAtStart). It queues a ladder of reads for issue that starts with a climb
+// start asks for it too, for each issue outside merging whose start read GitHub answered `unknown`
+// (readIssuesAtStart, ladderAtStart). It queues a ladder of reads for issue that starts with a climb
 // (queueMergeStateFollow, with no head to follow), or, when once is set, one read
 // (readMergeStateOnce): the engine sets once for a push to the base of an issue in merging
 // (classify.MergeStateReadOnce), whose head sits in the merge queue, where GitHub answers
@@ -318,7 +320,8 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) str
 // wait: the follow's next read answers it. A read that fails is logged and followed by the next
 // wait, since the record follows GitHub only while something reads it. It is held in memory, and a
 // restart ends it; the daemon's start read queues a ladder for a head GitHub still answers
-// `unknown` for (readIssuesAtStart), which climbs and follows in turn.
+// `unknown` for (readIssuesAtStart), which climbs and follows in turn, unless the issue stands in
+// merging (ladderAtStart).
 func (w *workflowRuntime) followMergeState(ctx context.Context, issue, head string) {
 	wait := w.mergeStateWait()
 	for attempt := 1; ; attempt++ {

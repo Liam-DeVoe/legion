@@ -338,7 +338,8 @@ func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
 // `unknown`, or `mergeable` null - queues a ladder for the issue, which reads GitHub again and
 // records the state it answers then. A start read that answers a state queues none. The issue
 // stands in testing, where none of the facts these reads apply owes a read
-// (classify.MergeStateReadOwed), so a ladder here is the start read's alone.
+// (classify.MergeStateReadOwed), so a ladder here is the start read's alone; in merging the start
+// read is the one read and queues none (TestAStartReadReadsAMergingHeadOnce).
 func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 	const pull = `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},`
 	clean := pullAnswer{body: pull + `"mergeable":true,"mergeable_state":"clean"}`}
@@ -537,6 +538,46 @@ func (rig *readRig) climbedAndFollowed(t *testing.T) {
 	})
 }
 
+// readOnceMovingNothing holds that GitHub was read once for CAPTURE-1, which stands in merging with
+// status retro, and that the answer, GitHub's `unknown`, asked for no read after it and moved
+// nothing: the test waits out twenty of the runtime's waits (readRigWait) after the read, so a
+// climb's next read, one wait on, would be seen, and the record then holds GitHub's `unknown` as
+// every read's answer is applied, with no base push standing unanswered, no conflict read and no
+// row in the outbox. why says why one read is all.
+func (rig *readRig) readOnceMovingNothing(t *testing.T, why string) {
+	t.Helper()
+	testwait.Eventually(t, "the read of GitHub", func() bool { return rig.reads.Load() >= 1 })
+	time.Sleep(2 * mergeStateFollowWaits * rig.w.mergeStateWait())
+	if got := rig.reads.Load(); got != 1 {
+		t.Fatalf("GitHub was read %d times, want one: %s, and GitHub's unknown asks for no climb and no follow", got, why)
+	}
+	if follows := rig.follows(t); len(follows) != 0 {
+		t.Fatalf("the reads after the ladder logged %v, want none", follows)
+	}
+	if running, waiting := ladders(rig.w); running != 0 || waiting != 0 {
+		t.Fatalf("%d issues are queued for a read and %d ladders are running, want none after the one read", waiting, running)
+	}
+	got, pr := capturePhase(t, rig.pool)
+	var status string
+	if err := rig.pool.QueryRow(context.Background(), "select status from issues where key = 'CAPTURE-1'").Scan(&status); err != nil {
+		t.Fatalf("read CAPTURE-1's status: %v", err)
+	}
+	if got != phase.Merging || status != "retro" {
+		t.Fatalf("after the read the issue is in %s with status %q, want it still in merging with retro", got, status)
+	}
+	if pr.Mergeability != record.MergeabilityUnknown || pr.MergeState != record.MergeStateUnknown || pr.BaseMoved != "" {
+		t.Fatalf("the record holds %s/%s with the base moved to %q, want GitHub's UNKNOWN/unknown recorded as the read's answer",
+			pr.Mergeability, pr.MergeState, pr.BaseMoved)
+	}
+	if pr.ConflictRead != nil || pr.ConflictingHead != "" || pr.MergeForward != nil {
+		t.Fatalf("the record holds first read %+v, %q conflicting and merge forward %+v, want nothing acted on",
+			pr.ConflictRead, pr.ConflictingHead, pr.MergeForward)
+	}
+	if rows := outboxRowsOf(t, rig.pool, "CAPTURE-1"); rows != 0 {
+		t.Fatalf("the outbox holds %d rows of CAPTURE-1, want none: the read moved nothing", rows)
+	}
+}
+
 // A push to the base asks one read of GitHub's merge state for the head of an issue that stands in
 // merging (classify.MergeStateReadOnce): its pull request sits in GitHub's merge queue, and GitHub
 // answers `unknown` for a queued head, so a ladder there would climb and then follow the head on
@@ -544,8 +585,7 @@ func (rig *readRig) climbedAndFollowed(t *testing.T) {
 // is applied as every read's is - the record holds GitHub's `unknown` against the push it answers
 // - and asks for nothing more: no climb, no follow, and the issue moves nowhere. The same push
 // over an issue in reviewing climbs and follows as before, so the one read is the merging phase's
-// rule, not the push's. The runtime's waits are cut (readRigWait), and the test waits out twenty
-// of them after the first read, so a climb's next read, one wait on, would be seen.
+// rule, not the push's.
 func TestABasePushReadsAMergingHeadOnce(t *testing.T) {
 	forever := func(int32) pullAnswer { return unknownPull }
 
@@ -553,42 +593,37 @@ func TestABasePushReadsAMergingHeadOnce(t *testing.T) {
 		rig := newReadRig(t, captureOnMain(phase.Merging, "retro"), forever)
 		rig.reading(t)
 		applyFact(t, rig.pool, "github", "base-push", basePushOntoMain, rig.w.handlers...)
-		testwait.Eventually(t, "the base push's read of GitHub", func() bool { return rig.reads.Load() >= 1 })
-		time.Sleep(2 * mergeStateFollowWaits * rig.w.mergeStateWait())
-		if got := rig.reads.Load(); got != 1 {
-			t.Fatalf("GitHub was read %d times, want one: a base push reads a merging head once, and GitHub's unknown asks for no climb and no follow", got)
-		}
-		if follows := rig.follows(t); len(follows) != 0 {
-			t.Fatalf("the reads after the ladder logged %v, want none", follows)
-		}
-		if running, waiting := ladders(rig.w); running != 0 || waiting != 0 {
-			t.Fatalf("%d issues are queued for a read and %d ladders are running, want none after the one read", waiting, running)
-		}
-		got, pr := capturePhase(t, rig.pool)
-		var status string
-		if err := rig.pool.QueryRow(context.Background(), "select status from issues where key = 'CAPTURE-1'").Scan(&status); err != nil {
-			t.Fatalf("read CAPTURE-1's status: %v", err)
-		}
-		if got != phase.Merging || status != "retro" {
-			t.Fatalf("after the read the issue is in %s with status %q, want it still in merging with retro", got, status)
-		}
-		if pr.Mergeability != record.MergeabilityUnknown || pr.MergeState != record.MergeStateUnknown || pr.BaseMoved != "" {
-			t.Fatalf("the record holds %s/%s with the base moved to %q, want GitHub's UNKNOWN/unknown recorded as the push's answer",
-				pr.Mergeability, pr.MergeState, pr.BaseMoved)
-		}
-		if pr.ConflictRead != nil || pr.ConflictingHead != "" || pr.MergeForward != nil {
-			t.Fatalf("the record holds first read %+v, %q conflicting and merge forward %+v, want nothing acted on",
-				pr.ConflictRead, pr.ConflictingHead, pr.MergeForward)
-		}
-		if rows := outboxRowsOf(t, rig.pool, "CAPTURE-1"); rows != 0 {
-			t.Fatalf("the outbox holds %d rows of CAPTURE-1, want none: the read moved nothing", rows)
-		}
+		rig.readOnceMovingNothing(t, "a base push reads a merging head once")
 	})
 
 	t.Run("reviewing climbs and follows", func(t *testing.T) {
 		rig := newReadRig(t, captureOnMain(phase.Reviewing, "needs_review"), forever)
 		rig.reading(t)
 		applyFact(t, rig.pool, "github", "base-push", basePushOntoMain, rig.w.handlers...)
+		rig.climbedAndFollowed(t)
+	})
+}
+
+// The daemon's start read of an issue that stands in merging is the one read of its head
+// (classify.MergeStateReadOnce): the pull request sits in GitHub's merge queue, where GitHub answers
+// `unknown` for the head, so the start read's `unknown` queues no ladder after it - no climb and no
+// follow - and the issue moves nowhere. The same start over an issue in reviewing queues a ladder,
+// which climbs and follows the head while GitHub answers `unknown` (dispatch://INFRA-4374 R4), so
+// the one read is the merging phase's rule, not the start read's.
+func TestAStartReadReadsAMergingHeadOnce(t *testing.T) {
+	forever := func(int32) pullAnswer { return unknownPull }
+
+	t.Run("merging reads once and moves nothing", func(t *testing.T) {
+		rig := newReadRig(t, captureOnMain(phase.Merging, "retro"), forever)
+		rig.reading(t)
+		rig.w.readIssuesAtStart(context.Background())
+		rig.readOnceMovingNothing(t, "the start read of a merging head is its one read")
+	})
+
+	t.Run("reviewing climbs and follows", func(t *testing.T) {
+		rig := newReadRig(t, captureOnMain(phase.Reviewing, "needs_review"), forever)
+		rig.reading(t)
+		rig.w.readIssuesAtStart(context.Background())
 		rig.climbedAndFollowed(t)
 	})
 }

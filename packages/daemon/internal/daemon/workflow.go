@@ -288,16 +288,17 @@ type workflowRuntime struct {
 	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
 	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
 	// testing through merging, one read for a base push in merging and a ladder for every other),
-	// each the start read found GitHub still computing (readIssuesAtStart), and each a second read
-	// of a conflicting head left reading no answer (queueMergeStateFollow), that readMergeStates has
-	// not started a ladder for yet; mergeStateQueued is what each of them asked for, a climb, the
-	// head its ladder starts by following, or one read (mergeStateAsk); and mergeStateRunning each
-	// issue whose ladder is still reading, a climb, a follow or its one read (mergeStateRun), which
-	// is why a second fact of an issue already being read starts no second ladder. mergeStateRetry
-	// is how long a ladder waits between reads of a state GitHub answers `unknown` for, the unit the
-	// reads after a ladder wait in, and how long the outbox's merge-queue read and second conflict
-	// read wait before they read again (mergeStateWait, which attach hands the outbox),
-	// mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
+	// each outside merging the start read found GitHub still computing (readIssuesAtStart,
+	// ladderAtStart), and each a second read of a conflicting head left reading no answer
+	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
+	// mergeStateQueued is what each of them asked for, a climb, the head its ladder starts by
+	// following, or one read (mergeStateAsk); and mergeStateRunning each issue whose ladder is still
+	// reading, a climb, a follow or its one read (mergeStateRun), which is why a second fact of an
+	// issue already being read starts no second ladder. mergeStateRetry is how long a ladder waits
+	// between reads of a state GitHub answers `unknown` for, the unit the reads after a ladder wait
+	// in, and how long the outbox's merge-queue read and second conflict read wait before they read
+	// again (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a
+	// test shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateQueued  map[string]mergeStateAsk
