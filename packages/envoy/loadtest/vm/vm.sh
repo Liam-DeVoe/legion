@@ -771,7 +771,7 @@ on_vm_for() {
 # directory that takes no new file -- a full disk, no free inode, no write permission -- never
 # stops a kill before it signals, and an interrupt that ends the script during one leaves no file.
 remote_kill() {
-  local what=$1 file=$2 started=${3:-} out said rc=0 left=$'\n''pid=([0-9]+)'$'\n' none=$'\n''no-pid'$'\n'
+  local what=$1 file=$2 started=${3:-} out said rc=0 left=$'\n''pid=([0-9]+)'$'\n' mismatch=$'\n''pid-start-mismatch=([0-9]+)'$'\n' none=$'\n''no-pid'$'\n'
   STOPPING=$what
   # shellcheck disable=SC2016 # expanded by the load machine's sh
   out=$(on_vm "$LOAD_VM" sh -c '
@@ -785,8 +785,13 @@ remote_kill() {
         sleep 1
       done
     fi
-    pid=$(cat "$1" 2>/dev/null)
+    read -r pid start <"$1" 2>/dev/null || pid= start=
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      now=$(awk '"'"'{ sub(/^.*\) /, ""); print $20 }'"'"' "/proc/$pid/stat" 2>/dev/null)
+      if [ -z "$start" ] || [ -z "$now" ] || [ "$now" != "$start" ]; then
+        echo "pid-start-mismatch=$pid"
+        exit 5
+      fi
       kill -TERM "$pid" 2>/dev/null
       i=0
       while kill -0 "$pid" 2>/dev/null && [ "$i" -lt "$2" ]; do
@@ -813,6 +818,8 @@ remote_kill() {
   fi
   if ((rc == 3)) && [[ $'\n'$out$'\n' =~ $left ]]; then
     note "$what (pid ${BASH_REMATCH[1]}) is still in the $LOAD_VM VM's process table $REMOTE_GONE_SECONDS s after its SIGKILL; $file there still names it"
+  elif ((rc == 5)) && [[ $'\n'$out$'\n' =~ $mismatch ]]; then
+    note "$file on the $LOAD_VM VM names pid ${BASH_REMATCH[1]}, whose recorded start does not match the process there, so it is not signalled and nothing shows $what gone"
   elif ((rc == 4)) && [[ $'\n'$out$'\n' =~ $none ]]; then
     note "the start of $what on the $LOAD_VM VM recorded no pid in $file there within $REMOTE_GONE_SECONDS s of its kill, so nothing shows it gone"
   else
@@ -2399,7 +2406,7 @@ load_start() {
   shift 2
   ssh_cmd
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  remote_cmd=$(remote_argv sh -c 'pid_file=$1; shift; echo $$ >"$pid_file"; exec "$@"' sh "$(load_pid_file)" "$@")
+  remote_cmd=$(remote_argv sh -c 'pid_file=$1; shift; start=$(awk '"'"'{ sub(/^.*\) /, ""); print $20 }'"'"' "/proc/$$/stat"); printf "%s %s\n" "$$" "$start" >"$pid_file"; exec "$@"' sh "$(load_pid_file)" "$@")
   STARTING="the step's load"
   timeout "$seconds" "${SSH[@]}" "$(vm_ssh "$LOAD_VM")" "$remote_cmd" >"$dir/loadgen.out" 2>&1 &
   LOAD_SSH_PID=$! LOAD_REMOTE=1 STARTING=""

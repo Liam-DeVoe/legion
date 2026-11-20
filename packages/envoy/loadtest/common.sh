@@ -86,20 +86,30 @@ usage() {
   exit 2
 }
 
-# proc_start PID: the process's start time (field 22 of /proc/PID/stat, read after the command name,
-# which may hold spaces), so a pid the kernel reused for another process is told apart. For a pid
-# that has left the table -- its /proc entry gone -- it prints nothing and succeeds, since a process
-# can end between the read that found its pid and the read of its start. Any other read that fails
-# -- an entry there with no stat read from it, for want of a file descriptor, say -- fails, so no
-# caller takes a read it could not make for a process that has gone.
-proc_start() {
-  local stat fields
-  if ! read -r stat 2>/dev/null <"/proc/$1/stat"; then
-    [ ! -e "/proc/$1" ] || return 1
+# proc_start_into NAME PID: PID's start time (field 22 of /proc/PID/stat) assigned to shell
+# variable NAME, or an empty assignment when PID has left the table. A read that fails while the
+# entry exists fails. Assigning in this shell lets callers distinguish a failed read even when a
+# low descriptor limit makes command substitution report an empty successful result.
+proc_start_into() {
+  local name=$1 pid=$2 stat fields
+  printf -v "$name" ''
+  if ! read -r stat 2>/dev/null <"/proc/$pid/stat"; then
+    [ ! -e "/proc/$pid" ] || return 1
     return 0
   fi
   read -r -a fields <<<"${stat##*) }" && [ -n "${fields[19]:-}" ] || return 1
-  printf '%s\n' "${fields[19]}"
+  printf -v "$name" '%s' "${fields[19]}"
+}
+
+# proc_start PID: the process's start time (field 22 of /proc/PID/stat, read after the command
+# name, which may hold spaces), so a pid the kernel reused for another process is told apart. For a
+# pid that has left the table -- its /proc entry gone -- it prints nothing and succeeds. Any other
+# read that fails -- an entry there with no stat read from it, for want of a file descriptor, say --
+# fails, so no caller takes a read it could not make for a process that has gone.
+proc_start() {
+  local start
+  proc_start_into start "$1" || return
+  printf '%s\n' "$start"
 }
 
 # proc_ended PID START: whether the process that PID named when it started at START (proc_start)

@@ -18,9 +18,9 @@ body: |-
   then goes on with its delete and fails; the stop of a step's disk watcher kills every process
   of its act, each `kubectl` below its `timeout` included, and waits until each has ended, every
   thread of it, naming one that has not. A process whose `/proc` entry is there and cannot be
-  read is never taken for one that has ended: the stop names it, and the disk watcher and the
-  wait on the runner job read the step shell again at their next poll. `restart-step.sh` counts
-  the listener it kills as down only once every thread of it has gone, and fails, naming it, on
+  read is never taken for one that has ended, including with `ulimit -n 4`: the stop names it, and
+  the disk watcher and the wait on the runner job read the step shell again at their next poll.
+  `restart-step.sh` counts the listener it kills as down only once every thread of it has gone, and fails, naming it, on
   a `/proc` entry it cannot read; when the script fails, its SIGTERM goes to its own step's
   `loadgen run`, by its pid, and no longer to every process of that command line, another run's
   included.

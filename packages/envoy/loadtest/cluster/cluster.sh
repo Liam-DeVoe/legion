@@ -974,13 +974,14 @@ copy_is_ours() {
 # record a failure in a dead step's directory or TERM a new run's job of the same name. Each poll
 # of pg_disk_watch and runner_wait asks this, and ends, recording nothing and stopping nothing,
 # once it is true (0). It is 1 while the step shell is still the process it was, and 2 when that
-# shell's start could not be read with its /proc entry there (proc_start): a read it could not
-# make is no sign that the step has gone, so the poll names it and goes on as for a step that
-# runs, and the next poll reads again.
+# shell's start could not be read with its /proc entry there (proc_start_into): a read it could not
+# make is no sign that the step has gone, so the poll names it and goes on as for a step that runs,
+# and the next poll reads again.
 step_gone() {
   local now
   [ -d "$RUN_DIR" ] || return 0
-  now=$(proc_start "$1") || return 2
+  proc_start_into now "$1" || return 2
+  [ -n "$now" ] || return 0
   [ "$now" != "$2" ]
 }
 

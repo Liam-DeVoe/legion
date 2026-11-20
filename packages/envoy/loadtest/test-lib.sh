@@ -117,9 +117,14 @@ end_recorded() {
 }
 
 end_tree() {
-  local walked=("$1") seen=" $1 " i=0 file kid found=()
-  if ! stop_process "$1"; then
-    [ -e "/proc/$1" ] && return 1
+  local pid=$1 walked seen i=0 file kid found=()
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || {
+    printf 'end_tree: refusing invalid process id %q\n' "$pid" >&2
+    return 1
+  }
+  walked=("$pid") seen=" $pid "
+  if ! stop_process "$pid"; then
+    [ -e "/proc/$pid" ] && return 1
     return 0
   fi
   while ((i < ${#walked[@]})); do
@@ -128,6 +133,10 @@ end_tree() {
       { read -r -a found <"$file"; } 2>/dev/null || true
       for kid in "${found[@]}"; do
         [[ $seen != *" $kid "* ]] || continue
+        [[ $kid =~ ^[1-9][0-9]*$ ]] || {
+          printf 'end_tree: refusing invalid process id %q\n' "$kid" >&2
+          return 1
+        }
         if ! stop_process "$kid"; then
           [ -e "/proc/$kid" ] && return 1
           continue
