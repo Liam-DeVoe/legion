@@ -90,7 +90,10 @@ describe.skipIf(LEGION_E2E !== "1")("the replay answer under a session's own NAT
     const session = await connect({
       ...natsConnectionOptions({
         name: "claude-envoy-reply-grant",
-        seed: { source: "the row's session user", value: decoder.decode(sessionUser.getSeed()) },
+        credential: {
+          kind: "seed",
+          seed: { source: "the row's session user", value: decoder.decode(sessionUser.getSeed()) },
+        },
         servers: [server.url],
       }),
       reconnect: false,
@@ -99,9 +102,12 @@ describe.skipIf(LEGION_E2E !== "1")("the replay answer under a session's own NAT
     const requester = await connect({
       ...natsConnectionOptions({
         name: "claude-envoy-reply-grant-requester",
-        seed: {
-          source: "the row's requester user",
-          value: decoder.decode(requesterUser.getSeed()),
+        credential: {
+          kind: "seed",
+          seed: {
+            source: "the row's requester user",
+            value: decoder.decode(requesterUser.getSeed()),
+          },
         },
         servers: [server.url],
       }),

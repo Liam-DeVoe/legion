@@ -24106,9 +24106,12 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
         ...natsConnectionOptions({
           servers: [server.url],
           name: "pi-envoy-reply-grant-requester",
-          seed: {
-            value: decoder.decode(requesterUser.getSeed()),
-            source: "the row's requester user",
+          credential: {
+            kind: "seed",
+            seed: {
+              value: decoder.decode(requesterUser.getSeed()),
+              source: "the row's requester user",
+            },
           },
         }),
         reconnect: false,
