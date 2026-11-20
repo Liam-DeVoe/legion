@@ -754,7 +754,12 @@ remote at `world.json`'s seeded head) on `api.github.com`, `github.com`,
 `raw.githubusercontent.com` or `codeload.github.com`, as production reaches it (a repository a
 `bash` command names through a variable is read with each value a `for` loop over literal words or
 an assignment of a literal gives that variable, trimmed where the command trims it by `%`, `%%`,
-`#` or `##`, and the call is such a read only where every one of those values makes it one); and
+`#` or `##`, and the call is such a read only where every one of those values makes it one; a
+single-quoted word the call gives a program the shell runs as a process of its own, such as the
+pattern of `grep -E '"ref"'`, sets no variable it names, while one a builtin, a function or an
+alias may read as a name or as code (`[[ -v 'a[ref=1]' ]]`, `time -p eval 'ref=…'`) leaves the
+variable unread; and a GET whose repository holds a variable read no other way is named so,
+`its URL holds ${ref}, which the reader cannot expand`); and
 no agent says a
 word of the measurement an input gave it: a scenario or case word with a character that is no
 letter or digit (`text-only`, `threads-closed`), a removed name (`skill-scenarios`, `LWEVAL`,

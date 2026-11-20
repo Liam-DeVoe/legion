@@ -2801,8 +2801,9 @@ function assignmentsAlone(scan: Scanned, at: number, open: boolean): number {
 
 /** What `flowed` finds in a call's text, at places in the call's text: where a command sets a
  * variable as it reads it (`sites`: the variable, and where its name stands), and the spans that
- * are literal text it reads as a value (`literal`: the words of a loop's list, the value of an
- * assignment that is a literal), which name no variable to any command. */
+ * name no variable to the shell (`literal`): literal text it reads as a value (the words of a
+ * loop's list, the value of an assignment that is a literal), and each word `literalFlow` reads as
+ * data a process of its own is given (`childWords`). */
 interface Places {
   readonly sites: { readonly name: string; readonly at: number }[];
   readonly literal: (readonly [from: number, to: number])[];
@@ -2919,11 +2920,63 @@ const GIVES_ATTRIBUTES = new Set(["declare", "typeset", "local", "readonly", "ex
 const SHELL_SETS =
   /^(?:_|BASH\w*|COMP_\w+|READLINE_\w+|COPROC|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS|EUID|FUNCNAME|GROUPS|HISTCMD|HOSTNAME|HOSTTYPE|LINENO|MACHTYPE|MAPFILE|OLDPWD|OPTARG|OPTIND|OSTYPE|PIPESTATUS|PPID|PWD|RANDOM|REPLY|SECONDS|SHELLOPTS|SHLVL|SRANDOM|UID)$/;
 
+/** bash's builtins and reserved words (bash 5.2's `compgen -b` and `compgen -k`): the commands the
+ * shell runs itself, any of which may read a word it is given as a variable's name, as code or as
+ * arithmetic, and so set that variable (`read 'name'`, `time -p eval 'name=…'`, `[[ 1 -eq
+ * 'name=1' ]]`, `test -v 'a[name=1]'`, each measured with bash 5.2.37). */
+const SHELL_BUILTINS = new Set(
+  `. : [ alias bg bind break builtin caller cd command compgen complete compopt continue declare
+  dirs disown echo enable eval exec exit export false fc fg getopts hash help history jobs kill let
+  local logout mapfile popd printf pushd pwd read readarray readonly return set shift shopt source
+  suspend test times trap true type typeset ulimit umask unalias unset wait if then else elif fi
+  case esac for select while until do done in function time { } ! [[ ]] coproc`.split(/\s+/)
+);
+/** A word of shell text that is one single-quoted string, in which the shell expands nothing. */
+const SINGLE_QUOTED = /^'[^']*'$/;
+
+/** Where `scan` gives a program the shell runs as a process of its own a word that is one
+ * single-quoted string (SINGLE_QUOTED): a word of a command after its name, past its prefix
+ * assignments and redirections, the name a literal (`literalWord`) that is no option and none of
+ * SHELL_BUILTINS. The shell reads nothing in such a word and the process cannot set the shell's
+ * variables, so the word names no variable to the shell: `grep -E '"ref"'`, `python3 -c '…'`,
+ * `bash -c '…'`, whose own shell's variables are not the call's. None in a text that may run a
+ * builtin by such a program's name: one that defines a function (`f() …`, `function f`) or an
+ * alias (`alias`), either of which may run the builtin a word names (`f() { builtin "$@"; }; f
+ * eval 'name=…'`), or that runs a command named by an expansion (`$a grep=eval`), which may be
+ * `alias`. */
+function childWords(scan: Scanned): (readonly [from: number, to: number])[] {
+  const { tokens, raw, gaps, starts } = scan;
+  const words: (readonly [from: number, to: number])[] = [];
+  // Whether the command the token is in has had its name read, and whether that name is a program
+  // the shell runs as a process of its own.
+  let named = false;
+  let child = false;
+  for (const [i, token] of tokens.entries()) {
+    const word = raw[i] ?? "";
+    const read = literalWord(word);
+    if (read === "alias" || read === "function" || /^[ \t]*\([ \t]*\)/.test(gaps[i + 1] ?? ""))
+      return [];
+    if (starts[i]) named = false;
+    if (named) {
+      if (child && token.redirect === undefined && SINGLE_QUOTED.test(word))
+        words.push([token.at, token.end]);
+      continue;
+    }
+    if (token.redirect !== undefined || ASSIGNMENT.test(word)) continue;
+    if (read === undefined && /[$`]/.test(word)) return [];
+    named = true;
+    child = read !== undefined && !read.startsWith("-") && !SHELL_BUILTINS.has(read);
+  }
+  return words;
+}
+
 /** Whether every place `code` names the variable `name` is a read of it (`$name`, or `${name…}`
  * but its assigning `${name=…}` and `${name:=…}`), one of the sites `flowed` reads it set, or
- * inside literal text `flowed` reads as a value (`places`). The places are read in the text as
- * written, quotes and all, so that none is missed for being quoted (`export "name=…"`, `eval
- * 'name=…'`): a word of quoted text that names it is one more. */
+ * inside a span that names no variable to the shell (`places`' `literal`: literal text `flowed`
+ * reads as a value, a single-quoted word a process of its own is given). The places are read in
+ * the text as written, quotes and all, so that none is missed for being quoted (`export
+ * "name=…"`, `eval 'name=…'`, `[[ -v 'a[name=1]' ]]`): a word of quoted text that names it is one
+ * more, but in one of those spans. */
 function namedOnlyAt(code: string, name: string, places: Places): boolean {
   const sites = new Set(places.sites.map((site) => site.at));
   for (const hit of code.matchAll(new RegExp(`(?<!\\w)${name}(?!\\w)`, "g"))) {
@@ -2945,8 +2998,9 @@ function namedOnlyAt(code: string, name: string, places: Places): boolean {
  * nothing set any other way is read, a command's output, a file's text, arithmetic, a loop over
  * anything but literal words, an assignment inside a bracket, a compound command or after `&&`,
  * and its expansion stays as written. A variable is read only where every place the text names it
- * is a read of it, a place `flowed` reads it set or literal text it reads as a value
- * (`namedOnlyAt`), where no word of a command of SETS_NAMED ends with its name (`read -arepo`
+ * is a read of it, a place `flowed` reads it set, literal text it reads as a value or a
+ * single-quoted word a process of its own is given (`namedOnlyAt`, `childWords`: the pattern of
+ * `grep -E '"ref"'`), where no word of a command of SETS_NAMED ends with its name (`read -arepo`
  * sets `repo`), and never one the shell sets itself (SHELL_SETS). The text is returned whole
  * where it holds what may set any variable unread: a comment (`#`, whose end the reader does not
  * read), a command of RUNS_TEXT, one of SETS_NAMED given an expansion among its words, one of
@@ -2974,7 +3028,7 @@ function literalFlow(code: string): string {
     if (words.some((one) => /[$`]/.test(one)) || /[(`]/.test(gaps[last + 1] ?? "")) return code;
     naming.push(...words);
   }
-  const places: Places = { sites: [], literal: [] };
+  const places: Places = { sites: [], literal: childWords(scan) };
   flowed(code, 0, new Map(), undefined, places);
   const eligible = new Set(
     places.sites
@@ -3524,22 +3578,50 @@ const GITHUB_READ_HOSTS: Readonly<Record<string, RegExp>> = {
 const githubReadPattern = (host: string): RegExp | undefined =>
   Object.hasOwn(GITHUB_READ_HOSTS, host) ? GITHUB_READ_HOSTS[host] : undefined;
 
-/** Whether `reach` reads and sends nothing (its `get`) of a repository of `repositories` on a host
- * of GITHUB_READ_HOSTS, over https or http (curl's scheme for an operand that names none). */
-function githubRead(reach: Reach, repositories: ReadonlySet<string>): boolean {
+/** The path of the URL `reach` names on a host of GITHUB_READ_HOSTS, over https or http (curl's
+ * scheme for an operand that names none), and the repository the path names there, OWNER/REPO in
+ * lower case, where it names one; undefined for any other reach. */
+function githubPath(reach: Reach): { path: string; repository?: string } | undefined {
   const pattern = githubReadPattern(reach.host);
-  if (reach.get !== true || pattern === undefined) return false;
+  if (pattern === undefined) return undefined;
   let url: URL;
   try {
     url = new URL(reach.named.includes("://") ? reach.named : `http://${reach.named}`);
   } catch {
-    return false;
+    return undefined;
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
   const found = pattern.exec(url.pathname);
-  if (found === null) return false;
+  if (found === null) return { path: url.pathname };
   const repository = `${found[1]}/${(found[2] ?? "").replace(/\.git$/i, "")}`.toLowerCase();
-  return repositories.has(repository);
+  return { path: url.pathname, repository };
+}
+
+/** Whether `reach` reads and sends nothing (its `get`) of a repository of `repositories` on a host
+ * of GITHUB_READ_HOSTS (`githubPath`). */
+function githubRead(reach: Reach, repositories: ReadonlySet<string>): boolean {
+  const repository = reach.get === true ? githubPath(reach)?.repository : undefined;
+  return repository !== undefined && repositories.has(repository);
+}
+
+/** An expansion in shell text as written: `${…}`, `$NAME`, or a `$` and the character after it. */
+const EXPANSION = /\$(?:\{[^}]*\}|[A-Za-z_]\w*|\S)?/;
+
+/** Why `reach`, off the run's world on a host of GITHUB_READ_HOSTS, is no read rule 13 allows of
+ * one of `repositories`, those the world's workflow names: where it is a GET whose URL holds an
+ * expansion (EXPANSION) in what names the repository, or anywhere in a path that names none, the
+ * reader holds no value of it (`literalFlow` read none), so which repository it reads is not in
+ * the text (`its URL holds ${ref}, which the reader cannot expand`); else it is no GET of one of
+ * them. Nothing for any other host, and for a world whose workflow names none, which allows none. */
+function githubReadRefusal(reach: Reach, repositories: ReadonlySet<string>): string {
+  if (repositories.size === 0 || githubReadPattern(reach.host) === undefined) return "";
+  const read = reach.get === true ? githubPath(reach) : undefined;
+  const expansion = (read?.repository ?? read?.path ?? "").includes("$")
+    ? EXPANSION.exec(reach.named)?.[0]
+    : undefined;
+  return expansion === undefined
+    ? `, and no GET or HEAD with no body or ls-remote of a repository the world's workflow names (${[...repositories].join(", ")})`
+    : `, and its URL holds ${expansion}, which the reader cannot expand`;
 }
 
 /** A workflow step's `uses:` line naming an action of a repository, `OWNER/REPO[/path]@<ref>`,
@@ -3678,7 +3760,8 @@ export type Keeper = (target: string, transcript: string) => string | undefined;
  * stand-in, <own>/bin/gh of each of `own`, the run's directories, a relative path read from the
  * run's cwd (<own>/cwd, where launch starts the agent). Any other reach off the world is allowed
  * where it reads and sends nothing (a GET or a HEAD with no body, a `git ls-remote`) of one of
- * the public repositories the world's workflow names (`allowed`'s `uses`, `githubRead`). */
+ * the public repositories the world's workflow names (`allowed`'s `uses`, `githubRead`), and the
+ * reason for a reach of a host that serves those says why it is none (`githubReadRefusal`). */
 export function offWorldReach(
   calls: readonly Call[],
   hosts: ReadonlySet<string>,
@@ -3718,11 +3801,7 @@ export function offWorldReach(
           ? `a gh that is not the run's own stand-in (${standIns.join(", ")}), and no world of this rig serves another`
           : off.served !== undefined
             ? `no host the run's gh serves (${off.served.join(", ")})`
-            : `no host of the run's world (${allowedHosts})${
-                repositories.size > 0 && githubReadPattern(off.host) !== undefined
-                  ? `, and no GET or HEAD with no body or ls-remote of a repository the world's workflow names (${[...repositories].join(", ")})`
-                  : ""
-              }`
+            : `no host of the run's world (${allowedHosts})${githubReadRefusal(off, repositories)}`
       }`;
     written.push(...record(writtenText(call), written, call.shown, call.file));
   }
