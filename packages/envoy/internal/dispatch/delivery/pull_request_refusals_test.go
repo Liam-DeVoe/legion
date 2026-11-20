@@ -152,8 +152,13 @@ func TestAPassAsksAtMostItsAbsenceQueriesAndTheNextPassAsksAboutTheRest(t *testi
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	const repo, over = "acme/widgets", 10
-	partials := AbsenceQueriesPerPass - RefusedReadsPerPass + over
+	// The bound is 250 (the README and the body say so): a literal, so a change of the constant
+	// fails this test rather than moving its counts with it.
+	const repo, over, bound = "acme/widgets", 10, 250
+	if AbsenceQueriesPerPass != bound {
+		t.Fatalf("AbsenceQueriesPerPass is %d, want %d: the 200 failures and the 50 refusals one pass reads", AbsenceQueriesPerPass, bound)
+	}
+	partials := bound - RefusedReadsPerPass + over
 	fake := newFakeGitHub(t)
 	fake.facts = func(w http.ResponseWriter, _ *http.Request) {
 		mustEncode(t, w, map[string]any{"data": map[string]any{}})
@@ -193,7 +198,7 @@ func TestAPassAsksAtMostItsAbsenceQueriesAndTheNextPassAsksAboutTheRest(t *testi
 	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
 
 	for i, want := range []struct{ asked, owed, rows, partial, unfetchable int }{
-		{asked: AbsenceQueriesPerPass, owed: 0, rows: partials, partial: over, unfetchable: partials - over},
+		{asked: bound, owed: 0, rows: partials, partial: over, unfetchable: partials - over},
 		{asked: over, owed: 0, rows: partials, partial: 0, unfetchable: partials},
 	} {
 		before := github.absenceQueries.Load()

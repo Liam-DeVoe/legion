@@ -306,3 +306,67 @@ func TestTwoClaimsOfTwoPassedCommitsMadeAtOnceAreBothGranted(t *testing.T) {
 		}
 	})
 }
+
+// A settle and a release write the claim every process shares on a context their caller's end
+// cannot cancel: a read-through that GitHub answered keeps what it learned though its request was
+// cancelled after the answer. Here the caller's context is cancelled before either is called. The
+// settle records CommitPullSettledFor past now in the table, and the release gives back the claim
+// a read took. And a release gives back only the claim it took: a later moment, which a settle or
+// another process's later claim recorded, stays in the table and in the process's memory.
+func TestASettleAndAReleaseWriteOnAContextTheirCallerCannotCancel(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	start := time.Date(2026, 11, 20, 4, 0, 0, 0, time.UTC)
+	gone, cancel := context.WithCancel(ctx)
+	cancel()
+	moment := func(t *testing.T, sha string) *time.Time {
+		t.Helper()
+		var notBefore *time.Time
+		if err := pool.QueryRow(ctx, `select max(not_before) from commit_pull_reads where repo = 'acme/widgets' and sha = $1`, sha).Scan(&notBefore); err != nil {
+			t.Fatal(err)
+		}
+		return notBefore
+	}
+
+	t.Run("the_settle_outlives_its_caller", func(t *testing.T) {
+		var reads CommitPullReads
+		if granted, err := reads.ClaimAcrossProcesses(ctx, pool, "acme/widgets", "settled", start); err != nil || !granted {
+			t.Fatalf("claim: granted %v, error %v", granted, err)
+		}
+		if err := reads.SettleAcrossProcesses(gone, pool, "acme/widgets", "settled", start); err != nil {
+			t.Fatalf("a settle whose caller hung up: %v, want it written", err)
+		}
+		if got, want := moment(t, "settled"), start.Add(CommitPullSettledFor); got == nil || !got.Equal(want) {
+			t.Errorf("after a settle whose caller hung up, the table holds %v, want %v", got, want)
+		}
+	})
+	t.Run("the_release_outlives_its_caller", func(t *testing.T) {
+		var reads CommitPullReads
+		if granted, err := reads.ClaimAcrossProcesses(ctx, pool, "acme/widgets", "released", start); err != nil || !granted {
+			t.Fatalf("claim: granted %v, error %v", granted, err)
+		}
+		if err := reads.ReleaseAcrossProcesses(gone, pool, "acme/widgets", "released", start); err != nil {
+			t.Fatalf("a release whose caller hung up: %v, want it written", err)
+		}
+		if got := moment(t, "released"); got != nil {
+			t.Errorf("after a release whose caller hung up, the table holds %v, want no claim", got)
+		}
+	})
+	t.Run("a_release_keeps_a_later_moment", func(t *testing.T) {
+		var reads CommitPullReads
+		if granted, err := reads.ClaimAcrossProcesses(ctx, pool, "acme/widgets", "later", start); err != nil || !granted {
+			t.Fatalf("claim: granted %v, error %v", granted, err)
+		}
+		if err := reads.SettleAcrossProcesses(ctx, pool, "acme/widgets", "later", start); err != nil {
+			t.Fatal(err)
+		}
+		if err := reads.ReleaseAcrossProcesses(ctx, pool, "acme/widgets", "later", start); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := moment(t, "later"), start.Add(CommitPullSettledFor); got == nil || !got.Equal(want) {
+			t.Errorf("after a release of the claim at %v, the table holds %v, want the settled moment %v kept", start, got, want)
+		}
+		if reads.Claim("acme/widgets", "later", start.Add(CommitPullReadStaleAfter)) {
+			t.Error("after the release, the process's memory granted a claim one short span later, want it refused: the settled moment is later than the claim it gave back")
+		}
+	})
+}
