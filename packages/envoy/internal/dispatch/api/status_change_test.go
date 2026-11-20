@@ -838,6 +838,44 @@ func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
 	}))
 }
 
+// TestAStatusChangeRefusedByItsRequestKeyAnswersChanged: every refusal of the route carries
+// changed beside its code, [] when no step committed before it (plan v19, "The contract"; the
+// check c-route-fence: "a call refused before its first step answers an empty changed"). The
+// refusals of the call's request key come before its first step too: a repeat while the first
+// holder runs (409 KEY_IN_FLIGHT, a 409 whose declared body, StatusChangeRefusal, requires
+// changed), the key sent again with another body (422 KEY_REUSED), and a malformed key (400
+// KEY_INVALID). Each answers changed [].
+func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
+	rig := newRepeatRig(t)
+	named := rig.file(t, "Issue whose key is refused", "backlog", "")
+	rig.file(t, "Child of the keyed call", "backlog", named)
+	const key = "refused-by-its-key"
+	write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true})
+	requireEmptyChanged := func(t *testing.T, request string, response *httptest.ResponseRecorder, status int, code string) {
+		t.Helper()
+		var body map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: decode the answer %s: %v", request, response.Body.String(), err)
+		}
+		changed, ok := body["changed"].([]any)
+		if response.Code != status || body["code"] != code || !ok || len(changed) != 0 {
+			t.Errorf("%s answered %d %s, want %d %s with changed []", request, response.Code, response.Body.String(), status, code)
+		}
+	}
+
+	resume := rig.stopAfterStep(t, write, key, 0)
+	requireEmptyChanged(t, write.String()+" again while the first holder runs", rig.keyedStatusChange(t, write, key),
+		http.StatusConflict, contracts.IdempotencyKeyInFlight)
+	if first := resume(); first.Code != http.StatusOK {
+		t.Fatalf("the first run answered %d %s once it went on, want 200", first.Code, first.Body.String())
+	}
+	other := statusChangeOf(named, map[string]any{"status": "backlog", "include_children": true})
+	requireEmptyChanged(t, other.String()+" under the first call's key", rig.keyedStatusChange(t, other, key),
+		http.StatusUnprocessableEntity, contracts.IdempotencyKeyReused)
+	requireEmptyChanged(t, write.String()+" under a malformed key", rig.keyedStatusChange(t, write, "not a key!"),
+		http.StatusBadRequest, contracts.IdempotencyKeyInvalid)
+}
+
 // ruleState is an issue's status and parent, as a replay of the call's writes holds them.
 type ruleState struct {
 	status string
