@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -869,8 +870,10 @@ func TestLegionMergeRunsInAWorkspaceOfASharedClone(t *testing.T) {
 	}
 }
 
-// B16: a carrier a killed run in this workspace left, with its bookmark and a commit on it, and
-// one of another workspace's. A run of B1 removes this workspace's and leaves the other's.
+// B16: what a killed run in this workspace left, and a carrier of another workspace's. This
+// workspace's are a carrier with its bookmark, and jj's merge of the carriers on it, which
+// carries the killed run's Legion-Merge-Run line from the moment jj made it. A run of B1 removes
+// this workspace's and leaves the other's.
 func TestLegionMergeRemovesOnlyThisWorkspacesLeftovers(t *testing.T) {
 	r := newMergeRepo(t)
 	r.minimalCase(2)
@@ -885,7 +888,7 @@ func TestLegionMergeRemovesOnlyThisWorkspacesLeftovers(t *testing.T) {
 	mine, myBookmark := carrier("default")
 	theirs, theirBookmark := carrier("other")
 	r.jj("git", "import")
-	r.jj("new", "--no-edit", mine, "-m", "jj's merge of git's versions a killed run left")
+	r.jj("new", "--no-edit", mine, "-m", "jj's merge of git's versions a killed run left", "-m", "Legion-Merge-Run: legion-merge-default-0123456789abcdef-")
 	onMine := r.id(fmt.Sprintf("children(%s)", mine))
 	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
 	if code != 0 {
@@ -959,8 +962,8 @@ func TestLegionMergeHelpSaysEachNextStepAndTheReading(t *testing.T) {
 		"  3  The command refused the merge or failed, and it gives the reason. The command made nothing.\n     Act on the reason.\n     Do not make the merge with jj new.\n",
 		"Put only the resolution of git's conflicts into the merge.\nPut each other change into a commit above the merge.\n",
 		"A squash into the merge gives the merge a new commit id. The change id of the merge does not change.\nUse the change id to name the merge in jj commands.\n",
-		`git diff "$(git ` + options + ` merge-tree --write-tree <merge>^1 <merge>^2 | head -n 1)" <merge>`,
-		`git diff --name-only "$(git ` + options + ` merge-tree --write-tree <merge>^1 <merge>^2 | head -n 1)" <merge>`,
+		`git diff "$(git ` + options + ` merge-tree --write-tree $(git rev-parse <merge>^1 <merge>^2) | head -n 1)" <merge>`,
+		`git diff --name-only "$(git ` + options + ` merge-tree --write-tree $(git rev-parse <merge>^1 <merge>^2) | head -n 1)" <merge>`,
 		"git diff --stat <merge>^1 <merge>",
 		"Do not read a merge with jj diff -r <merge>.",
 	} {
@@ -968,6 +971,30 @@ func TestLegionMergeHelpSaysEachNextStepAndTheReading(t *testing.T) {
 			t.Errorf("legion merge --help lacks %q:\n%s", want, stdout.String())
 		}
 	}
+}
+
+// While another run holds the workspace's lock, the command refuses with exit 3 and makes
+// nothing: the leftover sweep at the start of a run would otherwise take the commits of the run
+// that is still going.
+func TestLegionMergeRefusesWhileAnotherRunHoldsTheWorkspace(t *testing.T) {
+	r := newMergeRepo(t)
+	r.minimalCase(2)
+	r.setEnv()
+	before := r.snapshot()
+	held, err := os.OpenFile(filepath.Join(r.ws, ".jj", "legion-merge.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("hold the merge lock: %v", err)
+	}
+	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+	want := "legion merge: another legion merge is running in the workspace " + r.ws + ". Wait for it to end, then run the merge again\n"
+	if code != 3 || !strings.Contains(stderr, want) || !strings.HasSuffix(stderr, mergeRefusedNextStep) || stdout != "" {
+		t.Errorf("legion merge with the lock held = %d, want 3 naming %q and ending with the next step\nstdout:\n%s\nstderr:\n%s", code, want, stdout, stderr)
+	}
+	r.wantNothingMade(before)
 }
 
 // killRunner is jjmerge.Exec until the first command step picks out; that command and every one

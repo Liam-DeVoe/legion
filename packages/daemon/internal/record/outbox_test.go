@@ -744,8 +744,8 @@ func TestMergeForwardMessagesNameLegionMergeAndReadAgainstGitsMerge(t *testing.T
 		var lacking []string
 		for _, says := range []string{
 			"git diff c0de d00d",
-			"git merge-tree --write-tree d00d^1 d00d^2",
-			`git diff "$(git merge-tree --write-tree d00d^1 d00d^2 | head -n 1)" d00d`,
+			"git merge-tree --write-tree $(git rev-parse d00d^1 d00d^2)",
+			`git diff "$(git merge-tree --write-tree $(git rev-parse d00d^1 d00d^2) | head -n 1)" d00d`,
 			"git diff --stat d00d^1 d00d",
 		} {
 			if !strings.Contains(text, says) {

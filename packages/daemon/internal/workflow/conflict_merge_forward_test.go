@@ -671,7 +671,7 @@ func TestAConflictRefusalReadsTheMergeAgainstGitsMerge(t *testing.T) {
 		t.Fatalf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code, result.Refusal)
 	}
 	msg := result.Refusal.Message
-	if says := "git merge-tree --write-tree " + forwardHead + "^1 " + forwardHead + "^2"; !strings.Contains(msg, says) {
+	if says := "git merge-tree --write-tree $(git rev-parse " + forwardHead + "^1 " + forwardHead + "^2)"; !strings.Contains(msg, says) {
 		t.Errorf("the refusal reads %q, want it to say %q", msg, says)
 	}
 	if strings.Contains(msg, "--remerge-diff") {

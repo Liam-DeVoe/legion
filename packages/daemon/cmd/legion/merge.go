@@ -50,12 +50,13 @@ const mergeRefusedNextStep = "Next step: act on the reason above.\nDo not make t
 // workspace that the directory repository is in, running each git and jj through runner. It
 // answers 0 for a merge git made cleanly and 1 for a merge that holds git's conflicts, each with
 // the merge on stdout, and 3 for a refusal or a failure, with the reason on stderr and nothing
-// made.
+// made. A commit of an earlier run that the merge keeps, because another commit stands on it, is
+// named on stderr too, and the merge goes on.
 func runMerge(ctx context.Context, runner jjmerge.Runner, repository, message string, revisions []string, stdout, stderr io.Writer) int {
 	root, err := mergeWorkspace(repository)
 	if err == nil {
 		var result jjmerge.Result
-		if result, err = jjmerge.Merge(ctx, runner, jjmerge.Request{Workspace: root, Message: message, Revisions: revisions}); err == nil {
+		if result, err = jjmerge.Merge(ctx, runner, jjmerge.Request{Workspace: root, Message: message, Revisions: revisions, Stderr: stderr}); err == nil {
 			return reportMerge(stdout, root, revisions, result)
 		}
 	}
@@ -169,17 +170,20 @@ func shownPath(path string) string {
 }
 
 // mergeComparison is the command that prints how merge differs from git's merge of its parents,
-// with the merge's own option list, so no configuration file makes git's merge another one. flags
-// go to git diff, as --name-only does.
+// with the merge's own option list, so no configuration file makes git's merge another one. git
+// rev-parse gives merge-tree the parents' full commit ids, as the merge gives them: git names a
+// file it puts aside in a conflict after the revision it was given (p~<id>), so a merge-tree of
+// <merge>^1 would name a path the merge does not hold. flags go to git diff, as --name-only does.
 func mergeComparison(merge string, flags ...string) string {
 	diff := strings.Join(append([]string{"git", "diff"}, flags...), " ")
-	return fmt.Sprintf(`%s "$(git %s merge-tree --write-tree %s^1 %s^2 | head -n 1)" %s`,
+	return fmt.Sprintf(`%s "$(git %s merge-tree --write-tree $(git rev-parse %s^1 %s^2) | head -n 1)" %s`,
 		diff, strings.Join(jjmerge.MergeTreeOptions(), " "), merge, merge, merge)
 }
 
-// mergeHelp is `legion merge --help`'s text: what the command does and why, the next step of each
-// exit status, the case of a legion that has no merge command, what goes into the merge, how to
-// name a merge, and how to read one.
+// mergeHelp is `legion merge --help`'s text: what the command does and why, that one run at a
+// time goes on in a workspace and what the next run does with the commits a stopped run left, the
+// next step of each exit status, the case of a legion that has no merge command, what goes into
+// the merge, how to name a merge, and how to read one.
 func mergeHelp() string {
 	return `legion merge makes the merge commit of two commits in a jj workspace.
 The merge holds git's merge of the two commits (git merge-tree --write-tree).
@@ -198,6 +202,13 @@ On each path where git has a conflict, the merge holds jj's merge of git's three
 The output names each such path as "` + jjConflictLabel + `" or as "` + jjMergedLabel + `".
 "` + jjMergedLabel + `" means that jj merged git's versions with no jj conflict.
 The command then makes the working copy an empty commit on top of the merge.
+
+One legion merge runs in a workspace at a time.
+While another legion merge runs in the workspace, the command refuses with exit 3.
+Each commit that the command makes in jj carries the line "Legion-Merge-Run: <run>".
+When the merge holds git's merge, the command removes this line from the merge and adds the Legion-Merge line.
+If a run stops before its end, the next run in the workspace removes the commits that the stopped run made.
+It keeps a commit that another commit stands on or that is a working-copy commit, and it names that commit on stderr.
 
 Exit status and next step:
   0  The command made the merge, and git merged with no conflict.
@@ -228,6 +239,8 @@ Use the change id to name the merge in jj commands.
 
 Read a merge with git. In these commands, <merge> is the commit id of the merge.
 Get it with: jj log -r <change id> --no-graph -T commit_id
+git rev-parse gives git the full commit ids of the parents, as the command gives them.
+Then git names a file that it puts aside in a conflict (p~<commit id>) as the merge names it.
   The difference between the merge and git's merge of its parents (the resolution of git's conflicts):
     ` + mergeComparison("<merge>") + `
   The files of that difference:

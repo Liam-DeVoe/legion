@@ -527,9 +527,11 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 
 // gitsMergeReading is how a role reads a merge (dispatch://INFRA-4149, R2): the merge against
 // git's own merge of its two parents, `git merge-tree --write-tree`, which shows each file where
-// the merge differs from git's merge. `git show --remerge-diff` can leave out a file git conflicts
-// in, and `jj diff -r` compares the merge with jj's own merge of its parents.
-const gitsMergeReading = `git diff "$(git merge-tree --write-tree <merge>^1 <merge>^2 | head -n 1)" <merge>`
+// the merge differs from git's merge. git rev-parse gives merge-tree the parents' full commit ids,
+// as `legion merge` gives them, so git names a file it puts aside in a conflict (p~<id>) as the
+// merge names it. `git show --remerge-diff` can leave out a file git conflicts in, and `jj diff
+// -r` compares the merge with jj's own merge of its parents.
+const gitsMergeReading = `git diff "$(git merge-tree --write-tree $(git rev-parse <merge>^1 <merge>^2) | head -n 1)" <merge>`
 
 // jj can merge two commits that have more than one merge base wrongly, with no conflict and no
 // warning (jj-vcs/jj#6369), so every merge of two commits a phase worker makes is `legion merge`,

@@ -8,4 +8,6 @@ body: |-
   refuses. It exits 0 for a clean merge, 1 for a merge with conflicts, whose output ends with the
   next step, 2 for a usage error, and 3 for a refusal or a failure, which makes nothing and leaves
   the working copy where it was. Its last description line is `Legion-Merge: <git's tree id>`.
+  One run at a time goes on in a workspace (a second run exits 3), and a run removes the commits a
+  run stopped before its end left, except a commit another commit stands on, which it names.
   It needs git 2.38 or later.

@@ -4,5 +4,7 @@ body: |-
   with `legion merge`, and to make no merge and tell the architect when its `legion` has no
   `merge` command. The role prompts, the daemon's messages after a forward merge lands and the
   `HANDOFF_HEAD_MERGED_FORWARD` refusal read a merge's resolution with
-  `git diff "$(git merge-tree --write-tree <merge>^1 <merge>^2 | head -n 1)" <merge>` in place of
-  `git show --remerge-diff`, which can leave out a file git conflicts in.
+  `git diff "$(git merge-tree --write-tree $(git rev-parse <merge>^1 <merge>^2) | head -n 1)" <merge>`
+  in place of `git show --remerge-diff`, which can leave out a file git conflicts in. git rev-parse
+  gives git the parents' full commit ids, as `legion merge` gives them, so git names a file it puts
+  aside in a conflict as the merge names it.
