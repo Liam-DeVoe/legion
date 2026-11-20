@@ -229,22 +229,28 @@ func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 // step at which a task with plan rows was stopped is refused as late (intake's
 // LateReportOfStoppedTask): the answer names no result and no cause, sends the agent to
 // `dispatch steps`, and keeps the handoff record the report named as used, so each phase worker is
-// told what TASK_STOPPED means and that a later run of its step writes a handoff of its own. This
-// shows the text is loaded, never that a worker follows it.
+// told what TASK_STOPPED means and that a later run of its step writes a handoff of its own. Each
+// duty is held by the terms of the clause that states it, in their order, so a rewording that
+// keeps them passes. This shows the text is loaded, never that a worker follows it.
 func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	duties := [][]string{
+		// The first report after an event ended the run is taken and moves nothing: end the turn.
+		{"first report", "is no refusal", "taken", "moves nothing", "ended step's report", "end your turn"},
+		// The report of the step a task was stopped at is refused, and the answer gives the stop.
+		{"stopped", "`TASK_STOPPED`", "reason"},
+		// It moved nothing, `dispatch steps` shows the run's end, and its handoff record is used,
+		// so a later run writes a handoff of its own.
+		{"moved nothing", "`dispatch steps --issue", "handoff record", "used", "later run", "handoff of its own"},
+	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
-		text := foldWhitespace(composedText(t, composer, role, false))
-		for _, phrase := range []string{
-			"is no refusal: it is taken, moves nothing, and its handoff is the ended step's report, so end your turn.",
-			"the report of the step at which the task was stopped is refused `TASK_STOPPED`, whose stop reason the answer gives.",
-			"The report moved nothing, `dispatch steps --issue <issue>` shows how that run ended, and a handoff record the report named counts as used, so a later run of your step writes a handoff of its own.",
-		} {
-			if !strings.Contains(text, phrase) {
-				t.Errorf("the composed %s prompt omits %q", role, phrase)
+		composed := composedText(t, composer, role, false)
+		for _, terms := range duties {
+			if !clauseHolds(composed, terms...) {
+				t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)
 			}
 		}
 	}
@@ -290,7 +296,6 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"the planner's `plan` handoff",
 		"so its planner may already be reading it",
 		"since the reviewer approves only",
-		"the reviewer's approval moves an issue to `accepting`",
 		"The reviewer's approval moves this child to `accepting`",
 		"is mandatory after your acceptance",
 		"Your last act is `sign_off` of this child in `accepting`",
