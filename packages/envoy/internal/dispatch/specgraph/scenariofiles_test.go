@@ -38,17 +38,17 @@ func scenarioFS(t *testing.T, dir string) fstest.MapFS {
 	return fsys
 }
 
-// editTree changes the JSON file name of fsys by change, which takes its tree and gives the new one,
-// and reads the file back by its name, with each other file unchanged (filesRead); the value that
-// change writes is the caller's to read back.
+// editTree changes the JSON file name of fsys by change, a writer of a sweep or of a base, which
+// takes the file's tree, decoded for it alone, its own to build the new tree in, and gives the new
+// one; and reads the file back by its name, with each other file as a copy of fsys taken before the
+// call holds it (cloneFiles, filesRead), so that a writer that writes another file too fails by
+// name. The value that change writes is the caller's to read back, against what the caller states
+// before the call, and a writer of a sweep is a function of the package (refusalAt,
+// resultsWithout), so that it can name no variable of the sweep.
 func editTree(t *testing.T, fsys fstest.MapFS, name string, change func(any) any) {
 	t.Helper()
-	var tree any
-	if err := json.Unmarshal(fsys[name].Data, &tree); err != nil {
-		t.Fatalf("%s: %v", name, err)
-	}
-	before := maps.Clone(fsys)
-	data := encodeTree(t, change(tree))
+	before := cloneFiles(fsys)
+	data := encodeTree(t, change(fileTree(t, fsys, name)))
 	fsys[name] = &fstest.MapFile{Data: data}
 	filesRead(t, before, fsys, map[string][]byte{name: data}, nil)
 }
@@ -143,17 +143,7 @@ func (c treeChange) meant(t *testing.T, base fstest.MapFS, name string) meantTre
 // back.
 func (c treeChange) on(t *testing.T, v any) any {
 	t.Helper()
-	if !c.renamed {
-		var x any
-		data, err := json.Marshal(c.value)
-		if err == nil {
-			err = json.Unmarshal(data, &x)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.value = x
-	}
+	c.value = jsonCopy(t, c.value)
 	if len(c.place) == 0 && !c.out && !c.renamed {
 		return c.value
 	}
@@ -232,18 +222,103 @@ func treeDiff(a, b any, at []string) ([]string, bool) {
 	return at, !reflect.DeepEqual(a, b)
 }
 
+// copied is a copy of c that shares no object with c: its place cloned, and its value as jsonCopy
+// gives it.
+func (c treeChange) copied(t *testing.T) treeChange {
+	t.Helper()
+	c.place, c.value = slices.Clone(c.place), jsonCopy(t, c.value)
+	return c
+}
+
+// treeWriter is a writer of a sweep's JSON file (changedFile): it gives the file's new tree from
+// tree, the file's tree, and c, the change that the sweep means. Each is the writer's own: tree is
+// decoded for it alone, and it may build its result in it; c is a copy of the sweep's change
+// (treeChange.copied), which it may read and may not change. Each writer of a sweep is a function
+// of the package, not a closure of the sweep, so that it can name no variable of the sweep.
+type treeWriter func(tree any, c treeChange) any
+
+// nullAt, leftOutAt, renamedAt and valueAt are the writers of the sweeps (treeWriter): the tree with
+// null at c's place (the whole file null at no place), with the member or the element at c's place
+// taken out, with the member at c's place under the name that c's value holds, and with c's value at
+// c's place.
+func nullAt(tree any, c treeChange) any    { return treeChanged(tree, c.place, false) }
+func leftOutAt(tree any, c treeChange) any { return treeChanged(tree, c.place, true) }
+func renamedAt(tree any, c treeChange) any { return treeRenamed(tree, c.place, c.value.(string)) }
+func valueAt(tree any, c treeChange) any   { return treeWith(tree, c.place, c.value) }
+
 // changedFile is a copy of base with the JSON file name written as the tree that write, a writer of a
-// sweep, gives, read back against want, the change that the sweep means, which the caller gives
-// apart from the writer's call (filesRead). It builds the meant tree from want before it calls
-// write, so a writer that changes the value or the place that it shares with want changes no part
-// of what its tree is read back against.
-func changedFile(t *testing.T, base fstest.MapFS, name string, want treeChange, write func() any) fstest.MapFS {
+// sweep, gives, read back against want, the change that the sweep means (filesRead). Each object
+// that write is handed is its own: before write runs, changedFile builds the meant tree from want
+// and from a decode of base of its own (treeChange.meant), and it hands write a tree of the file
+// decoded for write alone and a copy of want (treeChange.copied). After write returns, it compares
+// that copy, and want itself, with a copy of want taken before the call, as decoded values, not as
+// encodings, since encoding/json/v2 writes the members of an object in no fixed order (changeKept).
+// So a writer that writes another value or at another place fails by the read back, and one that
+// changes the value or the place that it is handed, before or after a right write, fails by name
+// too; and no later input of the sweep reads what a writer changed.
+func changedFile(t *testing.T, base fstest.MapFS, name string, want treeChange, write treeWriter) fstest.MapFS {
 	t.Helper()
 	meant := want.meant(t, base, name)
+	handed, before := want.copied(t), want.copied(t)
+	data := encodeTree(t, write(fileTree(t, base, name), handed))
+	changeKept(t, name, meant.at, "the writer's copy of the change", handed, before)
+	changeKept(t, name, meant.at, "the sweep's own change", want, before)
 	fsys := maps.Clone(base)
-	fsys[name] = &fstest.MapFile{Data: encodeTree(t, write())}
+	fsys[name] = &fstest.MapFile{Data: data}
 	filesRead(t, base, fsys, nil, map[string]meantTree{name: meant})
 	return fsys
+}
+
+// changeKept fails the test unless c, the copy of a change that changedFile handed a writer, or the
+// sweep's own change, whose words give, holds after the writer ran what before, the copy that
+// changedFile took before the call, holds: the same place, and the same value as encoding/json/v2
+// decodes it (jsonCopy). A string cannot change through a copy of it; a place, or a value that is a
+// list or an object, can.
+func changeKept(t *testing.T, name, at, whose string, c, before treeChange) {
+	t.Helper()
+	if !slices.Equal(c.place, before.place) {
+		t.Fatalf("the sweep changed %s at %q, and %s names the place %q after the writer ran, where it named %q", name, at, whose, treePointer(c.place), treePointer(before.place))
+	}
+	value := jsonCopy(t, c.value)
+	if p, differ := treeDiff(value, before.value, nil); differ {
+		x, _ := treeAt(value, p)
+		w, _ := treeAt(before.value, p)
+		t.Fatalf("the sweep changed %s at %q, and %s holds %s at %q of its value after the writer ran, where it held %s", name, at, whose, encodeTree(t, x), treePointer(p), encodeTree(t, w))
+	}
+}
+
+// cloneFiles is a copy of fsys that shares no object with fsys: each file a MapFile of its own, with
+// its bytes copied.
+func cloneFiles(fsys fstest.MapFS) fstest.MapFS {
+	c := make(fstest.MapFS, len(fsys))
+	for name, file := range fsys {
+		f := *file
+		f.Data = slices.Clone(file.Data)
+		c[name] = &f
+	}
+	return c
+}
+
+// filesWritten is base as write, a writer of a sweep's files, leaves it, read back against written,
+// the bytes of each file that the sweep means the writer to write, or nil to take it out, which the
+// caller builds from base before the call (filesRead). write is handed a copy of base of its own
+// (cloneFiles), which it changes, and the read back takes each other file from another copy of base,
+// taken before the call, so that a writer that writes another file, or writes through a file that
+// it is handed, fails by name. Each writer is the function that a function of the package gives
+// (takenOut, textWritten, attributeOutOfFiles), of its own copies of what it writes, so that it can
+// name no variable of the sweep.
+func filesWritten(t *testing.T, base fstest.MapFS, written map[string][]byte, write func(fsys fstest.MapFS)) fstest.MapFS {
+	t.Helper()
+	before, fsys := cloneFiles(base), cloneFiles(base)
+	write(fsys)
+	filesRead(t, before, fsys, written, nil)
+	return fsys
+}
+
+// takenOut is the writer of the tree sweep that takes the file name out of the files that it is
+// handed.
+func takenOut(name string) func(fstest.MapFS) {
+	return func(fsys fstest.MapFS) { delete(fsys, name) }
 }
 
 // fileTree is the JSON tree of the file name of fsys, decoded anew for its caller.
@@ -374,4 +449,15 @@ func encodeTree(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// jsonCopy is v as encoding/json/v2 decodes its JSON text into any: a copy that shares no object
+// with v, with a number as a float64.
+func jsonCopy(t *testing.T, v any) any {
+	t.Helper()
+	var x any
+	if err := json.Unmarshal(encodeTree(t, v), &x); err != nil {
+		t.Fatal(err)
+	}
+	return x
 }

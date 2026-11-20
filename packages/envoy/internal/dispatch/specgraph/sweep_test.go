@@ -73,13 +73,18 @@ func notRepoPaths(path string) []string {
 // each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases).
 // Each sweep fails an input whose files are its base's (sweepAgainst), so that a writer that writes
 // nothing fails by name, and each sweep reads back each write that it makes against the write that
-// it means, which it gives apart from the writer's call (filesRead): each file by its name, with each
-// other file of the base unchanged and no file added; a JSON file as the tree of the base's file
-// with the one change that the input names, built anew from the base before the writer runs and
-// compared whole (changedFile); a text file by its bytes; and a refusal of CI as the reader reads
-// it (refusalRead). So a writer that writes another value, writes it at another place, under
-// another key or under another file name, changes another place of the file too, or changes the
-// value or the place that it is handed, fails by name. One right, which sweepInputs gives
+// it means (filesRead): each file by its name, with each other file of the base unchanged and no
+// file added; a JSON file as the tree of the base's file with the one change that the input names,
+// compared whole (changedFile); a text file by its bytes (filesWritten); and a refusal of CI as the
+// reader reads it (refusalRead). The sweep builds what it means before its writer runs, from a
+// decode of the base of its own, and each object that the writer is handed is the writer's own: a
+// writer is a function of the package, which can name no variable of the sweep, and it gets a tree
+// or files of its own and copies of the place and the value, which the sweep compares after the
+// call with copies taken before it (changeKept). So a writer that writes another value, writes it
+// at another place, under another key or under another file name, changes another place of the
+// file too, or changes the value or the place that it is handed, before or after a right write,
+// fails by name; and each sweep reads at least its floor of inputs of each base (sweepFloors), so
+// that a fault that drops inputs fails by name too. One right, which sweepInputs gives
 // the input where it writes it: a repository path of a tree written " " is a real path, since git
 // holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so the tree
 // changed at a path that a tie covers, and a result there, a failure among them, carries no more
@@ -94,6 +99,7 @@ func notRepoPaths(path string) []string {
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
+	floorsCover(t, "tree", bases)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -103,6 +109,7 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
 			}
 			n := sweepAgainst(t, base, inputs)
+			atFloor(t, "tree", name, n.inputs)
 			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
 			for _, in := range inputs {
 				if strings.HasSuffix(in.what, `/leg as ""`) {
@@ -215,11 +222,12 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 // the subject's takes out nothing, whatever commit a result's test_commit names, and it has no
 // right. The sweep adds one refusal at a time to uncited.json of each base (sweepBases), at each
 // commit that a record of the base names, for each check of its approved spec that the base does
-// not refuse there, and reads each one back as the reader reads it, beside the refusals of the base
-// (refusalRead).
+// not refuse there, and reads each one back as the reader reads it, against the refusals that it
+// means, built before its writer runs (refusalAdded, refusalRead).
 func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
+	floorsCover(t, "refusals", bases)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -235,26 +243,16 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 					if _, refused := s.Uncited[commit][c.ID]; refused {
 						continue
 					}
-					fsys := maps.Clone(base)
-					editTree(t, fsys, "uncited.json", func(v any) any {
-						uncited := v.(map[string]any)
-						checks := map[string]any{}
-						if at, held := uncited[commit].(map[string]any); held {
-							checks = maps.Clone(at)
-						}
-						checks[c.ID] = "test-did-not-run"
-						uncited[commit] = checks
-						return uncited
-					})
-					refusalRead(t, s, fsys, commit, c.ID)
+					fsys := refusalAdded(t, base, commit, c.ID)
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
 					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit }) {
-						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, s, c, commit)
+						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, c, commit)
 					}
 					inputs = append(inputs, in)
 				}
 			}
 			n := sweepAgainst(t, base, inputs)
+			atFloor(t, "refusals", name, n.inputs)
 			t.Logf("%d refusals added: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
 				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
 		})
@@ -265,24 +263,24 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 // check: those results count nowhere (R48), and the results of the other commits decide.
 const refusedCommitsResults = `the results of the refused commit count nowhere, and the results of the other commits decide (R48: "no earlier result of it counts")`
 
-// withoutResultsOf is the states of base, whose scenario is s, with each result of the check c
-// whose commit (countedCommit) is commit taken out of results.json, and with no state of a subject
-// at commit: the places that a refusal of the check at commit may move toward true, each to the
-// state given here.
-func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, c Check, commit string) map[string]string {
+// withoutResultsOf is the states of base with each result of the check c whose commit
+// (countedCommit) is commit taken out of results.json, and with no state of a subject at commit:
+// the places that a refusal of the check at commit may move toward true, each to the state given
+// here. The results that it means, those of base but each of c whose commit is commit, as the
+// reader reads them, come from a decode of base of their own, made before the writer runs. The
+// writer (resultsWithout) reads each record by a scenario decoded for it alone, and
+// withoutResultsOf compares that scenario after the call with another decode, made before it, so
+// that a writer that changes the results that it is handed fails by name.
+func withoutResultsOf(t *testing.T, base fstest.MapFS, c Check, commit string) map[string]string {
 	t.Helper()
-	fsys := maps.Clone(base)
-	editTree(t, fsys, "results.json", func(v any) any {
-		kept := []any{}
-		for i, record := range v.([]any) {
-			if r := s.Results[i]; r.Check != c.ID || countedCommit(s, c, r) != commit {
-				kept = append(kept, record)
-			}
-		}
-		return kept
-	})
-	// The results as the reader reads them: those of the base, but each of c whose commit is commit.
+	s := decodedScenario(t, base)
 	want := slices.DeleteFunc(slices.Clone(s.Results), func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit })
+	handed, before := decodedScenario(t, base), decodedScenario(t, base)
+	fsys := cloneFiles(base)
+	editTree(t, fsys, "results.json", resultsWithout(t, handed, c.ID, commit))
+	if !reflect.DeepEqual(handed, before) {
+		t.Fatalf("the sweep took the results of %s at %s out of results.json, and its writer changed the scenario that it was handed", c.ID, commit)
+	}
 	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Results, want) {
 		t.Fatalf("the sweep took the results of %s at %s out of results.json, and the reader reads %d results (%v), where it should read %d", c.ID, commit, len(read.Results), err, len(want))
 	}
@@ -298,6 +296,43 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, c Check, comm
 	return states
 }
 
+// resultsWithout is the writer of withoutResultsOf: the tree of results.json that it is handed
+// without each result of the check id whose commit (countedCommit) is commit, where s, the scenario
+// of the same files that it is handed, reads each record.
+func resultsWithout(t *testing.T, s Scenario, id, commit string) func(any) any {
+	return func(v any) any {
+		c := checkOf(t, s, id)
+		kept := []any{}
+		for i, record := range v.([]any) {
+			if r := s.Results[i]; r.Check != c.ID || countedCommit(s, c, r) != commit {
+				kept = append(kept, record)
+			}
+		}
+		return kept
+	}
+}
+
+// decodedScenario is the scenario of base as ReadScenario reads it, decoded for its caller alone.
+func decodedScenario(t *testing.T, base fstest.MapFS) Scenario {
+	t.Helper()
+	s, err := ReadScenario(base)
+	if err != nil {
+		t.Fatalf("the base: %v", err)
+	}
+	return s
+}
+
+// checkOf is the check id of the current approved spec of s.
+func checkOf(t *testing.T, s Scenario, id string) Check {
+	t.Helper()
+	current, _ := s.Approved.Current()
+	i := slices.IndexFunc(current.Checks, func(c Check) bool { return c.ID == id })
+	if i < 0 {
+		t.Fatalf("the approved spec holds no check %s", id)
+	}
+	return current.Checks[i]
+}
+
 // plantedOnElsewhere is the right of a planted_on added to a failing example where it names a commit
 // of the history: R8 decides whether that record counts at a subject, and where it does not, the
 // older evidence decides, as with no such record.
@@ -306,9 +341,7 @@ const plantedOnElsewhere = `a planted_on that names a commit of the history coun
 // withoutResult is the states of base with result i of results.json taken out.
 func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
 	t.Helper()
-	fsys := changedFile(t, base, "results.json", treeChange{place: []string{strconv.Itoa(i)}, out: true}, func() any {
-		return treeChanged(fileTree(t, base, "results.json"), []string{strconv.Itoa(i)}, true)
-	})
+	fsys := changedFile(t, base, "results.json", treeChange{place: []string{strconv.Itoa(i)}, out: true}, leftOutAt)
 	states, err := sweepStates(fsys)
 	if err != nil {
 		t.Fatalf("the base with result %d taken out: %v", i+1, err)
@@ -364,6 +397,7 @@ var addableMembers = map[string]struct {
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
+	floorsCover(t, "members", bases)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -403,10 +437,9 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 						}
 						for _, v := range values[m[1]] {
 							// The read back takes the member and its value from the input's words, and
-							// builds the file that it means before the writer runs (changedFile).
-							fsys := changedFile(t, base, file, treeChange{place: append(slices.Clone(place), m[0]), value: v}, func() any {
-								return treeWith(tree, append(slices.Clone(place), m[0]), v)
-							})
+							// changedFile builds the file that it means before the writer runs and hands the
+							// writer copies of its own.
+							fsys := changedFile(t, base, file, treeChange{place: append(slices.Clone(place), m[0]), value: v}, valueAt)
 							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
 							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
 								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
@@ -419,6 +452,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 				}
 			}
 			n := sweepAgainst(t, base, inputs)
+			atFloor(t, "members", name, n.inputs)
 			t.Logf("%d members added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 		})
 	}
@@ -501,20 +535,19 @@ const pathOfOneSpace = `the path " " of the tree is a real path, which git holds
 
 // sweepInputs is each input of the sweep of the scenario base, and base with each JSON file written
 // again by the sweep's own decoder and encoder, unchanged, which the sweep reads as base. Each input
-// is read back against the change that its words name, which the sweep gives apart from the
-// writer's call and builds into the file that it means before the writer runs (changedFile).
+// is read back against the change that its words name, which changedFile builds into the file that
+// it means before the writer runs; the writers are functions of the package (nullAt, leftOutAt,
+// renamedAt, valueAt, takenOut), each handed copies of its own.
 func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 	t.Helper()
 	var inputs []sweepInput
 	roundTrip := maps.Clone(base)
-	with := func(what, name string, want treeChange, write func() any) *sweepInput {
+	with := func(what, name string, want treeChange, write treeWriter) *sweepInput {
 		inputs = append(inputs, sweepInput{what: what, fsys: changedFile(t, base, name, want, write)})
 		return &inputs[len(inputs)-1]
 	}
 	for _, name := range slices.Sorted(maps.Keys(base)) {
-		out := maps.Clone(base)
-		delete(out, name)
-		filesRead(t, base, out, map[string][]byte{name: nil}, nil)
+		out := filesWritten(t, base, map[string][]byte{name: nil}, takenOut(name))
 		inputs = append(inputs, sweepInput{what: name + " taken out", fsys: out})
 		if path.Ext(name) != ".json" {
 			continue
@@ -524,7 +557,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		roundTrip[name] = &fstest.MapFile{Data: encodeTree(t, tree)}
-		with(name+" as null", name, treeChange{}, func() any { return nil })
+		with(name+" as null", name, treeChange{}, nullAt)
 		var walk func(v any, at []string)
 		walk = func(v any, at []string) {
 			switch v := v.(type) {
@@ -533,9 +566,9 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 				paths := slices.ContainsFunc(sweepPaths[name].keysOf, func(p []string) bool { return placeMatches(p, at) })
 				for _, key := range slices.Sorted(maps.Keys(v)) {
 					place := append(slices.Clone(at), key)
-					with(name+" "+treePointer(place)+" as null", name, treeChange{place: place}, func() any { return treeChanged(tree, place, false) })
+					with(name+" "+treePointer(place)+" as null", name, treeChange{place: place}, nullAt)
 					if !entries {
-						with(name+" "+treePointer(place)+" left out", name, treeChange{place: place, out: true}, func() any { return treeChanged(tree, place, true) })
+						with(name+" "+treePointer(place)+" left out", name, treeChange{place: place, out: true}, leftOutAt)
 					}
 					var renames []string
 					if entries {
@@ -546,9 +579,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 					}
 					for _, renamed := range renames {
 						if _, taken := v[renamed]; !taken {
-							in := with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, treeChange{place: place, value: renamed, renamed: true}, func() any {
-								return treeRenamed(tree, place, renamed)
-							})
+							in := with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, treeChange{place: place, value: renamed, renamed: true}, renamedAt)
 							if paths && renamed == " " {
 								in.right = pathOfOneSpace
 							}
@@ -559,7 +590,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 			case []any:
 				for i, x := range v {
 					place := append(slices.Clone(at), strconv.Itoa(i))
-					with(name+" "+treePointer(place)+" as null", name, treeChange{place: place}, func() any { return treeChanged(tree, place, false) })
+					with(name+" "+treePointer(place)+" as null", name, treeChange{place: place}, nullAt)
 					walk(x, place)
 				}
 			case string:
@@ -569,7 +600,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 				}
 				for _, form := range forms {
 					if form != v {
-						with(fmt.Sprintf("%s %s as %q", name, treePointer(at), form), name, treeChange{place: at, value: form}, func() any { return treeWith(tree, at, form) })
+						with(fmt.Sprintf("%s %s as %q", name, treePointer(at), form), name, treeChange{place: at, value: form}, valueAt)
 					}
 				}
 			}
@@ -715,9 +746,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		if r.setup != nil {
 			r.setup(t, base)
 		}
-		without := changedFile(t, base, r.file, treeChange{place: r.place, out: true}, func() any {
-			return treeChanged(fileTree(t, base, r.file), r.place, true)
-		})
+		without := changedFile(t, base, r.file, treeChange{place: r.place, out: true}, leftOutAt)
 		for _, read := range []struct {
 			fsys fstest.MapFS
 			want string
@@ -741,18 +770,45 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	}
 }
 
-// refusalRead fails the test unless the scenario fsys, to which the refusal sweep added CI's
-// refusal of the check id at commit, reads, through the reader, as the refusals of the base s and
-// that one with the rule test-did-not-run, and no other refusal: the read back of the refusal by
-// its commit, its check and its rule, so that a writer that writes the refusal of another check, at
-// another commit, or an entry of the commit that holds no refusal, fails by name.
-func refusalRead(t *testing.T, s Scenario, fsys fstest.MapFS, commit, id string) {
+// refusalAdded is a copy of base, of its own (cloneFiles), with CI's refusal of the check id at
+// commit added to uncited.json by its writer (refusalAt), read back by the reader against the
+// refusals that the sweep means, which it builds before the writer runs from a decode of base of
+// their own: those of base, and that one with the rule test-did-not-run (refusalRead).
+func refusalAdded(t *testing.T, base fstest.MapFS, commit, id string) fstest.MapFS {
 	t.Helper()
 	want := map[string]map[string]string{commit: {}}
-	for at, checks := range s.Uncited {
+	for at, checks := range decodedScenario(t, base).Uncited {
 		want[at] = maps.Clone(checks)
 	}
 	want[commit][id] = "test-did-not-run"
+	fsys := cloneFiles(base)
+	editTree(t, fsys, "uncited.json", refusalAt(commit, id))
+	refusalRead(t, fsys, commit, id, want)
+	return fsys
+}
+
+// refusalAt is the writer of the refusal sweep: the tree of uncited.json that it is handed with CI's
+// refusal of the check id at commit, by the rule test-did-not-run.
+func refusalAt(commit, id string) func(any) any {
+	return func(v any) any {
+		uncited := v.(map[string]any)
+		checks := map[string]any{}
+		if at, held := uncited[commit].(map[string]any); held {
+			checks = maps.Clone(at)
+		}
+		checks[id] = "test-did-not-run"
+		uncited[commit] = checks
+		return uncited
+	}
+}
+
+// refusalRead fails the test unless the scenario fsys, to which the refusal sweep added CI's
+// refusal of the check id at commit, reads, through the reader, as want, the refusals that the
+// sweep means, and no other refusal: the read back of the refusal by its commit, its check and its
+// rule, so that a writer that writes the refusal of another check, at another commit, or an entry
+// of the commit that holds no refusal, fails by name.
+func refusalRead(t *testing.T, fsys fstest.MapFS, commit, id string, want map[string]map[string]string) {
+	t.Helper()
 	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Uncited, want) {
 		t.Fatalf("the sweep wrote CI's refusal of %s at %s, and the reader reads the refusals %v (%v), where it should read %v", id, commit, read.Uncited, err, want)
 	}

@@ -359,6 +359,10 @@ func withJSONAt(v any, pointer string, x any) any {
 	return v
 }
 
+// elementAt is the writer of TestAMemberLeftOutOfAFileIsReadByItsMark (treeWriter): the tree that
+// it is handed, its own, with c's value at c's place, whose names hold no ~ or / (withJSONAt).
+func elementAt(tree any, c treeChange) any { return withJSONAt(tree, treePointer(c.place), c.value) }
+
 // parentOf is the pointer of the value that holds the value at the pointer.
 func parentOf(pointer string) string { return pointer[:max(strings.LastIndexByte(pointer, '/'), 0)] }
 
@@ -374,11 +378,13 @@ func parentOf(pointer string) string { return pointer[:max(strings.LastIndexByte
 // reads otherwise; one marked zero reads as the same element with the member at its zero value, the
 // reading that its reason states. A member of a one of mark is refused too beside the other member.
 // Each file that the test writes is read back whole, as the base's tree with the element that the
-// test's edit makes at its pointer, which the read back takes as JSON before the writer runs
-// (changedFile), with each other file unchanged, so that a writer that writes another element, at
-// another place or in another file, changes another place of the file too, or changes the element
-// that it is handed, fails by name. The element is the edit's own, so a fault of the edit is in what
-// the read back takes too; the readings that each mark states catch it.
+// test's edit makes at its pointer, which the read back takes as JSON before the writer runs, while
+// the writer (elementAt) gets a tree and a copy of the element of its own (changedFile), with each
+// other file unchanged, so that a writer that writes another element, at another place or in
+// another file, changes another place of the file too, or changes the element that it is handed,
+// fails by name. The element is the edit's own, so a fault of the edit is in what the read back
+// takes too; the readings that each mark states catch it. The test reads at least the floor of
+// readings of a member left out that it read when the floor was written (markReadingsFloor).
 func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	base := memberScenario(t)
@@ -439,8 +445,7 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 				// placement is the file with e in its place, as edit leaves it: beside, or alone in its list,
 				// read back at its pointer, whose tokens hold no ~ or / (jsonAt).
 				placement := func(t *testing.T, alone bool, edit func(members map[string]any)) fstest.MapFS {
-					v := read(t, name)
-					members := maps.Clone(jsonAt(v, e.pointer).(map[string]any))
+					members := maps.Clone(jsonAt(read(t, name), e.pointer).(map[string]any))
 					edit(members)
 					at, x := e.pointer, any(members)
 					if alone && e.pointer != "" {
@@ -450,7 +455,7 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 					if at != "" {
 						place = strings.Split(at[1:], "/")
 					}
-					return changedFile(t, base, name, treeChange{place: place, value: x}, func() any { return withJSONAt(v, at, x) })
+					return changedFile(t, base, name, treeChange{place: place, value: x}, elementAt)
 				}
 				for _, alone := range []bool{false, true} {
 					where := fmt.Sprintf("%s %s of %s %s, %s", name, m.name, typ.Name(), e.pointer, map[bool]string{false: "beside " + objectsPointer(objects, beside), true: "alone"}[alone])
@@ -481,6 +486,9 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 		}
 	}
 	t.Logf("%d readings of a member left out", checked)
+	if checked < markReadingsFloor {
+		t.Errorf("the test read %d readings of a member left out, fewer than its floor of %d (markReadingsFloor)", checked, markReadingsFloor)
+	}
 }
 
 // objectsPointer is the pointer of objects[i], and "none" for no i.
