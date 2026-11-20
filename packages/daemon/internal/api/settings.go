@@ -566,7 +566,7 @@ func SettingsOf(cfg config.Config) Settings {
 			},
 			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
-			DefaultSteps:    stepWordsOf(project.RunsByDefault()),
+			DefaultSteps:    plan.Words(project.RunsByDefault()),
 			Deploys:         []DeploySettings{},
 		}
 		settings.Projects[key] = entry
@@ -734,16 +734,6 @@ func seconds(d time.Duration) int {
 // stringsOf is a copy of values that is `[]` on the wire when values is nil.
 func stringsOf(values []string) []string {
 	return append([]string{}, values...)
-}
-
-// stepWordsOf is each step as the settings file writes it (plan.Step.String: `role`, or
-// `role:key`), `[]` on the wire for no step.
-func stepWordsOf(steps []plan.Step) []string {
-	words := make([]string, len(steps))
-	for i, step := range steps {
-		words[i] = step.String()
-	}
-	return words
 }
 
 // experimentsOf is the project's `experiments` key as the settings carry it, in the file's

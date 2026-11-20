@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
@@ -337,16 +338,11 @@ func productionCheckLine(key string, project config.Project) string {
 
 // defaultStepsLine is `legion config check`'s line for one project's `default_steps`: the steps
 // the project runs by default (config.Project.RunsByDefault, today's line up to the owner's
-// acceptance for a project that names none), as the file would write the list, and what they
-// decide.
+// acceptance for a project that names none), as the file would write the list (plan.Words), and
+// what they decide.
 func defaultStepsLine(key string, project config.Project) string {
-	steps := project.RunsByDefault()
-	words := make([]string, len(steps))
-	for i, step := range steps {
-		words[i] = step.String()
-	}
 	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge",
-		key, strings.Join(words, ", "))
+		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
 }
 
 // reservedUnder is a cpu or memory reservation as `legion config check` names it: the one quantity when
