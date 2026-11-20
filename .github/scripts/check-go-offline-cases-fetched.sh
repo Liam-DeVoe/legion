@@ -223,11 +223,12 @@ check "the line for it: exits 0" "$(is "$status" 0)"
 check "and counts it" "$(held 1 0)"
 
 echo "case: go list -m reads the module graph, which no deps line can hold"
+# No operand: `all` would be refused as an import path even if -m were lost.
 fetched fetched-list-m 'deps packages/app -test ./...' '      - name: List the module updates
-        run: go list -m -u all
+        run: go list -m -u
         working-directory: packages/app'
 check "fails beside a line that holds every package" "$(is "$status" 1)"
-check "names it as a command this rule cannot read" "$(unread 'go list -m -u all')"
+check "names it as a command this rule cannot read" "$(unread 'go list -m -u')"
 
 echo "case: a command that names an import path is one no deps line can hold"
 fetched fetched-import-path 'deps packages/app -test ./...' '      - name: Run a tool at a version
