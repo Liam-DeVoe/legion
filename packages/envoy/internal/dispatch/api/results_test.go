@@ -200,10 +200,13 @@ func writeBranchAnswer(t *testing.T, database *store.Store, repo, branch, sha st
 	}
 }
 
-// letterWord is one word of length characters, of plain letters alone, which #4517's line keeps
+// letterWordSeed is the text letterWord repeats: plain letters alone, which #4517's line keeps
 // (plainWord) and which Unicode's default word rules (UAX #29) keep in one word (WB5).
+const letterWordSeed = "resultsbranchnewest"
+
+// letterWord is one word of length characters, letterWordSeed repeated and cut to length.
 func letterWord(length int) string {
-	return strings.Repeat("resultsbranchnewest", length/19+1)[:length]
+	return strings.Repeat(letterWordSeed, length/len(letterWordSeed)+1)[:length]
 }
 
 // The pull-request body line carries the reading the role recorded, because that is the record
@@ -212,10 +215,13 @@ func letterWord(length int) string {
 // word boundary and marked, a short one prints whole, and a result with no reading says so. A
 // word that ends at the budget's last character is kept, and a reading of exactly the budget
 // prints whole. A first word longer than the budget is never cut in two, at any length: the line
-// keeps it whole, with a parenthesis or a quote that leads into it, marked as cut only where more
-// of the reading follows it. Text in a script written without spaces between its words is cut
-// inside the budget at a UAX #29 boundary. Each row's words are plain, so #4517's filter keeps
-// them and the row tests the cut.
+// keeps it whole, with all that leads into it, such as a parenthesis, a quote, a slash, a full
+// stop or a hyphen, marked as cut only where more of the reading follows it. Text in a script
+// written without spaces between its words is cut inside the budget at a UAX #29 boundary. A
+// public address GitHub links with no scheme (`www.`) is one word, kept whole or left out, and
+// where it ends what the line keeps, a blank stands before the `…`, so the link does not take the
+// `…` into its address. Each row's words are plain, so #4517's filter keeps them and the row
+// tests the cut.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
@@ -225,6 +231,15 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	// fifteen is fifteen words of four characters, 74 characters before the word after them.
 	fifteen := strings.TrimSuffix(strings.Repeat("word ", 15), " ")
 	name := letterWord(110)
+	// 208 characters, 16 to a sentence with no punctuation, and 100 Hiragana characters, 20 to a
+	// sentence.
+	chinese := strings.Repeat("运行了二十次每次都打印了列表", 13)
+	hiragana := strings.Repeat("にじゅっかいのしけんはすべてとおりました", 5)
+	// address is a public address GitHub links with no scheme; filler is the words before it that
+	// end it at the budget's last character. www is such an address longer than the budget.
+	address := "www.example.com/runs/7777"
+	filler := strings.Repeat("word ", (checkResultReadingRunes-len(address))/len("word "))
+	www := "www.example.com/" + strings.Repeat("segment/", 12)
 	type lineRow struct{ name, observed, want string }
 	rows := []lineRow{
 		{name: "a reading over the budget is cut at a word boundary", observed: long, want: "The rig drove the command against a local Dispatch and the refusal named the…"},
@@ -237,18 +252,20 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 		{name: "a first word of 110 characters after a parenthesis is kept whole with it", observed: "(" + name + ") passed 20 of 20 runs.", want: "(" + name + "…"},
 		{name: "a first word of 110 characters after a quote is kept whole with it", observed: `"` + name + `" passed 20 of 20 runs.`, want: `"` + name + "…"},
 		{name: "a word of 110 characters after a first word and a parenthesis is left out with it", observed: "Run (" + name + ") now.", want: "Run…"},
-		{
-			// 208 characters, 16 to a sentence with no punctuation: the 80th ends the fifth.
-			name:     "a reading of Chinese is cut inside the budget at a word boundary",
-			observed: strings.Repeat("运行了二十次每次都打印了列表", 13),
-			want:     prefixRunes(strings.Repeat("运行了二十次每次都打印了列表", 13), 80) + "…",
-		},
-		{
-			// 100 Hiragana characters: the 80th ends the fourth sentence.
-			name:     "a reading of Hiragana is cut inside the budget at a word boundary",
-			observed: strings.Repeat("にじゅっかいのしけんはすべてとおりました", 5),
-			want:     strings.Repeat("にじゅっかいのしけんはすべてとおりました", 4) + "…",
-		},
+		{name: "a word of 110 characters after a number that ends inside the budget is left out", observed: "1 " + name + " passed 20 of 20 runs.", want: "1…"},
+		{name: "a reading of Chinese is cut inside the budget at a word boundary", observed: chinese, want: prefixRunes(chinese, checkResultReadingRunes) + "…"},
+		{name: "a reading of Hiragana is cut inside the budget at a word boundary", observed: hiragana, want: prefixRunes(hiragana, checkResultReadingRunes) + "…"},
+		{name: "an address with no scheme that ends the kept words has a blank before the ellipsis", observed: filler + address + " for the review.", want: filler + address + " …"},
+		{name: "a first word that is an address with no scheme is kept whole with a blank before the ellipsis", observed: www + " shows the step.", want: www + " …"},
+		{name: "an address with no scheme after a parenthesis across the budget is left out with it", observed: "Log (" + www + ") shows the step.", want: "Log…"},
+		{name: "a www inside a word links nothing, so the ellipsis follows the cut with no blank", observed: "See a" + www, want: "See awww.example.com/" + strings.Repeat("segment/", 7) + "…"},
+	}
+	// Punctuation that opens no word leads into the first word as a parenthesis does.
+	for _, lead := range []string{"/", "./", "...", "-", "--", ".", ":", ")"} {
+		rows = append(rows, lineRow{
+			name:     fmt.Sprintf("a first word of 110 characters after %q is kept whole with it", lead),
+			observed: lead + name + " passed 20 of 20 runs.", want: lead + name + "…",
+		})
 	}
 	for _, length := range []int{81, 110, 161, 1000} {
 		word := letterWord(length)
@@ -3181,20 +3198,29 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 
 // The pull-request body line of a check CI proves cuts the check's words as a recorded line cuts
 // a reading (TestThePullRequestLineCarriesTheReading), after the same filter: words of exactly
-// the budget print whole, and a first word longer than the budget is kept whole, with a
-// parenthesis that leads into it, marked as cut where more words follow it and printed whole
-// where it is all the check says.
+// the budget print whole, and a first word longer than the budget is kept whole, with all that
+// leads into it, marked as cut where more words follow it and printed whole where it is all the
+// check says.
 func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Check words cut at a word")
 	exactly := strings.Repeat("word ", 15) + "fives"
 	name := letterWord(110)
-	rows := []struct{ name, words, want string }{
+	type ciRow struct{ name, words, want string }
+	rows := []ciRow{
 		{name: "a sentence over the budget is cut at a word boundary", words: "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case.", want: "The rig drove the command against a local Dispatch and the refusal named the…"},
 		{name: "words of exactly 80 characters print whole", words: exactly, want: exactly},
 		{name: "a first word over the budget is kept whole and marked when more words follow it", words: name + " builds at the head.", want: name + "…"},
 		{name: "a first word over the budget that is all the check says prints whole", words: name, want: name},
 		{name: "a first word over the budget after a parenthesis is kept whole with it", words: "(" + name + ") builds at the head.", want: "(" + name + "…"},
+		{name: "a word over the budget after a number that ends inside the budget is left out", words: "1 " + name + " builds at the head.", want: "1…"},
+	}
+	// Punctuation that opens no word leads into the first word as a parenthesis does.
+	for _, lead := range []string{"/", "./", "...", "-", "--", ".", ":", ")"} {
+		rows = append(rows, ciRow{
+			name:  fmt.Sprintf("a first word over the budget after %q is kept whole with it", lead),
+			words: lead + name + " builds at the head.", want: lead + name + "…",
+		})
 	}
 	var document strings.Builder
 	for index, row := range rows {

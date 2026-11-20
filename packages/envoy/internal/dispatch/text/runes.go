@@ -7,13 +7,22 @@ import (
 )
 
 // HeadRunes returns value cut to its first limit runes; a value at or under the
-// limit is returned unchanged.
+// limit is returned unchanged. It reads value only up to the cut, so a long value costs no more
+// than its first limit runes. A value that is no valid UTF-8 counts each byte that starts no rune
+// as one rune, as Go's conversion to runes reads it, and the cut writes U+FFFD for each such byte.
 func HeadRunes(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
+	count := 0
+	for at := range value {
+		if count == limit {
+			head := value[:at]
+			if utf8.ValidString(head) {
+				return head
+			}
+			return string([]rune(head))
+		}
+		count++
 	}
-	return string(runes[:limit])
+	return value
 }
 
 // HeadWords returns value cut at a word boundary to at most its first limit runes, and whether
@@ -27,16 +36,22 @@ func HeadRunes(value string, limit int) string {
 // it. The cut falls at the last end of a word at or before the limit, so a word that ends at the
 // limit itself is kept, and white space is never kept at the end of a cut.
 //
-// A word is never cut in two, and opening punctuation that leads into a word goes with that
-// word. The first word is the first word that holds a letter or a number, with whitespace and an
-// opening backtick, bracket, parenthesis or quote before it. Where it runs past the limit, the
-// answer is that whole first word, past the limit, with no bound but the value's own length.
-// Where a value holds no letter or number before a word that runs past the limit, and no word ends
-// inside the limit, that word, of any kind, is kept whole the same way. A later word of letters or
-// numbers that runs past the limit is left out with opening punctuation before it from the start
-// of its run with no white space, so the answer does not end with a backtick or a bracket that
-// opens a word it leaves out. Other punctuation, such as a slash, is a word boundary rather than
-// a lead-in.
+// A word is never cut in two. The first word is the first word that holds a letter or a number,
+// together with all that comes before it: white space, punctuation of any kind, a symbol or an
+// emoji. Where it runs past the limit, the answer is that whole first word with all that leads
+// into it, past the limit, with no bound but the value's own length, so a value that starts with
+// `/`, `./`, `...`, `-`, `(` or a backtick before a long first word keeps that word whole and never
+// ends with the lead-in alone. Where a value holds no letter or number before a word that runs
+// past the limit, and no word ends inside the limit, that word, of any kind, is kept whole the same
+// way; where a word of punctuation or symbols ends inside the limit before it, the cut falls after
+// that word. So `(` before a chain of pictographs joined by zero-width joiners that runs past the
+// limit gives `(` alone, a cut: the public lines of the api package, the one caller, never reach
+// that answer, since they drop every word that holds a pictograph or a joiner before they cut. A
+// later word of letters or numbers that runs past the limit is left out with the opening
+// punctuation (openingPunctuation) before it from the start of its run with no white space, so the
+// answer does not end with a backtick or a bracket that opens a word it leaves out. After a word of
+// letters or numbers, other punctuation, such as a slash, is a word boundary rather than a
+// lead-in.
 //
 // The answer is a prefix of value. It is a cut where it leaves out a character that is no white
 // space, a mark alone among them (leftOut), and no cut where it leaves out white space alone; a
@@ -50,7 +65,8 @@ func HeadWords(value string, limit int) (string, bool) {
 	// number of runes read. lead is end as it stood where the current run with no white space
 	// began, while that run holds whitespace and opening punctuation before a letter word, and -1
 	// after any other word: a later letter word that runs past the limit is left out with the
-	// opening punctuation before it.
+	// opening punctuation before it. The first letter word does not read it, since all that comes
+	// before that word leads into it.
 	segments := wordSegments{s: value}
 	end, count, lettered, lead, start := 0, 0, false, 0, 0
 	for {
@@ -78,8 +94,8 @@ func HeadWords(value string, limit int) (string, bool) {
 		case end == 0:
 			// No word ended inside the limit, so this first word is kept whole.
 			return value[:next], leftOut(value[next:])
-		case class == classLetter && !lettered && lead >= 0:
-			// The first letter word runs past the limit: it is kept with opening punctuation.
+		case class == classLetter && !lettered:
+			// The first letter word runs past the limit: it is kept with all that leads into it.
 			return value[:next], leftOut(value[next:])
 		case class == classLetter && lead >= 0:
 			// A later word runs past the limit: opening punctuation is left out with it.
@@ -98,7 +114,8 @@ func HeadWords(value string, limit int) (string, bool) {
 
 // openingPunctuation is the punctuation that opens a word a reader normally reads with it: a
 // code mark, bracket, parenthesis or quote. A slash, hyphen, full stop and the other punctuation
-// that separates words is not here, so it remains a boundary inside the budget.
+// that separates words is not here, so after a word of letters or numbers it remains a boundary
+// inside the budget. Before the first such word, every mark leads into it (HeadWords).
 const openingPunctuation = "`[({\"'“‘"
 
 // opensWord reports whether every rune of segment is opening punctuation. segment is one UAX #29
@@ -151,6 +168,18 @@ func isURL(run string) bool {
 		}
 	}
 	return false
+}
+
+// EndsInURL reports whether the last run with no white space of value holds a URL (isURL). Where
+// it does, a character written right after value, with no white space between, joins that link
+// where GitHub renders it: GitHub's markdown makes a link of a URL up to the white space after it,
+// and an ellipsis is none of the trailing punctuation it leaves out of the link.
+func EndsInURL(value string) bool {
+	if at := strings.LastIndexFunc(value, unicode.IsSpace); at >= 0 {
+		_, size := utf8.DecodeRuneInString(value[at:])
+		value = value[at+size:]
+	}
+	return isURL(value)
 }
 
 // leftOut reports whether rest, what a cut leaves out of a value, holds a character of it: a rune

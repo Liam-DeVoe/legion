@@ -48,6 +48,8 @@ func TestHeadWordsEndsAWordAtWhiteSpace(t *testing.T) {
 		{name: "a first word past the limit that is the whole value is returned whole", value: "abcdefghij", limit: 4, want: "abcdefghij", cut: false},
 		{name: "a mark at the start is no word and ends none", value: "\u0301abcdefgh ij", limit: 4, want: "\u0301abcdefgh", cut: true},
 		{name: "a mark alone after a line break is no word, but leaving it out is a cut", value: "abcdefghij\n\u0301", limit: 4, want: "abcdefghij", cut: true},
+		{name: "a mark after a space is no word, so the cut does not end with it", value: "abc \u0301 defghijkl", limit: 6, want: "abc", cut: true},
+		{name: "a joiner after a line break is no word, so the cut does not end with it", value: "abc\n\u2060 defghijkl", limit: 6, want: "abc", cut: true},
 		{name: "a value at or under the limit is returned unchanged", value: " one  two ", limit: 10, want: " one  two ", cut: false},
 		{name: "a value of white space alone past the limit holds no word and is returned unchanged", value: " \t\n  ", limit: 2, want: " \t\n  ", cut: false},
 	}
@@ -61,17 +63,17 @@ func TestHeadWordsEndsAWordAtWhiteSpace(t *testing.T) {
 }
 
 // Opening punctuation that leads into a word goes with that word. The first word is the first
-// word that holds a letter or a number, with whitespace and an opening backtick, bracket,
-// parenthesis or quote before it. Where it runs past the limit, the answer keeps it whole with
-// what leads into it, as a test's name in backticks is written, and never the lead-in alone. A
-// later word that runs past the limit is left out with the opening marks before it, so the answer
-// never ends with a backtick or a bracket that opens a word it left out. A separator, such as a
-// slash, stays a word boundary: a public-line filter can then inspect its complete budget prefix.
+// word that holds a letter or a number, with all that comes before it: white space, any
+// punctuation, a symbol or an emoji. Where it runs past the limit, the answer keeps it whole with
+// what leads into it, as a test's name in backticks or a path such as `./TestName` is written, and
+// never the lead-in alone. A later word that runs past the limit is left out with the opening
+// marks before it, so the answer never ends with a backtick or a bracket that opens a word it left
+// out. After a word of letters or numbers, a separator, such as a slash, stays a word boundary.
 func TestHeadWordsKeepsAnOpeningMarkWithTheWordItLeadsInto(t *testing.T) {
 	name := "TestA" + strings.Repeat("LongName", 12) // 101 characters, a test's name
 	var rows []headWordsRow
 	for _, lead := range []struct{ open, close string }{
-		{"`", "`"}, {"[", "]"}, {"(", ")"}, {`"`, `"`}, {"'", "'"}, {"“", "”"}, {"(`", "`)"},
+		{"`", "`"}, {"[", "]"}, {"(", ")"}, {"{", "}"}, {`"`, `"`}, {"'", "'"}, {"“", "”"}, {"‘", "’"}, {"(`", "`)"},
 	} {
 		rows = append(rows, headWordsRow{
 			name:  fmt.Sprintf("a first word of 101 characters after %q is kept whole with it", lead.open),
@@ -82,13 +84,23 @@ func TestHeadWordsKeepsAnOpeningMarkWithTheWordItLeadsInto(t *testing.T) {
 			value: "Run " + lead.open + name + lead.close + " now.", limit: 80, want: "Run", cut: true,
 		})
 	}
+	// Punctuation that opens no word, a symbol and an emoji lead into the first word as an
+	// opening mark does.
+	for _, lead := range []string{"/", "./", "...", "-", "--", ".", ":", ")", "- ", "§", "🛑"} {
+		rows = append(rows, headWordsRow{
+			name:  fmt.Sprintf("a first word of 101 characters after %q is kept whole with it", lead),
+			value: lead + name + " passed 20 of 20 runs.", limit: 80, want: lead + name, cut: true,
+		})
+	}
 	checkHeadWords(t, append(rows,
 		headWordsRow{name: "a first word after a backtick that is the whole value is returned whole", value: "`" + name, limit: 80, want: "`" + name, cut: false},
+		headWordsRow{name: "a first word after 79 slashes is kept whole with them", value: strings.Repeat("/", 79) + "ab tail words", limit: 80, want: strings.Repeat("/", 79) + "ab", cut: true},
 		headWordsRow{name: "a first word after a backtick that ends inside the limit is cut at a word boundary as before", value: "`short` passed 20 of 20 runs", limit: 20, want: "`short` passed 20 of", cut: true},
 		headWordsRow{name: "a long word after a first word that ends inside the limit is left out", value: "Run " + name + " now", limit: 80, want: "Run", cut: true},
 		headWordsRow{name: "a long word after a number that ends inside the limit is left out", value: "1 " + name, limit: 80, want: "1", cut: true},
 		headWordsRow{name: "a long word after a numbered item is left out with its backtick", value: "1. `" + name + "` passed.", limit: 80, want: "1.", cut: true},
 		headWordsRow{name: "a mark that ends a word inside the limit stays with that word", value: "Run `x` " + name, limit: 80, want: "Run `x`", cut: true},
+		headWordsRow{name: "a slash after a first word is a word boundary, not a lead-in", value: "Run /" + name + " now", limit: 80, want: "Run /", cut: true},
 	))
 }
 
@@ -149,7 +161,8 @@ func TestHeadWordsCutsAScriptWithoutSpacesAtItsWordBoundaries(t *testing.T) {
 // stop between two letters (WB6, WB7) and a full stop or a comma between two digits (WB11, WB12).
 // So a long run of them with no space is cut inside the limit, and a path is cut at a slash. A
 // chain of pictographs joined by zero-width joiners is one word: kept whole where it is the first
-// word, and left out where a word ends before it inside the limit.
+// word, and left out where a word ends before it inside the limit, an opening mark too, which
+// leads only into a word of letters or numbers.
 func TestHeadWordsCutsEmojiSymbolsAndPunctuationAtTheirWordBoundaries(t *testing.T) {
 	chain := strings.Repeat("🛑\u200d", 99) + "🛑" // 100 pictographs joined, 199 runes
 	checkHeadWords(t, []headWordsRow{
@@ -166,6 +179,7 @@ func TestHeadWordsCutsEmojiSymbolsAndPunctuationAtTheirWordBoundaries(t *testing
 		{name: "a chain of 100 joined pictographs that is the whole value is returned whole", value: chain, limit: 80, want: chain, cut: false},
 		{name: "a chain of 100 joined pictographs that is the first word is kept whole before more words", value: chain + " and more", limit: 80, want: chain, cut: true},
 		{name: "a chain of 100 joined pictographs after a first word is left out", value: "Log " + chain, limit: 80, want: "Log", cut: true},
+		{name: "a chain of 100 joined pictographs after an opening parenthesis is left out", value: "(" + chain + " and more", limit: 80, want: "(", cut: true},
 	})
 }
 
@@ -176,13 +190,85 @@ func TestHeadWordsCutsEmojiSymbolsAndPunctuationAtTheirWordBoundaries(t *testing
 func TestHeadWordsKeepsAURLWhole(t *testing.T) {
 	url := "https://example.com/" + strings.Repeat("segment/", 12) // 116 runes; the 80th is inside it
 	short := "https://example.com/" + strings.Repeat("x", 50)      // 70 runes
-	checkHeadWords(t, []headWordsRow{
+	www := "www.example.com/" + strings.Repeat("segment/", 12)     // 112 runes
+	rows := []headWordsRow{
 		{name: "a URL across the limit is left out, and the cut falls before it", value: "Log: " + url + " shows the step.", limit: 80, want: "Log:", cut: true},
 		{name: "a URL that ends inside the limit is kept whole", value: "Log: " + short + " shows the step.", limit: 80, want: "Log: " + short, cut: true},
 		{name: "a first word that is a URL past the limit is kept whole", value: url + " shows the step.", limit: 80, want: url, cut: true},
 		{name: "a URL past the limit that is the whole value is returned whole", value: url, limit: 80, want: url, cut: false},
-		{name: "an address that starts with www and no scheme is one word", value: "See www.example.com/" + strings.Repeat("segment/", 12), limit: 80, want: "See", cut: true},
-		{name: "a www inside a word starts no link, so its run is cut at a slash", value: "See awww.example.com/" + strings.Repeat("segment/", 12), limit: 80, want: "See awww.example.com/" + strings.Repeat("segment/", 7), cut: true},
+		{name: "an address that starts with www and no scheme is one word", value: "See " + www, limit: 80, want: "See", cut: true},
+		{name: "an address that starts with www in capitals is one word", value: "See " + strings.ToUpper(www), limit: 80, want: "See", cut: true},
+		{name: "a www inside a word starts no link, so its run is cut at a slash", value: "See a" + www, limit: 80, want: "See awww.example.com/" + strings.Repeat("segment/", 7), cut: true},
 		{name: "a markdown link's address is not cut inside", value: "See [the log](" + url + ") now", limit: 80, want: "See [the", cut: true},
-	})
+	}
+	// GitHub starts a link with no scheme after each of these as at the start of a run.
+	for _, lead := range []string{"(", "*", "_", "[", "]", "~"} {
+		rows = append(rows, headWordsRow{
+			name:  fmt.Sprintf("an address that starts with www after %q is one word", lead),
+			value: "Log " + lead + www + " shows the step.", limit: 80, want: "Log", cut: true,
+		})
+	}
+	checkHeadWords(t, rows)
+}
+
+// A cut that ends with a URL GitHub links needs white space before anything written after it, or
+// GitHub's link takes that into its address: EndsInURL reads the last run with no white space, as
+// HeadWords reads a run for a URL (isURL), after white space of any width.
+func TestEndsInURLReadsTheLastRunWithNoWhiteSpace(t *testing.T) {
+	for _, row := range []struct {
+		value string
+		want  bool
+	}{
+		{"See www.example.com/runs/7777", true},
+		{"www.example.com", true},
+		{"See WWW.EXAMPLE.COM/RUNS", true},
+		{"See (www.example.com/runs/7777)", true},
+		{"See *www.example.com*", true},
+		{"See _www.example.com_", true},
+		{"See [www.example.com]", true},
+		{"See ]www.example.com", true},
+		{"See ~www.example.com~", true},
+		{"Log: https://example.com/a/b", true},
+		{"See\u3000www.example.com", true},
+		{"See www.example.com and more", false},
+		{"See awww.example.com/runs", false},
+		{"See example.com/runs", false},
+		{"", false},
+	} {
+		if got := EndsInURL(row.value); got != row.want {
+			t.Errorf("EndsInURL(%q) = %v, want %v", row.value, got, row.want)
+		}
+	}
+}
+
+// HeadRunes cuts a value to its first limit runes and reads no further, so a value of 1 MiB cut
+// to 80 runes costs no allocation; a value that is no valid UTF-8 is cut as Go's conversion to
+// runes reads it, with U+FFFD for each byte that starts no rune.
+func TestHeadRunesReadsOnlyTheRunesItKeeps(t *testing.T) {
+	for _, row := range []struct {
+		value string
+		limit int
+		want  string
+	}{
+		{"abc", 3, "abc"},
+		{"abc", 2, "ab"},
+		{"abc", 0, ""},
+		{"", 4, ""},
+		{"日本語です", 3, "日本語"},
+		{"a🛑b", 2, "a🛑"},
+		{"\xffab", 2, "\ufffda"},
+		{"a\xff", 4, "a\xff"},
+	} {
+		if got := HeadRunes(row.value, row.limit); got != row.want {
+			t.Errorf("HeadRunes(%q, %d) = %q, want %q", row.value, row.limit, got, row.want)
+		}
+	}
+	long := strings.Repeat("x", 1<<20)
+	if allocs := testing.AllocsPerRun(5, func() {
+		if len(HeadRunes(long, 80)) != 80 {
+			t.Fatal("HeadRunes of 1 MiB of x to 80 runes is not 80 bytes")
+		}
+	}); allocs != 0 {
+		t.Fatalf("HeadRunes of 1 MiB to 80 runes made %v allocations, want 0", allocs)
+	}
 }
