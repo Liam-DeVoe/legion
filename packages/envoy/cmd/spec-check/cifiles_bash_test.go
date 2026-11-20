@@ -267,16 +267,23 @@ func expectEachComparisonNamed(t *testing.T, bash string, files []bashFile, cont
 
 // firstArguments runs each of scripts in bash and answers, for each, the first argument of each
 // call of spec-check that it makes. A bash that defines spec-check as a function, and exports it to
-// a nested bash, reads the scripts on its standard input and runs each one as (eval -- "$s"): the
-// subshell keeps the exported function, the recorder on file descriptor 3 and the batch's PATH, and
-// gives each script /dev/null as its standard input. It keeps no variable, function, alias, option,
-// trap or working directory that one script sets for the next. It does not run a script as . runs
-// a file: $0 and BASH_SOURCE name the driver, LINENO is a line of the driver, there are no
-// positional parameters, and a top-level return is an error after which the script goes on. A
-// spec-check on PATH and in ./bin records the calls of a nested sh and of a path. The scripts run
-// in batches, one bash for each, so that no script is a file to write and remove. Before each
-// script's calls the driver writes a byte 1, the script's number and a byte 1, and each call's first
-// argument with a NUL after it.
+// a nested bash, reads the scripts on its standard input and runs each one as (eval -- "$s") on its
+// line 3, the line of its loop. The subshell keeps the exported function, the recorder on file
+// descriptor 3 and the batch's PATH, and gives each script /dev/null as its standard input. A
+// variable, exported or not, a function, an alias, an option, a trap or a working directory that a
+// script sets ends with its subshell, and no later script of the batch sees it. Two things outlive
+// the subshell: a file that a script writes stays for the scripts after it, and a process that a
+// script starts in the background and leaves running can call spec-check after the subshell ends,
+// and that call is recorded as one of the script of the batch that runs at that moment. A script
+// does not run as . runs a file: $0 and BASH_SOURCE name the driver, LINENO counts from the
+// driver's line 3, so that a script's line n reads n + 2, there are no positional parameters, and
+// a top-level return is an error after which the script goes on. Two tests pin each of these facts,
+// TestFirstArgumentsRunsEachScriptInItsOwnShell and
+// TestFirstArgumentsLetsAFileAndABackgroundProcessOutliveTheirScript, and a third the standard
+// input, TestFirstArgumentsGivesEachScriptEmptyStandardInput. A spec-check on PATH and in ./bin
+// records the calls of a nested sh and of a path. The scripts run in batches, one bash for each, so
+// that no script is a file to write and remove. Before each script's calls the driver writes a byte
+// 1, the script's number and a byte 1, and each call's first argument with a NUL after it.
 func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 	t.Helper()
 	dir := t.TempDir()
@@ -340,28 +347,42 @@ func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 }
 
 // Each script of a batch runs in its own subshell. A script at the start of the batch sets a
-// variable, and each of the next sixteen scripts reads it: whatever the number of batches, one of
-// them is in the first script's batch, after it, so a driver that runs the scripts in one shell
-// fails here. The same batch keeps the cases that the driver's doc names: $0 is the driver, standard
-// input is empty, an unclosed quote and an unfinished here-document make no call, a top-level return
-// goes on, and an exit ends only its script.
+// variable, an exported variable, a function, an alias, an option, a trap and the working
+// directory, and each of the next sixteen scripts calls spec-check with the name of each of them
+// that it sees: whatever the number of batches, one of them is in the first script's batch, after
+// it. So a driver that runs the scripts in one shell fails here: the script that exits ends its
+// batch, and with that script taken out, the later script names each state that it sees. The same
+// batch keeps the other cases that the driver's doc names: $0 and BASH_SOURCE are the driver, a
+// script's line 3 reads LINENO 5, there is no positional parameter, standard input is empty, an
+// unclosed quote and an unfinished here-document make no call, a top-level return goes on, and an
+// exit ends only its script.
 func TestFirstArgumentsRunsEachScriptInItsOwnShell(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
 	}
-	scripts := []string{"batch_state=present"}
+	scripts := []string{"batch_variable=set; export batch_exported=set; batch_function() { :; }; alias batch_alias=:; set -f; trap : USR1; cd bin"}
 	want := [][]string{nil}
 	for range 16 {
-		scripts = append(scripts, `if [[ ${batch_state-} == present ]]; then spec-check compare; else spec-check tree; fi`)
+		scripts = append(scripts, `[[ -v batch_variable ]] && spec-check variable
+[[ -v batch_exported ]] && spec-check exported
+declare -F batch_function >/dev/null && spec-check function
+alias batch_alias >/dev/null 2>&1 && spec-check alias
+[[ -o noglob ]] && spec-check option
+[[ -n $(trap -p USR1) ]] && spec-check trap
+[[ $PWD == */bin ]] && spec-check directory
+spec-check tree`)
 		want = append(want, []string{"tree"})
 	}
 	for _, c := range []struct {
 		script string
 		want   []string
 	}{
-		{`case "$0" in */driver.sh) spec-check compare ;; *) spec-check tree ;; esac`, []string{"compare"}},
+		{`spec-check "${0##*/}"`, []string{"driver.sh"}},
+		{`spec-check "${BASH_SOURCE[0]##*/}"`, []string{"driver.sh"}},
+		{":\n:\nspec-check \"$LINENO\"", []string{"5"}},
+		{`spec-check "$#"`, []string{"0"}},
 		{`if IFS= read -r line; then spec-check compare; else spec-check tree; fi`, []string{"tree"}},
 		{`spec-check compare --dir "unterminated`, nil},
 		{"cat <<'EOF'\nspec-check compare\n", nil},
@@ -376,6 +397,51 @@ func TestFirstArgumentsRunsEachScriptInItsOwnShell(t *testing.T) {
 		if !slices.Equal(got, want[i]) {
 			t.Errorf("script %d %q calls %q, want %q", i, scripts[i], got, want[i])
 		}
+	}
+}
+
+// Two things outlive a script's subshell, as the driver's doc says: a file that the script writes,
+// and a process that it starts in the background, whose call of spec-check after the subshell ends
+// is recorded as one of the script that runs then. The first script writes a file and starts a
+// process that waits until a later script of its batch has begun. The scripts of one batch share
+// the batch's $$, so of the next sixteen scripts, the first of the first script's batch finds the
+// file, calls spec-check file, lets the process call spec-check background, and waits for that
+// call: whatever the number of batches, one of the sixteen is in that batch, after the first
+// script. So that script records file, background and tree, each other one tree alone, and the first
+// script nothing. A driver that took the file away, or waited for a script's background processes,
+// fails here; the bound of each wait, 6,000 rounds of 10 ms, only turns such a driver's wait, which
+// never ends, into a failure, where an honest one ends as soon as the next script of the batch starts.
+func TestFirstArgumentsLetsAFileAndABackgroundProcessOutliveTheirScript(t *testing.T) {
+	t.Parallel()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+	}
+	scripts := []string{`: >"kept-$$"
+(for ((i = 0; i < 6000; i++)); do [[ -e begun-$$ ]] && break; sleep 0.01; done; spec-check background; : >"called-$$") &`}
+	for range 16 {
+		scripts = append(scripts, `if [[ -e kept-$$ && ! -e begun-$$ ]]; then
+	spec-check file
+	: >"begun-$$"
+	for ((i = 0; i < 6000; i++)); do [[ -e called-$$ ]] && break; sleep 0.01; done
+fi
+spec-check tree`)
+	}
+	calls := firstArguments(t, bash, scripts)
+	if calls[0] != nil {
+		t.Errorf("script 0 %q calls %q, want none", scripts[0], calls[0])
+	}
+	outlived := 0
+	for i, got := range calls[1:] {
+		switch {
+		case slices.Equal(got, []string{"file", "background", "tree"}):
+			outlived++
+		case !slices.Equal(got, []string{"tree"}):
+			t.Errorf("script %d calls %q, want tree, or file, background and tree", i+1, got)
+		}
+	}
+	if outlived != 1 {
+		t.Errorf("%d scripts found the file and recorded the call of the background process, want 1", outlived)
 	}
 }
 
