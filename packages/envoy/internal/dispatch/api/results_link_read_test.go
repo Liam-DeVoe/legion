@@ -68,8 +68,11 @@ func TestALinkByHandStoresTheHeadOfThePullRequestItLinks(t *testing.T) {
 // head, and the linking issue's check k1 compares with it. In the second case Dispatch holds that
 // head, from that read: the link moves to another issue, which owes no read, so the next pass asks
 // GitHub nothing about #12, and the new issue's check k1 compares with the held head at once (R7:
-// a new link reaches a stored pull request with no read of GitHub). The test fails where a link to
-// a held head owes a read, and where a link to a head Dispatch does not hold owes none.
+// a new link reaches a stored pull request with no read of GitHub). The held head is found under
+// the repository's canonical name in any letter case: a link of https://github.com/ACME/Tools/pull/12
+// owes no read, and nor does a link under the name the repository had before a rename to
+// acme/tools (oweLinkedRead). The test fails where a link to a held head owes a read, in either of
+// those spellings, and where a link to a head Dispatch does not hold owes none.
 func TestALinkByHandAsksGitHubForAPullRequestOnlyWhereItsHeadIsNotHeld(t *testing.T) {
 	handler, database, served, fake := readThroughGitHub(t, "acme/tools")
 	first := issueInRepository(t, handler, "ACME", "acme/tools", "Linked first")
@@ -118,6 +121,26 @@ func TestALinkByHandAsksGitHubForAPullRequestOnlyWhereItsHeadIsNotHeld(t *testin
 		}
 		if !comparedWithPull(t, readResults(t, handler, second.Key), "k1", 12) {
 			t.Fatalf("after the link and one pass, %s's check k1 does not compare with the head of acme/tools#12", second.Key)
+		}
+	})
+
+	t.Run("the_head_is_held_under_other_letters", func(t *testing.T) {
+		patchIssue(t, handler, second.Key, map[string]any{"external_links": []map[string]string{}})
+		patchIssue(t, handler, first.Key, map[string]any{"external_links": []map[string]string{{"url": "https://github.com/ACME/Tools/pull/12"}}})
+		if owed := owedReads(t, database); len(owed) != 0 {
+			t.Fatalf("after a link to ACME/Tools#12, whose head Dispatch holds as acme/tools#12, the owed reads are %q; want none", owed)
+		}
+	})
+
+	t.Run("the_head_is_held_under_the_name_before_a_rename", func(t *testing.T) {
+		patchIssue(t, handler, first.Key, map[string]any{"external_links": []map[string]string{}})
+		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/oldco/tools",
+			map[string]any{"project": "ACME", "renamed_to": "acme/tools"}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("record oldco/tools as renamed to acme/tools: status=%d body=%s", response.Code, response.Body.String())
+		}
+		patchIssue(t, handler, second.Key, map[string]any{"external_links": []map[string]string{{"url": "https://github.com/oldco/tools/pull/12"}}})
+		if owed := owedReads(t, database); len(owed) != 0 {
+			t.Fatalf("after a link to oldco/tools#12, the name before acme/tools' rename, whose head Dispatch holds, the owed reads are %q; want none", owed)
 		}
 	})
 }
