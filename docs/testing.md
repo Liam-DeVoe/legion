@@ -328,8 +328,17 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-The commands `packages/envoy/cmd/dispatch/AGENTS.md` ("Checks") gives for the Dispatch server
-take these deadlines, each from the reading beside it:
+The Dispatch server's commands below take these deadlines, each from the reading beside it:
+
+```sh
+cd packages/envoy
+go test -timeout 60m ./internal/dispatch/api
+go test -timeout 60m $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/api$')
+env DISPATCH_TEST_DATABASE_URL=… go test -tags memory -count=1 -timeout 90m ./cmd/dispatch
+env DISPATCH_TEST_DATABASE_URL=… go test -tags multiprocess -count=1 -timeout 50m ./cmd/dispatch
+```
+
+`internal/dispatch/api` runs first and on its own, for the reason above.
 
 - The run of every other `internal/dispatch` and `cmd/dispatch` package, `-timeout 60m`: its
   slowest package, `internal/dispatch/docs`, took 1690 s plain in an issue pod.
@@ -382,7 +391,7 @@ Go's own detector finds a closure that reaches its object:
 
 ```sh
 cd packages/envoy
-GODEBUG=checkfinalizers=1 go test -count=1 -timeout 34m ./internal/dispatch/docs/
+GODEBUG=checkfinalizers=1 go test -count=1 -timeout 45m ./internal/dispatch/docs/
 ```
 
 It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
@@ -390,6 +399,7 @@ The rule covers the cleanup's argument as well as its closure, so an argument th
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
+Its 45 minutes are that job's own: twice and more the package's slowest run over the job's 20 newest green merge-group runs up to 2026-11-15, 1261.698 s (run 43188011059), and 1.6 times the 1690 s the package took plain in an issue pod.
 It is one of the ten slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
