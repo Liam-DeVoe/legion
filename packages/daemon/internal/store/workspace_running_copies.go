@@ -133,8 +133,9 @@ func (b WorkspaceCopyBegun) At() time.Time { return b.at }
 //
 // It is clock_timestamp(), this database's clock as the statement runs; the push's record
 // (RecordIssuePush), a pod's first ask (TakeWorkspaceCopyForRestore) and every write of a copy read
-// that same clock, so the restore compares one clock alone. A read that fails answers no time, and
-// the taker takes no copy.
+// that same clock, so the restore's choice between the two copies compares one clock alone (the
+// drop for a pod of a kept Sandbox alone reads the API server's too, runtime.DecideKeptVolumeDrop).
+// A read that fails answers no time, and the taker takes no copy.
 func (s *Store) BeginWorkspaceCopy(ctx context.Context) (WorkspaceCopyBegun, error) {
 	var at time.Time
 	if err := s.pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
@@ -710,7 +711,9 @@ func takeCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue, podUID st
 // since been pushed, and the next pod must never restore it. The two writes that invalidate what
 // the issue holds drop the copy inside their own transaction, with the release bundle each saves
 // or drops (PutWorkspaceBundle, DeleteWorkspaceBundle), and those deletes read no time: the
-// bundle they write or drop is the issue's whole answer either way.
+// bundle they write or drop is the issue's whole answer either way. The drop of the copies a kept
+// volume holds deletes in a transaction of its own too (DropHeldWorkspaceCopies), each copy by the
+// time its take began against the Sandbox's creation.
 //
 // A row whose take began after this take is left standing and answers ErrNewerCopyStands, which
 // is the rule a save of a copy keeps (PutRunningWorkspaceCopy): a read that found nothing

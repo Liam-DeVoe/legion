@@ -220,7 +220,8 @@ func (s *Store) KeepRestoredWorkspaceBundle(ctx context.Context, issue, podUID s
 // bundle whose work a live pod's disk holds: the confirmation of its restore, which sources the
 // work to the restoring pod (KeepRestoredWorkspaceBundle), and the cancel of the release that saved
 // it, which leaves it sourced to the pod it came off, the one the roles resume in
-// (CancelIssueRelease).
+// (CancelIssueRelease). The drop of a bundle that a pod's kept volume holds ends one as well, by
+// deleting it, since that volume is the copy of the work (DropHeldWorkspaceCopies).
 func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string, release int64, bundle runtime.WorkspaceCopyHeld, pod string) error {
 	running, err := heldCopy(ctx, tx, runningCopyCopies, issue)
 	if err != nil {
@@ -256,7 +257,7 @@ func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string
 // and records nothing at all, the pod's first ask included, and both rows stay in the database: a
 // row names no project, so a copy another project's daemon saved for its own pod and this
 // daemon's running copy of an operator's spawn of the issue are kept alike, as the take withholds
-// both.
+// both, until a copy of that issue's own pod replaces or drops the running copy.
 //
 // It is one transaction under the issue's copy lock (lockWorkspaceCopies). It records the pod's
 // first ask for a restore if this is it (firstRestoreAsk), because the runtime takes nothing more

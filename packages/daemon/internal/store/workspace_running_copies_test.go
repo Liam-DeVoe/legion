@@ -118,8 +118,8 @@ func storeClock(t *testing.T, s *Store) time.Time {
 // and the confirmation of a restore keeps the copy its id names, and no other, as the restoring
 // pod's own. The copy's time is the store's clock when its take began, which the save is handed,
 // and its write time the store's clock when it wrote the row, never the time the shim stamped on
-// it by its node's clock, so the restore compares one clock alone. A save handed no take's begin
-// is refused.
+// it by its node's clock, so the restore's choice between the two copies compares one clock
+// alone. A save handed no take's begin is refused.
 func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)

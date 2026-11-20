@@ -20,7 +20,9 @@ import (
 //
 // The push's time is the store's, as a copy's `at` is the store's when its take began
 // (BeginWorkspaceCopy) and a pod's first ask the store's when it recorded the ask
-// (TakeWorkspaceCopyForRestore), so the restore compares one clock alone. It is the time the
+// (TakeWorkspaceCopyForRestore), so the restore's choice between the two copies compares one
+// clock alone (the drop for a pod of a kept Sandbox alone reads the API server's too,
+// runtime.DecideKeptVolumeDrop). It is the time the
 // statement that reads the push's heads began (statement_timestamp), read once and written for
 // both heads and the row: the database's own clock, read after the fact's transaction has waited
 // its turn under the intake's one serializer (intake.ApplyFact). It is not tx's now(), which is

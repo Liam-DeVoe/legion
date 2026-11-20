@@ -291,7 +291,8 @@ type WorkspaceBundler interface {
 // WorkspaceBundleNone, for a copy, is nothing sent and nothing recorded: an issue never released
 // and whose cadence took nothing, one whose release a wake cancelled, one whose copy is spent
 // already, one the daemon's project does not record, whose copies are withheld and stay in the
-// database, this daemon's own running copy of an operator's spawn of the issue among them, since
+// database until the next copy replaces or drops it, this daemon's own running copy of an
+// operator's spawn of the issue among them, since
 // a row names no project and a copy of such an issue can be another project's daemon's (the whole
 // answer is then empty, and not even the pod's ask is recorded), and the pod the work was taken
 // off, or the pod that restored it, asking for its own workspace's work back. The runtime calls

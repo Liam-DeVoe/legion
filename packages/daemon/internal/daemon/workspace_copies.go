@@ -151,10 +151,11 @@ const (
 	// pause saves no workspace (docs/kubernetes.md, "Pausing a project"), so no copy starts while
 	// it stands. The pause's hold of a pod stops only the idle release and the update round: a
 	// close, a park, a teardown or an end from outside the pod still ends a held pod, and a role
-	// of it may still be in its turn. A pod that ends during the pause loses the work done since
-	// its last copy, which is from before the pause: the next pod restores that copy, and the
-	// turns that ended in the pause are in none. That cost is chosen, as a pause saves no
-	// workspace. It is written at Info with the open pause's id, since nothing failed, and it
+	// of it may still be in its turn. A pod that ends during the pause while its issue goes on,
+	// on an ephemeral volume, loses the work done since its last copy, which is from before the
+	// pause: the next pod restores that copy, and the turns that ended in the pause are in none (a
+	// kept volume keeps them, and a close ends the issue's work). That cost is chosen, as a pause
+	// saves no workspace. It is written at Info with the open pause's id, since nothing failed, and it
 	// owes a retry (runningCopy.retry): a turn that ended while the project was paused is in no
 	// copy, so the cadence takes it again once the project has resumed and a role of the issue is
 	// live.
@@ -925,15 +926,6 @@ func (w *workflowRuntime) unsavedCopy(issue string, args ...any) {
 	w.log.Warn(runningCopyUnsavedLine, append([]any{"issue", issue}, args...)...)
 }
 
-// pausedCopy logs a copy of issue that the open pause of the daemon's project kept from its shim,
-// at Info under runningCopyProjectPaused with the pause's id, since nothing failed
-// (runningCopyUnsavedLine). args are what the line names between the issue and the reason: the
-// role the copy was asked of, where one was chosen.
-func (w *workflowRuntime) pausedCopy(issue string, pause int64, args ...any) {
-	args = append(append([]any{"issue", issue}, args...), "reason", runningCopyProjectPaused, "pause", pause)
-	w.log.Info(runningCopyUnsavedLine, args...)
-}
-
 // issuesInTurn is every issue of the project with a turn in flight, each named once, in the order
 // the claims were read. A claim in supervise.StateWorking is a role whose agent is in a turn, and
 // the cadence copies that issue's workspace every period. An issue between turns is copied by the
@@ -994,15 +986,4 @@ func (w *workflowRuntime) copyTick() time.Duration {
 		return w.idleTick
 	}
 	return idleTickInterval
-}
-
-// projectPaused is the open pause's id and true while the daemon's project is paused, as the
-// pause service last read or made it (pause.Service.Paused), and false for a runtime that holds no
-// pause: run builds the project's pause before supervision and before any copy can start
-// (workflowRuntime.pauses), and a runtime a test builds by hand holds none.
-func (w *workflowRuntime) projectPaused() (int64, bool) {
-	if w.pauses == nil {
-		return 0, false
-	}
-	return w.pauses.service.Paused()
 }

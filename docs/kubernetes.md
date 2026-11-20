@@ -6451,12 +6451,12 @@ The first sweep after its agent is ready asks it.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
 A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
 A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
-A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
+A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk but for what the daemon's last copy of the workspace holds, and a retry brings it back into the round as any other claim.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to do the first three steps and end its turn, since its round ends at the bound whatever it does.
 The end of a turn is no answer at any contract: only the `ready_for_update` call answers the round.
 An answer stands until the round ends, through every later turn of that role, and the daemon hands an answered role no new task until the round ends (`answeredOpenRound`):
-work a later turn commits and does not push goes with the disk, since the answer is not taken back for it.
+work a later turn commits and does not push goes with the disk but for what the daemon's last copy of the workspace holds, since the answer is not taken back for it.
 A role whose subagent or background job finishes after its answer is told to push what it made and to answer again with the same id, and the second answer takes the place of the first.
 The id is what makes the answer that round's:
 the daemon takes an answer only for the round the claim is in now and refuses any other, naming both ids, so an answer given to a message the role read before the round changed counts for nothing.
@@ -6482,7 +6482,7 @@ the daemon reads the issue's claims from the store again — which is how a clai
 An operator's suspension aborts it at any moment, and before the bound so does a claim that has not answered, a turn that started, or a claim whose report holds the round, as the store reads them after the replacement waited for the pod's launch turn:
 nothing is suspended, the round stays open, and the next sweep decides again.
 
-The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, comes back in the new pod only up to the daemon's last copy of the workspace, or whole on a kept volume (below), so the agent does the rest again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
+The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, comes back in the new pod only up to the daemon's last copy of the workspace, or whole on a kept volume that the round keeps (below), so the agent does the rest again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
 An earlier release checked the disk first, from the shim, and pushed what the remote lacked; that check and the frame that asked for it are gone.
 A daemon of an earlier release that sends that frame still sends it to a shim of this image, which passes it to its agent unchanged, and the agent refuses a command it does not know, which that daemon reads as a shim that predates the check, so it replaces the pod with no check of the disk.
 A `legion-v20.14.0` daemon then replaces the pod once every role it asked has answered and no turn runs, or at the round's bound, and it asks no role a second time: it reads no activity report.
@@ -6940,7 +6940,7 @@ A bundle sent to a pod where a role registered is never sent again, because that
 One window stays open: a `roles` container killed in the middle of a restore leaves the restore's temporary refs, so the next restore fails, and the bundle is spent once a role that started without it registers, its bytes kept in the daemon's database and out of every later pod for a person to recover; no role runs during a restore, so the container is far below its memory limit then, and closing that window needs a new pod image.
 A pod that first asked before the save, one that was already working when the release saved, is sent nothing of the bundle and nothing is recorded on it, so the bundle stays for the pod after that one ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace) says which times are compared).
 A pod of a kept Sandbox that was made before the save is sent no bundle, and the daemon drops the bundle, because the volume holds that work, so no `bundle_unrestored` hold keeps that pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-A restore that fails, and a bundle closed unsent because a newer copy was offered in its place, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
+A restore that fails, and a bundle closed unsent because a newer copy was offered in its place or held by the pod's kept volume, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
 The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
 A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
 A release of a pod no claim owns neither takes a bundle nor deletes one, so a bundle an earlier release of the same issue saved stays where it is, and the issue's next pod is offered it as before.
@@ -7104,7 +7104,8 @@ While the daemon's project is paused, no copy is taken at all, since a pause sav
 Each copy that a turn's end, the cadence or a push asks for then logs the same line at Info with the reason `project_paused` and the open pause's id as `pause`, which is no fault and is not one of the reasons above.
 A copy already asking its shim when the pause begins runs to its end, since it read the workspace before the pause.
 A skipped copy owes a retry, because a turn that ended while the project was paused is in no copy: the cadence takes it once the project has resumed and a role of the issue is live again.
-A pod that still ends during the pause, at a close, a park or an end from outside it, loses the work done since its last copy, which is from before the pause: the next pod restores that copy.
+A pod that still ends during the pause, at a park or an end from outside it, loses the work done since its last copy on an ephemeral volume, which is from before the pause: the next pod restores that copy.
+A kept volume keeps that work, and a close ends the issue's work.
 
 A copy runs the shim's own `jj` in the workspace a role is working in, and two `jj` commands at once in one workspace can leave a divergent change there, which a role then has to clean up in its own turn.
 That race is not new — another role's `jj` makes it today — and the copy raises how often the workspace is inside a `jj` command of somebody else's.

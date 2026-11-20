@@ -327,21 +327,20 @@ func (d *launchers) logCopyTakes(session *launcherSession, token claim.Token, re
 	for _, kind := range [...]runtime.WorkspaceCopyKind{runtime.WorkspaceCopyReleaseBundle, runtime.WorkspaceCopyRunning} {
 		taken := restore.Of(kind)
 		b := taken.Bundle
+		// Each line names the copy the same way, and then what its own decision read.
+		copyOf := func(more ...any) []any {
+			return append([]any{"issue", issue, "launcher", token, "pod", podUID, "copy", kind, "taken", b.At}, more...)
+		}
 		switch taken.Take {
 		case runtime.WorkspaceBundleHeldByVolume:
-			d.log.Info(keptVolumeHoldsLine, "issue", issue, "launcher", token, "pod", podUID,
-				"copy", kind, "restore", b.Release, "taken", b.At, "bytes", taken.Size, "volume_created", session.keptSince)
+			d.log.Info(keptVolumeHoldsLine, copyOf("restore", b.Release, "bytes", taken.Size, "volume_created", session.keptSince)...)
 		case runtime.WorkspaceBundleLeftForNextPod:
-			d.log.Info(leftForNextPodLine, "issue", issue, "launcher", token, "pod", podUID,
-				"copy", kind, "firstAsked", restore.FirstAsked, "taken", b.At, "written", taken.Written)
+			d.log.Info(leftForNextPodLine, copyOf("firstAsked", restore.FirstAsked, "written", taken.Written)...)
 		case runtime.WorkspaceBundleRefusedPushed:
-			d.log.Warn(refusedPushedLine, "issue", issue, "launcher", token, "pod", podUID,
-				"copy", kind, "taken", b.At, "bytes", taken.Size, "head", b.Head, "restore", b.Release,
-				"pushed", restore.Push.At, "pushedHead", restore.Push.Head)
+			d.log.Warn(refusedPushedLine, copyOf("bytes", taken.Size, "head", b.Head, "restore", b.Release,
+				"pushed", restore.Push.At, "pushedHead", restore.Push.Head)...)
 		case runtime.WorkspaceBundleSuperseded:
-			d.log.Info(supersededLine,
-				"issue", issue, "launcher", token, "pod", podUID, "copy", kind, "taken", b.At,
-				"bytes", taken.Size, "newer", restore.Offered, "newerTake", offered.Take)
+			d.log.Info(supersededLine, copyOf("bytes", taken.Size, "newer", restore.Offered, "newerTake", offered.Take)...)
 		}
 	}
 }
