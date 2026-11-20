@@ -68,7 +68,12 @@ func TestARoleKeysProofsAreNotInterchangeable(t *testing.T) {
 		t.Fatalf("keygen = exit %d, stderr %q", code, stderr.String())
 	}
 	thumbprint := strings.TrimSpace(stdout.String())
-	fileKey, err := loadKey(filepath.Join(keyDir, keyFile))
+	keyPath := filepath.Join(keyDir, keyFile)
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileKey, err := parseKeyPEM(keyPEM, keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}

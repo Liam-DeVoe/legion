@@ -1418,6 +1418,7 @@ pi_legion:
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/internal/googleidentity/*'
   - 'packages/envoy/internal/redact/*'
+  - 'packages/envoy/internal/tlsalert/*'
   - 'packages/envoy/internal/redirects/*'
   - *go_workspace
   - 'AGENTS.md'
