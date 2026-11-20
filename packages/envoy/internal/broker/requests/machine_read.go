@@ -1101,9 +1101,11 @@ func pendingRequests(ctx context.Context, q querier, enrollmentID string, sorted
 	})
 }
 
-// sameLifetime is the one lifetime rule of a join and of a reuse: a new request joins a pending
-// request, or takes a live grant, only of the lifetime it asks for, the same seconds or none on
-// both sides.
+// sameLifetime is the lifetime rule of a reuse, and the first of a join's two: a new request takes
+// a live grant, or joins a pending request, of the lifetime it gets, the same seconds or none on
+// both sides. Create's join has a second rule: a request that signs no lifetime also joins a
+// pending request that recorded none, whatever lifetime the new request gets
+// (TestANoTTLRetryJoinsAPendingNoLifetimeRequest).
 func sameLifetime(a, b *int) bool {
 	if a == nil || b == nil {
 		return a == b

@@ -127,8 +127,10 @@ func TestANoTTLRequestIsNotHandedATwelveHourGrant(t *testing.T) {
 }
 
 // TestANoTTLRequestDoesNotJoinATwelveHourPendingRequest: a pending request written with --ttl
-// 12h is never joined by a request without one, which is refused REQUEST_PENDING, as a request of
-// any other lifetime is (sameLifetime).
+// 12h is never joined by a request without one, which is refused REQUEST_PENDING. Their lifetimes
+// differ (sameLifetime), and the pending request recorded a lifetime, so Create's second join
+// rule, which joins a request that signs no lifetime to a pending request that recorded none
+// (TestANoTTLRetryJoinsAPendingNoLifetimeRequest), does not apply.
 func TestANoTTLRequestDoesNotJoinATwelveHourPendingRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
