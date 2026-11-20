@@ -62,6 +62,11 @@ type launchers struct {
 	indexMu        sync.Mutex
 	index          leakguard.Index
 	indexFrames    []shimwire.LauncherLeakCheckIndex
+	// startReserve is how much of a start's own time the hops it sends before its start frame
+	// leave for that frame (beforeTheStart), startFrameReserve outside the tests. indexTurns is
+	// each token's one push of the index (takeIndexTurn), under mu.
+	startReserve time.Duration
+	indexTurns   map[claim.Token]*indexTurn
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
 	// A launchers built without the pair restores nothing.
@@ -114,16 +119,15 @@ type launcherSession struct {
 	// lines from the daemon (shimwire.LauncherHello.LeakCheckIndex). leakCheckIndexSHA256 is the
 	// digest of the index whose install it reported on this connection, "" before any
 	// (serveLeakCheckIndex): the digest a launcher_leak_check_index sequence declares, of the
-	// whole file, so a build whose list did not change is another index all the same. indexPush
-	// holds the one push of the index to this launcher that runs at a time (serveLeakCheckIndex).
+	// whole file, so a build whose list did not change is another index all the same.
 	leakCheckIndex       bool
 	leakCheckIndexSHA256 string
-	indexPush            chan struct{}
 }
 
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
 	guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
+		startReserve: startFrameReserve, indexTurns: map[claim.Token]*indexTurn{},
 		saved: saved, restored: restored, guardKilled: guardKilled, volume: volume, log: log}
 }
 
@@ -134,7 +138,7 @@ func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled,
-		leakCheckIndex: hello.LeakCheckIndex, indexPush: make(chan struct{}, 1)}
+		leakCheckIndex: hello.LeakCheckIndex}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -374,22 +378,29 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	if err := d.serveLeakCheck(ctx, token, podUID); err != nil {
 		return err
 	}
-	// The leak check's index of sandbox lines goes over next, so the check in the role's pod reads
-	// the newest index the daemon holds from the role's first write. It never stops the start: a
-	// launcher that did not install it keeps the index it holds, or holds none, and the check in
-	// its roles reads that index, or UNKNOWN, and says why, until the push after the daemon's next
-	// read (refreshLeakCheckIndex).
-	if session, err := d.await(ctx, token, podUID); err == nil {
-		if err := d.serveLeakCheckIndex(ctx, session); err != nil {
+	// The work the release took off the pod this one replaces goes over next: the launcher holds
+	// the bundle and restores it into the workspace before it runs the role's command, so the
+	// restore has to be in its hands before any generation of the pod is started, this one
+	// included (internal/launcher's bundleRestore). It never stops the start, and it leaves the
+	// start its reserve (beforeTheStart). It goes before the index: this send is the bundle's one
+	// attempt, and the index has the poll's next push besides.
+	d.restoreWorkspace(ctx, token, podUID)
+	// The leak check's index of sandbox lines goes over last, so the check in the role's pod reads
+	// the newest index the daemon holds from the role's first write. It never stops the start, and
+	// it leaves the start its reserve: a launcher that did not install it keeps the index it holds,
+	// or holds none, and the check in its roles reads that index, or UNKNOWN, and says why, until
+	// the push after the daemon's next read (refreshLeakCheckIndex).
+	if session, err := d.await(ctx, token, podUID); err == nil && session.leakCheckIndex {
+		hop, cancel, err := d.beforeTheStart(ctx)
+		if err == nil {
+			err = d.serveLeakCheckIndex(hop, session)
+			cancel()
+		}
+		if err != nil {
 			d.log.Warn("launcher leak check index: the leak check index did not reach the pod's launcher before the role's start, so the role starts and the check in its pod reads the index the pod holds, or UNKNOWN where it holds none",
 				"launcher", token, "pod", podUID, "error", err)
 		}
 	}
-	// The work the release took off the pod this one replaces goes over next: the launcher holds
-	// the bundle and restores it into the workspace before it runs the role's command, so the
-	// restore has to be in its hands before any generation of the pod is started, this one
-	// included (internal/launcher's bundleRestore). It never stops the start.
-	d.restoreWorkspace(ctx, token, podUID)
 	answer, _, err := d.request(ctx, token, podUID, command, command.ID)
 	if err != nil {
 		return err
@@ -540,7 +551,7 @@ func (d *launchers) refreshLeakCheckIndex(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		d.log.Warn("launcher leak check index: the daemon could not read a new leak check index, so each pod is pushed the newest one it read before",
+		d.log.Warn("launcher leak check index: the daemon could not read a new leak check index, so each pod keeps the index it holds, and is pushed the newest one the daemon read before, if any",
 			"error", err)
 	}
 	_, frames := d.newestLeakCheckIndex()
@@ -595,6 +606,66 @@ func (s *launcherSession) installedLeakCheckIndex() string {
 	return s.leakCheckIndexSHA256
 }
 
+// startFrameReserve is how much of a start's own time the hops it sends before its start frame,
+// and never stops on, leave for that frame: the saved bundle's (restoreWorkspace) and the leak
+// check index's (serveLeakCheckIndex). The frame's write is bounded by apiTimeout (request), and
+// the launcher answers it once it has applied a saved bundle and started the child, so a launcher
+// that answers neither hop still has this long to be sent its start and to answer it.
+const startFrameReserve = apiTimeout
+
+// beforeTheStart is ctx ended d.startReserve before ctx's own deadline: the bound of a hop a start
+// sends before its start frame and never stops on. Where no more than the reserve is left there is
+// no such hop, and the error says so. A ctx with no deadline bounds the hop alone.
+func (d *launchers) beforeTheStart(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		hop, cancel := context.WithCancel(ctx)
+		return hop, cancel, nil
+	}
+	if left := time.Until(deadline); left <= d.startReserve {
+		return nil, nil, fmt.Errorf("the start has %s left, no more than the %s it keeps for its start frame",
+			left.Round(time.Millisecond), d.startReserve)
+	}
+	hop, cancel := context.WithDeadline(ctx, deadline.Add(-d.startReserve))
+	return hop, cancel, nil
+}
+
+// indexTurn is one token's turn to push the leak check index: slot holds the push that runs, and
+// users counts the pushes that hold it or wait for it, so the turn is dropped once none does.
+type indexTurn struct {
+	slot  chan struct{}
+	users int
+}
+
+// takeIndexTurn waits for token's turn to push the index, until ctx ends, and answers its release.
+// The turn is the token's and not one connection's, because each slice goes to the token's
+// current connection (request): a push asked for a connection that a reconnect has replaced sends
+// to its replacement, which a push of the replacement's own must not run beside.
+func (d *launchers) takeIndexTurn(ctx context.Context, token claim.Token) (func(), error) {
+	d.mu.Lock()
+	turn := d.indexTurns[token]
+	if turn == nil {
+		turn = &indexTurn{slot: make(chan struct{}, 1)}
+		d.indexTurns[token] = turn
+	}
+	turn.users++
+	d.mu.Unlock()
+	leave := func() {
+		d.mu.Lock()
+		if turn.users--; turn.users == 0 {
+			delete(d.indexTurns, token)
+		}
+		d.mu.Unlock()
+	}
+	select {
+	case turn.slot <- struct{}{}:
+		return func() { <-turn.slot; leave() }, nil
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
+	}
+}
+
 // serveLeakCheckIndex pushes the newest leak check index the daemon holds to session's launcher and
 // waits for the launcher to install it, under leakCheckHopBound: its slices, each answer read
 // before the next slice goes, and the launcher's Installed, which sets the digest the daemon holds
@@ -604,10 +675,13 @@ func (s *launcherSession) installedLeakCheckIndex() string {
 //
 // Nothing is sent to a launcher that did not say it takes the index, since one built before the
 // frame ends its connection on it, nor while the daemon holds no index, nor to a launcher that has
-// reported the newest installed. One push to a launcher runs at a time (indexPush): a start's and
-// the poll's would otherwise send one sequence at once, whose answers share their waiters' names
-// (bundleWaiter), and the second, once the first has ended, finds the index installed and sends
-// nothing.
+// reported the newest installed. Each slice goes to the token's current connection, as every
+// request does, so a push asked for a connection a reconnect has replaced goes to its replacement,
+// and that connection's hello and install are the ones it reads; a launcher not connected now is
+// pushed the index by its next connection's start, or by the poll after its next read. One push of
+// the index to a token runs at a time (takeIndexTurn): a start's and the poll's would otherwise
+// send one sequence at once, whose answers share their waiters' names (bundleWaiter), and the
+// second, once the first has ended, finds the index installed and sends nothing.
 //
 // Every other outcome is an error that says why: the launcher refused a slice or the install,
 // answered with another frame or a malformed one, the connection failed, or the hop, its wait for
@@ -618,26 +692,23 @@ func (d *launchers) serveLeakCheckIndex(ctx context.Context, session *launcherSe
 	}
 	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
 	defer cancel()
-	select {
-	case session.indexPush <- struct{}{}:
-	case <-hop.Done():
+	release, err := d.takeIndexTurn(hop, session.token)
+	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return fmt.Errorf("another push of the leak check index to the pod's launcher still ran when this push's bound of %s ran out", d.leakCheckHop)
 	}
-	defer func() { <-session.indexPush }()
+	defer release()
 	index, frames := d.newestLeakCheckIndex()
 	if len(frames) == 0 {
 		return nil
 	}
 	digest := frames[0].SHA256
-	session.mu.Lock()
-	closed, installed := session.closed, session.leakCheckIndexSHA256 == digest
-	session.mu.Unlock()
-	// A connection that has closed since is replaced by one whose own start, or the poll's next
-	// push, carries the index.
-	if closed || installed {
+	d.mu.Lock()
+	current := d.sessions[session.token]
+	d.mu.Unlock()
+	if current == nil || current.podUID != session.podUID || !current.leakCheckIndex || current.installedLeakCheckIndex() == digest {
 		return nil
 	}
 	name := fmt.Sprintf("the leak check index %s built at %s", digest[:12], index.BuiltAt.UTC().Format(time.RFC3339))
@@ -689,6 +760,9 @@ const bundleRestoreBound = 2 * time.Minute
 // sent, a store that cannot be read and a connection that fails are each logged and left: a pod
 // that never starts is worse than one whose workspace holds only what was pushed, and the
 // launcher writes the agent its own notice of what was lost (internal/launcher's restoreWorkspace).
+// Nor does the hop take the time the start frame needs: it ends the start's reserve before the
+// start's deadline (beforeTheStart), and where no more than that is left the store is not asked,
+// so the bundle's attempt is not spent and it stays in the store.
 //
 // One attempt per bundle, and the read is it: the store records the pod this send is for before
 // it answers the body, and answers nothing for that bundle afterwards
@@ -719,7 +793,14 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		return
 	}
 	issue := session.issue
-	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
+	reserved, cancelReserve, err := d.beforeTheStart(ctx)
+	if err != nil {
+		d.log.Warn("launcher bundle: the store is not asked for a saved workspace bundle before this start, so any bundle it holds stays there and the pod starts on what was pushed",
+			"issue", issue, "launcher", token, "pod", podUID, "error", err)
+		return
+	}
+	defer cancelReserve()
+	restoring, cancel := context.WithTimeout(reserved, bundleRestoreBound)
 	defer cancel()
 	bundle, take, err := d.saved(restoring, issue, podUID, session.podCreated)
 	if err != nil {

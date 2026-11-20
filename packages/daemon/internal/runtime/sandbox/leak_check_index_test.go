@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -110,12 +111,13 @@ func (c *countedReads) Read(ctx context.Context) (leakguard.Index, error) {
 // indexLauncher is the launcher end of one fake pod launcher connection, which answers the index
 // as the pod's launcher does: it rebuilds each launcher_leak_check_index sequence, answers its last
 // slice Installed once the slices rebuild the digest they declare, and answers any slice of a
-// sequence whose digest it has installed Installed at once. It answers a start OK. It records
-// every frame it was sent and the digest of each index it installed, in order. refuse has it refuse
-// each slice of the index with that cause, and silent has it take each slice and answer none, as a
-// launcher whose install failed, or is still running when the daemon's hop ends, does. hold, when
-// set, has it close holding as the first slice of the index arrives and answer that slice only
-// once hold is closed.
+// sequence whose digest it has installed Installed at once. It answers a start OK, and answers no
+// slice of a saved workspace bundle. It records every frame it was sent and the digest of each
+// index it installed, in order, and keeps the slices it took across its connections, as one
+// launcher process does across a reconnect. refuse has it refuse each slice of the index with that
+// cause, and silent has it take each slice and answer none, as a launcher whose install failed, or
+// is still running when the daemon's hop ends, does. hold, when set, has it close holding as the
+// first slice of the index arrives and answer that slice only once hold is closed.
 type indexLauncher struct {
 	refuse        string
 	silent        bool
@@ -124,6 +126,7 @@ type indexLauncher struct {
 	mu        sync.Mutex
 	sent      []shimwire.Frame
 	installed []string
+	held      map[string]map[int][]byte
 }
 
 func (l *indexLauncher) serve(conn net.Conn) {
@@ -132,7 +135,6 @@ func (l *indexLauncher) serve(conn net.Conn) {
 		return
 	}
 	reader := shimwire.NewReader(conn)
-	held := map[string]map[int][]byte{}
 	for {
 		line, err := reader.ReadLine()
 		if err != nil {
@@ -155,7 +157,7 @@ func (l *indexLauncher) serve(conn net.Conn) {
 				<-l.hold
 				l.hold = nil
 			}
-			_ = writer.WriteFrame(l.take(held, command))
+			_ = writer.WriteFrame(l.take(command))
 		case shimwire.LauncherStart:
 			_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation})
 		}
@@ -163,7 +165,7 @@ func (l *indexLauncher) serve(conn net.Conn) {
 }
 
 // take is the answer to one slice of the index.
-func (l *indexLauncher) take(held map[string]map[int][]byte, slice shimwire.LauncherLeakCheckIndex) shimwire.LauncherLeakCheckIndexResult {
+func (l *indexLauncher) take(slice shimwire.LauncherLeakCheckIndex) shimwire.LauncherLeakCheckIndexResult {
 	answer := shimwire.LauncherLeakCheckIndexResult{ID: slice.ID, Index: slice.Index}
 	if l.refuse != "" {
 		answer.Error = l.refuse
@@ -175,17 +177,20 @@ func (l *indexLauncher) take(held map[string]map[int][]byte, slice shimwire.Laun
 		answer.OK, answer.Installed = true, true
 		return answer
 	}
-	if held[slice.ID] == nil {
-		held[slice.ID] = map[int][]byte{}
+	if l.held == nil {
+		l.held = map[string]map[int][]byte{}
 	}
-	held[slice.ID][slice.Index] = slice.Payload
-	if len(held[slice.ID]) < slice.Count {
+	if l.held[slice.ID] == nil {
+		l.held[slice.ID] = map[int][]byte{}
+	}
+	l.held[slice.ID][slice.Index] = slice.Payload
+	if len(l.held[slice.ID]) < slice.Count {
 		answer.OK = true
 		return answer
 	}
 	var body []byte
 	for index := range slice.Count {
-		body = append(body, held[slice.ID][index]...)
+		body = append(body, l.held[slice.ID][index]...)
 	}
 	if digestOf(body) != slice.SHA256 {
 		answer.Error = "the slices rebuild an index of another digest"
@@ -538,5 +543,142 @@ func TestANegativeIndexPollIsRefused(t *testing.T) {
 	opts.LeakCheckIndex, opts.LeakCheckIndexPoll = readsOf(testIndex(rigNow)), -time.Minute
 	if _, err := configure(opts); err == nil || !strings.Contains(err.Error(), "leak check index poll") {
 		t.Fatalf("configure with a poll of -1m answered %v, want the poll refused", err)
+	}
+}
+
+// testStartReserve is the reserve the start-bound tests give a launchers in place of the
+// production one (startFrameReserve): short enough that a test waits it out in about a second, and
+// long enough for a start frame and its answer over a pipe.
+const testStartReserve = time.Second
+
+// bundleSeam is a store of one saved workspace bundle for any pod, counting how often it was
+// asked for it: each ask is the bundle's one restore attempt spent.
+type bundleSeam struct{ takes atomic.Int32 }
+
+func (b *bundleSeam) take(context.Context, string, string, time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	b.takes.Add(1)
+	return savedWorkspaceBundle(), runtime.WorkspaceBundleSend, nil
+}
+
+func (b *bundleSeam) restored(context.Context, string, int64) error { return nil }
+
+// reserveLaunchers is a launchers with a saved bundle in seam (none where seam is nil), the newest
+// index read from reader, and testStartReserve.
+func reserveLaunchers(t *testing.T, reader LeakCheckIndexReader, seam *bundleSeam, log *lockedLog) *launchers {
+	t.Helper()
+	d := newLaunchers(nil, nil, nil, nil, nil, slogTo(log))
+	if seam != nil {
+		d.saved, d.restored = seam.take, seam.restored
+	}
+	d.leakCheckIndex = reader
+	d.startReserve = testStartReserve
+	d.refreshLeakCheckIndex(context.Background())
+	return d
+}
+
+// A hop the start sends before its start frame and never stops on leaves the start its reserve:
+// a launcher that answers no slice of it, under a start whose own time is shorter than the hop's
+// bound, still gets its start frame and answers it. The index's push and the saved bundle's each
+// end the reserve before the start's deadline.
+func TestASilentHopLeavesTheStartItsReserve(t *testing.T) {
+	for name, tc := range map[string]struct {
+		launcher *indexLauncher
+		seam     *bundleSeam
+		takes    bool
+		hop      string
+	}{
+		"the launcher answers no slice of the index":            {launcher: &indexLauncher{silent: true}, takes: true, hop: shimwire.TypeLauncherLeakCheckIndex},
+		"the launcher answers no slice of the saved bundle hop": {launcher: &indexLauncher{}, seam: &bundleSeam{}, hop: shimwire.TypeLauncherBundle},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs lockedLog
+			d := reserveLaunchers(t, readsOf(testIndex(rigNow)), tc.seam, &logs)
+			connectIndexLauncher(t, d, workerToken, "uid-pod-silent", tc.takes, tc.launcher)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*testStartReserve)
+			defer cancel()
+
+			if err := d.start(ctx, workerToken, "uid-pod-silent", shimwire.LauncherStart{ID: "start-after-silence", Generation: 1, Argv: []string{"true"}}); err != nil {
+				t.Fatalf("the start failed with %v, want it sent and answered within its reserve", err)
+			}
+			frames := tc.launcher.frames()
+			if countOf(frames, tc.hop) == 0 || countOf(frames, shimwire.TypeLauncherStart) != 1 || frames[len(frames)-1].FrameType() != shimwire.TypeLauncherStart {
+				t.Fatalf("the launcher was sent %v, want a slice of %s and then the start", frameTypes(frames), tc.hop)
+			}
+			if text := logs.String(); !strings.Contains(text, "level=WARN") {
+				t.Fatalf("the daemon logged %q, want a warning for the hop that did not end", text)
+			}
+		})
+	}
+}
+
+// A start with no more than its reserve left sends neither hop: no slice of the index, and no
+// slice of a saved bundle, whose one restore attempt it does not spend, since the store is not
+// asked. It sends its start frame, and says why it sent nothing before it.
+func TestAStartWithNoMoreThanItsReserveLeftSendsNeitherHop(t *testing.T) {
+	var logs lockedLog
+	seam := &bundleSeam{}
+	d := reserveLaunchers(t, readsOf(testIndex(rigNow)), seam, &logs)
+	d.startReserve = time.Minute
+	l := &indexLauncher{}
+	connectIndexLauncher(t, d, workerToken, "uid-pod-late", true, l)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 30*time.Second, time.Second))
+	defer cancel()
+
+	if err := d.start(ctx, workerToken, "uid-pod-late", shimwire.LauncherStart{ID: "start-with-little-left", Generation: 1, Argv: []string{"true"}}); err != nil {
+		t.Fatalf("the start: %v", err)
+	}
+	if frames := l.frames(); len(frames) != 1 || frames[0].FrameType() != shimwire.TypeLauncherStart {
+		t.Fatalf("the launcher was sent %v, want its start alone", frameTypes(frames))
+	}
+	if takes := seam.takes.Load(); takes != 0 {
+		t.Fatalf("the store was asked for the saved bundle %d time(s), want none: each ask spends its one restore attempt", takes)
+	}
+	if text := logs.String(); strings.Count(text, "level=WARN") != 2 {
+		t.Fatalf("the daemon logged %q, want a warning for each hop it did not send", text)
+	}
+}
+
+// A push the poll began for a launcher connection that has since been replaced goes to the token's
+// current connection, as each slice's request does, and holds the token's one push turn while it
+// runs: a start on the replacement waits for it, finds the index installed, and sends its start
+// alone. The launcher process is the same across the reconnect, so it keeps the slices it took.
+func TestAPushForAReplacedConnectionHoldsTheTokensTurn(t *testing.T) {
+	a := testIndex(rigNow)
+	var logs lockedLog
+	d := indexLaunchers(readsOf(a), &logs)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+	defer cancel()
+	d.refreshLeakCheckIndex(ctx)
+	l := &indexLauncher{hold: make(chan struct{}), holding: make(chan struct{})}
+	replaced := connectIndexLauncher(t, d, workerToken, "uid-pod-reconnect", true, l)
+	current := connectIndexLauncher(t, d, workerToken, "uid-pod-reconnect", true, l)
+
+	pushed := make(chan error, 1)
+	go func() { pushed <- d.serveLeakCheckIndex(ctx, replaced) }()
+	select {
+	case <-l.holding:
+	case err := <-pushed:
+		t.Fatalf("the push for the replaced connection ended (%v) having sent %v, want it pushed to the token's current connection", err, frameTypes(l.frames()))
+	}
+	started := make(chan error, 1)
+	go func() {
+		started <- d.start(ctx, workerToken, "uid-pod-reconnect", shimwire.LauncherStart{ID: "start-on-the-replacement", Generation: 1, Argv: []string{"true"}})
+	}()
+	// A start that did not wait for the token's turn would send a slice of its own while the
+	// push's first is held; it is given the time to before the push goes on.
+	time.Sleep(50 * time.Millisecond)
+	close(l.hold)
+	if err := <-pushed; err != nil {
+		t.Fatalf("the push: %v", err)
+	}
+	if err := <-started; err != nil {
+		t.Fatalf("the start: %v", err)
+	}
+	frames := l.frames()
+	if len(frames) < 3 || countOf(frames, shimwire.TypeLauncherLeakCheckIndex) != len(frames)-1 || frames[len(frames)-1].FrameType() != shimwire.TypeLauncherStart {
+		t.Fatalf("the launcher was sent %v, want each slice of the index once and then the start", frameTypes(frames))
+	}
+	if held := current.installedLeakCheckIndex(); held != digestOf(a.Body) {
+		t.Fatalf("the daemon holds the current connection on %q, want %s", held, digestOf(a.Body))
 	}
 }
