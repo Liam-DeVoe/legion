@@ -12,6 +12,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -19,8 +20,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -454,17 +457,63 @@ func stubLauncher(t *testing.T, pid int, err error) {
 }
 
 // fixedLauncher makes this test process's parent its launcher: a real ancestor, since the
-// command checks that the root the helper answers is one. It returns that pid.
+// command checks that the root the helper answers is one. It returns that pid. The row must run
+// belowLaunchers first, so that parent is a shell the row started rather than whatever runs the
+// test.
 func fixedLauncher(t *testing.T) int {
 	t.Helper()
+	if os.Getenv(launcherChainEnv) != t.Name() {
+		t.Fatalf("%s names its parent as the launcher without running belowLaunchers first", t.Name())
+	}
 	launcher := os.Getppid()
 	stubLauncher(t, launcher, nil)
 	return launcher
 }
 
+// launcherChainEnv names the row a run of this test binary that belowLaunchers started is for.
+const launcherChainEnv = "AGENT_SECRETS_TEST_BELOW_LAUNCHERS"
+
+// belowLaunchers runs the calling row again in a process two shells below this one and answers
+// true in that run, which goes on with the row; elsewhere it waits for that run, fails the row
+// unless that run passed it, and answers false, so the row returns. The shells are real ancestors
+// the row can name whatever runs the test, the nearer one as the session launcher and the farther
+// one as a root above it. A row that named the test process's own parent and grandparent failed
+// where the runner is the first process of its PID namespace (a `go test` in a container with no
+// init, whose test binary's parent is pid 1, or a shell there, whose parent is 0), since the
+// command walks no ancestor at pid 1 or below (walkAncestors). The run is bounded by the test's
+// own deadline, less a second to report it.
+func belowLaunchers(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv(launcherChainEnv) == t.Name() {
+		return true
+	}
+	ctx := context.Background()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-time.Second))
+		defer cancel()
+	}
+	// Each shell runs the next command as a child and waits for it, rather than exec it, since
+	// another command follows it.
+	run := exec.CommandContext(ctx, "sh", "-c", `sh -c '"$@"; exit $?' sh "$@"; exit $?`, "sh",
+		os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v")
+	run.Env = append(os.Environ(), launcherChainEnv+"="+t.Name())
+	run.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	run.Cancel = func() error { return syscall.Kill(-run.Process.Pid, syscall.SIGKILL) }
+	run.WaitDelay = time.Second
+	out, err := run.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- PASS: "+t.Name()+" (") {
+		t.Fatalf("%s, run two shells below this process: %v\n%s", t.Name(), err, out)
+	}
+	return false
+}
+
 // TestRegisterWithoutExecPrintsRuntimeEnrollmentState covers register's contract without
 // --exec: "<runtime_id>\t<enrollment_id>\t<state>" on stdout, exit 0.
 func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -484,6 +533,9 @@ func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
 // checks for the other forms that print an enrollment. It is here because register without
 // --exec takes the helper's answer only for a root above this process, which only Linux can check.
 func TestRegisterPrintsTheBrokersEnrollmentOnOneLine(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelperByOp(t, map[string]helper.Response{"register": {OK: true, RuntimeID: forged, EnrollmentID: forged, State: forged, RootPID: launcher}})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -497,6 +549,9 @@ func TestRegisterPrintsTheBrokersEnrollmentOnOneLine(t *testing.T) {
 // TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero: with no positive --wait, a confirmed root
 // whose session is still enrolling is printed as that state, and the command exits 0.
 func TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -511,6 +566,9 @@ func TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero(t *testing.T) {
 // never pin its own process, which ends with the command) and names the session launcher it found
 // above itself as the root to pin. The fields go on the wire as attach and root_pid.
 func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	launcher := fixedLauncher(t)
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -537,6 +595,9 @@ func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
 // already (one `register --exec -- claude` started, say). Its answer for that session, rooted
 // above this process, is printed, and the command exits 0.
 func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	stubLauncher(t, 0, errNoLauncher)
 	root := os.Getppid()
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: root})
@@ -561,10 +622,13 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 // helper answers that session, rooted above the launcher this command named. A root that is an
 // ancestor of this process is this session's, so the command prints it and exits 0.
 func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	launcher := fixedLauncher(t)
 	above := parentPID(t, launcher)
 	if above <= 1 {
-		t.Fatalf("the test process's parent %d has no parent above init (%d), so this test cannot name a root above it", launcher, above)
+		t.Fatalf("the launcher %d, a shell this row started, has no parent above init (%d), so this test cannot name a root above it", launcher, above)
 	}
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: above})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -579,6 +643,9 @@ func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
 // which ends with the command, and says nothing about the root it pinned. Its `enrolled` is
 // never printed as success: the command refuses, naming the helper and the relaunch.
 func TestRegisterRefusesAHelperThatNamesNoRoot(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled"})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -596,6 +663,9 @@ func TestRegisterRefusesAHelperThatNamesNoRoot(t *testing.T) {
 // above this command — the command's own process, which ends with it, or a child of it — is not
 // this session's root, so its `enrolled` is never printed.
 func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	fixedLauncher(t)
 	child := exec.Command("sleep", "30")
 	if err := child.Start(); err != nil {
@@ -624,6 +694,9 @@ func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
 // TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled covers "exits 1 if --wait was given
 // and state isn't enrolled": the state is printed, and stderr says it is not enrolled yet and why.
 func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -639,6 +712,9 @@ func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
 // ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
 // up by starting the helper with no settings registers its sessions without exporting the variable.
 func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
+	if !belowLaunchers(t) {
+		return
+	}
 	launcher := fixedLauncher(t)
 	runtimeDir := shortTempDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)

@@ -91,6 +91,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testproc"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -541,31 +542,22 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 	return launchedPrompt{}
 }
 
-// ompChildOf is the pid of the Oh My Pi the shim at pid shim started: the live process whose
-// PPid is that shim and whose argv[0] is the binary LEGION_OMP_PATH names. /proc is walked
-// rather than /proc/<pid>/task/<tid>/children read, because that file lists only the children
-// one thread of the process forked, and the Go shim forks from whichever of its threads runs
-// exec.Command: measured in a gVisor pod, the shim's main thread listed no child while another
-// of its threads listed its Oh My Pi. A process that ends between the two reads is passed over,
-// as a walk of /proc must do.
+// ompChildOf is the pid of the Oh My Pi the shim at pid shim started: the live child of that shim
+// whose argv[0] is the binary LEGION_OMP_PATH names. The shim's children are read from the
+// children file of each of its threads (testproc.Children), since each lists only the children
+// that one thread forked, and the Go shim forks from whichever of its threads runs exec.Command:
+// measured in a gVisor pod, the shim's main thread listed no child while another of its threads
+// listed its Oh My Pi. A child that ends between the two reads is passed over.
 func (r *rolePromptRuleLive) ompChildOf(token claim.Token, shim int) int {
 	t := r.t
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	children, err := testproc.Children(shim)
 	if err != nil {
-		t.Fatalf("read /proc to find the Oh My Pi %s's shim (pid %d) started: %v", token, shim, err)
+		t.Fatalf("read the children of %s's shim (pid %d) to find the Oh My Pi it started: %v", token, shim, err)
 	}
 	var ofTheShim []string
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == shim {
-			continue
-		}
-		status, err := os.ReadFile("/proc/" + entry.Name() + "/status")
-		if err != nil || parentOf(string(status)) != shim {
-			continue
-		}
-		raw, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+	for _, pid := range children {
+		raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
 		if err != nil {
 			continue
 		}
@@ -580,22 +572,6 @@ func (r *rolePromptRuleLive) ompChildOf(token claim.Token, shim int) int {
 	}
 	t.Fatalf("the shim of %s (pid %d) has no live child whose argv[0] is %s, the Oh My Pi this run launches; its children are %v, and that pane's own output is under %s",
 		token, shim, r.omp, ofTheShim, r.rt.paneLogs)
-	return 0
-}
-
-// parentOf is the PPid a /proc/<pid>/status holds, or 0 when it holds none.
-func parentOf(status string) int {
-	for _, line := range strings.Split(status, "\n") {
-		rest, found := strings.CutPrefix(line, "PPid:")
-		if !found {
-			continue
-		}
-		parent, err := strconv.Atoi(strings.TrimSpace(rest))
-		if err != nil {
-			return 0
-		}
-		return parent
-	}
 	return 0
 }
 

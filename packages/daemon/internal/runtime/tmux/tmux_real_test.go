@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testproc"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -681,37 +682,23 @@ func procEnviron(t *testing.T, pid int) map[string]string {
 	return env
 }
 
-// descendant is the first process under root, walking children breadth first, whose argv[0] is
-// named name — how the Stage 2 proof finds a pane's OMP.
+// descendant is the first process under root, root itself first and then its descendants breadth
+// first, whose argv[0] is named name — how the Stage 2 proof finds a pane's OMP. The tree is read
+// from the children files below root (testproc.Descendants), which read no other process of the
+// machine.
 func descendant(t *testing.T, root int, name string) int {
 	t.Helper()
 	found := 0
 	eventually(t, 20*time.Second, name+" under pid "+strconv.Itoa(root), func() bool {
-		children := map[int][]int{}
-		entries, _ := os.ReadDir("/proc")
-		for _, entry := range entries {
-			pid, err := strconv.Atoi(entry.Name())
-			if err != nil {
-				continue
-			}
-			stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-			if err != nil {
-				continue
-			}
-			fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
-			if ppid, err := strconv.Atoi(fields[1]); err == nil {
-				children[ppid] = append(children[ppid], pid)
-			}
+		below, err := testproc.Descendants(root)
+		if err != nil {
+			t.Fatalf("read the processes under pid %d: %v", root, err)
 		}
-		queue := []int{root}
-		for len(queue) > 0 {
-			pid := queue[0]
-			queue = queue[1:]
+		for _, pid := range append([]int{root}, below...) {
 			if argv := procCmdline(pid); len(argv) > 0 && filepath.Base(argv[0]) == name {
 				found = pid
 				return true
 			}
-			queue = append(queue, children[pid]...)
 		}
 		return false
 	})
@@ -1101,9 +1088,17 @@ func TestRealTmuxSpawnThatFailsAfterOpeningItsPaneKillsThePane(t *testing.T) {
 				if tc.startTime && reads < 2 {
 					t.Fatalf("pane process %d's refused read came %d reads after its command started, not startTicks' second", pid, reads)
 				}
+				// The pane process has ended once its own stat says so: no entry, or state Z or X.
+				// The tmux server that started it exits with its last pane, so the process is an
+				// orphan by then, and where this test's runner is PID 1 of its namespace nothing
+				// reaps it: its zombie stays, and an entry alone is no process that still runs.
 				deadline := time.Now().Add(10 * time.Second)
 				for {
-					if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); os.IsNotExist(err) {
+					ended, err := testproc.Ended(pid)
+					if err != nil {
+						t.Fatalf("read pane process %d's state: %v", pid, err)
+					}
+					if ended {
 						break
 					}
 					if time.Now().After(deadline) {

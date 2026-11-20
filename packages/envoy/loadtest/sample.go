@@ -306,34 +306,56 @@ func procAlive(pid int) bool {
 	return ok && st.state != "Z" && st.state != "X"
 }
 
-// childrenOf lists the live processes whose parent is pid.
-func childrenOf(pid int) []int {
-	ents, _ := os.ReadDir("/proc")
+// childrenOf lists the processes whose parent is pid: the union of /proc/<pid>/task/<tid>/children
+// over every thread of pid, since each of those files lists only the children that one thread
+// forked (proc(5)). It reads pid's own files alone, where a walk of /proc would read the stat of
+// every process of the machine at each sample. A child not yet reaped is listed too, and its time
+// counts until its parent reaps it into the reaped-child time. An error is a pid whose children
+// could not be read, which must not read as one with none: its task listing failed, or no thread
+// of it had a children file (a kernel without CONFIG_PROC_CHILDREN has none).
+func childrenOf(pid int) ([]int, error) {
+	task := fmt.Sprintf("/proc/%d/task", pid)
+	threads, err := os.ReadDir(task)
+	if err != nil {
+		return nil, err
+	}
 	var out []int
-	for _, e := range ents {
-		child, err := strconv.Atoi(e.Name())
+	read := 0
+	for _, thread := range threads {
+		listed, err := os.ReadFile(task + "/" + thread.Name() + "/children")
 		if err != nil {
-			continue
+			continue // the thread ended after the listing
 		}
-		if st, ok := readProcStat(child); ok && st.ppid == pid {
-			out = append(out, child)
+		read++
+		for _, field := range strings.Fields(string(listed)) {
+			if child, err := strconv.Atoi(field); err == nil {
+				out = append(out, child)
+			}
 		}
 	}
-	return out
+	if read == 0 {
+		return nil, fmt.Errorf("no thread of pid %d has a children file under %s", pid, task)
+	}
+	return out, nil
 }
 
 // postgresUsage is the stack's Postgres CPU and RSS: the postmaster, its live children (the
 // backends and background workers) and the postmaster's reaped-child time, which holds the CPU
 // of backends that have exited. Only the stack's own postmaster counts, never every process
-// named postgres on the box.
+// named postgres on the box. It is no reading (ok false) where the postmaster's children cannot
+// be read, since their time is most of Postgres's.
 func postgresUsage(postmaster int) (ticks, rssKiB float64, ok bool) {
 	st, ok := readProcStat(postmaster)
 	if !ok {
 		return 0, 0, false
 	}
+	children, err := childrenOf(postmaster)
+	if err != nil {
+		return 0, 0, false
+	}
 	ticks = st.utime + st.stime + st.cutime + st.cstime
 	rssKiB = procRSS(postmaster)
-	for _, child := range childrenOf(postmaster) {
+	for _, child := range children {
 		if c, ok := readProcStat(child); ok {
 			ticks += c.utime + c.stime
 			rssKiB += procRSS(child)

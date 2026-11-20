@@ -263,6 +263,52 @@ type promptTerminal struct {
 	mayBeBackground bool
 	notice          error // why the entry was refused, for onDiscard once the reader holds the terminal; nil for no notice
 	applied         bool  // whether t.current and bracketed paste are already in effect
+	// orphanCheck is the check of whether this process's group is orphaned that waitForeground
+	// started and has not had the answer of yet (groupOrphaned), or nil.
+	orphanCheck chan orphanAnswer
+}
+
+// orphanAnswer is processGroupOrphaned's answer.
+type orphanAnswer struct {
+	orphaned bool
+	err      error
+}
+
+// orphanWait is how long one pass of waitForeground waits for its orphan check before it goes on
+// with the rest of the pass: the 50 ms the wait rechecks the foreground at.
+const orphanWait = 50 * time.Millisecond
+
+// errOrphanCheckUnfinished is waitForeground's answer when the value deadline, the bound of the
+// whole read, passes while its check of whether this process's group is orphaned has not answered
+// (groupOrphaned): the prompt can say neither that a shell can still bring it to the foreground nor
+// that none can.
+var errOrphanCheckUnfinished = errors.New("the value deadline passed while the prompt's check of whether a shell can still bring it to the foreground, a read of every process's stat on Linux, had not ended")
+
+// groupOrphaned answers whether this process's group is orphaned (processGroupOrphaned), and pending
+// while that check has not answered. On Linux the check may read the stat of every process of the
+// machine, and Go cannot interrupt a read once it blocks, so it runs on a goroutine of its own and
+// each call waits for it at most orphanWait: the wait for the foreground goes on answering its
+// events, its foreground check and its value deadline whatever the check does. A check still
+// running is waited on again by the next call rather than started a second time; one the prompt
+// ends before has a buffered channel to answer into and ends with its read.
+func (t *promptTerminal) groupOrphaned() (orphaned, pending bool, err error) {
+	if t.orphanCheck == nil {
+		check := make(chan orphanAnswer, 1)
+		go func() {
+			orphaned, err := processGroupOrphaned()
+			check <- orphanAnswer{orphaned, err}
+		}()
+		t.orphanCheck = check
+	}
+	timer := time.NewTimer(orphanWait)
+	defer timer.Stop()
+	select {
+	case answer := <-t.orphanCheck:
+		t.orphanCheck = nil
+		return answer.orphaned, false, answer.err
+	case <-timer.C:
+		return false, true, nil
+	}
 }
 
 // apply puts the reader's mode and bracketed paste in effect. One resume can reach here more than
@@ -474,13 +520,18 @@ func (t *promptTerminal) waitForeground() error {
 		}
 		// No shell can hand an orphaned group the terminal (its starting shell has
 		// gone), and the kernel discards the stops it would take, so waiting would
-		// never end.
-		if orphaned, err := processGroupOrphaned(); err != nil {
+		// never end. A check that has not answered yet is neither: the wait goes on.
+		orphaned, pending, err := t.groupOrphaned()
+		if err != nil {
 			return err
-		} else if orphaned {
+		}
+		if orphaned {
 			return errNoForeground
 		}
 		if !t.deadline.IsZero() && !time.Now().Before(t.deadline) {
+			if pending {
+				return errOrphanCheckUnfinished
+			}
 			return errValueTimedOut
 		}
 		// fg need not send SIGCONT to a job that bg already left running, so the

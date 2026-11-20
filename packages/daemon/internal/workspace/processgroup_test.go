@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testproc"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // hangingServer accepts an HTTPS connection and never writes a byte of response: git's
@@ -102,29 +106,30 @@ func TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires(t *testing.T) {
 	}
 }
 
-// gitProcessesUnder scans /proc for a process whose command line names marker (server.URL, the
+// gitProcessesUnder reads every process's command line for one that names marker (server.URL, the
 // one local address the fetch's clone and git-remote-https both reach): a git or git-remote-https
-// process orphaned by a timeout that killed only its parent would still show up this way. A
-// request's own CredentialDir never appears in any git argv — the credential helper reaches git
-// through GIT_CONFIG_VALUE_1 (clone.go), not a path — so scanning for it finds nothing whether or
-// not a process leaked.
+// process orphaned by a timeout that killed only its parent would still show up this way, and its
+// parent has gone, so no process this test knows leads to it. A request's own CredentialDir never
+// appears in any git argv — the credential helper reaches git through GIT_CONFIG_VALUE_1
+// (clone.go), not a path — so scanning for it finds nothing whether or not a process leaked. The
+// walk (testproc.Matching) is held to the bound one wait of the daemon's tests takes
+// (testwait.Bounded of a minute, less a second of the test binary's deadline), and a walk that
+// ends there fails the test naming it.
 func gitProcessesUnder(t *testing.T, marker string) []string {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
+	if _, err := os.Stat("/proc/self/cmdline"); err != nil {
 		t.Skipf("/proc unavailable: %v", err)
 	}
+	ctx, cancel := context.WithTimeoutCause(context.Background(), testwait.Bounded(t, time.Minute, time.Second),
+		errors.New("gitProcessesUnder's bound, testwait.Bounded of a minute"))
+	defer cancel()
+	running, err := testproc.Matching(ctx, func(p testproc.Process) bool { return strings.Contains(p.CommandLine(), marker) })
+	if err != nil {
+		t.Fatal(err)
+	}
 	var found []string
-	for _, entry := range entries {
-		cmdline, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
-		if err != nil {
-			continue
-		}
-		args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-		joined := strings.Join(args, " ")
-		if strings.Contains(joined, marker) {
-			found = append(found, fmt.Sprintf("pid %s: %s", entry.Name(), joined))
-		}
+	for _, p := range running {
+		found = append(found, fmt.Sprintf("pid %d: %s", p.PID, p.CommandLine()))
 	}
 	return found
 }

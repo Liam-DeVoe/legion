@@ -12,4 +12,4 @@ import (
 func inOwnGroup(*exec.Cmd) {}
 
 // waitGroup has no group to wait for on a system that is not Unix.
-func waitGroup(context.Context, *exec.Cmd) bool { return true }
+func waitGroup(context.Context, *exec.Cmd) error { return nil }

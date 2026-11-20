@@ -31,7 +31,9 @@ var discardInput = func(fd int) error {
 // (kernel/exit.c, will_become_orphaned_pgrp): no member but a zombie has a parent in another group
 // of the same session. No shell can then hand the group the terminal. The shell that started the
 // job is usually the parent of this process or of a wrapper in its group, so the walk up its
-// ancestors settles it in a few reads; only a group no ancestor holds is scanned for in /proc.
+// ancestors settles it in a few reads; only a group no ancestor holds is scanned for in /proc, a
+// read of the stat of every process of the machine, which its caller holds off the prompt's wait
+// and its value deadline (promptTerminal.groupOrphaned).
 func processGroupOrphaned() (bool, error) {
 	self, err := readProcStat(unix.Getpid())
 	if err != nil {

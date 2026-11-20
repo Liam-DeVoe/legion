@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -1032,28 +1033,24 @@ func TestWorkspaceInitHoldEndsWithItsTest(t *testing.T) {
 }
 
 // killProcessesRunning is every process whose command line names path, as "pid <n>: <argv>", each
-// killed once found so a failing run leaves none behind.
+// killed once found so a failing run leaves none behind. A fake jj left running is an orphan, whose
+// parent, workspace-init, has gone, so no process this test knows leads to it and every process's
+// command line is read (testproc.Matching). That walk is held to the bound one wait of this
+// package's tests takes (testwait.Bounded of a minute, less a second of the test binary's deadline),
+// and a walk that ends there fails the test naming it.
 func killProcessesRunning(t *testing.T, path string) []string {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	ctx, cancel := context.WithTimeoutCause(context.Background(), testwait.Bounded(t, time.Minute, time.Second),
+		errors.New("killProcessesRunning's bound, testwait.Bounded of a minute"))
+	defer cancel()
+	running, err := testproc.Matching(ctx, func(p testproc.Process) bool { return strings.Contains(p.CommandLine(), path) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	var found []string
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		cmdline, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
-		if err != nil {
-			continue
-		}
-		argv := strings.ReplaceAll(strings.TrimRight(string(cmdline), "\x00"), "\x00", " ")
-		if strings.Contains(argv, path) {
-			found = append(found, "pid "+entry.Name()+": "+argv)
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
+	for _, p := range running {
+		found = append(found, "pid "+strconv.Itoa(p.PID)+": "+p.CommandLine())
+		_ = syscall.Kill(p.PID, syscall.SIGKILL)
 	}
 	return found
 }

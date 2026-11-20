@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/testproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -599,34 +601,35 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 	return nil
 }
 
+// detachedWait is how long detachedProcess waits for the detached command to go once the role's
+// init has exited, the ten seconds this check gave it before its walks were bounded: the kernel
+// ends every process of a PID namespace as its init exits, so the command goes within a
+// scheduling delay of that exit.
+const detachedWait = 10 * time.Second
+
 // detachedProcess says whether any process of the machine still runs the detached command the
-// role started, once the role's init has exited.
+// role started, once the role's init has exited: "gone", "running", or "unreadable: " and why. The
+// role's namespace has gone with its init, so no process the test knows leads to the command, and
+// each look reads every process's command line (testproc.Matching). Each look is held to what is
+// left of detachedWait, and one that has not ended by then answers unreadable, naming that bound,
+// rather than gone or running.
 func detachedProcess(marker string) string {
-	var unreadable string
-	gone := testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
-		entries, err := os.ReadDir("/proc")
+	ctx, cancel := context.WithTimeoutCause(context.Background(), detachedWait, errors.New("detachedProcess's bound, detachedWait"))
+	defer cancel()
+	for {
+		found, err := testproc.Matching(ctx, func(p testproc.Process) bool { return strings.Contains(p.CommandLine(), marker) })
 		if err != nil {
-			unreadable = "unreadable: " + err.Error()
-			return true
+			return "unreadable: " + err.Error()
 		}
-		for _, entry := range entries {
-			if _, err := strconv.Atoi(entry.Name()); err != nil {
-				continue
-			}
-			body, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
-			if err == nil && strings.Contains(string(body), marker) {
-				return false
-			}
+		if len(found) == 0 {
+			return "gone"
 		}
-		return true
-	})
-	if unreadable != "" {
-		return unreadable
+		select {
+		case <-ctx.Done():
+			return "running"
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
-	if gone {
-		return "gone"
-	}
-	return "running"
 }
 
 // TestRoleInitAgentHelper is the worker shim's stand-in: the process role-init starts inside the

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testproc"
 )
 
 // The live test's environment. TestMemoryGuardLiveSandbox runs only where liveEnv is 1, which the
@@ -884,7 +886,10 @@ func (s *liveSampler) take() error {
 	if err != nil {
 		return err
 	}
-	top := s.largest(shmem)
+	top, err := s.largest(shmem)
+	if err != nil {
+		return err
+	}
 	text := fmt.Sprintf("sample anon_pages=%d counter=%d shmem=%d pid=%d anonymous=%d size=%d vm_rss=%d at=%s",
 		anon, counter, shmem, top.pid, top.anonymous, top.size, top.vmRSS, liveTime(at))
 	s.out.write(text)
@@ -915,19 +920,23 @@ type liveProcess struct {
 }
 
 // largest is the scenario's largest process by the guard's own rule, among its root and the
-// root's descendants by their PPid chain: each one's smaps size, and the memfds it holds open by
-// a descriptor that none of them maps and no larger one of them holds, each at its size or shmem,
-// the sample's Shmem reading, whichever is less, ranked as the guard ranks them (addHeldMemfds),
-// so a process that grows a memfd it never maps shows that memfd's size up to Shmem. pid 0 when
-// none could be read.
-func (s *liveSampler) largest(shmem uint64) liveProcess {
+// root's descendants: each one's smaps size, and the memfds it holds open by a descriptor that
+// none of them maps and no larger one of them holds, each at its size or shmem, the sample's Shmem
+// reading, whichever is less, ranked as the guard ranks them (addHeldMemfds), so a process that
+// grows a memfd it never maps shows that memfd's size up to Shmem. pid 0 when none could be read;
+// an error when the processes below the root could not be (liveDescendants).
+func (s *liveSampler) largest(shmem uint64) (liveProcess, error) {
 	if s.memfds == nil {
 		s.memfds = map[memfdID]bool{}
 	}
 	clear(s.memfds)
+	family, err := liveDescendants(s.root)
+	if err != nil {
+		return liveProcess{}, err
+	}
 	var read []candidate
 	anonymous := map[int]uint64{}
-	for _, p := range liveDescendants(s.root) {
+	for _, p := range family {
 		data, err := readAll(filepath.Join(liveProc, strconv.Itoa(p.PID), "smaps"), s.smaps)
 		s.smaps = data
 		if err != nil {
@@ -937,51 +946,54 @@ func (s *liveSampler) largest(shmem uint64) liveProcess {
 		anonymous[p.PID] = smapsAnonymous(data)
 	}
 	if len(read) == 0 {
-		return liveProcess{}
+		return liveProcess{}, nil
 	}
 	addHeldMemfds(read, liveProc, memfdPrefix, s.memfds, shmem)
 	top := liveProcess{pid: read[0].PID, anonymous: anonymous[read[0].PID], size: read[0].size}
 	if status, err := os.ReadFile(filepath.Join(liveProc, strconv.Itoa(top.pid), "status")); err == nil {
 		top.vmRSS, _ = meminfoBytes(status, "VmRSS")
 	}
-	return top
+	return top, nil
 }
 
-// liveDescendants is root and every process whose PPid chain leads to it, each as its stat reads
-// (the root by its pid alone where its stat cannot be read).
-func liveDescendants(root int) []*Process {
-	procs := map[int]*Process{root: {PID: root}}
-	entries, err := os.ReadDir(liveProc)
+// liveDescendants is root and every process below it, read from the children files of each
+// (testproc.Descendants), so no other process of the machine is read; each as its stat reads, the
+// root by its pid alone where its stat cannot be read, and a descendant that ended between the
+// reads passed over. A root that has been reaped is that root alone, as it was; any other failure
+// to read the tree is an error, which the sample fails with rather than read as a root with no
+// process below it.
+func liveDescendants(root int) ([]*Process, error) {
+	below, err := testproc.Descendants(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []*Process{{PID: root}}, nil
+	}
 	if err != nil {
-		return []*Process{procs[root]}
+		return nil, fmt.Errorf("read the processes below the scenario's root %d: %w", root, err)
 	}
-	children := map[int][]int{}
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 0 {
-			continue
-		}
-		stat, err := os.ReadFile(filepath.Join(liveProc, entry.Name(), "stat"))
-		if err != nil {
-			continue
-		}
-		if p, err := parseStat(stat); err == nil {
-			p.PID = pid
-			procs[pid] = p
-			children[p.PPID] = append(children[p.PPID], pid)
+	family := []*Process{{PID: root}}
+	if p, ok := liveStat(root); ok {
+		family[0] = p
+	}
+	for _, pid := range below {
+		if p, ok := liveStat(pid); ok {
+			family = append(family, p)
 		}
 	}
-	seen := map[int]bool{root: true}
-	family := []*Process{procs[root]}
-	for i := 0; i < len(family); i++ {
-		for _, child := range children[family[i].PID] {
-			if !seen[child] {
-				seen[child] = true
-				family = append(family, procs[child])
-			}
-		}
+	return family, nil
+}
+
+// liveStat is pid as its stat reads, and false where it cannot be read.
+func liveStat(pid int) (*Process, bool) {
+	stat, err := os.ReadFile(filepath.Join(liveProc, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return nil, false
 	}
-	return family
+	p, err := parseStat(stat)
+	if err != nil {
+		return nil, false
+	}
+	p.PID = pid
+	return p, true
 }
 
 // smapsAnonymous is the sum of a smaps' Anonymous lines alone, which a sample prints beside the

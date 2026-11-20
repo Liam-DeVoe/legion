@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 	"golang.org/x/sys/unix"
@@ -460,32 +461,20 @@ func roleNamespaceHolder(t *testing.T, dir, lock string) int {
 	return holder
 }
 
-// childOf is the pid of parent's one child in the container's own /proc, and 0 while it has none:
-// every process's status names its parent's pid there, which is how a process of a role's
+// childOf is the pid of parent's one child, and 0 while it has none: the child is in namespaces of
+// its own, so the container's /proc names it by its pid there, in the children file of the
+// parent's thread that forked it (testproc.Children), which is how a process of a role's
 // namespaces is found from outside them.
 func childOf(t *testing.T, parent int) int {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	children, err := testproc.Children(parent)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read the children of pid %d: %v", parent, err)
 	}
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		status, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "status"))
-		if err != nil {
-			// Gone between the read of the process table and the read of its status.
-			continue
-		}
-		for _, line := range strings.Split(string(status), "\n") {
-			if rest, ok := strings.CutPrefix(line, "PPid:"); ok && strings.TrimSpace(rest) == strconv.Itoa(parent) {
-				return pid
-			}
-		}
+	if len(children) == 0 {
+		return 0
 	}
-	return 0
+	return children[0]
 }
 
 // The launcher's first pass removes every lock of the clone that no process holds open, whatever

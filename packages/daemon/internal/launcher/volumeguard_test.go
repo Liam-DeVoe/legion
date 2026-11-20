@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/testproc"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
@@ -842,7 +843,20 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		time.Sleep(testwait.Poll)
 	}
 
-	used := readUsedPaths("/proc", []string{dir}, os.Getpid())
+	// readUsedPaths reads every process of this container's /proc, the reader under test, and a
+	// read there cannot be interrupted once it blocks: so it runs on a goroutine of its own, held to
+	// the bound one wait of this package's tests takes (testwait.Bounded of a minute, less a second
+	// of the test binary's deadline), and a walk still running then fails the test naming that
+	// bound. A walk the bound outlasts is left behind with a buffered channel to answer into.
+	walked := make(chan usedPaths, 1)
+	go func() { walked <- readUsedPaths("/proc", []string{dir}, os.Getpid()) }()
+	walkBound := testwait.Bounded(t, time.Minute, time.Second)
+	var used usedPaths
+	select {
+	case used = <-walked:
+	case <-time.After(walkBound):
+		t.Fatalf("readUsedPaths' walk of this container's /proc had not ended at this test's bound (testwait.Bounded of a minute, %s here)", walkBound)
+	}
 	if len(used.paths) == 0 {
 		t.Fatalf("the reader found no path at all in this container's /proc; refused %v", used.Refused)
 	}
@@ -865,32 +879,32 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 	// above: a task/<tid>/cwd link of this container's /proc names the directory the opener works
 	// in. Go's threads share one working directory, so no process here can hold a thread cwd its
 	// own cwd does not name; what this holds is that the entry exists and the kernel answers it.
-	if !threadCwdNames(t, tree.Cwd) {
-		t.Errorf("no task/<tid>/cwd of this container's /proc names %s, so the reader's thread entry read nothing here", tree.Cwd)
+	if !threadCwdNames(t, child.Process.Pid, tree.Cwd) {
+		t.Errorf("no task/<tid>/cwd of a process below the namespace child %d in this container's /proc names %s, so the reader's thread entry read nothing here", child.Process.Pid, tree.Cwd)
 	}
 	if used.Covers(tree.Unused) {
 		t.Errorf("Covers(%s) = true, want nothing: no process of the tree uses it, and a reader that answers yes to everything guards nothing", tree.Unused)
 	}
 }
 
-// threadCwdNames is whether any thread of any process of this container has cwd as its working
-// directory, read straight from /proc rather than through the guard.
-func threadCwdNames(t *testing.T, cwd string) bool {
+// threadCwdNames is whether any thread of a process below child, the case's child in the role's
+// namespaces, has cwd as its working directory, read straight from /proc rather than through the
+// guard. The opener that stands in cwd is one of child's descendants, so the tree below child
+// (testproc.Descendants) holds it, and no other process of the machine is read.
+func threadCwdNames(t *testing.T, child int, cwd string) bool {
 	t.Helper()
-	processes, err := os.ReadDir("/proc")
+	below, err := testproc.Descendants(child)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read the processes below the namespace child %d: %v", child, err)
 	}
-	for _, process := range processes {
-		if _, err := strconv.Atoi(process.Name()); err != nil {
-			continue
-		}
-		threads, err := os.ReadDir(filepath.Join("/proc", process.Name(), "task"))
+	for _, pid := range below {
+		task := filepath.Join("/proc", strconv.Itoa(pid), "task")
+		threads, err := os.ReadDir(task)
 		if err != nil {
 			continue
 		}
 		for _, thread := range threads {
-			if target, err := os.Readlink(filepath.Join("/proc", process.Name(), "task", thread.Name(), "cwd")); err == nil && target == cwd {
+			if target, err := os.Readlink(filepath.Join(task, thread.Name(), "cwd")); err == nil && target == cwd {
 				return true
 			}
 		}

@@ -23,7 +23,8 @@
 //     group has exited, the processes the binary leaves behind included. Elsewhere it ends when
 //     the binary's own process exits, and a process it leaves behind is not waited for;
 //   - is killed and reported when it has not ended within a minute, with every process of its
-//     group;
+//     group, and so is a run whose read of the process table for a process of its group has not
+//     answered by then: the report says that read had not ended;
 //   - counts its output as standard output and standard error together, except where a check
 //     below names standard output alone;
 //   - is the only run a contact with the recorder is counted against when the contact came while
@@ -479,8 +480,8 @@ type result struct {
 	code           int
 	stdout, stderr string
 	// failed is why the run has no exit code of its own: it did not start, it or a process of its
-	// group did not exit within runTimeout, it was ended by a signal, or the recorder's count
-	// after it could not be read.
+	// group did not exit within runTimeout, the read of the process table for its group had not
+	// ended within it, it was ended by a signal, or the recorder's count after it could not be read.
 	failed string
 	// requests and connections are what the recorder took during the run: the requests it read,
 	// and how many connections were made to it.
@@ -505,14 +506,17 @@ func (h *harness) run(args ...string) result {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	exited := ctx.Err() == nil
-	groupEnded := cmd.Process == nil || waitGroup(ctx, cmd)
+	var group error
+	if cmd.Process != nil {
+		group = waitGroup(ctx, cmd)
+	}
 	r := result{argv: h.display(args), stdout: stdout.String(), stderr: stderr.String()}
 	var exit *exec.ExitError
 	switch {
 	case !exited:
 		r.failed = fmt.Sprintf("did not exit within %s", runTimeout)
-	case !groupEnded:
-		r.failed = fmt.Sprintf("exited, but a process it started was still running %s after the run began", runTimeout)
+	case group != nil:
+		r.failed = fmt.Sprintf("exited, but at the run's bound (runTimeout), %s after it began, %v", runTimeout, group)
 	case err == nil:
 	case errors.As(err, &exit) && exit.ExitCode() >= 0:
 		r.code = exit.ExitCode()

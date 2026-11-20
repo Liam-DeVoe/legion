@@ -1083,6 +1083,12 @@ func (r *liveRig) recordSandbox(name string) error {
 
 // ---- operator steps ----------------------------------------------------------------------------
 
+// kubectlBound is how long one kubectl call of the live rig may run. It holds each shell an exec
+// runs inside a pod too, the walks of the container's /proc that roleEnter, agentPid and the
+// lifecycle checks make among them: the exec ends with its kubectl, and the call's error then
+// names this bound.
+const kubectlBound = 2 * time.Minute
+
 // kubectl runs one operator step in the namespace through the admin context. A single retry
 // absorbs the one failure mode confirmed transient here (live, 2026-10-17): the operator's
 // gke-gcloud-auth-plugin hitting a one-off "internal_failure" refreshing its token mid-run, this
@@ -1091,13 +1097,16 @@ func (r *liveRig) recordSandbox(name string) error {
 // returned as before, on the first try.
 func (r *liveRig) kubectl(args ...string) (string, error) {
 	run := func() (string, error) {
-		ctx, cancel := context.WithTimeout(r.ctx, 2*time.Minute)
+		ctx, cancel := context.WithTimeout(r.ctx, kubectlBound)
 		defer cancel()
 		full := append([]string{"--context", r.env.operatorContext, "-n", r.env.namespace}, args...)
 		var stdout, stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, "kubectl", full...)
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		if err := cmd.Run(); err != nil {
+			if ctx.Err() != nil {
+				return stdout.String(), fmt.Errorf("kubectl %s: %v, at its bound (kubectlBound, %s, or the rig's own context): %s", strings.Join(args, " "), err, kubectlBound, strings.TrimSpace(stderr.String()))
+			}
 			return stdout.String(), fmt.Errorf("kubectl %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 		}
 		return stdout.String(), nil
