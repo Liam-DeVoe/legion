@@ -68,7 +68,7 @@ import {
  * How long before an access token's expiry the client trades again, so a renewal lands with the
  * token in hand still good and nothing of the caller's restarts. The broker mints a machine's
  * token for an hour or less. A token that lives less than this, such as a restricted member's
- * machine login's five minutes, is traded again halfway through its life instead, as the Go
+ * machine login's 270 seconds, is traded again halfway through its life instead, as the Go
  * client renews one (`renewalAt`, packages/envoy/internal/brokerclient/brokerclient.go).
  */
 export const DEFAULT_RENEW_BEFORE_MS = 5 * 60_000;

@@ -100,7 +100,7 @@ test("the token in hand is reused until the renewal window, then traded again", 
   }
 });
 
-// A token that lives less than the renewal window, such as the five minutes the broker gives a
+// A token that lives less than the renewal window, such as the 270 seconds the broker gives a
 // restricted member's machine login, is reused until halfway through its life, as the Go client
 // renews one (`renewalAt`, packages/envoy/internal/brokerclient/brokerclient.go), not traded
 // again at every call: a client that renewed it at once would trade at every Dispatch request

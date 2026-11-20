@@ -157,3 +157,53 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 		t.Errorf("the full member's approve answered %d with %d decisions reaching the broker and body %q, want 200, one naming alice", response.Code, rig.decisions()-before, rig.lastBody)
 	}
 }
+
+// TestARemovalTheBrokerCannotRevokeLeavesTheMemberListed: taking a restricted member off an access
+// list revokes their machine logins at the broker in the removal's transaction
+// (revokeRestrictedMemberLogins), and fails closed. While the broker does not answer the list of
+// the member's logins, the removal is 503 MACHINE_LOGINS_NOT_REVOKED and erin stays on ACC's list,
+// so no committed removal leaves her agents' tokens alive. Once it answers, the removal revokes
+// erin's own login and no service's, whoever approved the service's, and commits.
+//
+// Control: let the removal commit whatever the broker answers (the relay's error dropped), and the
+// first row fails naming the 200 and the list without erin.
+func TestARemovalTheBrokerCannotRevokeLeavesTheMemberListed(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, _ := newAccessServerWith(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	const list = "GET /v1/launcher-credentials"
+	stillListed := func() bool {
+		t.Helper()
+		read := dispatchRequest(t, served, http.MethodGet, "/api/v1/projects/ACC/access", nil, "alice")
+		if read.Code != http.StatusOK {
+			t.Fatalf("alice reads ACC's access: %d %s", read.Code, read.Body.String())
+		}
+		return strings.Contains(read.Body.String(), accessErin)
+	}
+
+	rig.statusByRoute[list] = http.StatusServiceUnavailable
+	removed := dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice")
+	if removed.Code != http.StatusServiceUnavailable || !strings.Contains(removed.Body.String(), `"code":"MACHINE_LOGINS_NOT_REVOKED"`) || !stillListed() {
+		t.Fatalf("erin's removal while the broker does not answer = %d %s, erin still listed %t; want 503 MACHINE_LOGINS_NOT_REVOKED and erin on the list",
+			removed.Code, removed.Body.String(), stillListed())
+	}
+
+	delete(rig.statusByRoute, list)
+	rig.bodyByRoute[list] = `{"credentials":[
+		{"credential_id":"cred-erin","host":"erin-laptop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false},
+		{"credential_id":"cred-daemon","host":"cluster.example","service":"legion-daemon","subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
+	rig.routes = nil
+	removed = dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice")
+	if removed.Code != http.StatusOK || stillListed() {
+		t.Fatalf("erin's removal once the broker answers = %d %s, erin still listed %t; want 200 and erin off the list", removed.Code, removed.Body.String(), stillListed())
+	}
+	revokes := slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
+	if !slices.Equal(revokes, []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {
+		t.Errorf("the removal revoked %v, want erin's own login alone", revokes)
+	}
+}

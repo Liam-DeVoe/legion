@@ -114,11 +114,15 @@ const (
 )
 
 // RestrictedLifetime is the longest a restricted member's machine-login token lives, whatever
-// BROKER_ACCESS_TOKEN_SECONDS says when that is longer. Dispatch takes such a person off a
-// project by taking them off its access list, which a token already minted does not hear: the
-// broker's next trade does (projectaccess.Visible), so this is how long such a person goes on
-// holding a token for the project after they are taken off it, beside projectaccess.CacheTTL.
-const RestrictedLifetime = 5 * time.Minute
+// BROKER_ACCESS_TOKEN_SECONDS says when that is longer: 270 seconds. Dispatch revokes the member's
+// machine logins when it takes them off an access list, which ends every token traded from them
+// at once; this bounds the one token the revoke cannot reach, minted from a login the member
+// approves after the removal while the broker still holds Dispatch's earlier answer that they see
+// the project (projectaccess.CacheTTL, 30 s). That token ends at most 30 + 270 = 300 seconds after
+// the removal, and the edge listener's live check closes its socket within 25 seconds more, so
+// the person keeps nothing of the project past 325 seconds (TestARestrictedTokenEndsWithinTheBound
+// holds the sum).
+const RestrictedLifetime = 270 * time.Second
 
 // MaxSessionBytes is the longest session name a request may carry. A session name is written into
 // every record the token's writes produce and read back in a dashboard, so it is bounded; 200

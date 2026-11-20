@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
@@ -17,7 +18,26 @@ import (
 // restrictedLifetime is the longest a restricted member's machine-login token lives, whatever
 // BROKER_ACCESS_TOKEN_SECONDS says: the bound on how long a person taken off a project's access
 // list keeps a token for it.
-const restrictedLifetime = 300 * time.Second
+const restrictedLifetime = exchange.RestrictedLifetime
+
+// edgeLiveCheck is how long after a token ends the edge listener closes a socket it opened: its
+// 20 s check of the token plus the 5 s its verifier keeps an answer (the relay socket's contract).
+const edgeLiveCheck = 25 * time.Second
+
+// TestARestrictedTokenEndsWithinTheBound holds the arithmetic of the bound on a removal from an
+// access list: the broker's cache of Dispatch's answer that a person sees the project, then the
+// restricted token's lifetime, then the edge listener's live check, end at most 325 seconds after
+// the removal. A token traded before the removal ends at once, since Dispatch revokes the
+// person's machine logins with the removal; this is the bound for the one traded after it, from
+// the broker's earlier answer.
+//
+// Control: RestrictedLifetime at five minutes, and the sum is 355 s and the row fails naming it.
+func TestARestrictedTokenEndsWithinTheBound(t *testing.T) {
+	if sum := projectaccess.CacheTTL + exchange.RestrictedLifetime + edgeLiveCheck; sum > 325*time.Second {
+		t.Fatalf("the cache (%s), the restricted lifetime (%s) and the edge's check (%s) sum to %s, want at most 5m25s",
+			projectaccess.CacheTTL, exchange.RestrictedLifetime, edgeLiveCheck, sum)
+	}
+}
 
 // oneProjectRule is what the refusal of a restricted member's trade that names no project, or
 // several, says.
@@ -63,9 +83,10 @@ func (f *exchangeFixture) introspectedLifetime(t *testing.T, token string) time.
 // TestARestrictedMembersMachineTradeIsNamedToItsOneProject: a machine login whose approver Dispatch
 // calls a restricted member trades for a token of the named scope listing exactly the one project
 // it asked for, which Dispatch gives neither the person nor the approve scope; and the token lives
-// the lesser of five minutes and BROKER_ACCESS_TOKEN_SECONDS, by its answer's expires_in and by its
-// introspection's exp alike. A trade asking for no project, or for two, is refused naming the
-// rule, and one asking for a project the person does not see is refused as every trade is.
+// the lesser of exchange.RestrictedLifetime and BROKER_ACCESS_TOKEN_SECONDS, by its answer's
+// expires_in and by its introspection's exp alike. A trade asking for no project, or for two, is
+// refused naming the rule, and one asking for a project the person does not see is refused as
+// every trade is.
 //
 // Controls: mint the person scope in Set.Machine for every approver, and the first row fails
 // naming the scope; drop the lifetime cap with BROKER_ACCESS_TOKEN_SECONDS at 3600, and the

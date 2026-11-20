@@ -172,7 +172,7 @@ func TestATokenShorterThanRenewBeforeIsNotRenewedInALoop(t *testing.T) {
 }
 
 // TestTokenReusesAShortTokenUntilHalfwayThroughItsLife: Token reuses a token that lives less than
-// RenewBefore, such as the five minutes the broker gives a restricted member's machine login,
+// RenewBefore, such as the 270 seconds the broker gives a restricted member's machine login,
 // until halfway through what was left of its life when it landed, as Run renews one
 // (untilRenewal), rather than trading again at every call, which empties the broker's bucket.
 func TestTokenReusesAShortTokenUntilHalfwayThroughItsLife(t *testing.T) {

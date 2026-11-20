@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
@@ -116,10 +117,18 @@ func (r restrictedTokenRig) trade(t *testing.T, machine machineLogin, session, p
 	if err != nil {
 		t.Fatalf("the machine's device-code exchange: %v", err)
 	}
+	return r.exchange(t, machine, token.AccessToken, session, projects)
+}
+
+// exchange is the RFC 8693 exchange at the broker of machineToken, the machine's own login token,
+// for a session's, naming session and asking for projects, with a DPoP proof of the machine's key.
+// It answers the trade's status and body.
+func (r restrictedTokenRig) exchange(t *testing.T, machine machineLogin, machineToken, session, projects string) (int, map[string]any) {
+	t.Helper()
 	form := url.Values{
 		"grant_type":           {"urn:ietf:params:oauth:grant-type:token-exchange"},
 		"client_id":            {oauthwire.ExchangeClientID},
-		"subject_token":        {token.AccessToken},
+		"subject_token":        {machineToken},
 		"subject_token_type":   {oauthwire.SubjectTokenTypeAccessToken},
 		oauthwire.FormSession:  {session},
 		oauthwire.FormProjects: {projects},
@@ -174,7 +183,8 @@ func (r restrictedTokenRig) presenting(t *testing.T, machine machineLogin, token
 // on one deployment, end to end. erin, a restricted member, approves her own machine's device
 // login at her browser through Dispatch, which reaches the broker; her machine trades its token
 // for a session's naming ACC, and the broker answers a token of the named scope listing exactly
-// ACC that lives at most five minutes. Presented to Dispatch, that token acts for erin in ACC, and
+// ACC that lives at most exchange.RestrictedLifetime. Presented to Dispatch, that token acts for
+// erin in ACC, and
 // it neither mints a personal token (POST /api/v1/me/agent-tokens) nor approves a machine login,
 // each 403 OAUTH_SCOPE_REQUIRED, the login staying pending. Her browser approve of carol's pending
 // machine login is 403 RESTRICTED_MEMBER and leaves it pending.
@@ -204,11 +214,11 @@ func TestARestrictedMembersAgentTokenIsNamedAndNeitherMintsNorApproves(t *testin
 		t.Fatalf("erin's agent's token introspects as %+v, want a live token of project scope %s listing exactly [ACC], acting for %s",
 			answer, brokertoken.ProjectScopeNamed, accessErin)
 	}
-	if expiresIn, _ := body["expires_in"].(float64); expiresIn <= 0 || expiresIn > 300 {
-		t.Fatalf("erin's agent's token expires_in %v, want at most 300 seconds", body["expires_in"])
+	if expiresIn, _ := body["expires_in"].(float64); expiresIn <= 0 || time.Duration(expiresIn)*time.Second > exchange.RestrictedLifetime {
+		t.Fatalf("erin's agent's token expires_in %v, want at most %s", body["expires_in"], exchange.RestrictedLifetime)
 	}
-	if lifetime := time.Until(time.Unix(answer.ExpiresAt, 0)); lifetime > 300*time.Second {
-		t.Fatalf("erin's agent's token is live for %s more, want at most 5m0s", lifetime)
+	if lifetime := time.Until(time.Unix(answer.ExpiresAt, 0)); lifetime > exchange.RestrictedLifetime {
+		t.Fatalf("erin's agent's token is live for %s more, want at most %s", lifetime, exchange.RestrictedLifetime)
 	}
 
 	if acts := r.presenting(t, erins, token, http.MethodGet, "/api/v1/whoami", nil); acts.Code != http.StatusOK ||
@@ -257,5 +267,97 @@ func TestARestrictedMembersAgentTokenIsNamedAndNeitherMintsNorApproves(t *testin
 	carolsSecondRecord, _ := r.recordOf(t, accessCarol, carolsSecond)
 	if decided := r.presenting(t, carols, carolsToken, http.MethodPost, "/api/v1/credential-requests/"+carolsSecondRecord+"/approve", map[string]any{"code": carolsSecond.device.UserCode}); decided.Code != http.StatusOK {
 		t.Errorf("an approve of carol's second machine login under carol's agent's token = %d %s, want 200", decided.Code, decided.Body.String())
+	}
+}
+
+// approvedLogin is a machine login of person's, approved at person's browser through Dispatch, and
+// the device login's own token, which the machine refreshes and trades: the start of each row
+// below. It answers the launcher credential the approval minted.
+func (r restrictedTokenRig) approvedLogin(t *testing.T, person, host string) (machineLogin, *oauth2.Token, string) {
+	t.Helper()
+	machine := r.startLogin(t, person, host)
+	recordID, _ := r.recordOf(t, person, machine)
+	approved := r.approveAtBrowser(t, person, recordID, machine)
+	var decided struct {
+		CredentialID string `json:"credential_id"`
+	}
+	if approved.Code != http.StatusOK || json.Unmarshal(approved.Body.Bytes(), &decided) != nil || decided.CredentialID == "" {
+		t.Fatalf("%s's browser approve of their own machine login = %d %s, want 200 and its credential", person, approved.Code, approved.Body.String())
+	}
+	device, err := r.client.DeviceToken(t, machine.key, machine.device)
+	if err != nil {
+		t.Fatalf("%s's machine's device-code exchange: %v", person, err)
+	}
+	return machine, device, decided.CredentialID
+}
+
+// sessionToken is the session token a trade of machine's device token answered, failing the test
+// for any other answer.
+func (r restrictedTokenRig) sessionToken(t *testing.T, machine machineLogin, device *oauth2.Token, session, projects string) string {
+	t.Helper()
+	status, body := r.exchange(t, machine, device.AccessToken, session, projects)
+	token, _ := body["access_token"].(string)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("the trade for session %s naming %q = %d %v, want 200 and a token", session, projects, status, body)
+	}
+	return token
+}
+
+// TestADelistedMembersTokenIsNotRenewed: once ACC's owner takes erin, a restricted member, off
+// ACC's access list, Dispatch has revoked at the broker every machine login she approved, before
+// the removal commits. So her agent's session token introspects not active at once, the broker
+// refuses her device login's refresh and every further trade of its token, and the login is
+// revoked in the broker's own rows. A device login is not per project, so the removal from one
+// project's list ends all of hers, and she approves again for a project that still lists her.
+//
+// The control runs on the same rig: carol, a full member, is put on ACC's list and taken off it
+// again, and her token stays active and her refresh is answered, so each refusal above is the
+// delisting's and not the rig's.
+//
+// Control: drop the relay from the removal (revokeRestrictedMembersLogins answering nil at once),
+// and erin's token introspects active and her refresh is answered, each named.
+func TestADelistedMembersTokenIsNotRenewed(t *testing.T) {
+	r := newRestrictedTokenRig(t)
+	ctx := t.Context()
+
+	erins, erinsDevice, erinsCredential := r.approvedLogin(t, accessErin, "erin-laptop")
+	erinsToken := r.sessionToken(t, erins, erinsDevice, "erin-agent", "ACC")
+	if !r.introspect(t, erinsToken).Active {
+		t.Fatalf("erin's agent's token introspects not active before the removal")
+	}
+	if listed := dispatchRequest(t, r.dispatch, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessCarol, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names carol on ACC's list: %d %s", listed.Code, listed.Body.String())
+	}
+	carols, carolsDevice, _ := r.approvedLogin(t, accessCarol, "carol-laptop")
+	carolsToken := r.sessionToken(t, carols, carolsDevice, "carol-agent", "")
+
+	for _, person := range []string{accessErin, accessCarol} {
+		if removed := dispatchRequest(t, r.dispatch, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+person, nil, "alice"); removed.Code != http.StatusOK {
+			t.Fatalf("alice takes %s off ACC's list: %d %s, want 200", person, removed.Code, removed.Body.String())
+		}
+	}
+
+	if r.introspect(t, erinsToken).Active {
+		t.Errorf("erin's agent's token introspects active after her removal from ACC's list, want it ended at once")
+	}
+	// The trade first: a refresh ends the device login's earlier access tokens, so a trade after it
+	// would be refused whatever the removal did.
+	if status, body := r.exchange(t, erins, erinsDevice.AccessToken, "erin-agent-2", "ACC"); status == http.StatusOK {
+		t.Errorf("a trade of erin's device token after her removal = 200 %v, want it refused", body)
+	}
+	if refreshed, err := r.client.Refresh(t, erins.key, erinsDevice); err == nil {
+		t.Errorf("erin's device login refreshed after her removal, answering a token expiring %s; want it refused", refreshed.Expiry)
+	}
+	var revoked bool
+	if err := r.broker.Store.Pool.QueryRow(ctx, `select revoked_at is not null from launcher_credentials where id = $1::uuid`, erinsCredential).Scan(&revoked); err != nil || !revoked {
+		t.Errorf("erin's machine login %s is revoked %t (%v) after her removal, want revoked", erinsCredential, revoked, err)
+	}
+
+	// The control: carol's login is not a restricted member's, and nothing of hers ended.
+	if !r.introspect(t, carolsToken).Active {
+		t.Errorf("carol's agent's token introspects not active after her removal, want a full member's token untouched")
+	}
+	if _, err := r.client.Refresh(t, carols.key, carolsDevice); err != nil {
+		t.Errorf("carol's device login's refresh after her removal: %v, want it answered", err)
 	}
 }

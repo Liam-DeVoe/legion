@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
@@ -60,6 +62,12 @@ const privateProjectsBucket = "envoy_private_projects"
 // private-projects record cannot be written: 409 PRIVATE_PROJECTS_UNAVAILABLE.
 var errPrivateProjectsUnavailable = errors.New("the project stays public: every listener holds a private project's messages back by its key in the hub's " +
 	privateProjectsBucket + " bucket, and that key could not be written")
+
+// errMachineLoginsNotRevoked is a removal of a restricted member from an access list whose
+// revocation of the member's machine logins the broker did not confirm: 503
+// MACHINE_LOGINS_NOT_REVOKED, and the removal rolls back, so the owner removes them again rather
+// than leaving their agents' tokens alive with no list naming them.
+var errMachineLoginsNotRevoked = errors.New("the person stays on the list: the secrets broker did not revoke their machine logins")
 
 // errPrivateProjectNotProvisioned is a switch to private of a project the deployment does not name
 // among those it has provisioned as private: 409 PRIVATE_PROJECT_NOT_PROVISIONED, wrapped after the
@@ -233,9 +241,68 @@ func (s *server) putProjectAccessPerson(w http.ResponseWriter, r *http.Request) 
 	s.principalWrite(w, r, access.PrincipalPerson, r.PathValue("email"), access.AddPrincipal)
 }
 
-// deleteProjectAccessPerson takes a person off the project's access list.
+// deleteProjectAccessPerson takes a person off the project's access list. A restricted member's
+// machine logins are revoked at the broker in the removal's transaction
+// (revokeRestrictedMemberLogins), before it commits.
 func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
-	s.principalWrite(w, r, access.PrincipalPerson, r.PathValue("email"), access.RemovePrincipal)
+	email := r.PathValue("email")
+	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+		answer, event, err := access.RemovePrincipal(ctx, tx, s.deps.Events, key, access.PrincipalPerson, email, by)
+		if err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		if err := s.revokeRestrictedMemberLogins(ctx, tx, email); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		return answer, []model.Event{event}, nil
+	})
+}
+
+// revokeRestrictedMemberLogins revokes at the secrets broker every machine login person approved
+// for their own machines, when people records person as a restricted member, read in tx; a full
+// member, a person with no row and a deployment with no broker (Deps.AgentSecrets nil, where no
+// machine login exists) revoke nothing. It is the one revocation a removal from an access list
+// (deleteProjectAccessPerson) and the owner's Reset of a person both run, in the write's own
+// transaction and before it commits: a broker that does not answer, or refuses a revoke, fails the
+// write with errMachineLoginsNotRevoked, so no committed removal leaves the person's logins alive.
+//
+// A machine login is not a project's: the broker holds each trade of a restricted member's login
+// to the one project it names (exchange.Set.Machine), not the login itself. So the person's every
+// login is revoked, and they approve a new one for a project that still lists them. A revoke ends
+// the login's refresh and every token traded from it at once (the broker's
+// enroll.Service.RevokeCredential ends each access token naming the credential), so introspection
+// answers each of the person's session tokens not active from the commit on.
+func (s *server) revokeRestrictedMemberLogins(ctx context.Context, tx pgx.Tx, person string) error {
+	person = model.CanonicalLogin(person)
+	client := s.deps.AgentSecrets
+	if client == nil || person == "" {
+		return nil
+	}
+	var kind string
+	if err := tx.QueryRow(ctx, `select coalesce((select member_kind from people where email = $1), '')`, person).Scan(&kind); err != nil {
+		return err
+	}
+	if kind != string(model.MemberRestricted) {
+		return nil
+	}
+	listed, err := client.MachineLogins(ctx, person)
+	if err != nil {
+		return fmt.Errorf("%w: list %s's machine logins: %w", errMachineLoginsNotRevoked, person, err)
+	}
+	var logins wire.LauncherCredentialsResponse
+	if err := json.Unmarshal(listed, &logins); err != nil {
+		return fmt.Errorf("%w: read %s's machine logins: %w", errMachineLoginsNotRevoked, person, err)
+	}
+	for _, login := range logins.Credentials {
+		// The list holds every service's logins beside the person's own; only theirs are revoked.
+		if login.Service != nil || model.CanonicalLogin(login.ApprovedBy) != person {
+			continue
+		}
+		if _, err := client.RevokeMachineLogin(ctx, login.CredentialID, person); err != nil {
+			return fmt.Errorf("%w: revoke %s's machine login %s: %w", errMachineLoginsNotRevoked, person, login.CredentialID, err)
+		}
+	}
+	return nil
 }
 
 // putProjectAccessGroup names a group on the project's access list.
@@ -351,6 +418,7 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{errPrivateProjectsUnavailable, "PRIVATE_PROJECTS_UNAVAILABLE", http.StatusConflict},
 		{errPrivateProjectNotProvisioned, "PRIVATE_PROJECT_NOT_PROVISIONED", http.StatusConflict},
 		{errPrivateProjectsIncomplete, "PRIVATE_PROJECTS_INCOMPLETE", http.StatusConflict},
+		{errMachineLoginsNotRevoked, "MACHINE_LOGINS_NOT_REVOKED", http.StatusServiceUnavailable},
 		{access.ErrListFull, "ACCESS_LIST_FULL", http.StatusConflict},
 		{access.ErrGroupFull, "GROUP_FULL", http.StatusConflict},
 		{access.ErrSlackChannelInput, "INVALID_SLACK_CHANNEL", http.StatusBadRequest},

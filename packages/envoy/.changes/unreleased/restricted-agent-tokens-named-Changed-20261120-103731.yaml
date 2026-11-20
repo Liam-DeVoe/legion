@@ -9,7 +9,10 @@ body: |-
   broker token stays `403 RESTRICTED_MEMBER`, and the broker is asked to decide nothing. A broker
   token of project scope `named` that records the credential a person made, the account it was
   approved by or when it was made, is held to that account as a `person` token is; an operator
-  entry's, which records neither, is held to none, as before.
+  entry's, which records neither, is held to none, as before. Taking a restricted member off a
+  project's access list now revokes every machine login they approved at the broker before the
+  removal commits, which ends their agents' tokens at once; while the broker does not confirm the
+  revokes, the removal is `503 MACHINE_LOGINS_NOT_REVOKED` and the member stays on the list.
 time: 2026-11-20T10:37:31Z
 custom:
     Issue: restricted-agent-tokens-named

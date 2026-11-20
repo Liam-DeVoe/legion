@@ -12,15 +12,15 @@ import (
 
 // TestARestrictedMembersMachineLoginIsNamedToItsOneProject: a machine login whose approver
 // Dispatch calls a restricted member is decided named, to exactly the one project its trade asked
-// for, and its token lives at most RestrictedLifetime, five minutes; one asking for no project or
+// for, and its token lives at most RestrictedLifetime, 270 seconds; one asking for no project or
 // for two is refused, the refusal naming the rule, the person and how to name the one project.
 //
 // Control: Machine deciding the person scope for every approver; the first row fails naming the
 // scope.
 func TestARestrictedMembersMachineLoginIsNamedToItsOneProject(t *testing.T) {
 	set := listed(t)
-	if exchange.RestrictedLifetime != 5*time.Minute {
-		t.Fatalf("RestrictedLifetime = %s, want 5m0s: the bound on how long a person taken off a project's access list keeps a token for it", exchange.RestrictedLifetime)
+	if exchange.RestrictedLifetime != 270*time.Second {
+		t.Fatalf("RestrictedLifetime = %s, want 4m30s: 300 s less the broker's 30 s cache of Dispatch's answer, the bound on how long a person taken off a project's access list keeps a token for it", exchange.RestrictedLifetime)
 	}
 	claims, err := set.Machine(credentialID, person, "ada-devbox", []string{project}, exchange.ApproverRestricted)
 	if err != nil {

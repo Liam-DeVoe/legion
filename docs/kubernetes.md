@@ -7690,7 +7690,7 @@ the person's `hd` claim must name the Workspace domain `BROKER_SIGNIN_DOMAIN` gi
 
 A `person` token names the projects its trade asks for (`projects`, keys separated by spaces, at most 16, each a project key; `AGENT_SECRETS_PROJECTS` is where a session's client reads them from).
 Before it mints, the broker asks Dispatch, with its own projected ServiceAccount token, whether the token's person may see each one (`BROKER_PROJECT_ACCESS_URL`, `BROKER_PROJECT_ACCESS_TOKEN_FILE`, `packages/envoy/internal/broker/projectaccess`), and refuses `invalid_request` naming the first it may not see, in the same words whether Dispatch holds that project or not.
-A machine login's trade asks Dispatch first what kind of member the login's approver is: a restricted member's machine is held to exactly the one project its trade names, scope `named`, its token living the lesser of five minutes and `BROKER_ACCESS_TOKEN_SECONDS`, and its trade naming no project or several is refused `invalid_request` naming the rule;
+A machine login's trade asks Dispatch first what kind of member the login's approver is: a restricted member's machine is held to exactly the one project its trade names, scope `named`, its token living the lesser of 270 seconds and `BROKER_ACCESS_TOKEN_SECONDS`, and its trade naming no project or several is refused `invalid_request` naming the rule;
 a person's sign-in is taken as a full member's and asks no member kind, since the broker checked its Workspace domain itself.
 An operator's entry is held to Dispatch the same way: a `named` token is refused when the entry's person may not see the entry's project.
 Dispatch's answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins.

@@ -2577,7 +2577,7 @@ export interface paths {
     /** @description Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person scope. */
     put: operations["putApiV1ProjectsByKeyAccessPeopleByEmail"];
     post?: never;
-    /** @description Take a person off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person scope. */
+    /** @description Take a person off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). A restricted member's machine logins are revoked at the secrets broker before the removal commits, which ends every token their agents traded from them; while the broker does not confirm the revokes, the removal is 503 MACHINE_LOGINS_NOT_REVOKED and the person stays on the list. Appends project.access_changed and answers the project's access. Needs the person scope. */
     delete: operations["deleteApiV1ProjectsByKeyAccessPeopleByEmail"];
     options?: never;
     head?: never;

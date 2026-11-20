@@ -163,7 +163,7 @@ test("with no bearer at all, the session's credential is its own identity traded
 
 test("a session reuses a token shorter than the renewal window until half its life", async () => {
   // A minute of life is inside the 5-minute renewal window from the start, as a restricted
-  // member's five-minute token is: the session reuses it until halfway through its life rather
+  // member's 270-second token is: the session reuses it until halfway through its life rather
   // than trading again at every request, which would spend the broker's per-address bucket.
   const broker = stubBroker(60);
   const dispatch = stubDispatch();
