@@ -26,8 +26,10 @@ var (
 // idleChild is a child issue's pod that every condition of the rule holds for: in the workflow
 // under a live root, on the configured image, one live implementer on the daemon's contract that
 // finished its turn twenty minutes ago and reported five minutes later that it runs no background
-// work with no reminder armed, a tester the daemon suspended beside it, and nothing queued for
-// either. Each row of the table below changes exactly one thing about it.
+// work with no reminder armed, and that owes its phase (record.PhaseOwed): it serves the issue's
+// run and the entry its phases row stands on, which records no completion, and no merge forward
+// holds it. Beside it is a tester the daemon suspended, and nothing is queued for either. Each
+// row of the table below changes exactly one thing about it.
 func idleChild() pods.IdleView {
 	return pods.IdleView{
 		Issue: "LEGION-209", Tree: "LEGION-208", Found: true,
@@ -37,6 +39,7 @@ func idleChild() pods.IdleView {
 			{
 				Role:  claim.RoleImplementer,
 				State: supervise.StateIdle, PluginContract: idleContract, ServingGeneration: 3,
+				ServingEntry: 3, RowEntry: 3,
 				LastTurnAt: idleNow.Add(-20 * time.Minute),
 				ActivityAt: idleNow.Add(-15 * time.Minute), UpdatedAt: idleNow.Add(-15 * time.Minute),
 			},
@@ -260,6 +263,36 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				return v
 			}(),
 			image: true, want: IdleHoldReminder,
+		},
+		{
+			name: "a reminder of a worker whose row records its completion",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Claims[0].RowCompleted = true
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			name: "a reminder of a worker a merge forward holds",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Claims[0].MergeForwardHeld = true
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			name: "a reminder of a worker behind its entry",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Claims[0].ServingEntry = 2
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
 			name: "an open phase's reminder is due after the period",

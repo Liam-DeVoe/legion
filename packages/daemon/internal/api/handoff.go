@@ -489,15 +489,6 @@ func claimServes(c supervise.Claim, issue record.Issue) (serving uint64, entry i
 	return serving, entry, notCurrent
 }
 
-// entriesDiffer is whether entry, the one a claim serves (claimServes), and rowEntry, the one its
-// role's phases row stands on (record.PhaseRow.Entry), are both set and differ. Either one 0 is
-// nothing to compare, for the reasons entryFence gives. It is the one comparison the completion
-// route's entry fence (entryFence) and the owed answer (owedBy) make, so the two routes read one
-// rule.
-func entriesDiffer(entry, rowEntry int64) bool {
-	return entry != 0 && rowEntry != 0 && entry != rowEntry
-}
-
 // heldTaskNotCurrent says why the task a claim is holding is not the issue's current task — it is
 // of another run, of another phase, or there is no task at all — and answers "" when it is that
 // task: one of the issue's own generation and its own phase. The one rule has two readers, and
@@ -607,7 +598,7 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 //
 // An entry behind the row's is refused (staleEntry) unless behindEntryClause takes it.
 func entryFence(grant credential.Grant, position completionPosition, entry int64, commit string, pending *supervise.Delivery) *intake.Refusal {
-	if !entriesDiffer(entry, position.entry) {
+	if !record.EntriesDiffer(entry, position.entry) {
 		return nil
 	}
 	p := position.issue.Phase

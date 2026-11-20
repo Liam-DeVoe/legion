@@ -2616,6 +2616,63 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 	return PhaseRow{}
 }
 
+// EntriesDiffer is whether entry, the one a claim serves (api's claimServes, which reads
+// supervise.Claim.ServingEntry), and rowEntry, the one its role's phases row stands on
+// (PhaseRow.Entry), are both set and differ. Either one 0 is nothing to compare, for the reasons
+// the completion route's entry fence gives (api's entryFence). It is the one comparison that fence
+// and the owed answer (api's owedBy, through PhaseOwed) make, so the two routes read one rule.
+func EntriesDiffer(entry, rowEntry int64) bool {
+	return entry != 0 && rowEntry != 0 && entry != rowEntry
+}
+
+// PhaseOwed is whether a claim that works its issue's phase owes that phase's completion, from
+// the facts the record holds of it: serving, the run the claim serves, and generation, the
+// issue's; entry, the phase entry the claim serves, and rowEntry, the one its role's phases row
+// stands on (PhaseRow.Entry); completed, whether that row records the role's completion
+// (PhaseRow.Completed); and mergeForwardHeld, whether a merge forward holds the role
+// (MergeForwardHolds, which the caller reads of the issue's pull request at the phase the issue
+// stands in). It answers false for a claim that serves no run or a run the issue has left, for
+// one behind or above its row's entry (EntriesDiffer), for one whose completion the row records,
+// and for one a merge forward holds, and true otherwise. Whether the claim's role works the
+// phase the issue stands in is its caller's to ask first.
+//
+// It is the one rule two readers hold a phase worker to (dispatch://INFRA-2746 R1): the owed
+// answer (api's owedBy), which tells the claim's session whether it owes its phase, and the idle
+// release's reminder hold (workflow's IdleRelease, IdleHoldReminder), which keeps a pod for a
+// reminder only of a claim that owes its phase. The second reads the first's rule because a
+// claim that owes nothing is reminded of nothing, and the silence sweep does not nudge a role
+// whose completion stands, so a hold on such a claim's reported wake would never end.
+func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld bool) bool {
+	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld
+}
+
+// FillIdleClaims gives each of claims, the claims of issue's pod as the idle view reads them
+// (pods.IdleView), what the record holds of its role while issue stands at at: the entry its
+// role's phases row stands on and whether that row records a completion (PhaseRowOf,
+// PhaseRow.Entry, PhaseRow.Completed), zero and false where the role has no row, and whether a
+// merge forward of the issue's pull request holds the role (MergeForwardHolds). Those are the
+// facts the idle release's reminder hold reads beside each claim (workflow's IdleRelease, through
+// PhaseOwed). It reads them through tx, the view's own transaction, in two statements whatever
+// the number of claims: the issue's phases rows and its pull request, the reads the completion
+// route's position takes (api's handoffPosition). The store's idle view calls it through the
+// reader the daemon hands it (store.IdleRecords), since that package cannot import this one.
+func FillIdleClaims(ctx context.Context, store Store, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+	rows, err := store.Phases(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	pr, err := store.PullRequest(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	for i := range claims {
+		row := PhaseRowOf(rows, claims[i].Role)
+		claims[i].RowEntry, claims[i].RowCompleted = row.Entry, row.Completed()
+		claims[i].MergeForwardHeld = MergeForwardHolds(pr, at, claims[i].Role)
+	}
+	return nil
+}
+
 // Lingers says whether the root lingers after its close: its linger deadline is set, and
 // re-admission clears it.
 func (i Issue) Lingers() bool { return i.LingerUntil != nil }

@@ -178,7 +178,10 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // close — is not owed yet: a report sent from that turn is refused as no report on production
 // (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 //
-// Every other claim owes its phase while the five terms of R1 all hold, and nothing otherwise:
+// Every other claim owes its phase while the five terms of R1 all hold, and nothing otherwise. The
+// second term is this function's own; the other four are record.PhaseOwed, the one rule the idle
+// release's reminder hold reads too (workflow's IdleRelease), so a pod is held for a reminder
+// only of a claim this route tells it owes its phase:
 //
 //   - The claim serves a run, and that run is the issue's current generation. The run and the
 //     entry are claimServes's, the one function the completion route (answerCompletion) reads for
@@ -196,13 +199,13 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //     not merged owes the merge, since the merger merges.
 //   - The claim is neither behind nor above the entry its role's phases row stands on
 //     (record.PhaseRow.Entry), where both are set; where either is 0 nothing is compared. The
-//     route's entry fence (entryFence) reads the same predicate (entriesDiffer). A claim behind
-//     its entry owes nothing: the route refuses its completion HANDOFF_STALE_ENTRY wherever
-//     behindEntryClause gives a clause, and the daemon sends that entry's task itself (the
-//     delivery it already queued, the owed-entry repair, the silence sweep), so the claim stands
-//     level once a turn confirms that task. The entry read is the one the claim serves, not the
-//     one it was given (supervise.Claim.GivenEntry): a task queued and not yet confirmed leaves
-//     the claim behind for the route.
+//     route's entry fence (entryFence) reads the same predicate (record.EntriesDiffer). A claim
+//     behind its entry owes nothing: the route refuses its completion HANDOFF_STALE_ENTRY
+//     wherever behindEntryClause gives a clause, and the daemon sends that entry's task itself
+//     (the delivery it already queued, the owed-entry repair, the silence sweep), so the claim
+//     stands level once a turn confirms that task. The entry read is the one the claim serves, not
+//     the one it was given (supervise.Claim.GivenEntry): a task queued and not yet confirmed
+//     leaves the claim behind for the route.
 //   - The row does not record the claim's completion of that entry (record.PhaseRow.Completed). A
 //     reviewer whose round waits for a review, or a merger whose completion the workflow recorded
 //     without moving the issue, owes nothing, and the daemon sends a level claim no entry's work.
@@ -235,13 +238,8 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 		return nothing
 	}
 	serving, entry, _ := claimServes(c, *issue)
-	if serving == 0 || serving != issue.Generation {
-		return nothing
-	}
-	if entriesDiffer(entry, position.entry) {
-		return nothing
-	}
-	if position.completed || record.MergeForwardHolds(position.pullRequest, issue.Phase, c.Role) {
+	if !record.PhaseOwed(serving, issue.Generation, entry, position.entry, position.completed,
+		record.MergeForwardHolds(position.pullRequest, issue.Phase, c.Role)) {
 		return nothing
 	}
 	return OwedResponse{Owes: true, Work: fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key), Architect: owner}

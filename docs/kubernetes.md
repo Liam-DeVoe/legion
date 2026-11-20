@@ -6438,8 +6438,8 @@ A near-full disk slows jj's working-copy snapshot before a push, which is why `l
 
 An issue pod that no role is using is released: the daemon ends it and starts another at the next wake for one of its roles.
 A pod qualifies once it has had no turn in progress and no turn due for the idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default).
-A turn is due when the next phase reminder of a phase worker whose phase the daemon's record holds open falls inside the idle period:
-the worker's session reports when its next reminder timer is due, and the daemon reads from its own record whether the phase is open.
+A turn is due when the next phase reminder of a phase worker that owes its phase falls inside the idle period:
+the worker's session reports when its next reminder timer is due, and the daemon reads from its own record whether the claim owes its phase, by the rule the owed route reads (`record.PhaseOwed`).
 The reminder keeps no phase of its own: when its timer is due it asks the daemon what the claim owes (`POST /legion/v1/claims/owed`), and it reminds only when the answer says the claim owes work.
 When the answer is that the claim owes nothing, or the read fails or gets no answer within 3 seconds (`OWED_READ_BOUND_MS`), the timer sends no reminder and clears the next reminder the session reports, so that reminder holds no pod.
 A worker that owes its phase and goes quiet is sent its task again by the daemon's silence sweep, not by a reminder.
