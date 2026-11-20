@@ -8,11 +8,13 @@
 // oauth2call.Call(s.Read(call(s.Context(), ...))). The boundary census
 // (internal/redact/testdata/wholeuse/boundary) holds both. Every HTTP client such a module builds
 // or hands a library is oauth2call.RefusalClient's, or a scope's (s.Client), as it is
-// redact.RefusalClient's here.
+// redact.RefusalClient's here. Every answer such a module reads is read through ReadAnswer or
+// StreamAnswer, as it is through redact's here: the answer census (cmd/redact-gate) holds it.
 package oauth2call
 
 import (
 	"context"
+	"io"
 	"net/http"
 
 	"golang.org/x/oauth2"
@@ -40,3 +42,20 @@ func TokenSource(source oauth2.TokenSource) *redact.BoundTokenSource {
 // travelling with what the request led to, for every HTTP client a module outside this one builds
 // or hands a library.
 func RefusalClient(base *http.Client) *http.Client { return redact.RefusalClient(base) }
+
+// Answer is redact.Answer: an HTTP answer's body, which decodes into typed values with the
+// request's record, prints only as the rule reads it, and streams to a writer.
+type Answer = redact.Answer
+
+// ErrAnswerTooLarge is redact.ErrAnswerTooLarge.
+var ErrAnswerTooLarge = redact.ErrAnswerTooLarge
+
+// ReadAnswer is redact.ReadAnswer: resp's body, at most limit bytes, as an Answer.
+func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
+	return redact.ReadAnswer(resp, limit)
+}
+
+// StreamAnswer is redact.StreamAnswer: resp's body as a stream of data of at most limit bytes.
+func StreamAnswer(resp *http.Response, limit int64) io.ReadCloser {
+	return redact.StreamAnswer(resp, limit)
+}
