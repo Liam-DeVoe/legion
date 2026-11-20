@@ -217,6 +217,8 @@ var MachineryTables = map[string]string{
 // test of the shadows admits these tables with no shadow; each read of one of them at a cut
 // must apply its predicate.
 var CutReadTables = map[string]string{
+	"ask_block_state": "Only the revision of an ask that did not change after the cut (AsksChangedAfterStatement), " +
+		"which the read of its ask_blocks reads with it; an answer leaves out the revision of every other ask.",
 	"ask_block_texts": "Only the texts of the parts that a meaning hit covers, of an ask whose text did not change after the cut.",
 	"ask_blocks": "Only the parts of an ask that did not change after the cut (AsksChangedAfterStatement); " +
 		"an answer leaves out the part ids and the revision of every other ask.",

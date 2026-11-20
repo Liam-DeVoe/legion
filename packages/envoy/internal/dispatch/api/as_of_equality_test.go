@@ -443,8 +443,9 @@ type asOfReader struct {
 }
 
 // asOfRig is the server under test with the broker that answers its callers' tokens, the key
-// that proves them, and the statements each as_of read sends (markedStatements: every statement
-// of a request whose context the harness marked, countedRead).
+// that proves them, and, on the harness's own rig (newAsOfRig), the statements each as_of read
+// sends (markedStatements: every statement of a request whose context the harness marked,
+// countedRead).
 type asOfRig struct {
 	*brokerTokenRig
 	key        *brokerCaller
@@ -479,18 +480,27 @@ func newAsOfListener(t *testing.T) string {
 	return listener.URL
 }
 
-// newAsOfRig is the package's broker-token rig on a traced store, with the test hooks in (the
-// harness settles every document before it reads) and the listener above.
+// newAsOfRig is the package's broker-token rig on a traced store (newAsOfRigOn), whose tracer
+// records the statements of each read the harness marks.
 func newAsOfRig(t *testing.T) *asOfRig {
 	t.Helper()
-	listener := newAsOfListener(t)
 	statements := &markedStatements{}
+	rig := newAsOfRigOn(t, storetest.TracedStore(t, storetest.Open(t), statements))
+	rig.statements = statements
+	return rig
+}
+
+// newAsOfRigOn is the package's broker-token rig on database, with the test hooks in (the harness
+// settles every document before it reads) and the listener above.
+func newAsOfRigOn(t *testing.T, database *store.Store) *asOfRig {
+	t.Helper()
+	listener := newAsOfListener(t)
 	rig := newBrokerTokenRigOn(t, testServerOptions{
-		store:     storetest.TracedStore(t, storetest.Open(t), statements),
+		store:     database,
 		envoyURL:  listener,
 		testHooks: true,
 	})
-	return &asOfRig{brokerTokenRig: rig, key: newBrokerCaller(t), statements: statements}
+	return &asOfRig{brokerTokenRig: rig, key: newBrokerCaller(t)}
 }
 
 // callers are the three credentials every row is read with, each said to the stub broker: a
