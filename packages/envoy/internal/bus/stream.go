@@ -661,7 +661,7 @@ func purgeLegacyRoleMessages(ctx context.Context, js nats.JetStreamContext) erro
 // purgeRoleLane purges the stream's messages on subject, a role lane. Each send is waited for up to
 // the limit of ctx's run of writes (limitedWrite, writeLimitOf), which ends the start's wait on it:
 // nats.go's PurgeStream reads no context and waits its JetStream context's own wait, ten seconds
-// (nats.go@v1.53.1 jsm.go:1477-1524), so a send the limit cut runs on in the background until that
+// (nats.go@v1.55.0 jsm.go:1529-1576), so a send the limit cut runs on in the background until that
 // wait ends, and its answer is dropped (Bounded). A send that drew no answer is read back, the
 // stream's messages on subject (laneMessages, sent again while unanswered under ctx's run of
 // reads, readAgain), and the purge is sent again only when that read still finds some, the purge
@@ -1080,7 +1080,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	}
 	// The migrate and the purge below write the stream's consumers and its messages, and a server
 	// can leave any of their requests unanswered. Each of their reads is sent again while the
-	// server leaves it unanswered, and each write is waited for up to the start's read limit, read
+	// server leaves it unanswered, and each write is waited for up to the start's write limit, read
 	// back, and sent again only when that read shows it did not land (migrateLegacyConsumerFilters,
 	// purgeRoleLane), so the start waits none of them the JetStream context's own ten second wait,
 	// and the ensure ends at ctx or the start's hang guard like every other wait of it, naming the
@@ -1292,7 +1292,7 @@ type streamUpdate struct {
 //     server/jetstream_cluster.go), and v2.10.29 was seen to leave one of two replica changes
 //     proposed at once unanswered. A stream that holds what was asked for has taken the update; one
 //     that does not is sent it again, for as long as ctx lasts, so an update the server dropped
-//     cannot fail the step at the caller's JetStream wait. Each send waits its read limit (below),
+//     cannot fail the step at the caller's JetStream wait. Each send waits its write limit (below),
 //     and the step ends on a server that never answers only when ctx does,
 //     which every caller bounds: a start's or a keeper pass's hang guard (startHangGuard), the
 //     session reaper's RequestTimeout. An update sent again while the one before it is still

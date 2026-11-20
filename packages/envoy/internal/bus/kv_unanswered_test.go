@@ -490,7 +490,7 @@ const createStepReadBound = RequestTimeout / 2
 // A start whose create meets a bucket another start created a moment before, and whose create step
 // loses the read of the stream nats.go makes inside it, sends the step again after its read limit
 // and goes on, rather than waiting out the JetStream wait that read is sent under. On "stream name
-// already in use" nats.go's js.CreateKeyValue reads the stream itself (nats.go@v1.53.1
+// already in use" nats.go's js.CreateKeyValue reads the stream itself (nats.go@v1.55.0
 // kv.go:534-545), and nothing the start passes reaches that read. In the moment after another
 // start's create lands, no member answers it (the members that hold the new assignment are not the
 // stream's preferred member, which has not applied it yet), and a read no member answered is never
@@ -897,7 +897,7 @@ func TestAMoveOfAConsumerOffTheRoleLanesHeldPastTheJetStreamWaitIsSentAgain(t *t
 
 // A start's purge of a role lane is waited for up to its read limit, so the start waits no
 // JetStream wait: nats.go's PurgeStream ignores any context it is handed and waits the context's
-// own ten seconds (nats.go@v1.53.1 jsm.go:1477-1524), and a start once sent the purge once that way
+// own ten seconds (nats.go@v1.55.0 jsm.go:1529-1576), and a start once sent the purge once that way
 // and failed "nats: timeout" when its answer had not come by then. With the first purge held past
 // that wait, the start reads the lane after its read limit, finds its message still there, purges
 // it again and goes on. With every purge held, the start ends when its context ends, naming the

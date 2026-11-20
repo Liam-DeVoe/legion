@@ -15,7 +15,7 @@ import (
 // ends with the connection rather than at its MaxWait. A caller must not pass nats.MaxWait to
 // these methods: nats.go refuses a context and a wait together. Every other method is js's own and
 // is not bounded by ctx, the purge among them, which nats.go sends under js's own wait whatever
-// context it is handed; the stream ensure's purges are waited for up to the start's read limit
+// context it is handed; the stream ensure's purges are waited for up to the start's write limit
 // instead (purgeRoleLane).
 func requestsUnder(ctx context.Context, js nats.JetStreamContext) nats.JetStreamContext {
 	return contextRequests{JetStreamContext: js, ctx: ctx}

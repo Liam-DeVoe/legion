@@ -43,12 +43,14 @@ func (u directStreamUpdate) String() string {
 	return fmt.Sprintf("%s:%d %s", u.path, u.line, u.function)
 }
 
-// testSources calls visit with every Go file under root (packages/envoy) that is a test file or a
-// file of a test helper package (a non-test file of a package whose name begins or ends with
-// "test", as testnats and cmdtest do), parsed, by its slash-separated path from root. It skips
-// testdata, node_modules, vendor and hidden directories.
-func testSources(root string, visit func(rel string, fileSet *token.FileSet, file *ast.File)) error {
-	fileSet := token.NewFileSet()
+// goFiles calls visit with every Go file under root (packages/envoy), by its path and its
+// slash-separated path from root, and whether it is a test source: a test file, or a file of a test
+// helper package (a non-test file of a package whose directory's name begins or ends with "test",
+// as testnats and cmdtest do). It skips testdata, node_modules, vendor and hidden directories. Both
+// source checks read the tree through it, so they judge the same files: the update check parses
+// the test sources alone (testSources), and the create check every file, to type-check the packages
+// the test sources are in (typedTestUnits).
+func goFiles(root string, visit func(path, rel string, test bool) error) error {
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -62,25 +64,34 @@ func testSources(root string, visit func(rel string, fileSet *token.FileSet, fil
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		dir := filepath.Base(filepath.Dir(path))
-		if !strings.HasSuffix(path, "_test.go") && !strings.HasPrefix(dir, "test") && !strings.HasSuffix(dir, "test") {
-			return nil
-		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		file, err := parser.ParseFile(fileSet, path, nil, 0)
-		if err != nil {
-			return err
-		}
-		visit(filepath.ToSlash(rel), fileSet, file)
-		return nil
+		dir := filepath.Base(filepath.Dir(path))
+		return visit(path, filepath.ToSlash(rel), strings.HasSuffix(path, "_test.go") || strings.HasPrefix(dir, "test") || strings.HasSuffix(dir, "test"))
 	})
 	if err != nil {
 		return fmt.Errorf("walk %s: %w", root, err)
 	}
 	return nil
+}
+
+// testSources calls visit with every test source under root (goFiles), parsed, by its
+// slash-separated path from root.
+func testSources(root string, visit func(rel string, fileSet *token.FileSet, file *ast.File)) error {
+	fileSet := token.NewFileSet()
+	return goFiles(root, func(path, rel string, test bool) error {
+		if !test {
+			return nil
+		}
+		file, err := parser.ParseFile(fileSet, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		visit(rel, fileSet, file)
+		return nil
+	})
 }
 
 // directStreamUpdates walks the test sources under root (testSources) and returns every reference

@@ -126,7 +126,8 @@ const (
 // differently: the first is a member that has not applied the create and is read again until it
 // has, the second is a request that drew nothing and is sent again. So a start's send is waited
 // for up to its read limit, 630 ms first and twice that after each send left unanswered, up to
-// RequestTimeout (readAgain); a start's waits, on the member and on an answer, last as long as its
+// limitCeiling, 9 s, and copied every 630 ms while it waits past the first (readAgain,
+// limitedRead); a start's waits, on the member and on an answer, last as long as its
 // ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
 // caller is one send, bounded by RequestTimeout as a lone read is. One send is right there because
 // such a caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again

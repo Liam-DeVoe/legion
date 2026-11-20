@@ -80,10 +80,10 @@ func (r refusalReads) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (
 	})
 }
 
-// PurgeStream is one request, the stream's purge (nats.go@v1.53.1 jsm.go:1477-1524). nats.go reads
+// PurgeStream is one request, the stream's purge (nats.go@v1.55.0 jsm.go:1529-1576). nats.go reads
 // only the purge request among its options and waits its JetStream context's own wait, ten
 // seconds, whatever context it is handed, so a caller that must not wait that long bounds its wait
-// itself: a start's purge of a role lane is waited for up to its read limit (purgeRoleLane).
+// itself: a start's purge of a role lane is waited for up to its write limit (purgeRoleLane).
 func (r refusalReads) PurgeStream(stream string, opts ...nats.JSOpt) error {
 	_, err := refusedVia(r, []string{jsAPI("STREAM.PURGE", stream)}, func() (struct{}, error) {
 		return struct{}{}, r.JetStreamContext.PurgeStream(stream, opts...)

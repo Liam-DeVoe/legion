@@ -275,6 +275,9 @@ func writeRun(first time.Duration) *readLimit {
 // group or the stream's own: a follower that has heard no leader for its election timeout, at most
 // this one, campaigns. A request still unanswered after that was dropped rather than slowed, and a
 // longer limit guards nothing: it only holds the start that much longer once the leader is back.
+// internal/textcheck's TestTheLongestLimitIsNatsServersLongestElectionTimeout reads both constants
+// from source, this one and the one of the nats-server version go.mod requires, and fails when they
+// differ.
 const limitCeiling = 9 * time.Second
 
 // readLimitKey is the context key of the run of reads withReadLimit puts in a context, and

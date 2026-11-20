@@ -141,6 +141,13 @@ func (heldUnansweredWarningError) Unwrap() error { return nats.ErrTimeout }
 // mutable last error of the caller that has already continued, which the send cannot reach:
 // readAgain hands limitedRead the warning, the previous send's error in it, by value in the call
 // that starts the send (sendAgain).
+//
+// The second send's line is held until readAgain has returned, and a copy of that send, made one
+// first limit after it while it waits (limitedRead), is what answers. The run's first limit is
+// 2 s here, so the first send, answered at once, makes no copy, and the second, waiting up to 4 s,
+// has that long to start (Bounded starts a send only while its limit lasts). The row waits for the
+// line it reads, written once its error is released, and not for a count of sends: how many
+// copies went out before the answer was taken depends on how the goroutines are scheduled.
 func TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend(t *testing.T) {
 	logs := captureLogs(t)
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Bounded(t, time.Minute, time.Second))
@@ -149,7 +156,7 @@ func TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend(t *testing.T) {
 	release := sync.OnceFunc(func() { close(released) })
 	defer release()
 	var sends atomic.Int32
-	limit := readRun(firstReadLimit)
+	limit := readRun(2 * time.Second)
 	value, err := readAgain(ctx, "held-warning STREAM.INFO", limit, func() (int, error) {
 		if sends.Add(1) == 1 {
 			return 0, heldUnansweredWarningError{ctx: ctx, release: released}
@@ -160,28 +167,37 @@ func TestAReadAgainWarningKeepsTheErrorOfItsPreviousSend(t *testing.T) {
 	if err != nil || value != 42 {
 		t.Fatalf("the read after the held warning = %d, %v, want 42 and no error", value, err)
 	}
-	testwait.Eventually(t, "the send whose warning outlived its read limit to finish", func() bool { return sends.Load() == 3 })
-	for _, warn := range logs.recordsWithMsg(t, "envoy nats stream request unanswered; sending it again") {
-		if warn["request"] == "held-warning STREAM.INFO" && warn["sent"] == float64(1) {
-			if warn["error"] != "the first read drew no answer" {
-				t.Fatalf("the first retry's error = %v, want the first read's error", warn["error"])
+	var held map[string]any
+	testwait.Eventually(t, "the line of the send whose warning outlived its read limit", func() bool {
+		for _, warn := range logs.recordsWithMsg(t, "envoy nats stream request unanswered; sending it again") {
+			if warn["request"] == "held-warning STREAM.INFO" && warn["sent"] == float64(1) {
+				held = warn
+				return true
 			}
-			return
 		}
+		return false
+	})
+	if held["error"] != "the first read drew no answer" {
+		t.Fatalf("the first retry's error = %v, want the first read's error", held["error"])
 	}
-	t.Fatal("the retry whose warning was held logged no warning for its first lost send")
 }
 
 // readAgain's sends run on goroutines of their own (Bounded) and can outlive the call that started
 // them, while readAgain sets its own last error again for the next send. So no function literal of
-// readAgain may read a variable readAgain sets again: the warning goes to the send by value, in the
+// readAgain may read a variable readAgain sets again, and readAgain takes no such variable's
+// address, which a send could read through later: the warning goes to the send by value, in the
 // call that starts it (sendAgain). A closure that built the warning inside the send,
 // `func() (T, error) { ...lastErr...; return read() }`, compiles and passes both warning rows above
 // in every plain run, since the send starts long before readAgain sets the error again; only
-// -race saw it, once in three runs. This row refuses it by name in every run, and holds its
-// reading to a planted readAgain that shares its error.
+// -race saw it, once in three runs; and a pointer to the error handed to the send, read inside it
+// (`errp := &lastErr` and then `*errp`), passed both rows under -race as well. This row refuses
+// each by name in every run, and holds its reading to planted readAgains that share their error.
 func TestReadAgainHandsItsSendsNothingItSetsAgain(t *testing.T) {
-	planted := `package bus
+	for _, planted := range []struct {
+		name, source string
+		want         []string
+	}{
+		{"a closure", `package bus
 
 func readAgain(read func() (int, error)) (int, error) {
 	var lastErr error
@@ -193,23 +209,40 @@ func readAgain(read func() (int, error)) (int, error) {
 		lastErr = err
 	}
 }
-`
-	if found, err := sharedWithItsSends("planted.go", planted); err != nil || !slices.Equal(found, []string{"lastErr at planted.go:6", "sends at planted.go:6"}) {
-		t.Fatalf("the planted readAgain's shared variables = %q (%v), want lastErr and sends at planted.go:6: the reading cannot see the sharing it refuses", found, err)
+`, []string{"lastErr at planted.go:6", "sends at planted.go:6"}},
+		{"a pointer", `package bus
+
+func readAgain(read func() (int, error)) (int, error) {
+	var lastErr error
+	for sends := 1; ; sends++ {
+		errp, n := &lastErr, sends-1
+		value, err := limited(warning{sent: n, previous: errp}, read)
+		if err == nil {
+			return value, nil
+		}
+		lastErr = err
+	}
+}
+`, []string{"&lastErr at planted.go:6"}},
+	} {
+		if found, err := sharedWithItsSends("planted.go", planted.source); err != nil || !slices.Equal(found, planted.want) {
+			t.Fatalf("the planted readAgain with %s shares %q (%v), want %q: the reading cannot see the sharing it refuses", planted.name, found, err, planted.want)
+		}
 	}
 	found, err := sharedWithItsSends("start_wait.go", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(found) > 0 {
-		t.Fatalf("readAgain's function literals read %q, variables readAgain sets again: a send that outlives its read limit then reads the caller's later value; hand it a copy in the call that starts it (sendAgain)", found)
+		t.Fatalf("readAgain shares %q with its sends, variables it sets again: a send that outlives its read limit then reads the caller's later value; hand it a copy in the call that starts it (sendAgain)", found)
 	}
 }
 
 // sharedWithItsSends parses the Go file at path (src, when not nil, is its text) and returns each
 // variable of its readAgain that readAgain sets again after declaring it (an assignment, an
 // increment, or a := that reuses it) and that a function literal of readAgain declared outside it
-// reads, as "<name> at <file>:<line of the read>", sorted and once each. The parser's own scopes
+// reads, as "<name> at <file>:<line of the read>", and each such variable whose address readAgain
+// takes anywhere, as "&<name> at <file>:<line>", sorted and once each. The parser's own scopes
 // decide which declaration a name is, so a literal's own variable of the same name is not one.
 func sharedWithItsSends(path string, src any) ([]string, error) {
 	fileSet := token.NewFileSet()
@@ -244,6 +277,14 @@ func sharedWithItsSends(path string, src any) ([]string, error) {
 		return true
 	})
 	var found []string
+	ast.Inspect(body, func(node ast.Node) bool {
+		if address, ok := node.(*ast.UnaryExpr); ok && address.Op == token.AND {
+			if ident, ok := ast.Unparen(address.X).(*ast.Ident); ok && ident.Obj != nil && setAgain[ident.Obj] {
+				found = append(found, fmt.Sprintf("&%s at %s:%d", ident.Name, path, fileSet.Position(address.Pos()).Line))
+			}
+		}
+		return true
+	})
 	ast.Inspect(body, func(node ast.Node) bool {
 		literal, ok := node.(*ast.FuncLit)
 		if !ok {
