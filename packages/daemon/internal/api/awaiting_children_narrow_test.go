@@ -30,16 +30,16 @@ func TestAwaitingChildrenNarrowsToAdmittedAndChildrenFirstBelowItsContract(t *te
 
 	narrowed := withoutGateBasis(state)
 	if got := narrowed.Issues["LEGION-208"].Phase; got != phase.Admitted {
-		t.Errorf("a caller below 177 reads LEGION-208's phase %s, want admitted", got)
+		t.Errorf("a caller below 182 reads LEGION-208's phase %s, want admitted", got)
 	}
 	if got := narrowed.Issues["LEGION-209"].Phase; got != phase.Implementing {
-		t.Errorf("a caller below 177 reads LEGION-209's phase %s, want implementing unchanged", got)
+		t.Errorf("a caller below 182 reads LEGION-209's phase %s, want implementing unchanged", got)
 	}
 	if got := narrowed.Admission.Held[0].Reason; got != record.HeldChildrenFirst {
-		t.Errorf("a caller below 177 reads the held reason %s, want children_first", got)
+		t.Errorf("a caller below 182 reads the held reason %s, want children_first", got)
 	}
 	if got := narrowed.Admission.Held[1].Reason; got != record.HeldDesignGate {
-		t.Errorf("a caller below 177 reads the other held reason %s, want design_gate unchanged", got)
+		t.Errorf("a caller below 182 reads the other held reason %s, want design_gate unchanged", got)
 	}
 
 	// A current caller reads the new words: withoutGateBasis leaves the source as it was.

@@ -2420,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 177: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 182: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -2459,19 +2492,23 @@ package api
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 177 is served every issue without `treeRuns`, and without `gatedSteps` on an
+// contract below 182 is served every issue without `treeRuns`, and without `gatedSteps` on an
 // issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller
-// below 146 is served the issues without both entry times and `architectStalls`, the entry of 146
-// above (withoutEntryTimes), a caller below 141 every issue without `assignments`, the entry of
-// 141 (withoutAssignments), and a caller below 133 the state with no `mergeWait` on any issue,
-// the entry of 133 (withoutMergeWait), and so on down the bands that entry lists; the twenty-one
-// compose. 146's row runs before this one and the two touch no key of each other's, so a caller
-// at 146 through 176 is served the entry times and none of this entry's keys and words.
+// below 178 is served the state without `paused` and `lastPause`, the entry of 178 above
+// (withoutPause), a caller below 146 the issues without both entry times and `architectStalls`,
+// the entry of 146 (withoutEntryTimes), a caller below 141 every issue without `assignments`, the
+// entry of 141 (withoutAssignments), and a caller below 133 the state with no `mergeWait` on any
+// issue, the entry of 133 (withoutMergeWait), and so on down the bands that entry lists; the
+// twenty-two compose. 178's row runs before this one and the two touch no key of each other's:
+// withoutPause takes the state's `paused` and `lastPause`, and withoutGateBasis takes `treeRuns`
+// and some `gatedSteps` and reads the phase and the held word, so a caller at 178 through 181 is
+// served the pause and none of this entry's keys and words, and a caller at 146 through 177 the
+// entry times and neither.
 // The strip of `gatedSteps` is not for the key's sake: every plugin from 55 on
 // reads `status` with a strict enum of the four words and refuses the whole body for a fifth, and
 // no word of the four is true of such a step — `waiting` would send its architect to ask a person
 // for an approval of its own, and `approved` names a person's approval no person gave — so such a
-// caller is served no entry of that issue at all rather than a wrong one. Every reader from 177
+// caller is served no entry of that issue at all rather than a wrong one. Every reader from 182
 // on takes `treeRuns` and `basis` as optional and reads the six words
 // (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
@@ -2483,7 +2520,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 177 knows
+// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 182 knows
 // neither word — its phase enum and its held words are the ones before this change — so the daemon
 // serves it that issue's `phase` as `admitted`, the status that names no worker's phase, and that
 // held entry's `reason` as `children_first`, the word a started parent's wait took over (api's
@@ -2547,7 +2584,11 @@ package api
 // found 169 (#4065), 170 (#2230, #4173, #4180 and #4193), 172 (#3659), 173 (#4493), 174 (#3993
 // and #4273), 175 (#3712, #4115, #4392, #4432, #4485 and #4495) and 176 (#3831 and #4030)
 // declared, and nothing above 176, so this change moved 164 → 177, the lowest number above main's
-// and above every number another open head declares. Read the base's own number and every open
-// head again, by a REST raw read of each head's file, at the next forward merge rather than from
-// this line.)
-const DaemonAPIVersion = 177
+// and above every number another open head declares. At the forward merge of 2026-11-20 that
+// brought main in at c7e1cbd53237, main carried 178 (cybermonklabs/legion#4115's project pause,
+// INFRA-3759, the entry above), and a read of each open head's file at 2026-11-20T01:17Z found 178
+// (#3831, #4552 and #4554), 179 (#4392 and #4540), 180 (#4049 and #4175) and 181 (#4553)
+// declared, so this change moved 177 → 182, the lowest number above main's that no other open head
+// declares. Read the base's own number and every open head again, by a REST raw read of each
+// head's file, at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 182

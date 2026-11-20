@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -267,11 +268,11 @@ type Options struct {
 	CapabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
 	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
-	// not the controller: the daemon queues the publication of that issue's role sessions to
-	// Dispatch, which reads the live set from the store when it runs. The ready is what sends the
-	// claim its first task, so the publication is queued before any task goes. An error refuses
-	// the ready with 503: the machine has not taken it, no task goes, and the plugin tries the
-	// ready again. Nil queues nothing.
+	// not the controller: for an issue of the daemon's own project, the daemon queues the
+	// publication of that issue's role sessions to Dispatch, which reads the live set from the
+	// store when it runs. The ready is what sends the claim its first task, so the publication is
+	// queued before any task goes. An error refuses the ready with 503: the machine has not taken
+	// it, no task goes, and the plugin tries the ready again. Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
@@ -286,6 +287,11 @@ type Options struct {
 	// and goroutine, so the registration waits for it to return. It is a test's seam alone, to act
 	// on Dispatch between a registration's reads and its commit; nil, the daemon's, tells no one.
 	GateRegistrationRead func(ctx context.Context, issue string)
+	// Pause is the project's pause service (internal/pause's Service), which the four pause and
+	// resume routes act through and whose flag the claim routes read to refuse a turn while the
+	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
+	// it answers every pause and resume PAUSE_UNAVAILABLE and refuses no turn for one.
+	Pause PauseService
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -388,6 +394,8 @@ type server struct {
 	claimActivity      ClaimActivityStore
 	// gateRead is Options.GateRegistrationRead.
 	gateRead func(ctx context.Context, issue string)
+	// pause is Options.Pause, nil for a daemon with no workflow.
+	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -458,6 +466,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		gateRead:           opts.GateRegistrationRead,
+		pause:              opts.Pause,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -542,18 +551,22 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/roots/close", s.closeRoot},
 		{"POST /legion/v1/children/park", s.parkChild},
 		{"POST /legion/v1/children/rerun", s.rerunChild},
+		{"POST /legion/v1/project/pause", s.projectPause},
+		{"POST /legion/v1/project/resume", s.projectResume},
 
 		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
 		{"GET /legion/v1/operator/claims", s.operator(s.list)},
 		{"POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent))},
 		{"POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent))},
-		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent))},
+		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", s.resumeEvent))},
 		{"POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent))},
 		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
 		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
 		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
+		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
 		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
@@ -725,6 +738,40 @@ func (s *server) stopRefusal(request string) string {
 	return request + " refused: the daemon is stopping; ask again once it is back"
 }
 
+// refusedWhilePaused refuses request of c, answering PROJECT_PAUSED, while the project is paused
+// and c is not the controller's claim (decision 20): a turn a paused project's role would start —
+// a compaction or a fresh session the controller asks for, the operator's resume, retry,
+// compaction, spawn or delivery — waits for the resume, and nothing of the claim changes. The
+// pause flag decides (pause.Service.Paused), as it decides every launch the machines hold; the
+// refusal names the standing pause when the store's read finds it. A stop, a suspension, an
+// issue's status and the daemon's own status are not turns, and no caller of this asks of them.
+// A claim of another project's issue, which the operator's spawn makes under the daemon's own
+// project token, is refused as every other claim is, its spawn included: the daemon runs it.
+func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, request string, c supervise.Claim) bool {
+	if s.pause == nil || claim.IsController(c.Role, c.Issue, c.Tree) {
+		return false
+	}
+	id, paused := s.pause.Paused()
+	if !paused {
+		return false
+	}
+	body := PauseFailure{Failure: Failure{Code: projectPaused}}
+	named := fmt.Sprintf("pause %d", id)
+	standing, found, err := s.pause.OpenPause(r.Context())
+	switch {
+	case err != nil:
+		s.logRequestFailure(r, err, "api: read the open pause for a refusal", "pause", id)
+	case found:
+		view := pauseViewOf(standing)
+		body.Pause, named = &view, describePause(standing)
+	}
+	body.Error = fmt.Sprintf("%s of %s refused: the project is paused (%s), and a paused project starts no turn of a role but the controller's; nothing of %s changed. Resume the project first",
+		request, c.Token, named, c.Token)
+	s.log.Info("api: refused a request: the project is paused", "request", request, "claim", c.Token, "pause", id)
+	writeJSON(w, http.StatusConflict, body)
+	return true
+}
+
 // stateRoute answers the state out of one repeatable-read, read-only snapshot, under a bound of
 // the daemon's own (stateReadBound, Options.StateReadBound). Before INFRA-3169 the only thing
 // that ended this read was the client giving up, so a read that never finished held its
@@ -862,13 +909,14 @@ func statementBound(bound time.Duration) int64 {
 // served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
-// below gateBasisContract, the contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request, served each root whether its
-// tree runs and added the phase awaiting_children, is served it without `treeRuns`, without the
-// `gatedSteps` of an issue any step of which reads `open_on_basis` or `pending_on_basis`, and
-// with an issue in awaiting_children read as `admitted` and that held word as `children_first`
-// (withoutGateBasis).
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); a caller below
+// pauseContract, the contract that added the project's pause, is served it without `paused` and
+// `lastPause` (withoutPause); and a caller below gateBasisContract, the contract that let a root's
+// gated step stand open on an ancestor's approval or wait on an ancestor's approval request,
+// served each root whether its tree runs and added the phase awaiting_children, is served it
+// without `treeRuns`, without the `gatedSteps` of an issue any step of which reads
+// `open_on_basis` or `pending_on_basis`, and with an issue in awaiting_children read as
+// `admitted` and that held word as `children_first` (withoutGateBasis).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -1001,6 +1049,7 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{pauseContract, carriesPause, withoutPause, "paused and lastPause"},
 	{gateBasisContract, carriesGateBasis, withoutGateBasis, "the issues' treeRuns, the gatedSteps " +
 		"of every issue with a step open or pending on an ancestor's basis, and the awaiting_children " +
 		"phase and held word read as admitted and children_first"},
@@ -1139,9 +1188,9 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Every later row of stateNarrowings
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
-// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's and
-// gateBasisContract's, the last this daemon's own contract — so a caller from it up is served the
-// measure, and none of what a later row adds until it reaches that row's contract (123,
+// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's, pauseContract's
+// and gateBasisContract's, the last this daemon's own contract — so a caller from it up is served
+// the measure, and none of what a later row adds until it reaches that row's contract (123,
 // INFRA-3146's contract, moves no shape of the state).
 const quietTimeContract = 111
 
@@ -1152,11 +1201,12 @@ const quietTimeContract = 111
 // INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional. mergeWaitContract, assignmentsContract, entryTimesContract and gateBasisContract
-// stand above it, so a caller in a pod at 132 through 176 is served the word and neither
-// `treeRuns` nor the gated steps of an issue a step of which stands on a basis, one at 132
-// through 145 no `entryQueuedAt`, `entryConfirmedAt` or `architectStalls` either, one at 132
-// through 140 no `assignments` either, and one at 132 no `mergeWait` either.
+// optional. mergeWaitContract, assignmentsContract, entryTimesContract, pauseContract and
+// gateBasisContract stand above it, so a caller in a pod at 132 through 181 is served the word and
+// neither `treeRuns` nor the gated steps of an issue a step of which stands on a basis, one at 132
+// through 177 no `paused` or `lastPause` either, one at 132 through 145 no `entryQueuedAt`,
+// `entryConfirmedAt` or `architectStalls` either, one at 132 through 140 no `assignments` either,
+// and one at 132 no `mergeWait` either.
 const waitingOnIssueContract = 132
 
 // mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
@@ -1191,8 +1241,18 @@ const assignmentsContract = 141
 // assignmentsContract and below this contract is served `assignments` and not these three keys.
 const entryTimesContract = 146
 
+// pauseContract is the daemon contract that added the project's pause to the state (version.go's
+// 178, dispatch://INFRA-3759): `paused`, the pause that stands with the roles it waits
+// on and the rows it holds, and `lastPause`, the newest ended pause while the project runs. A
+// plugin before it is served the state without either key: one built before sjawhar/legion#2788
+// reads it with a strict schema and would refuse the whole body for a key it does not name, and
+// one built after strips the key instead, so the strip is what keeps the pause from a caller that
+// did not ask for it rather than what keeps such a caller reading at all. The two are one band: a
+// state carries one of them at most, and both describe the one pause record.
+const pauseContract = 178
+
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 177,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 182,
 // dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
 // gated step's `basis` and the two status words `open_on_basis` and `pending_on_basis`, and each
 // root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
@@ -1207,12 +1267,15 @@ const entryTimesContract = 146
 // `admitted` and `children_first`, the values the wait replaced (withoutGateBasis). It is the
 // highest of the bands, this daemon's own contract, so of the pods whose claims record a contract
 // only one at it is served the basis, `treeRuns` and the two words; a pod whose claims record none
-// and a caller in no pod are served the state as it is (stateFor). entryTimesContract stands
-// right below it, and the two rows touch no key of each other's: withoutEntryTimes takes three
-// keys whatever the issue's phase, and withoutGateBasis reads no key it takes, so a caller at 146
-// through 176 is served both times and `architectStalls` and none of this contract's, and a caller
-// below 146 neither.
-const gateBasisContract = 177
+// and a caller in no pod are served the state as it is (stateFor). pauseContract stands right
+// below it, and the two rows touch no key of each other's: withoutPause takes the state's `paused`
+// and `lastPause`, and withoutGateBasis takes `treeRuns` and some `gatedSteps` and reads the phase
+// and the held word, so a caller at 178 through 181 is served the pause and none of this
+// contract's keys and words. entryTimesContract stands below pauseContract, and no row of the
+// three reads a key another takes, so a caller at 146 through 177 is served both times and
+// `architectStalls` and neither the pause nor this contract's, and a caller below 146 none of the
+// three.
+const gateBasisContract = 182
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1412,6 +1475,21 @@ func withoutMergeWait(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// carriesPause is whether state carries a key pauseContract added: `paused` while the project is
+// paused, `lastPause` while it runs after a pause has ended. Each is written only where there is
+// one, so this is asked of the state rather than answered true.
+func carriesPause(state State) bool {
+	return state.Paused != nil || state.LastPause != nil
+}
+
+// withoutPause is state with neither `paused` nor `lastPause`, the two keys pauseContract added to
+// this route; the rest of that contract is other routes. Both are pointers, dropped on the state's
+// own copy, so the state the source answered is left as it was.
+func withoutPause(state State) State {
+	state.Paused, state.LastPause = nil, nil
 	return state
 }
 

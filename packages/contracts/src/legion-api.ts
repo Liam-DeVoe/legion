@@ -432,7 +432,7 @@ const legionMergeWaitView = z.object({
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * the gate is open exactly when it equals `currentVersion`. A spec step that stands open on an
- * ancestor's approval (contract 177) holds the version its root registered there, which no person
+ * ancestor's approval (contract 182) holds the version its root registered there, which no person
  * approved: the step's entry in `gatedSteps` reads `open_on_basis` and names that approval, so a
  * reader that names a person's approval reads `gatedSteps`, not this. */
 const legionGateView = z.object({
@@ -447,7 +447,7 @@ const legionGateView = z.object({
 const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.GatedStepBasis` — the ancestor's approval a step stands open on, or the ancestor's open
- * approval request it waits on (contract 177): the ancestor `issue`, its document's `artifactId`
+ * approval request it waits on (contract 182): the ancestor `issue`, its document's `artifactId`
  * and the `version` a person approved or is asked to approve; for an approval, `approver`, who
  * gave it as Dispatch names an actor (`user:<login>`), and `approvedAt`, Dispatch's time of it
  * where Dispatch gave one; for a request, its `askId`. */
@@ -468,7 +468,7 @@ const legionGatedStepBasis = z.object({
  * tree's work), `waiting` (registered, and no person has reviewed its current version),
  * `approved` (a person approved its current version, which lets the work past the step) or
  * `changes_requested` (its reviewer asked for changes at its current version, with
- * `changesReason` the reason they gave; absent under every other status). Contract 177 adds two
+ * `changesReason` the reason they gave; absent under every other status). Contract 182 adds two
  * words and `basis` beside them: `open_on_basis`, a step its architect registered on a person's
  * approval of an ancestor's document, which lets the work past the step as an approval does and is
  * no person's approval of the root, its `approvedVersion` being the root's version registered; and
@@ -737,12 +737,12 @@ const legionIssue = z.object({
    * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
   /** Whether the tree this root roots runs under the workflow, as the daemon's own rule answers it
-   * (`record.TreeRuns`, contract 177): its lifecycle stands open under the workflow, the root does
+   * (`record.TreeRuns`, contract 182): its lifecycle stands open under the workflow, the root does
    * not linger, and the root does not wait in the line for that tree to be opened. On every root
    * the daemon records and on no other issue, since no other field decides it in every case: a
    * root a re-admission left at `todo` waiting for a slot runs nothing whatever its architect's
    * claim reads, and a root a person answered runs while it waits in the line for its resume.
-   * Absent from every issue of the body the route serves a caller before 177
+   * Absent from every issue of the body the route serves a caller before 182
    * (`api.stateFor`, `withoutGateBasis`), which is why a reader takes it as optional. */
   treeRuns: z.boolean().optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
@@ -1174,6 +1174,76 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
+/** `api.PauseActorView` — who paused the project or ended its pause (contract 178): the
+ * controller, with the session it acted from, or the operator, who acts from none. The daemon's
+ * store holds these two shapes and no other (`project_pauses_by_session` and
+ * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`), so a
+ * controller's entry always names its session. */
+const legionPauseActor = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
+  z.object({ kind: z.literal("operator") }),
+]);
+
+/** What every view of a pause carries: its id, when it began, who paused, and why. */
+const pauseFields = {
+  id: z.number().int().positive(),
+  since: timestamp,
+  by: legionPauseActor,
+  reason: nonEmptyString,
+};
+
+/** `api.PauseView` — one pause of the project (contract 178): its id, `since`, when it began,
+ * `by`, who paused, `reason`, why, and, once a resume has ended it, `endedAt` and `endedBy`, when
+ * and by whom. A pause answers this shape for the pause it began, and a refusal that names the
+ * pause that stands carries it; both are of a pause no resume has ended, so neither names an
+ * end. */
+const legionPause = z.object({
+  ...pauseFields,
+  endedAt: timestamp.optional(),
+  endedBy: legionPauseActor.optional(),
+});
+
+/** `api.PauseView` where the daemon writes only a pause a resume has ended: the pause a resume
+ * answers, the state's `lastPause`, and the last pause a refused resume names. `endedAt` and
+ * `endedBy` are both required there, since the store holds an end only with who ended it
+ * (`project_pauses_end_has_its_by` in the same migration). */
+const legionEndedPause = z.object({
+  ...pauseFields,
+  endedAt: timestamp,
+  endedBy: legionPauseActor,
+});
+
+/** `api.PauseStopView` — one claim whose stop the open pause still waits on: the claim, its issue
+ * and role, and `askedAt`, when the pause asked it to stop. A role in a turn stops when that turn
+ * ends, so it is listed until then. */
+const legionPauseStop = z.object({
+  claim: nonEmptyString,
+  issue: issueKey,
+  role: z.enum(LEGION_ROLES),
+  askedAt: timestamp,
+});
+
+/** `api.PauseHeldView` — one outbox row the open pause holds: its id, its kind, its issue,
+ * `claim`, the claim it is for, absent for a row that names none (an architect's notice, which
+ * the daemon routes when the row runs), and `waitedSeconds`, how long the row has been due. */
+const legionPauseHeldRow = z.object({
+  id: z.number().int().positive(),
+  kind: nonEmptyString,
+  issue: nonEmptyString,
+  claim: nonEmptyString.optional(),
+  waitedSeconds: z.number().int().nonnegative(),
+});
+
+/** `api.PausedView` — the project's open pause as the state shows it (contract 178): the pause,
+ * `waitsOn`, the claims whose stop it still waits on, and `held`, every row it holds. The rows
+ * are listed under the pause because the pause is the reason each one waits. Both lists are
+ * never null. */
+const legionPaused = z.object({
+  ...pauseFields,
+  waitsOn: z.array(legionPauseStop),
+  held: z.array(legionPauseHeldRow),
+});
+
 /** `api.State`, the body of `GET /legion/v1/state`. `controllerLocator` is absent until a session
  * registers as the project's controller: with the capability `legion controller start` fetched, or,
  * under `controller: daemon`, with the boot token of the daemon's own controller launch;
@@ -1208,7 +1278,15 @@ const legionConsumerLag = z.object({
  * the route strips it for a caller in a pod below 75, and for that caller alone, since a reader
  * before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
- * the shapes `internal/projection` answers before the route marks them carry none either. */
+ * the shapes `internal/projection` answers before the route marks them carry none either.
+ * `paused` is the project's open pause, with the claims whose stop it still waits on and the rows
+ * it holds, and `lastPause` is its newest ended pause, with when and by whom it was ended
+ * (contract 178). The daemon writes each only where there is one: `paused` while the project is
+ * paused and `lastPause` while it runs after a pause has ended, so a state carries one of them at
+ * most, and neither before the project's first pause. Both are optional for that reason, and for
+ * the one `wakesWaiting` is optional for: the route strips both for a caller in a pod below 178,
+ * and for that caller alone (`api.stateFor`, `withoutPause`), so a reader in such a pod learns
+ * nothing of the pause from a state that carries neither. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   contract: legionContract.optional(),
@@ -1219,6 +1297,8 @@ export const LegionStateResponse = z.object({
   strandedClaims: z.array(legionStrandedClaim),
   wakesWaiting: z.array(legionWakeWaiting).optional(),
   claimsToRefresh: z.number().int().nonnegative().optional(),
+  paused: legionPaused.optional(),
+  lastPause: legionEndedPause.optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
   capabilities: z.array(legionCapabilityState),
@@ -1393,7 +1473,10 @@ const legionReleaseRecord = z.object({
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
  * no release row is recorded for it), the role it was for, what woke it, when the wake reached the
  * daemon, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
- * that went ten minutes with no turn of the woken role. */
+ * that went ten minutes with no turn of the woken role. `pause` is the project pause that held
+ * the wake (contract 178), absent on a wake no pause held: a held wake pairs with no release, so
+ * its `release` is 0, and its time to the first turn measures the pause, so a reader of these
+ * records counts it apart (`releaseRecords` in `packages/pi-shared/src/legion-phase-ops.ts`). */
 const legionResumeRecord = z.object({
   id: z.number().int().positive(),
   release: z.number().int().nonnegative(),
@@ -1404,6 +1487,7 @@ const legionResumeRecord = z.object({
   podReadyAt: timestamp.optional(),
   firstTurnAt: timestamp.optional(),
   stuck: z.boolean(),
+  pause: z.number().int().positive().optional(),
 });
 
 /** `api.HoldRecord` — one streak of the idle rule keeping a pod past the idle period, with the
@@ -1687,6 +1771,39 @@ export const LegionWaveReleaseResponse = z.object({
   held: z.array(legionBlockedIssue),
 });
 
+/** `api.ProjectPauseResponse`, the answer to a pause of the project, the controller's `POST
+ * /legion/v1/project/pause` and the operator's `POST /legion/v1/operator/project/pause` alike:
+ * the pause it began. */
+export const LegionProjectPauseResponse = z.object({
+  pause: legionPause,
+});
+
+/** `api.ProjectResumeResponse`, the answer to a resume of the project, the controller's `POST
+ * /legion/v1/project/resume` and the operator's `POST /legion/v1/operator/project/resume` alike:
+ * the pause it ended, and `released`, how many held rows it let out to run. The daemon's log
+ * names those rows one by one. */
+export const LegionProjectResumeResponse = z.object({
+  pause: legionEndedPause,
+  released: z.number().int().nonnegative(),
+});
+
+/** `api.PauseFailure`, the refusal of a pause, of a resume, and of a request that would start a
+ * turn while the project is paused: the code and the sentence every workflow refusal carries,
+ * and what this one names beside them. `PAUSE_UNAVAILABLE` names the `setting` that turns the
+ * pause off, and none from a daemon that runs no workflow; `PROJECT_ALREADY_PAUSED` and
+ * `PROJECT_PAUSED` name the `pause` that stands; `PROJECT_NOT_PAUSED` names the `lastPause`,
+ * where one has ended. A blank reason's refusal (`PAUSE_REASON_REQUIRED`) names nothing beside
+ * its sentence and is the plain refusal (`LegionErrorResponse`). The daemon client reads a
+ * refusal's code and sentence alone (`LegionErrorResponse`), and the sentence says which pause it
+ * is, so this schema is what holds the rest of the body to the daemon's goldens. */
+export const LegionPauseFailureResponse = z.object({
+  code: nonEmptyString,
+  error: nonEmptyString,
+  setting: nonEmptyString.optional(),
+  pause: legionPause.optional(),
+  lastPause: legionEndedPause.optional(),
+});
+
 /** `api.GrantRequest`, the session form that mints one short-lived credential grant: it serves every
  * redemption for sixty seconds while its claim holds the registration that minted it. */
 export const LegionGrantRequest = z.strictObject({
@@ -1807,12 +1924,36 @@ export const LegionIssueStatusRequest = z.strictObject({
   status: z.enum(["todo", "backlog", "icebox"]),
 });
 
+/** `api.ProjectPauseRequest`, the controller's pause of the project: its grant, and why the
+ * project is paused. It names no project: the daemon pauses its own. The daemon refuses a grant
+ * that is not a controller's (`CONTROLLER_REQUIRED`), a blank reason (`PAUSE_REASON_REQUIRED`),
+ * a deployment whose configuration cannot hold a pause (`PAUSE_UNAVAILABLE`) and a project that
+ * is paused already (`PROJECT_ALREADY_PAUSED`). */
+export const LegionProjectPauseRequest = z.strictObject({
+  grantId: nonEmptyString,
+  reason: nonEmptyString,
+});
+
+/** `api.ProjectResumeRequest`, the controller's resume of the project: its grant. It ends the
+ * project's pause whoever made it, the operator's included, and the daemon refuses it for a
+ * project that is not paused (`PROJECT_NOT_PAUSED`). */
+export const LegionProjectResumeRequest = z.strictObject({
+  grantId: nonEmptyString,
+});
+
+/** `api.OperatorPauseRequest`, the operator's pause of the project (`legion project pause`, under
+ * the operator's bearer): why the project is paused. The operator's resume sends no body, so it
+ * has no schema here. The CLI sends both; the plugin never does. */
+export const LegionOperatorProjectPauseRequest = z.strictObject({
+  reason: nonEmptyString,
+});
+
 /** `api.GateRegisterRequest`, the tree root's architect's current Dispatch document approval
  * target, for one step of the deployment's design gate; the daemon refuses it from a child's own
  * architect (`GATE_ROOT_ONLY`). `step` is the step the document is for; a deployment
  * that gates one step alone takes a request that leaves it out, and one that gates several
  * refuses it (`GATE_STEP_REQUIRED`). `basisArtifactId`, `basisVersion` and `reason` name a basis
- * (contract 177): the same step's document of an ancestor on the issue's Dispatch `child_of`
+ * (contract 182): the same step's document of an ancestor on the issue's Dispatch `child_of`
  * chain, the version of it a person approved or an open approval request asks a person to
  * approve, and the architect's reason, 1 to 1,000 characters with no decision block, which the
  * daemon posts on the issue. The three come together or not at all (`BASIS_INCOMPLETE`), and the
@@ -1840,7 +1981,7 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * on its own issue, or an architect's on an issue it owns, from `accepting`. An architect may own
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
- * grant's (`ISSUE_NOT_GRANTS`). Since contract 177 the daemon refuses it on an issue in
+ * grant's (`ISSUE_NOT_GRANTS`). Since contract 182 the daemon refuses it on an issue in
  * `awaiting_children` (`WAITING_ON_CHILDREN`, naming its open Dispatch children and the start it
  * holds), which stands in no phase a move back acts on (dispatch://INFRA-3320, R11). */
 export const LegionPhaseBackwardRequest = z.strictObject({
@@ -1874,7 +2015,7 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 177 it
+ * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 182 it
  * is refused after that while a root whose design-gate step rests on the issue's approval is still
  * in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each), and last while a Dispatch
  * child of the issue is open (`SIGNOFF_CHILD_OPEN`, naming each with its Dispatch status): the

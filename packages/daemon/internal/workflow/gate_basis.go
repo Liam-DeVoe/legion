@@ -794,7 +794,7 @@ func (e *Engine) openPendingBasis(ctx context.Context, tx pgx.Tx, root record.Is
 	}
 	if current.AwaitingPerson() {
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its step's opening on the ancestor's approval by its resume", "issue", root.Key)
-		_, err := e.answerOpenGates(ctx, tx, current.Project, []record.Issue{*current}, nil)
+		_, err := e.answerOpenGates(ctx, tx, []record.Issue{*current}, nil)
 		return opened, err
 	}
 	return opened, e.notice(ctx, tx, root.Key, openedNotice(root.Key, opened, ""))
