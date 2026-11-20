@@ -40,12 +40,13 @@ how it was **Granted** (**Automatically**, or **Approved by** whoever decided it
 `judge:<model id>` where the model judge decided it in an approver's stead), and when it was
 created and expires. Click
 **Revoke** to end one at once; the session's next read of it is refused `GRANT_NOT_LIVE`. The
-broker allows it when you may see the grant and are its approver or its session's operator, and
-it allows anyone signed in who may see it to end a grant whose approver is `anyone`. A grant of a
-private Dispatch project you are not on, by a secret's project tag, a project its session's
-credential names, or an issue key its reason names, is hidden from you: the broker answers
-`404 NOT_FOUND`, as for a grant id no grant has, and a Dispatch that does not answer gets
-`503 PROJECT_ACCESS_UNAVAILABLE`, revoking nothing. It refuses everyone else
+broker allows it when you are the grant's approver or its session's operator, whatever project
+the grant touches and whether or not Dispatch answers: you are named on the grant, and a revoke
+only takes access away. It allows anyone signed in to end a grant whose approver is `anyone`,
+but only when they may see it: a grant of a private Dispatch project they are not on, by a
+secret's project tag, a project its session's credential names, or an issue key its reason
+names, answers `404 NOT_FOUND`, as for a grant id no grant has, and a Dispatch that does not
+answer gets `503 PROJECT_ACCESS_UNAVAILABLE`, revoking nothing. It refuses everyone else
 `NOT_APPROVER` — so a grant with no approver and no operator has no **Revoke** button at all. Its
 row reads **Ends with its machine login** instead:
 [revoke the service's machine login](#end-a-machines-login), which ends every session it started,

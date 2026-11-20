@@ -709,9 +709,10 @@ approval asks Dispatch again, afresh and not from the 30 seconds of answers the 
 before it is written, so a project that turned private while the judge was reading, or a session
 that took the request over and names a private project, leaves the request to a person. Its
 refusal's write asks Dispatch nothing, so a refusal is final whatever project the request belongs
-to; the checks that lead to it read Dispatch as every check does. A sign-in started from a
-private project's request names no approver to the provider, since the approver is part of what
-the page hides.
+to; the checks that lead to it read Dispatch as every check does. A signed-out sign-in names no
+approver to the provider for any record, since the page reads no record before a person signs in,
+and a record the person may not see answers as an id no record has before any sign-in starts,
+**Sign in as someone else** (`?switch=1`) included.
 
 ### A person's pod
 
