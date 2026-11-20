@@ -1074,7 +1074,7 @@ test("Escape calls onClose", async () => {
   }
 });
 
-test("Escape closes the palette even when pressed before focus has moved into it", async () => {
+test("Escape closes the palette with the focus outside it", async () => {
   const user = userOnFakeClock();
   let closed = 0;
   const view = renderPalette({
@@ -1084,10 +1084,10 @@ test("Escape closes the palette even when pressed before focus has moved into it
   });
 
   try {
-    // The dialog moves focus inside itself one animation frame after opening; a key pressed
-    // in that frame lands on whatever was focused before (the document editor, the body).
-    // user-event sends its key to whatever holds focus, so the focus the dialog took is given
-    // up here: the press has to reach the dialog from outside it, as a press in that frame does.
+    // The palette takes the focus in the commit that opens it, and a press on its own text gives
+    // the focus to the page; a key pressed then lands outside the palette. user-event sends its
+    // key to whatever holds focus, so the focus the palette took is given up here: the press has
+    // to reach the dialog from outside it, as a press after one on the palette's text does.
     (document.activeElement as HTMLElement | null)?.blur();
     await user.keyboard("{Escape}");
     expect(closed).toBe(1);
