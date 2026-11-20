@@ -106,13 +106,29 @@ func requestWaitingRoot(t *testing.T) (*pgxpool.Pool, *Admission) {
 	return pool, admission
 }
 
+// waitingRootFor is LEGION-208 waiting on a person, and the approval request of its own that its
+// pending registration finds open: waiting on its own approval request ask-approval
+// (requestWaitingRoot) where ownRequest is set, and otherwise on a question of its own
+// (waitingRoot), with no such request.
+func waitingRootFor(t *testing.T, ownRequest bool) (*pgxpool.Pool, *Admission, string) {
+	t.Helper()
+	if ownRequest {
+		pool, admission := requestWaitingRoot(t)
+		return pool, admission, "ask-approval"
+	}
+	pool, admission := waitingRoot(t, config.DesignGateRootIssues)
+	return pool, admission, ""
+}
+
 // k11's awaiting-person runs (dispatch://INFRA-3320, R1), which the scratch Dispatch rig does not
 // build, since no rig act puts a root in awaiting_person with its architect's ask of its own. A
 // root that waits on a person keeps that wait beside its step's wait on an ancestor's open approval
 // request: the pending registration declares no hand-back, the person's approval of the ancestor's
 // version answers the wait as an approval does, and a changes request on it answers the wait as a
 // changes request does, with no notice beside either; the resume task names the ancestor's
-// document, its version and what happened.
+// document, its version and what happened. The changes request answers so a root waiting on a
+// question of its own and one waiting on its own approval request alike, and the latter's resume
+// names that request as still with the person.
 //
 // A root waiting on its own approval request whose architect makes the pending registration and
 // then resolves that request: the resolve, by a session of the root's own tree, answers the wait
@@ -125,10 +141,14 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 	const ancestorDocument = "the primary document of LEGION-150 (dispatch://LEGION-150/spec)"
 	for _, tc := range []struct {
 		name string
-		act  intake.DispatchArtifact
-		by   record.Answer
-		says []string
-		not  []string
+		// ownRequest is a root waiting on its own approval request (requestWaitingRoot), whose
+		// pending registration found that request open; otherwise the root waits on a question of
+		// its own (waitingRoot).
+		ownRequest bool
+		act        intake.DispatchArtifact
+		by         record.Answer
+		says       []string
+		not        []string
 	}{
 		{
 			name: "a question of its own, then the person's approval of the ancestor's version", act: ancestorAct(intake.DispatchArtifactApproved, 60, ""),
@@ -146,10 +166,19 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 				"Still with the person: ask ask-q."},
 			not: []string{"A person requested changes to your", workflow.DesignApprovedWake},
 		},
+		{
+			name: "its own approval request, then the person's changes request on the ancestor's version", ownRequest: true,
+			act: ancestorAct(intake.DispatchArtifactChangesRequested, 61, "name the rollback path"), by: record.AnsweredByChanges,
+			says: []string{"The wait of your spec step on an ancestor's approval request ended: user:alice requested changes on version 4 of " +
+				ancestorDocument + `: "name the rollback path".`, "The spec step of LEGION-208 no longer waits on approval request ask-150 of version 4 of " +
+				ancestorDocument, "The step stays closed, registered on the primary document of LEGION-208 (dispatch://LEGION-208/spec) with no basis.",
+				"Your primary document is not approved at version 3.", "Still with the person: the approval request for primary document version 3."},
+			not: []string{"A person requested changes to your", workflow.DesignApprovedWake, "Do not request approval"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool, admission := waitingRoot(t, config.DesignGateRootIssues)
-			registeredPendingWhileWaiting(t, pool, admission, "")
+			pool, admission, requestAsk := waitingRootFor(t, tc.ownRequest)
+			registeredPendingWhileWaiting(t, pool, admission, requestAsk)
 
 			// The act answers the wait, and the pass that applied it resumes the root on the row
 			// it kept through the wait.

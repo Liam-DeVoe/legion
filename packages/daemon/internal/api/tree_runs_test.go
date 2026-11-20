@@ -39,13 +39,15 @@ func (projectedState) State(ctx context.Context, tx pgx.Tx) (api.State, []superv
 
 // The served `treeRuns` is the daemon's own answer to whether a root's tree runs (record.TreeRuns,
 // dispatch://INFRA-3320, R4), on every root it records, read through the route a session reads
-// its record from, over the state the projection builds from a real store. Four roots, each a
+// its record from, over the state the projection builds from a real store. Five roots, each a
 // case no other field of the record decides alone: a root whose tree runs, true; a root whose
-// tree finished and lingers, false, though its lifecycle still stands open; a root a re-admission
-// left at todo waiting in the line for its tree to be opened again, false, though the lifecycle
-// of the run that ended stands open too; and a root a person answered, which waits in the line
-// for its architect's resume, true, since its tree runs while it waits there. A child carries no
-// such key.
+// tree finished and lingers, false, though its lifecycle still stands open; a root a person moved
+// to the backlog, which the leave left lingering at done (workflow's beginLinger) with Dispatch
+// showing backlog, false, though its lifecycle stands open too; a root a re-admission left at todo
+// waiting in the line for its tree to be opened again, false, though the lifecycle of the run that
+// ended stands open as well; and a root a person answered, which waits in the line for its
+// architect's resume, true, since its tree runs while it waits there. A child carries no such
+// key.
 func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_api_test")
@@ -58,7 +60,7 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 		return record.Issue{Key: key, Tree: key, Project: treeRunsProject, Title: key, Phase: at, Generation: generation, Status: status,
 			Rank: rank, HandedOver: true, LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	}
-	const running, lingering, readmitted, answered, child = "LEGION-300", "LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304"
+	const running, lingering, readmitted, answered, child, parked = "LEGION-300", "LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-305"
 	lingerUntil := treeRunsNow.Add(time.Hour)
 	answeredAt := treeRunsNow.Add(-10 * time.Minute)
 	parent := running
@@ -70,20 +72,22 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 		root(answered, phase.AwaitingPerson, "in_progress", 1, "D"),
 		{Key: child, Tree: running, Parent: &parent, Project: treeRunsProject, Title: child, Phase: phase.Admitted, Generation: 1,
 			Status: "todo", Rank: "E", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+		root(parked, phase.Done, "backlog", 1, "F"),
 	}
 	issues[1].LingerUntil = &lingerUntil
 	issues[3].Awaiting = &record.Awaiting{Ask: "ask-303", Since: record.EventMark{Seq: 5, At: treeRunsNow.Add(-time.Hour)},
 		AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk}
+	issues[5].DispatchStatus, issues[5].LingerUntil = "backlog", &lingerUntil
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
 		for _, issue := range issues {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
 		}
-		// Every one of the four trees once opened, and none has been cleaned up: the lingering
-		// tree and the re-admitted one stand open from the run that ended, which is why the
-		// lifecycle alone would call both running.
-		for _, tree := range []string{running, lingering, readmitted, answered} {
+		// Every one of the five trees once opened, and none has been cleaned up: the lingering
+		// tree, the parked one and the re-admitted one stand open from the run that ended, which
+		// is why the lifecycle alone would call each of them running.
+		for _, tree := range []string{running, lingering, readmitted, answered, parked} {
 			if _, err := records.OpenTreeLifecycle(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow); err != nil {
 				return err
 			}
@@ -133,6 +137,7 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 	}{
 		{running, true},
 		{lingering, false},
+		{parked, false},
 		{readmitted, false},
 		{answered, true},
 	} {
@@ -140,6 +145,9 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 		if served == nil || *served != tc.runs {
 			t.Errorf("%s is served treeRuns %v, want %t", tc.key, served, tc.runs)
 		}
+	}
+	if served := body.Issues[parked].TreeRuns; served != nil {
+		t.Logf("%s, at status backlog with its linger set and its lifecycle open, is served treeRuns %t", parked, *served)
 	}
 	if served := body.Issues[child].TreeRuns; served != nil {
 		t.Errorf("%s, a child of %s, is served treeRuns %t, want no such key on an issue that roots no tree", child, running, *served)
