@@ -1694,6 +1694,42 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "redact.url-error/op"
+      },
+      {
+        "row": "brokerclient-answer-echo-302",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/brokerclient/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokerclient.answer-echo/302-words"
+      },
+      {
+        "row": "brokerclient-answer-echo-502",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/brokerclient/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokerclient.answer-echo/502-words"
+      },
+      {
+        "row": "brokerclient-answer-echo-token-type",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/brokerclient/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokerclient.answer-echo/200-token-type"
+      },
+      {
+        "row": "brokerclient-answer-echo-credential-expires-at",
+        "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
+        "files": [
+          "packages/envoy/internal/brokerclient/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokerclient.answer-echo/200-credential-expires-at"
       }
     ],
     "boundary_fields": {
@@ -3583,6 +3619,34 @@
       "production": "brokerclient Client.post, redact.Carried, RemoteText.WithoutTokens"
     },
     {
+      "id": "brokerclient-answer-echo-302",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/302-words",
+      "production": "brokerclient Client.post: a 3xx's words, through the record taken once before the status switch (redact.Carried)"
+    },
+    {
+      "id": "brokerclient-answer-echo-502",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/502-words",
+      "production": "brokerclient Client.post: a 5xx's words, through the record taken once before the status switch (redact.Carried)"
+    },
+    {
+      "id": "brokerclient-answer-echo-token-type",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/200-token-type",
+      "production": "brokerclient Client.read: a refusal quotes no value the broker wrote"
+    },
+    {
+      "id": "brokerclient-answer-echo-credential-expires-at",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/200-credential-expires-at",
+      "production": "brokerclient Client.read: a refusal quotes no value the broker wrote"
+    },
+    {
       "id": "record-interleaved",
       "requirement": "r3-each-site",
       "package": "./internal/oidc",
@@ -5077,6 +5141,16 @@
       "site": "the *url.Error OAuth2 copied with its URL as it came, which a redirect sets",
       "source": "the field census at class B",
       "guard": "boundary-url-error-url"
+    },
+    {
+      "site": "brokerclient.(*Client).post: a 3xx or 5xx answer's words printed with no request record",
+      "source": "the review of #4368 at 63bd188095, finding 1",
+      "guard": "brokerclient-answer-echo-502"
+    },
+    {
+      "site": "brokerclient.(*Client).read: token_type, credential_expires_at and expires_in quoted with no request record",
+      "source": "the review of #4368 at 63bd188095, finding 2",
+      "guard": "brokerclient-answer-echo-token-type"
     }
   ]
 }

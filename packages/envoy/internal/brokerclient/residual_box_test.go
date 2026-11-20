@@ -46,7 +46,7 @@ func answerWith(t *testing.T, field string, value any) string {
 // TestATokenAnswersFieldsAreReadOnlyThroughTheBox: the token type is compared as it came, so a
 // lowercase dpop is the closed TokenTypeDPoP; the expiry and the credential's expiry are parsed, a
 // JSON string holding a number among them; and each that is not this grant's is refused in words
-// that quote it only as the rule reads it, so a credential's URL in it prints none of its secrets.
+// that quote none of it, so a credential's URL in it prints nothing of the URL at all.
 func TestATokenAnswersFieldsAreReadOnlyThroughTheBox(t *testing.T) {
 	token, err := tradeAt(t, http.StatusOK, answerWith(t, "token_type", "dpop"))
 	if err != nil || token.TokenType != TokenTypeDPoP || fmt.Sprint(token.TokenType) != "DPoP" {
@@ -67,8 +67,8 @@ func TestATokenAnswersFieldsAreReadOnlyThroughTheBox(t *testing.T) {
 				t.Fatalf("Token took %+v", token)
 			}
 			redacttest.RequireNone(t, "the refusal of "+field, err.Error())
-			if field != "expires_in" && !strings.Contains(err.Error(), `"`+redacttest.Shown+`"`) {
-				t.Errorf("the refusal of %s is %q, want it to quote the field as the rule reads it, %q", field, err, redacttest.Shown)
+			if strings.Contains(err.Error(), "issuer.example") {
+				t.Errorf("the refusal of %s is %q, want it to quote none of the field", field, err)
 			}
 		})
 	}

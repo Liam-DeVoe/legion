@@ -31,7 +31,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -671,6 +670,10 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))
 	}
+	// Whatever answers in the broker's place can echo any credential the trade carried (the subject
+	// token, the actor token, the proof), under any status: every word of the answer this trade
+	// prints is held with each of them redacted (RemoteText.WithoutTokens), and compares as it came.
+	carried := redact.Carried(resp)
 	var answer tokenAnswer
 	if err := json.Unmarshal(body, &answer); err != nil && resp.StatusCode/100 == 2 {
 		// The decoder's error quotes the value it could not read, which is the answer's own
@@ -688,14 +691,11 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// prints the status alone, since a broker, or anyone answering for it, can repeat
 		// the credential the address carries in the words it answers with; any other
 		// answer prints its words as the address lets them (brokeraddr.Address.WordsOf).
-		if resp.StatusCode/100 == 4 && !answer.Error.IsEmpty() {
-			// The answer's words print with every credential the trade carried redacted, and compare
-			// as they came (RemoteText.WithoutTokens).
-			carried := redact.Carried(resp)
-			answer.Error, answer.ErrorDescription = answer.Error.WithoutTokens(carried...), answer.ErrorDescription.WithoutTokens(carried...)
-			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
+		said, described := answer.Error.WithoutTokens(carried...), answer.ErrorDescription.WithoutTokens(carried...)
+		if resp.StatusCode/100 == 4 && !said.IsEmpty() {
+			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, said, described))
 		}
-		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.WordsOf(answer.Error))
+		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.WordsOf(said))
 	}
 	return c.read(shown, answer)
 }
@@ -705,30 +705,24 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 // that kept one would hold a credential this contract says is never minted. shown is the token
 // endpoint as a message may print it (brokeraddr.Address.Call), never the endpoint as built.
 //
-// The three values these messages quote are the broker's own answer, held as redact.RemoteText,
-// so each prints, Go-quoted, as it prints itself beside a clean address and as
-// brokeraddr.WordsNotPrinted beside any other: whoever answers for the broker at an address that
-// is not clean could put the credential the address carries in them. Each is read only through
-// the box: the token type compared (EqualFold), the expiry and the credential's expiry parsed
-// (Int64, Time), and none of them is kept as text.
+// A refusal here quotes no value the broker wrote, as the TypeScript client's quotes none
+// (packages/broker-client, TokenClient's read): whatever answers for the broker can put in them the
+// subject token it was sent, and a 200's values are read through no request record. Each of the
+// three it reads is held as redact.RemoteText and read only through the box: the token type
+// compared (EqualFold), the expiry and the credential's expiry parsed (Int64, Time), and none of
+// them is kept as text.
 func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
-	quoted := func(value redact.RemoteText) string {
-		if !c.brokerURL.Clean() {
-			return brokeraddr.WordsNotPrinted
-		}
-		return strconv.Quote(value.String())
-	}
 	switch {
 	case answer.AccessToken == "":
 		return nil, fmt.Errorf("the broker at %s answered no access token", shown)
 	case !answer.TokenType.EqualFold(TokenTypeDPoP.String()):
-		return nil, fmt.Errorf("the broker at %s answered token_type %s, and this grant mints DPoP-bound tokens alone", shown, quoted(answer.TokenType))
+		return nil, fmt.Errorf("the broker at %s answered a token_type that is not DPoP, and this grant mints DPoP-bound tokens alone", shown)
 	case answer.RefreshToken != "":
 		return nil, fmt.Errorf("the broker at %s answered a refresh token, which this grant never issues; a renewal trades a fresh identity token instead", shown)
 	}
 	seconds, ok := answer.ExpiresIn.Int64()
 	if !ok || seconds <= 0 {
-		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%s)", shown, quoted(answer.ExpiresIn.RemoteText))
+		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (a positive number of seconds)", shown)
 	}
 	token := &Token{
 		AccessToken:  answer.AccessToken,
@@ -739,7 +733,7 @@ func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
 	if !answer.CredentialExpiresAt.IsEmpty() {
 		expires, ok := answer.CredentialExpiresAt.Time(time.RFC3339)
 		if !ok {
-			return nil, fmt.Errorf("the broker at %s answered a %s that is no RFC 3339 time (%s)", shown, oauthwire.ExtraCredentialExpiresAt, quoted(answer.CredentialExpiresAt))
+			return nil, fmt.Errorf("the broker at %s answered a %s that is no RFC 3339 time", shown, oauthwire.ExtraCredentialExpiresAt)
 		}
 		token.CredentialExpiresAt = expires.UTC()
 	}
