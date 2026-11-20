@@ -38,8 +38,11 @@
 //     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
 // Every child is started in a process group of its own (Setpgid) and every stop signals that
-// group, so Oh My Pi and the shim go together and a failed or finished run leaves no child
-// behind: the test's cleanup kills every group the runtime ever started, whatever the proof did.
+// group, so Oh My Pi and the shim go together: the test's cleanup kills every group the runtime
+// ever started, whatever the proof did. What Oh My Pi starts in a session of its own, its daemon
+// broker and the browser that broker runs, is in no such group; the cleanup testbin.OMPHome
+// registers for the run's Oh My Pi HOME ends it after this one, so a failed or finished run
+// leaves no process behind.
 //
 // Two things here are a step's rather than a runtime's, and both are of that process group: a
 // step kills one out from under the daemon (killProcessGroup), and a step holds the runtime's
