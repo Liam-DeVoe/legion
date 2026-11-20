@@ -231,44 +231,66 @@ type pauseReader interface {
 
 // releasePauseRefusal reads through db what of the project's pause refuses a project release of
 // project, the claim token's spelling: the open pause (readOpenPauseByToken), and each pod hold
-// that stands, with the claims of its issue a pause stopped. It answers nil while neither stands.
-// The pause's tables hold the Dispatch key, which the token lowercases, so the holds are read by
-// lower(project), as readOpenPauseByToken reads the pause.
+// that stands (openPausePodHolds), with the claims of its issue stored suspended by `released`
+// (heldPausePods). It answers nil while neither stands.
 func releasePauseRefusal(ctx context.Context, db pauseReader, project string) (*ProjectPausedError, error) {
 	open, paused, err := readOpenPauseByToken(ctx, db, project, "")
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `select h.issue, h.pause_id, h.held_at,
-		coalesce(array_agg(c.token order by c.token) filter (where c.token is not null), '{}')
-		from project_pause_pod_holds h
-		left join claims c on c.project = $1 and c.issue = h.issue and c.state = $2 and c.suspended_by = $3
-		where lower(h.project) = $1 and h.ended_at is null
-		group by h.id order by h.issue`, project, string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
+	holds, err := openPausePodHolds(ctx, db, project)
 	if err != nil {
-		return nil, fmt.Errorf("read the pods a pause of %s holds: %w", project, err)
+		return nil, err
 	}
-	defer rows.Close()
-	var held []HeldPausePod
-	for rows.Next() {
-		var pod HeldPausePod
-		var tokens []string
-		if err := rows.Scan(&pod.Issue, &pod.Pause, &pod.HeldAt, &tokens); err != nil {
-			return nil, fmt.Errorf("read the pods a pause of %s holds: %w", project, err)
-		}
-		pod.Claims = make([]claim.Token, len(tokens))
-		for i, token := range tokens {
-			pod.Claims[i] = claim.Token(token)
-		}
-		held = append(held, pod)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the pods a pause of %s holds: %w", project, err)
-	}
-	if !paused && len(held) == 0 {
+	if !paused && len(holds) == 0 {
 		return nil, nil
 	}
+	held, err := heldPausePods(ctx, db, project, holds)
+	if err != nil {
+		return nil, err
+	}
 	return &ProjectPausedError{Project: project, Pause: open, Paused: paused, Held: held}, nil
+}
+
+// heldPausePods is each of holds as a refused release names it, in the order of holds: its issue,
+// its pause and since when, and the claims of project, the claim token's spelling, on its issue
+// stored suspended by `released` (supervise.SuspendedByReleased), read through q in token order
+// and never nil. It reads nothing where holds is empty, and answers nil.
+func heldPausePods(ctx context.Context, q rowsQuerier, project string, holds []PausePodHold) ([]HeldPausePod, error) {
+	if len(holds) == 0 {
+		return nil, nil
+	}
+	issues := make([]string, len(holds))
+	for i, hold := range holds {
+		issues[i] = hold.Issue
+	}
+	rows, err := q.Query(ctx, `select issue, token from claims
+		where project = $1 and issue = any($2) and state = $3 and suspended_by = $4 order by token`,
+		project, issues, string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of the pods a pause of %s holds: %w", project, err)
+	}
+	defer rows.Close()
+	released := make(map[string][]claim.Token, len(holds))
+	for rows.Next() {
+		var issue, token string
+		if err := rows.Scan(&issue, &token); err != nil {
+			return nil, fmt.Errorf("read the claims of the pods a pause of %s holds: %w", project, err)
+		}
+		released[issue] = append(released[issue], claim.Token(token))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claims of the pods a pause of %s holds: %w", project, err)
+	}
+	held := make([]HeldPausePod, len(holds))
+	for i, hold := range holds {
+		claims := released[hold.Issue]
+		if claims == nil {
+			claims = []claim.Token{}
+		}
+		held[i] = HeldPausePod{Issue: hold.Issue, Pause: hold.Pause, HeldAt: hold.HeldAt, Claims: claims}
+	}
+	return held, nil
 }
 
 // runningProjectReleaseTx is project's release whose acts still run (ProjectRelease.Runs), read

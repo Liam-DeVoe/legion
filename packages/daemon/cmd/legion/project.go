@@ -169,22 +169,21 @@ func pauseActorWords(by api.PauseActorView) string {
 	return "the " + by.Kind
 }
 
-// newProjectReleaseCommand is `legion project release`: the three flags every operator command
-// takes, and the release's own --bound, --wait, --dry-run and --json. Its --wait is its own rather
-// than withWait's, since the call it bounds waits out the release's bound (waitUntil).
+// newProjectReleaseCommand is `legion project release`: the flags every project command takes
+// (newProjectCall), and the release's own --bound, --wait and --dry-run. Its --wait is its own
+// rather than withWait's, since the call it bounds waits out the release's bound (waitUntil).
 func newProjectReleaseCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "release",
 		Short: "release every pod of the project, asking each role with unpushed work to push first, for a move to another cluster",
 		Args:  noArguments,
 	}
-	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
+	c := newProjectCall(cmd, stdout, stderr)
 	bound := c.flags.Duration("bound", 0, "how long the release waits for the roles it asks before it deletes every pod still waiting (default the daemon's pod_update_grace_minutes)")
 	wait := c.flags.Duration("wait", 0, "how long the whole command may take before it ends, saying the release goes on (default the release's bound plus 30m)")
 	dryRun := c.flags.Bool("dry-run", false, "print what a release would do now: read each pod's workspace, and ask, stop and save nothing")
-	asJSON := c.flags.Bool("json", false, "print the release as the daemon served it, one JSON object")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
-		return runProjectRelease(ctx, c, *bound, *wait, *dryRun, *asJSON)
+		return runProjectRelease(ctx, c.operatorCall, *bound, *wait, *dryRun, *c.asJSON)
 	})
 	return cmd
 }

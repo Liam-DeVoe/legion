@@ -2462,8 +2462,8 @@ test("the state goldens carry the pause that stands and the last pause, and both
 // which keeps the code and the sentence of every one of them. Contract 180's two refusals between
 // the pause and the project release are among them: a pause while a release runs names nothing
 // beside its sentence, and a release while a pause holds the project names the pause that stands
-// and each pod a pause still holds, with the claims of it a pause stopped; a held pod that names
-// no issue key, or no list of claims, is no such pod.
+// and each pod a pause still holds, with the claims of it stored suspended by `released`; a held
+// pod that names no issue key, or no list of claims, is no such pod.
 test("the pause goldens answer the pause begun and the pause ended, and each refusal names what its code names", () => {
   const pause = {
     id: 7,

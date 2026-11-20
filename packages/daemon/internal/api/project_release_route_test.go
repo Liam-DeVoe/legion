@@ -240,11 +240,11 @@ func TestProjectReleaseRouteRefusesOnTheTmuxRuntime(t *testing.T) {
 
 // dispatch://INFRA-3583 R13: a release the daemon's release refuses because a pause holds the
 // project (store.ProjectPausedError) is answered 409 PROJECT_PAUSED, a dry run's included: the
-// body names the pause that stands and each pod a pause still holds, with the claims of it a pause
-// stopped, and the sentence names those pods and the resume that ends each hold. A refusal that
-// names only held pods, once the project runs again, names no pause and tells the operator to
-// resume a role of each pod rather than the project. The daemon's own release over a real store is
-// TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject (internal/daemon).
+// body names the pause that stands and each pod a pause still holds, with the claims of it stored
+// suspended by `released`, and the sentence names those pods and the resume that ends each hold.
+// A refusal that names only held pods, once the project runs again, names no pause and tells the
+// operator to resume a role of each pod rather than the project. The daemon's own release over a
+// real store is TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject (internal/daemon).
 func TestProjectReleaseRouteAnswersPausedWhileAPauseHoldsTheProject(t *testing.T) {
 	held := store.HeldPausePod{Issue: "LEGION-208", Pause: 7, HeldAt: fakeReleaseStarted, Claims: []claim.Token{"legion-legion-legion-208-implementer"}}
 	standing := store.Pause{ID: 7, Project: "LEGION", Since: fakeReleaseStarted, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "an outage"}

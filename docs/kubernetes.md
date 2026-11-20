@@ -7031,7 +7031,7 @@ The daemon logs four messages, each with the claim it is about where it has one:
   A pause once the release has finished is taken, although the release's mark still holds every start until the daemon's next boot: a finished release reads, asks, stops and deletes nothing more, and every role it stopped is stored suspended by `project_release`, so the pause stops no role then, and the next boot comes up paused, holding the start of each of those claims as a held `start` row until the resume.
 
 `legion project release` ([Releasing a project's pods](#releasing-a-projects-pods)) answers 409 `PROJECT_PAUSED` while the project is paused and while a pause's hold stands on a pod, its dry run included, and records, stops and deletes nothing: a release deletes a held pod in which no role process runs with no read and no ask, so the work its roles did not push would go with the pod.
-The refusal names the pause that stands and each pod a pause still holds (`heldPods`), with the claims of the pod that a pause stopped.
+The refusal names the pause that stands and each pod a pause still holds (`heldPods`), with the claims of the pod stored suspended by `released`.
 Resume the project first, then end each pod's hold by resuming one role of the pod (`legion claims resume --claim <token>`), which works once the project runs, and run the release again.
 
 **A rolling restart.**

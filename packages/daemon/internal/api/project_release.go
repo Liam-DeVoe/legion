@@ -318,11 +318,11 @@ func (s *server) startProjectRelease(w http.ResponseWriter, r *http.Request) {
 
 // releasePausedFailure is the refusal of a project release a pause holds (store.ProjectPausedError,
 // dispatch://INFRA-3583 R13): PROJECT_PAUSED, naming the pause that stands where one does, and each
-// pod a pause still holds with the claims of it a pause stopped. Its sentence says why the release
-// waits — it deletes a pod in which no role runs without reading the work its roles did not push —
-// that nothing was recorded, stopped or deleted, and how an operator ends each hold: the resume of
-// the project, then `legion claims resume --claim <token>` of one role of each held pod, whose
-// ready ends that pod's hold.
+// pod a pause still holds with its claims stored suspended by `released`. Its sentence says why the
+// release waits — it deletes a pod in which no role runs without reading the work its roles did
+// not push — that nothing was recorded, stopped or deleted, and how an operator ends each hold:
+// the resume of the project, then `legion claims resume --claim <token>` of one role of each held
+// pod, whose ready ends that pod's hold.
 func releasePausedFailure(refused *store.ProjectPausedError) PauseFailure {
 	body := PauseFailure{Failure: Failure{Code: projectPaused}}
 	var why []string
@@ -342,7 +342,7 @@ func releasePausedFailure(refused *store.ProjectPausedError) PauseFailure {
 			body.HeldPods[i] = PauseHeldPodView{Issue: held.Issue, Pause: held.Pause, HeldAt: held.HeldAt.UTC(), Claims: claims}
 			pods[i] = held.Issue + " (" + heldPodClaimsWords(claims) + ")"
 		}
-		why = append(why, fmt.Sprintf("a pause still holds %d pod(s) whose roles it stopped: %s", len(pods), strings.Join(pods, "; ")))
+		why = append(why, fmt.Sprintf("a pause still holds %d pod(s), each with its claims stored suspended by `released`: %s", len(pods), strings.Join(pods, "; ")))
 	}
 	end := "End each pod's hold by resuming one role of the pod (legion claims resume --claim <token>), whose ready ends the hold, then run the release again"
 	if refused.Paused {
@@ -354,11 +354,11 @@ func releasePausedFailure(refused *store.ProjectPausedError) PauseFailure {
 }
 
 // heldPodClaimsWords is the claims of a held pod as the release's refusal names them: the ones
-// whose resume ends the hold, or, where the store holds none of the pod's claims stopped by a
-// pause, where to find the pod's claims.
+// whose resume ends the hold, or, where the store holds none of the pod's claims suspended by
+// `released`, where to find the pod's claims.
 func heldPodClaimsWords(claims []claim.Token) string {
 	if len(claims) == 0 {
-		return "no claim of it is stored stopped by a pause; legion claims list names its claims"
+		return "no claim of it is stored suspended by `released`; legion claims list names its claims"
 	}
 	tokens := make([]string, len(claims))
 	for i, token := range claims {

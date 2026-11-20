@@ -327,12 +327,12 @@ func TestAProjectReleasesRecordGrowsFinishesAndEndsAtTheBoot(t *testing.T) {
 
 // dispatch://INFRA-3583 R13: a pause that holds the project refuses a project release before it
 // records anything. While the project is paused, the refusal names the pause that stands and each
-// pod a pause holds, with the claims of the pod a pause stopped (stored suspended by `released`)
-// in token order. Once the resume has ended the pause, a pod whose hold still stands — no role of
-// it has run again — still refuses the release, naming that pod and no pause. Once that hold has
-// ended at a role's ready, the release is recorded. The refusal reads alike on the pool, where the
-// release asks it before it sets its mark, and in the release's own transaction, which then
-// records nothing: no release, and no take-over of the idle release in flight.
+// pod a pause holds, with the claims of the pod stored suspended by `released` in token order. Once
+// the resume has ended the pause, a pod whose hold still stands — no role of it has run again —
+// still refuses the release, naming that pod and no pause. Once that hold has ended at a role's
+// ready, the release is recorded. The refusal reads alike on the pool, where the release asks it
+// before it sets its mark, and in the release's own transaction, which then records nothing: no
+// release, and no take-over of the idle release in flight.
 func TestAProjectReleaseIsRefusedWhileAPauseHoldsItsProject(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

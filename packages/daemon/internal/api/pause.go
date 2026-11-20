@@ -128,9 +128,9 @@ type PauseFailure struct {
 
 // PauseHeldPodView is one pod a pause still holds, as a refused project release names it
 // (store.HeldPausePod): its issue, the pause that holds it and since when, and the claims of the
-// pod a pause stopped, stored suspended by `released`, in token order and never null. An
-// operator's `legion claims resume --claim <token>` of one of them runs a role of the pod again,
-// and its ready ends the hold.
+// pod stored suspended by `released`, the source a pause stops a role by, in token order and
+// never null. An operator's `legion claims resume --claim <token>` of one of them runs a role of
+// the pod again, and its ready ends the hold.
 type PauseHeldPodView struct {
 	Issue  string        `json:"issue"`
 	Pause  int64         `json:"pause"`
