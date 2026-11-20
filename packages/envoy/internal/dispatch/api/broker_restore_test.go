@@ -27,25 +27,13 @@ const (
 	brokerRestoredLead = "The other way round, when it is **the broker's database that was restored alone**"
 )
 
-// bearerOnACommandLine is a curl whose arguments hold a bearer token: the header given on the
-// command line rather than read from a file with -H @file.
-var bearerOnACommandLine = regexp.MustCompile(`\bcurl\b[^\n]*-H\s+["']Authorization: Bearer`)
-
 // TestTheRunbookPassesNoBearerTokenOnACommandLine: a token in curl's arguments sits in
-// /proc/<pid>/cmdline while the call runs, which every user of the box can read. Every curl of
-// Dispatch's runbook that sends a token reads its header from a file the step writes first
-// (`-H @"$header"`), the directory read of the restore recovery among them.
-//
-// Control, in the test: the line the runbook's directory read had before this change is caught.
+// /proc/<pid>/cmdline while the call runs, which every user of the box can read. The daemon's
+// textcheck (TestNoTextGivesACredentialAsACommandArgument) holds every tracked file, this runbook
+// among them, to no credential given as a command argument; this test holds the restore's
+// directory read to the form that check asks for: its token written to a file the step makes,
+// and read with -H @"$header".
 func TestTheRunbookPassesNoBearerTokenOnACommandLine(t *testing.T) {
-	if before := `curl -sS --fail-with-body -H "Authorization: Bearer $DIRECTORY_TOKEN" "https://admin.googleapis.com/admin/directory/v1/users/<address>"`; !bearerOnACommandLine.MatchString(before) {
-		t.Fatalf("control: the pattern does not catch %q, so the test shows nothing", before)
-	}
-	for number, line := range runbookLines(t) {
-		if bearerOnACommandLine.MatchString(line) {
-			t.Errorf("running-dispatch.md:%d passes a bearer token on curl's command line, where every user of the box reads it: %s", number+1, strings.TrimSpace(line))
-		}
-	}
 	directory := strings.Join(runbookBlockAfter(t, resetDirectoryLead).lines, "\n")
 	if !strings.Contains(directory, `-H @"$header"`) || !strings.Contains(directory, `printf 'Authorization: Bearer %s\n' "$DIRECTORY_TOKEN" >"$header"`) {
 		t.Errorf("the runbook's directory read is %q; want its token written to a file and read with -H @\"$header\"", directory)

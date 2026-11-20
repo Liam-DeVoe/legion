@@ -143,7 +143,10 @@ describe("DISPATCH_E2E_SIGNIN", () => {
     "google is accepted with one process and with two",
     async () => {
       for (const processes of googleProcesses) {
-        const { code, stderr } = await importPorts({ ...google, DISPATCH_E2E_PROCESSES: processes });
+        const { code, stderr } = await importPorts({
+          ...google,
+          DISPATCH_E2E_PROCESSES: processes,
+        });
         expect(stderr).toBe("");
         expect(code).toBe(0);
       }
