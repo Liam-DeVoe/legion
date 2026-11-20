@@ -2,6 +2,7 @@
 package appauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -89,12 +91,15 @@ func transient(response *http.Response, body []byte, err error) error {
 	return err
 }
 
-// refusalBody is the body GitHub sent with a refusal, read whole, and the response closed. One
-// that cannot be read is empty: the status and the headers still say what the answer is.
+// refusalBody is the body GitHub sent with a refusal, read through oauth2call.ReadAnswer up to
+// responseBound, as the rule prints it with every credential the request carried redacted (the
+// App's JWT, an installation token), and the response closed: whatever answers in GitHub's place
+// can echo the request there. One that cannot be read is empty: the status and the headers still
+// say what the answer is.
 func refusalBody(response *http.Response) []byte {
-	body, _ := io.ReadAll(response.Body)
+	answer, _ := oauth2call.ReadAnswer(response, responseBound)
 	response.Body.Close()
-	return body
+	return []byte(answer.Words().String())
 }
 
 // responseBound caps what the daemon reads of every GitHub answer but a token exchange's, which
@@ -119,21 +124,24 @@ const responseBound = 1 << 20
 // into the daemon's memory.
 const exchangeAnswerBound = 16 << 20
 
-// readBody reads a successful response's body whole, up to limit: a read that fails is a
-// transport failure, and transient, where what the body then fails to parse as is GitHub's
-// answer. A body past limit is no answer GitHub makes, and is refused naming the bound rather
-// than parsed, so a body that never ends cannot take the daemon's memory with it; the refusal
-// names the bound and never what the body held, which for a token exchange is the token.
+// readBody reads a successful response's body whole, up to limit, through oauth2call.ReadAnswer:
+// a read that fails is a transport failure, and transient, where what the body then fails to parse
+// as is GitHub's answer. A body past limit is no answer GitHub makes, and is refused naming the
+// bound rather than parsed, so a body that never ends cannot take the daemon's memory with it; the
+// refusal names the bound and never what the body held, which for a token exchange is the token.
+// The body is the data the call asked for, which the caller decodes and prints none of.
 func readBody(response *http.Response, what string, limit int64) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	answer, err := oauth2call.ReadAnswer(response, limit)
 	response.Body.Close()
+	if errors.Is(err, oauth2call.ErrAnswerTooLarge) {
+		return nil, fmt.Errorf("%s: the response is longer than the %d bytes an answer holds", what, limit)
+	}
 	if err != nil {
 		return nil, &TransientError{Err: fmt.Errorf("%s: read the response: %w", what, err)}
 	}
-	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("%s: the response is longer than the %d bytes an answer holds", what, limit)
-	}
-	return body, nil
+	var body bytes.Buffer
+	_, _ = answer.StreamTo(&body)
+	return body.Bytes(), nil
 }
 
 // Tokens mints a GitHub installation token for an App on one owner account. Every token reaches

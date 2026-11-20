@@ -10,13 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/roleholder"
 )
 
@@ -257,7 +257,7 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if keep && response.StatusCode == http.StatusAccepted {
 		return true, nil
 	}
-	answered, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	answered, readErr := listenerAnswer(response, refusalBodyLimit)
 	if readErr != nil {
 		// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
 		// is unknown, so it is the failure a request that never got its answer is.
@@ -386,7 +386,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 		// Read whole within answerBodyLimit and then unmarshalled, rather than decoded off the
 		// stream: the read drains the body, so this connection is reused for the delete that
 		// follows.
-		body, err := io.ReadAll(io.LimitReader(response.Body, answerBodyLimit))
+		body, err := listenerAnswer(response, answerBodyLimit)
 		if err != nil {
 			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 		}
@@ -398,7 +398,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	case http.StatusNotFound:
 		return SessionRegistration{}, nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	body, _ := listenerAnswer(response, refusalBodyLimit)
 	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
 		session, response.Status, strings.TrimSpace(string(body)))
 }
@@ -439,17 +439,18 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return fmt.Errorf("look up the holder of role %s: %w", role, &RoleLookupRefused{Status: response.StatusCode, Reason: reason})
 	}
 	if response.StatusCode == http.StatusOK {
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, answerBodyLimit))
+		body, readErr := listenerAnswer(response, answerBodyLimit)
 		if readErr != nil {
 			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
 		}
 		var answer listenerwire.RoleHolder
 		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
-			return "", "", refused("the listener's answer names no holder: " + excerpt(body))
+			// The 200's body is data, which the error quotes none of.
+			return "", "", refused("the listener's 200 names no holder")
 		}
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
 	}
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	body, readErr := listenerAnswer(response, refusalBodyLimit)
 	switch response.StatusCode {
 	case http.StatusNotFound:
 		if readErr != nil {
@@ -490,6 +491,24 @@ func (e *RoleLookupRefused) Error() string {
 // excerpt is body as an error names it: trimmed, and no longer than refusalBodyLimit.
 func excerpt(body []byte) string {
 	return strings.TrimSpace(string(body[:min(len(body), refusalBodyLimit)]))
+}
+
+// listenerAnswer is the listener's answer to response, at most limit bytes, read through
+// oauth2call.ReadAnswer: a 2xx answer's bytes as the data they are, and any other's as the rule
+// prints them, with the bearer the call carried redacted, since every refusal here is printed and
+// whatever answers in the listener's place can echo the bearer. A body past limit is its first
+// limit bytes; a read that failed is the read's error.
+func listenerAnswer(response *http.Response, limit int64) ([]byte, error) {
+	answer, err := oauth2call.ReadAnswer(response, limit)
+	if err != nil && !errors.Is(err, oauth2call.ErrAnswerTooLarge) {
+		return nil, err
+	}
+	if response.StatusCode/100 != 2 {
+		return []byte(answer.Words().String()), nil
+	}
+	var body bytes.Buffer
+	_, _ = answer.StreamTo(&body)
+	return body.Bytes(), nil
 }
 
 // unreadAnswer is a listener answer of status whose body could not be read to its end (err), for
@@ -578,7 +597,7 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 		// removed the registration, and so is any other body this route never writes. A body
 		// that could not be read to its end is neither: it may have said the listener kept the
 		// registration, so what the stop did is unknown (unreadAnswer).
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+		body, readErr := listenerAnswer(response, refusalBodyLimit)
 		if readErr != nil {
 			return SessionDeleted{}, unreadAnswer("delete session "+session, response.Status, readErr)
 		}
@@ -590,6 +609,6 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	case http.StatusNoContent, http.StatusNotFound:
 		return SessionDeleted{Deleted: true}, nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	body, _ := listenerAnswer(response, refusalBodyLimit)
 	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, strings.TrimSpace(string(body)))
 }

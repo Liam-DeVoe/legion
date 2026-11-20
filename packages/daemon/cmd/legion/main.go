@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -1647,14 +1649,17 @@ func get(ctx context.Context, url string) ([]byte, error) {
 		return nil, refuse(err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
 		return nil, refuse(err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, answer.Words())
 	}
-	return body, nil
+	// The answer is data the command decodes or prints as the daemon wrote it.
+	var body bytes.Buffer
+	_, _ = answer.StreamTo(&body)
+	return body.Bytes(), nil
 }
 
 // processEnvironment is this process's environment by name, the last entry for a name winning as

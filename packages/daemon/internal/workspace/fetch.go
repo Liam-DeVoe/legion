@@ -7,12 +7,12 @@ import (
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"path"
@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
@@ -595,7 +596,11 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 	var health struct {
 		Ready bool `json:"ready"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&health); err != nil {
+	answer, err := oauth2call.ReadAnswer(response, 1<<16)
+	if err == nil {
+		err = answer.Decode(&health)
+	}
+	if err != nil {
 		return fmt.Sprintf("GET %s/healthz answered a body that is not the cache's health: %v", cache, err), nil
 	}
 	if !health.Ready {
@@ -666,7 +671,9 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if response.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("GET %s answered %s", response.Request.URL, response.Status)
 	}
-	stream.reader = response.Body
+	// The tar is data unpacked as it arrives (oauth2call.StreamAnswer), as long as the
+	// repository needs; FeedEntry bounds what it writes.
+	stream.reader = oauth2call.StreamAnswer(response, math.MaxInt64)
 	archive := tar.NewReader(stream)
 	for {
 		header, err := archive.Next()

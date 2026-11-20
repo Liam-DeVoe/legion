@@ -507,8 +507,10 @@ func TestDispatchCoverageReadsTheReportAndReportsWhatItCannotRead(t *testing.T) 
 		t.Errorf("error %v, want the 503 named", err)
 	}
 	status, body = http.StatusOK, "<html>a proxy's page</html>"
-	if _, err := reader.readCoverage(context.Background()); err == nil || !strings.Contains(err.Error(), "invalid character") {
-		t.Errorf("error %v, want the body that does not decode named", err)
+	// The answer is read through redact.Answer, whose decode error names that the body is not
+	// JSON and quotes none of it (the decoder's own "invalid character" quoted a byte of it).
+	if _, err := reader.readCoverage(context.Background()); err == nil || !strings.Contains(err.Error(), "is not JSON") || strings.Contains(err.Error(), "html") {
+		t.Errorf("error %v, want the body that does not decode named and none of it quoted", err)
 	}
 }
 

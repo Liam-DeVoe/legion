@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -142,26 +143,19 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 }
 
 // decodeTurnOutcome is what the daemon answered: the outcome it derived, and the text to log for
-// an answer that is not one — a refusal's sentence, or the status alone when the body says
-// nothing.
+// an answer that is not one — a refusal's sentence, as the rule prints it (oauth2call.Answer.Words),
+// or the status alone when the body says nothing. The answer is read through oauth2call.ReadAnswer,
+// at most maxAnswerBytes: a refusal is a sentence, and nothing the bridge logs needs more.
 func decodeTurnOutcome(response *http.Response) (string, claim.TurnOutcomeResponse) {
 	var decoded claim.TurnOutcomeResponse
-	body, err := readAnswer(response)
+	answer, err := oauth2call.ReadAnswer(response, maxAnswerBytes)
 	if err != nil {
 		return fmt.Sprintf("%s (its answer could not be read: %v)", response.Status, err), decoded
 	}
-	if json.Unmarshal(body, &decoded) != nil || len(body) == 0 {
-		return fmt.Sprintf("%s %s", response.Status, strings.TrimSpace(string(body))), decoded
+	if answer.Words().IsEmpty() || answer.Decode(&decoded) != nil {
+		return fmt.Sprintf("%s %s", response.Status, answer.Words()), decoded
 	}
 	return response.Status, decoded
-}
-
-// readAnswer reads at most maxAnswerBytes of the daemon's answer: a refusal is a sentence, and
-// nothing the bridge logs needs more.
-func readAnswer(response *http.Response) ([]byte, error) {
-	var buffer bytes.Buffer
-	_, err := buffer.ReadFrom(http.MaxBytesReader(nil, response.Body, maxAnswerBytes))
-	return buffer.Bytes(), err
 }
 
 // maxAnswerBytes bounds what the bridge reads of the daemon's answer.

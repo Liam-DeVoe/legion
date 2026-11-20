@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -744,7 +745,11 @@ func cacheHealthOf(ctx context.Context, client *http.Client, address string, rep
 		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s naming the repository %q, not %s", address, response.Status, named, repo)
 	}
 	var health repocache.Health
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+	answer, err := oauth2call.ReadAnswer(response, 1<<20)
+	if err == nil {
+		err = answer.Decode(&health)
+	}
+	if err != nil {
 		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s with a body that is not the cache's health: %w", address, response.Status, err)
 	}
 	return health, nil

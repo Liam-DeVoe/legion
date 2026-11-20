@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
@@ -173,8 +174,10 @@ type operator struct {
 }
 
 // do is one request to the daemon: body as JSON when it is not nil, the bearer as its
-// Authorization when op carries one. It answers the status and the body the daemon served; only a
-// request that got no answer is an error.
+// Authorization when op carries one. It answers the status and the body the daemon served, read
+// through oauth2call.ReadAnswer: a 2xx body as the data it is, and a refusal's as the rule prints
+// it, with the bearer and any credential the request carried redacted, since every caller prints a
+// refusal. Only a request that got no answer is an error.
 func (op operator) do(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	var reader io.Reader
 	if body != nil {
@@ -199,11 +202,16 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 		return 0, nil, err
 	}
 	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
+	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
 		return 0, nil, fmt.Errorf("read the answer to %s %s: %w", method, request.URL, err)
 	}
-	return response.StatusCode, answer, nil
+	if response.StatusCode/100 != 2 {
+		return response.StatusCode, []byte(answer.Words().String()), nil
+	}
+	var served bytes.Buffer
+	_, _ = answer.StreamTo(&served)
+	return response.StatusCode, served.Bytes(), nil
 }
 
 // daemonAddress is the API root of the daemon a command reaches: the one LEGION_DAEMON_URL names —

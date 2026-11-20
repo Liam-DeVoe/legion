@@ -24,7 +24,6 @@ package testnats
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -39,6 +38,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 // Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
@@ -338,7 +339,11 @@ func clientConnections() ([]Connection, error) {
 			Name string `json:"name"`
 		} `json:"connections"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
+	answer, err := oauth2call.ReadAnswer(response, 16<<20)
+	if err != nil {
+		return nil, fmt.Errorf("read %s/connz: %w", monitorURL, err)
+	}
+	if err := answer.Decode(&connz); err != nil {
 		return nil, fmt.Errorf("decode %s/connz: %w", monitorURL, err)
 	}
 	connections := make([]Connection, 0, len(connz.Connections))

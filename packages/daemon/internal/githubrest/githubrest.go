@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
@@ -155,8 +156,10 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
 // when into is not nil, and returns the next page's URL its Link header names ("" for none) and
-// GitHub's response headers. An answer other than 2xx is an *Answer; when it is a rate limit, it
-// names the budget spent, the REST API's core budget when GitHub names no other.
+// GitHub's response headers. The answer is read through oauth2call.ReadAnswer: an answer other
+// than 2xx is an *Answer whose body is GitHub's words as the rule prints them, with the token the
+// call carried redacted, and a decode's error quotes no value. When it is a rate limit, it names
+// the budget spent, the REST API's core budget when GitHub names no other.
 func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
@@ -176,17 +179,18 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 		return "", nil, err
 	}
 	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
+	read, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
 		return "", response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
+		answer := []byte(read.Words().String())
 		return "", response.Header, c.refusal(method, request.URL, response, answer, RateLimited(response, answer))
 	}
 	if into == nil {
 		return nextPage(response.Header.Get("Link")), response.Header, nil
 	}
-	return nextPage(response.Header.Get("Link")), response.Header, json.Unmarshal(answer, into)
+	return nextPage(response.Header.Get("Link")), response.Header, read.Decode(into)
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its

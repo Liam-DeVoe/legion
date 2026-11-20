@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -172,14 +172,18 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		if response.StatusCode == http.StatusUnauthorized && s.Forget != nil {
 			s.Forget()
 		}
-		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyBytes))
+		// GitHub's words, or a stand-in's, print as the rule reads them, with the token the read
+		// carried redacted (oauth2call.Answer.Words).
+		refused, _ := oauth2call.ReadAnswer(response, refusalBodyBytes)
 		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", CheckSlug, tag, response.StatusCode)
-		if strings.TrimSpace(string(body)) != "" {
-			what += ": " + firstLine(string(body))
+		if said := refused.Words(); !said.IsEmpty() {
+			what += ": " + firstLine(said.String())
 		}
 		return Served{}, errors.New(Cause(what, nil))
 	}
-	body, err := PackTarball(response.Body)
+	// The tarball is data the daemon unpacks and serves, streamed through oauth2call.StreamAnswer;
+	// PackTarball bounds what it unpacks.
+	body, err := PackTarball(oauth2call.StreamAnswer(response, math.MaxInt64))
 	if err != nil {
 		if ctx.Err() != nil {
 			return Served{}, readFailure(ctx, tag, bound, err)

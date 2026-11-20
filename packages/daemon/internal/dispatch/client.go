@@ -7,11 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 const requestTimeout = 10 * time.Second
@@ -527,17 +528,20 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	defer response.Body.Close()
-	payload, err := io.ReadAll(response.Body)
+	// The answer is read through oauth2call.ReadAnswer: a refusal's words print with every
+	// credential the call carried redacted (the daemon's Dispatch token among them), and a
+	// decode's error quotes no value of the answer.
+	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, response.Status, payload)
+		return dispatchError(response.StatusCode, response.Status, []byte(answer.Words().String()))
 	}
 	if into == nil {
 		return nil
 	}
-	if err := json.Unmarshal(payload, into); err != nil {
+	if err := answer.Decode(into); err != nil {
 		return fmt.Errorf("decode Dispatch %s %s response: %w", method, path, err)
 	}
 	return nil

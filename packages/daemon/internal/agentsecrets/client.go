@@ -31,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 // launcherService is the authorization_details "service" this daemon's token logins always
@@ -878,9 +880,12 @@ func (c *Client) noCredentialError() error {
 // their answers comes near it, and a longer one is cut there.
 const answerBytes = 1 << 16
 
-// do sends one broker call and reads its answer: at most limit bytes and one more, so a caller
-// that must tell a whole answer from one cut short (Carried) reads a body longer than limit as
-// one that was; every other caller reads the cut body as its contract's shape or not.
+// do sends one broker call and reads its answer through oauth2call.ReadAnswer: at most limit
+// bytes and one more, so a caller that must tell a whole answer from one cut short (Carried) reads
+// a body longer than limit as one that was; every other caller reads the cut body as its
+// contract's shape or not. A refusal's body is answered as the rule prints it, with every
+// credential the call carried redacted, since the broker's words, or a stand-in's, can echo the
+// call's token, and every caller prints a refusal (refusal).
 func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, error) {
 	var payload io.Reader
 	if body != nil {
@@ -909,11 +914,16 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 		return 0, nil, fmt.Errorf("broker %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
-	if err != nil {
+	answer, err := oauth2call.ReadAnswer(resp, int64(limit)+1)
+	if err != nil && !errors.Is(err, oauth2call.ErrAnswerTooLarge) {
 		return 0, nil, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
 	}
-	return resp.StatusCode, raw, nil
+	if resp.StatusCode/100 != 2 {
+		return resp.StatusCode, []byte(answer.Words().String()), nil
+	}
+	var raw bytes.Buffer
+	_, _ = answer.StreamTo(&raw)
+	return resp.StatusCode, raw.Bytes(), nil
 }
 
 // refusal is the broker's error body as an *APIError; a body that is not the contract's shape

@@ -30,6 +30,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
+
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
@@ -83,8 +85,9 @@ func httpClient() (*http.Client, error) {
 	}, nil
 }
 
-// cappedTransport reads each response through a maxResponseBytes+1 LimitReader, refusing an
-// overflow before the SDK can accept a valid prefix and ignore trailing bytes.
+// cappedTransport reads each response whole through oauth2call.ReadAnswer, at most
+// maxResponseBytes, refusing an overflow before the SDK can accept a valid prefix and ignore
+// trailing bytes, and hands the SDK the bytes, the data it decodes (oauth2call.Answer.StreamTo).
 type cappedTransport struct{ http.RoundTripper }
 
 func (c cappedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -92,18 +95,20 @@ func (c cappedTransport) RoundTrip(request *http.Request) (*http.Response, error
 	if err != nil {
 		return nil, err
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	answer, err := oauth2call.ReadAnswer(response, maxResponseBytes)
 	closeErr := response.Body.Close()
+	if errors.Is(err, oauth2call.ErrAnswerTooLarge) {
+		return nil, errResponseTooLarge
+	}
 	if err != nil {
 		return nil, err
 	}
 	if closeErr != nil {
 		return nil, closeErr
 	}
-	if len(body) > maxResponseBytes {
-		return nil, errResponseTooLarge
-	}
-	response.Body = io.NopCloser(bytes.NewReader(body))
+	var body bytes.Buffer
+	_, _ = answer.StreamTo(&body)
+	response.Body = io.NopCloser(&body)
 	return response, nil
 }
 

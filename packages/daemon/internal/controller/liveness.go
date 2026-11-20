@@ -2,8 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -11,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 )
@@ -102,7 +101,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		return Unknown
 	}
 	defer response.Body.Close()
-	body, readErr := io.ReadAll(response.Body)
+	read, readErr := oauth2call.ReadAnswer(response, 1<<20)
 	if response.StatusCode == http.StatusNotFound {
 		// A 404 whose body could not be read to its end may have named an unresponsive holder,
 		// which is not gone, so what it said is unknown: a reset mid-body is no answer that the
@@ -113,7 +112,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 			return Unknown
 		}
 		var refusal listenerwire.RoleRefusal
-		_ = json.Unmarshal(body, &refusal)
+		_ = read.Decode(&refusal)
 		if refusal.HolderState == notify.StateUnresponsive {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
 				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
@@ -132,7 +131,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		return Unknown
 	}
 	var answer listenerwire.RoleHolder
-	if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" || answer.LastSeen == nil {
+	if readErr != nil || read.Decode(&answer) != nil || answer.Holder == "" || answer.LastSeen == nil {
 		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.lookup)
 		return Unknown
 	}
