@@ -320,10 +320,18 @@ func checksABody(graph *lockGraph, call *ast.CallExpr) bool {
 
 // calledFunctionName is the name of the function or method call names, as the graph names one
 // (functionName); it is empty for a call through a value, a conversion or anything else the type
-// information does not resolve to a function.
+// information does not resolve to a function. A generic function called with its type arguments
+// written out is named as the function they instantiate.
 func calledFunctionName(graph *lockGraph, call *ast.CallExpr) string {
+	fun := ast.Unparen(call.Fun)
+	switch generic := fun.(type) {
+	case *ast.IndexExpr:
+		fun = generic.X
+	case *ast.IndexListExpr:
+		fun = generic.X
+	}
 	var object types.Object
-	switch fun := ast.Unparen(call.Fun).(type) {
+	switch fun := fun.(type) {
 	case *ast.Ident:
 		object = graph.info.Uses[fun]
 	case *ast.SelectorExpr:

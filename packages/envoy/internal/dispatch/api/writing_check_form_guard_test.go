@@ -21,10 +21,11 @@ const multipartUploadFunction = "api.server.multipartArtifactUpload"
 // formFieldReaders names the functions of package api that read one form value by a name their
 // caller passes, with the index of that argument: multipartJSONField reads an upload's `actor` and
 // `precondition` so. The read is the caller's, under the name the call passes, so the guard reads
-// that name at each call - a constant, or a name it cannot read - and walks no further into the
-// reader. A reader passed as a value, not called, is walked as any function is, where its read by
-// its parameter is one the guard cannot name. TestEveryFormValueTheUploadReadsIsMarked holds each
-// reader to reading the form by that argument alone, so an entry here hides no other read.
+// that name at each call - a constant, or a name it cannot read - in place of the reader's own
+// body, and walks what the reader calls as it walks any callee. A reader passed as a value, not
+// called, is walked as any function is, where its read by its parameter is one the guard cannot
+// name. TestEveryFormValueTheUploadReadsIsMarked holds each reader's own body to reading the form
+// by that argument alone, so an entry here hides no other read.
 var formFieldReaders = map[string]int{"api.multipartJSONField": 3}
 
 // formReads is what the functions a route runs read of its request's form: each form value read
@@ -36,11 +37,14 @@ type formReads struct {
 
 // uploadFormReads is every read of the request's form in what handlers run inside package api,
 // walked as routeReaches walks it: a call is followed as the copy-lock graph resolves it, plus
-// every function handed to it as an argument.
+// every function handed to it as an argument. A field reader's own body is the one not read where
+// it is called (formFieldReaders); what it calls is walked all the same.
 func uploadFormReads(graph *lockGraph, handlers []*lockFunction) formReads {
 	reads := formReads{named: map[string][]string{}}
 	walked := map[*lockFunction]bool{}
-	var walk func(fn *lockFunction)
+	followed := map[*lockFunction]bool{}
+	var walk, follow func(fn *lockFunction)
+	// walk reads fn's own body, then follows its calls.
 	walk = func(fn *lockFunction) {
 		if fn == nil || fn.pkg != decisionBlockGuardPkg || walked[fn] {
 			return
@@ -49,16 +53,6 @@ func uploadFormReads(graph *lockGraph, handlers []*lockFunction) formReads {
 		ast.Inspect(fn.body, func(node ast.Node) bool {
 			if _, ok := node.(*ast.FuncLit); ok {
 				return false
-			}
-			if call, ok := node.(*ast.CallExpr); ok {
-				if index, reader := formFieldReaderOf(graph, call); reader {
-					if name, known := literalText(ast.Unparen(call.Args[index]), fn.pkg, graph.constants); known {
-						reads.named[name] = append(reads.named[name], graph.line(fn.source, call))
-					} else {
-						reads.unnamed = append(reads.unnamed, graph.line(fn.source, call))
-					}
-					return true
-				}
 			}
 			name, read, known := formReadOf(graph, fn.pkg, node)
 			switch {
@@ -70,9 +64,20 @@ func uploadFormReads(graph *lockGraph, handlers []*lockFunction) formReads {
 			}
 			return true
 		})
+		follow(fn)
+	}
+	// follow walks what fn's calls run, without reading fn's own body: each callee, and every
+	// function handed to a call as an argument. A field reader is followed rather than walked: its
+	// read was read at the call, by the name the call passes (formReadKeyOf).
+	follow = func(fn *lockFunction) {
+		if fn == nil || fn.pkg != decisionBlockGuardPkg || followed[fn] {
+			return
+		}
+		followed[fn] = true
 		for _, call := range ownCalls(fn) {
-			// A call of a field reader was read above, by the name it passes.
-			if _, reader := formFieldReaderOf(graph, call); !reader {
+			if _, reader := formFieldReaderOf(graph, call); reader {
+				follow(graph.named[calledFunctionName(graph, call)])
+			} else {
 				for _, callee := range graph.callees(call) {
 					walk(callee)
 				}
@@ -93,22 +98,7 @@ func uploadFormReads(graph *lockGraph, handlers []*lockFunction) formReads {
 // formFieldReaderOf reports whether call calls a function formFieldReaders names, and the index of
 // the argument that names the form value it reads.
 func formFieldReaderOf(graph *lockGraph, call *ast.CallExpr) (int, bool) {
-	fun := ast.Unparen(call.Fun)
-	switch generic := fun.(type) {
-	case *ast.IndexExpr:
-		fun = generic.X
-	case *ast.IndexListExpr:
-		fun = generic.X
-	}
-	ident, ok := fun.(*ast.Ident)
-	if !ok {
-		return 0, false
-	}
-	fn, ok := graph.info.Uses[ident].(*types.Func)
-	if !ok || fn.Pkg() == nil {
-		return 0, false
-	}
-	index, reader := formFieldReaders[functionName(fn.Origin())]
+	index, reader := formFieldReaders[calledFunctionName(graph, call)]
 	return index, reader && index < len(call.Args)
 }
 
@@ -124,12 +114,16 @@ func formReadOf(graph *lockGraph, pkg string, node ast.Node) (name string, read,
 }
 
 // formReadKeyOf reports whether node reads a value or a file of the request's form, and the
-// expression naming what it reads: a call of http.Request's FormValue, PostFormValue or FormFile,
-// an index or a Get or Has of http.Request's Form or PostForm, an index of multipart.Form's Value
-// or File, or a read of the raw parts (MultipartReader), which names none and answers a nil key.
+// expression naming what it reads: a call of a field reader (formFieldReaders), by the argument
+// that names its value, a call of http.Request's FormValue, PostFormValue or FormFile, an index or
+// a Get or Has of http.Request's Form or PostForm, an index of multipart.Form's Value or File, or
+// a read of the raw parts (MultipartReader), which names none and answers a nil key.
 func formReadKeyOf(graph *lockGraph, node ast.Node) (key ast.Expr, read bool) {
 	switch n := node.(type) {
 	case *ast.CallExpr:
+		if index, reader := formFieldReaderOf(graph, n); reader {
+			return n.Args[index], true
+		}
 		switch calledFunctionName(graph, n) {
 		case "http.Request.FormValue", "http.Request.PostFormValue", "http.Request.FormFile":
 			return n.Args[0], true
@@ -151,8 +145,9 @@ func formReadKeyOf(graph *lockGraph, node ast.Node) (key ast.Expr, read bool) {
 }
 
 // formFieldReaderReadsOnlyItsArgument reports, for a function formFieldReaders names, each read of
-// the request's form in its body that is not a read by its name argument (the parameter at
-// index), so an entry of formFieldReaders cannot hide a read of the reader's own.
+// the request's form in its own body that is not a read by its name argument (the parameter at
+// index), so an entry of formFieldReaders cannot hide a read of the reader's own; what the reader
+// calls, uploadFormReads walks.
 func formFieldReaderReadsOnlyItsArgument(graph *lockGraph, reader *lockFunction, index int) []string {
 	var parameter types.Object
 	for fn, declared := range graph.declared {

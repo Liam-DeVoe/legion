@@ -123,8 +123,8 @@ export interface Reach {
   unknownRoute: boolean;
 }
 
-/** The card's `Reaches N` toggle, `Reaches N + route (unknown)` while a role route's reach is
- *  unknown, so the count never reads as the route reaching nobody. */
+/** The routing list's heading, `Reaches N`, or `Reaches N + route (unknown)` while a role route's
+ *  reach is unknown, so the count never reads as the route reaching nobody. */
 export function reachLabel({ count, unknownRoute }: Pick<Reach, "count" | "unknownRoute">): string {
   return unknownRoute ? `Reaches ${count} + route (unknown)` : `Reaches ${count}`;
 }

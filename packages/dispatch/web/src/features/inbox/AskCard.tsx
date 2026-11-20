@@ -477,18 +477,22 @@ export function AskCard({
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
     },
   });
+  // The press's state is the card's only while the press is of the ask on screen: a host draws
+  // one card for one ask after another, and a rewrite of the ask drawn before is that ask's.
+  const rewriteOfShown = rewriting.variables?.ask.id === displayedAsk.id;
+  const rewritePending = rewriteOfShown && rewriting.isPending;
   // The rewrite the card shows: a press Dispatch refused stands as a failed rewrite, with
   // Dispatch's reason; else the newer of what the press was answered with and what the ask's
   // read carries, since the read is refreshed behind the answer.
   const shownRewrite: Pick<TextRewrite, "original" | "reason" | "state"> | undefined =
-    rewriting.isError
+    rewriteOfShown && rewriting.isError
       ? {
           original: { body: displayedAsk.question },
           reason: rewriting.error.message,
           state: "failed",
         }
-      : newerRewrite(rewriting.data?.rewrite, displayedAsk.rewrite);
-  const rewriteRunning = rewriting.isPending || shownRewrite?.state === "rewriting";
+      : newerRewrite(rewriteOfShown ? rewriting.data?.rewrite : undefined, displayedAsk.rewrite);
+  const rewriteRunning = rewritePending || shownRewrite?.state === "rewriting";
   const original = originalWording(shownRewrite, showingOriginal);
   // A decision block's question as its document holds it, with the marks the ask's own plain
   // question leaves out; the card draws it wherever it is not the block itself.
@@ -1176,7 +1180,7 @@ export function AskCard({
           onRetry={startRewrite}
           onToggle={() => setShowingOriginal((shown) => !shown)}
           rewrite={shownRewrite}
-          running={rewriting.isPending}
+          running={rewritePending}
           showingOriginal={original !== undefined}
           toggleKey="w"
         />
