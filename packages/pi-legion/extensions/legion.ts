@@ -483,8 +483,9 @@ export default function legionExtension(pi: PiApi): void {
         context: () => paneContext,
         // `pi`'s own method, called on `pi` as every other send of this entry is.
         sendMessage: (message, options) => pi.sendMessage(message, options),
-        // The take's text is the turn after an abort while a take is pending.
-        taskPending: () => claimSession.taskPending(),
+        // The take's text is the turn after an abort while a take is pending; the message waits
+        // for that take, and goes if the daemon refuses or drops it.
+        deferUntilTakeSettles: (callback) => claimSession.deferUntilTakeSettles(callback),
         log: logger,
       }),
       exits: createStallExits({

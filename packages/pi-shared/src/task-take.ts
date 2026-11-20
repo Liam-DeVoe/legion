@@ -65,7 +65,12 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * going now: the daemon writes the value again at that run's end, so the take asks again then. That
  * last state ends at the run's end or at a newer revision, whichever comes first, and a refusal by
  * any other hold is not pending, since the daemon writes the value again only once its hold ends.
- * The host's reminder starts no turn while the take is pending: the task is the next turn.
+ * A held value naming the task whose turn is running is pending neither as one not asked about
+ * nor as one refused `in-turn`, and `noteFor` gives it no note either: nothing is taken for it,
+ * since that run's end holds the number finished.
+ * The host's reminder starts no turn while the take is pending: the task is the next turn. A stall
+ * abort's restart message that finds the take pending waits for it (`deferUntilSettled`), and is
+ * sent if the take is refused or dropped, since nothing else then starts the worker's work again.
  *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
  * gave no answer to — a refused, reset or closed connection, an unreachable host or network, a
@@ -79,7 +84,8 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * again.
  *
  * A take its host replaced (`close`) does nothing more: what it was sending stops, an answer that
- * still arrives for it is dropped, and its task-turn mark is cleared.
+ * still arrives for it is dropped, a callback held for it (`deferUntilSettled`) is dropped, and its
+ * task-turn mark is cleared.
  */
 
 /** The daemon's hold for a take refused because the claim is in a turn (`supervise.HoldInTurn`,
@@ -166,9 +172,22 @@ export interface TaskTake {
    * `in-turn` during the run going now, which the daemon answers by writing the value again at
    * that run's end. The last ends at the run's end or at a newer revision, whichever comes first;
    * an `in-turn` refusal that arrives while the host is idle came after that run's end, and sets
-   * nothing. False once the take is closed.
+   * nothing. A held value naming the task whose turn is running is pending neither as one not
+   * asked about nor as one refused `in-turn`, and `noteFor` gives it no note either: nothing is
+   * taken for it, since that run's end holds the number finished (`runEnded`). False once the
+   * take is closed.
    */
   readonly pending: () => boolean;
+  /**
+   * Holds `callback` for the pending take (a stall abort's restart message): where `pending` is
+   * true, the callback is kept and the answer is true, and it is called once, at the end of the
+   * first settle that finds no run going and nothing pending — the take refused by a hold, the
+   * value dropped or deleted — since nothing else then starts the worker's work again. A run that
+   * starts first drops it, since the worker is working again (the take's own text, or another
+   * turn), and so does `close`. A second call replaces the first. A callback that throws is
+   * logged as a warning. Where `pending` is false, the answer is false and nothing is kept.
+   */
+  readonly deferUntilSettled: (callback: () => void) => boolean;
   /**
    * The number to note at this tool result of the run (R1, `taskWaitingNote`): that of an owed
    * value held while a run is going that is neither accepted nor the task running — one not asked
@@ -178,8 +197,8 @@ export interface TaskTake {
    */
   readonly noteFor: () => number | undefined;
   /** The take is replaced by another of the same host: every request it is sending stops, an
-   * answer that still arrives for one changes nothing, its task-turn mark is cleared, and every
-   * call after this one does nothing. */
+   * answer that still arrives for one changes nothing, a callback held for it is dropped, its
+   * task-turn mark is cleared, and every call after this one does nothing. */
   readonly close: () => void;
 }
 
@@ -220,6 +239,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   let seeing: Sending | undefined;
   let taking: Sending | undefined;
   let marked = false;
+  // The callback held for the pending take (`deferUntilSettled`).
+  let deferred: (() => void) | undefined;
   // The reads the host awaits (`awaitRead`) that have not answered yet.
   let reading = 0;
   let closed = false;
@@ -328,17 +349,41 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const turnToCome = (): boolean =>
     (owed(held) && !asked.has(keyOf(held))) || taking !== undefined || accepted !== undefined;
 
-  /** Asks about the held value where it may, and keeps the task-turn mark to what is pending. */
+  const pending = (): boolean => {
+    if (closed) return false;
+    if (taking !== undefined || accepted !== undefined) return true;
+    // A value naming the task whose turn is running is owed no take: that run's end holds the
+    // number finished, so nothing is taken for it, and `noteFor` gives it no note either.
+    if (!owed(held) || held.number === running) return false;
+    // A refusal `in-turn` holds only the revision it answered: a newer one ends it.
+    const key = keyOf(held);
+    return !asked.has(key) || key === refusedInTurn;
+  };
+
+  /** Asks about the held value where it may, keeps the task-turn mark to what is pending, and
+   * calls the callback held for the take (`deferUntilSettled`) once nothing is pending while no
+   * run is going. */
   const settle = (): void => {
     const key = held === undefined ? undefined : keyOf(held);
     if (armed && !busy && owed(held) && key !== undefined && !asked.has(key)) {
       asked.add(key);
       ask(held, key);
     }
-    const pending = reading > 0 || turnToCome();
-    if (pending === marked) return;
-    marked = pending;
-    deps.setPending(pending);
+    const mark = reading > 0 || turnToCome();
+    if (mark !== marked) {
+      marked = mark;
+      deps.setPending(mark);
+    }
+    if (deferred === undefined || busy || pending()) return;
+    const callback = deferred;
+    deferred = undefined;
+    // A settle runs inside the host's own event handlers and the daemon's answers: a callback
+    // that throws is logged, and changes neither the take's state nor its caller's answer.
+    try {
+      callback();
+    } catch (error) {
+      log.warn("legion: what waited for the take to settle failed", { error: messageFor(error) });
+    }
   };
 
   /** A request for a pair other than `key`'s is replaced: it is sent no more. */
@@ -404,6 +449,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     runStarted: () => {
       if (closed) return;
       busy = true;
+      // The worker is working again: a callback held for the take is not called.
+      deferred = undefined;
       // The first run that starts after an accepted take's text was sent is the task's turn. A
       // text still held waits for the end of a run that started before it was accepted, so a run
       // that starts before that end is not its turn.
@@ -438,10 +485,11 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       finishing = 0;
       settle();
     },
-    pending: () => {
-      if (closed) return false;
-      // A refusal `in-turn` holds only the revision it answered: a newer one ends it.
-      return turnToCome() || (owed(held) && keyOf(held) === refusedInTurn);
+    pending,
+    deferUntilSettled: (callback) => {
+      if (!pending()) return false;
+      deferred = callback;
+      return true;
     },
     noteFor: () => {
       if (closed || !busy || !owed(held)) return undefined;
@@ -453,6 +501,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     close: () => {
       if (closed) return;
       closed = true;
+      deferred = undefined;
       replace(undefined);
       if (!marked) return;
       marked = false;

@@ -273,8 +273,9 @@ export interface StallWatchdogAborter {
   /** Puts one message in front of this same session, which the host turns into a turn because the
    * session is idle once the abort has ended the turn. The daemon counts a task served by an
    * ended turn and sends nothing after it, so this message is what starts the work again. It
-   * answers `held` where it sent nothing because the claim's take is pending: the task's text,
-   * sent at the end of the run the abort ended, starts the next run (dispatch://INFRA-4130 R6). */
+   * answers `held` where it sent nothing because the claim's take is pending: the task's text, if
+   * the daemon accepts the take, starts the next run, and the message waits for that take and is
+   * sent if it is refused or dropped (dispatch://INFRA-4130 R6). */
   readonly sendMessage: (text: string) => Promise<"sent" | "held"> | "sent" | "held";
 }
 
@@ -636,7 +637,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
         sent === "sent"
           ? "the session was sent the message naming the ended call"
           : "the message naming the ended call was not sent, because a take of the claim's task " +
-              "is pending and its text starts the next run"
+              "is pending: it waits for that take, and is sent if that take is refused or dropped"
       );
     } catch (error) {
       outcomes.push(`the session refused the message naming the ended call: ${messageFor(error)}`);

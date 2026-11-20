@@ -831,6 +831,42 @@ test("a PostToolUse while the daemon names a take held behind this turn adds one
   }
 })
 
+// Risk (c) of dispatch://INFRA-4130: a turn can end with neither `Stop` nor `StopFailure` (one the
+// user interrupts), so the holds answer it kept is still kept when the next turn starts. The
+// daemon accepts each take that answer names at that end, so it waits no more: the next turn's
+// `UserPromptSubmit` drops it, as Oh My Pi's run start does, and that turn notes it only where a
+// read of its own names it again.
+test("a holds answer of a turn that ended with no Stop is not noted in the next turn", async () => {
+  const { endpoint, taskReads, answered, advance, close } = await harness({
+    record: recorded("open", 0),
+    claim: implementer,
+    claimsTask: async () => ({ task: null, finished: 3, holds: [{ role: "tester", task: 7 }] }),
+  })
+  const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+  try {
+    // The turn's first call starts the read, which names the tester's take; the turn is
+    // interrupted before a call notes it, and no `Stop` or `StopFailure` comes.
+    expect(await toolCall()).toEqual({})
+    await waitFor(async () => answered() === 1, "the holds read's answer")
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with LEGION-208." })
+
+    // The next turn's calls note nothing of the ended turn's answer, and read nothing inside the
+    // minute.
+    expect(await toolCall()).toEqual({})
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(1)
+
+    // A minute on, this turn's own read names the take again, and the next call notes it once.
+    advance(60_000)
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(2)
+    await waitFor(async () => answered() === 2, "the new turn's holds read's answer")
+    expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
+  } finally {
+    await close()
+  }
+})
+
 // Rows S5 and S17 of dispatch://INFRA-4130: a helper agent's tool call is not the worker, which
 // alone can end the turn a note asks it to end. It asks the bridge nothing, starts no holds read,
 // and uses up no note: the worker's own next call carries them.

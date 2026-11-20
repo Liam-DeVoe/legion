@@ -216,8 +216,9 @@ export interface PhaseHookDeps {
   readonly takePending: () => Promise<TakePending | undefined>
   /** The claim's holds read (`createHoldsRead`, `@legion/pi-shared/holds-read`): its `holds` is
    * called at each `PostToolUse` of the worker's own, which starts the next read where one is due
-   * and does not wait for it, and its `turnEnded` at the worker's turn's end — a `Stop` that
-   * blocks nothing, a `StopFailure` — which drops what the turn's reads named. */
+   * and does not wait for it; its `turnEnded`, which drops what the turn's reads named, is called
+   * at the worker's turn's end — a `Stop` that blocks nothing, a `StopFailure` — and at the next
+   * turn's start (`UserPromptSubmit`), for a turn that ended with neither. */
   readonly holdsRead: HoldsRead
 }
 
@@ -613,6 +614,11 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // holds is the plainest way to say the same thing.
           reminder.turnStarted()
           dropTimer()
+          // A turn starts: the holds answer a turn kept is that turn's alone, since the daemon
+          // accepts each take it names at that turn's end. A turn that ended with neither `Stop`
+          // nor `StopFailure` (an interrupted one) dropped nothing, so it is dropped here, as Oh
+          // My Pi's run start drops it (`packages/pi-legion/src/claim-session.ts`).
+          deps.holdsRead.turnEnded()
           const prompt = event.prompt ?? ""
           if (prompt === lastReminder) return {}
           // A line this server wrote is dropped as its prompt arrives, so a later turn carrying

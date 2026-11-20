@@ -775,8 +775,11 @@ type ClaimView struct {
 	// role, to each claim whose turn holds it (internal/daemon's HeldBehind), which reads it on
 	// its task route so its worker can come to a safe point (dispatch://INFRA-4130). It names the
 	// number only while the pending task still has it and no take of it is accepted, so a task
-	// retired or replaced since names nothing. It travels on the published view for the reason
-	// WakeWaiting does, and no store column holds it.
+	// retired or replaced since names nothing, and only while the claim's own state puts no hold
+	// on a take (claimHold): a claim suspended, retired, in a turn of its own, or held by its
+	// launch, an answered update round, a stale plugin or a provider-error wait does not take the
+	// task at that turn's end, so it names nothing. It travels on the published view for the
+	// reason WakeWaiting does, and no store column holds it.
 	HeldTask uint64
 }
 
@@ -1309,9 +1312,11 @@ type Machine struct {
 	unseenListed bool
 	// heldTask is the number the pending task had when takeable last answered issue-in-turn, and
 	// 0 where its last answer was anything else: another hold, a drop, a take it lets go ahead.
-	// ClaimView.HeldTask publishes it only while the pending task still has that number and no
-	// take of it is accepted. It is memory only: a daemon restart forgets it, and the first
-	// takeable after it, the sweep's offerPending at the latest, records it again.
+	// ClaimView.HeldTask publishes it only while the pending task still has that number, no take
+	// of it is accepted, and the claim's own state puts no hold on a take (claimHold), since a
+	// claim suspended or retired since takes nothing at the other claim's turn end. It is memory
+	// only: a daemon restart forgets it, and the first takeable after it, the sweep's
+	// offerPending at the latest, records it again.
 	heldTask uint64
 	// unsaved is a pending delivery the store's row does not hold as memory holds it — a write of
 	// it the store did not take (saved), or a row another write left under another id
@@ -2293,7 +2298,8 @@ func (m *Machine) current() Claim {
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
 // pacing holds over it, if any, its value when nobody reported seeing it for a whole first bound
 // (unseenListed), and its pending task's number while a take of it stands refused issue-in-turn
-// (heldTask): a fresh value each time, since the view is read without mu. The caller holds mu.
+// (heldTask) and the claim's own state puts no hold on a take (claimHold, which only reads): a
+// fresh value each time, since the view is read without mu. The caller holds mu.
 func (m *Machine) publish() {
 	view := &ClaimView{Claim: m.current(), Stopping: m.stopping}
 	if m.wake != nil {
@@ -2303,7 +2309,7 @@ func (m *Machine) publish() {
 	if m.unseenListed && p != nil {
 		view.UnseenTask = &UnseenTask{Task: p.Number, WrittenAt: m.valueWrittenAt}
 	}
-	if m.heldTask != 0 && p != nil && p.Number == m.heldTask && !p.taken() {
+	if m.heldTask != 0 && p != nil && p.Number == m.heldTask && !p.taken() && m.claimHold() == "" {
 		view.HeldTask = m.heldTask
 	}
 	m.view.Store(view)

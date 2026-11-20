@@ -341,8 +341,14 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 // what a take-pending query answers (pendingAnswer). The last term holds back no delivery the
 // first three do not: it is set only while a turn runs and cleared as that turn ends (runEnded),
 // and deliver and idle read this only while no turn runs.
+//
+// A value naming the task whose turn is running, which the daemon can write again during that
+// turn, is not an unasked value here: the bridge takes nothing for it, since that turn's end holds
+// the number finished (runEnded), and pendingAnswer does not name it waiting either. That changes
+// neither deliver nor idle: the term differs only while a turn runs, and neither reads this then.
 func (b *bridge) takePending() bool {
-	return b.unasked() || b.asking != nil || b.heldTask != 0 || b.refusedInTurn
+	runningOwn := b.inRun && b.task != nil && b.task.number == b.runTask
+	return (b.unasked() && !runningOwn) || b.asking != nil || b.heldTask != 0 || b.refusedInTurn
 }
 
 // pendingAnswer is the answer to a take-pending query: whether the take is pending, and, while

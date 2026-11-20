@@ -992,3 +992,93 @@ test("pending() is false for a newer revision of the task whose turn is running,
   expect(ran).toEqual([TEXT]);
   expect(take.pending()).toBe(false);
 });
+
+// dispatch://INFRA-4130, risk (b): a stall abort that finds the take pending holds its restart
+// message for the take (`deferUntilSettled`). A take the daemon accepts starts the next run with
+// its own text, so the message is not sent; one the daemon refuses or drops starts nothing, so the
+// message is all that starts the worker's work again, and it goes then, once.
+test("deferUntilSettled calls back once when a pending take is refused or dropped, and not when the take's text starts a run", async () => {
+  // Refused by a hold: the value came during the run the abort ends, the run's end asks the take,
+  // and the callback runs once the daemon's refusal has answered it, not before.
+  const held = rig();
+  held.take.ready();
+  held.take.runStarted();
+  const refusal = Promise.withResolvers<LegionTake>();
+  held.takes.push({ late: refusal.promise });
+  held.take.relayed(put(4, 12));
+  await held.advance(0);
+  let heldCalls = 0;
+  expect(
+    held.take.deferUntilSettled(() => {
+      heldCalls += 1;
+    })
+  ).toBe(true);
+  expect(held.take.runEnded(false)).toBeUndefined();
+  await held.advance(0);
+  expect(held.routed("take")).toEqual([body(4, 12)]);
+  expect(heldCalls).toBe(0);
+  refusal.resolve(refused("issue-in-turn"));
+  await held.advance(0);
+  expect(heldCalls).toBe(1);
+  // Once: a later take refused again calls nothing more.
+  held.take.relayed(put(4, 13));
+  await held.advance(0);
+  expect(held.routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(heldCalls).toBe(1);
+
+  // Dropped: called once, at the drop's answer.
+  const dropped = rig();
+  dropped.take.ready();
+  const drop = Promise.withResolvers<LegionTake>();
+  dropped.takes.push({ late: drop.promise });
+  dropped.take.relayed(put(4, 12));
+  await dropped.advance(0);
+  let droppedCalls = 0;
+  expect(
+    dropped.take.deferUntilSettled(() => {
+      droppedCalls += 1;
+    })
+  ).toBe(true);
+  await dropped.advance(0);
+  expect(droppedCalls).toBe(0);
+  drop.resolve(DROPPED);
+  await dropped.advance(0);
+  expect(droppedCalls).toBe(1);
+
+  // Accepted: the take's text starts the next run, which is the worker working again, so nothing
+  // is called, then or at that run's end.
+  const accepted = rig();
+  accepted.take.ready();
+  const accept = Promise.withResolvers<LegionTake>();
+  accepted.takes.push({ late: accept.promise });
+  accepted.take.relayed(put(4, 12));
+  await accepted.advance(0);
+  let acceptedCalls = 0;
+  expect(
+    accepted.take.deferUntilSettled(() => {
+      acceptedCalls += 1;
+    })
+  ).toBe(true);
+  accept.resolve(ACCEPTED);
+  await accepted.advance(0);
+  expect(accepted.ran).toEqual([TEXT]);
+  expect(acceptedCalls).toBe(0);
+  accepted.take.runStarted();
+  expect(accepted.take.runEnded(false)).toBe(4);
+  await accepted.advance(0);
+  expect(acceptedCalls).toBe(0);
+
+  // Not pending: it answers false and keeps nothing, so a take refused later calls nothing.
+  const idle = rig();
+  idle.take.ready();
+  let idleCalls = 0;
+  expect(
+    idle.take.deferUntilSettled(() => {
+      idleCalls += 1;
+    })
+  ).toBe(false);
+  idle.take.relayed(put(4, 12));
+  await idle.advance(0);
+  expect(idle.routed("take")).toEqual([body(4, 12)]);
+  expect(idleCalls).toBe(0);
+});

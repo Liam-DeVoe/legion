@@ -51,10 +51,14 @@ export interface ClaimSession {
    * only the host's call at a tool result of the session's own agent may make it. Undefined
    * where the session holds no take. */
   readonly taskNote: () => number | undefined;
-  /** Whether the claim's take is pending (R6, `TaskTake.pending`), so that neither the phase
-   * reminder nor the stall abort's restart message starts a turn ahead of its task; false where
-   * the session holds no take. */
+  /** Whether the claim's take is pending (R6, `TaskTake.pending`), so that the phase reminder
+   * starts no turn ahead of its task; false where the session holds no take. */
   readonly taskPending: () => boolean;
+  /** Holds `callback`, the stall abort's restart message, for the claim's pending take
+   * (`TaskTake.deferUntilSettled`): true where the take is pending, which calls it once if that
+   * take is refused or dropped and not if a run starts first; false, keeping nothing, where the
+   * take is not pending or the session holds no take. */
+  readonly deferUntilTakeSettles: (callback: () => void) => boolean;
   /**
    * The host's call at each tool result of the session's own agent (R2): the takes of the
    * issue's other claims that the daemon holds behind this claim's turn, as the latest holds
@@ -247,6 +251,7 @@ export function createClaimSession(deps: {
     reportRefused: (number) => taking?.take.reportRefused(number),
     taskNote: () => taking?.take.noteFor(),
     taskPending: () => taking?.take.pending() ?? false,
+    deferUntilTakeSettles: (callback) => taking?.take.deferUntilSettled(callback) ?? false,
     heldNotes: () => (running ? (holdsRead?.holds() ?? []) : []),
   };
 }
