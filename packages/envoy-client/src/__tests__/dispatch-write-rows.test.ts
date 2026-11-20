@@ -604,7 +604,11 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
           ? []
           : [["the JSON {}", "application/json", "{}"]]),
       ] as const) {
-        const expected = noAnswer(row, echo);
+        // A body that is empty or not JSON-typed is no answer Dispatch writes to a keyed write
+        // (`foreign-2xx`, write-outcome.ts), whatever key it names back, so it is read as one that
+        // names none; JSON that is not the row, named back, is a landing whose answer was lost.
+        const expected =
+          body === "" || type !== "application/json" ? noAnswer(row, "none") : noAnswer(row, echo);
         const reads =
           "landed" in expected ? "ANSWER_LOST" : "missing" in expected ? "no answer" : "unknown";
         test(`${label}: a ${status} with ${name}, ${named}, is ${reads}`, async () => {

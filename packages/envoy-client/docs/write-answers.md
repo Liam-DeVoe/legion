@@ -47,13 +47,13 @@ Dispatch's API routes answer no request with a 3xx, so a 3xx is a refusal of wha
 It is a `DispatchGatewayError`, whatever its body is.
 Its message names the request as for any gateway's answer, then the status and the reason phrase, and the origin that the redirect points at.
 That origin is the scheme and the host of the `Location`, with a port that is not the scheme's own (`redirectOrigin` in `excerpt.ts`).
-The message holds nothing of the target's path, query, fragment or user, and nothing of the answer's body.
-A redirector writes its target into the body too, as text or as the text of a link, and that target can carry a secret.
+The message holds nothing else of the `Location`: not its path, query, fragment or user.
+The body is named as any gateway's body is: one redacted plain-text line, as the section above says (`bodyForText` in `excerpt.ts`).
 
 The listener's client refuses a redirect the same way.
 An `EnvoyApiError` of a 3xx names the method, the URL without its user and password, the status and the origin (`transport.ts`).
-It names nothing of the body.
-The pool identity of `@legion/broker-client` names a 3xx of the security token service by its status alone, as `HTTP <status>`.
+It names the body as one redacted line too.
+The pool identity of `@legion/broker-client` names a 3xx of the security token service as it names any other non-2xx: `HTTP <status>`, with the Google error code that its body names, if any.
 The GitHub Actions identity of the Go broker client follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
 
 ## An answer of the secrets broker's airlock proxy
@@ -132,7 +132,7 @@ Dispatch's keyed layer names the request's `Idempotency-Key` back on every answe
 So an answer that names this call's key back is Dispatch's word about this write.
 A landing needs that key.
 The client takes a write as made, with its answer gone, only from an answer that names the call's key back.
-The rule is the same for a 2xx and for a `409 KEY_COMMITTED` (`#notTheRow`).
+The rule is the same for a 2xx and for a `409 KEY_COMMITTED` (`#missingWriteAnswer`).
 A key that a caller gives is the call's key: `docEdit` and the upload of a project's document take one.
 An empty key names no request, so no answer names it back, and an answer that names no key is no landing of it.
 
@@ -143,9 +143,9 @@ On a route that stores what it is sent, these answers are a landing when they na
 
 - A replayed 2xx (`Idempotency-Replayed: ?1`) that reads `ANSWER_NOT_KEPT`: the first answer was larger than Dispatch keeps (`answerNotKept`, which the page shares).
 
-- A 2xx whose body gives no row: the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a write's 2xx only after the write committed.
-  A body that is cut, or that stalls past the deadline, is such a landing.
-  So is a body that is no JSON whatever its type says, an empty body, and JSON that is not the row.
+- A 2xx that the write table settles on and whose body gives no row: the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a write's 2xx only after the write committed.
+  The table settles on a 2xx that names the call's key back and whose body, read whole, is JSON, or a 204 or a 205, which carries none (`answerEvent`).
+  JSON that is not the row is such a landing, and so is a 204 or a 205 where the row needs a body.
 
 Every `POST` and `PATCH` of the client reads its 2xx into the row that its callers read (`dispatch-write-rows.ts`).
 A row holds those members, in the forms that the route answers.
@@ -156,10 +156,11 @@ Its message is the one line that a session reads.
 It says that the method and URL were made, and why the answer is gone.
 It then says to read back what it made with `dispatch read` or the matching list.
 
-Two routes store nothing: the round trip of a text and the related-item check.
-An answer of either that is not its answer made nothing, so it is never a landing.
-That holds for a 2xx with no row, a 2xx that names no key back, a replay whose first answer Dispatch did not keep, and a `409 KEY_COMMITTED`.
+Three routes store nothing: the round trip of a text, the related-item check and the dry run of a result.
+An answer of any of them that is not its answer made nothing, so it is never a landing.
+That holds for a 2xx with no row, a 2xx that names no key back, a 2xx whose body is empty or not JSON, a replay whose first answer Dispatch did not keep, and a `409 KEY_COMMITTED`.
 Each is a `DispatchAnswerMissingError` (`ANSWER_LOST`), which says that nothing was made and that asking again is safe.
+A 204 or a 205 that names the call's key back is the answer of such a route: an empty text, since no row was to be lost.
 
 ## A 2xx that names no key back
 
@@ -171,6 +172,20 @@ A Dispatch older than the keyed layer names no key back either, so each of its 2
 A `409 KEY_COMMITTED` that names no key back, or another request's key, is no such answer either.
 The write may have reached Dispatch behind what answered it, so its outcome is unknown, a `DispatchWriteUnsettledError`.
 Check whether it took effect before you send it again.
+
+## A 2xx whose body is not JSON, or does not arrive whole
+
+Every answer that Dispatch writes to a keyed write is JSON, or a 204 or a 205, which carries no body (`WriteJSON`).
+So a 2xx whose body is empty, or whose `Content-Type` does not say JSON, is no answer of Dispatch's either, whatever key it names back (`foreign-2xx` in `write-outcome.ts`).
+A captive portal's 200 page is such an answer.
+The write ends there, and where an attempt may have reached Dispatch its outcome is unknown, a `DispatchWriteUnsettledError`.
+Its message says that something in Dispatch's place answered.
+
+The client reads every answer's body inside its attempt, so a 2xx settles the write only once its body is read whole.
+A 2xx whose body breaks off before it is read whole (`body-broken`) is asked again under the key, and Dispatch replays what it stored.
+So is a 2xx whose body, read whole, is not the JSON that its `Content-Type` says (`body-malformed`), an answer cut short on the way.
+A 2xx whose body the call's deadline or its caller's stop ends is that stop, with an attempt in flight: the write ends, and its outcome is unknown.
+When the asking runs out after such an answer, the write ends with it as `last`.
 
 ## What the `dispatch` command prints
 

@@ -47,13 +47,18 @@ export type WriteEvent =
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */
   | "redirect"
-  /** A 2xx that carried no key back, from a Dispatch this process knows runs the keyed layer,
-   *  whose every answer to a keyed write carries it: not Dispatch's answer to this write (a
-   *  captive portal's or a proxy's own page), so it says nothing of whether the write ran. */
+  /** A 2xx that is no answer of Dispatch's to this write (a captive portal's or a proxy's own
+   *  page), so it says nothing of whether the write ran: its body is empty or not JSON-typed where
+   *  its status carries one, though every answer Dispatch writes to a keyed write is JSON or a
+   *  bodiless 204 or 205; or it carried no key back, though every Dispatch runs the keyed layer,
+   *  whose every answer to a keyed write carries it. */
   | "foreign-2xx"
   /** A 2xx whose body broke off before it was read whole (a reset mid-body): Dispatch answered,
    *  and asked again under the key it replays what it stored. */
   | "body-broken"
+  /** A 2xx whose body, read whole, is not the JSON its `Content-Type` says (cut short on the way):
+   *  asked again under the key as a broken body is. */
+  | "body-malformed"
   /** A 5xx: asked again under the key. It can come after Dispatch committed the write. */
   | "server-error"
   /** Dispatch's `409 KEY_IN_FLIGHT`: an earlier attempt still runs under the key. */
@@ -96,7 +101,6 @@ export type WriteEvent =
   /** The caller's stop ended a pause, a wait or a presentation: nothing in flight. */
   | "cancelled"
   /** No ask is left after an event that asks again: the attempts or the time are spent, the
-   *  Dispatch is not known to run the keyed layer (a repeat there would be a second write), the
    *  rolling-release schedule is spent, or the client asks no route again (`retryNoRoute: false`). */
   | "exhausted";
 
@@ -135,6 +139,7 @@ export const WRITE_TRANSITIONS: {
   // Whether a foreign page's sender passed the write on cannot be told, so it may have landed.
   "foreign-2xx": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   "body-broken": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
+  "body-malformed": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "server-error": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "in-flight": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "try-later": { "nothing-sent": nothing("retry"), "may-have-landed": landed("retry") },

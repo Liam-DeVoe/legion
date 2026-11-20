@@ -671,10 +671,11 @@ read it), its answer's body broke off or was ended by the deadline or the caller
 ended by either while it was in flight; a refused connection or a name that did not resolve
 reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
 body is read whole. From "may have landed", only such a 2xx or a refusal Dispatch's keyed layer
-judged for the key (the key echoed back) settles the write. A 2xx that names no key back, or
-another request's key, is no answer of Dispatch's to this write, whatever its body (a captive
-portal's 200 page, a proxy's), since every answer the keyed layer gives a keyed write names its
-key back, and it settles nothing from either state (`#writePayload`). Every
+judged for the key (the key echoed back) settles the write. A 2xx that is no answer of Dispatch's
+settles nothing from either state: one whose body is empty or not typed JSON (a captive portal's
+200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever key it names back,
+and one that names no key back, or another request's key, whatever its body (a proxy's page),
+since every answer the keyed layer gives a keyed write names its key back (`foreign-2xx`). Every
 other end — a 3xx, a page something in Dispatch's place wrote, a refusal Dispatch's auth made
 before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a second `401
 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
@@ -705,7 +706,7 @@ since a new command sends it under a new key. A conversion that writes nothing
 `dispatch-write-outcomes.test.ts` drives the client through every (state, event) pair and every
 sequence of events up to its limits against that rule.
 
-The write-state table (`write-outcome.ts`) uses declared answer rows (`dispatch-write-rows.ts`). Each POST or PATCH declares the row its callers read and whether it stores anything. The markdown round trip, related-item check and result dry run store nothing. A successful answer is usable only when it names this call's key back and matches the row; extra members from a newer server are allowed. An echoed 2xx proves commitment even when its body is unreadable, empty or not the row: it is `DispatchWriteLandedError` with `ANSWER_LOST`, not a retry. An echoed `KEY_COMMITTED` or replayed `ANSWER_NOT_KEPT` is also a landing. A non-storing route instead reports `DispatchAnswerMissingError`. A 2xx without the matching key cannot settle a storing write.
+The write-state table (`write-outcome.ts`) uses declared answer rows (`dispatch-write-rows.ts`). Each POST or PATCH declares the row its callers read and whether it stores anything. The markdown round trip, related-item check and result dry run store nothing. A successful answer is usable only when the table settles on it (it names this call's key back, and its body, read whole, is JSON or a bodiless 204 or 205) and it matches the row; extra members from a newer server are allowed. Such a 2xx proves commitment even when its JSON is not the row, or it carries no body where the row needs one: it is `DispatchWriteLandedError` with `ANSWER_LOST`, not a retry. An echoed `KEY_COMMITTED` or replayed `ANSWER_NOT_KEPT` is also a landing. A non-storing route instead reports `DispatchAnswerMissingError`. A 2xx without the matching key cannot settle a storing write.
 
 Every Dispatch runs the keyed layer on every `POST` and `PATCH` route, the writes the client asks
 again: `GET /healthz` answers `idempotency_keys: true` on every build since
@@ -760,11 +761,11 @@ deadline ended it"). A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a 2xx that names the
-call's key back and whose body gives no row, the client's own `ANSWER_LOST`. It is no refusal and
-no `DispatchServiceError`, and it is never asked again. Its message is the one line the session
-reads: the method and URL were made, why the answer is gone, and to read what it made back with
-`dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
+answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a 2xx the table
+settled on whose body gives no row (`#writePayload`), the client's own `ANSWER_LOST`. It is no
+refusal and no `DispatchServiceError`, and it is never asked again. Its message is the one line
+the session reads: the method and URL were made, why the answer is gone, and to read what it made
+back with `dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
 `landed_without_answer: <code>` in its ledger entry. A step before the
 command's own write that lands this way fails the command (exit 1) with that line and what it
 means: a picture upload (nothing else was written: run the call again, which uploads it as its
@@ -777,7 +778,7 @@ what the `dispatch` command prints for each. It covers Dispatch's refusal, a gat
 refused redirect, a path value that names nothing, and a write whose outcome is unknown. It also
 covers a landing whose answer is gone, and a 2xx that names no key back, which is never the call's
 answer. A landing needs the key that Dispatch names back. The line of a refused redirect names the
-target's origin and nothing of the body.
+target's origin and the body as one redacted line, as for any gateway's page.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec

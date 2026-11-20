@@ -102,7 +102,7 @@ interface Kind {
   /** Whether the answer carries the request's key back, as Dispatch's keyed layer answers. */
   readonly echoed?: boolean;
   /** Whether it is a 2xx whose body is empty or not JSON-typed: no answer Dispatch writes to a
-   *  keyed write, whatever the process knows of the layer. */
+   *  keyed write, whatever key it names back. */
   readonly notJson?: boolean;
   /** Whether it can come after Dispatch committed the write: a 5xx, `KEY_IN_FLIGHT`, a silence
    *  cut, a reset after the request went out, a 2xx whose body did not arrive whole. */
@@ -263,19 +263,19 @@ const KINDS: readonly Kind[] = [
   },
   {
     name: "201 body outlives deadline",
-    role: "committed",
+    role: "stop-in-flight",
     at: "attempt",
     respond: (key, init, run) => partBody(key, init, run, "deadline"),
   },
   {
     name: "201 body stopped",
-    role: "committed",
+    role: "stop-in-flight",
     at: "attempt",
     respond: (key, init, run) => partBody(key, init, run, "stop"),
   },
   {
     name: "201 body broken",
-    role: "committed",
+    role: "repeatable",
     at: "attempt",
     followsCommit: true,
     echoed: true,
@@ -283,7 +283,7 @@ const KINDS: readonly Kind[] = [
   },
   {
     name: "201 body malformed",
-    role: "committed",
+    role: "repeatable",
     at: "attempt",
     followsCommit: true,
     echoed: true,
@@ -597,12 +597,12 @@ function oracle(events: readonly Kind[]): Decision[] {
     if (event.at === "credential") credentialFailed = event.role === "repeatable";
     switch (event.role) {
       case "applied":
-        // A 2xx that does not name the key back is no answer of Dispatch's, whose keyed layer
-        // names it on every answer to a keyed write; one that does is a landing, whose body gives
-        // the row or is an answer lost.
-        if (!event.echoed) return end(UNSETTLED);
-        if (event.notJson || event.name === "204" || event.name === "205")
-          return end({ as: "landed" });
+        // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one that does
+        // not name the key back, though Dispatch's keyed layer names it on every answer to a keyed
+        // write. One that does is the write's answer, whose body gives the row or is an answer
+        // lost: a 204 or a 205 gives none where the route's row needs one.
+        if (event.notJson || !event.echoed) return end(UNSETTLED);
+        if (event.name === "204" || event.name === "205") return end({ as: "landed" });
         return end({ as: "resolved" });
       case "refusal":
         if (event.echoed && event.name !== "422 KEY_REUSED") return end(refusal);
