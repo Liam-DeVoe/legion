@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
@@ -20,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -110,7 +109,7 @@ func TestAStaleExcerptLeftByABuildThatStoresNoneIsMarkedAndCutAgain(t *testing.T
 
 // unreadableDocumentStore fails every read of the documents in unreadable with an error that is
 // neither of the two the reconciliation records as no block (ErrDocumentUnloadable,
-// ErrDocOutsideSchema), and records when each such read was made.
+// ErrDocOutsideSchema), and counts the attempts to read each of them (failedReads).
 type unreadableDocumentStore struct {
 	VersionedStore
 	unreadable map[string]bool
@@ -127,7 +126,7 @@ func newUnreadableDocumentStore(database *store.Store, unreadable ...string) unr
 
 func (s unreadableDocumentStore) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
 	if s.unreadable[room] {
-		s.reads.record(room)
+		s.reads.attempted(room)
 		return DocumentStamp{}, errors.New("injected: the store cannot read this document")
 	}
 	return s.VersionedStore.DocumentStamp(ctx, room)
@@ -135,39 +134,34 @@ func (s unreadableDocumentStore) DocumentStamp(ctx context.Context, room string)
 
 func (s unreadableDocumentStore) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
 	if s.unreadable[room] {
-		s.reads.record(room)
 		return LoadedDocument{}, errors.New("injected: the store cannot read this document")
 	}
 	return s.VersionedStore.LoadDocument(ctx, room)
 }
 
-// failedReads is when each read of an unreadable document failed.
+// failedReads counts the attempts to read each unreadable document: the reads of its stamp. Every
+// read of a document no room or transaction holds begins with its stamp (coldRead), once, and a
+// stamp that fails ends that read, so each attempt is one stamp read, however long it took and
+// however soon the next one came.
 type failedReads struct {
-	mu sync.Mutex
-	at map[string][]time.Time
+	mu       sync.Mutex
+	attempts map[string]int
 }
 
-func (r *failedReads) record(room string) {
+func (r *failedReads) attempted(room string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.at == nil {
-		r.at = make(map[string][]time.Time)
+	if r.attempts == nil {
+		r.attempts = make(map[string]int)
 	}
-	r.at[room] = append(r.at[room], time.Now())
+	r.attempts[room]++
 }
 
-// attempts is when the reconciliation tried to read room: the failed reads, with the reads one
-// attempt makes (a stamp, then a load) taken together.
-func (r *failedReads) attempts(room string) []time.Time {
+// count is how many times the reconciliation tried to read room.
+func (r *failedReads) count(room string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var attempts []time.Time
-	for _, at := range r.at[room] {
-		if len(attempts) == 0 || at.Sub(attempts[len(attempts)-1]) > 100*time.Millisecond {
-			attempts = append(attempts, at)
-		}
-	}
-	return attempts
+	return r.attempts[room]
 }
 
 // owedDocuments commits n project documents, each with one mention owed an excerpt, and returns
@@ -265,16 +259,21 @@ func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 	})
 }
 
-// countedLeases counts the lease connections a leased loop takes: one for each attempt at a pass
-// (duty.Exclusive).
-type countedLeases struct {
-	duty.Leases
-	taken atomic.Int64
-}
-
-func (l *countedLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
-	l.taken.Add(1)
-	return l.Leases.Acquire(ctx)
+// awaitExcerptPassesEnded waits until passes passes of the reconciliation have run and the last of
+// them has given its lease back. duty.Exclusive logs a pass that ran before it frees the lease, and
+// frees it after the pass's last statement, so once the lease is free after that many lines every
+// statement of those passes has been made: a state the test reads (duty.LeaseHeld, on the pool the
+// counted statements do not run on), where a quiet span could end inside a pass's last statements.
+func awaitExcerptPassesEnded(t *testing.T, database *store.Store, logs *storetest.LockedLog, passes int, what string) {
+	t.Helper()
+	testwait.Until(t, what, func() (string, bool) {
+		ran := countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", referenceExcerptLease)
+		held, err := duty.LeaseHeld(context.Background(), database.Pool, referenceExcerptLease)
+		if err != nil {
+			t.Fatalf("read whether the reconciliation's lease is held: %v", err)
+		}
+		return fmt.Sprintf("%d passes ran, the lease held %t", ran, held), ran >= passes && !held
+	})
 }
 
 // One document the reconciliation cannot read for any other reason than the two it records as no
@@ -309,8 +308,8 @@ func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *test
 	if err != nil || reconciled != 0 || full {
 		t.Fatalf("the next batch = %d documents, full %v, err %v; want nothing to do", reconciled, full, err)
 	}
-	if attempts := persistence.reads.attempts(first); len(attempts) != 1 {
-		t.Fatalf("the unreadable document was read %d times; want once, its retry not yet due", len(attempts))
+	if attempts := persistence.reads.count(first); attempts != 1 {
+		t.Fatalf("the unreadable document was read %d times; want once, its retry not yet due", attempts)
 	}
 }
 
@@ -439,8 +438,8 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 	wake <- struct{}{}
 	waitFor(t, "the excerpt of a mention left owed after the twenty-first's to be stored by a later pass", func() bool { return !isOwed(t, database, later) })
 	for _, document := range failing {
-		if attempts := persistence.reads.attempts(document); len(attempts) != 1 {
-			t.Fatalf("failing document %s was read %d times; want once, its retry an hour away", document, len(attempts))
+		if attempts := persistence.reads.count(document); attempts != 1 {
+			t.Fatalf("failing document %s was read %d times; want once, its retry an hour away", document, attempts)
 		}
 		if version, attempts := backoffAttempts(t, database, document); version != 1 || attempts != 1 {
 			t.Fatalf("failing document %s's backoff = version %d, %d attempts; want version 1, 1 attempt", document, version, attempts)
@@ -456,13 +455,14 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	documents := owedDocuments(t, database, 3)
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	service := newExcerptService(t, counted, nil)
 	leases := excerptLeases(t, counted)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
 	waitFor(t, "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
-	storetest.AwaitQuiet(t, counter, time.Second,
-		"the pass that stored the last excerpt leaves no state the test can read for the statements it still makes after it (its lease's release, its next-retry read)")
+	awaitExcerptPassesEnded(t, database, logs, 1, "the pass that stored the last excerpt to end and give its lease back")
 	storetest.RequireNoStatements(t, counter, 3*time.Second, "the reconciliation with nothing owed",
 		"the claim is about a window longer than the two-second step of the timer the loop replaced: the loop's timer is a real one (duty.RunWoken), so neither a state the test reads nor a later action shows a pass it would start, and synctest does not reach the real PostgreSQL connections")
 	if next := service.reconcileExcerptPass(context.Background(), referenceExcerptSchedule); !next.IsZero() {
@@ -486,10 +486,10 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	wake := hub.Wake(ExcerptsOwedChannel)
 	connected := make(chan struct{})
 	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
-	counter := &storetest.StatementCounter{}
-	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	service := newExcerptService(t, counted, nil)
-	leases := &countedLeases{Leases: excerptLeases(t, counted)}
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
+	service := newExcerptService(t, database, nil)
+	leases := excerptLeases(t, database)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, wake) })
 	waitFor(t, "the boot pass to store the excerpt", func() bool { return !isOwed(t, database, document) })
 	// The hub starts once the boot pass has begun, so the wake it signals after its LISTEN earns
@@ -505,9 +505,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		<-hubDone
 	})
 	testwait.Receive(t, "the hub to connect", connected)
-	waitFor(t, "the pass the hub's wake earns to take its lease", func() bool { return leases.taken.Load() >= 2 })
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond,
-		"the pass the hub's wake earned leaves no state the test can read for its last statements, and the next action the test takes is the one whose wake it proves")
+	awaitExcerptPassesEnded(t, database, logs, 2, "the pass the hub's wake earns to end and give its lease back")
 
 	ctx := context.Background()
 	for name, leaveOwed := range map[string]func() error{

@@ -92,9 +92,10 @@ type Deps struct {
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
 	// Clock is the clock a room query's wait and its flush answer's timeout run on (roomQueries),
-	// VerifyMark's wait for a mark (MarkWait), the compaction queue's waits (compactionQueue) and
-	// the edit notice sweep's gaps and due times (RunEditNotices); nil means the real clock. A test
-	// hands a clocktest fake and moves it past the wait.
+	// VerifyMark's wait for a mark (MarkWait), the compaction queue's waits (compactionQueue), the
+	// edit notice sweep's gaps and due times (RunEditNotices), the settlement resumption's ticks
+	// (RunSettlementResumption) and Shutdown's drain budget (ShutdownDrainBudget); nil means the
+	// real clock. A test hands a clocktest fake and moves it past the wait.
 	Clock clock.Clock
 	// RoomIdleTimeout is how long an idle room stays resident before ygo's idle sweeper evicts it
 	// (Server.RoomIdleTimeout); zero means roomIdleTimeout, a minute. The sweeper runs on the real

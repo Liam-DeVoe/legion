@@ -138,13 +138,19 @@ func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
 
 	result := pair.askOnTheSide(pair.taskA, roomQueryFlush)
 	// Task A waits for the answer, and task B's flush waits for its append, each with its deadline
-	// armed on the clock.
+	// armed on the clock. Task B answers only once its flush's wait for its room's updates to be
+	// stored returns (awaitStored), so the test waits until task B's flush is inside that wait, a
+	// state it reads from the goroutines rather than one instant after the arms: a flush that
+	// answers without waiting for the append is never seen there, and its answer ends the wait.
 	clock.AwaitArmed(t, "task A's wait for the answers and task B's flush timeout", 2)
-	select {
-	case early := <-result:
-		t.Fatalf("task A's flush returned %+v while task B's append was held: it did not wait for the append", early)
-	default:
-	}
+	testwait.Eventually(t, "task B's flush to wait for its held append to be stored (awaitStored)", func() bool {
+		select {
+		case early := <-result:
+			t.Fatalf("task A's flush returned %+v while task B's append was held: it did not wait for the append", early)
+		default:
+		}
+		return goroutinesIn("docs.awaitStored(", "docs.(*roomQueries).query") > 0
+	})
 	pair.gateB.release()
 	flushed := testwait.Receive(t, "task A's flush to return once task B's append is stored", result)
 	answers, asked, err := flushed.answers, flushed.asked, flushed.err
@@ -330,7 +336,19 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 		asked := clock.Now()
 		result := pair.askOnTheSide(pair.taskA, kind)
 		awaitingOnly(t, pair.taskA, silent)
-		// Task A's wait, and for a flush task B's timeout until it lets it go, both armed at asked.
+		// Task B's flush answer cancels its timeout and only then counts itself off its room's
+		// append waiters (askRoomAppends' done), deferred in that order, so once task B counts no
+		// waiter its timeout is gone and the clock holds task A's wait alone, whatever task B's
+		// goroutine was doing when its answer reached task A. A holds or a share arms no timeout
+		// of task B's at all.
+		testwait.Until(t, kind+": task B to let go of its flush answer's timeout", func() (int, bool) {
+			state := pair.taskB.lockExistingState(pair.artifactID)
+			if state == nil {
+				return 0, true
+			}
+			defer pair.taskB.unlockState(pair.artifactID, state)
+			return state.appendWaiters, state.appendWaiters == 0
+		})
 		armed := clock.AwaitArmed(t, kind+": task A's wait for the silent member", 1)
 		want := asked.Add(roomQueryWait)
 		for _, deadline := range armed {

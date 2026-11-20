@@ -41,7 +41,7 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 
 	restarted := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() { _ = restarted.Shutdown(context.Background()) })
-	restarted.compactionSweepTick(ctx, excerptLeases(t, database))
+	restarted.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	requireCompactedFrom(t, database, artifactID, rows, foldPoint, cursor)
 	if got := storedReading(t, NewPgVersioned(database), artifactID); got != reading {
@@ -52,11 +52,14 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 // The sweep runs once an aligned hour across the processes that share the database, and across
 // their restarts: a second process's tick inside the hour the first one swept finds the hour served
 // and compacts nothing, however due a document is, and the duty record holds the first pass's hour.
+// A tick's period is the hour its due time falls in (duty.Exclusive), the moment its ticker
+// delivered, so the test names both ticks' due times, ten and forty minutes into one hour, rather
+// than reading a clock that could turn the hour between them.
 func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	waitOutTheSweepHour(t, database)
+	hour := time.Date(2026, time.November, 19, 12, 0, 0, 0, time.UTC)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
@@ -65,14 +68,14 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 
 	swept := storeAgedRows(t, database, 3, 20*time.Minute)
-	first.compactionSweepTick(ctx, excerptLeases(t, database))
+	first.compactionSweepTick(ctx, excerptLeases(t, database), hour.Add(10*time.Minute))
 	if got := storedRows(t, database, swept); len(got) != 1 {
 		t.Fatalf("the first process's sweep left rows %v, want the document folded into one", rowVersions(got))
 	}
 
 	due := storeAgedRows(t, database, 3, 20*time.Minute)
 	rows := storedRows(t, database, due)
-	other.compactionSweepTick(ctx, excerptLeases(t, second))
+	other.compactionSweepTick(ctx, excerptLeases(t, second), hour.Add(40*time.Minute))
 	requireRowsAsStored(t, database, due, rows)
 
 	ran := countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", compactionSweepLease)
@@ -80,15 +83,14 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	if ran != 1 || skipped != 1 {
 		t.Fatalf("the two ticks ran %d passes and skipped %d, want one of each:\n%s", ran, skipped, logs.Lines("lease="))
 	}
-	var thisHour bool
+	var boundary time.Time
 	if err := database.Pool.QueryRow(ctx, `
-		select boundary = to_timestamp(floor(extract(epoch from now()) / 3600) * 3600)
-		from duty_passes where lease = $1 and period_ns = $2
-	`, compactionSweepLease, compactionSweepPeriod.Nanoseconds()).Scan(&thisHour); err != nil {
+		select boundary from duty_passes where lease = $1 and period_ns = $2
+	`, compactionSweepLease, compactionSweepPeriod.Nanoseconds()).Scan(&boundary); err != nil {
 		t.Fatalf("read the sweep's duty record: %v", err)
 	}
-	if !thisHour {
-		t.Fatal("the sweep's duty record does not hold this hour's pass")
+	if !boundary.Equal(hour) {
+		t.Fatalf("the sweep's duty record holds the pass of the hour from %v, want the hour both ticks were due in, from %v", boundary, hour)
 	}
 }
 
@@ -105,7 +107,7 @@ func TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule(t *t
 	young := storeAgedRows(t, database, 3, 5*time.Minute)
 	oldRows, youngRows := storedRows(t, database, old), storedRows(t, database, young)
 
-	service.compactionSweepTick(ctx, excerptLeases(t, database))
+	service.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	if got := storedRows(t, database, old); len(got) != 1 || got[0].version != oldRows[len(oldRows)-1].version {
 		t.Fatalf("the old document holds rows %v, want the head %d alone", rowVersions(got), oldRows[len(oldRows)-1].version)
@@ -236,7 +238,7 @@ func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) 
 	youngRows := storedRows(t, database, young)
 	requireOwed(t, database, "every document an append gave a second row", pruned, emptied, young)
 
-	service.compactionSweepTick(ctx, excerptLeases(t, database))
+	service.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	requireOwed(t, database, "the document whose young rows are not yet due", young)
 	requireRowsAsStored(t, database, young, youngRows)
@@ -282,7 +284,7 @@ func TestTheCompactionSweepReadsNoRowOfADocumentThatIsNotDue(t *testing.T) {
 	due := storeAgedRows(t, database, 3, 20*time.Minute)
 	before := docUpdatesTuplesRead(t, database)
 
-	service.compactionSweepTick(ctx, excerptLeases(t, database))
+	service.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	if got := storedRows(t, database, due); len(got) != 1 {
 		t.Fatalf("the due document holds rows %v after the sweep, want it folded into one", rowVersions(got))
@@ -357,7 +359,7 @@ func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	busyRows := storedRows(t, database, busy)
 	unlock := holdDocumentLock(t, database, busy)
 
-	service.compactionSweepTick(ctx, excerptLeases(t, database))
+	service.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	if got := storedRows(t, database, free); len(got) != 1 {
 		t.Fatalf("the free document holds rows %v after the sweep, want it folded into one", rowVersions(got))
@@ -378,23 +380,8 @@ func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	}
 }
 
-// waitOutTheSweepHour returns with at least half a minute of the database clock's aligned hour
-// left, so two sweep ticks a test makes one after the other fall in one period (duty.Exclusive).
-func waitOutTheSweepHour(t *testing.T, database *store.Store) {
-	t.Helper()
-	var left time.Duration
-	if err := database.Pool.QueryRow(context.Background(),
-		`select make_interval(secs => $1 - mod(extract(epoch from now()), $1))`, compactionSweepPeriod.Seconds(),
-	).Scan(&left); err != nil {
-		t.Fatalf("read how much of the hour is left: %v", err)
-	}
-	if left < 30*time.Second {
-		time.Sleep(left + time.Second)
-	}
-}
-
-// compactionSweepTick is one tick of the sweep, due now, as RunCompactionSweep's ticker makes one:
-// the pass, when this process takes the lease and no process has swept this hour.
-func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases) {
-	duty.Exclusive(ctx, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
+// compactionSweepTick is one tick of the sweep due at due, as RunCompactionSweep's ticker makes
+// one: the pass, when this process takes the lease and no process has swept the hour due falls in.
+func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases, due time.Time) {
+	duty.Exclusive(ctx, leases, compactionSweepLease, due, compactionSweepPeriod, s.compactionSweepPass)
 }

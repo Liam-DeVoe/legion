@@ -3,6 +3,8 @@ package docs
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -118,6 +120,47 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 		t.Fatalf("the rig could not judge the transaction: %v", err)
 	}
 }
+
+// The collaborator check's control through this package's rig, in every run: the tracer opens a
+// transaction's xid window at its first write (store.OpenXidWindow), and a call to a collaborator
+// the rig decorates (checkedIdentity, through collabtest.Check) is then named, where the same call
+// before the write is not. A tracer that stopped opening the window, a decorator that stopped
+// checking or a check that stopped reporting would leave every rig row passing, and fails this one.
+func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
+	tracer := storetest.NewXidTracer()
+	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
+	caught := &recordedFailures{TB: t}
+	people := checkedIdentity(caught, signedIn("alice@example.com"))
+	ctx := storetest.MarkXid(context.Background())
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	login := func(when string) {
+		t.Helper()
+		if _, err := people.Login(httptest.NewRequest(http.MethodGet, "/ws/doc/rig", nil).WithContext(ctx)); err != nil {
+			t.Fatalf("%s: resolve the socket's person: %v", when, err)
+		}
+	}
+	login("before the write")
+	if failures := caught.reported(); len(failures) != 0 {
+		t.Fatalf("a collaborator call before the transaction's first write was reported: %q", failures)
+	}
+	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	login("after the write")
+	failures := caught.reported()
+	if len(failures) != 1 || !strings.HasPrefix(failures[0], "identity.Identity.Login was called while its caller holds a connection of the pool") {
+		t.Fatalf("a collaborator call after the transaction's first write was reported as %q, want one failure naming identity.Identity.Login", failures)
+	}
+}
+
+// signedIn is an identity that resolves every request to one person, reading nothing.
+type signedIn string
+
+func (s signedIn) Login(*http.Request) (string, error) { return string(s), nil }
 
 // The document-work check's one gap, held in place: the same parse as the control above, handed
 // to another goroutine while the window is open and waited for, holds the transaction id as long,

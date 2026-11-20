@@ -699,7 +699,15 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 	held := make(chan struct{})
 	release := sync.OnceFunc(func() { close(held) })
 	t.Cleanup(release)
-	lane.push(func(context.Context) { <-held })
+	// The lane takes the held task off its queue as it runs it (roomSyncLane.pop); the burst is
+	// sent only once it runs, so the queue the wait below counts holds the burst's announcements
+	// alone, never the held task still waiting for the lane.
+	holding := make(chan struct{})
+	lane.push(func(context.Context) {
+		close(holding)
+		<-held
+	})
+	testwait.Receive(t, "the lane to run the task that holds it", holding)
 
 	const burst = 5
 	update := paragraphUpdate()

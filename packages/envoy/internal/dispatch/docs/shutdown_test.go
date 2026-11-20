@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -150,6 +151,20 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 		return slices.Contains(drainClock.Armed(), budget)
 	})
 	drainClock.Advance(ShutdownDrainBudget)
+	// Its budget over, Shutdown still has to wait for the held settlement, through its room's close
+	// and its join of the settlements under way, and the budget's end readies no join that does.
+	// The test lets the settlement go only once Shutdown is blocked in a join with its drain's own
+	// settlement over (shutdownWaitsPastItsDrain), a state it reads rather than a window of real
+	// time: a Shutdown that returns at its budget's end never blocks so, and fails here, by name,
+	// whenever it returns.
+	testwait.Eventually(t, "Shutdown, its drain budget over, to wait for the settlement the browser's leaving started", func() bool {
+		select {
+		case err := <-shutdown:
+			t.Fatalf("Shutdown returned (%v) once its drain budget was over, while the settlement the browser's leaving started was still committing its stamp", err)
+		default:
+		}
+		return shutdownWaitsPastItsDrain("TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted")
+	})
 	released.Store(true)
 	pause.let()
 	if err := testwait.Receive(t, "Shutdown to return once the settlement the browser's leaving started could go on", shutdown); err != nil {
@@ -163,6 +178,28 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 		t.Fatalf("the document owes no settlement (%v) after a shutdown that settled nothing", err)
 	}
 	waitForPersistedProofText(t, database, artifactID, "before\n\nadded\n")
+}
+
+// shutdownWaitsPastItsDrain reports, from one snapshot of every goroutine, whether a Shutdown that
+// test's own goroutines run is blocked in one of its joins (waitGroup, parked in its select) while
+// no worker of its drain is still in a settlement of its own (settleRoomWithin). Once its drain
+// budget is over, a Shutdown blocked so waits on work the budget does not end, since the budget's
+// end readies every join it bounds: a Shutdown that only waits out its budget is runnable or gone
+// by then, never parked in a join.
+func shutdownWaitsPastItsDrain(test string) bool {
+	buffer := make([]byte, 1<<24)
+	blocked, settling := false, false
+	for _, stack := range strings.Split(string(buffer[:runtime.Stack(buffer, true)]), "\n\n") {
+		header, frames, _ := strings.Cut(stack, "\n")
+		switch {
+		case strings.Contains(frames, "docs.(*Service).Shutdown.func") && strings.Contains(frames, "docs.(*Service).settleRoomWithin("):
+			settling = true
+		case strings.Contains(header, "[select") && strings.Contains(frames, "docs.waitGroup(") &&
+			strings.Contains(frames, "docs.(*Service).Shutdown(") && strings.Contains(frames, test):
+			blocked = true
+		}
+	}
+	return blocked && !settling
 }
 
 // A settlement its timer started runs on the timer's goroutine under the timer's settleWG count.

@@ -254,7 +254,7 @@ func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
 		t.Fatalf("send schema authentication: %v", err)
 	}
 
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	connection.SetReadDeadline(readDeadline(t))
 	for {
 		_, message, err := connection.ReadMessage()
 		if err != nil {
@@ -650,7 +650,7 @@ func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
 				t.Fatalf("connect outside-schema document: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
 			t.Cleanup(func() { _ = connection.Close() })
-			connection.SetReadDeadline(time.Now().Add(time.Second))
+			connection.SetReadDeadline(readDeadline(t))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentSchemaCloseCode {
@@ -704,14 +704,19 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 }
 
 // Shutdown returns at its caller's deadline while an editor is connected and a durable append waits
-// on a lock, and the append still reaches the store once the lock is released.
+// on a lock, and the append still reaches the store once the lock is released. The service runs on
+// the caller's clock, a fake the test moves past the caller's deadline and never as far as
+// Shutdown's own drain budget (ShutdownDrainBudget, on the service's clock), so a Shutdown that
+// waited out its drain instead of its caller's deadline never returns, and the wait for it fails.
 func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
+	callerClock := clocktest.New(time.Now())
 	service := New(Deps{
 		Store: database, Events: events.NewBroker(),
 		Identity: headerIdentity(database),
 		Settle:   time.Hour,
+		Clock:    callerClock,
 	})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
@@ -737,9 +742,8 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	if !service.hasDurableAppend(artifactID) {
 		t.Fatal("durable append finished while its advisory lock was held")
 	}
-	// The caller's deadline is a context on a fake clock, which the test moves past it once
-	// Shutdown has scanned the room and is waiting on the locked append.
-	callerClock := clocktest.New(time.Now())
+	// The caller's deadline is a context on the fake, which the test moves past it once Shutdown
+	// has scanned the room and is waiting on the locked append.
 	ctx, cancel := callerClock.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
 	shutdown := make(chan error, 1)

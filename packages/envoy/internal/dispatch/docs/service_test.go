@@ -5326,8 +5326,18 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 	assertTableCellPipeVersionAndEventCounts(t, database, artifactID, 2, 1)
 }
 
+// Shutdown returns at its caller's deadline while a settlement waits on a lock, rather than wait
+// for it. The service runs on the caller's clock, a fake the test moves past the caller's deadline
+// and never as far as Shutdown's own drain budget (ShutdownDrainBudget, on the service's clock), so
+// the caller's deadline is the one end Shutdown can meet: a Shutdown that waited out its drain
+// instead never returns, and the wait for it fails.
 func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
-	service, artifactID := newTestService(t)
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	callerClock := clocktest.New(time.Now())
+	deps := testServiceDeps(database)
+	deps.Clock = callerClock
+	service := newTestServiceWith(t, deps)
 	service.settle = 5 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
 
@@ -5341,9 +5351,8 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	waitForDatabaseLock(t, service.store)
-	// The caller's deadline is a context on a fake clock, which the test moves past it once
-	// Shutdown has scanned the room whose settlement waits on the lock.
-	callerClock := clocktest.New(time.Now())
+	// The caller's deadline is a context on the fake, which the test moves past it once Shutdown
+	// has scanned the room whose settlement waits on the lock.
 	ctx, cancel := callerClock.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	result := make(chan error, 1)

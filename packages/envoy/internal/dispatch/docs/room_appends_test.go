@@ -54,7 +54,14 @@ import (
 type statementTracer struct {
 	mu    sync.Mutex
 	trips []tracedTrip
+	// answers is the text of each statement sent on its own whose answer the connection read
+	// whole and without an error (TraceQueryEnd), in the order they ended.
+	answers []string
 }
+
+// tracedQuery is the context key under which TraceQueryStart hands its statement's text to that
+// statement's TraceQueryEnd, which pgx calls with the context TraceQueryStart returned.
+type tracedQuery struct{}
 
 // tracedTrip is one statement, or one pipeline of statements, a connection sent.
 type tracedTrip struct {
@@ -81,10 +88,18 @@ func (t *statementTracer) record(conn *pgx.Conn, statements []tracedStatement) {
 
 func (t *statementTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	t.record(conn, []tracedStatement{{sql: data.SQL, args: data.Args}})
-	return ctx
+	return context.WithValue(ctx, tracedQuery{}, data.SQL)
 }
 
-func (t *statementTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (t *statementTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	sql, ok := ctx.Value(tracedQuery{}).(string)
+	if !ok || data.Err != nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.answers = append(t.answers, sql)
+}
 
 func (t *statementTracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
 	statements := make([]tracedStatement, 0, len(data.Batch.QueuedQueries))
@@ -168,17 +183,16 @@ func (t *statementTracer) statements(room, text string, since int) int {
 	return count
 }
 
-// sent is how many statements whose text contains text were sent at all, whatever they name, a
-// pipeline's counted one by one.
-func (t *statementTracer) sent(text string) int {
+// answered is how many statements sent on their own, whose text contains text, have been answered
+// whole, whatever they name: a statement that is only sent may not have run yet, and the snapshot
+// it reads is taken when it runs, so a wait for what such a statement read waits for its answer.
+func (t *statementTracer) answered(text string) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	count := 0
-	for _, trip := range t.trips {
-		for _, statement := range trip.statements {
-			if strings.Contains(statement.sql, text) {
-				count++
-			}
+	for _, sql := range t.answers {
+		if strings.Contains(sql, text) {
+			count++
 		}
 	}
 	return count

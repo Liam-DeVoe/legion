@@ -156,8 +156,10 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.RunEditNotices(ctx, leases, wake) })
 	// The loop's boot pass reads the due time before the edit is written, so it finds nothing due
 	// and arms nothing: a pass that later reads the notice can only have been earned by the wake.
-	testwait.Eventually(t, "the sweep's boot pass to read the due time", func() bool {
-		return tracer.sent("min(due_at) - now()") > 0
+	// The wait is for the read's answer, not its send: a read sent but not yet run could run after
+	// the notice commits and find it due, earning the pass the wake must earn.
+	testwait.Eventually(t, "the sweep's boot pass's read of the due time to be answered", func() bool {
+		return tracer.answered("min(due_at) - now()") > 0
 	})
 
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}

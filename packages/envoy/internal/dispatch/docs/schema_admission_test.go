@@ -103,11 +103,11 @@ func sendToken(t *testing.T, connection *gws.Conn, artifactID, token string) {
 	}
 }
 
-// readUntil reads the room's messages, for up to 5 s, until it sends one of kind (Hocuspocus's
-// message type), and returns the rest of that message.
+// readUntil reads the room's messages until it sends one of kind (Hocuspocus's message type), and
+// returns the rest of that message. Its reads wait until the shared wait gives up (readDeadline).
 func readUntil(t *testing.T, connection *gws.Conn, kind uint64) *encoding.Decoder {
 	t.Helper()
-	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = connection.SetReadDeadline(readDeadline(t))
 	defer func() { _ = connection.SetReadDeadline(time.Time{}) }()
 	for {
 		_, message, err := connection.ReadMessage()
@@ -409,10 +409,11 @@ func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t
 }
 
 // requireRevokedClose reads connection until it ends, and fails the test unless the server closed
-// it with the admission-revoked code within five seconds.
+// it with the admission-revoked code; the read waits for that end until the shared wait gives up
+// (readDeadline).
 func requireRevokedClose(t *testing.T, connection *gws.Conn, what string) {
 	t.Helper()
-	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = connection.SetReadDeadline(readDeadline(t))
 	for {
 		_, _, err := connection.ReadMessage()
 		if err == nil {
