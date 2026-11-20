@@ -394,20 +394,27 @@ func nodeParams(nodes []Node) ([]any, error) {
 	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents}, nil
 }
 
-// tupleParams are the ten arrays a tuple append binds, in tupleWriteColumns' order.
+// tupleParams are the tupleArrayCount arrays a tuple append binds, in tupleWriteColumns' order.
 func tupleParams(tuples []Tuple) ([]any, error) {
-	fromKinds := make([]string, len(tuples))
-	fromIDs := make([]string, len(tuples))
-	kinds := make([]string, len(tuples))
-	toKinds := make([]string, len(tuples))
-	toIDs := make([]string, len(tuples))
-	ats := make([]time.Time, len(tuples))
-	whos := make([][]byte, len(tuples))
-	sourceEvents := make([]int64, len(tuples))
-	legacySeqs := make([]*int64, len(tuples))
-	asserted := make([]bool, len(tuples))
+	return tupleParamsOf(len(tuples), func(index int) Tuple { return tuples[index] })
+}
+
+// tupleParamsOf is tupleParams of the count tuples nth answers, read in place where the caller
+// holds them (queueAppend).
+func tupleParamsOf(count int, nth func(index int) Tuple) ([]any, error) {
+	fromKinds := make([]string, count)
+	fromIDs := make([]string, count)
+	kinds := make([]string, count)
+	toKinds := make([]string, count)
+	toIDs := make([]string, count)
+	ats := make([]time.Time, count)
+	whos := make([][]byte, count)
+	sourceEvents := make([]int64, count)
+	legacySeqs := make([]*int64, count)
+	asserted := make([]bool, count)
 	var writers writerEncoder
-	for index, tuple := range tuples {
+	for index := range count {
+		tuple := nth(index)
 		who, err := writers.encode(tuple.Who)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of %s %s: %w", tuple.Kind, tuple.FromID, err)

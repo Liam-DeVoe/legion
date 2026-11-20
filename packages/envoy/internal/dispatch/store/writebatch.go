@@ -25,6 +25,9 @@ import (
 // QueryRow, Query), which runs as Send reads that statement's result, in statement order.
 type WriteBatch struct {
 	batch pgx.Batch
+	// builds holds, beside each statement queued, the function that builds its arguments when
+	// Send reaches it (QueueBuilt), and nil for a statement queued with its arguments.
+	builds []func() ([]any, error)
 }
 
 // LatestEventID is the SQL expression for the id of the event this session appended last: the
@@ -47,6 +50,19 @@ type Queued struct {
 // as a statement run on its own would.
 func (b *WriteBatch) Queue(what, sql string, args ...any) Queued {
 	queued := Queued{query: b.batch.Queue(sql, args...), what: what}
+	b.builds = append(b.builds, nil)
+	queued.Exec(nil)
+	return queued
+}
+
+// QueueBuilt is Queue for a statement whose arguments build returns when Send reaches it, rather
+// than now: a write of thousands of rows queues its statements with the rows they read, and only
+// the batch Send is sending holds their arguments, which it drops once that batch has run. build
+// reads the rows as they stand then, so they must not change after this call. Its error stops
+// Send, as a statement's own failure would.
+func (b *WriteBatch) QueueBuilt(what, sql string, build func() ([]any, error)) Queued {
+	queued := Queued{query: b.batch.Queue(sql), what: what}
+	b.builds = append(b.builds, build)
 	queued.Exec(nil)
 	return queued
 }
@@ -131,23 +147,57 @@ func (r batchRow) Scan(dest ...any) error {
 //
 // The statements go as one pipelined batch while their arguments come to sendBound or less, which
 // is every write phase but the few that carry thousands of rows. A larger one goes as several
-// batches in a row, each read before the next is sent (sendParts): pgx encodes the whole of a
-// batch into one buffer before it sends any of it, beside each statement's own encoding of its
+// batches in a row, each read before the next is sent (partEnd): pgx encodes the whole of a batch
+// into one buffer before it sends any of it, beside each statement's own encoding of its
 // arguments, so a version of 150,000 blocks held some 740 MB of encoded statements at once as one
-// batch. In parts it holds one part's, which is at most its largest statement's twice over. The
-// round trip between two parts is the one gap the order above allows, and it is taken only by a
-// write phase whose statements run for seconds on their own.
+// batch. In parts it holds one part's. A statement queued with QueueBuilt has its arguments built
+// as its part is cut, and every statement's arguments are dropped once its part has run, so a
+// write's rows are held as arguments only for the part that sends them. The round trip between
+// two parts is the one gap the order above allows, and it is taken only by a write phase whose
+// statements run for seconds on their own.
 func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 	if b.batch.Len() == 0 {
 		return nil
 	}
-	queued := b.batch.QueuedQueries
-	b.batch = pgx.Batch{}
-	for _, part := range sendParts(queued, sendBound) {
-		batch := pgx.Batch{QueuedQueries: part}
+	queued, builds := b.batch.QueuedQueries, b.builds
+	b.batch, b.builds = pgx.Batch{}, nil
+	// measured is each statement's argument bytes once its arguments are built, -1 before: partEnd
+	// asks the size of the statement that starts the next part as well.
+	measured := make([]int, len(queued))
+	for index := range measured {
+		measured[index] = -1
+	}
+	size := func(index int) (int, error) {
+		if measured[index] >= 0 {
+			return measured[index], nil
+		}
+		if build := builds[index]; build != nil {
+			arguments, err := build()
+			if err != nil {
+				return 0, err
+			}
+			queued[index].Arguments = arguments
+		}
+		bytes := 0
+		for _, argument := range queued[index].Arguments {
+			bytes += argumentBytes(argument)
+		}
+		measured[index] = bytes
+		return bytes, nil
+	}
+	for start := 0; start < len(queued); {
+		end, err := partEnd(start, len(queued), sendBound, size)
+		if err != nil {
+			return err
+		}
+		batch := pgx.Batch{QueuedQueries: queued[start:end]}
 		if err := tx.SendBatch(ctx, &batch).Close(); err != nil {
 			return err
 		}
+		for index := start; index < end; index++ {
+			queued[index].Arguments, queued[index] = nil, nil
+		}
+		start = end
 	}
 	return nil
 }
@@ -157,23 +207,23 @@ func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 // of its own.
 const sendBound = 16 << 20
 
-// sendParts cuts queued into the batches Send sends, in order: each as many statements as fit in
-// bound together, and a statement past bound on its own.
-func sendParts(queued []*pgx.QueuedQuery, bound int) [][]*pgx.QueuedQuery {
-	var parts [][]*pgx.QueuedQuery
-	start, size := 0, 0
-	for index, query := range queued {
-		bytes := 0
-		for _, argument := range query.Arguments {
-			bytes += argumentBytes(argument)
+// partEnd is the end of the batch Send sends from statement start of count: as many statements
+// as fit in bound together, and a statement past bound on its own. size gives a statement's
+// argument bytes, and is asked once for each statement in order, the one past the batch included,
+// which is the next batch's first.
+func partEnd(start, count, bound int, size func(index int) (int, error)) (int, error) {
+	total := 0
+	for index := start; index < count; index++ {
+		bytes, err := size(index)
+		if err != nil {
+			return 0, err
 		}
-		if index > start && size+bytes > bound {
-			parts = append(parts, queued[start:index])
-			start, size = index, 0
+		if index > start && total+bytes > bound {
+			return index, nil
 		}
-		size += bytes
+		total += bytes
 	}
-	return append(parts, queued[start:])
+	return count, nil
 }
 
 // argumentBytes is about how many bytes pgx sends for argument: a string's or a byte slice's
