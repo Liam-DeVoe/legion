@@ -207,7 +207,11 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // captures no subject of the role's kept lane (bus.ErrStreamLacksSubject): that is the 503 of the
 // refusal, recorded stream_lacks_subject, as the send route and a role send's forward answer it,
 // so the sender learns that nothing stored the message and why. The role lane counts an unclaimed
-// role skipped and a lapsed holder failed when its own keep fails.
+// role skipped and a lapsed holder failed when its own keep fails. A keep whose publish went out
+// and was never acknowledged (bus.ErrUnacknowledged) is answered with the 404 too, as at main,
+// although it may have stored the copy: what each role route answers is unchanged here, and a
+// sender that publishes again after the 404 gives the role's next holder the message once more,
+// which at-least-once delivery allows.
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
@@ -222,8 +226,8 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
-		kept, ok, err := keepForNextHolder(*s.d.delivery, s.role, s.item)
-		if ok {
+		kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item)
+		if err == nil {
 			s.kept(result, kept)
 			return
 		}
@@ -408,6 +412,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	// reads the same stamp this send's own 202 names.
 	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
+	resolvedAt := d.delivery.now()
 	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)
 	cancelFirst()
 	if err != nil {
@@ -428,7 +433,8 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
 	for pass := 0; ; pass++ {
-		if pass > 0 || !sessionIsLive(first.HolderState) {
+		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
+			resolvedAt = d.delivery.now()
 			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
 			if err != nil && ctx.Err() != nil {
 				// The window ended under the resolution: what it read says nothing more.
