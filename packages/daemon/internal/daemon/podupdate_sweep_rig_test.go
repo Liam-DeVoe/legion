@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -54,7 +55,8 @@ import (
 // The machines a test builds write nothing to the store and answer every name of a claim's session
 // as that claim's (sweepClaims), and arm no timer (sweepClock): a test puts hundreds of thousands
 // of claims to the path, each a machine of its own for one sweep. The runtime reads every pod there
-// and drifted, and records nothing (steadyPod).
+// and drifted, and records nothing (steadyPod), and the tick reads no hold of a project's pause
+// (noPauseHolds).
 // The rig's machines are fed nothing once the path is built: each one's inbox is swapped for one
 // no goroutine takes from, and the inbox it had is closed, which ends the goroutine that fed it. So
 // each post openPodUpdate makes is kept there for posts to read rather than decided, and no
@@ -75,7 +77,7 @@ type sweepPath struct {
 func newSweepPath(rig *podUpdateRig) *sweepPath {
 	p := &sweepPath{rig: rig, posted: map[claim.Token]*inbox{}, deps: rig.sup.deps, held: map[claim.Token]*sweepHeld{}}
 	p.deps.Store, p.deps.Clock, p.deps.Log = sweepClaims{rig.sup.deps.Store}, sweepClock{rig.clock}, slog.New(slog.DiscardHandler)
-	rig.s.runtime = steadyPod{rig.rt}
+	rig.s.runtime, rig.s.pauseHoldsSince = steadyPod{rig.rt}, noPauseHolds
 	rig.sup.mu.Lock()
 	defer rig.sup.mu.Unlock()
 	for token, m := range rig.sup.machines {
@@ -565,6 +567,14 @@ func (steadyPod) PodDrift(context.Context, runtime.Known) ([]string, error) {
 	return []string{podUpdateDrift}, nil
 }
 
+// noPauseHolds is the holds of a project's pause as a sweepPath's tick reads them
+// (supervision.pauseHoldsSince): none, which is what the store answers over the rig's database,
+// where no pause is ever taken. It answers from memory because a test puts groups to the sweep
+// hundreds of thousands of times, and a read of the store at each sweep is a database round trip.
+func noPauseHolds(context.Context, string, time.Time) ([]store.PausePodHold, error) {
+	return nil, nil
+}
+
 // sweepRig is the pod-update rig with a ready worker of every workflow role, so a machine holds
 // the claim of each role's token, and the controller's token, like any token of no issue, is held
 // by none, driven from the daemon's tick to the publish (sweepPath). The round's enqueue is
@@ -591,7 +601,7 @@ func newSweepRig(t *testing.T) *sweepRig {
 	}
 	r := &sweepRig{rig: newPodUpdateRig(t, workers...), heard: &holderPublisher{}}
 	r.rig.s.log = slog.New(slog.DiscardHandler)
-	r.rig.s.enqueue = func(_ context.Context, issue string, rows ...record.OutboxPayload) error {
+	r.rig.s.enqueue = func(_ context.Context, issue string, rows ...record.OutboxPayload) (bool, error) {
 		for _, row := range rows {
 			ask, ok := row.(record.UpdateAsk)
 			if !ok || issue != podUpdateIssue {
@@ -599,7 +609,7 @@ func newSweepRig(t *testing.T) *sweepRig {
 			}
 			r.asked = append(r.asked, ask)
 		}
-		return nil
+		return true, nil
 	}
 	r.lane = &outbox{project: podUpdateProject, notices: r.heard, supervisor: r.rig.sup, log: slog.New(slog.DiscardHandler)}
 	r.path = newSweepPath(r.rig)

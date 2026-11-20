@@ -894,8 +894,8 @@ func TestPodUpdateTheSweepsAskReachesEveryOwedReadyClaimWhateverElseItHolds(t *t
 		heard := rig.deliveredTo(claim.RoleImplementer)
 		other := record.UpdateAsk{Role: claim.RoleTester, Round: podUpdateRound, Pod: podUpdatePod,
 			Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))}
-		if err := rig.s.enqueue(rig.ctx, podUpdateIssue, other); err != nil {
-			t.Fatalf("%s: queue the tester's ask of the round: %v", label, err)
+		if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, other); err != nil || !written {
+			t.Fatalf("%s: queue the tester's ask of the round: written=%t error=%v", label, written, err)
 		}
 		group := []supervise.Claim{c}
 		path.hold(group)

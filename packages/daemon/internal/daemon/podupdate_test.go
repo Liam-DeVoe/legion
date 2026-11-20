@@ -229,6 +229,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
 		enqueue:         w.enqueueOutbox,
+		pauseHoldsSince: st.PausePodHoldsSince,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
@@ -292,7 +293,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 func podUpdateWorkflow(pool *store.Pool, records record.Store, clock *heldClock, log *slog.Logger) *workflowRuntime {
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Clock: clock.Now}, log)
-	return &workflowRuntime{pool: pool, records: records, log: log, handlers: []intake.Handler{engine}}
+	return &workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: log, handlers: []intake.Handler{engine}}
 }
 
 // podUpdateLocator is one role process in an issue pod, as the Sandbox runtime records it. The
@@ -1629,6 +1630,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	next.s = &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
 		applySweepFacts: r.s.applySweepFacts,
+		pauseHoldsSince: st.PausePodHoldsSince,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	return next
