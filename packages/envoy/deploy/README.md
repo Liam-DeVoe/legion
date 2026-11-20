@@ -99,22 +99,29 @@ the pass with nothing deployed.
 its start. Every call of the pass that waits on the registry, Docker or the
 database is given the time it leaves: the fetch of `main`, each manifest read
 (the walk of the 30 commits has no bound of its own), the backup, each schema
-read's container, the origin check, and every step of a rollback. A call that
+read's container, and every step of a rollback. A call that
 answers slowly is waited for; one that has not answered when the pass's time is
 spent is stopped and named as having run out the pass's deadline, and the pass
 fails. Each step of a deploy keeps 180 seconds of the pass for its rollback (the
 rollback's health check, its one step with a bound of its own), so a deploy whose
-steps run until the pass is nearly spent still leaves its rollback that time, and
-a deploy the pass has no more than 180 seconds left for does not start: the
-previous image still serves, and the next pass starts with the whole deadline.
-Three steps of a deploy keep a bound of their own, each cut to what the pass
+steps run until the pass is nearly spent still leaves its rollback that time.
+Four steps of a deploy keep a bound of their own, each cut to what the pass
 leaves after those 180 seconds: the pull's 900 seconds (a pull that runs it out
 changes nothing, and the next pass pulls again), the `up`'s 300 seconds (the
 deploy's limit for the new image's start: a start that has not finished within it
-is rolled back), and the health check's 180 at most (below), which stops at the
-try the pass has no time for. Those three add up to 1380 seconds, and the least
-`PASS_DEADLINE` the deployer takes is 1560 seconds, those and the rollback's 180:
-a smaller value is refused at start, naming both numbers. The deadline is the
+is rolled back), the health check's 180 at most (below), and the origin check's
+3, one request to Dispatch's own `/auth/start`, bounded as one health request is.
+Those four add up to 1383 seconds, and with the rollback's 180 they make
+`PASS_DEADLINE_MINIMUM`, 1563 seconds. A deploy starts only where the pass leaves
+at least that much, read where the deploy starts and again just before the pull,
+since the backup before it has no bound of its own. Where the pass leaves less,
+the deployer logs what it leaves and that minimum, records nothing, and the
+previous image still serves; the next pass starts with the whole deadline. So no
+step of a deploy is cut below its own bound unless the clock moves on past those
+bounds (a step that overran, a clock that stepped), and a step the pass's
+deadline cut even then is not recorded as a failure of the image (below). The
+least `PASS_DEADLINE` the deployer takes is that same 1563 seconds: a smaller
+value is refused at start, naming both numbers. The deadline is the
 pass's, not the poll's: a rollback comes after the deploy's own steps, so a
 deadline as short as `POLL` would leave a slow deploy's rollback no time. `POLL`,
 `PASS_DEADLINE` and `SCHEMA_READ_DEADLINE` are whole numbers of seconds, and a
@@ -152,7 +159,10 @@ scripts/autodeploy.sh --once
 ```
 In the continuous loop each pass runs as a process of its own, a `--once` run.
 A pass that fails logs its own line and ends, the loop logs that it failed, and
-the next pass starts after `POLL`. One pass, `--once`, exits 1 when it fails.
+the next pass starts after `POLL`. One pass, `--once`, exits 1 when it fails, 3
+when a rollback was refused or failed, 4 when the record below could not be
+rewritten or removed after the pass's result, and 5 when the record already held
+a stopped deploy as the pass started.
 
 A deploy that started its image and did not succeed is recorded in
 `$BACKUPS/failed-deploy`, one line each: the commit, `rolled-back` or `stopped`,
@@ -161,13 +171,24 @@ the image starts and rewritten as rolled-back once the rollback restored the
 previous image, so a pass that ends in between leaves the deployer stopped.
 While the record names a commit, no pass deploys it or an ancestor of it again:
 each pass names the commit and the file on one line, and only a newer published
-commit deploys. A refused or failed rollback, or any stopped line, ends the
-continuous loop with exit 3 and one line saying forward recovery is required,
-and a deployer started again deploys nothing while that line is there. The
-backups the record names are never pruned, so the dump taken before a failed
-deploy is kept for the person recovering from it. A deploy that succeeds removes
-the record; a person deletes it to deploy a recorded commit again, or to let the
-deployer start after a stop.
+commit deploys. A step that ends because the pass's deadline ran out, not because
+the image failed it, never records the image as failed: an `up`, a health check
+or an origin check the pass had no time left for, or that ran out a bound the
+pass cut below the step's own, is rolled back, its stopped line is taken out,
+and the next pass deploys that commit with the whole deadline. A refused or
+failed rollback, or any stopped line, ends the continuous loop with exit 3 and
+one line saying why: forward recovery is required after a refused or failed
+rollback; the previous image (or the new one, after a deploy that succeeded)
+serves after a record that could not be rewritten or removed, which a person
+deletes once it can be written to; and what runs is not known after a pass that
+ended between an image's start and its result. A deployer started again deploys
+nothing while a stopped line is there, and its line names each of those cases,
+since it cannot tell them apart: the log of the pass that wrote the line says
+which. The backups the record names are never pruned, so the dump taken before a
+failed deploy is kept for the person recovering from it. A deploy that succeeds
+removes the record, and logs the removal only where the record held a failed
+deploy of another commit; a person deletes it to deploy a recorded commit again,
+or to let the deployer start after a stop.
 
 The health check asks `/healthz` up to 30 times, each try a 3-second wait and a
 request bounded at 3 seconds (`HEALTH_INTERVAL`, `HEALTH_REQUEST_BOUND`), 180

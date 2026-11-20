@@ -87,10 +87,26 @@ if [[ "$output" != *"new-image is an ancestor of newer-image, whose deploy faile
   fail 'deployer deployed an ancestor of a commit whose deploy failed, or did not name both'
 fi
 
+# A pass that dies between its image's start and its result, with a status other than 3 (here
+# SIGTERM, which the candidate's up sends the pass), leaves its stopped line, and the loop stops
+# after that pass with 3 and a line saying what runs is not known: no wait of POLL, no second pass.
+case_begin "the loop after a pass that died between its image's start and its result"
+fresh_env
+status=0
+output=$(POLL=11 AUTODEPLOY_TEST_LOOP_PASSES=3 AUTODEPLOY_TEST_UP_KILLS_PASS=1 AUTODEPLOY_TEST_COMMITS='new-image old-image' deployer) || status=$?
+if ((status != 3)) || [[ -e "$schema.passes" ]] || [[ $(grep -c 'main has a newer published image' <<<"$output") -ne 1 ]]; then
+  fail "the continuous loop ended with status $status after $(cat "$schema.passes" 2>/dev/null | wc -l) waits and $(grep -c 'main has a newer published image' <<<"$output") deploys, where a pass that died after recording new-image as stopped must stop it at once with 3"
+fi
+if [[ "$output" != *"the pass ended with status 143 between the start of new-image and its result, which $failed_record records as stopped, so what runs is not known: the deployer stops, and deploys nothing until a person deletes $failed_record"* ]] ||
+  [[ $(grep -c ' up ' "$log") -ne 1 ]] || [[ $(cut -d' ' -f1,2 "$failed_record") != 'new-image stopped' ]]; then
+  fail 'the continuous loop did not name a pass that died between its image start and its result, or the record did not keep new-image stopped'
+fi
+
 # A refused rollback stops the loop: the pass exits 3, naming why, and the loop ends with 3 and
 # one line saying forward recovery is required, as at main, starting nothing again. A deployer
 # started again after that (a supervisor's restart) deploys nothing while the record says the
-# deployer stopped, and neither does a single run.
+# deployer stopped, and neither does a single run, which exits 5. Their line cannot tell what left
+# the record stopped, so it names every case, and the log of the pass that wrote it says which.
 case_begin 'the loop after a refused rollback'
 fresh_env
 status=0
@@ -108,14 +124,69 @@ case_begin 'a deployer started again after a refused rollback'
 status=0
 output=$(POLL=11 AUTODEPLOY_TEST_LOOP_PASSES=3 AUTODEPLOY_TEST_COMMITS='new-image old-image' deployer) || status=$?
 if ((status != 3)) || [[ -s "$log" || -s "$manifest_log" ]] ||
-  [[ "$output" != *"$failed_record records that the deploy of new-image left Dispatch for a person, and forward recovery is required: deploying nothing until a person deletes $failed_record"*"the deployer stops"* ]]; then
-  fail "a deployer started again after a refused rollback ended with status $status, or read or started anything"
+  [[ "$output" != *"$failed_record records the deploy of new-image as stopped: its rollback was refused or failed, or its pass ended before its result, or the record could not be rewritten after its result; the log of the pass that deployed it says which, and what serves. Deploying nothing until a person deletes $failed_record"*"the pass ended with status 5: $failed_record already recorded the deploy of new-image as stopped when the pass started (the line above says what may have left it so): the deployer stops, and deploys nothing until a person deletes $failed_record"* ]]; then
+  fail "a deployer started again after a refused rollback ended with status $status, or read or started anything, or did not say the record was stopped before its pass"
 fi
 status=0
 output=$(deploy_once) || status=$?
-if ((status != 3)) || [[ -s "$log" ]]; then
-  fail "a single run after a refused rollback ended with status $status, or started anything"
+if ((status != 5)) || [[ -s "$log" ]]; then
+  fail "a single run after a refused rollback ended with status $status, not 5, or started anything"
 fi
+
+# A rollback that restored the previous image, whose record then could not be rewritten (the disk
+# filled between the stopped line and the rolled-back one), stops the loop too: the record still
+# says stopped. Its lines say what happened: old-image serves, and the record could not be rewritten
+# and still says stopped, naming the file to delete once it can be written to; the pass exits 4, and
+# the loop's line says so, not that the rollback failed. A deployer started again says what a
+# restart can know, as after a refused rollback.
+case_begin 'the loop after a rollback whose record could not be rewritten'
+fresh_env
+status=0
+output=$(POLL=11 AUTODEPLOY_TEST_LOOP_PASSES=3 AUTODEPLOY_TEST_RECORD_MOVES=1 AUTODEPLOY_TEST_COMMITS='new-image old-image' deployer) || status=$?
+if ((status != 3)) || [[ -e "$schema.passes" ]]; then
+  fail "the continuous loop ended with status $status after $(cat "$schema.passes" 2>/dev/null | wc -l) waits, where a record a rollback could not rewrite must stop it at once with 3"
+fi
+if [[ "$output" != *"rolling back to old-image"*"could not record the failed deploy of new-image as rolled-back in $failed_record"*"the rollback restored old-image, which serves, but $failed_record could not be rewritten, and still records the deploy of new-image as stopped, so the deployer stops: delete $failed_record once it can be written to, to start the deployer again (the next pass then deploys new-image again, since no record says it failed)"*"the pass ended with status 4: $failed_record could not be rewritten after the deploy of new-image, and still records it as stopped, though Dispatch serves (the lines above say which image; delete the file once it can be written to): the deployer stops, and deploys nothing until a person deletes $failed_record"* ]] ||
+  [[ "$output" == *"did not restore"* || "$output" == *"forward recovery"* ]] ||
+  [[ $(cut -d' ' -f1,2 "$failed_record") != 'new-image stopped' ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]] ||
+  [[ $(grep -c ' up ' "$log") -ne 2 ]]; then
+  fail 'a rollback that restored old-image and a record it could not rewrite were not named as such, or the lines said the rollback failed'
+fi
+case_begin 'a deployer started again after a record a rollback could not rewrite'
+: >"$log"
+status=0
+output=$(POLL=11 AUTODEPLOY_TEST_LOOP_PASSES=3 AUTODEPLOY_TEST_COMMITS='new-image old-image' deployer) || status=$?
+if ((status != 3)) || [[ -s "$log" ]] ||
+  [[ "$output" != *"$failed_record records the deploy of new-image as stopped: its rollback was refused or failed, or its pass ended before its result, or the record could not be rewritten after its result"*"the pass ended with status 5: "* ]] ||
+  [[ "$output" == *"did not restore"* ]]; then
+  fail "a deployer started again after a record a rollback could not rewrite ended with status $status, started anything, or said more than it can know"
+fi
+
+# The same holds for the other records a pass could not rewrite after its result, each ending the
+# pass with 4: the stopped line of a deploy the pass's deadline cut, which the rollback restored
+# old-image after (the clock moves on 3,416 s as the pull returns, and the health check's one try is
+# cut), and the record of a deploy that succeeded. The control of each, with the record's removal
+# working, is in deadline.sh and above: the cut deploy leaves no record, and the success removes it.
+for after in cut success; do
+  case_begin "a record that could not be removed after the pass's result ($after)"
+  fresh_env
+  status=0
+  if [[ "$after" == cut ]]; then
+    output=$(AUTODEPLOY_TEST_RECORD_RM_FAILS=1 AUTODEPLOY_TEST_CLOCK_STEP=pull:3416 AUTODEPLOY_TEST_HEALTH_TAKES=2 deploy_once) || status=$?
+    first="could not take the deploy of new-image out of $failed_record"
+    later="the rollback restored old-image, which serves, but $failed_record could not be rewritten, and still records the deploy of new-image as stopped, so the deployer stops: delete $failed_record once it can be written to, to start the deployer again"
+    tag=old-image
+  else
+    output=$(AUTODEPLOY_TEST_RECORD_RM_FAILS=1 AUTODEPLOY_TEST_ORIGIN_OK=1 deploy_once) || status=$?
+    first="deployed new-image (test deployment)"
+    later="deployed new-image, which serves, but could not remove $failed_record, which still records its deploy as stopped, so the deployer stops: delete $failed_record to start it again"
+    tag=new-image
+  fi
+  if ((status != 4)) || [[ "$output" != *"$first"*"$later"* ]] || [[ "$output" == *"the pass's deadline cut"* ]] ||
+    [[ $(cut -d' ' -f1,2 "$failed_record") != 'new-image stopped' ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=$tag"* ]]; then
+    fail "a record that could not be removed after the pass's result ($after) ended the pass with status $status (4 wanted), was not named, or did not leave new-image recorded as stopped with $tag deployed"
+  fi
+done
 
 # The backup taken before a deploy that failed is kept while the record names it, past the ten
 # newest the prune keeps: it is what a person recovering from that deploy may need. Here it is the
@@ -218,23 +289,23 @@ done
 case_begin 'a pass deadline below the least'
 fresh_env
 status=0
-output=$(PASS_DEADLINE=1559 deploy_once) || status=$?
-if ((status != 2)) || [[ "$output" != "PASS_DEADLINE is 1559s, below the 1560s a pass needs: 1380s for its deploy steps (the pull 900s, the up 300s, the health check 180s) and 180s for its rollback's health check; not starting" ]] ||
+output=$(PASS_DEADLINE=1562 deploy_once) || status=$?
+if ((status != 2)) || [[ "$output" != "PASS_DEADLINE is 1562s, below the 1563s a pass needs: 1383s for its deploy steps (the pull 900s, the up 300s, the health check 180s, the origin check 3s) and 180s for its rollback's health check; not starting" ]] ||
   [[ -s "$manifest_log" ]]; then
   fail 'deployer did not refuse a pass deadline that leaves its rollback no time, naming both numbers'
 fi
-# The control: the least pass deadline the deployer takes starts a pass.
+# The control: the least pass deadline the deployer takes starts a pass, and its deploy.
 case_begin 'the least pass deadline'
 fresh_env
-if output=$(PASS_DEADLINE=1560 deploy_once); then
-  fail 'deployer did not fail at the origin check under PASS_DEADLINE=1560'
+if output=$(PASS_DEADLINE=1563 deploy_once); then
+  fail 'deployer did not fail at the origin check under PASS_DEADLINE=1563'
 fi
 if [[ "$output" != *"rolling back to old-image"* ]]; then
-  fail 'deployer refused the least pass deadline it takes'
+  fail 'deployer refused the least pass deadline it takes, or the deploy under it'
 fi
 # The least pass deadline is computed from the health check's own numbers, not written beside them:
 # a copy of the deployer whose health check waits 4 s between tries asks 30 s more of the pass, both
-# for its own health check and for its rollback's, so it refuses 1560 and names 1620.
+# for its own health check and for its rollback's, so it refuses 1563 and names 1623.
 case_begin 'the least pass deadline follows the health check'
 fresh_env
 sed 's/^HEALTH_INTERVAL=3$/HEALTH_INTERVAL=4/' "$deployer_script" >"$root/autodeploy-interval-4.sh"
@@ -243,8 +314,8 @@ if cmp -s "$deployer_script" "$root/autodeploy-interval-4.sh"; then
 fi
 chmod +x "$root/autodeploy-interval-4.sh"
 status=0
-output=$(deployer_script="$root/autodeploy-interval-4.sh" && PASS_DEADLINE=1560 deploy_once) || status=$?
-if ((status != 2)) || [[ "$output" != "PASS_DEADLINE is 1560s, below the 1620s a pass needs: 1410s for its deploy steps (the pull 900s, the up 300s, the health check 210s) and 210s for its rollback's health check; not starting" ]]; then
+output=$(deployer_script="$root/autodeploy-interval-4.sh" && PASS_DEADLINE=1563 deploy_once) || status=$?
+if ((status != 2)) || [[ "$output" != "PASS_DEADLINE is 1563s, below the 1623s a pass needs: 1413s for its deploy steps (the pull 900s, the up 300s, the health check 210s, the origin check 3s) and 210s for its rollback's health check; not starting" ]]; then
   fail 'the least pass deadline did not move with the health check interval'
 fi
 
