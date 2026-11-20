@@ -3,13 +3,14 @@
 # one sent: a recording proxy and a process per client (start_proxy, client_fifo, client_ready,
 # start_omp, and start_claude, which is launch_claude and then claude_started, a wait until the
 # server answers a tool: claude_answers_tools), one command answered on a client's stdout (send),
-# the readers of that client's proxy log — the claims it made (claim_status, claim_holder,
-# first_claim_status, first_claim_holder, made_claim, claim_count), the registrations it sent
-# (instance_id, registered_at, first_registered_at), the requests of either kind (claim_writes),
-# its deregistration (delete_answer), its hand-backs (release_status, release_instance, released)
+# or written and read back later (post, answer_to), the readers of that client's proxy log — the
+# claims it made (claim_status, claim_holder, first_claim_status, first_claim_holder, made_claim,
+# claimed_since, claim_count), the registrations it sent (instance_id, registered_at,
+# first_registered_at), the requests of either kind (claim_writes), its deregistration
+# (delete_answer, deregistered_at), its hand-backs (release_status, release_instance, released)
 # and how old a holder's renewal was when a claim was weighed against it (renewal_age) — and the
 # ways a row makes a holder answer for its claim (renew_omp, renew_claude,
-# renew_claude_until_claimed).
+# renew_claude_until_claimed, renew_claude_until_started).
 #
 # smoke-role-takeover.sh sources it, as it sources local-stack.sh and listener-api.sh beside it:
 # what that smoke knows about the stack is in the first file, what it knows about the listener's
@@ -99,20 +100,25 @@ start_claude() {
   claude_started "$1"
 }
 
-# launch_claude LABEL SESSION STATE_DIR HEARTBEAT_MS: that process, started and not waited for.
-# The channel server claims the role its record names as it boots, so a row whose holder must be
-# answering for its claim when that claim is weighed launches the claimant here and has the holder
-# answer while it boots (renew_claude_until_claimed). Two labels given one STATE_DIR are two
-# `claude` processes of one user, which share one plugin data directory, as they do on a real
-# machine.
+# launch_claude LABEL SESSION STATE_DIR HEARTBEAT_MS [HOLDER]: that process, started and not
+# waited for. The channel server claims the role its record names as it boots, so a row whose
+# holder must be answering for its claim when that claim is weighed launches the claimant here,
+# names the holder's label as HOLDER, and has the holder answer while it boots
+# (renew_claude_until_claimed, renew_claude_until_started). HOLDER answers (renew_claude) once
+# LABEL's proxy listens and immediately before LABEL's process starts: the proxy's own start is
+# a process start a loaded machine stretches too, and the claim must never be weighed against an
+# answer older than it. Two labels given one STATE_DIR are two `claude` processes of one user,
+# which share one plugin data directory, as they do on a real machine.
 launch_claude() {
-  local label="$1" session="$2" state="$3" heartbeat="$4" config="${work}/${1}-claude-config"
+  local label="$1" session="$2" state="$3" heartbeat="$4" holder="${5:-}"
+  local config="${work}/${1}-claude-config"
   start_proxy "$label"
   mkdir -p "$config" "$state"
   jq -n --arg url "${proxy_url[$label]}" --arg nats "$nats_url" \
     '{envoy: {enabled: true, url: $url, natsUrls: [$nats]}, dispatch: {enabled: false}}' \
     >"${config}/envoy.json"
   client_fifo "$label"
+  [[ -z "$holder" ]] || renew_claude "$holder"
   (cd -- "${repo_root}/packages/claude-envoy" &&
     exec env -i PATH="$PATH" HOME="${work}/bun-home" TMPDIR="${TMPDIR:-/tmp}" \
       bun "${drivers}/claude-client.ts" --server "$channel_server" --session "$session" \
@@ -161,6 +167,22 @@ send() {
   reply="$(grep -F "\"id\":\"${id}\"" "${client_out[$label]}" | tail -n 1)"
   jq -e '.ok == true' <<<"$reply" >/dev/null ||
     refuse "the ${label} client refused ${body}: ${reply}"
+}
+
+posted=""
+# post LABEL JSON: one command written to the client's stdin and not waited for. Its id is left in
+# `posted`, and answer_to reads the answer once it has come. A row posts where it must go on
+# driving another client while this one works on the command (renew_claude_until_started).
+post() {
+  local label="$1" body="$2"
+  next_command_id=$((next_command_id + 1))
+  posted="c${next_command_id}"
+  printf '%s\n' "$(jq -c --arg id "$posted" '. + {id: $id}' <<<"$body")" >&"${client_fd[$label]}"
+}
+
+# answer_to LABEL ID: that client's answer to the command ID, empty while it has not answered.
+answer_to() {
+  grep -F "\"id\":\"${2}\"" "${client_out[$1]}" 2>/dev/null | tail -n 1
 }
 
 # ---- reading what a client sent ------------------------------------------------------------------
@@ -255,8 +277,28 @@ delete_answer() {
     "${proxy_log[$1]}" 2>/dev/null | tail -n 1
 }
 
+# deregistered_at LABEL SESSION: when that client's first deregistration of SESSION reached its
+# proxy, empty when it sent none.
+deregistered_at() {
+  jq -rs --arg path "/v1/sessions/$2" \
+    'map(select(.method == "DELETE" and .path == $path) | .at)
+     | if length == 0 then "" else (min | tostring) end' \
+    "${proxy_log[$1]}" 2>/dev/null
+}
+
 made_claim() {
   [[ -n "$(claim_status "$1" "$2" "$3")" ]]
+}
+
+# claimed_since LABEL SESSION PREVIOUS MS: that client made such a claim that reached its proxy at
+# or after MS. A claim is logged once the listener has answered it, so a row that reads every
+# claim made before MS waits first for one made after it: a claimant that asks again on every
+# heartbeat, one claim at a time, has then had each earlier claim answered and logged.
+claimed_since() {
+  jq -e -s --arg sid "$2" --arg previous "$3" --argjson since "$4" \
+    'any(.[]; .path == "/v1/roles/set" and .request.session_id == $sid
+              and (.request.previous_session_id // "") == $previous and .at >= $since)' \
+    "${proxy_log[$1]}" >/dev/null 2>&1
 }
 
 # claim_count LABEL SESSION PREVIOUS: how many such claims that client has made, so a row that
@@ -290,29 +332,41 @@ released() {
   [[ -n "$(release_status "$1" "$2" "$3")" ]]
 }
 
-# renewal_age CLAIMANT SESSION PREVIOUS HOLDER HOLDER_SESSION: the most the holder's renewal can
-# have aged by the time the listener weighed CLAIMANT's first soft claim for SESSION naming
-# PREVIOUS, in milliseconds — from the arrival of the holder's last registration of HOLDER_SESSION
-# that the listener had answered with a 200 before that claim arrived, to the listener's answer to
-# the claim, both read off the two proxies' logs, which stamp one wall clock. Empty where the
-# claimant made no such claim, or the holder registered nothing before it: an age nobody could
-# read, which a row reports as such rather than as inside the window.
+# renewal_age CLAIMANT SESSION PREVIOUS HOLDER HOLDER_SESSION [BEFORE_MS]: the most the holder's
+# renewal can have aged by the time the listener weighed CLAIMANT's soft claim for SESSION naming
+# PREVIOUS, in milliseconds — from the arrival of the holder's latest registration of
+# HOLDER_SESSION that the listener had answered with a 200 before that claim arrived, to the
+# listener's answer to the claim, both read off the two proxies' logs, which stamp one wall clock.
+# The claim is the client's first such claim; given BEFORE_MS, it is each such claim that arrived
+# before that moment, and the age is the oldest of theirs, for a row whose claimant asks again and
+# again while the holder must keep the role. PREVIOUS `*` takes a claim naming any predecessor or
+# none, for a claimant that names its predecessor only while it reads that predecessor as live,
+# and claims naming none once the holder's answer has lapsed. Empty where the claimant made no
+# such claim, or the holder registered nothing before one of them: an age nobody could read, which
+# a row reports as such rather than as inside the window.
+#
+# A registration answered 200 is read as a renewal, though the listener answers 200 whatever the
+# renewal wrote (its registration route logs a renewal it could not write and goes on). A
+# registration writes no renewal where the claim is no longer its process's, where a hand-back
+# marked it, or where its write lost a compare-and-swap to another write of the record. In the
+# rows that read this, the holder's claim is its own and unmarked when the row starts, and the
+# only other writer of that record is the claimant, whose refused claims write nothing. So a 200
+# that renewed nothing can only follow a claim the listener granted the claimant, and each row
+# reads the age at every claim it needs refused, in order, from the first. A renewal whose read or
+# write failed is recorded, and the listener then refuses the next claim under that session id
+# (its grant guard), so it can make a row pass by a refusal, never by a grant.
 renewal_age() {
-  local claimed arrived answered renewed
-  claimed="$(jq -rs --arg sid "$2" --arg previous "$3" \
-    'map(select(.path == "/v1/roles/set" and .request.session_id == $sid
-                and (.request.previous_session_id // "") == $previous))
-     | if length == 0 then "" else "\(.[0].at) \(.[0].at + .[0].ms)" end' \
-    "${proxy_log[$1]}" 2>/dev/null)"
-  [[ -n "$claimed" ]] || return 0
-  read -r arrived answered <<<"$claimed"
-  renewed="$(jq -rs --arg sid "$5" --argjson before "$arrived" \
-    'map(select(.path == "/v1/interests/subscribe" and .request.session_id == $sid
-                and .status == 200 and .at + .ms <= $before))
-     | if length == 0 then "" else (last.at | tostring) end' \
-    "${proxy_log[$4]}" 2>/dev/null)"
-  [[ -n "$renewed" ]] || return 0
-  printf '%s' "$((answered - renewed))"
+  jq -nr --slurpfile claims "${proxy_log[$1]}" --slurpfile renewals "${proxy_log[$4]}" \
+    --arg sid "$2" --arg previous "$3" --arg holder_sid "$5" --arg before "${6:-}" '
+    [$claims[] | select(.path == "/v1/roles/set" and .request.session_id == $sid
+                        and ($previous == "*" or (.request.previous_session_id // "") == $previous))]
+    | if $before == "" then .[:1] else map(select(.at < ($before | tonumber))) end
+    | map(. as $claim
+          | [$renewals[] | select(.path == "/v1/interests/subscribe"
+                                  and .request.session_id == $holder_sid
+                                  and .status == 200 and .at + .ms <= $claim.at) | .at]
+          | if length == 0 then null else $claim.at + $claim.ms - max end)
+    | if length == 0 or any(. == null) then "" else (max | tostring) end' 2>/dev/null
 }
 
 # ---- making a holder answer for its claim --------------------------------------------------------
@@ -343,14 +397,52 @@ renew_claude() {
 
 # renew_claude_until_claimed SECONDS HOLDER CLAIMANT SESSION PREVIOUS: HOLDER's channel server
 # answers for its claim (renew_claude) again and again until CLAIMANT, launched and booting
-# (launch_claude), has made a soft claim for SESSION naming PREVIOUS, so that claim is weighed
-# against a renewal one round trip old however long the boot took. 1 when no such claim came
-# within SECONDS, which the row then fails on by name.
+# (launch_claude, which has HOLDER answer right before the launch), has made a soft claim for
+# SESSION naming PREVIOUS, so that claim is weighed against a renewal one round trip old however
+# long the boot took. For a row whose holder must stop answering once that first claim is made;
+# one whose holder must keep the role while the claimant asks again runs
+# renew_claude_until_started. 1 when no such claim came within SECONDS, which the row then fails
+# on by name.
 renew_claude_until_claimed() {
   local deadline=$((SECONDS + $1)) holder="$2" claimant="$3" session="$4" previous="$5"
   until made_claim "$claimant" "$session" "$previous"; do
     ((SECONDS < deadline)) || return 1
     renew_claude "$holder"
+    sleep 0.2
+  done
+}
+
+# renew_claude_until_started SECONDS HOLDER CLAIMANT: HOLDER's channel server answers for its
+# claim (renew_claude) on every pass until CLAIMANT, launched (launch_claude, which has HOLDER
+# answer right before the launch), has ended its start: its ready line, and then a tool it answers
+# as a started server does (claude_answers_tools). A claimant refused at its boot claims again on
+# every heartbeat, and the rest of its start after that first claim (the sweeps of its state
+# directories) is file work a loaded machine stretches past the window too, so the holder answers
+# through it. The tool call is posted and its answer read on a later pass, never waited on: a
+# claimant whose start has stalled answers late, and the holder answering meanwhile is the point.
+# Refused, as claude_started is, when CLAIMANT has not started within SECONDS.
+renew_claude_until_started() {
+  local deadline=$((SECONDS + $1)) holder="$2" claimant="$3" probe="" answer=""
+  while :; do
+    renew_claude "$holder"
+    if [[ -n "$probe" ]]; then
+      answer="$(answer_to "$claimant" "$probe")"
+      if [[ -n "$answer" ]]; then
+        jq -e '.ok == true' <<<"$answer" >/dev/null ||
+          refuse "the ${claimant} client refused envoy_whoami: ${answer}"
+        jq -e '.result.error == null and .result.result != null' <<<"$answer" >/dev/null && return 0
+        probe=""
+      fi
+    fi
+    if [[ -z "$probe" ]] && client_ready "$claimant"; then
+      post "$claimant" '{"op":"tool","name":"envoy_whoami","args":{}}'
+      probe="$posted"
+    fi
+    if ((SECONDS >= deadline)); then
+      client_ready "$claimant" ||
+        refuse "the ${claimant} Claude Code channel server did not start: $(tail -n 10 "${work}/logs/${claimant}.err") $(tail -n 10 "${work}/logs/${claimant}-channel.err" 2>/dev/null)"
+      refuse "the ${claimant} Claude Code channel server answered no tool within ${1}s: ${answer:-no answer}"
+    fi
     sleep 0.2
   done
 }
