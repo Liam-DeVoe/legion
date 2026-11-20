@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // commit_pull_reads.go bounds how often one commit's pull requests are read through
@@ -138,10 +140,14 @@ func (c *CommitPullReads) Settle(repoFull, sha string, now time.Time) {
 // CommitPullAnswers for the pull requests of a commit, and Branches' own for a commit's place on
 // a branch. An answer of either is a handful of short strings (a pull request's head row keeps
 // its title and URL, never its body), so the bound holds each memory to a few megabytes at most.
-// A process whose read-only reads ask about more commits than this drops the answer it learned
-// longest ago and says so in its log (readOnlyAnswers.keep). That is the one place a read-only
-// read may ask GitHub where a writer's stored row would answer: a dropped answer costs one more
-// GitHub read of that commit.
+// A memory at the bound whose every answer still stands drops the answer it learned longest ago
+// for each new commit (readOnlyAnswers.keep). That is the one place a read-only read may ask
+// GitHub where a writer's stored row would answer: a dropped answer costs one more GitHub read of
+// that commit. An answer that holds pull requests stands for good, as a branch's yes does, so a
+// process whose read-only reads have learned this many commits drops one for every new commit.
+// The memory counts every drop on the process's metrics (CommitPullAnswers.CountDrops,
+// Branches.CountReadOnlyDrops) and logs one WARN when it first drops one, and no other until it
+// has fallen below the bound.
 const ReadOnlyAnswerBound = 1024
 
 // readOnlyAnswers is what a read-only caller's results read remembers of GitHub's answers, since
@@ -152,6 +158,11 @@ const ReadOnlyAnswerBound = 1024
 type readOnlyAnswers[K comparable, V any] struct {
 	mu      sync.Mutex
 	entries map[K]readOnlyAnswer[V]
+	// full is whether the memory has dropped an answer at its bound since it was last below it,
+	// which is when its one WARN is written (makeRoomLocked).
+	full bool
+	// dropped counts every answer the memory drops at its bound (countDrops); nil counts none.
+	dropped *metrics.Counter
 }
 
 // readOnlyAnswer is one remembered value, when it was learned, and the moment it stops standing:
@@ -185,9 +196,12 @@ func (a *readOnlyAnswers[K, V]) recallLocked(key K, now time.Time) (readOnlyAnsw
 // keep remembers answer for key, replacing whatever was kept for key.
 //
 // A new key in a memory at ReadOnlyAnswerBound first drops every answer that no longer stands at
-// now. Where every answer still stands, it drops the one learned longest ago and logs that it
-// did, naming the bound and the key, so a memory at its bound is seen in the log rather than in a
-// GitHub bill. Nothing grows past the bound.
+// now; where that leaves fewer than the bound, the memory has fallen below it. Where every answer
+// still stands, it drops the one learned longest ago and counts the drop (countDrops). The first
+// drop since the memory was last below its bound also logs one WARN, naming the bound and the
+// key, so a memory at its bound is seen in the log rather than in a GitHub bill; the drops after
+// it are seen in the count alone, since a memory whose answers stand for good drops one for every
+// new key. Nothing grows past the bound.
 func (a *readOnlyAnswers[K, V]) keep(key K, answer readOnlyAnswer[V], now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -212,6 +226,7 @@ func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 		}
 	}
 	if len(a.entries) < ReadOnlyAnswerBound {
+		a.full = false
 		return
 	}
 	var oldest K
@@ -223,8 +238,20 @@ func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 		}
 	}
 	delete(a.entries, oldest)
-	slog.Warn("dispatch: a read-only results read's memory of GitHub's answers is at its bound; it dropped the answer learned longest ago, which costs one more GitHub read if that commit is read again",
+	a.dropped.Inc()
+	if a.full {
+		return
+	}
+	a.full = true
+	slog.Warn("dispatch: a read-only results read's memory of GitHub's answers reached its bound with every answer still standing, so it drops the answer learned longest ago for each new one, and each answer dropped costs one more GitHub read if its commit is read again; every drop is counted on the process's metrics, and this is not logged again until the memory has fallen below its bound",
 		"bound", ReadOnlyAnswerBound, "dropped", fmt.Sprintf("%+v", oldest), "learned", learned)
+}
+
+// countDrops has the memory count every answer it drops at its bound on dropped.
+func (a *readOnlyAnswers[K, V]) countDrops(dropped *metrics.Counter) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.dropped = dropped
 }
 
 // CommitPullAnswers is CommitPullReads' twin for a read-only caller's results read: a claim of
@@ -245,7 +272,8 @@ func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 // stored (Learned), until a newer answer for the same commit replaces it or the bound drops it.
 //
 // Its zero value is an empty memory, and the server holds one for the process
-// (api.server.readOnlyCommitPulls). It holds at most ReadOnlyAnswerBound commits.
+// (api.server.readOnlyCommitPulls). It holds at most ReadOnlyAnswerBound commits, and counts each
+// one it drops at the bound on the counter the server hands it (CountDrops).
 type CommitPullAnswers struct {
 	answers readOnlyAnswers[commitPullKey, commitPullAnswer]
 }
@@ -317,6 +345,13 @@ func (c *CommitPullAnswers) Keep(repoFull, sha string, pulls CommitPulls, now ti
 	}
 	kept := commitPullAnswer{pulls: &pulls, notBefore: now.Add(span)}
 	c.answers.keep(commitPullKey{repo: repoFull, sha: sha}, kept.held(now), now)
+}
+
+// CountDrops has the memory count every answer it drops at ReadOnlyAnswerBound on dropped, the
+// process's count of them, which the server registers on its metrics. A memory no counter was
+// handed counts nothing.
+func (c *CommitPullAnswers) CountDrops(dropped *metrics.Counter) {
+	c.answers.countDrops(dropped)
 }
 
 // Learned is every answer the memory keeps, in the order they were read, two read at one moment

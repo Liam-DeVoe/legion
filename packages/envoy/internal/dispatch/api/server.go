@@ -201,7 +201,9 @@ type Deps struct {
 	// that runs no outbox.
 	OutboxPublishes bool
 	// Metrics is the process's registry, which register adds the gauges of the mention sends held
-	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
+	// behind an earlier event to (registerHeldGauges), and the count of the answers a read-only
+	// results read drops from its memory (registerReadOnlyAnswerDrops); nil adds none, as this
+	// package's tests run.
 	Metrics *metrics.Registry
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
@@ -804,6 +806,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
 	s.registerHeldGauges(deps.Metrics)
+	s.registerReadOnlyAnswerDrops(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -863,6 +866,22 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
+}
+
+// registerReadOnlyAnswerDrops adds to registry envoy_dispatch_read_only_answers_dropped_total, with
+// no label: the answers this server's two memories of a read-only caller's results reads
+// (readOnlyCommitPulls, and branches' own) dropped at delivery.ReadOnlyAnswerBound, each one a
+// GitHub read a later read-only read of that commit makes again. Each memory logs one WARN when
+// it first drops one, so the count is where every later drop is seen. A nil registry adds none,
+// and the memories count nothing.
+func (s *server) registerReadOnlyAnswerDrops(registry *metrics.Registry) {
+	if registry == nil {
+		return
+	}
+	dropped := registry.NewCounter("envoy_dispatch_read_only_answers_dropped_total",
+		"Answers a read-only caller's results read dropped from its memory at the memory's bound, each one a GitHub read it makes again if that commit is read again")
+	s.readOnlyCommitPulls.CountDrops(dropped)
+	s.branches.CountReadOnlyDrops(dropped)
 }
 
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler

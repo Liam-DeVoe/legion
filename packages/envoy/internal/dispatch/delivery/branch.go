@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // branch.go owns every answer about whether one branch of one repository carries one commit,
@@ -349,6 +350,13 @@ func (c *Branches) ReadCommitOnBranch(
 		c.readOnly.keep(read.key, kept, now)
 	}
 	return read.answer
+}
+
+// CountReadOnlyDrops has the memory of a read-only caller's compare answers (ReadCommitOnBranch)
+// count every answer it drops at ReadOnlyAnswerBound on dropped, as CommitPullAnswers.CountDrops
+// has its own.
+func (c *Branches) CountReadOnlyDrops(dropped *metrics.Counter) {
+	c.readOnly.countDrops(dropped)
 }
 
 // branchRead is what readCommitOnBranch found: the answer, and where a compare read was answered,
