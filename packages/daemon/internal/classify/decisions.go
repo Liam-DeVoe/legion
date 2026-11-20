@@ -1470,7 +1470,8 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // workflow's SupersedingApproval, which holds every guard that chooses whether to ask it — the kind of
 // decision, the gate of the document reviewed, whether the deployment gates that step, and an
 // approval that is the gate's own — and is asked from the gates as the record holds them at that
-// moment: the changes notice (workflow's applyArtifact, tellChanges and gateRegistered), the
+// moment: the changes notice (workflow's applyArtifact, tellChanges and gateRegistered, and the
+// daemon's readNoticeTree at its delivery), the
 // resume task of a root that waited on a person (workflow's resumeTask), the kept decisions and
 // the kept approval of an architect's start or catch-up (workflow's KeptDecisionsTask, which the
 // daemon's rootTask also renders through at each send and its readNoticeTree at each delivery)

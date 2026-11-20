@@ -1795,6 +1795,18 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 // deliverNotice is the notice executor's own work: routing the notice, publishing it, and settling
 // what a catch-up that will never publish named. Its endings are notice's to read.
 //
+// A changes request the person's approval followed finishes first, with nothing published and
+// one line that names the approved version (readNoticeTree's changesSuperseded): the workflow
+// asked when it queued the notice (workflow's tellChanges), but a row waits here while its
+// architect's pod is released or relaunching, and a copy a listener's report queued again
+// (reholdNotice) comes through here too, so the delivery asks again on every attempt. It comes
+// before the routing because nothing after it can make the request the person's word again: a
+// released pod is not woken for it (wakeForDelivery), a later notice of the same architect, the
+// approval's own design-approved notice among them, is not held behind it (earlierNoticeFor),
+// and a tree whose architect stopped with it would not relay it to the controller either
+// (parkDecision asks the same decisionSuperseded). One window is left: an approval that commits
+// between that read and the publish, which reaches the architect after the request it answered.
+//
 // A catch-up is published as the issues its architect owns stand at this delivery, not as they
 // stood when the row was queued: the delivery's one read of the tree composes it again for the
 // row's own issue (readNoticeTree, workflow.TreeCatchUp: a root's whole tree, a child's own issue
@@ -1823,6 +1835,12 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	issue, tree, recomposed, err := r.readNoticeTree(ctx, row, payload)
 	if errors.Is(err, errNoticeRowGone) {
 		r.log.Info("outbox notice finished without publishing: its row was deleted under its lease", "row", row.ID, "kind", payload.Kind, "issue", row.Issue)
+		return nil
+	}
+	var superseded changesSuperseded
+	if errors.As(err, &superseded) {
+		r.log.Info("outbox changes request finished without publishing: the person's approval followed it", "row", row.ID, "issue", row.Issue,
+			"version", payload.Version, "approved", superseded.approved)
 		return nil
 	}
 	if errors.Is(err, errNoticeUnroutable) {

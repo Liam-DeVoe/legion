@@ -7,6 +7,7 @@ import (
 	"go/importer"
 	"go/token"
 	"go/types"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -56,11 +57,35 @@ var storedTaskReaders = map[string]string{
 		"of a design document",
 }
 
+// noticePublishers are the functions that hand a message to Envoy, each as go/types names it: the
+// outbox's publish and its publish with keep, which every executor publishes through, and the two
+// of notify.Publisher, which those call. A function that hands one of them a record.Notice it
+// holds publishes that notice: the queued notice's delivery (the outbox's deliverNotice) does.
+var noticePublishers = []string{
+	"(*" + senderModule + "daemon.outbox).publish",
+	"(*" + senderModule + "daemon.outbox).publishKept",
+	"(" + senderModule + "notify.Publisher).Publish",
+	"(" + senderModule + "notify.Publisher).PublishKept",
+}
+
+// noticePublisherExceptions is every function of the three packages that may publish a
+// record.Notice it holds without reaching the predicate, with why what it publishes is no person's
+// review of a design document.
+var noticePublisherExceptions = map[string]string{
+	"(*" + senderModule + "daemon.outbox).controllerNotice": "it publishes a controller notice row (record.ControllerNotice) to the " +
+		"project's controller topic as the record.Notice it is, and its kinds are the controller's: the wakes record names " +
+		"(record.TriageNotice to record.ArchitectStalledNotice) and the machinery's notices copied to the controller (a hold, a " +
+		"worker's death or stall, a lost session, a session store's fault), none of them a kind record.SpecDecision names. The " +
+		"one that carries a person's spec decision, a parked-decision notice, is written by record.RelayParkedDecision after " +
+		"the outbox's relay asked the predicate of it (parkDecision)",
+}
+
 // senderPackages are the three packages that hold senders of a person's design decision: the
 // workflow, which writes the notices and renders the resume and the kept-decisions tasks, the
-// daemon, which sends a held task at each send (rootTask), writes a catch-up's decisions again at
-// its delivery (readNoticeTree) and relays a decision nobody in its tree hears (parkDecision), and
-// admission, which composes a re-admitted root's start from what was kept for it.
+// daemon, which sends a held task at each send (rootTask), publishes a queued notice
+// (deliverNotice), writes a catch-up's decisions again at its delivery and asks a changes request
+// again there (readNoticeTree), and relays a decision nobody in its tree hears (parkDecision),
+// and admission, which composes a re-admitted root's start from what was kept for it.
 var senderPackages = []string{"workflow", "daemon", "admit"}
 
 // keptDecisionTypes are the record types that hold one kept decision: the row the daemon keeps
@@ -100,12 +125,18 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //   - holds a review sentence (decisionReviewSentences) in a string constant, which is rendering
 //     the task that says it;
 //   - calls such a renderer that does not reach the predicate itself: the renderer is then a
-//     template, its callers are its senders, and a template nothing calls is a sender itself; or
+//     template, its callers are its senders, and a template nothing calls is a sender itself;
 //   - writes a record.SuperviseRequest that carries a person's answered wait (its Awaiting): the
 //     start of a resume, whose task the daemon renders at each send from that wait (resumeSend),
 //     so such a function reaches what that render reaches. The resume itself writes one
 //     (workflow.Engine.ResumeAwaitedRoot), and so does the sweep's send of a resume's entry whose
-//     start was lost (workflow.Engine.SendArchitectStart).
+//     start was lost (workflow.Engine.SendArchitectStart); or
+//   - publishes a record.Notice it holds: hands a value of that type, however it was made (a
+//     row's payload, its Published copy, a conversion), to one of noticePublishers. A notice the
+//     workflow queued is published where it is delivered (the outbox's deliverNotice), which can
+//     be long after the workflow asked, so the publish is a send of its own. A function whose
+//     notices are never a person's review passes only where noticePublisherExceptions names it,
+//     with why, and a function named there that publishes no notice any more fails.
 //
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
@@ -113,6 +144,14 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // dependencies (testtypes.CompiledDependencies) and resolves every call, and every function value
 // a body names, through types.Info to the function it is, so a method that shares a name with
 // another is never mistaken for it.
+//
+// The reach is transitive, which bounds what the rule for a publisher proves: it fails a publisher
+// that reaches the predicate through nothing it calls, and no more. The delivery of a notice
+// (deliverNotice) reaches it three ways: through its ask of a changes request
+// (readNoticeTree's decisionSuperseded), through the catch-up's Decided that readNoticeTree
+// writes again (workflow.KeptDecisionsTask), and through the relay of a parked decision
+// (parkDecision). Take the first out and the walk still passes. What holds that ask is its
+// behavior, which TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives.
 //
 // A list of kept decisions is held to more: every loop that ranges over one (keptDecisionTypes)
 // and writes a decision's kind into text (a fmt print, a WriteString, a string conversion) is a
@@ -138,9 +177,10 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //
 // This test reads its sites from the source because no chokepoint can make a sender ask: the
 // predicate is the one place the answer is decided, but a notice is a plain struct literal any
-// function can write, the review sentences are built in several functions, a list of kept
-// decisions is a plain slice any function can range over and write into text, and a stored task is
-// a plain field any function can read, and no type can make any of them ask the predicate first.
+// function can write and a publish takes it as any other payload, the review sentences are built
+// in several functions, a list of kept decisions is a plain slice any function can range over and
+// write into text, and a stored task is a plain field any function can read, and no type can make
+// any of them ask the predicate first.
 // So this test stands until one can; delete it then.
 func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 	walk := readDecisionWalk(t)
@@ -207,6 +247,23 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 				"task and no other", short(name))
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(noticePublisherExceptions)) {
+		f := walk.byName[name]
+		if f == nil || len(f.publishes) == 0 {
+			t.Errorf("noticePublisherExceptions names %s, which publishes no record.Notice: take it out, so the list names every "+
+				"publisher of a notice that need not ask and no other", short(name))
+			continue
+		}
+		t.Logf("publisher of a notice %s (%s), at %s, need not ask: %s", f.short(), f.at, strings.Join(f.publishes, ", "),
+			noticePublisherExceptions[name])
+	}
+	// A queued notice is published where it is delivered (the outbox's deliverNotice): the walk
+	// has to see that publish, or the rule for a publisher of a notice proves nothing.
+	if !slices.ContainsFunc(senders, func(s decisionSender) bool {
+		return s.fn.short() == "(*daemon.outbox).deliverNotice" && len(s.fn.publishes) > 0
+	}) {
+		t.Error("the walk found no publish of a record.Notice in (*daemon.outbox).deliverNotice")
+	}
 	// The one wording of kept decisions (workflow.KeptDecisionsTask) renders them in a loop: the
 	// walk has to see it, or it proves nothing of any renderer.
 	if f := walk.named("workflow.KeptDecisionsTask"); f == nil || len(f.keptLoops) == 0 {
@@ -254,6 +311,9 @@ type decisionFunc struct {
 	// queuesResume is whether the body writes a record.SuperviseRequest that carries a person's
 	// answered wait, whose task the daemon renders at each send (resumeSend).
 	queuesResume bool
+	// publishes are the positions where the body hands a record.Notice to one of
+	// noticePublishers.
+	publishes []string
 }
 
 func (f *decisionFunc) short() string { return short(f.name) }
@@ -335,6 +395,9 @@ func (w *decisionWalk) decisionSenders() []decisionSender {
 		if f.queuesResume {
 			add(f, fmt.Sprintf("writes a start that carries a person's answered wait, whose task the daemon renders at each send (%s)",
 				short(resumeSend)))
+		}
+		if _, excepted := noticePublisherExceptions[f.name]; len(f.publishes) > 0 && !excepted {
+			add(f, fmt.Sprintf("publishes a record.Notice it holds, at %s", strings.Join(f.publishes, ", ")))
 		}
 		if len(f.phrases) == 0 {
 			continue
@@ -452,7 +515,8 @@ func readDecisionWalk(t *testing.T) *decisionWalk {
 
 // readDecisionFunc reads what fn calls, the record.Notice literals it writes, the review
 // sentences its string constants hold, its loops over kept decisions that write them as text, the
-// stored entry tasks it reads and the starts it writes that carry a person's answered wait.
+// stored entry tasks it reads, the starts it writes that carry a person's answered wait and the
+// notices it publishes.
 func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 	info := pkg.info
 	f := &decisionFunc{pkg: pkg.name, name: info.Defs[fn.Name].(*types.Func).FullName(), at: pkg.pos(fn)}
@@ -513,6 +577,9 @@ func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 			}
 			if sel, ok := node.(*ast.SelectorExpr); ok && !written[sel] && sel.Sel.Name == "EntryTask" && isRecordType(info.TypeOf(sel.X), "PhaseRow") {
 				f.storedTasks = append(f.storedTasks, pkg.pos(sel))
+			}
+			if call, ok := node.(*ast.CallExpr); ok && publishesNotice(info, call) {
+				f.publishes = append(f.publishes, pkg.pos(call))
 			}
 		case *ast.RangeStmt:
 			if loop, ok := readKeptLoop(pkg, node, callsIn); ok {
@@ -651,17 +718,8 @@ func writesText(info *types.Info, call *ast.CallExpr) bool {
 		basic, ok := typ.Type.Underlying().(*types.Basic)
 		return ok && basic.Info()&types.IsString != 0
 	}
-	var ident *ast.Ident
-	switch fun := ast.Unparen(call.Fun).(type) {
-	case *ast.Ident:
-		ident = fun
-	case *ast.SelectorExpr:
-		ident = fun.Sel
-	default:
-		return false
-	}
-	fun, ok := info.Uses[ident].(*types.Func)
-	if !ok {
+	fun := calledFunc(info, call)
+	if fun == nil {
 		return false
 	}
 	if fun.Name() == "WriteString" {
@@ -669,6 +727,32 @@ func writesText(info *types.Info, call *ast.CallExpr) bool {
 	}
 	return fun.Pkg() != nil && fun.Pkg().Path() == "fmt" &&
 		slices.ContainsFunc([]string{"Sprint", "Fprint", "Append"}, func(prefix string) bool { return strings.HasPrefix(fun.Name(), prefix) })
+}
+
+// publishesNotice is whether call hands a record.Notice to one of noticePublishers: an argument of
+// that type is the notice the call publishes, whatever made the value.
+func publishesNotice(info *types.Info, call *ast.CallExpr) bool {
+	fun := calledFunc(info, call)
+	if fun == nil || !slices.Contains(noticePublishers, fun.Origin().FullName()) {
+		return false
+	}
+	return slices.ContainsFunc(call.Args, func(arg ast.Expr) bool { return isRecordType(info.TypeOf(arg), "Notice") })
+}
+
+// calledFunc is the function call calls by name, a method by its selector, and nil for a call of
+// anything else (a function value, a conversion).
+func calledFunc(info *types.Info, call *ast.CallExpr) *types.Func {
+	var ident *ast.Ident
+	switch fun := ast.Unparen(call.Fun).(type) {
+	case *ast.Ident:
+		ident = fun
+	case *ast.SelectorExpr:
+		ident = fun.Sel
+	default:
+		return nil
+	}
+	fun, _ := info.Uses[ident].(*types.Func)
+	return fun
 }
 
 // isRecordType is whether typ is the record package's type name.

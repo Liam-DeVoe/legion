@@ -59,7 +59,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	}
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
-	outcome, fresh, recorded, superseded := record.RelayNone, false, false, false
+	outcome, fresh, recorded := record.RelayNone, false, false
+	var superseded *workflow.Approval
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		marked, err := r.records.MarkProcessed(scoped, tx, parkedDecisionSource, key)
@@ -72,7 +73,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			return err
 		}
 		recorded = true
-		if superseded, err = r.decisionSuperseded(scoped, tx, issue, notice, decision); err != nil || superseded {
+		if superseded, err = r.decisionSuperseded(scoped, tx, issue, notice, decision); err != nil || superseded != nil {
 			return err
 		}
 		// The decision is kept at Dispatch's mark of the review it reports (record.Notice.Review),
@@ -96,8 +97,9 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision handled before under this key", args...)
 	case !recorded:
 		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
-	case superseded:
-		r.log.Info("outbox parked decision not relayed: the person approved a later version since", append(args, "version", notice.Version)...)
+	case superseded != nil:
+		r.log.Info("outbox parked decision not relayed: the person approved a later version since",
+			append(args, "version", notice.Version, "approved", superseded.Version)...)
 	case outcome == record.RelaySent:
 		r.log.Info("outbox parked decision sent to the controller", args...)
 	case outcome == record.RelayKept:
@@ -112,19 +114,22 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	return nil
 }
 
-// decisionSuperseded says whether the spec decision notice carries on issue is no longer the
-// person's word, by the one predicate (workflow.SupersedingApproval) over the gate of issue as the
-// record holds it now: the gate of the step whose document notice.Ref names
-// (workflow.RefSuperseded), at the version the notice carries and at Dispatch's mark of the review
-// (record.Notice.Review), which this release puts on every design decision's notice. A notice an
-// earlier release queued carries no mark, and is asked at its version alone.
-func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (bool, error) {
+// decisionSuperseded is the approval that took the place of the spec decision notice carries on
+// issue, nil while that decision is still the person's word, by the one predicate
+// (workflow.SupersedingApproval) over the gate of issue as tx reads it: the gate of the step whose
+// document notice.Ref names (workflow.RefSuperseded), at the version the notice carries and at
+// Dispatch's mark of the review (record.Notice.Review), which this release puts on every design
+// decision's notice. A notice an earlier release queued carries no mark, and is asked at its
+// version alone. Both outbox readers of a queued decision ask it here: the relay to the controller
+// (parkDecision) and the delivery of a changes request to the architect (readNoticeTree), and the
+// line that says one was declined names the approved version.
+func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (*workflow.Approval, error) {
 	gates, err := r.records.GatesOf(ctx, tx, issue)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	d := workflow.Decision{Kind: decision, Version: notice.Version, Mark: notice.Review}
-	return workflow.RefSuperseded(gates, r.gatedSteps, issue, notice.Ref, d) != nil, nil
+	return workflow.RefSuperseded(gates, r.gatedSteps, issue, notice.Ref, d), nil
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

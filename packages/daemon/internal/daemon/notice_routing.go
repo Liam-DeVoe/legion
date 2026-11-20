@@ -48,6 +48,16 @@ var errNoticeUnroutable = errors.New("the notice has no architect to go to")
 // ready dropped (record.Store.DropCatchUps).
 var errNoticeRowGone = errors.New("the notice row was deleted under its lease")
 
+// changesSuperseded is a changes request the person's approval followed: the gates readNoticeTree
+// read record an approval of the document reviewed, at the version the request reviewed or a
+// later one, given after the review (decisionSuperseded). approved is the version approved, which
+// the line that finishes the row names.
+type changesSuperseded struct{ approved int }
+
+func (s changesSuperseded) Error() string {
+	return fmt.Sprintf("the person approved version %d of the document after the changes request", s.approved)
+}
+
 // noticeRoute is what routes a notice of a tree: the tree's project token, its root, and every
 // issue of the tree whose key makes a claim token, by key. An issue whose key makes no claim token
 // owns nothing, so it is left out: a walk that meets it ends at the root, and an earlier notice of
@@ -75,8 +85,15 @@ type recomposedCatchUp struct {
 }
 
 // readNoticeTree reads row's tree in one repeatable-read transaction: that the row is still in the
-// outbox under its lease, row's issue and the tree's route (readNoticeRoute), then the fence. A row
-// deleted under its lease is errNoticeRowGone, and a notice it cannot route is errNoticeUnroutable.
+// outbox under its lease, whether a changes request is still the person's word, row's issue and
+// the tree's route (readNoticeRoute), then the fence. A row deleted under its lease is
+// errNoticeRowGone, a changes request the person's approval followed is changesSuperseded, and a
+// notice it cannot route is errNoticeUnroutable. The changes request is asked of the gates of
+// row's issue as this read holds them (decisionSuperseded, at the version and the review's mark
+// the notice carries): the workflow asked when it queued the notice (workflow's tellChanges), and
+// the row may have waited since, for an architect whose pod was released or is relaunching, or as
+// a copy a listener's report queued again (reholdNotice). Only a changes request is dropped this
+// way: a design-approved notice behind it is the approval that answered it, and goes as before.
 // For a catch-up (payload.CatchUp) the same transaction composes again what the architect of row's
 // issue owns (workflow.TreeCatchUp, a pure read, for the issue the row is queued on, as
 // workflow.QueueCatchUp composed it: a root's whole tree, a child's own issue and every issue
@@ -105,6 +122,15 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, paylo
 		}
 		if !leased {
 			return errNoticeRowGone
+		}
+		if decision, ok := record.SpecDecision(payload.Kind); ok && decision == record.DecisionDesignChangesRequested {
+			approval, err := r.decisionSuperseded(ctx, tx, row.Issue, payload, decision)
+			if err != nil {
+				return err
+			}
+			if approval != nil {
+				return changesSuperseded{approved: approval.Version}
+			}
 		}
 		if issue, tree.noticeRoute, err = r.readNoticeRoute(ctx, tx, row.Issue, map[string]noticeRoute{}); err != nil {
 			return err

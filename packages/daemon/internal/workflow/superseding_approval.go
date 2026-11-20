@@ -34,7 +34,8 @@ type Approval struct {
 // gate the issue holds for d.Step as the record holds it when it asks (gate, nil where the issue
 // holds none) and of whether the deployment gates that step (gated): the changes notice
 // (tellChanges, and the registration's and the artifact event's reading of the gate before they
-// apply the review), the resume of a root a person answered (resumeTask), the decisions and the
+// apply the review, and again at the notice's delivery, the daemon's readNoticeTree), the resume
+// of a root a person answered (resumeTask), the decisions and the
 // approval kept for an architect's start or catch-up (KeptDecisionsTask, again at each send and
 // each delivery) and the controller's relay of a decision nobody in its tree hears (the daemon's
 // parkDecision); the clear of a generation asks it too, of each decision kept on the issues it

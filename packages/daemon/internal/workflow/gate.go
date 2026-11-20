@@ -254,7 +254,9 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // Before anything is marked or sent, the gates as the record holds them now are asked whether an
 // approval of the document followed the review (SupersedingApproval), whichever path carried the review
 // here: one did, and the review is not the person's word any more, so it is neither told nor
-// marked; the processed mark stays the second guard, against telling one review twice.
+// marked; the processed mark stays the second guard, against telling one review twice. The
+// notice this queues is asked again at its delivery (the daemon's readNoticeTree), since an
+// approval can follow while the row waits for its architect.
 func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, artifact string, version int, reason, reviewer string, mark record.EventMark, notify bool) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -830,7 +832,8 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 // is still the person's words: it is told, with its own version and reason, unless an approval came
 // after it (SupersedingApproval, asked of the gate as the event found it, since the review applied
 // clears the approval that would answer it), which the person gave in its place. Every changes
-// notice asks that same function, here, at a registration and where it is sent (tellChanges).
+// notice asks that same function, here, at a registration, where it is queued (tellChanges) and
+// where it is delivered (the daemon's readNoticeTree).
 //
 // Every design-changes-requested notice goes through tellChanges, which sends it once per review
 // whatever carries it (the live event, a registration's read, the gate seed's read) and in whatever
