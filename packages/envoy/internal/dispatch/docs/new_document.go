@@ -152,7 +152,8 @@ type WrittenText struct {
 // the document's next version (Ledger.QueueVersion, which numbers it), crediting actor alone,
 // with summary naming the version (nil for an unnamed one). created says the transaction created
 // the document, which holds no text yet, so its text is seeded (SeedText); otherwise the text
-// replaces the document's (ReplaceText). It then records the version over the write
+// replaces the document's (ReplaceText), which holds the replacement to precondition, the token
+// of the version the caller believes it replaces (nil for a new document). It then records the version over the write
 // (Ledger.WroteVersion), which clears the credit of every edit the write read when it changed the
 // document, queues the count of the document's task items after the version's insert, so the
 // count names that version (LEGION-542), and indexes the version's references. ctx is the context
@@ -161,7 +162,7 @@ type WrittenText struct {
 //
 // It appends no event: an upload appends its own, after the approval moves a replacement makes,
 // and the eval registry appends the creation's.
-func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown string, actor model.Actor, summary *string, created bool) (WrittenText, error) {
+func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown string, actor model.Actor, summary *string, created bool, precondition *model.EditPrecondition) (WrittenText, error) {
 	ledger := ledgerFrom(ctx)
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -172,7 +173,7 @@ func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown 
 	if created {
 		stored, err = documents.SeedText(ctx, artifactID, markdown, actor)
 	} else {
-		stored, err = documents.ReplaceText(ctx, artifactID, markdown, actor)
+		stored, err = documents.ReplaceText(ctx, artifactID, markdown, actor, precondition)
 	}
 	if err != nil {
 		return WrittenText{}, err
@@ -213,7 +214,7 @@ func CreateDocument(ctx context.Context, documents API, row NewArtifact, markdow
 	if err != nil {
 		return model.Artifact{}, WrittenText{}, err
 	}
-	written, err := WriteDocumentText(ctx, documents, artifact.ID, markdown, row.CreatedBy, nil, true)
+	written, err := WriteDocumentText(ctx, documents, artifact.ID, markdown, row.CreatedBy, nil, true, nil)
 	if err != nil {
 		return model.Artifact{}, WrittenText{}, err
 	}
