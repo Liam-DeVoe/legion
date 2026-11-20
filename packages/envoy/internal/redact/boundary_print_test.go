@@ -13,11 +13,23 @@ import (
 )
 
 // probeAnswer is an OAuth error answer x/oauth2 returned whose every field quotes the probe: its
-// code, description and error_uri, and its body. With code false it names no code, which is the
-// form whose Error prints the body.
-func probeAnswer(code bool) *oauth2.RetrieveError {
+// code, description and error_uri, and its body. It travels through a RefusalClient so the
+// boundary reads it on the recorded path. With code false it names no code, which is the form
+// whose Error prints the body.
+func probeAnswer(t *testing.T, code bool) *oauth2.RetrieveError {
+	t.Helper()
+	client := redact.RefusalClient(&http.Client{Transport: scopeRoundTripper{
+		status: http.StatusBadRequest,
+		reason: func(*http.Request) string { return http.StatusText(http.StatusBadRequest) },
+		body:   func(*http.Request) string { return "" },
+	}})
+	response, err := client.Get("https://idp.example/token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
 	re := &oauth2.RetrieveError{
-		Response: &http.Response{StatusCode: http.StatusBadRequest, Status: "400 Bad Request"},
+		Response: response,
 		Body:     []byte(`{"detail":"` + redacttest.Words + `"}`),
 	}
 	if code {
@@ -34,7 +46,7 @@ func probeAnswer(code bool) *oauth2.RetrieveError {
 // which prints the body) and redact.new-retrieve-error.
 func TestTheBoundarysAnswerPrintsNoSecretItsWordsQuote(t *testing.T) {
 	for capture, code := range map[string]bool{"redact.oauth2-answer": true, "redact.oauth2-body": false} {
-		_, err := redact.OAuth2(0, probeAnswer(code))
+		_, err := redact.OAuth2(0, probeAnswer(t, code))
 		var held *redact.OAuthAnswer
 		var re *oauth2.RetrieveError
 		if !errors.As(err, &held) || !errors.As(err, &re) {
@@ -68,7 +80,7 @@ type oauthAnswerExported struct {
 // TestTheBoundarysHolderPrintsNoSecretByAnyPrinterAtAnyPlacement is the box print test of the
 // boundary's holder, an *OAuthAnswer holding the probe in its code and description.
 func TestTheBoundarysHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
-	_, err := redact.OAuth2(0, probeAnswer(true))
+	_, err := redact.OAuth2(0, probeAnswer(t, true))
 	var held *redact.OAuthAnswer
 	if !errors.As(err, &held) {
 		t.Fatalf("OAuth2 answered %T, want an *OAuthAnswer", err)
