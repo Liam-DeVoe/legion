@@ -3817,6 +3817,28 @@ check "names a kind the script does not bound, with its kinds" \
 check "names a call without --" \
   "$(contains "$out" "in step \"no --\": .github/scripts/network-install.sh takes \`<kind> -- <command>\`")"
 
+# The go kind bounds a go download alone: a compile under it is timed as a wait on the network, as
+# gopls's 74 s of compile under the 120 s bound was. go-fetch.sh's `go get` fetches, and the build
+# runs unwrapped from the module cache with GOPROXY a file:// proxy (or off), which reads no network.
+echo "case: rule 22 refuses a go compile under the go kind, and reads a go command with the module proxy off as no install"
+root=$(fixture network-go-split)
+lint_steps "$root" \
+  "a wrapped install" ".github/scripts/network-install.sh go -- go install example.com/m/cmd/tool@v1.0.0" \
+  "a wrapped build" ".github/scripts/network-install.sh go -- go build ./cmd/tool" \
+  "a wrapped script" ".github/scripts/network-install.sh go -- scripts/notices.sh --install" \
+  "the fetch, then the build with the network off" $'.github/scripts/network-install.sh go -- go get example.com/m/cmd/tool@v1.0.0\nGOPROXY="file://$(go env GOMODCACHE)/cache/download" go install example.com/m/cmd/tool@v1.0.0' \
+  "a tidy with the proxy off" "GOPROXY=off go mod tidy" \
+  "the build with the network on" "go install example.com/m/cmd/tool@v1.0.0"
+run_check "$root"
+check "names the wrapped install, and why" \
+  "$(contains "$out" "runs \`go install example.com/m/cmd/tool@v1.0.0\` through .github/scripts/network-install.sh's kind 'go' in step \"a wrapped install\": that kind bounds a go download alone")"
+check "names the wrapped build" "$(contains "$out" "runs \`go build ./cmd/tool\` through .github/scripts/network-install.sh's kind 'go' in step \"a wrapped build\"")"
+check "names the wrapped script" "$(contains "$out" "runs \`scripts/notices.sh --install\` through .github/scripts/network-install.sh's kind 'go'")"
+check "passes the fetch and the build with the network off" \
+  "$(is "$(contains "$out" "in step \"the fetch, then the build with the network off\"")" false)"
+check "passes a tidy with the proxy off" "$(is "$(contains "$out" "in step \"a tidy with the proxy off\"")" false)"
+check "still names the build with the network on" "$(refused_in "the build with the network on" "go install <module>@<version>")"
+
 echo "case: rule 22 holds a job's limit, and a step's, to the worst case of its wrapped installs"
 root=$(fixture network-limits)
 lint_steps "$root" \
@@ -3958,7 +3980,10 @@ root=$(fixture network-aliases-wrapped)
 lint_steps "$root" \
   "bun ci" ".github/scripts/network-install.sh bun -- bun ci" \
   "npm clean-install" ".github/scripts/network-install.sh npm -- npm clean-install" \
-  "npm cit" ".github/scripts/network-install.sh npm -- npm cit"
+  "npm cit" ".github/scripts/network-install.sh npm -- npm cit" \
+  "a bare yarn" ".github/scripts/network-install.sh yarn -- yarn" \
+  "yarn frozen" ".github/scripts/network-install.sh yarn -- yarn install --frozen-lockfile" \
+  "yarn add" ".github/scripts/network-install.sh yarn -- yarn add left-pad"
 run_check "$root"
 check "passes them wrapped" "$(is "$status" 0)"
 

@@ -47,6 +47,7 @@ none is left, so `sudo DEBIAN_FRONTEND=noninteractive bash -c 'timeout 60 apt-ge
 `apt-get update`.
 """
 
+import posixpath
 import re
 
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
@@ -87,6 +88,9 @@ WRAPPERS = {
     "xargs": {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-L", "--max-lines", "-n",
               "--max-args", "-P", "--max-procs", "-s", "--max-chars"},
     "command": set(),
+    # `flock [options] <file> <command>` and `flock [options] <file> -c <command line>` run the
+    # command under the lock; the lock's file is the word after flock's options.
+    "flock": {"-w", "--wait", "--timeout", "-E", "--conflict-exit-code"},
 }
 
 
@@ -111,18 +115,26 @@ class Shell:
     (`here=$(cd "$(dirname "$0")" && pwd)` gives ("here", '$(cd "$(dirname "$0")" && pwd)')); the
     files it writes (each target of a `>`, `>>` or `>|`, as written); for each command a `PATH=…`
     before it sets (`PATH="$bin:$PATH" cmd`, `env PATH=… cmd`), the command word and that PATH, as
-    (command, value); and, one tuple per pipeline, the variables it runs only while unset: the NAME
+    (command, value); one tuple per pipeline, the variables it runs only while unset: the NAME
     of each `if [ -z "$NAME" ]` (or `[[ -z … ]]`, `test -z …`, `${NAME:-}` too) whose `then` branch
-    it stands in."""
+    it stands in; and, for each command assignments before it give variables of its own
+    (`GOPROXY=off go mod tidy`), those variables, by the tuple of its words (`prefixes`), and the
+    commands among them run with the module proxy off (`offline`: GOPROXY `off` or `file://…`); and,
+    one per pipeline, the directory a `cd` of a written-out relative path moved it to from where the
+    text started ("" for none, None after a `cd` of any other word), a subshell's own ending with it
+    (`(cd packages/a && ../../x.sh)`)."""
 
     def __init__(self, pipelines: list, loops: list, assignments: list, writes: list, paths: list,
-                 guards: list | None = None) -> None:
+                 guards: list | None = None, prefixes: dict | None = None, cwds: list | None = None) -> None:
         self.pipelines = pipelines
         self.loops = loops
         self.assignments = assignments
         self.writes = writes
         self.paths = paths
         self.guards = guards if guards is not None else [()] * len(pipelines)
+        self.prefixes = prefixes or {}
+        self.offline = {command for command, env in self.prefixes.items() if offline_proxy(env)}
+        self.cwds = cwds if cwds is not None else [""] * len(pipelines)
 
 
 # The test of an `if` that runs its branch only while a variable is unset or empty.
@@ -141,6 +153,38 @@ def unset_guard(words: list[str]) -> str | None:
         return None
     match = UNSET_TEST.match(test[1]) if len(test) == 2 and test[0] == "-z" else None
     return match.group(1) if match else None
+
+
+def literal_word(word: str) -> bool:
+    """Whether a word is written out whole: no variable, expression (`${{ … }}`, which read_shell
+    leaves as EXPR), substitution or glob in it."""
+    return not any(mark in word for mark in ("$", "EXPR", "`", "*", "?", "["))
+
+
+def prefix_assignments(words: list[str]) -> dict[str, str]:
+    """The variables the assignments before a command, or after its env and env's options, set for
+    it alone (`GOPROXY=off go mod tidy`, `env -u CI NAME=1 script.sh`), as {name: value}."""
+    prefix = words[1:] if words[:1] == ["env"] else words
+    env: dict[str, str] = {}
+    index = 0
+    while index < len(prefix):
+        word = prefix[index]
+        if ASSIGNMENT.match(word):
+            name, _, value = word.partition("=")
+            env[name] = value
+        elif words[:1] == ["env"] and word.startswith("-"):
+            index += word in ("-u", "--unset", "-C", "--chdir")
+        else:
+            break
+        index += 1
+    return env
+
+
+def offline_proxy(env: dict[str, str]) -> bool:
+    """Whether a command's own variables set GOPROXY to `off` or to a `file://` proxy, which read no
+    network: a go command run so fetches nothing."""
+    value = env.get("GOPROXY")
+    return value is not None and (value == "off" or value.startswith("file://"))
 
 
 # A word that is an assignment and nothing yet: what precedes the `(` of an array (`tools=(…)`).
@@ -170,9 +214,16 @@ class Scanner:
         self.pipelines: list[list[list[str]]] = []
         self.loop_of: list[tuple] = []
         self.guard_of: list[tuple] = []
+        self.prefixes: dict[tuple, dict] = {}
         # The `if` blocks open around the command being read, innermost last: the variable each
-        # holds unset in its `then` branch, or "" for any other test or branch.
+        # holds unset in its `then` branch, or "" for any other test or branch; "?NAME" until the
+        # `then`, so the test itself stands in no branch.
         self.guards: list[str] = []
+        # The directory a `cd` of a written-out relative path moved the text to, from where it
+        # started ("" there), or None after a `cd` of any other word; a subshell's and a
+        # substitution's `cd` end with them. Each pipeline is kept with the one it runs in.
+        self.cwd: str | None = ""
+        self.cwd_of: list = []
         self.assignments: list[tuple[str, str]] = []
         self.writes: list[str] = []
         self.paths: list[tuple[str, str]] = []
@@ -190,7 +241,7 @@ class Scanner:
         self.heredocs: list[tuple[str, bool]] = []
 
     FRAME = ("pipeline", "piped", "words", "redirects", "word", "started", "at_word_start",
-             "redirect_target", "operator", "heredoc_next")
+             "redirect_target", "operator", "heredoc_next", "cwd")
 
     def open_frame(self) -> dict:
         """The state of the command a substitution interrupts, which the substitution's own
@@ -250,8 +301,15 @@ class Scanner:
     def note(self, words: list[str], redirects: list[tuple[str, str]]) -> None:
         """The loops a command opens or closes, the `if` blocks it opens, turns or closes, the
         variables it assigns, the files it writes and the PATH an assignment before it sets for it."""
+        if words[0] == "cd":
+            target = next((word for word in words[1:] if not word.startswith("-")), None)
+            self.cwd = posixpath.normpath(posixpath.join(self.cwd, target)) \
+                if self.cwd is not None and target and literal_word(target) and not target.startswith(("/", "~")) \
+                else None
         if words[0] == "if":
-            self.guards.append(unset_guard(words) or "")
+            self.guards.append("?" + (unset_guard(words) or ""))
+        elif words[0] == "then" and self.guards and self.guards[-1].startswith("?"):
+            self.guards[-1] = self.guards[-1][1:]
         elif words[0] in ("elif", "else") and self.guards:
             self.guards[-1] = ""  # a later branch runs where the first test failed
         elif words[0] == "fi" and self.guards:
@@ -286,20 +344,26 @@ class Scanner:
         """Each command of the pipeline read, reduced by command_of. A command that reduces to one
         pipeline (a plain command, or a `-c` string of one) stands in this one; a `-c` string or an
         `eval` of several stands apart, as its own pipelines. Each pipeline is kept with the loops
-        open around it."""
+        open around it, and the variables the assignments before a command set for it alone are
+        kept in `prefixes`, by the tuple of its reduced words."""
         joined: list[list[str]] = []
         for words in self.pipeline:
+            env = prefix_assignments(words)
             reduced = command_of(words, self.through)
+            for command in (command for pipeline in reduced for command in pipeline if env):
+                self.prefixes.setdefault(tuple(command), {}).update(env)
             if len(reduced) == 1:
                 joined += reduced[0]
             else:
                 self.pipelines += reduced
                 self.loop_of += [tuple(self.loops)] * len(reduced)
-                self.guard_of += [tuple(g for g in self.guards if g)] * len(reduced)
+                self.guard_of += [tuple(g for g in self.guards if g and g[0] != "?")] * len(reduced)
+                self.cwd_of += [self.cwd] * len(reduced)
         if joined:
             self.pipelines.append(joined)
             self.loop_of.append(tuple(self.loops))
-            self.guard_of.append(tuple(g for g in self.guards if g))
+            self.guard_of.append(tuple(g for g in self.guards if g and g[0] != "?"))
+            self.cwd_of.append(self.cwd)
         self.pipeline = []
 
     def skip_heredocs(self, text: str, i: int) -> int:
@@ -422,7 +486,7 @@ class Scanner:
                 i = self.balanced(text, i)  # an arithmetic command, `((i++))`: no command
             elif char == "(":
                 self.end_command()
-                open_subs.append(("subshell",))
+                open_subs.append(("subshell", self.cwd))
             elif char == ")":
                 if open_subs and open_subs[-1][0] == "paren":
                     _, outer, frame, start, opener = open_subs.pop()
@@ -431,7 +495,7 @@ class Scanner:
                 else:
                     self.end_command()
                     if open_subs and open_subs[-1][0] == "subshell":
-                        open_subs.pop()
+                        self.cwd = open_subs.pop()[1]
             elif char in "<>":
                 if self.word.isdigit():  # the descriptor of `2>/dev/null`, `2>&1`: no word
                     self.word, self.started = "", False
@@ -477,7 +541,7 @@ def read_shell(run: str, through: dict | None = None) -> Shell:
     scanner = Scanner(through)
     pipelines = scanner.scan(EXPRESSION.sub("EXPR", run))
     return Shell(pipelines, scanner.loop_of, scanner.assignments, scanner.writes, scanner.paths,
-                 scanner.guard_of)
+                 scanner.guard_of, scanner.prefixes, scanner.cwd_of)
 
 
 def pipelines_of(run: str, through: dict | None = None) -> list[list[list[str]]]:
@@ -562,5 +626,11 @@ def command_of(words: list[str], through: dict | None = None) -> list[list[list[
             words = past_options(words, through[name])
             if name == "timeout" and words:
                 words.pop(0)  # its duration
+            if name == "flock":
+                words = words[1:]  # its lock's file
+                if words[:1] in (["-c"], ["--command"]):
+                    return pipelines_of(words[1], through) if len(words) > 1 else []
+            if not words:
+                return []
             continue
         return [[words]]
