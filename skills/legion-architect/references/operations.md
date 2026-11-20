@@ -23,7 +23,7 @@ agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: <the write, and why>' --gith
 
 - Keep the call in single quotes and give `curl` the header on standard input, so the token is in no command's arguments. Never print the token.
 - Name in `--reason` the write, why you make it, and your issue's key.
-- Exit 77 with no `agent-secrets:` grant line is a denial. A denial is final: ask no other session to make the write.
+- Exit 77 with no `agent-secrets:` grant line is a denial, and exit 22 is GitHub's refusal, whose status curl prints. A denial and a 4xx are final: ask no other session to make the write. After a 5xx, make it once more at a later wake. Name a denial, a 4xx or a second failure in your summary.
 
 ## A pull request no merger merges
 
