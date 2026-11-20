@@ -1007,15 +1007,19 @@ const (
 // probes take: without it the planner pulls the probe up into the join, and an arm that is a
 // subquery - the tuple arm's newest tuple of each triple - takes the node's kind and id as a
 // filter over every tuple of that kind rather than as the keys of its index, read again for each
-// node. Fenced, each arm keys its own index with the node's kind and id. An edge an old arm
-// answers out of a row whose ask the store holds no node of yet is no row of this read either.
+// node. Fenced, each arm keys its own index with the node's kind and id. The probe also names the
+// holders' kinds as constants, the kinds n.kind takes, so an arm whose from_kind is a constant of
+// another kind - the arm out of a finding of a lens, whose from_kind is lens_block - is cut from
+// the plan rather than probed for each node. An edge an old arm answers out of a row whose ask the
+// store holds no node of yet is no row of this read either.
 func graphEdgesOut(kind, unmarked string, holders ...string) string {
 	read := `
 		select 'graph_edges ' || n.kind || ':' || n.id, n.kind, n.id, edge.kind, edge.to_kind, edge.to_id
 		from graph_nodes n
 		cross join lateral (
 			select e.kind, e.to_kind, e.to_id from graph_edges e
-			where e.from_kind = n.kind and e.from_id = n.id and e.kind = '` + kind + `'
+			where e.from_kind = n.kind and e.from_kind in ('` + strings.Join(holders, `', '`) + `')
+			  and e.from_id = n.id and e.kind = '` + kind + `'
 			offset 0
 		) edge
 		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'`
