@@ -766,7 +766,10 @@ still releases, and a grant of a secret whose `requesters` names the person ends
 names no list of its own from then on, only its account's `BROKER_EXCHANGE_ACCOUNTS` project, as
 any pod of no person does, so a grant of a private project's secret that its list named ends for
 good at its next release. The enrollment's own record keeps the person it was made for, so the
-grant log and that person's **Live grants** still name them.
+grant log names them, and their **Live grants** still lists each grant of the pod they may see. A
+grant of a private project they are not on, which the pod may now get through its exchange entry,
+is hidden from them as from anyone outside the project: the pod no longer acts for them, so the
+grant does not name them as its operator.
 [Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
 ## Requests and grants
