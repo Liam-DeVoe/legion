@@ -72,7 +72,7 @@ func (r *durableEvents) count() int {
 
 // stopWithAHeldHandBack starts a holder and a standby, has the holder's handler hold one pull
 // request with a second message of it waiting behind, stops the holder, and holds a write on the
-// holder's link from inside the stop's hand-back of the waiting message, after the connected read
+// holder's link while the stop's hand-back of the waiting message waits, after the connected read
 // has answered and before the publish (beforeHandBackPublish), so that publish waits for nats.go's
 // lock. It returns once the write is held, with the stop under way. The stop's deadline is
 // intakeStopBudget, shrunk to stopBudget.
@@ -112,17 +112,28 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	// runner the drain can take longer than callNATS's wait: the stop then withholds its hand-backs,
 	// and the row has no publish to hold. The row gives the stop's calls a 30 s guard, and puts the
 	// wait back as the hand-back's publish begins, so the held write still outlives it.
+	//
+	// The hand-back waits in its hook, before its publish, until the test's goroutine holds the
+	// write lock. Every bounded wait and every failure is on the test's goroutine, not the
+	// delivery's, so the hand-back reaching its publish and the write taking the lock each have a
+	// bound and a message of their own. ended, closed by a cleanup that runs before the holder's
+	// own, lets a hand-back still held there go on when the test ends early.
 	wait := callNATSWait.Swap(int64(30 * time.Second))
 	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
+	reached := make(chan struct{})
 	held := make(chan struct{})
-	thawed := make(chan func(), 1)
+	ended := make(chan struct{})
+	t.Cleanup(func() { close(ended) })
 	hook := func() {
 		holding.Do(func() {
 			restoreWait()
-			thawed <- link.HoldWriteLock(t, holderConn)
-			close(held)
+			close(reached)
+			select {
+			case <-held:
+			case <-ended:
+			}
 		})
 	}
 	row.delivery = subscribedDelivery(holder.intake)
@@ -138,14 +149,16 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	// The handler finishes as the stop waits for it; the stop then hands back the message that
-	// was waiting behind it, and the hook holds the write before that publish.
+	// was waiting behind it, and that hand-back waits in the hook, before its publish, until the
+	// write is held.
 	holder.release()
 	select {
-	case <-held:
+	case <-reached:
 	case <-time.After(30 * time.Second):
 		t.Fatal("control: the stop's hand-back never reached its publish: the stop withheld it, as it does when its drain has not answered within the row's 30 s guard: " + consumerState(publisher))
 	}
-	row.thaw = <-thawed
+	row.thaw = link.HoldWriteLock(t, holderConn)
+	close(held)
 	return row
 }
 
@@ -268,10 +281,10 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // the stop releases the hold only once every hand-back has reached the server; one still pending at
 // the stop's deadline keeps the hold renewing until it has (heldDurable.finalizeHandBacks).
 //
-// Both subtests hold a write on the holder's link from inside its stop's hand-back
-// (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers published to
-// the durable and the durable's creations, on a connection of its own, and every step waits for an
-// event:
+// Every subtest holds a write on the holder's link while its stop's hand-back waits before its
+// publish (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers
+// published to the durable and the durable's creations, on a connection of its own, and every step
+// waits for an event:
 //   - a hand-back that lands before the stop's deadline: the link moves once the stop has gone on
 //     without the publish (its log line). The hold is released by the time the stop returns, and the
 //     hand-back reached the server before the standby created the durable.

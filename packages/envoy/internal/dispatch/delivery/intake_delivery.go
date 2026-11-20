@@ -64,8 +64,8 @@ type intakeDelivery struct {
 	published  chan struct{}
 
 	// beforeHandBackPublish, when set, runs before each hand-back is published, after the rule has
-	// let it through (publishHandBack). It is nil outside tests: a test sets it to take nats.go's
-	// connection lock in that moment.
+	// let it through (publishHandBack). It is nil outside tests: a test sets it to hold the publish
+	// there while the test's own goroutine takes nats.go's connection lock.
 	beforeHandBackPublish atomic.Pointer[func()]
 }
 
