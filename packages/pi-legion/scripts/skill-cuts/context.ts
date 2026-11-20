@@ -78,6 +78,9 @@ export interface RepoSource {
   /** Writes each file of `repo` at `commit` under `dir` (a path inside the repository, or "" for
    *  all of it) into `dest`, at its path below `dir`. Throws when `dir` holds no file. */
   tree(repo: string, commit: string, dir: string, dest: string): Promise<void>;
+  /** Reads ahead, in as few calls as it can, the files of `repo` at `commit` under each of `dirs`,
+   *  so the `tree` calls for them that follow need no read of their own. Optional. */
+  prefetch?(repo: string, commit: string, dirs: readonly string[]): Promise<void>;
 }
 
 /** One build the context needed: what it is, its cache key, whether the cache held it already,
@@ -353,6 +356,7 @@ interface TreeEntry {
   readonly mode: string;
   readonly type: string;
   readonly sha: string;
+  readonly size?: number;
 }
 
 /** Writes a blob of `mode` (git's: 100755 executable, 120000 a link) at `file`. */
@@ -384,6 +388,9 @@ async function eachLimited<T>(
 }
 /** How many times one `gh` read is made before it fails, by default. */
 export const GH_TRIES = 5;
+/** The most blobs, and the most bytes, one GraphQL read of blobs asks for. */
+export const BLOB_BATCH = 50;
+const BLOB_BATCH_BYTES = 4_000_000;
 /** The wait before a read's second try; each try after waits twice the one before, at most
  *  GH_MAX_WAIT_MS. A rate limit waits until its reset instead, at most GH_MAX_RATE_WAIT_MS. */
 const GH_FIRST_WAIT_MS = 2_000;
@@ -445,10 +452,16 @@ async function ghRetried<T>(
 }
 
 /**
- * The repositories as GitHub serves them, read with `gh api` GET calls only: a file from its
- * contents, a directory from the commit's recursive tree and each blob, the whole repository from
- * its tarball. A tree GitHub cuts short (`truncated`) is read from the tarball instead. Each read
- * is tried again on a transient failure (`ghRetried`), so one network error stops no screen.
+ * The repositories as GitHub serves them, read with `gh api` reads only: a file from its contents,
+ * a directory from the commit's recursive tree (read once per repository and commit) and its
+ * blobs, the whole repository from its tarball. A tree GitHub cuts short (`truncated`) is read
+ * from the tarball instead. `prefetch` reads the blobs of many directories of one commit in
+ * GraphQL batches, `object(oid: …)` up to BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes a call, with
+ * `-f owner=<owner> -f name=<repo>` so the pod's gh sends it with that owner's token (as copies.ts
+ * does); a blob a batch does not give whole (binary, truncated, missing, in a batch that failed,
+ * or a text whose bytes are not the blob's, checked by its git blob id) is read alone over REST.
+ * Each read is tried again on a transient failure (`ghRetried`), so one network error stops no
+ * screen.
  */
 export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
   const trees = new Map<string, Promise<{ entries: TreeEntry[]; truncated: boolean }>>();
@@ -511,27 +524,112 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
       rmSync(archive, { force: true });
     }
   };
+  // The commit's recursive tree, read once per repository and commit.
+  const listingOf = (
+    repo: string,
+    commit: string
+  ): Promise<{ entries: TreeEntry[]; truncated: boolean }> => {
+    const id = `${repo}@${commit}`;
+    let listing = trees.get(id);
+    if (listing === undefined) {
+      listing = api(`repos/${repo}/git/trees/${commit}?recursive=1`, false).then((bytes) => {
+        const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
+          tree: TreeEntry[];
+          truncated: boolean;
+        };
+        return { entries: parsed.tree, truncated: parsed.truncated };
+      });
+      trees.set(id, listing);
+    }
+    return listing;
+  };
+  // Each blob a GraphQL batch gave whole, by its id, as bytes.
+  const blobs = new Map<string, Uint8Array>();
   return {
     name: "gh",
     file: (repo, commit, file) => {
       const route = file.split("/").map(encodeURIComponent).join("/");
       return api(`repos/${repo}/contents/${route}?ref=${encodeURIComponent(commit)}`, true);
     },
+    async prefetch(repo, commit, dirs) {
+      const { entries, truncated } = await listingOf(repo, commit);
+      if (truncated) return;
+      const prefixes = dirs.map((dir) => `${dir.replace(/\/+$/, "")}/`);
+      const wanted = new Map<string, TreeEntry>();
+      for (const entry of entries) {
+        if (entry.type !== "blob" || blobs.has(entry.sha) || !/^[0-9a-f]{40}$/.test(entry.sha)) {
+          continue;
+        }
+        if (prefixes.some((prefix) => entry.path.startsWith(prefix))) wanted.set(entry.sha, entry);
+      }
+      // Batches of at most BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes.
+      const batches: TreeEntry[][] = [];
+      let bytes = 0;
+      for (const entry of wanted.values()) {
+        const last = batches.at(-1);
+        if (
+          last === undefined ||
+          last.length >= BLOB_BATCH ||
+          bytes + (entry.size ?? 0) > BLOB_BATCH_BYTES
+        ) {
+          batches.push([entry]);
+          bytes = entry.size ?? 0;
+        } else {
+          last.push(entry);
+          bytes += entry.size ?? 0;
+        }
+      }
+      const [owner = "", name = ""] = repo.split("/");
+      for (const batch of batches) {
+        const fields = batch
+          .map(
+            (entry, index) =>
+              `b${index}: object(oid: "${entry.sha}") { ... on Blob { isBinary isTruncated text } }`
+          )
+          .join(" ");
+        const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
+        const argv = [gh, "api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`];
+        let answer: unknown;
+        try {
+          const stdout = await ghRetried(
+            `${argv.join(" ")} -f query=<${batch.length} blobs>`,
+            async () => {
+              const ran = await run([...argv, "-f", `query=${query}`], {
+                timeoutMs: GH_READ_TIMEOUT_MS,
+              });
+              return { code: ran.code, stderr: ran.stderr, value: ran.stdout };
+            },
+            options,
+            rateReset
+          );
+          answer = JSON.parse(new TextDecoder().decode(stdout));
+        } catch {
+          // The batch failed for good: each of its blobs is read alone, over REST, in `tree`.
+          continue;
+        }
+        const found: unknown = Reflect.get(
+          Object(Reflect.get(Object(answer), "data")),
+          "repository"
+        );
+        batch.forEach((entry, index) => {
+          const blob: unknown = Reflect.get(Object(found), `b${index}`);
+          const text: unknown = Reflect.get(Object(blob), "text");
+          if (
+            Reflect.get(Object(blob), "isBinary") !== false ||
+            Reflect.get(Object(blob), "isTruncated") !== false ||
+            typeof text !== "string"
+          ) {
+            return;
+          }
+          // Kept only when its bytes are the blob's: a text GraphQL decoded with a loss reads alone.
+          const bytes = new TextEncoder().encode(text);
+          if (gitBlobId(bytes) === entry.sha) blobs.set(entry.sha, bytes);
+        });
+      }
+    },
     async tree(repo, commit, dir, dest) {
       if (dir === "") return tarball(repo, commit, dest);
-      const id = `${repo}@${commit}`;
-      let listing = trees.get(id);
-      if (listing === undefined) {
-        listing = api(`repos/${repo}/git/trees/${commit}?recursive=1`, false).then((bytes) => {
-          const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
-            tree: TreeEntry[];
-            truncated: boolean;
-          };
-          return { entries: parsed.tree, truncated: parsed.truncated };
-        });
-        trees.set(id, listing);
-      }
-      const { entries, truncated } = await listing;
+      const { entries, truncated } = await listingOf(repo, commit);
       const prefix = `${dir.replace(/\/+$/, "")}/`;
       if (truncated) {
         const whole = mkdtempSync(`${dest}.whole-`);
@@ -546,12 +644,13 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
         }
         return;
       }
-      const blobs = entries.filter(
+      const files = entries.filter(
         (entry) => entry.type === "blob" && entry.path.startsWith(prefix)
       );
-      if (blobs.length === 0) throw new Error(`${repo} at ${commit} holds no file under ${dir}`);
-      await eachLimited(blobs, 4, async (entry) => {
-        const bytes = await api(`repos/${repo}/git/blobs/${entry.sha}`, true);
+      if (files.length === 0) throw new Error(`${repo} at ${commit} holds no file under ${dir}`);
+      await eachLimited(files, 4, async (entry) => {
+        const bytes =
+          blobs.get(entry.sha) ?? (await api(`repos/${repo}/git/blobs/${entry.sha}`, true));
         writeBlob(path.join(dest, entry.path.slice(prefix.length)), entry.mode, bytes);
       });
     },
@@ -887,6 +986,21 @@ export async function buildContext(
   mkdirSync(skillsDir, { recursive: true });
   mkdirSync(workspace, { recursive: true });
 
+  // The repository skills the cache lacks, read ahead per repository and commit: one tree and a
+  // GraphQL batch per BLOB_BATCH blobs, where each file would take a call of its own.
+  const ahead = new Map<string, { repo: string; commit: string; dirs: string[] }>();
+  for (const skill of arm.profileSkills) {
+    const key = cacheKey(skill.repo, skill.commit, skill.path);
+    if (skill.name === arm.skill || existsSync(path.join(options.cacheDir, "skills", key)))
+      continue;
+    const id = `${skill.repo}@${skill.commit}`;
+    const group = ahead.get(id) ?? { repo: skill.repo, commit: skill.commit, dirs: [] };
+    group.dirs.push(skill.path);
+    ahead.set(id, group);
+  }
+  for (const { repo, commit, dirs } of ahead.values()) {
+    await source.prefetch?.(repo, commit, dirs);
+  }
   const skills: InstalledSkill[] = [];
   const skillRecords: ContextRecord["skills"][number][] = [];
   for (const skill of arm.profileSkills) {

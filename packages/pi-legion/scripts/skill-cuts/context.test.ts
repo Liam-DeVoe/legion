@@ -532,3 +532,160 @@ test("a gh read that fails for good, such as a 404, is not tried again", async (
   expect(failed).toContain("try 1: exit 1: gh: Not Found (HTTP 404)");
   expect(waits).toEqual([]);
 });
+
+/** A file of the stand-in repository: its path, its bytes, and whether a GraphQL batch calls it
+ *  binary. */
+interface StandinFile {
+  readonly path: string;
+  readonly bytes: Uint8Array;
+  readonly binary?: boolean;
+}
+
+/**
+ * A stand-in `gh` holding one made-up repository at one commit, a Bun script that logs each call's
+ * arguments as one JSON line to its `log` and answers as GitHub does: the recursive tree; a
+ * GraphQL batch of blobs by oid (a binary file as `isBinary`, any other as its text decoded as
+ * UTF-8, as GitHub decodes it, so bytes that are no UTF-8 come back changed); and a blob alone.
+ */
+function standinRepoGh(name: string, files: readonly StandinFile[]): { gh: string; log: string } {
+  const root = path.join(dir, name);
+  const log = path.join(root, "calls.jsonl");
+  const gh = path.join(root, "gh");
+  const listed = files.map((file) => ({
+    path: file.path,
+    sha: gitBlobId(file.bytes),
+    size: file.bytes.length,
+    b64: Buffer.from(file.bytes).toString("base64"),
+    binary: file.binary === true,
+  }));
+  writeTree(root, {
+    gh: `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const files = ${JSON.stringify(listed)};
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
+const route = args.at(-1) ?? "";
+if (args[1] === "graphql") {
+  const query = (args.find((arg) => arg.startsWith("query=")) ?? "").slice(6);
+  const repository = {};
+  for (const match of query.matchAll(/b(\\d+): object\\(oid: "([0-9a-f]{40})"\\)/g)) {
+    const file = files.find((each) => each.sha === match[2]);
+    repository["b" + match[1]] = file === undefined ? null : file.binary
+      ? { isBinary: true, isTruncated: false, text: null }
+      : { isBinary: false, isTruncated: false, text: Buffer.from(file.b64, "base64").toString("utf8") };
+  }
+  process.stdout.write(JSON.stringify({ data: { repository } }));
+} else if (route.includes("/git/trees/")) {
+  process.stdout.write(JSON.stringify({
+    tree: files.map((file) => ({ path: file.path, mode: "100644", type: "blob", sha: file.sha, size: file.size })),
+    truncated: false,
+  }));
+} else if (/\\/git\\/blobs\\/[0-9a-f]{40}$/.test(route)) {
+  const file = files.find((each) => route.endsWith(each.sha));
+  process.stdout.write(Buffer.from(file.b64, "base64"));
+} else {
+  process.stderr.write("gh: Not Found (HTTP 404)\\n");
+  process.exit(1);
+}
+`,
+  });
+  chmodSync(gh, 0o755);
+  return { gh, log };
+}
+
+/** The stand-in's calls, by kind. */
+function callsOf(log: string): { tree: number; graphql: number; blob: number; other: number } {
+  const calls = readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as string[]);
+  const count = (test: (args: string[]) => boolean) => calls.filter(test).length;
+  const tree = count((args) => (args.at(-1) ?? "").includes("/git/trees/"));
+  const graphql = count((args) => args[1] === "graphql");
+  const blob = count((args) => (args.at(-1) ?? "").includes("/git/blobs/"));
+  return { tree, graphql, blob, other: calls.length - tree - graphql - blob };
+}
+
+/** A case of alpha whose profile also installs each of `dirs` of acme/batch at COMMIT, and its old
+ *  arm, under `root`. */
+function batchCase(root: string, dirs: readonly string[]): { c: Case; arm: Arm } {
+  const c = aCase("devbox", {
+    skills: [
+      { repo: "acme/skills", commit: COMMIT, path: "skills/alpha", name: "alpha" },
+      ...dirs.map((each) => ({
+        repo: "acme/batch",
+        commit: COMMIT,
+        path: each,
+        name: path.basename(each),
+      })),
+    ],
+    contextFiles: [],
+  });
+  writeTree(path.join(root, "old"), { "SKILL.md": ALPHA_ARM });
+  const arm = buildArm(
+    c,
+    "old",
+    { old: path.join(root, "old"), new: path.join(root, "old") },
+    root
+  );
+  return { c, arm };
+}
+
+test("a profile of N files at one commit is read with its tree and ceil(N/50) GraphQL batches, byte for byte", async () => {
+  const dirs = ["skills/s1", "skills/s2", "skills/s3"];
+  const files: StandinFile[] = dirs.flatMap((each) => [
+    {
+      path: `${each}/SKILL.md`,
+      bytes: new TextEncoder().encode(
+        `---\nname: ${path.basename(each)}\ndescription: Made-up ${each}.\n---\n`
+      ),
+    },
+    ...Array.from({ length: 39 }, (_, index) => ({
+      path: `${each}/references/r${index}.md`,
+      bytes: new TextEncoder().encode(`Reference ${index} of ${each}, é ✓.\n`),
+    })),
+  ]);
+  const { gh, log } = standinRepoGh("gh-batch", files);
+  const root = path.join(dir, "batch");
+  const { c, arm } = batchCase(root, dirs);
+  const options = {
+    source: ghSource(gh),
+    cacheDir: path.join(root, "cache"),
+    root: path.join(root, "scratch"),
+  };
+  const built = await buildContext(c, arm, options);
+  expect(files.length).toBe(120);
+  expect(callsOf(log)).toEqual({ tree: 1, graphql: Math.ceil(120 / 50), blob: 0, other: 0 });
+  for (const file of files) {
+    const at = path.join(built.skillsDir, file.path.replace(/^skills\//, ""));
+    expect([...readFileSync(at)]).toEqual([...file.bytes]);
+  }
+  // Built again from the cache, it reads nothing.
+  await buildContext(c, arm, options);
+  expect(callsOf(log)).toEqual({ tree: 1, graphql: 3, blob: 0, other: 0 });
+});
+
+test("a blob a batch does not give whole, binary or no UTF-8, is read alone over REST, byte for byte", async () => {
+  const files: StandinFile[] = [
+    {
+      path: "skills/mixed/SKILL.md",
+      bytes: new TextEncoder().encode("---\nname: mixed\ndescription: Made-up mixed.\n---\n"),
+    },
+    { path: "skills/mixed/notes.md", bytes: new TextEncoder().encode("Plain notes.\n") },
+    { path: "skills/mixed/logo.bin", bytes: new Uint8Array([0, 1, 2, 255]), binary: true },
+    { path: "skills/mixed/latin.txt", bytes: new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]) },
+  ];
+  const { gh, log } = standinRepoGh("gh-mixed", files);
+  const root = path.join(dir, "mixed");
+  const { c, arm } = batchCase(root, ["skills/mixed"]);
+  const built = await buildContext(c, arm, {
+    source: ghSource(gh),
+    cacheDir: path.join(root, "cache"),
+    root: path.join(root, "scratch"),
+  });
+  expect(callsOf(log)).toEqual({ tree: 1, graphql: 1, blob: 2, other: 0 });
+  for (const file of files) {
+    const at = path.join(built.skillsDir, file.path.replace(/^skills\//, ""));
+    expect([...readFileSync(at)]).toEqual([...file.bytes]);
+  }
+});
