@@ -91,6 +91,6 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[4] }),
   ...answers("AppShell | - | form | (issueFrame && !railFits) ? …", { reason: REASONS[5] }),
   ...answers("AppShell | - | form | isCompactViewport || …", { reason: REASONS[5] }),
-  ...answers("AppShell | - | form | (iconRailShown) ? …", { reason: REASONS[5] }),
-  ...answers("AppShell | - | form | (isCompactViewport) ? …", { reason: REASONS[4] }),
+  ...answers("AppShell | - | form | if (iconRailShown) return …", { reason: REASONS[5] }),
+  ...answers("AppShell | - | form | if (isCompactViewport) return …", { reason: REASONS[4] }),
 ];

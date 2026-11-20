@@ -161,6 +161,9 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
         options={options}
         placeholder={placeholder}
         readOnly={readOnly}
+        // Two lines, as `main`'s answer and reply boxes drew, so a phone draws the placeholder
+        // whole: one line is the touch floor's 44 px (`MentionField`'s `rows`).
+        rows={2}
         stoppedOptions={stoppedOptions}
       />
       <DraftUploadStatus upload={upload} />

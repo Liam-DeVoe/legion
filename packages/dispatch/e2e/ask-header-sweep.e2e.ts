@@ -1009,7 +1009,21 @@ test("the margin card's copy control stands beside its two lines, on the label's
   }
 });
 
-test("on a phone the Inbox card's copy control ends the label's line and the asker has the next line whole, whoever's turn it is @phone", async ({
+/** The answer box of `card` as it is drawn before it holds anything: its content box's height,
+ *  read from its border box, and its line height, both in px. */
+async function answerBox(card: Locator): Promise<{ content: number; line: number }> {
+  return card.locator("[data-ask-answer]").evaluate((box) => {
+    const style = getComputedStyle(box);
+    const edges = ["borderTopWidth", "borderBottomWidth", "paddingTop", "paddingBottom"] as const;
+    const around = edges.reduce((sum, edge) => sum + Number.parseFloat(style[edge]), 0);
+    return {
+      content: box.getBoundingClientRect().height - around,
+      line: Number.parseFloat(style.lineHeight),
+    };
+  });
+}
+
+test("on a phone the Inbox card's copy control ends the label's line, the asker has the next line whole and the answer box is two lines tall, whoever's turn it is @phone", async ({
   browser,
 }) => {
   const { turns } = await seedTurns();
@@ -1039,6 +1053,16 @@ test("on a phone the Inbox card's copy control ends the label's line and the ask
       // truncates there whatever the copy control does, and its tooltip holds it whole.
       if (author === ledger) continue;
       expect(line.askerWhole, `${turn}: the asker's name is not cut short`).toBe(true);
+    }
+    // The answer box draws two of its lines, its placeholder's two at a phone's width: the touch
+    // floor's 44 px (`web/src/styles.css`) is one line, which cut the placeholder mid-line.
+    for (const { ask, turn } of turns) {
+      const box = await answerBox(await askCard(page, ask.id));
+      expect(box.line, `${turn}: the answer box has no line height in px`).toBeGreaterThan(0);
+      expect(
+        box.content,
+        `${turn}: the answer box is under two of its lines tall`
+      ).toBeGreaterThanOrEqual(2 * box.line - 0.5);
     }
   } finally {
     await alice.close();

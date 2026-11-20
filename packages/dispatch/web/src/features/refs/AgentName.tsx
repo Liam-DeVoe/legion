@@ -303,7 +303,7 @@ function SessionAgentName({
   // reader is waiting for (`features/doc/first-batch.ts`). A name inside a panel the reader
   // has opened reads it at once, because that panel says so (`ReaderIsHere`). Until the read
   // lands this name is the one every page without the registry shows: the title stamped on the
-  // write, or the short session id.
+  // write, else the short id outside `NoTooltips`, the page's word inside.
   const registry = useAgentRegistry(useAfterTheFirstBatch());
   const { attribution, sessionId } = resolveAgent(subject, registry);
   // Every form names a session by the one rule for a drawn session name, whether the host gave

@@ -88,7 +88,7 @@ test("a document address asks for the transport chunk and the editor chunk", asy
   const editorChunk = spyOn(editor, "loadEditor").mockImplementation(() => undefined);
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(issue),
-    spyOn(api, "getIssueArtifactText").mockResolvedValue(text),
+    spyOn(api, "ownerArtifactText").mockResolvedValue(text),
     spyOn(api, "getArtifactText").mockResolvedValue(text),
     spyOn(api, "getMyState").mockResolvedValue({}),
   ];
@@ -123,7 +123,7 @@ test("a document address holds the reads the first editable block needs none of"
   const editorChunk = spyOn(editor, "loadEditor").mockImplementation(() => undefined);
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(issue),
-    spyOn(api, "getIssueArtifactText").mockResolvedValue(text),
+    spyOn(api, "ownerArtifactText").mockResolvedValue(text),
     spyOn(api, "getArtifactText").mockResolvedValue(text),
     spyOn(api, "getMyState").mockResolvedValue({}),
   ];
@@ -169,7 +169,7 @@ test("a document address whose issue names no document lets the held reads go", 
   const editorChunk = spyOn(editor, "loadEditor").mockImplementation(() => undefined);
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(issue),
-    spyOn(api, "getIssueArtifactText").mockRejectedValue(new Error("no such artifact")),
+    spyOn(api, "ownerArtifactText").mockRejectedValue(new Error("no such artifact")),
     spyOn(api, "getMyState").mockResolvedValue({}),
   ];
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -248,7 +248,7 @@ test("an earlier navigation's late issue answer leaves the current opening alone
   const { promise: issueRead, resolve: answerIssue } = Promise.withResolvers<IssueDetails>();
   const reads = [
     spyOn(api, "getIssue").mockReturnValue(issueRead),
-    spyOn(api, "getIssueArtifactText").mockRejectedValue(new Error("no such artifact")),
+    spyOn(api, "ownerArtifactText").mockRejectedValue(new Error("no such artifact")),
     spyOn(api, "getArtifactText").mockResolvedValue(text),
     spyOn(api, "getMyState").mockResolvedValue({}),
   ];

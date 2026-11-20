@@ -75,8 +75,8 @@ export function RowText({
   focused?: boolean;
   /** The text as stored: drawn as it is where `tree` is absent. */
   markdown: string;
-  /** Called in the task that first paints the reading of a text drawn from `tree`, where that
-   *  task comes after the commit that drew the text (`DrawnText`). */
+  /** Called in the task that the first paint of the reading of a text drawn from `tree` ends in,
+   *  where that task comes after the commit that drew the text (`DrawnText`). */
   onLatePaint?: () => void;
   /** The record the text is (`MarkdownBody`'s `source`). */
   source?: TextSource;
@@ -458,9 +458,13 @@ export function useOutOfTabOrder(
  *  engine has loaded, and in the task the engine loads in otherwise (`renderWithEngine`). On a
  *  fresh load of the issue page that task can come after the rows' own commit: at 1440 px the
  *  conversation's rows mounted with no words, and their readings were painted 53 ms later
- *  (dispatch://INFRA-341). That first paint is the one `onLatePaint` is told of, in its own task.
- *  A paint in the commit that drew the text is not, and neither is any paint after the first: it
- *  paints a reading the text has drawn already, or one its caller drew in a commit of its own. */
+ *  (dispatch://INFRA-341). A reading of more nodes than one task attaches (`ATTACH_BATCH`) is
+ *  painted a batch a task, and its paint ends in a later task than the commit even where the
+ *  engine has loaded (`useRenderedMarkdown`). The first paint that ends after the commit is the
+ *  one `onLatePaint` is told of, in the task it ends in, whether the text was drawn with no words
+ *  until then or with part of them. A paint that ends in the commit that drew the text is not,
+ *  and neither is any paint after the first: it paints a reading the text has drawn already, or
+ *  one its caller drew in a commit of its own. */
 function DrawnText({
   focused,
   markdown,

@@ -290,11 +290,11 @@ function IssuePageFallback(): ReactNode {
  * short pieces, yielding to the browser between them, so the page's own paint and the reader's
  * scroll are not held behind the whole of it.
  *
- * The shell paints `IssuePageFallback` first - the space the page's own chunk keeps until it
- * arrives (`chunkComponent`'s `space`, above), the same skeleton the route's `Suspense`
- * fallback carries for the pages that still suspend - and this element's effect then starts
- * the transition. So the page appears exactly as it does today: the skeleton, then the page,
- * with nothing in between that a reader did not see before.
+ * The shell paints `IssuePageSpace` first - the space the page's own chunk keeps until it
+ * arrives (`chunkComponent`'s `space`, above), the skeleton the route's `Suspense` fallback
+ * draws for the same address - and this element's effect then starts the transition. So the
+ * page appears exactly as it does today: the skeleton, then the page, with nothing in between
+ * that a reader did not see before.
  *
  * Two transitions carry two renders. This one carries the render that mounts the page's chunk
  * component, and the page's own first render where that chunk is already in hand; where it is
@@ -311,14 +311,26 @@ function IssuePageInATransition(): ReactNode {
 }
 
 /**
- * The space the issue page keeps until it is drawn: the new page's frame keeps its own skeleton,
- * which names no control and no tab (`IssueFrameFallback`), and every other reader today's
- * (`IssuePageFallback`). It is drawn only on an issue's address, so the reader's choice alone
- * says which, as the route's own `Suspense` fallback says it from `issueFrame`.
+ * The space the issue page keeps until it is drawn: the skeleton the route's own `Suspense`
+ * fallback draws for the same address, chosen as the shell chooses its frame (`useIssueFrame`).
+ * The new page's frame keeps its own skeleton, which names no control and no tab
+ * (`IssueFrameFallback`), and every other reader today's (`IssuePageFallback`), on an address
+ * the route `/issues/:key/*` takes and `parseIssuePath` refuses as well: the shell draws no frame
+ * there.
  */
 function IssuePageSpace(): ReactNode {
+  return useIssueFrame() ? <IssueFrameFallback /> : <IssuePageFallback />;
+}
+
+/**
+ * Whether the shell draws the new issue page's frame (R1, R14): on an issue's address, as
+ * `parseIssuePath` reads it, for a reader who chose the new page. Every other page, and every
+ * other reader's issue page, keeps the standard shell.
+ */
+function useIssueFrame(): boolean {
   const [choice] = useIssuePageChoice();
-  return choice === "outline" ? <IssueFrameFallback /> : <IssuePageFallback />;
+  const { pathname, search } = useLocation();
+  return choice === "outline" && parseIssuePath(pathname, search) !== undefined;
 }
 
 /**
@@ -663,18 +675,15 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     rememberShellLayout(marginHidden, marginWidth, sidebarHidden);
   }, [marginHidden, marginWidth, sidebarHidden]);
   const location = useLocation();
-  // The new issue page's frame (R1, R14), computed here once: an issue's
-  // address, for a reader who chose the new page. In it an icon rail of 56 px stands where the
-  // sidebar stands, from Tailwind's `md` up, and below that the page's header draws the control
-  // that opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over
-  // the page. The rail is drawn by the query that is `md` itself, in `rem`, because the room the
-  // page makes for it is `md:pl-14`: a pixel query draws the rail over the page wherever the two
-  // disagree, which is every width from 768 to 959 px at a 20 px default font. Every other page,
-  // and every other reader's issue page, keeps the shell below exactly as it was.
-  const [issuePageChoice] = useIssuePageChoice();
-  const issueFrame =
-    issuePageChoice === "outline" &&
-    parseIssuePath(location.pathname, location.search) !== undefined;
+  // The new issue page's frame (`useIssueFrame`), read here once for the whole shell. In it an
+  // icon rail of 56 px stands where the sidebar stands, from Tailwind's `md` up, and below that
+  // the page's header draws the control that opens the navigation (`ShellNavigationContext`);
+  // the margin is Details, a drawer over the page. The rail is drawn by the query that is `md`
+  // itself, in `rem`, because the room the page makes for it is `md:pl-14`: a pixel query draws
+  // the rail over the page wherever the two disagree, which is every width from 768 to 959 px at
+  // a 20 px default font. Every other page, and every other reader's issue page, keeps the shell
+  // below exactly as it was.
+  const issueFrame = useIssueFrame();
   const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
   const iconRailShown = issueFrame && railFits;
   // Whether Details is open, held for the issue it was opened on: every load opens it closed, and
@@ -814,9 +823,11 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
   // Each binding says what it does to the reader (`effect`, `features/shell/keymap.ts`): every
-  // one that opens a dialog, the bar or the drawer, or goes to another page, moves them; the two
-  // toggles only redraw the page around what they are reading, which the page's keepers hold
-  // them through, and move nothing.
+  // one that opens a dialog, the bar or the drawer, or goes to another page, moves them, and so
+  // does `Shift+M` in the new issue page's frame, which opens Details with the focus on its Close
+  // and closes it giving the focus back (`Margin.tsx`); the sidebar's toggle and the margin's only
+  // redraw the page around what the reader is reading, which the page's keepers hold them
+  // through, and move nothing.
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
@@ -929,7 +940,8 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       when: () => !isCompactViewport && !issueFrame,
     },
     {
-      effect: "moves nothing",
+      // Opening Details puts the focus on its Close, and closing it gives the focus back.
+      effect: detailsDrawer === undefined ? "moves nothing" : "moves the reader",
       // In the new issue page's frame the margin is Details, which this key opens and closes at
       // every width. Its id follows the gate, so that crossing it registers the binding again
       // and the list of keys reads the label of the shell it is in.
@@ -1058,6 +1070,68 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     />
   );
 
+  /** What stands in the sidebar's place: the new issue page's icon rail, else the sidebar's
+   *  column, its spacer or its collapsed rail. */
+  const sidebarSlot = (): ReactNode => {
+    if (iconRailShown) {
+      return (
+        <CountedIconRail
+          navigationOpen={navigationOpen}
+          onOpenNavigation={() => setNavigationOpen(true)}
+          project={routeProject}
+          user={user}
+        />
+      );
+    }
+    if (issueFrame) return null;
+    if (isCompactViewport) {
+      // Below `xl` the navigation is the drawer's, and this column holds none of it. It is drawn
+      // all the same, hidden until `xl`, so that the frame which already lays the desktop shell
+      // out while this render is still the compact one holds the sidebar's width, and `<main>` is
+      // laid out at the width it keeps rather than across the sidebar's column. A collapsed
+      // sidebar's gutter is `<main>`'s own padding.
+      return sidebarHidden ? null : (
+        <div aria-hidden="true" className="hidden order-1 w-80 xl:block" />
+      );
+    }
+    if (sidebarHidden) {
+      return (
+        <aside
+          aria-label="Collapsed sidebar"
+          className={`fixed inset-y-0 left-0 z-10 hidden w-14 justify-center border-r p-2 xl:flex ${railBorder} ${railBg} ${railText}`}
+          data-testid="sidebar-rail"
+        >
+          <button
+            aria-label="Show sidebar"
+            className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
+            onClick={() => setSidebarHidden(false)}
+            type="button"
+          >
+            <span aria-hidden="true">›</span>
+          </button>
+        </aside>
+      );
+    }
+    // The sidebar is first in the document and as tall as the viewport, so left to itself
+    // Chromium's scroll anchoring picks it as the anchor node - and since it never moves, nothing
+    // is ever compensated. Excluding it makes the browser anchor inside <main>, so content
+    // growing above the reader (a card's thread loading, Markdown rendering) no longer shifts what
+    // they are looking at.
+    return (
+      <aside
+        aria-label="Navigation"
+        className={`relative hidden order-1 w-80 max-w-none border-r [overflow-anchor:none] xl:block ${railBorder} ${railBg} ${railText}`}
+        onFocusCapture={reachForTheShell}
+        onPointerDownCapture={reachForTheShell}
+      >
+        {/* The aside stretches to the page's height, so the navigation is a viewport-tall column
+            that sticks inside it: on a long issue the links stay reachable, and the identity
+            footer sits at the bottom of the screen rather than the bottom of the document. */}
+        <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
+      </aside>
+    );
+  };
+
   return (
     <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
       <div
@@ -1141,56 +1215,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </aside>
           </>
         ) : null}
-        {iconRailShown ? (
-          <CountedIconRail
-            navigationOpen={navigationOpen}
-            onOpenNavigation={() => setNavigationOpen(true)}
-            project={routeProject}
-            user={user}
-          />
-        ) : issueFrame ? null : isCompactViewport ? (
-          // Below `xl` the navigation is the drawer's, and this column holds none of it. It is
-          // drawn all the same, hidden until `xl`, so that the frame which already lays the
-          // desktop shell out while this render is still the compact one holds the sidebar's
-          // width, and `<main>` is laid out at the width it keeps rather than across the
-          // sidebar's column. A collapsed sidebar's gutter is `<main>`'s own padding.
-          sidebarHidden ? null : (
-            <div aria-hidden="true" className="hidden order-1 w-80 xl:block" />
-          )
-        ) : sidebarHidden ? (
-          <aside
-            aria-label="Collapsed sidebar"
-            className={`fixed inset-y-0 left-0 z-10 hidden w-14 justify-center border-r p-2 xl:flex ${railBorder} ${railBg} ${railText}`}
-            data-testid="sidebar-rail"
-          >
-            <button
-              aria-label="Show sidebar"
-              className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
-              onClick={() => setSidebarHidden(false)}
-              type="button"
-            >
-              <span aria-hidden="true">›</span>
-            </button>
-          </aside>
-        ) : (
-          // The sidebar is first in the document and as tall as the viewport, so left to itself
-          // Chromium's scroll anchoring picks it as the anchor node - and since it never moves,
-          // nothing is ever compensated. Excluding it makes the browser anchor inside <main>, so
-          // content growing above the reader (a card's thread loading, Markdown rendering) no
-          // longer shifts what they are looking at.
-          <aside
-            aria-label="Navigation"
-            className={`relative hidden order-1 w-80 max-w-none border-r [overflow-anchor:none] xl:block ${railBorder} ${railBg} ${railText}`}
-            onFocusCapture={reachForTheShell}
-            onPointerDownCapture={reachForTheShell}
-          >
-            {/* The aside stretches to the page's height, so the navigation is a viewport-tall
-                column that sticks inside it: on a long issue the links stay reachable, and the
-                identity footer sits at the bottom of the screen rather than the bottom of the
-                document. */}
-            <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
-          </aside>
-        )}
+        {sidebarSlot()}
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
             Contents pane and its column each keep the inset the prototype gives them, the pane
             against the rail, which `md:pl-14` makes room for. Its references open no card on

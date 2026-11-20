@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
+import type { Window as HappyDomWindow } from "happy-dom";
 import { http, type RequestHandler } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
@@ -139,6 +140,18 @@ export function answerTextReadsWithTheSeededText(): void {
     restore = () => getArtifactText.mockRestore();
   });
   afterEach(() => restore?.());
+}
+
+/** Lays the test's window out `width` px wide (happy-dom's own `setViewport`), so every media
+ *  query answers as a viewport that wide does, until the restore it returns runs: the shell's
+ *  compact query (`COMPACT_VIEWPORT_QUERY`) decides whether the page's editor publishes presence,
+ *  and the test DOM's own 1,024 px is compact. */
+export function layOutAt(width: number): () => void {
+  // The suite's DOM is happy-dom's (`register-dom.ts`), whose window carries its own API.
+  const testWindow = window as unknown as HappyDomWindow;
+  const { innerHeight, innerWidth } = window;
+  testWindow.happyDOM.setViewport({ height: innerHeight, width });
+  return () => testWindow.happyDOM.setViewport({ height: innerHeight, width: innerWidth });
 }
 
 function CurrentRoute() {

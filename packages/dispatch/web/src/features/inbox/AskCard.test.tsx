@@ -37,6 +37,7 @@ import {
   thread,
 } from "./ask-card-fixture";
 import { draftEmpty } from "./draft-store";
+import { ApprovalExchange } from "./ReadingPane";
 import { ThreadBody } from "./ThreadBody";
 
 installAskCardApiMocks();
@@ -891,19 +892,18 @@ for (const surface of ["inline", "collapsed"] as const) {
 }
 
 // INFRA-341, testing round 17. The Inbox reading pane's approval request keeps its reply box under
-// the open ask (`exchangeOnly`), the card the same request is drawn as below the pane's width draws
-// none while the ask is open, and every thread of one ask shares one draft (`reply-drafts.ts`).
-// Neither may read a draft the other is still writing as a reply whose send failed: only a reply
-// typed under the settled ask, which then opened again, is one.
+// the open ask (`ApprovalExchange`'s `repliesWhileOpen`), the card the same request is drawn as
+// below the pane's width draws none while the ask is open, and every thread of one ask shares one
+// draft (`reply-drafts.ts`). Neither may read a draft the other is still writing as a reply whose
+// send failed: only a reply typed under the settled ask, which then opened again, is one.
 
-/** The reading pane's approval request for `ask`: its exchange alone (`ApprovalExchange`). */
+/** The reading pane's approval request for `ask`: its exchange alone (`ApprovalExchange`), seeded
+ *  from the Inbox row as the pane seeds it. */
 function paneExchange(ask: Ask): ReactNode {
+  const { ask: _seeded, ...seed } = thread(ask);
   return (
-    <AskCard
-      ask={ask}
-      exchangeOnly
-      getAskThread={async () => thread(ask)}
-      initialThread={thread(ask)}
+    <ApprovalExchange
+      ask={{ ...ask, last_reply: null, priority: null, snoozed_until: null, thread: seed }}
     />
   );
 }

@@ -139,7 +139,7 @@ export function openDocumentEarly(client: QueryClient, pathname: string, search:
   // (dispatch://INFRA-341, R11). The Spec tab's address names no slug, so its text is read by
   // the id the issue answers with, as it always was.
   const bySlug =
-    route.kind === "artifact" ? api.getIssueArtifactText(route.key, route.slug) : undefined;
+    route.kind === "artifact" ? api.ownerArtifactText({ issue: route.key }, route.slug) : undefined;
   // Nothing waits on this promise until the issue read hands it over, so its refusal is
   // answered here rather than left to the window as an unhandled rejection.
   void bySlug?.catch(() => undefined);

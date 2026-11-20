@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 
-import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import { api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type {
   AnswerAskInput,
   Ask,
@@ -65,12 +65,12 @@ import {
   type AskFrame,
   OrphanedAnchorNotice,
 } from "./AskCompletionCard";
+import { AskExchange, askUploadOwner } from "./AskExchange";
 import { AskHandOn } from "./AskHandOn";
 import { AskHeader, hasUrgencyNotch } from "./AskHeader";
 import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
-import { AskThread, UnsentBox } from "./AskThread";
-import { AskThreadDisclosure } from "./AskThreadDisclosure";
+import { UnsentBox } from "./AskThread";
 import type { OwnedAsk } from "./ask-name";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
@@ -114,14 +114,6 @@ export interface AskCardProps {
    *  editor shows the question, and the block is the link's target, so the card renders only
    *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
   frame?: AskFrame;
-  /** Draws the ask's exchange alone - its replies and the reply box under them - for a host that
-   *  draws the question and answers it with controls of its own: the Inbox reading pane's
-   *  approval request, whose column draws the question above the document's version and whose
-   *  head approves or requests changes (`ApprovalBody` in `ReadingPane.tsx`). The exchange is the
-   *  card's own - its thread read, seeded from `initialThread`, its order and its read mark -
-   *  drawn inline whatever `thread` says, and its reply box stands while the ask is open too,
-   *  since nothing else that host draws posts to the thread (`AskThread`'s `repliesWhileOpen`). */
-  exchangeOnly?: boolean;
   answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
   declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Reply-thread fetch/write seams for tests; default to the real API. */
@@ -238,7 +230,6 @@ export function AskCard({
   thread = "inline",
   variant = "full",
   frame = "card",
-  exchangeOnly = false,
   answerAsk: answer = answerAsk,
   createReply: reply = createReply,
   declineAsk: decline = declineAsk,
@@ -329,13 +320,14 @@ export function AskCard({
   // When those words go, by a deletion of theirs or by the Ask back that sends them, the box stays
   // open as if they had opened it, rather than folding away from under their caret or the button
   // they pressed. Recorded while rendering, React's pattern for state derived from a change, so
-  // no frame draws the box gone.
-  const heldByWords =
-    isCompact && completed === null && !otherSelected && !reasonRequired && trimmedAnswer !== "";
+  // no frame draws the box gone. Nothing but its words can hold the box open while the form is
+  // drawn, Other is unticked and the choice demands no reason (`onlyWordsHold`).
+  const onlyWordsHold = completed === null && !otherSelected && !reasonRequired;
+  const heldByWords = isCompact && onlyWordsHold && trimmedAnswer !== "";
   const [wordsHeldBox, setWordsHeldBox] = useState(false);
   if (heldByWords !== wordsHeldBox) {
     setWordsHeldBox(heldByWords);
-    if (wordsHeldBox && completed === null && !otherSelected && !reasonRequired) {
+    if (wordsHeldBox && onlyWordsHold) {
       setOwnWordsOpen(true);
     }
   }
@@ -349,15 +341,8 @@ export function AskCard({
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
   const source = textSourceOf("ask", displayedAsk.id);
-  // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
-  // ask's issue, or the project of the document it was asked on.
-  const documentProject = (askOwner ?? displayedAsk.anchor_artifact)?.project;
-  const uploadOwner: ArtifactOwner | undefined =
-    displayedAsk.issue_key !== null
-      ? { issue: displayedAsk.issue_key }
-      : documentProject === undefined
-        ? undefined
-        : { project: documentProject };
+  // Where a file pasted or dropped into the answer, or into a reply under the ask, goes.
+  const uploadOwner = askUploadOwner(displayedAsk, askOwner);
   // Everything the reader puts in the box goes through here, the keystroke and the text an
   // upload lands alike: a draft the field changed is no longer the question-shaped answer the
   // card offered to ask back instead.
@@ -559,40 +544,21 @@ export function AskCard({
     );
   // A reply's own `dispatch://` reference needs the project document behind a document ask
   // (`askOwner`), which only an Inbox row carries on the ask itself.
-  const threadNode =
-    thread === "collapsed" && !exchangeOnly ? (
-      <AskThreadDisclosure
-        ask={currentAsk}
-        createReply={reply}
-        currentReplyId={currentReplyId}
-        embedded={completed === null}
-        markNewest={answerIsNewest ? undefined : markNewest}
-        order={threadOrder}
-        owner={askOwner}
-        thread={threadQuery}
-        unread={unreadReplies}
-        uploadOwner={uploadOwner}
-      />
-    ) : (
-      <AskThread
-        ask={currentAsk}
-        createReply={reply}
-        currentReplyId={currentReplyId}
-        embedded={exchangeOnly || completed === null}
-        markNewest={answerIsNewest ? undefined : markNewest}
-        order={threadOrder}
-        owner={askOwner}
-        repliesWhileOpen={exchangeOnly}
-        thread={threadQuery}
-        unread={unreadReplies}
-        uploadOwner={uploadOwner}
-      />
-    );
-  // The host draws everything else: the question, the controls that answer it, and the record
-  // of an answer, which an approval's head shows on its chip.
-  if (exchangeOnly) {
-    return threadNode;
-  }
+  const threadNode = (
+    <AskExchange
+      ask={currentAsk}
+      collapsed={thread === "collapsed"}
+      createReply={reply}
+      currentReplyId={currentReplyId}
+      embedded={completed === null}
+      markNewest={answerIsNewest ? undefined : markNewest}
+      order={threadOrder}
+      owner={askOwner}
+      thread={threadQuery}
+      unread={unreadReplies}
+      uploadOwner={uploadOwner}
+    />
+  );
 
   const answerLabel = changing ? "Save answer" : "Answer";
   /** What Answer says while it is busy: this card's own send, or an upload the draft is waiting

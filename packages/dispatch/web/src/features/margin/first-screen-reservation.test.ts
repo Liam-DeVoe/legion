@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   FIRST_SCREEN_MARGIN_PROPERTY,
@@ -8,7 +9,7 @@ import {
   LAST_SHELL_LAYOUT_KEY,
   shellLayoutValue,
 } from "../shell/last-shell-layout";
-import { COMPACT_VIEWPORT_QUERY } from "../shell/useDialog";
+import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY, XL_BREAKPOINT } from "../shell/useDialog";
 import { DEFAULT_MARGIN_WIDTH, MIN_MARGIN_WIDTH } from "./margin-width";
 
 /**
@@ -25,7 +26,8 @@ import { DEFAULT_MARGIN_WIDTH, MIN_MARGIN_WIDTH } from "./margin-width";
  * stylesheet, a page of HTML the build copies through, the module the shell writes the layout
  * with, and the shell itself. They are held together here, so a renamed key, a renamed property
  * or a moved number fails this rather than silently leaving the server's blocks laid out at a
- * width the document does not keep.
+ * width the document does not keep. The reservation's width is the one every other width query of
+ * the stylesheet switches at, and those are held to the shell's here too.
  */
 
 const read = (path: string) => readFileSync(join(import.meta.dir, path), "utf8");
@@ -34,20 +36,68 @@ const appTsx = read("../../app.tsx");
 const indexHtml = read("../../../index.html");
 const firstScreenGo = read("../../../../../envoy/internal/dispatch/routes/first_screen.go");
 
+/** `styles.css` without its comments: a query a comment names is no query of the sheet. */
+const stylesRules = stylesCss.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** The length a Tailwind theme token stands for: the sheet's own `@theme` where it declares the
+ *  token, else Tailwind's `theme.css`, which its `@import "tailwindcss"` brings in. */
+function themeLength(token: string): string | undefined {
+  const declared = (css: string) => new RegExp(`${token}:\\s*([^;]+);`).exec(css)?.[1]?.trim();
+  const tailwind = fileURLToPath(import.meta.resolve("tailwindcss/theme.css"));
+  return declared(stylesRules) ?? declared(readFileSync(tailwind, "utf8"));
+}
+
+/** Below `xl` and from it, as every such `@media` of the sheet writes them: by the token the `xl:`
+ *  classes compile from. */
+const BELOW_XL = "(width < theme(--breakpoint-xl))";
+const FROM_XL = "(width >= theme(--breakpoint-xl))";
+
 /** The one rule in `styles.css` that lays the server's draw out: its breakpoint, the property
  *  on each side, and the default each property falls back to. */
 const RESERVATION =
-  /@media \(width >= (?<breakpoint>\d+(?:\.\d+)?[a-z]+)\) \{\n\s*#first-screen > \[data-first-screen-address\] \{\n\s*margin-left: var\((?<sidebarProperty>--[a-z-]+), calc\((?<sidebar>[^)]*)\)\);\n\s*margin-right: var\((?<marginProperty>--[a-z-]+), calc\((?<margin>\d+)px \+ (?<gutter>[^)]*)\)\);\n\s*\}\n\}/;
+  /@media \(width >= theme\((?<breakpoint>--breakpoint-[a-z0-9]+)\)\) \{\n\s*#first-screen > \[data-first-screen-address\] \{\n\s*margin-left: var\((?<sidebarProperty>--[a-z-]+), calc\((?<sidebar>[^)]*)\)\);\n\s*margin-right: var\((?<marginProperty>--[a-z-]+), calc\((?<margin>\d+)px \+ (?<gutter>[^)]*)\)\);\n\s*\}\n\}/;
 
 test("the server's draw is reserved for at exactly the widths above the compact viewport", () => {
   const found = RESERVATION.exec(stylesCss)?.groups;
   expect(found, "styles.css holds no reservation for the server's first-screen draw").toBeDefined();
   // The inverse of the query the shell reads: below it the margin is a sheet over the document
-  // rather than a column beside it, and the sidebar is not drawn at all. The same length in the
-  // same unit, so the two switch at one width whatever the reader's default font size.
-  const compact = /^\(width < (\d+(?:\.\d+)?[a-z]+)\)$/.exec(COMPACT_VIEWPORT_QUERY);
-  expect(compact, "COMPACT_VIEWPORT_QUERY is no longer a `width <` query").not.toBeNull();
-  expect(found?.breakpoint).toBe(compact?.[1]);
+  // rather than a column beside it, and the sidebar is not drawn at all. Both are Tailwind's `xl`,
+  // the sheet's by its token and the shell's by the length the token stands for, so the two
+  // switch at one width whatever the reader's default font size.
+  expect(found?.breakpoint).toBe("--breakpoint-xl");
+  expect(themeLength("--breakpoint-xl")).toBe(XL_BREAKPOINT);
+  expect(COMPACT_VIEWPORT_QUERY).toBe(`(width < ${XL_BREAKPOINT})`);
+});
+
+// Every width query of the sheet switches where one of the shell's own does: at Tailwind's `xl`,
+// written by the token the `xl:` classes compile from, which stands for the length the shell's
+// queries are built from; or, in the variant the broadcast composer compacts under
+// (`narrow-or-short`), at a phone's width, as `PHONE_VIEWPORT_QUERY` writes it. A block written in
+// a length of its own - `80rem` beside the token, or 1280 px, which a reader whose default font is
+// not 16 px meets at another width than the shell's - fails it.
+test("every width @media of styles.css switches at a width one of the shell's queries does", () => {
+  expect(themeLength("--breakpoint-xl"), "--breakpoint-xl is no longer the shell's xl").toBe(
+    XL_BREAKPOINT
+  );
+  expect(
+    BELOW_XL.replace("theme(--breakpoint-xl)", XL_BREAKPOINT),
+    "below xl in the sheet is not the shell's compact query"
+  ).toBe(COMPACT_VIEWPORT_QUERY);
+  const widths = [...stylesRules.matchAll(/@media\s+([^{]+?)\s*\{/g)]
+    .map(([, prelude = ""]) => prelude.trim())
+    .filter((prelude) => prelude.includes("width"));
+  expect(
+    widths.filter((prelude) => prelude === BELOW_XL || prelude === FROM_XL).length,
+    "styles.css reads fewer xl queries than the five it writes"
+  ).toBeGreaterThanOrEqual(5);
+  const known = new Set([BELOW_XL, FROM_XL, PHONE_VIEWPORT_QUERY]);
+  const strays = widths.filter((prelude) =>
+    prelude
+      .split(",")
+      .map((clause) => clause.trim())
+      .some((clause) => clause.includes("width") && !known.has(clause))
+  );
+  expect(strays, "a width @media of styles.css switches at a width of its own").toEqual([]);
 });
 
 test("the columns it falls back to are the ones the shell draws for a reader with no stored layout", () => {

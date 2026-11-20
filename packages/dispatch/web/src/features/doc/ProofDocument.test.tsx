@@ -16,12 +16,14 @@ import {
   artifact,
   createQueryClient,
   documentSurfaceHandlers,
+  layOutAt,
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
+import { DESKTOP_WIDTH } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { markdownWorkerThreshold } from "../refs/markdown-worker-threshold";
 import { installFakeParseWorker, restoreParseWorker } from "../refs/parse-worker-fixture";
@@ -65,7 +67,10 @@ beforeEach(() => {
   );
 });
 
+// At a desktop's width, where the shell draws no compact layout, so the editor publishes presence
+// (`ProofDocument.compact.test.tsx`).
 test("ProofDocument creates the editor on the synced document as the signed-in user", async () => {
+  const restoreViewport = layOutAt(DESKTOP_WIDTH);
   const { connections, editors, sync, toolbar, view } = renderProofDocument();
 
   try {
@@ -86,6 +91,7 @@ test("ProofDocument creates the editor on the synced document as the signed-in u
     expect(editors[0]?.root.getAttribute("role")).toBe("textbox");
   } finally {
     view.unmount();
+    restoreViewport();
   }
 });
 
@@ -1433,27 +1439,33 @@ const openDecision: Ask = {
 };
 
 test("a pane's editor is read-only and publishes no presence, where the page's takes edits and does", async () => {
-  const pane = renderProofDocument({ surface: "pane" });
+  // At a desktop's width the page's editor publishes presence (`ProofDocument.compact.test.tsx`).
+  const restoreViewport = layOutAt(DESKTOP_WIDTH);
   try {
-    await pane.sync();
-    await waitFor(() => expect(pane.editors).toHaveLength(1));
-    expect(pane.editors[0]?.options).toMatchObject({ access: "read", awareness: null });
-    expect(pane.editors[0]?.access).toBe("read");
-  } finally {
-    pane.view.unmount();
-  }
+    const pane = renderProofDocument({ surface: "pane" });
+    try {
+      await pane.sync();
+      await waitFor(() => expect(pane.editors).toHaveLength(1));
+      expect(pane.editors[0]?.options).toMatchObject({ access: "read", awareness: null });
+      expect(pane.editors[0]?.access).toBe("read");
+    } finally {
+      pane.view.unmount();
+    }
 
-  const page = renderProofDocument();
-  try {
-    await page.sync();
-    await waitFor(() => expect(page.editors).toHaveLength(1));
-    expect(page.editors[0]?.options).toMatchObject({
-      access: "edit",
-      awareness: page.connections[0]?.awareness,
-    });
-    expect(page.editors[0]?.access).toBe("edit");
+    const page = renderProofDocument();
+    try {
+      await page.sync();
+      await waitFor(() => expect(page.editors).toHaveLength(1));
+      expect(page.editors[0]?.options).toMatchObject({
+        access: "edit",
+        awareness: page.connections[0]?.awareness,
+      });
+      expect(page.editors[0]?.access).toBe("edit");
+    } finally {
+      page.view.unmount();
+    }
   } finally {
-    page.view.unmount();
+    restoreViewport();
   }
 });
 

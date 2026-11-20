@@ -107,16 +107,24 @@ interface Watched {
  * either. A row never measured is left as it was: one outside the view to the batches, and one
  * in view at the length the reader sees.
  *
- * A row's reading can be painted after the row too. The page's Markdown engine paints it, in the
- * row's own commit where the engine has loaded and in the task the engine loads in otherwise,
+ * A row's reading can be painted after the row too. The page's Markdown engine paints it in the
+ * row's own commit where the engine has loaded, and in the task the engine loads in otherwise,
  * and on a fresh load of the page the rows can mount first: the conversation's first reply,
  * 306 px tall at 1440 px, was painted 53 ms after its mount and never cut (dispatch://INFRA-341).
- * Whatever the mount and the batches measured of such a row before that paint was no words at
- * all. So the row says when its reading is first painted after its commit (`painted`), and that
- * measure is forgotten: the row is measured as one that mounts, in the task of the paint and
- * before the page is painted, where it stands in view, and left to the batches as never measured
- * where it does not. Kept, that measure would make a row far below the view stale once the
- * typeface arrives, and the row would be cut wherever it stood before the reader came near it.
+ * A reading of more nodes than one task attaches (`ATTACH_BATCH`) is painted a batch a task, so
+ * its paint ends in a later task than its commit as well, the engine loaded or not
+ * (`useRenderedMarkdown`). So the row says when its reading's first paint ends after its commit
+ * (`painted`), and is measured as one that mounts, in the task that paint ends in and before the
+ * page is painted, where it stands in view. Where it does not, it is left to the batches as never
+ * measured, and what was measured of it before is forgotten, save a cut: until an engine that
+ * loads late paints, the row holds no words, and a measure of none, kept, would make a row far
+ * below the view stale once the typeface arrives, and the row would be cut wherever it stood
+ * before the reader came near it. A paint over several tasks holds part of the words between
+ * them, and a batch can cut the row on that part, holding back too few words: that cut is
+ * measured again on the whole words, in the next batch where the row is near, and once it comes
+ * near where it is not. Until then it is a measure of words on the face it was read on, so it
+ * keeps the face, and the typeface's arrival measures it again as it does every other cut read
+ * before it.
  *
  * A long jump into the middle of the page, such as a fast drag of the scrollbar, lands on rows
  * not measured yet, and their cuts the frame after moved the content in view (-1,141 px once in
@@ -228,16 +236,20 @@ class ClampMeasurer {
     this.#measureAsMounted(element);
   }
 
-  /** Measures `element`'s words as they mount (`#measureMounted`), now that their reading has
-   *  been painted for the first time after the commit that handed them over. Whatever was
-   *  measured of them before that was no words at all, so it is forgotten: where the row does
-   *  not stand in view, it is left to the batches as a row never measured, which the typeface's
-   *  arrival does not measure wherever it stands. Called from the task of that paint
-   *  (`RowText`'s `onLatePaint`). */
+  /** Measures `element`'s words as they mount (`#measureMounted`), now that the first paint of
+   *  their reading after the commit that handed them over has ended. A measure that cut nothing
+   *  before it is forgotten - it read no words, or part of them - so where the row does not stand
+   *  in view it is left to the batches as a row never measured, which the typeface's arrival does
+   *  not measure wherever it stands. A cut was made by a batch on the words a paint over several
+   *  tasks had put in by then, and held back too few of them: it goes in the next batch, where
+   *  the row is near, and is measured again on the whole words, and until then it keeps the face
+   *  it was read on, so the typeface's arrival measures it again as it does every cut read before
+   *  it. Called from the task that paint ends in (`RowText`'s `onLatePaint`). */
   painted(element: HTMLElement): void {
     const watched = this.#rows.get(element);
     if (watched === undefined) return;
-    watched.face = undefined;
+    if (watched.clamp === undefined) watched.face = undefined;
+    else this.#queue(element);
     this.#measureAsMounted(element);
   }
 
@@ -413,8 +425,8 @@ export function clampRedrawn(element: HTMLElement): void {
   measurer?.redrawn(element);
 }
 
-/** Tells the page's one measurer that the reading of `element`'s words has been painted for the
- *  first time, after the commit that handed them over (`ClampMeasurer.painted`). */
+/** Tells the page's one measurer that the first paint of the reading of `element`'s words has
+ *  ended, in a task after the commit that handed them over (`ClampMeasurer.painted`). */
 export function clampPainted(element: HTMLElement): void {
   measurer?.painted(element);
 }

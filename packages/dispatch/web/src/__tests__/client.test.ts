@@ -843,7 +843,7 @@ test("API client reaches project artifact and owner-scoped document endpoints", 
   await api.listArtifactComments("artifact-1");
   await api.createArtifactComment("artifact-1", { body: "Looks good" }, keyed("write-2"));
   await api.getArtifactBlocks("artifact-1");
-  await api.getIssueArtifactText("CORE-1", "design notes.md");
+  await api.ownerArtifactText({ issue: "CORE-1" }, "design notes.md");
   await api.getIssueReferences("CORE-1");
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([

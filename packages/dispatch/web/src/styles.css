@@ -83,11 +83,11 @@ body {
        they were copied from, so they cannot drift;
      - nothing below `xl`, where the margin is a sheet over the document rather than a column
        beside it and the sidebar is not drawn at all: this query is the exact inverse of
-       `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`), and in `rem` as it is, so it
-       switches with the shell's `xl:` classes at any default font size. At a compact width the
-       blocks are laid out across the viewport and inset by `<main>`'s padding when the page
-       adopts them - 1,279 px to 1,231 px, measured at 1279x900 at a 16 px default font - which
-       is the page's own gutter and not either column;
+       `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`), and written from the token the
+       shell's `xl:` classes compile from (`--breakpoint-xl`), so it switches with them at any
+       default font size. At a compact width the blocks are laid out across the viewport and
+       inset by `<main>`'s padding when the page adopts them - 1,279 px to 1,231 px, measured at
+       1279x900 at a 16 px default font - which is the page's own gutter and not either column;
      - nothing on a route that draws no margin, because the server writes this element on the
        four issue document addresses alone (`documentAddress` in `routes/first_screen.go`), and
        `routeHasMargin` answers true for every one of them. A page with no draw carries no
@@ -107,7 +107,8 @@ body {
    and 792 px (measured at 1280x900). Where two logins share a browser the key holds whichever
    drew last, so the other sees that one re-wrap until the shell writes their own layout, which
    it does on that same load. */
-@media (width >= 80rem) {
+/* biome-ignore lint/correctness/noUnknownFunction: Tailwind compiles `theme()` in the build. */
+@media (width >= theme(--breakpoint-xl)) {
   #first-screen > [data-first-screen-address] {
     margin-left: var(--first-screen-sidebar-inset, calc(20rem + 1.5rem));
     margin-right: var(--first-screen-margin-inset, calc(384px + 1.5rem));
@@ -398,9 +399,11 @@ html:has([data-issue-page]) {
 }
 
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
-   through tablet widths so the sheet remains directly operable. Below `xl`, as
-   `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`) is, and in its unit. */
-@media (width < 80rem) {
+   through tablet widths so the sheet remains directly operable. Below `xl`, the token
+   `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`) is built from, as every width query
+   of this sheet is (`first-screen-reservation.test.ts` holds each to it). */
+/* biome-ignore lint/correctness/noUnknownFunction: Tailwind compiles `theme()` in the build. */
+@media (width < theme(--breakpoint-xl)) {
   input,
   select,
   textarea {
@@ -408,7 +411,8 @@ html:has([data-issue-page]) {
   }
 }
 
-@media (width < 80rem) {
+/* biome-ignore lint/correctness/noUnknownFunction: Tailwind compiles `theme()` in the build. */
+@media (width < theme(--breakpoint-xl)) {
   html {
     scroll-padding-bottom: 5rem;
   }
@@ -514,7 +518,8 @@ html:has([data-issue-page]) {
    the page added recalculated the style of every button and link of the page. A
    link's `[href]` keeps it above the floor's `a:not(.prose a):not(.dispatch-inline-link)`,
    which a link outside a `.prose` text matches, as the scope did. */
-@media (width < 80rem) {
+/* biome-ignore lint/correctness/noUnknownFunction: Tailwind compiles `theme()` in the build. */
+@media (width < theme(--breakpoint-xl)) {
   [data-node-row] button:is([data-node-bullet], .dispatch-inline-link),
   [data-node-words] a[data-row-reference][href] {
     min-width: 0;
@@ -980,7 +985,8 @@ html:has([data-issue-page]) {
 
 /* On touch screens the library docks the selection bar at the viewport bottom.
    An expanded margin sheet owns that space, so it suppresses the bar. */
-@media (width < 80rem) {
+/* biome-ignore lint/correctness/noUnknownFunction: Tailwind compiles `theme()` in the build. */
+@media (width < theme(--breakpoint-xl)) {
   body:has([data-testid="margin-sheet"][data-expanded="true"])
     .dispatch-action-bar[data-touch="true"] {
     display: none;

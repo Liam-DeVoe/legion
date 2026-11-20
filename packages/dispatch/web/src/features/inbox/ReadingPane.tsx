@@ -21,13 +21,16 @@ import { keepWhatStandsUnder, moveTheBox } from "../doc/readers-place";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
+import { AskExchange, askUploadOwner } from "./AskExchange";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
 import { artifactQueryOptions, DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
 import { holdSection, type SectionHold } from "./pane-placement";
 import { ReadingPaneHead } from "./ReadingPaneHead";
 import { ThreadPane } from "./ThreadPane";
+import { useAskThreadRead } from "./useAskThreadRead";
 
 /** What the selected question is, which is what the column shows. */
 type PaneSubject =
@@ -138,10 +141,13 @@ function useMarkedBlocks(content: RefObject<HTMLDivElement | null>): boolean {
 }
 
 /** The replies on an approval request's own ask and the box a reply is written in, which the
- *  column draws under the request's question through the parts every ask card draws its exchange
- *  with (`AskCard`'s `exchangeOnly`): the same thread, the same reply box and the same read mark.
- *  The thread is the row's own, seeded as the card the column falls back to seeds it
- *  (`QuestionCard`), so drawing it asks the server for nothing.
+ *  column draws under the request's question through the exchange every ask card draws
+ *  (`AskExchange`), from the same read of the ask's thread (`useAskThreadRead`), in the reader's
+ *  own order. The read is the row's own, seeded as the card the column falls back to seeds it
+ *  (`QuestionCard`), so drawing it asks the server for nothing; once it reads the ask settled, it
+ *  is the ask the exchange stands under, as a card's is. The reply box stands while the ask is
+ *  open too, since nothing else the column draws posts to the thread (`repliesWhileOpen`). No
+ *  reply is marked read here, as none is by the Inbox's other cards.
  *
  *  It stands above the version the reader reads, so a reply that lands while they are down in
  *  that version grows this box above them: the page answers each growth of the box while it
@@ -149,17 +155,33 @@ function useMarkedBlocks(content: RefObject<HTMLDivElement | null>): boolean {
  *  and the words under it stay on the line they are on. A reader who can see the box watches the
  *  reply land. One box for each request, so the next request's replies are a box of their own
  *  rather than a growth of this one, and where the column stands is the placement's to say. */
-function ApprovalExchange({ ask }: { ask: InboxRow }): ReactNode {
+export function ApprovalExchange({ ask }: { ask: InboxRow }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const element = box.current;
     return element === null ? undefined : keepWhatStandsUnder(element);
   }, []);
+  const thread = useAskThreadRead({
+    ask,
+    getAskThread: (id) => api.getAsk(id),
+    initialThread: { ask, ...ask.thread },
+  });
+  const [order] = useThreadOrder();
+  const threadAsk = thread.data?.ask;
+  const current = threadAsk !== undefined && threadAsk.state !== "open" ? threadAsk : ask;
   return (
     // `flow-root`, so the box measures the whole of what it draws: a margin inside it would
     // otherwise collapse out through it and be counted by no correction.
     <div className={`mb-3 flow-root border-b pb-3 ${borderDefault}`} ref={box}>
-      <AskCard ask={ask} exchangeOnly initialThread={{ ask, ...ask.thread }} />
+      <AskExchange
+        ask={current}
+        embedded
+        order={order}
+        owner={ask.document}
+        repliesWhileOpen
+        thread={thread}
+        uploadOwner={askUploadOwner(current, ask.document)}
+      />
     </div>
   );
 }

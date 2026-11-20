@@ -315,7 +315,8 @@ export function AskReplyComposer({
 
 export interface AskThreadProps {
   ask: Ask;
-  /** The shared ask-thread query AskCard owns; this component never requests thread data itself. */
+  /** The read of the ask's thread its host holds (`useAskThreadRead`); this component never
+   *  requests thread data itself. */
   thread: AskThreadQuery;
   createReply?: CreateReply;
   /** False where the caller renders the reply composer itself: a collapsed thread
@@ -342,9 +343,9 @@ export interface AskThreadProps {
   unread?: ReadonlySet<string>;
   /** Whether the reply composer stands under an open ask too, where the host answers the ask with
    *  controls of its own and draws no answer area to ask back in: a reply is then the one way
-   *  into the thread (`AskCard`'s `exchangeOnly`, the Inbox reading pane's approval request). A
-   *  reply typed here while the ask is open is one the reader is still writing, which no other
-   *  thread for the ask reads as unsent (`useUnsentReply`). */
+   *  into the thread (the Inbox reading pane's approval request, `ApprovalExchange`). A reply
+   *  typed here while the ask is open is one the reader is still writing, which no other thread
+   *  for the ask reads as unsent (`useUnsentReply`). */
   repliesWhileOpen?: boolean;
 }
 

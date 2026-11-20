@@ -1,14 +1,6 @@
 import { answerSelected } from "@legion/contracts/dispatch-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  type FormEvent,
-  type SetStateAction,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type FormEvent, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, apiErrorMessage, type WriteBounds, type WriteMethod } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
@@ -28,14 +20,11 @@ import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { setAnswerDraft as setAnswerDraftOfAsk, useAnswerDraft } from "./answer-drafts";
 import { askCommentInput, postAskComment } from "./ask-comment";
-import {
-  clearPendingAskThreadInvalidation,
-  hasPendingAskThreadInvalidation,
-} from "./ask-thread-freshness";
 import { type Draft, draftTargets, EMPTY_DRAFT, emptyDraftRefusal } from "./draft-store";
 import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
+import { useAskThreadRead } from "./useAskThreadRead";
 
 interface UseAskAnswerFormOptions {
   ask: AskWithTrees;
@@ -189,52 +178,13 @@ export function useAskAnswerForm({
   const replacing = useRef<AskAnswer | undefined>(undefined);
   const initialChangeConsumed = useRef(false);
   const submitGuard = useSubmitGuard();
-  // Shared by this card, its edit-version history, its collapsed disclosure, and its inline
-  // thread. A thread invalidated while its Inbox snapshot was in flight bypasses that snapshot,
-  // and so does every thread on an issue whose claim or route moved while it was in flight.
-  const refreshInitialThread =
-    initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
-  // A view that reads this thread with no seed (the reading column's thread, `ThreadPane`) may
-  // already have a read of it out, asked at a time this card cannot know: perhaps before the Inbox
-  // read the seed comes from, so that it answers an older thread - the ask still open, say, after
-  // the seed showed it answered. TanStack puts the seed into that read's query, which holds no
-  // data yet, and leaves the read running, and its answer then replaces the seed with no compare
-  // of their ages. So the card notes on its first render, before `useQuery` puts the seed in,
-  // whether it seeds over such a read, and if it does, puts the seed over that read as every write
-  // goes over the reads still out (`replaceQueryData`).
-  const threadBeforeSeed = queryClient.getQueryState(["ask-thread", ask.id]);
-  const seedsOverRead = useRef(
-    initialThread !== undefined &&
-      !refreshInitialThread &&
-      threadBeforeSeed !== undefined &&
-      threadBeforeSeed.data === undefined &&
-      threadBeforeSeed.fetchStatus !== "idle"
-  );
-  const threadQuery = useQuery<AskRead, Error>({
-    initialData: refreshInitialThread ? undefined : initialThread,
-    initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
-    queryKey: ["ask-thread", ask.id],
-    queryFn: () => getAskThread(ask.id),
-    staleTime: Number.POSITIVE_INFINITY,
+  // The ask's thread, as every view of it on the page reads it (`useAskThreadRead`).
+  const threadQuery = useAskThreadRead({
+    ask,
+    getAskThread,
+    initialThread,
+    initialThreadUpdatedAt,
   });
-  // In a layout effect, so that no answer from the network lands between the commit that drew the
-  // seed and this write. Cancelling the read puts its query back as it stood before that read,
-  // with no data, so the seed is written after the cancel; and with a read cancelled,
-  // `replaceQueryData` asks the thread again, so the next answer is of a read asked after the seed.
-  useLayoutEffect(() => {
-    if (!seedsOverRead.current) return;
-    seedsOverRead.current = false;
-    replaceQueryData<AskRead>(
-      queryClient,
-      ["ask-thread", ask.id],
-      (current) => current ?? initialThread
-    );
-  }, [ask.id, initialThread, queryClient]);
-  useEffect(() => {
-    if (refreshInitialThread && threadQuery.data !== undefined) {
-      clearPendingAskThreadInvalidation(queryClient, ask.id);
-    }
-  }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
   // What a press does to the card goes to the press's own ask. Its callbacks run with the newest

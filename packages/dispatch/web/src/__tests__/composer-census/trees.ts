@@ -46,17 +46,19 @@ import { type Item, type TreeKind, type Walked, walkUp } from "./walk";
  *   hands the hook where the hook's `homes` calls read it.
  *
  * A composer's mounts are followed up to the routes. The two ask fields' are followed up to the
- * ask card (`ASK_CARD`) and not past it: every host draws an ask in one card, which holds both
- * fields, and their drafts are the ask's, by its id, in stores that outlive every card
- * (`answer-drafts.ts`, `reply-drafts.ts`). So a place above the card that hides, ends or keys it,
- * or draws it for another ask, does to both fields what the card's own conditionals do to them,
- * and the card drawn for that ask again holds the ask's drafts. A field drawn outside a card is
- * followed up to the routes.
+ * ask card (`ASK_CARD`) and not past it, and the reply composer's to the Inbox reading pane's
+ * approval request too (`APPROVAL_EXCHANGE`), which draws the ask's exchange alone, with no card
+ * around it (`AskExchange`): every host draws an ask in one card, or its exchange in that one
+ * box, which holds the fields it draws, and their drafts are the ask's, by its id, in stores that
+ * outlive every card (`answer-drafts.ts`, `reply-drafts.ts`). So a place above the card or the
+ * box that hides, ends or keys it, or draws it for another ask, does to its fields what its own
+ * conditionals do to them, and the card or the box drawn for that ask again holds the ask's
+ * drafts. A field drawn outside them is followed up to the routes.
  */
 interface FieldBase {
   readonly homes: ReadonlySet<string>;
-  /** The component the census follows the field's mounts up to and not past. */
-  readonly upTo?: string;
+  /** The components the census follows the field's mounts up to and not past. */
+  readonly upTo?: ReadonlySet<string>;
 }
 
 type DraftField =
@@ -70,6 +72,10 @@ type DraftField =
 /** The ask card, which holds an ask's answer field and its reply composer. */
 const ASK_CARD = "features/inbox/AskCard.tsx#AskCard";
 
+/** The Inbox reading pane's approval request, which holds an ask's reply composer, in the
+ *  exchange it draws with no card (`AskExchange`). */
+const APPROVAL_EXCHANGE = "features/inbox/ReadingPane.tsx#ApprovalExchange";
+
 const DRAFT_FIELDS: readonly DraftField[] = [
   {
     component: "features/conversation/MentionComposer.tsx#MentionComposer",
@@ -79,13 +85,13 @@ const DRAFT_FIELDS: readonly DraftField[] = [
   {
     component: "features/inbox/AskThread.tsx#AskReplyComposer",
     homes: new Set(["useReplyDraft"]),
-    upTo: ASK_CARD,
+    upTo: new Set([ASK_CARD, APPROVAL_EXCHANGE]),
   },
   {
     handle: "data-ask-answer",
     homes: new Set(["useAnswerDraft"]),
     hook: "features/inbox/useAskAnswerForm.ts#useAskAnswerForm",
-    upTo: ASK_CARD,
+    upTo: new Set([ASK_CARD]),
   },
 ];
 
@@ -101,8 +107,8 @@ export interface Mount {
   readonly name: string;
   /** The lines that say where its draft lives as its host draws it. */
   readonly address: readonly Item[];
-  /** The component its field is followed up to and not past (`DraftField.upTo`). */
-  readonly upTo: string | undefined;
+  /** The components its field is followed up to and not past (`DraftField.upTo`). */
+  readonly upTo: ReadonlySet<string> | undefined;
   /** The walk up from it in its host, which the trees and the forms both read. */
   readonly walked: Walked;
 }
@@ -338,11 +344,11 @@ export function readTrees(program: Program): Trees {
     startId: string,
     props: ReadonlySet<string>,
     host: string,
-    upTo: string | undefined
+    upTo: ReadonlySet<string> | undefined
   ) => {
     const queue: { id: string; props: Set<string> }[] = [{ id: startId, props: new Set(props) }];
     for (let step = queue.shift(); step !== undefined; step = queue.shift()) {
-      if (step.id === upTo) continue;
+      if (upTo?.has(step.id) === true) continue;
       const labels = hostsOf.get(step.id) ?? new Set<string>();
       const newHost = !labels.has(host);
       labels.add(host);

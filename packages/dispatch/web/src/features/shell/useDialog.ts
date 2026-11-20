@@ -3,13 +3,19 @@ import { NavigationType, useLocation, useNavigationType } from "react-router-dom
 
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 
+/** Tailwind's `xl`, `--breakpoint-xl` in its `theme.css`: the length every `xl:` class compiles
+ *  from, and every width `@media` of `styles.css`, which names the token itself
+ *  (`theme(--breakpoint-xl)`). Both queries below are built from it, so the shell's state, the
+ *  classes and the stylesheet switch at one width whatever the reader's default font size
+ *  (`features/margin/first-screen-reservation.test.ts` holds the token and the sheet to it). */
+export const XL_BREAKPOINT = "80rem";
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. The exact inverse of the
  *  `xl:` classes, which is how Tailwind writes `max-xl:`, and in `rem` for `MD_VIEWPORT_QUERY`'s
  *  reason: this query chooses whether the shell renders the compact bar with its Menu or the
  *  sidebar, and the `xl:` classes whether either is shown, so a pixel query here left a reader
  *  whose default font is not 16 px a band of widths in which neither was drawn - from 1280 px to
  *  1599 px at a 20 px default, and from 960 px to 1279 px at a 12 px one. */
-export const COMPACT_VIEWPORT_QUERY = "(width < 80rem)";
+export const COMPACT_VIEWPORT_QUERY = `(width < ${XL_BREAKPOINT})`;
 /** Below Tailwind's `md`: a phone, where a margin thread opens full-screen. */
 export const PHONE_VIEWPORT_QUERY = "(max-width: 767px)";
 /** Tailwind's `md` itself: true exactly when the `md:` classes apply. A caller that pairs this
@@ -24,7 +30,7 @@ export const MD_VIEWPORT_QUERY = "(min-width: 48rem)";
 /** Tailwind's `xl`: from 1280 px the Inbox shows its reading pane beside the list. In `rem`, and
  *  for `MD_VIEWPORT_QUERY`'s reason: it is paired with `xl:` classes, which Tailwind declares at
  *  `80rem`, so only a `rem` query switches with them at any default font size. */
-export const READING_PANE_QUERY = "(min-width: 80rem)";
+export const READING_PANE_QUERY = `(min-width: ${XL_BREAKPOINT})`;
 
 const focusableSelector = [
   "a[href]",

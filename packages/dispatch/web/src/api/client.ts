@@ -1582,20 +1582,14 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/text", { id });
   }
 
-  /** The same markdown as `getArtifactText`, by the address a reader opens the document at
-   *  rather than by the id only the issue's own read names
-   *  (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, the same handler and the same check).
-   *  It is how a document route reads its document in one round trip instead of two
-   *  (`features/doc/open-document-early.ts`, dispatch://INFRA-341 R11). */
-  getIssueArtifactText(issueKey: string, slug: string) {
-    return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: issueKey, slug });
-  }
-
   /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the
    *  document `owner` holds under `slug`, which may be its slug or its filename. `404
    *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
    *  of a name reads. A conversation holds files and pictures and no document at all, and
-   *  serves no such route, which is why its owner is not one this takes. */
+   *  serves no such route, which is why its owner is not one this takes. It is the markdown
+   *  `getArtifactText` reads, by the address a reader opens the document at rather than by the
+   *  id only the owner's own read names: a document route reads its document in one round trip
+   *  this way instead of two (`features/doc/open-document-early.ts`, dispatch://INFRA-341 R11). */
   ownerArtifactText(owner: { issue: string } | { project: string }, slug: string) {
     if ("issue" in owner) {
       return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: owner.issue, slug });

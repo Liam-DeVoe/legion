@@ -64,6 +64,7 @@ import {
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { COMPACT_VIEWPORT_QUERY } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -587,14 +588,15 @@ function admitTheDocument(admission: Admission): void {
       run.constructing = admission
         .constructEditor(admission.parent, {
           // Cursor labels are outside the compact acceptance bar. Even with inline labels,
-          // yCursor's edge widget disrupts the mobile browser's post-update text selection.
+          // yCursor's edge widget disrupts the mobile browser's post-update text selection. The
+          // compact layout is the shell's own (`COMPACT_VIEWPORT_QUERY`), in its unit, so a
+          // reader whose default font is not 16 px gets presence where the shell draws its desktop
+          // layout and none where it draws the compact one.
           // A pane publishes no presence at all: the reader is skimming a document from a
           // list, not working in it, and the width rule would read the window rather than
           // the column and send it.
           awareness:
-            !admission.page ||
-            (globalThis.document.documentElement.clientWidth > 0 &&
-              globalThis.document.documentElement.clientWidth < 1280)
+            !admission.page || globalThis.matchMedia(COMPACT_VIEWPORT_QUERY).matches
               ? null
               : connection.awareness,
           heatMapMode: "hidden",

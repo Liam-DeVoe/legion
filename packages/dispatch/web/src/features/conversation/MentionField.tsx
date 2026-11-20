@@ -376,6 +376,7 @@ export function MentionField({
   stoppedOptions,
   placeholder,
   readOnly = false,
+  rows = 1,
 }: {
   readonly body: string;
   /** Takes no typing: a draft whose own send is out, which the host shows the reader rather than
@@ -417,6 +418,11 @@ export function MentionField({
    *  the card's own write is out, where `disabled` would drop the focus to the body
    *  (`AskAnswerArea`). */
   readonly readOnly?: boolean;
+  /** How many lines the box draws before it holds any: one, as a composer's does, or two for an
+   *  ask's answer and reply box (`AskAnswerArea`), as `main`'s were. Below `xl` the touch floor's
+   *  `min-height: 44px` (`styles.css`, unlayered, so it beats `min-h-24`) is the box's least
+   *  height, which is one line: a box of one row drew its placeholder cut there. */
+  readonly rows?: number;
   /** The roles the host's issue records that nobody is running (`stoppedRoleOptions`), offered
    *  under "Not running" after the live options. Undefined where the host has no issue to read
    *  them from, which is every host but the issue's own composer. */
@@ -702,7 +708,7 @@ export function MentionField({
           placeholder={placeholder}
           readOnly={readOnly}
           ref={bodyFieldRef}
-          rows={1}
+          rows={rows}
           value={body}
           {...(handle === undefined ? {} : { [handle]: "" })}
         />
