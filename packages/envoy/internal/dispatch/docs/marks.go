@@ -267,12 +267,14 @@ func (s *Service) SuggestionKind(ctx context.Context, artifactID, id string) (st
 
 // AcceptSuggestion applies the replacement for a suggestion mark.
 func (s *Service) AcceptSuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor) error {
-	return s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, replaceWith, actor, true)
+	_, err := s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, replaceWith, actor, true)
+	return err
 }
 
 // RejectSuggestion removes a suggestion mark and its inserted text when necessary.
 func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error {
-	return s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
+	_, err := s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
+	return err
 }
 
 // RejectDeletedCommentSuggestion rejects the pending suggestion of a comment its author is
@@ -289,12 +291,21 @@ func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, a
 // write, it forks the stored document cold (closedIssueCommentMark, readFork says why). The
 // accept and the reject routes keep RejectSuggestion, which a closed issue refuses as it always
 // did, and so does this reject under a context no caller marked.
-func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error {
-	return s.RejectSuggestion(commentMarkOperation(ctx), artifactID, id, actor)
+//
+// It answers the kind the suggestion's mark recorded: "insert", "replace" or "delete"
+// (suggestionKind). Only an insert's mark wraps text the suggestion itself put in the document,
+// which this reject takes out again (rejectedInsert); a replace's and a delete's wrap document
+// text, which an accept would replace and a reject leaves. So only an insert's anchor quote, the
+// text its mark wrapped, is a copy of the comment's own text.
+func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, error) {
+	return s.applySuggestion(context.WithValue(commentMarkOperation(ctx), skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
 }
 
-func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) error {
-	return s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+// applySuggestion accepts or rejects the suggestion mark id, and answers the kind that mark
+// recorded (suggestionKind).
+func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) (string, error) {
+	var kind string
+	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		// Read before the Yjs transaction opens: the state vector takes the document lock.
 		since := authoredClock(ctx, artifactID, doc)
@@ -311,7 +322,7 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		if !ok {
 			return fmt.Errorf("%w: suggestion mark %q has no attributes", ErrDocSchema, id)
 		}
-		kind, err := suggestionKind(attrs, id)
+		kind, err = suggestionKind(attrs, id)
 		if err != nil {
 			return err
 		}
@@ -431,6 +442,10 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		}
 		return write(next)
 	})
+	if err != nil {
+		return "", err
+	}
+	return kind, nil
 }
 
 // refuseBrokenAsks refuses the first ask a write left unreadable whose id the document could read

@@ -132,14 +132,17 @@ var errDeleteContended error = &apiError{
 // them (refs.TombstoneItem).
 //
 // A comment clears its suggestion with its body, since the suggestion's replacement text is the
-// comment's text too, and a message carries no suggestion: the kind decides which, and the clear
-// rides the one update, so the kind's search trigger rewrites the row's vector once from the
-// cleared body and the deleted post stops matching a keyword search. The post's embedding
-// windows go in this transaction too (refs.TombstoneItem): the cleared body splits into no
-// block, so the write enqueues no window and deletes each window the post held, and no meaning
-// search finds the post once the delete commits. No path of this build leaves a window of a
-// deleted post behind; the mark is the backstop for a hit that reaches one all the same, which
-// search stamps with the post's delete mark (stampSearchPostMarks, search.go).
+// comment's text too, and a message carries no suggestion: the kind decides which. quoteIsBody
+// says that a comment's anchor quote is its own text as well, the text an insert suggestion put
+// in the document, and the update then empties that quote too, leaving every other key of the
+// anchor as it is; a message carries no anchor. The clear rides the one update, so the kind's
+// search trigger rewrites the row's vector once from the cleared body and the deleted post stops
+// matching a keyword search. The post's embedding windows go in this transaction too
+// (refs.TombstoneItem): the cleared body splits into no block, so the write enqueues no window
+// and deletes each window the post held, and no meaning search finds the post once the delete
+// commits. No path of this build leaves a window of a deleted post behind; the mark is the
+// backstop for a hit that reaches one all the same, which search stamps with the post's delete
+// mark (stampSearchPostMarks, search.go).
 //
 // ctx is what the plan's reads run under: the context a comment's route derives from the ledger
 // it queues on (docs.Ledger.ReadContext), as queueEditedItemReferences derives it, and the
@@ -150,6 +153,7 @@ func (s *server) clearDeletedPostBody(
 	tx pgx.Tx,
 	kind refs.ItemKind,
 	itemID, previousBody string,
+	quoteIsBody bool,
 	actor model.Actor,
 	deletedAt time.Time,
 ) (model.ReferenceChanges, docs.WriteStep, error) {
@@ -160,6 +164,9 @@ func (s *server) clearDeletedPostBody(
 	alsoClears := ""
 	if kind == refs.ItemComment {
 		alsoClears = ", suggestion = null"
+		if quoteIsBody {
+			alsoClears += `, anchor = jsonb_set(anchor, '{quote}', to_jsonb(''::text))`
+		}
 	}
 	history, err := postBodyHistoryStep(kind, itemID, previousBody, actor)
 	if err != nil {

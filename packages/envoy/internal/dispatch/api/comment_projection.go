@@ -178,8 +178,9 @@ func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *mo
 //
 // A reply's comment.edited carries the block it names with the text that block holds as the edit
 // is written, as its comment.created carried the text it held then. Its comment.deleted carries
-// no text at all: the deleted comment's body and suggestion are already cleared in the comment
-// this payload is built from, and the block it names keeps every field but its text
+// no text at all: the deleted comment's body and suggestion, and the anchor quote of a pending
+// insert suggestion, which is the text that suggestion inserted, are already cleared in the
+// comment this payload is built from, and the block it names keeps every field but its text
 // (deleteEventReplyBlock), so the event keeps every field that routes it - reply_to, ask_id, the
 // anchor a root comment carries, the block's node id and id, thread_root_id and thread_logins -
 // and no copy of the post the reply answers. A reply naming no block carries reply_block null

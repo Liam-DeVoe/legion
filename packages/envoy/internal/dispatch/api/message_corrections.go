@@ -229,7 +229,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	referenceChanges, clear, err := s.clearDeletedPostBody(
-		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, actor, deletedAt)
+		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, false, actor, deletedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
