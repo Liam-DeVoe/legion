@@ -95,7 +95,14 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 			attemptWrites++
 		}
 	}
-	body := scrape(t, registry)
+	// The age is read from a scrape that counts the held send: a held lane's head is out of the
+	// gauges for as long as a try of it is in flight (mentionSender.heldSamples), so a scrape
+	// taken during one reads no send and an age of 0 with nothing wrong.
+	var body string
+	waitUntil(t, 10*time.Second, "a scrape that counts the held send", func() bool {
+		body = scrape(t, registry)
+		return strings.Contains(body, "envoy_dispatch_mention_sends_held 1\n")
+	})
 	t.Logf("over 3 s parked: %d reads of the rule, %d statements on comment_deliveries, %d statements in all; gauges:\n%s",
 		reads, attemptWrites, len(window), heldLines(body))
 	if reads == 0 || reads > 4 {
