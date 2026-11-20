@@ -40,15 +40,15 @@ func TestAKeptLaneCursorWriteWhoseAckTheDropLostIsReadBackAsLanded(t *testing.T)
 
 	held := hold.Hold(lane.subject)
 	type answer struct {
-		landed bool
-		err    error
+		confirmed cursorWrite
+		err       error
 	}
 	answered := make(chan answer, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t)-5*time.Second)
 		defer cancel()
-		landed, err := lane.confirm(ctx, cursor)
-		answered <- answer{landed, err}
+		confirmed, err := lane.confirm(ctx, cursor)
+		answered <- answer{confirmed, err}
 	}()
 	select {
 	case <-held.Withheld():
@@ -63,9 +63,9 @@ func TestAKeptLaneCursorWriteWhoseAckTheDropLostIsReadBackAsLanded(t *testing.T)
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("the cursor write whose acknowledgement the drop lost was still waiting at the test's deadline")
 	}
-	if !got.landed || got.err != nil {
-		t.Fatalf("confirm answered landed %t with %v %s after the drop (ErrCursorMoved: %t), want the write read back as landed with no error",
-			got.landed, got.err, time.Since(dropped), errors.Is(got.err, bus.ErrCursorMoved))
+	if got.confirmed != cursorWriteLanded || got.err != nil {
+		t.Fatalf("confirm answered %d with %v %s after the drop (ErrCursorMoved: %t), want the write read back as landed with no error",
+			got.confirmed, got.err, time.Since(dropped), errors.Is(got.err, bus.ErrCursorMoved))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 	defer cancel()

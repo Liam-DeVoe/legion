@@ -69,16 +69,31 @@ type heldFresh struct {
 	why   string
 }
 
-// heldFreshContexts are those calls, each keyed by the function that makes it and the call
-// (freshContext.call). Any other the walk reaches is a context under a lock that carries no mark of
-// the lock, which a request made under it would wait on for a reconnect with the lock held. A
-// count that changes fails too, in either direction, so a function here that makes one more, or
-// one fewer, is read again rather than let through on the old reason.
+// heldFreshContexts are those calls, and those reads of a context kept in a package variable or a
+// field, each keyed by the function that makes it and the call or the read (freshContext.call).
+// Any other the walk reaches is a context under a lock that carries no mark of the lock, which a
+// request made under it would wait on for a reconnect with the lock held. A count that changes
+// fails too, in either direction, so a function here that makes one more, or one fewer, is read
+// again rather than let through on the old reason.
 var heldFreshContexts = map[string]heldFresh{
 	"(*github.com/sjawhar/envoy/internal/bus.Client).requestLife -> context.Background": {1,
 		"the life of a connection, which no request is made under: requests are bound to it and end at its end, the drop"},
 	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.PubOpt] -> context.Background": {1,
 		"the wrapper's fallback for a publish whose options carry no context; every publish envoy makes passes nats.Context(ctx) (sendStored's callers), which callContext returns, and the stored publish row reads it at run time"},
+	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.PubOpt] -> the field github.com/nats-io/nats.go.ContextOpt.Context": {2,
+		"the caller's own context, which its options carry (nats.Context(ctx)) and callContext returns: made by the caller, not here"},
+	"(*github.com/sjawhar/envoy/internal/bus.Client).requestLife -> the field github.com/sjawhar/envoy/internal/bus.Client.life": {1,
+		"the connection's life, compared with the life read before the request's own read of the connection; no request is made under a life: bindRequest makes the request's context from its caller's and ends it at the life's end (context.AfterFunc)"},
+	"(*github.com/sjawhar/envoy/internal/bus.Client).requestLife -> the package variable github.com/sjawhar/envoy/internal/bus.endedLife": {3,
+		"the life that has already ended, which a request on a connection that is down is bound to, so the request is not sent (Request)"},
+	"(*github.com/sjawhar/envoy/internal/bus.Client).runningLifeLocked -> the field github.com/sjawhar/envoy/internal/bus.Client.life": {3,
+		"the connection's life, read to tell whether it still runs and to bind a request to it; no request is made under a life (bindRequest)"},
+	"(*github.com/sjawhar/envoy/internal/bus.Client).takeLifeLocked -> the field github.com/sjawhar/envoy/internal/bus.Client.life": {2,
+		"the connection's life, read to tell whether there is one to end; no request is made under a life (bindRequest)"},
+	"(*github.com/sjawhar/envoy/internal/bus.SessionPull).lostConnection -> the field github.com/sjawhar/envoy/internal/bus.SessionPull.life": {1,
+		"the life of the pull's connection, read to tell whether it ended; no request is made under it"},
+	"(*github.com/sjawhar/envoy/internal/bus.PendingForward).Wait -> the field github.com/sjawhar/envoy/internal/bus.PendingForward.ctx": {2,
+		"the forward's own context, which StartRequestStoredTo builds from its caller's (context.WithoutCancel, which keeps the caller's mark) and its own timeout; the forward row reads that at run time"},
 }
 
 // A context a function makes from context.Background() or context.TODO() while its caller holds a
@@ -87,8 +102,11 @@ var heldFreshContexts = map[string]heldFresh{
 // with the lock held. Review 5985435210 found two such paths (StartRequestStoredTo's context and
 // RoleClaim's unbound read); this check walks the call graph from every function that takes a lock
 // (lockTakers) or holds one handed to it (handedLocks), and fails on every fresh context it reaches
-// that heldFreshContexts does not hold, naming the call site and a path to it. A goroutine a walked
-// function starts runs outside the lock and is not walked.
+// that heldFreshContexts does not hold, naming the call site and a path to it. A context read from
+// a package variable or a struct field is one too: it was made outside the walk, where no call the
+// walk reads made it, so each such read is named as a call of context.Background is, by what it
+// reads. A goroutine a walked function starts, a closure made only to be started among them, runs
+// outside the lock and is not walked.
 //
 // The walk is variable type analysis over the program (golang.org/x/tools/go/callgraph/vta), with
 // the launcher walk's rules for callbacks (childstarts_test.go): a call the standard library makes
@@ -96,12 +114,14 @@ var heldFreshContexts = map[string]heldFresh{
 // method set that walked code outside the standard library hands out is walked as though it were
 // called, and so is every function stored into a package variable walked code reads.
 //
-// It cannot pass by reading nothing: its control plants a fresh context in each shape a path under a
-// lock can take, and must see each named: the registration repair's record read (a plain call under
-// the delete's lock), the filter step's row read (a closure the fence calls), the role claim read
-// RoleClaim makes (a call into the store), the forward's own context (StartRequestStoredTo, reached
-// through the configuration's forwardRole field), and the sweep's lane-head read (under a guard
-// tryHold took).
+// It cannot pass by reading nothing: each of lockTakers must be called by a root, and its control
+// plants a fresh context in each shape a path under a lock can take, and must see each named: the
+// registration repair's record read (a plain call under the delete's lock), the filter step's row
+// read (a closure the fence calls), the role claim read RoleClaim makes (a call into the store),
+// the forward's own context (StartRequestStoredTo, reached through the configuration's forwardRole
+// field), the sweep's lane-head read (under a guard tryHold took), and the walk's next-copy read
+// made under a context kept in a package variable. It plants one more, in a goroutine the sweep's
+// handover starts, which runs outside the guard, and must not see that one named.
 func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 	t.Run("this tree", func(t *testing.T) {
 		sites := map[string][]freshContext{}
@@ -138,6 +158,14 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			"ctx, cancel := context.WithTimeout(context.Background(), timeout)")
 		plantContext(t, overlay, "role_keep_sweep.go", "head, err = readKeptLaneHead(locked, cfg.client, role)",
 			"head, err = readKeptLaneHead(context.Background(), cfg.client, role)\n\t\t\t_ = locked")
+		plantContext(t, overlay, "role_keep.go", "stored, err := cfg.client.NextStoredMessage(ctx, keptSubject, kept+1)",
+			"stored, err := cfg.client.NextStoredMessage(plantedContext, keptSubject, kept+1)")
+		plantContext(t, overlay, "role_keep.go", "func walkKeptRole(",
+			"var plantedContext = context.Background()\n\nfunc walkKeptRole(")
+		// A goroutine the sweep's handover starts runs outside the guard, so a fresh context in it
+		// is no context made under the lock, and the check must not name it.
+		plantContext(t, overlay, "role_keep_sweep.go", "\tvar owed keptRoleOwed\n",
+			"\tgo func() { _ = context.TODO() }()\n\tvar owed keptRoleOwed\n")
 		found := freshContextsUnderLocks(t, overlay)
 		for _, want := range []struct{ what, caller string }{
 			{"the registration repair's record read, a plain call under the delete's lock", "(*" + listenerPackage + ".sessionDelivery).registeredTarget"},
@@ -145,11 +173,17 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			{"the role claim read, a call into the store", "(*github.com/sjawhar/envoy/internal/store.Registry).RoleClaim$1"},
 			{"the forward's own context, reached through the forwardRole field", "(*github.com/sjawhar/envoy/internal/bus.Client).StartRequestStoredTo"},
 			{"the sweep's lane-head read, under a guard tryHold took", listenerPackage + ".sweptLaneHead"},
+			{"the walk's next-copy read, under a context kept in a package variable", listenerPackage + ".walkKeptRole"},
 		} {
 			named := slices.ContainsFunc(found, func(fresh freshContext) bool { return fresh.caller == want.caller })
 			if !named {
 				t.Errorf("the check did not name %s (%s), so it could pass over a real one; it named: %v", want.what, want.caller, found)
 			}
+		}
+		if started := slices.IndexFunc(found, func(fresh freshContext) bool {
+			return strings.HasPrefix(fresh.caller, listenerPackage+".handOverSweptLane$")
+		}); started >= 0 {
+			t.Errorf("the check named %s, a fresh context in a goroutine the sweep's handover starts, which runs outside the guard", found[started])
 		}
 	})
 }
@@ -208,6 +242,11 @@ func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshCon
 	prog.Build()
 	functions := ssautil.AllFunctions(prog)
 	graph := vta.CallGraph(functions, cha.CallGraph(prog))
+	contextPackage := prog.ImportedPackage("context")
+	if contextPackage == nil {
+		t.Fatal("the listener's program holds no package context")
+	}
+	contextType := contextPackage.Pkg.Scope().Lookup("Context").Type()
 
 	var roots []*ssa.Function
 	for fn := range functions {
@@ -224,8 +263,10 @@ func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshCon
 			t.Fatalf("handedLocks names %s, which the listener no longer holds", name)
 		}
 	}
-	if len(roots) < len(lockTakers) {
-		t.Fatalf("the walk found %d functions that take a lock, fewer than the %d ways to take one: %v", len(roots), len(lockTakers), roots)
+	for _, taker := range lockTakers {
+		if !slices.ContainsFunc(roots, func(fn *ssa.Function) bool { return slices.Contains(staticCallees(fn), taker) }) {
+			t.Fatalf("lockTakers names %s, which no function of the listener calls, so the walk starts from no scope that takes it: %v", taker, roots)
+		}
 	}
 
 	w := lockWalk{prog: prog, graph: graph, stored: storedFunctionValues(functions),
@@ -238,6 +279,14 @@ func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshCon
 		fn := w.queue[0]
 		w.queue = w.queue[1:]
 		std := standardLibraryFunction(fn)
+		if envoyFunction(fn) {
+			for _, read := range storedContextReads(fn, contextType) {
+				fresh = append(fresh, freshContext{
+					caller: fn.String(), callee: read.what,
+					site: siteIn(prog.Fset, read.pos), path: w.pathTo(fn),
+				})
+			}
+		}
 		if node := graph.Nodes[fn]; node != nil {
 			for _, edge := range node.Out {
 				callee := edge.Callee.Func
@@ -318,18 +367,69 @@ func takesALock(fn *ssa.Function) bool {
 	if slices.Contains(lockTakers, fn.String()) {
 		return false
 	}
+	return slices.ContainsFunc(staticCallees(fn), func(callee string) bool { return slices.Contains(lockTakers, callee) })
+}
+
+// staticCallees is every function fn calls by name.
+func staticCallees(fn *ssa.Function) []string {
+	var callees []string
 	for _, block := range fn.Blocks {
 		for _, instruction := range block.Instrs {
-			call, ok := instruction.(ssa.CallInstruction)
-			if !ok {
-				continue
-			}
-			if callee := call.Common().StaticCallee(); callee != nil && slices.Contains(lockTakers, callee.String()) {
-				return true
+			if call, ok := instruction.(ssa.CallInstruction); ok {
+				if callee := call.Common().StaticCallee(); callee != nil {
+					callees = append(callees, callee.String())
+				}
 			}
 		}
 	}
-	return false
+	return callees
+}
+
+// contextRead is one read of a context kept in a package variable or a struct field: what it
+// reads, and where.
+type contextRead struct {
+	what string
+	pos  token.Pos
+}
+
+// storedContextReads is every read fn makes of a context kept in a package variable or a struct
+// field, the field read through its struct's value or through a pointer to it.
+func storedContextReads(fn *ssa.Function, contextType types.Type) []contextRead {
+	var reads []contextRead
+	for _, block := range fn.Blocks {
+		for _, instruction := range block.Instrs {
+			switch value := instruction.(type) {
+			case *ssa.UnOp:
+				if value.Op != token.MUL || !types.Identical(value.Type(), contextType) {
+					continue
+				}
+				switch address := value.X.(type) {
+				case *ssa.Global:
+					reads = append(reads, contextRead{"the package variable " + address.String(), readSite(fn, value.Pos())})
+				case *ssa.FieldAddr:
+					reads = append(reads, contextRead{"the field " + fieldName(address.X.Type().Underlying().(*types.Pointer).Elem(), address.Field), readSite(fn, address.Pos())})
+				}
+			case *ssa.Field:
+				if types.Identical(value.Type(), contextType) {
+					reads = append(reads, contextRead{"the field " + fieldName(value.X.Type(), value.Field), readSite(fn, value.Pos())})
+				}
+			}
+		}
+	}
+	return reads
+}
+
+// fieldName is field index of structType, named with its struct.
+func fieldName(structType types.Type, index int) string {
+	return types.TypeString(structType, nil) + "." + structType.Underlying().(*types.Struct).Field(index).Name()
+}
+
+// readSite is pos, or fn's own position where the read has none (an implicit load).
+func readSite(fn *ssa.Function, pos token.Pos) token.Pos {
+	if pos.IsValid() {
+		return pos
+	}
+	return fn.Pos()
 }
 
 // storedFunctionValues is every function value and closure that a Store anywhere in the program
@@ -407,6 +507,9 @@ func (w *lockWalk) handedOut(fn *ssa.Function) {
 			if _, started := instruction.(*ssa.Go); started {
 				continue
 			}
+			if closure, ok := instruction.(*ssa.MakeClosure); ok && startedOnly(closure) {
+				continue
+			}
 			var operands []*ssa.Value
 			if call, ok := instruction.(ssa.CallInstruction); ok && call.Common().StaticCallee() != nil {
 				for i := range call.Common().Args {
@@ -432,6 +535,21 @@ func (w *lockWalk) handedOut(fn *ssa.Function) {
 			}
 		}
 	}
+}
+
+// startedOnly is whether every use of closure is a go statement that runs it: a closure made only
+// to be started runs on a goroutine of its own, outside its maker's lock.
+func startedOnly(closure *ssa.MakeClosure) bool {
+	referrers := closure.Referrers()
+	if referrers == nil || len(*referrers) == 0 {
+		return false
+	}
+	for _, referrer := range *referrers {
+		if started, ok := referrer.(*ssa.Go); !ok || started.Call.Value != closure {
+			return false
+		}
+	}
+	return true
 }
 
 // pathTo is the chain of functions from a root to fn, first to last.

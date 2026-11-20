@@ -320,10 +320,10 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // stream keeps one copy however many listeners raise it for that message, each from its own
 // durable, a lane only a newer build's subjects capture among them.
 //
-// ctx is its caller's: a delivery handler's own (listenerDeliveryHandler), which holds no lock and
-// leaves the publish its own bound, or a handover's walk, under the role's keep guard, which marks
-// it as made under that lock (bus.WithLockHeld), so the publish answers a loss at once rather than
-// waiting for the reconnect. It carries the original payload whatever its size.
+// ctx is its caller's: a delivery handler's own (listenerDeliveryHandler), or the handover's own
+// once it has given the role's keep guard back (keptRoleOwed). Neither holds a lock across the
+// publish, so a connection that is down is waited for within the publish's own bound. It carries
+// the original payload whatever its size.
 func publishDeliveryException(ctx context.Context, client *bus.Client, item contracts.Envelope, reason, recipientSession, origin string) error {
 	exception, err := deliveryExceptionEnvelope(item, reason, recipientSession, 0)
 	if err != nil {
@@ -404,7 +404,10 @@ type deliveryOutcome struct {
 // shares — metrics, duration, logging, exception publication, and
 // attempt/dedupe cache updates — and reports whether the attempt should be
 // retried (NAKed). ctx is the context the exception is published under
-// (publishDeliveryException).
+// (publishDeliveryException): no caller holds a lock across it, so a publish
+// waits for a connection that is down within its own bound. The kept lane's
+// walk, which holds the role's keep guard, runs its reports only once it has
+// given the guard back (keptRoleOwed).
 func applyDeliveryOutcome(ctx context.Context, cfg listenerDeliveryHandlerConfig, item contracts.Envelope, outcome deliveryOutcome) bool {
 	if outcome.recordAttempt {
 		cfg.attemptCache.Record(item.DedupeKey, outcome.sessionID)
@@ -704,8 +707,8 @@ func refusedRoleForwardOutcome(verdict forwardVerdict, item contracts.Envelope, 
 // failed, the publish failed -- is delivery_failed like a stale holder or an
 // unadvertised/unreadable delivery mode; no claim is no_holder. A failure clears the attempt, so
 // a re-send is forwarded again; a delivered forward records the dedupe entry. ctx is the context
-// a failure's exception is published under (applyDeliveryOutcome): the role forwarder's own, or
-// the kept lane's walk, marked as made under the role's keep guard.
+// a failure's exception is published under (applyDeliveryOutcome): the role forwarder's own. The
+// kept lane's walk reports only a forward the stream acknowledged here, which publishes nothing.
 func finishRoleForward(ctx context.Context, cfg listenerDeliveryHandlerConfig, forward roleForward, err error, attrs ...slog.Attr) {
 	item, sessionID := forward.item, forward.sessionID
 	switch {

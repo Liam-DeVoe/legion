@@ -23,9 +23,15 @@ import (
 // then the row's own take of the guard while the handshake is still held, bounded only by the
 // test's deadline.
 //
-// The controls are the handover's pass, and the sweep's head read, made without asking the main
-// client first: its lane read waits for the reconnect with the guard held (or the sweep's read
-// never asks the probe under the guard), and the case fails at the test's deadline.
+// Two protections guard each case. The main client is asked first whether its connection is up
+// (bus.Client.LostNow, before each pass of the handover and before the sweep's head read), and
+// every call made under the guard is made under a context marked as made under it
+// (bus.WithLockHeld, which handOverKeptRole and sweptLaneHead set), so the call's own wait for its
+// connection answers within the probe's budget too (bus.Client.connForRequest). Either one gives
+// the guard up, and the row passes with either removed alone. The control removes both: the
+// handover's pass and the sweep's head read made without asking the main client first, under
+// contexts without the mark. The lane read then waits for the reconnect with the guard held, and
+// the case fails at the test's deadline.
 func TestAHandoverDuringAHeldMainClientHandshakeGivesTheRolesGuardUp(t *testing.T) {
 	for _, start := range []struct {
 		name string

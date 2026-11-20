@@ -187,14 +187,18 @@ func sweptLaneHead(ctx context.Context, cfg listenerDeliveryHandlerConfig, role 
 // (handOverKeptRole): as drainKeptRole does, the guard is given back, the wait for the connection
 // is made with nothing held (bus.Reconnected), and the handover is made again under the guard,
 // within the same window. A handover of the role that took the guard meanwhile is the one that
-// hands the lane over, and this one ends.
+// hands the lane over, and this one ends. What each handover owes is settled with the guard given
+// back, once that wait is over (keptRoleOwed).
 func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, release func()) uint64 {
 	handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
 	defer cancel()
+	var owed keptRoleOwed
 	for {
-		handover, err := handOverKeptRole(handoverCtx, cfg, role, cfg.now)
+		handover, err := handOverKeptRole(handoverCtx, cfg, role, cfg.now, &owed)
 		release()
-		if errors.Is(err, bus.ErrConnectionLost) && bus.Reconnected(handoverCtx, err) {
+		again := errors.Is(err, bus.ErrConnectionLost) && bus.Reconnected(handoverCtx, err)
+		owed.settle(handoverCtx, cfg)
+		if again {
 			var taken bool
 			if release, taken = cfg.roleKeepDrains.tryHold(role); taken {
 				continue
