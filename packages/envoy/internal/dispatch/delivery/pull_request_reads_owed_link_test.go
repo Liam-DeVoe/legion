@@ -212,3 +212,58 @@ func TestALinksRefusedReadOfAPullRequestWithNoResultsRowNamesTheRefusal(t *testi
 	wantAttributedHead(t, "after the refused read", attributedHeadOf(t, ctx, pool, issue, number),
 		AttributedHead{Number: number, RefusedAs: model.RefusedAsAppNotInstalled, RefusedSince: row.refusedSince})
 }
+
+// A link owes a read of acme/widgets#783, a pull request GitHub holds, while the App is not
+// installed on acme/widgets. The first pass reads it, GitHub refuses the read, and the row is
+// recorded as unreadable at its revision. The next two passes do not read it: its count of reads
+// stays one, and it is in neither owed count. Then the App is installed on acme/widgets, and the
+// next pass, whose installations list the repository, reads the pull request, stores its head and
+// settles the read. Control in the same test: a read that an event owes and GitHub refuses the
+// same way is read every pass, since an event says that GitHub sent something of that pull
+// request.
+func TestAnUnreadableLinkIsReadAgainWhenTheAppIsInstalledOnItsRepository(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	const linked, evented = 783, 785
+	issue := seedHeadIssue(t, ctx, pool, linked)
+	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, "acme/widgets")
+	opened := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Second)
+	head := fakeSHA("a", linked)
+	github.set("acme/widgets", linked, "open", head, "legion/"+issue, "Dispatch: "+issue, opened)
+	fake.notInstalled.Store("acme/widgets", true)
+	linkByHand(t, ctx, pool, linked)
+	if err := owePullRequestRead(ctx, pool, "acme/widgets", evented, owedRefusal, model.RefusedAsAppNotInstalled); err != nil {
+		t.Fatalf("owe the refused read of an event of #%d: %v", evented, err)
+	}
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	for pass := 1; pass <= 3; pass++ {
+		lookups := fake.lookupsOf("acme/widgets")
+		reconcile.runOnce(ctx)
+		row, owed := readOwedRow(t, ctx, pool, "acme/widgets", linked)
+		other, _ := readOwedRow(t, ctx, pool, "acme/widgets", evented)
+		counts, err := ReadAttributionCounts(ctx, pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("pass %d: #%d owed=%v reason=%s reads=%d; #%d reads=%d; installation lookups=%d; owed_refusals=%d",
+			pass, linked, owed, row.reason, row.reads, evented, other.reads, fake.lookupsOf("acme/widgets")-lookups, counts.OwedRefusals)
+		if !owed || row.reason != owedRefusal || row.reads != 1 || row.refusedAs == nil || *row.refusedAs != model.RefusedAsAppNotInstalled {
+			t.Errorf("after pass %d, #%d is owed %v (%+v); want a refusal as %s read one time", pass, linked, owed, row, model.RefusedAsAppNotInstalled)
+		}
+		if other.reads != pass {
+			t.Errorf("control: after pass %d, the read an event owed of #%d was read %d times; want %d", pass, evented, other.reads, pass)
+		}
+		if counts.OwedRefusals != 1 {
+			t.Errorf("after pass %d, owed_refusals counts %d; want 1, the event's: the unreadable link is owed no read", pass, counts.OwedRefusals)
+		}
+	}
+
+	fake.notInstalled.Delete("acme/widgets")
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	if row, owed := readOwedRow(t, ctx, pool, "acme/widgets", linked); owed {
+		t.Errorf("after the pass that follows the App's installation on acme/widgets, #%d is still owed a %s read (%+v); want none", linked, row.reason, row)
+	}
+	wantAttributedHead(t, "after the pass that follows the installation", attributedHeadOf(t, ctx, pool, issue, linked),
+		AttributedHead{Number: linked, HeadSHA: head, HeadKnown: true})
+}

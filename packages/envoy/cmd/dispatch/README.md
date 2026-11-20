@@ -1698,6 +1698,9 @@ No memory of a pass ends a read: each refusal is asked about at its own read, so
 The intake takes the events of every repository (`notifications.github.>`), so no repository leaves the intake's rule and ends a read either.
 So a pull request GitHub still answers 404 for at the reconcile's first read, in a repository the App reads, has no head until its next event.
 A pass looks the installation of each repository up once (`passInstallations`): a repository the App is not installed on costs the pass one lookup however many of its rows the pass reads, and its rows stay owed, since an installation that comes back has the pull request again.
+A read that a link by hand alone owed is the exception: where GitHub refuses it because the App is not installed on the repository, the row is recorded as unreadable at its revision (`unreadable_revision`, `delivery.recordOwedReadOutcome`), and no pass reads it again, since such a link names a pull request or an issue of a repository the App does not cover, as a bug report of another project does.
+The row stays, so the record of the read is kept, and it counts in neither of `dispatch attribution`'s owed counts; the issue's results name its link in `unreadable_links` (Routes below).
+A new link of it, an event of it or a trigger gives the row a new revision, so the next pass reads it again, and so does the first pass whose installations list the repository (`delivery.wakeUnreadableReads`, which reads the installations and their repositories from the client's ten-minute caches and asks nothing where no row is unreadable).
 A row of that table is never a head, a basis or a merge, and while a read is owed Dispatch does not know that the stored head is the head.
 So three readers of a head by issue read that table too (`HeadsAttributedTo`, `HeadAttributedTo`, `NewestPullRequestHead`; `owedReadJoin`, `20261118215934_pull_request_reads_owed_refusal`): the stored head of a pull request owed a read is no basis, no check run is read at it, and the results route names the pull request in `heads_not_read` (Routes below).
 A row that a link by hand alone owed is no such owe where a results row of the pull request is stored: a link says nothing of the head, so these readers skip a row whose `linked_revision` is its revision there, and each other owe gives the row a new revision (`20261119172039_pull_request_reads_owed_linked`, Links and ties above).
@@ -2814,6 +2817,10 @@ A granted claim then deletes, in a statement of its own, every row whose moment 
 That delete skips each row another statement holds (`for update skip locked`), and a claim, a settle and a release each lock the one row of their own pair, so no two statements on the table wait on each other; nothing else reads or writes the table.
 The moments are each process's clock, as its memory's are, so two processes whose clocks differ by a few seconds can read one commit through twice in a span that much shorter.
 A new table: nothing existing is read, locked or rewritten, the release before neither reads nor writes it and keeps its own memory alone while both serve, and its census answers `0`.
+
+Migration `20261120035910_pull_request_reads_owed_unreadable` adds `pull_request_reads_owed.unreadable_revision`, the revision of the row when GitHub refused its read because the App is not installed on the repository and a link by hand alone owed the read (`delivery.recordOwedReadOutcome`).
+No pass reads a row whose `unreadable_revision` is its revision; a new owe gives the row a new revision, and a pass sets the column back to null where an installation of the App lists the repository (`delivery.wakeUnreadableReads`).
+The column is nullable with no default, and null on each row a release before this one wrote; the release before names the table in none of its own statements; its census answers `0`.
 
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
 It cached the answer the results read asked for while that one question decided an `after_merge` and a `default_branch` check alike, a yes kept for good and a no re-read after five minutes.
@@ -4891,6 +4898,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   - Both reasons change an answer only where the issue resolves to a repository, the deployment holds an App key and the App reads the repository (`comparisonReader.decides`).
     Elsewhere each field answers as it did before Dispatch named either: a repository Dispatch cannot read is unknown already, and an issue with no repository holds every head it will ever hold.
+
+  - The answer also carries `unreadable_links`, `[{url, refused_since}]`, where the issue holds one: each link of the issue to a pull request or an issue of a repository the App is not installed on, whose one read GitHub refused at `refused_since` (Database migrations above, `20261120035910_pull_request_reads_owed_unreadable`).
+    No pass reads such a link again until the issue links it again, an event of its pull request arrives, or the App's installations come to cover the repository, and no check's answer turns on it.
+    `dispatch results` prints these links after the checks.
 
   - An `after_merge` check is compared with the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue — and with that repository's default branch, which answers alone where Dispatch holds no merge of the issue or the merged row names no base branch.
 

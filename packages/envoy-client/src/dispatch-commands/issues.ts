@@ -866,23 +866,46 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
   ];
 }
 
+/** The links of the issue that Dispatch reads no more (`unreadable_links`), one line each: GitHub
+ *  refused the read of each because the GitHub App is not installed on its repository, and Dispatch
+ *  reads it again only once the issue links it again, an event of its pull request arrives, or the
+ *  App is installed on that repository. No check's answer turns on them. */
+function unreadableLinkLines(results: IssueCheckResults): string[] {
+  const links = results.unreadable_links ?? [];
+  if (links.length === 0) return [];
+  return [
+    "Links Dispatch reads no more until the issue links them again, an event of the pull request arrives, or the GitHub App is installed on their repository:",
+    ...links.map((link) => {
+      const since =
+        link.refused_since === undefined ? "" : `, since ${minuteUTC(link.refused_since)}`;
+      return `- ${link.url}: GitHub refuses its read (${REFUSAL_WORDS.app_not_installed})${since}.`;
+    }),
+  ];
+}
+
 /** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
  *  compared its results with, whether a pass of it stands, its own words once, and every result
  *  recorded against it in the order the API serves them. A check CI proves prints its derived
  *  result, or why it has none, as one line, then whether a pass of it stands (`ciCheckLines`). A
  *  check with no result says so, and an issue with no Verification document says that instead of
  *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
- *  null, so that is what is compared. */
+ *  null, so that is what is compared. The links Dispatch reads no more end the text, whatever the
+ *  checks are (`unreadableLinkLines`). */
 function formatCheckResults(results: IssueCheckResults, brief = false): string {
+  const unreadable = unreadableLinkLines(results);
+  const withLinks = (text: string): string =>
+    unreadable.length === 0 ? text : [text, unreadable.join("\n")].join("\n\n");
   if (results.verification_artifact_id === "") {
-    return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
+    return withLinks(
+      `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`
+    );
   }
   const checks = results.checks ?? [];
   if (checks.length === 0) {
-    return `${results.issue}'s Verification document holds no check blocks.`;
+    return withLinks(`${results.issue}'s Verification document holds no check blocks.`);
   }
   const blocks = checks.map((check) => checkLines(check, brief).join("\n"));
-  return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
+  return withLinks([`Checks of ${results.issue}:`, ...blocks].join("\n\n"));
 }
 
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a

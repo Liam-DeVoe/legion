@@ -426,12 +426,16 @@ type owedRead struct {
 
 // listOwedPullRequestReads is at most limit pull requests owed a read for reason, the row the
 // reconcile has read the fewest times first and then the one owed longest, so every row has its
-// first read before any row has its second. The index pull_request_reads_owed_order serves the
-// order, so the cost is the limit's rows and not the table's.
+// first read before any row has its second. A row recorded as unreadable at its revision is not
+// listed (recordOwedReadOutcome): GitHub refused its read because the App is not installed on its
+// repository, and only a new owe or an installation that comes to cover the repository makes a
+// read of it worth asking again (wakeUnreadableReads). The index pull_request_reads_owed_order
+// serves the order, so the cost is the limit's rows and the unreadable rows before them, not the
+// table's.
 func listOwedPullRequestReads(ctx context.Context, pool *store.Pool, reason owedReason, limit int) ([]owedRead, error) {
 	rows, err := pool.Query(ctx, `
 		select repo, number, reason, owed_at, revision from pull_request_reads_owed
-		where reason = $1
+		where reason = $1 and unreadable_revision is distinct from revision
 		order by reads, owed_at, repo, number
 		limit $2
 	`, reason, limit)
@@ -476,6 +480,16 @@ const (
 // and gives no new revision, so an intake's read that read the row before it still deletes it.
 // refusedAs is the word of GitHub's refusal for owedReadRefused (refusalOf), and "" otherwise. It
 // sets refused_as and refused_since as owePullRequestRead does (owedRefusalSet).
+//
+// A refusal because the App is not installed on the repository, of a read that a link by hand
+// alone owed (linked_revision is the revision), records the row as unreadable at its revision
+// (unreadable_revision), and no pass reads it again (listOwedPullRequestReads). Such a link names
+// a pull request or an issue of a repository the App does not cover, as a bug report of another
+// project does, and every later read would be refused the same way. The row stays, so the record
+// of the read is kept (R4), and the issue's results name the link (UnreadableLinksOf). A new
+// link, an event or a trigger gives the row a new revision, so the next pass reads it again, and
+// a pass makes it readable again once the App's installations cover the repository
+// (wakeUnreadableReads). Every other outcome leaves the row readable.
 func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead, outcome owedReadOutcome, refusedAs string) error {
 	if outcome == owedReadAnswered {
 		return settleOwedRead(ctx, pool, read.Repo, read.Number, read.Revision)
@@ -486,9 +500,10 @@ func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead,
 	}
 	if _, err := pool.Exec(ctx, `
 		update pull_request_reads_owed set reason = $4::text, reads = reads + 1,
-			`+owedRefusalSet("$4::text", "nullif($5::text, '')", "now()", "")+`
+			`+owedRefusalSet("$4::text", "nullif($5::text, '')", "now()", "")+`,
+			unreadable_revision = case when $5::text = $6::text and linked_revision = revision then revision end
 		where repo = $1 and number = $2 and revision = $3
-	`, read.Repo, read.Number, read.Revision, string(reason), refusedAs); err != nil {
+	`, read.Repo, read.Number, read.Revision, string(reason), refusedAs, model.RefusedAsAppNotInstalled); err != nil {
 		return fmt.Errorf("count the read %s#%d is owed: %w", read.Repo, read.Number, err)
 	}
 	return nil

@@ -92,7 +92,9 @@ func ReadAttributionCounts(ctx context.Context, pool *store.Pool) (AttributionCo
 // owedReadCounts counts the reads owed of each kind, with the oldest time of each: when a failure
 // was owed, and when a refusal was first refused (refused_since), or owed where a release before
 // this one owed it and wrote no refused_since. A trigger that owes a failure over a refusal row
-// leaves its refused_since, so a failure's time is its owed_at alone.
+// leaves its refused_since, so a failure's time is its owed_at alone. A row recorded as unreadable
+// at its revision is owed no read (recordOwedReadOutcome), so it is in neither count; the results
+// of its issue name its link (UnreadableLinksOf).
 const owedReadCounts = `select reason, count(*),
 		min(case when reason = 'refusal' then coalesce(refused_since, owed_at) else owed_at end)
-	from pull_request_reads_owed group by reason`
+	from pull_request_reads_owed where unreadable_revision is distinct from revision group by reason`

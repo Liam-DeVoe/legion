@@ -600,11 +600,18 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context, absences *
 // installation of each repository up through the pass's own lookups (passInstallations), so a
 // repository the App is not installed on costs the pass one lookup however many of its rows it
 // reads. It answers the first limit and each failure of the database. The owed reads ask about
-// the reads GitHub refuses with a 404 or a 410 within absences, the pass's absence queries.
+// the reads GitHub refuses with a 404 or a 410 within absences, the pass's absence queries. Before
+// them, a link recorded as unreadable whose repository an installation of the App now lists is
+// made readable, so this pass reads it (wakeUnreadableReads); a failure there is logged and leaves
+// such links unreadable for the next pass, since no read is lost by it.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time, absences *absenceBudget) error {
 	var limited passRateLimit
 	installations := &passInstallations{}
 	var failures []error
+	if err := wakeUnreadableReads(ctx, r.pool, r.github); err != nil {
+		slog.Warn("dispatch delivery: read whether the App now covers the repositories of unreadable links; they stay unreadable until the next pass",
+			"error", err)
+	}
 	if err := r.readOwedPullRequests(ctx, now, installations, absences, &limited); err != nil {
 		failures = append(failures, err)
 	}

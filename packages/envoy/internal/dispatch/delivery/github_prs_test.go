@@ -168,9 +168,13 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 				}
 			}
 		}
-		payload := make([]map[string]any, len(repos))
-		for i, name := range repos {
-			payload[i] = map[string]any{"full_name": name}
+		// A repository the App is not installed on is in no installation's list, as GitHub's
+		// own lookup of its installation answers 404 for it.
+		payload := []map[string]any{}
+		for _, name := range repos {
+			if _, missing := f.notInstalled.Load(name); !missing {
+				payload = append(payload, map[string]any{"full_name": name})
+			}
 		}
 		mustEncode(t, w, map[string]any{"total_count": len(payload), "repositories": payload})
 	})

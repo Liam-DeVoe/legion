@@ -8599,6 +8599,43 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // A link to a repository the GitHub App is not installed on is read one time, and Dispatch reads
+  // it no more until it changes (unreadable_links). The links end the text, after the checks, and
+  // also for an issue with no Verification document. Control: the same issue with no such link
+  // prints the checks alone, as before.
+  test("dispatch_results names the links Dispatch reads no more, after the checks", async () => {
+    const unreadable_links = [
+      {
+        url: "https://github.com/upstream/project/issues/41",
+        refused_since: "2026-11-20T04:03:58.5Z",
+      },
+      { url: "https://github.com/upstream/project/pull/42" },
+    ];
+    const linkLines = [
+      "Links Dispatch reads no more until the issue links them again, an event of the pull request arrives, or the GitHub App is installed on their repository:",
+      "- https://github.com/upstream/project/issues/41: GitHub refuses its read (the GitHub App is not installed on the repository), since 2026-11-20 04:03 UTC.",
+      "- https://github.com/upstream/project/pull/42: GitHub refuses its read (the GitHub App is not installed on the repository).",
+    ];
+    const withChecks = await readAnswer({ ...threeResults, unreadable_links });
+    const control = await readAnswer(threeResults);
+    expect(withChecks.text).toBe([control.text, "", ...linkLines].join("\n"));
+    expect(control.text).not.toContain("Links Dispatch reads no more");
+
+    const noDocument = await readAnswer({
+      issue: "DSP-42",
+      verification_artifact_id: "",
+      checks: [],
+      unreadable_links,
+    });
+    expect(noDocument.text).toBe(
+      [
+        "DSP-42 has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.",
+        "",
+        ...linkLines,
+      ].join("\n")
+    );
+  });
+
   // A check CI proves prints as one line: its derived result, or why it has none, in the sentence
   // Dispatch wrote. Whether a pass of it stands follows, from the same pass_stands and in the same
   // words as a recorded check, so the gate reads both kinds alike. The pull-request body line

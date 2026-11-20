@@ -466,6 +466,12 @@ type issueCheckResults struct {
 	Checks                 []model.CheckBlock `json:"checks"`
 	Issue                  string             `json:"issue"`
 	VerificationArtifactID string             `json:"verification_artifact_id"`
+	// UnreadableLinks is each link of the issue to a pull request or an issue of a repository the
+	// App is not installed on, whose read GitHub refused, and which no pass reads again until a
+	// new link or an event owes the read again or the App's installations cover the repository
+	// (delivery.UnreadableLinksOf). It is read whether or not the issue holds a Verification
+	// document, and no check's answer turns on it.
+	UnreadableLinks []model.UnreadableLink `json:"unreadable_links,omitempty"`
 }
 
 // GET /api/v1/issues/{key}/results  (any authenticated caller)
@@ -504,7 +510,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
+	unreadable, err := delivery.UnreadableLinksOf(r.Context(), s.deps.Store.Pool, issueKey)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID, UnreadableLinks: unreadable}
 	if !held {
 		WriteJSON(w, http.StatusOK, body)
 		return

@@ -7,7 +7,12 @@ body: |-
     the create as at a link by hand, and the attribution takes a link in either form. Before,
     the link matched no pull request, owed no read, and the checks of the issue compared with
     nothing until someone linked the `/pull/<n>` URL by hand. An `/issues/<n>` link of a number
-    that is an issue costs one read of GitHub, which answers that no such pull request exists.
+    that is an issue costs one read of GitHub in a repository the App can read, and one absence
+    question that answers that no such pull request exists. In a repository the App is not
+    installed on, such a link, and a `/pull/<n>` link alike, costs one read: GitHub refuses it,
+    and no pass reads it again until the link is written again, an event of that pull request
+    arrives, or the App's installations come to cover the repository. The issue's results name
+    each such link in `unreadable_links`.
 time: 2026-11-19T20:36:28.000000000Z
 custom:
     Issue: pr4209

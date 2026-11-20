@@ -1356,6 +1356,16 @@ type HeadNotRead struct {
 	RefusedSince *time.Time `json:"refused_since,omitempty"`
 }
 
+// UnreadableLink is one link of an issue to a pull request or an issue of a repository that the
+// App is not installed on: a link Dispatch read GitHub for once, and GitHub refused the read
+// (RefusedAsAppNotInstalled). No pass reads it again until a new link or an event owes the read
+// again, or until the App's installations cover the repository. URL is the link as the issue
+// holds it, and RefusedSince the time of the first refusal.
+type UnreadableLink struct {
+	URL          string     `json:"url"`
+	RefusedSince *time.Time `json:"refused_since,omitempty"`
+}
+
 // IssueNotKnown is one pull request of the issue's repository whose answer is not known: its
 // facts name no issue that Dispatch holds, and its commit messages are not read. The check's
 // answer turns on it, because it can be the issue's own pull request.

@@ -175,12 +175,13 @@ func TestALinkByHandInARepositoryThatNoProjectMapsGetsItsHeadFromOneRead(t *test
 }
 
 // A person links a pull request of acme/hidden to an issue of acme/hidden, a repository that the
-// App is not installed on. GitHub refuses each read of it, so the read stays owed until a read
-// succeeds (R4 of the results lookup): after two passes the read is owed as a refusal, with
-// refused_as app_not_installed, read two times, and refused_since keeps the time of the first
-// refusal. The results route says that it cannot read the repository: check k1 compares with
-// nothing for repository_unreadable, and the recorded pass of k1 does not count (pass_stands
-// unknown). The test fails where a refused read of an owed pull request ends the owe.
+// App is not installed on. GitHub refuses the first read of it, so the read stays owed as a
+// refusal (R4 of the results lookup), with refused_as app_not_installed and refused_since the time
+// of that refusal, and is recorded as unreadable: the second pass does not read it again, so it is
+// read one time after two passes. The results route says that it cannot read the repository:
+// check k1 compares with nothing for repository_unreadable, and the recorded pass of k1 does not
+// count (pass_stands unknown). The test fails where a refused read of an owed pull request ends the
+// owe, and where a pass reads it again.
 func TestALinkByHandToAPullRequestThatGitHubRefusesStaysOwedAsARefusal(t *testing.T) {
 	handler, database, served, _ := readThroughGitHub(t, "acme/tools")
 	issue := issueInRepository(t, handler, "HIDE", "acme/hidden", "Linked where the App cannot read")
@@ -209,10 +210,10 @@ func TestALinkByHandToAPullRequestThatGitHubRefusesStaysOwedAsARefusal(t *testin
 		if pass == 1 && refusedSince != nil {
 			first = *refusedSince
 		}
-		if reason != "refusal" || reads != pass || refusedAs == nil || *refusedAs != model.RefusedAsAppNotInstalled ||
+		if reason != "refusal" || reads != 1 || refusedAs == nil || *refusedAs != model.RefusedAsAppNotInstalled ||
 			refusedSince == nil || !refusedSince.Equal(first) {
-			t.Fatalf("after pass %d, acme/hidden#40 is owed as %q, read %d times, refused as %v since %v; want a refusal read %d times, refused as %s since the first refusal %v",
-				pass, reason, reads, refusedAs, refusedSince, pass, model.RefusedAsAppNotInstalled, first)
+			t.Fatalf("after pass %d, acme/hidden#40 is owed as %q, read %d times, refused as %v since %v; want a refusal read one time, refused as %s since the first refusal %v",
+				pass, reason, reads, refusedAs, refusedSince, model.RefusedAsAppNotInstalled, first)
 		}
 	}
 	comparedNothing(t, readResults(t, handler, issue.Key), "k1", model.ReasonRepositoryUnreadable, model.PassStandsUnknown)
