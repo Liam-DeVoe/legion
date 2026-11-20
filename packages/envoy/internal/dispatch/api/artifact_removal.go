@@ -67,14 +67,14 @@ import (
 // runs, for the document's address (graphcensus.StateStaleLensesGone): its findings, its risks and
 // the lenses on those, those the person may not see among them, each written again as the store
 // holds it but for its state, keeping its cause, with one state tuple at the sentinel signed by the
-// person at the removal's time (spec v71 R5). The removal takes no person check of its own for
-// them: it is the person's already (routeScopes), and the cascade is part of the delete. It reads,
-// with the rest of what it reads before its first write, whether any lens stands on the document's
-// node, and runs the statement only where one does, so a document nothing stands on holds its
-// transaction id no longer than before. No lens stands on a block of the document, since a
-// document the removal takes holds no block, and the statement reads what it takes under the
-// issue's owner lock, which every writer of a lens, a finding or a risk takes first
-// (lockIssueOwner).
+// person at the removal's time (spec requirement r-proposed). The removal takes no person check of
+// its own for them: it is the person's already (routeScopes), and the cascade is part of the
+// delete. It reads, with the rest of what it reads before its first write, whether any lens stands
+// on the document's node, and runs the statement only where one does, so a document nothing stands
+// on holds its transaction id no longer than before. No lens stands on a block of the document,
+// since a document the removal takes holds no block, and the statement reads what it takes under
+// the issue's owner lock, which every writer of a lens, a finding or a risk takes first
+// (lockIssueOwner), and which the removal holds, so the statement takes no lock of its own.
 //
 // The document's node is addressed by its ref_key, which a later document of the same issue and
 // slug takes again: that document's create finds the node gone and states it live under its own
@@ -218,7 +218,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// Every lens on the document is stale from the delete on, since the row it recorded no longer
 	// stands at the address; each goes gone with all that stands under it, by the person who removed
 	// the document at the same time, through the statement the orphan sweep runs, in this
-	// transaction (spec v71 R5).
+	// transaction (spec requirement r-proposed).
 	if lensed {
 		if _, err := graphcensus.StateStaleLensesGone(r.Context(), tx, artifact.RefKey, removedAt, actor); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the lenses on the removed document %s gone: %w", artifact.ID, err))

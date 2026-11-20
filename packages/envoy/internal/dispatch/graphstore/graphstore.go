@@ -135,22 +135,22 @@ type Node struct {
 	Changed bool
 }
 
-// TakenGone answers nodes, as NodesBeneath read them, each to be written again gone by who at at,
-// as the state route's gone writes each node beneath the one it takes (api's writeNodeState): the
-// node as the store holds it but for its state, which the write moves (Restates false), keeping
-// the cause the store holds of it (KeepsCause), marked changed, and at the sentinel, so its write
-// states one state tuple at the sentinel signed by who. It sets them in place. Every writer that
-// takes a node's subtree gone beside a write of its own reads and writes it so: the orphan sweep
-// of a document node it states gone (graphcensus's StateOrphanedGone), and the statement that
-// takes every stale lens gone with all that stands under it (graphcensus's StateStaleLensesGone),
-// which the sweep and a document's removal (api's removeArtifact) run.
-func TakenGone(nodes []Node, at time.Time, who model.Actor) []Node {
+// AsStateWrite sets each of nodes, in place, to be written again at state by who at at, as a
+// request's write of a node's state writes it (api's writeNodeState): the node as the store holds
+// it but for its state, which the write moves (Restates false), keeping the cause the store holds
+// of it (KeepsCause), marked changed, and at the sentinel, so its write states one state tuple at
+// the sentinel signed by who. Every writer that moves a node's state, or takes a node's subtree
+// gone beside a write of its own, sets the nodes it read so: the state route and the settle
+// (writeNodeState, with what NodesBeneath reads beneath a node it takes gone), the orphan sweep of
+// a document node it states gone (graphcensus's StateOrphanedGone), and the statement that takes
+// every stale lens gone with all that stands under it (graphcensus's StateStaleLensesGone), which
+// the sweep and a document's removal (api's removeArtifact) run.
+func AsStateWrite(nodes []Node, state string, at time.Time, who model.Actor) {
 	for index := range nodes {
 		each := &nodes[index]
-		each.State, each.Restates, each.KeepsCause, each.Changed = StateGone, false, true, true
+		each.State, each.Restates, each.KeepsCause, each.Changed = state, false, true, true
 		each.MadeAt, each.MadeBy, each.SourceEvent = at, who, NoEvent
 	}
-	return nodes
 }
 
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is

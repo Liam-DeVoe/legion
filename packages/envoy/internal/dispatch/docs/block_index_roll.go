@@ -319,7 +319,8 @@ const objectPassBatches = 4
 
 // orphanedNodesSwept bounds the orphaned document nodes one tick states gone, each in a
 // transaction of its own (graphcensus's StateOrphanedGone); a tick that reads more leaves its debt
-// and is full.
+// and is full. It bounds those document nodes alone, and neither the nodes beneath each, which go
+// gone with it, nor the stale lenses the tick states gone after the sweep.
 const orphanedNodesSwept = 20
 
 // objectPassInterval is the longest a process of this build goes without finishing the object
@@ -373,11 +374,14 @@ var rollNow time.Time
 // It runs after the event read has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),
 // and each gone statement in its own, owner lock first too, so it holds no lock of the event
-// read's while it takes them. It writes at most objectPassBatches batches and states at most
-// orphanedNodesSwept nodes gone a tick, and a kind that fails holds back neither the other kinds
-// nor the sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass
-// that finishes clears, so no row is left without its node, no node without its row and no stale
-// lens live. A node the sweep leaves is logged with the reason.
+// read's while it takes them. Its pass writes at most objectPassBatches batches and its sweep
+// states at most orphanedNodesSwept orphaned document nodes gone a tick; neither bound covers what
+// stands beneath each orphan, which goes gone in the orphan's transaction whatever its size, nor
+// the stale lenses, each of which goes gone with its whole subtree in the one transaction the stale
+// sweep takes however many there are. A kind that fails holds back neither the other kinds nor the
+// sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass that
+// finishes clears, so no row is left without its node, no node without its row and no stale lens
+// live. A node the sweep leaves is logged with the reason.
 func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, owed *time.Time) (more bool, err error) {
 	if owed == nil {
 		return false, nil
@@ -404,13 +408,15 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 			tick.OrphansGone++
 		}
 	}
+	var staleLensesGone int
 	if err := pgx.BeginFunc(ctx, s.store.Pool, func(tx pgx.Tx) error {
-		gone, err := graphcensus.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
-		tick.StaleLensesGone = gone
+		var err error
+		staleLensesGone, err = graphcensus.StateStaleLensesGone(ctx, tx, "", time.Time{}, graphcensus.SweepActor)
 		return err
 	}); err != nil {
-		tick.StaleLensesGone = 0
 		failed = append(failed, fmt.Errorf("state the stale lenses gone: %w", err))
+	} else {
+		tick.StaleLensesGone = staleLensesGone
 	}
 	switch err := errors.Join(failed...); {
 	case err != nil:

@@ -605,13 +605,13 @@ func VisibleRow(alias, param string) string {
 }
 
 // VisibleGoneRow is the predicate over a `graph_nodes` row a read already holds that every read
-// answers as gone, for a reader the row's own kind admits but for that: its state is gone, or it
-// is a stale node of a standing kind (StaleSQL), and the comparison of its own kind
+// answers as gone (GoneOrStaleRow), for a reader the row's own kind admits but for that: its state
+// is gone, or it is a stale node of a standing kind (StaleSQL), and the comparison of its own kind
 // (authorIsOfRow) admits the reader as VisibleRow's does. The one read of it is a write's, which
 // refuses a write on a node it finds so 409 NODE_GONE (api's findWrittenNode), and answers a node
 // the reader may not see, gone or not, with the 404 every read answers it.
 func VisibleGoneRow(alias, param string) string {
-	return `(` + alias + `.state = '` + graphstore.StateGone + `' or ` + staleOfKindSQL(alias+`.kind`, alias+`.id`) + `) and ` +
+	return GoneOrStaleRow(alias) + ` and ` +
 		VisibilityMarker + `the row's own kind */` + visibleHeldRow(alias, authorIsOfRow(alias, param))
 }
 

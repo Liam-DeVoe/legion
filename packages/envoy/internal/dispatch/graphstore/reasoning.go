@@ -542,30 +542,32 @@ func queueLensArtifactIDs(b *store.WriteBatch, tuples []Tuple) error {
 
 // lensArtifactIDsStatement is queueLensArtifactIDs' statement, over the placements it binds as a
 // tuple append binds its tuples (tupleParams), one for each lens, in ascending id. A lens placed on
-// a document, or on a block of one - a block whose id is no finding's and no block of an ask, a
-// comment or a message - records the row the artifacts table holds, as the write runs, at the
-// address of that document: the node's id for a document, and for a block the address before the
-// `#` of the block's id, which is its own address, `<ref_key>#<block id>`. That row is the one whose
-// ref_key, the trigger's `<issue key>/<slug>`, `<project key>/<slug>` or `agent/<session>/<slug>`,
-// is that address (one probe of its unique index). It reads neither the row a node at the address
-// was written for, which may be a removed one's, nor the node a block stands under through its own
-// part_of. Where the lens's row holds another value than that one, the
+// a document, or on a block of one - a block whose id is no finding's (FindingIDSQL) and no block of
+// an ask, a comment or a message - records the row the artifacts table holds, as the write runs, at
+// the address of that document: the node's id for a document, and for a block the address before
+// the `#` of the block's id, which is its own address, `<ref_key>#<block id>`. That row is the one
+// whose ref_key, the trigger's `<issue key>/<slug>`, `<project key>/<slug>` or
+// `agent/<session>/<slug>`, is that address (one probe of its unique index). It reads neither the
+// row a node at the address was written for, which may be a removed one's, nor the node a block
+// stands under through its own part_of. Where the lens's row holds another value than that one, the
 // statement moves the row's attribute to it and appends its value tuple, at the placement's time,
 // writer and cause: the row's id where the lens stands on a document, and where it does not - a lens
 // moved off a document onto any other node, a finding of another lens, a block of an ask - the
 // retraction of the value it held, so the lens records none. A lens whose value is the one it holds
 // already states nothing. A lens placed on a document no row stands at states nothing either, and
-// the statement answers it, which refuses the write. It takes each lens's row `for no key update`,
-// in id order, before it moves any: the write's own node write holds the row of a lens it writes
-// already, and a move takes the lens's row here, after the rows the write took and before the
-// append, as the pointer check's lock of a lens does.
+// the statement answers it, which refuses the write. It takes no row lock of its own and reads each
+// lens's row and the artifacts row plainly: every writer that places a lens takes the issue's owner
+// lock first (api's lockIssueOwner, which the reasoning routes' write and the pre-mortem conversion
+// take before they write), and that lock serializes the placements of a lens, so no other placement
+// moves a lens's row between this statement's read of it and its update.
 var lensArtifactIDsStatement = `
 	with placed as (
 		select placement.from_id as lens, placement.to_kind, placement.to_id, placement.at, placement.who,
 		       ` + causeOf("placement.source_event") + ` as source_event,
 		       (placement.to_kind = '` + KindArtifact + `'
 		        or placement.to_kind = '` + blockKind + `'
-		           and split_part(placement.to_id, '/', 1) not in ('` + KindLens + `', '` + KindAsk + `', '` + KindComment + `', '` + KindMessage + `')) as on_document
+		           and not ` + FindingIDSQL("placement.to_id") + `
+		           and split_part(placement.to_id, '/', 1) not in ('` + KindAsk + `', '` + KindComment + `', '` + KindMessage + `')) as on_document
 		from unnest(` + tupleArrays(1) + `) as placement (` + tupleWriteColumns + `)
 	),
 	placements as (
@@ -576,8 +578,6 @@ var lensArtifactIDsStatement = `
 		       end as standing_row
 		from placed
 		join graph_nodes held on held.kind = '` + KindLens + `' and held.id = placed.lens
-		order by placed.lens
-		for no key update of held
 	),
 	changed as (
 		select * from placements

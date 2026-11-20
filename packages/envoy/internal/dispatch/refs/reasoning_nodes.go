@@ -60,34 +60,55 @@ func init() { standingKinds = slices.Sorted(maps.Keys(standingText)) }
 // predicate's to say where a read answers them.
 func StandingIssueSQL(kindExpr, idExpr string) string {
 	address := graphstore.AddressKindSQL(`standing.kind`, `standing.id`)
-	return `(with recursive standing (kind, id) as (
-			select (` + kindExpr + `)::text, (` + idExpr + `)::text
-			union
-			select placed.to_kind, placed.to_id
-			from standing
-			cross join lateral (
-				` + CurrentFarEndSQL(`newest.to_kind, newest.to_id`, storedKindSQL(`standing.kind`), `standing.id`, graphstore.TuplePartOf) + `
-			) placed
-			where ` + address + ` in (` + quotedKinds(standingKinds) + `)
-		)
+	return `(` + standingWalkSQL(`standing`, kindExpr, idExpr, nil) + `
 		select ` + issueOfSQL(`standing.kind`, `standing.id`) + `
 		from standing
 		where ` + address + ` not in (` + quotedKinds(standingKinds) + `)
 		limit 1)`
 }
 
-// StaleSQL is the one test of a stale node (spec v71 R5), true of the node of a standing kind
-// whose kind and store id are the SQL kindExpr and idExpr: one whose part_of walk, up through
-// every node of a standing kind as StandingIssueSQL walks it, reaches a stale lens, the node itself
-// among them. A lens is stale where it records a document's row (graphstore.AttributeArtifactID)
-// and no row with that id stands at the address of the node it stands on - the document itself, or
-// the document whose block it is, `<ref_key>#<block id>`: that row is gone, or another row stands
-// at the address. So a lens on a removed document, the findings under it, the risks under it and
-// every lens on one of those are stale, whatever build removed the document and whatever build made
-// a row at its address since, since a row's id never moves and no build gives a new row an old
-// one's. A lens on a retired document, or on a block a version removed, is not stale: the row
-// stands. A lens that records no row - one on no document, or one the store holds from before the
-// rule - is not stale either, and neither is a node of any other kind, whose walk stops at itself.
+// walkColumn is one column the part_of walk of standingWalkSQL carries beside each node's kind and
+// id: its name, its value at the node the walk starts at, and its value at each node a step
+// reaches, written over the walk's row of the node the step leaves.
+type walkColumn struct{ name, start, step string }
+
+// standingWalkSQL is the recursive common table expression name (kind, id), with carried's column
+// after them where carried is not nil, of the part_of walk StandingIssueSQL and StaleSQL both walk:
+// it starts at the node whose kind and store id are the SQL kindExpr and idExpr, and each step reads
+// the far end of the current part_of tuple of a node it holds of a standing kind
+// (CurrentFarEndSQL), under the kind the store keys that node by, so it walks up through every node
+// of those kinds to the first node of any other kind. Its `union` drops a row it holds already, so a
+// chain a move closed into a loop ends the walk rather than reading forever.
+func standingWalkSQL(name, kindExpr, idExpr string, carried *walkColumn) string {
+	columns, start, step := `kind, id`, ``, ``
+	if carried != nil {
+		columns, start, step = columns+`, `+carried.name, `, `+carried.start, `, `+carried.step
+	}
+	return `with recursive ` + name + ` (` + columns + `) as (
+			select (` + kindExpr + `)::text, (` + idExpr + `)::text` + start + `
+			union
+			select placed.to_kind, placed.to_id` + step + `
+			from ` + name + `
+			cross join lateral (
+				` + CurrentFarEndSQL(`newest.to_kind, newest.to_id`, storedKindSQL(name+`.kind`), name+`.id`, graphstore.TuplePartOf) + `
+			) placed
+			where ` + graphstore.AddressKindSQL(name+`.kind`, name+`.id`) + ` in (` + quotedKinds(standingKinds) + `)
+		)`
+}
+
+// StaleSQL is the one test of a stale node (spec requirement r-proposed), true of the node of a
+// standing kind whose kind and store id are the SQL kindExpr and idExpr: one whose part_of walk, up
+// through every node of a standing kind as StandingIssueSQL walks it (standingWalkSQL), reaches a
+// stale lens, the node itself among them. A lens is stale where it records a document's row
+// (graphstore.AttributeArtifactID) and no row with that id stands at the address of the node it
+// stands on - the document itself, or the document whose block it is, `<ref_key>#<block id>`: that
+// row is gone, or another row stands at the address. So a lens on a removed document, the findings
+// under it, the risks under it and every lens on one of those are stale, whatever build removed the
+// document and whatever build made a row at its address since, since a row's id never moves and no
+// build gives a new row an old one's. A lens on a retired document, or on a block a version
+// removed, is not stale: the row stands. A lens that records no row - one on no document, or one
+// the store holds from before the rule - is not stale either, and neither is a node of any other
+// kind, whose walk stops at itself.
 //
 // Only the lens at the foot of the walk, the one that stands on no node of a standing kind, can
 // record a row, so the test is of that one: the walk carries each node's child where the child is
@@ -104,20 +125,10 @@ func StandingIssueSQL(kindExpr, idExpr string) string {
 // hold to not gone, so a stale node answers as a gone one does: 404 NOT_FOUND by its address, as an
 // address nobody holds answers, and in no list, chain or count.
 func StaleSQL(kindExpr, idExpr string) string {
-	walked := graphstore.AddressKindSQL(`stale_walk.kind`, `stale_walk.id`)
 	foot := graphstore.AddressKindSQL(`stale_foot.kind`, `stale_foot.id`)
-	standing := quotedKinds(standingKinds)
-	return `exists (with recursive stale_walk (kind, id, below) as (
-			select (` + kindExpr + `)::text, (` + idExpr + `)::text, null::text
-			union
-			select placed.to_kind, placed.to_id,
-			       case when stale_walk.kind = '` + graphstore.KindLens + `' then stale_walk.id end
-			from stale_walk
-			cross join lateral (
-				` + CurrentFarEndSQL(`newest.to_kind, newest.to_id`, storedKindSQL(`stale_walk.kind`), `stale_walk.id`, graphstore.TuplePartOf) + `
-			) placed
-			where ` + walked + ` in (` + standing + `)
-		)
+	below := walkColumn{name: `below`, start: `null::text`,
+		step: `case when stale_walk.kind = '` + graphstore.KindLens + `' then stale_walk.id end`}
+	return `exists (` + standingWalkSQL(`stale_walk`, kindExpr, idExpr, &below) + `
 		select 1 from stale_walk stale_foot
 		cross join lateral (
 			select stale_lens.attributes->>'` + graphstore.AttributeArtifactID + `' as recorded
@@ -125,7 +136,7 @@ func StaleSQL(kindExpr, idExpr string) string {
 			where stale_lens.kind = '` + graphstore.KindLens + `' and stale_lens.id = stale_foot.below
 			offset 0
 		) stale_lens
-		where ` + foot + ` not in (` + standing + `)
+		where ` + foot + ` not in (` + quotedKinds(standingKinds) + `)
 		  and stale_lens.recorded is not null
 		  and (select stale_row.id::text from artifacts stale_row
 		       where stale_row.ref_key = split_part(stale_foot.id, '#', 1)) is distinct from stale_lens.recorded)`
@@ -138,6 +149,15 @@ func StaleSQL(kindExpr, idExpr string) string {
 func staleOfKindSQL(kindExpr, idExpr string) string {
 	return `(case when ` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` + quotedKinds(standingKinds) + `)
 		then ` + StaleSQL(kindExpr, idExpr) + ` else false end)`
+}
+
+// GoneOrStaleRow is whether the `graph_nodes` row a read holds aliased alias is one every read
+// answers as gone: its state is gone, or it is a stale node of a standing kind (staleOfKindSQL,
+// which reads nothing for a row of any other kind). The predicate of a gone row a reader may see
+// binds it (VisibleGoneRow), and so does a write's test of whether it writes on a gone node (api's
+// storedGone).
+func GoneOrStaleRow(alias string) string {
+	return `(` + alias + `.state = '` + graphstore.StateGone + `' or ` + staleOfKindSQL(alias+`.kind`, alias+`.id`) + `)`
 }
 
 // notStaleOfLiteralKind is StaleSQL negated and opened with ` and `, over the node of kind whose
@@ -312,7 +332,8 @@ type placedNode struct {
 // document's block (block_id), and the version of the document or the revision of the item a node
 // standing on it names it at (version), which pinnedParentColumns selects, and no row for any
 // other node. For a node standing on it, a lens on it among them, that node is history and not a
-// node taken gone, as an anchored comment on a removed paragraph keeps its place (spec v59 R5):
+// node taken gone, as an anchored comment on a removed paragraph keeps its place (spec requirement
+// r-proposed):
 //
 //   - A block of a document that no current version holds (no document_blocks row) is named at
 //     the last version that held it: the latest version a block-aware build indexed below the
@@ -333,11 +354,8 @@ func pinnedParentSQL(kindExpr, idExpr string) string {
 	block := `substr(` + idExpr + `, length(pinned_document.ref_key) + 2)`
 	last := `(select max(last_version.number) from artifact_versions last_version where last_version.artifact_id = pinned_document.id)`
 	var items strings.Builder
-	for _, item := range itemKinds {
+	for _, item := range revisedItemKinds() {
 		tables, _ := item.tables()
-		if !tables.revisions() {
-			continue
-		}
 		items.WriteString(`
 		union all
 		select null::uuid, null::text, null::text, null::text, null::text, null::text, null::boolean,
@@ -348,9 +366,7 @@ func pinnedParentSQL(kindExpr, idExpr string) string {
 		left join issues pinned_issue on pinned_issue.key = pinned_item.issue_key
 		left join artifacts pinned_on on pinned_on.id = pinned_item.artifact_id
 		cross join lateral (
-			select max(removal.revision) as revision from ` + tables.texts + ` removal
-			where removal.` + tables.item + ` = pinned_item_block.` + tables.item + ` and removal.block_id = pinned_item_block.block_id
-				and removal.text is null
+			select ` + itemRemovedAtSQL(tables, `pinned_item_block.`+tables.item, `pinned_item_block.block_id`) + ` as revision
 		) pinned_removal
 		where ` + kindExpr + ` in ('` + BlockNodeKind + `', '` + item.BlockKind() + `')
 			and pinned_item_block.node_id = ` + idExpr + ` and pinned_item_block.position is null
@@ -373,6 +389,31 @@ func pinnedParentSQL(kindExpr, idExpr string) string {
 			and pinned_document.ref_key = case when ` + kindExpr + ` = '` + graphstore.KindArtifact + `' then ` + idExpr + `
 				else split_part(` + idExpr + `, '#', 1) end
 			and pinned_at.version is not null` + items.String()
+}
+
+// revisedItemKinds is each item kind whose revisions are recorded (itemTables.revisions), in
+// itemKinds' order: a comment and an ask, whose revisions remove blocks, which pinnedParentSQL
+// names at the revision that last held them. A message records no revisions.
+func revisedItemKinds() []ItemKind {
+	var revised []ItemKind
+	for _, item := range itemKinds {
+		if tables, _ := item.tables(); tables.revisions() {
+			revised = append(revised, item)
+		}
+	}
+	return revised
+}
+
+// PinnedKinds is every kind of node, as a part_of tuple names it, that pinnedParentSQL reads, and
+// so PinnedParent can name at a version or a revision: a document and its block, and the block of
+// each item kind whose revisions are recorded (revisedItemKinds). For a node of any other kind
+// PinnedParent answers nil.
+func PinnedKinds() []string {
+	kinds := []string{graphstore.KindArtifact, BlockNodeKind}
+	for _, item := range revisedItemKinds() {
+		kinds = append(kinds, item.BlockKind())
+	}
+	return kinds
 }
 
 // pinnedParentColumns selects, from the row pinnedParentSQL reads aliased alias, what
@@ -473,8 +514,8 @@ func PinnedParent(ctx context.Context, q Queryer, kind, id string) (*model.NodeP
 // Its parent is that far end, as every loader's is the node it belongs to. A block of a document
 // that a version removed, a retired document and a block of one, and a block of a comment or a
 // part of an ask that a revision of its item removed, are history for the node standing on them,
-// and no node taken gone (spec v59 R5): each is named at the version of its document or the
-// revision of its item that last held it, from the columns of the same statement
+// and no node taken gone (spec requirement r-proposed): each is named at the version of its
+// document or the revision of its item that last held it, from the columns of the same statement
 // (pinnedParentSQL), with that version as the node's ParentVersion, since no loader answers a
 // block no current version or revision holds, and the address of a retired document read by its
 // ref_key answers its issue (loadArtifactNodes). So no lens on what a version, a retirement or a

@@ -261,7 +261,7 @@ func ItemBlockAt(ctx context.Context, q Queryer, kind ItemKind, itemID, blockID 
 		select coalesce((select s.revision from `+tables.state+` s where s.`+tables.item+` = $1::uuid), 0),
 		       (select t.text from `+tables.texts+` t where t.`+tables.item+` = $1::uuid and t.block_id = $2 and t.revision <= $3::bigint
 		        order by t.revision desc limit 1),
-		       (select max(t.revision) from `+tables.texts+` t where t.`+tables.item+` = $1::uuid and t.block_id = $2 and t.text is null)
+		       `+itemRemovedAtSQL(tables, "$1::uuid", "$2")+`
 	`, itemID, blockID, revision).Scan(&read.Current, &read.Text, &removed); err != nil {
 		return ItemBlockRevision{}, fmt.Errorf("read block %q of %s %s at revision %d: %w", blockID, string(kind), itemID, revision, err)
 	}
@@ -269,6 +269,15 @@ func ItemBlockAt(ctx context.Context, q Queryer, kind ItemKind, itemID, blockID 
 		read.RemovedRevision = *removed
 	}
 	return read, nil
+}
+
+// itemRemovedAtSQL is the latest revision of the item whose uuid is the SQL item that recorded its
+// block block removed, over the kind's tables, as a scalar expression over the SQL item and block,
+// null where none did: ItemBlockRevision's RemovedRevision, and the revision above the one a lens on
+// a block no current revision holds names it at (pinnedParentSQL), as removedAtSQL is a document's.
+func itemRemovedAtSQL(tables itemTables, item, block string) string {
+	return `(select max(removal.revision) from ` + tables.texts + ` removal
+		where removal.` + tables.item + ` = ` + item + ` and removal.block_id = ` + block + ` and removal.text is null)`
 }
 
 // RemovedItemBlockNode is the node of block nodeID of an item of kind — a block of a comment, a

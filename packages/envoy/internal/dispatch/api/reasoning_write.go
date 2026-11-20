@@ -259,10 +259,11 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 	// A lens placed on a document no row stands at, as the store's write reads it under the issue's
 	// owner lock (graphstore.NoDocumentRowError) - one a removal took while this write waited for
 	// that lock - is a write under a gone node: 409 NODE_GONE, naming the node it is placed on as
-	// refuseGoneNode names a gone parent: a document by its ref_key, a block by its own address.
+	// refuseGoneNode names a gone parent (goneEndError): a document by its ref_key, a block by its
+	// own address.
 	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 		if noRow := (*graphstore.NoDocumentRowError)(nil); errors.As(err, &noRow) {
-			return nil, nodeGone(graphstore.AddressKind(noRow.ToKind, noRow.ToID), noRow.ToID)
+			return nil, goneEndError(storedEnd{kind: noRow.ToKind, id: noRow.ToID})
 		}
 		return nil, err
 	}
@@ -295,16 +296,22 @@ func refuseGoneParents(ctx context.Context, tx pgx.Tx, nodes []reasoningNode) er
 	return nil
 }
 
-// refuseGoneNode is the 409 NODE_GONE (nodeGone) of a write on the node the store keys as end,
-// where its row is at gone or the node is stale (storedGone), naming it by its dispatch:// address
-// where it is a lens, a finding, a risk or a constraint, and by its store id otherwise; nil where
-// the row is at any other state and the node is not stale, or the store holds no row of it, which
-// every read answers live.
+// refuseGoneNode is the 409 NODE_GONE of a write on the node the store keys as end, where its row
+// is at gone or the node is stale (storedGone), naming it as goneEndError does; nil where the row
+// is at any other state and the node is not stale, or the store holds no row of it, which every
+// read answers live.
 func refuseGoneNode(ctx context.Context, tx pgx.Tx, end storedEnd) error {
 	gone, err := storedGone(ctx, tx, end)
 	if err != nil || !gone {
 		return err
 	}
+	return goneEndError(end)
+}
+
+// goneEndError is the 409 NODE_GONE (nodeGone) of a write on the node the store keys as end, which
+// it holds gone, naming it by its dispatch:// address where it is a lens, a finding, a risk or a
+// constraint, and by its store id otherwise.
+func goneEndError(end storedEnd) error {
 	kind, address := graphstore.AddressKind(end.kind, end.id), end.id
 	if slices.Contains(refs.StandingKinds(), kind) {
 		address = refs.StoreRef(kind, end.id)
@@ -334,17 +341,17 @@ func refuseGoneFarEnds(ctx context.Context, tx pgx.Tx, issue string, ends []name
 	return nil
 }
 
-// storedGoneQuery is whether the row of the node whose stored kind and id are $1 and $2 is at the
-// state $3 (graphstore.StateGone), or the node is stale (refs.StaleSQL), which every read answers
-// as gone, and no row where the store holds none.
-var storedGoneQuery = `select held.state = $3 or ` + refs.StaleSQL(`held.kind`, `held.id`) + `
+// storedGoneQuery is whether the row of the node whose stored kind and id are $1 and $2 is at gone,
+// or the node is stale, which every read answers as gone (refs.GoneOrStaleRow), and no row where
+// the store holds none.
+var storedGoneQuery = `select ` + refs.GoneOrStaleRow(`held`) + `
 	from graph_nodes held where held.kind = $1 and held.id = $2`
 
 // storedGone is whether the store holds the node it keys as end at gone, or stale
 // (storedGoneQuery), false where it holds no row of it.
 func storedGone(ctx context.Context, tx pgx.Tx, end storedEnd) (bool, error) {
 	var gone bool
-	err := tx.QueryRow(ctx, storedGoneQuery, end.kind, end.id, graphstore.StateGone).Scan(&gone)
+	err := tx.QueryRow(ctx, storedGoneQuery, end.kind, end.id).Scan(&gone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -476,20 +483,20 @@ var errNodeNotHeld = errors.New("the store holds no row of the node")
 // row of is errNodeNotHeld, and a node at gone, or a stale one (storedGone), 409 NODE_GONE
 // (nodeGone), since no write writes on a gone node, so a write the route found the node live for
 // and that queued behind its gone is refused too. It holds the node to the route's rule and writes
-// it again as the store holds it but for its state: a plain node write, not one that restates the
-// node (graphstore.Node.Restates), dated and signed by the request and at graphstore.NoEvent, as
-// every write of these routes is. So graphstore.Write moves the row's state and appends the one
-// state tuple that says so, whose writer is who: the row and the log agree, and every read of the
-// node answers the new state at once. The tuple is at the sentinel, which no repeat key drops, so a
-// node moved proposed, live and proposed again holds three state tuples. The row keeps the cause
-// the store holds of it
-// (graphstore.Node.KeepsCause): a write of the state is no cause of the node's other facts, and a
-// block row put at the sentinel would take the event of its document's next version, whose index
-// pass moves its cause onto every block row still at the sentinel, whether or not that version
-// changed the block. made_at and made_by stay the row's own, the store's rule for a node written
-// again, so the node's author is still the writer of its first write. A write of the state the
-// node holds moves nothing and appends nothing. A write that moves it marks the node changed
-// (graphstore.Node's Changed), so one made for a run names the node as changed by that run.
+// it again as the store holds it but for its state (graphstore.AsStateWrite): a plain node write,
+// not one that restates the node (graphstore.Node.Restates), dated and signed by the request and
+// at graphstore.NoEvent, as every write of these routes is. So graphstore.Write moves the row's
+// state and appends the one state tuple that says so, whose writer is who: the row and the log
+// agree, and every read of the node answers the new state at once. The tuple is at the sentinel,
+// which no repeat key drops, so a node moved proposed, live and proposed again holds three state
+// tuples. The row keeps the cause the store holds of it (graphstore.Node.KeepsCause): a write of
+// the state is no cause of the node's other facts, and a block row put at the sentinel would take
+// the event of its document's next version, whose index pass moves its cause onto every block row
+// still at the sentinel, whether or not that version changed the block. made_at and made_by stay
+// the row's own, the store's rule for a node written again, so the node's author is still the
+// writer of its first write. A write of the state the node holds moves nothing and appends
+// nothing. A write that moves it marks the node changed (graphstore.Node's Changed), so one made
+// for a run names the node as changed by that run.
 //
 // The write that takes a node to gone - a lens, a finding, a risk or a constraint, the route's
 // only nodes that take gone (stateRefusal) - takes its whole current part_of subtree that is not
@@ -497,9 +504,9 @@ var errNodeNotHeld = errors.New("the store holds no row of the node")
 // whatever its kind, those the caller may not see among them: a finding or a risk under a lens, a
 // lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each
 // (graphstore.NodesBeneath, one statement however deep the tree). So no read by its own address
-// answers a node under a gone one live with nothing to stand on (spec v59 R5). The route lets a
-// person alone make that move (goneNotPermitted), so what stands under the node is read for the
-// write and for no refusal, and tells the caller nothing.
+// answers a node under a gone one live with nothing to stand on (spec requirement r-proposed). The
+// route lets a person alone make that move (goneNotPermitted), so what stands under the node is
+// read for the write and for no refusal, and tells the caller nothing.
 //
 // It answers the node as the write leaves it and the state it held before.
 func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graphstore.Node, string, error) {
@@ -512,12 +519,10 @@ func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graph
 		return graphstore.Node{}, "", err
 	case !held:
 		return graphstore.Node{}, "", errNodeNotHeld
-	case node.State == graphstore.StateGone:
-		return graphstore.Node{}, "", nodeGone(write.target.kind, write.target.address)
 	}
-	if stale, err := storedGone(ctx, tx, write.target.end); err != nil {
+	if gone, err := storedGone(ctx, tx, write.target.end); err != nil {
 		return graphstore.Node{}, "", err
-	} else if stale {
+	} else if gone {
 		return graphstore.Node{}, "", nodeGone(write.target.kind, write.target.address)
 	}
 	if err := write.allowed(node); err != nil {
@@ -535,11 +540,7 @@ func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graph
 		}
 		moved = append(moved, beneath...)
 	}
-	for index := range moved {
-		each := &moved[index]
-		each.State, each.Restates, each.KeepsCause, each.Changed = write.state, false, true, true
-		each.MadeAt, each.MadeBy, each.SourceEvent = write.at, write.who, graphstore.NoEvent
-	}
+	graphstore.AsStateWrite(moved, write.state, write.at, write.who)
 	if err := graphstore.Write(ctx, tx, moved, nil); err != nil {
 		return graphstore.Node{}, "", err
 	}

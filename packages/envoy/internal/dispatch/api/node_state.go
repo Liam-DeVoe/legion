@@ -13,15 +13,15 @@ package api
 // 409 NODE_GONE, naming it (nodeGone), the state route's and the settle's, and the reasoning
 // routes' write of a lens, a finding, a risk or a pointer on it (findWrittenNode). The write that
 // takes a node to gone takes its whole part_of subtree to gone with it, at every depth and of
-// every kind, those nodes the caller may not see among them (writeNodeState, spec v59 R5), so that
-// move is a person's alone on a lens, a finding, a risk and a constraint alike, whatever stands
-// under the node (goneNotPermitted). settled goes through the settle alone, which a person makes on
-// any proposal and any other caller on a proposal its own credential wrote (maySettle). The state
-// route holds every other move of a node into or out of proposed or settled to that one rule too,
-// and refuses any other caller 403 STATE_NOT_PERMITTED: a move out of settled undoes what a settle
-// decided, a move out of proposed ends a proposal and counts a proposed check or plan task as
-// serving its requirement as a settle would, and a move into proposed takes a requirement's gaps
-// out of the coverage read and the approval request. Both routes share one body
+// every kind, those nodes the caller may not see among them (writeNodeState, spec requirement
+// r-proposed), so that move is a person's alone on a lens, a finding, a risk and a constraint
+// alike, whatever stands under the node (goneNotPermitted). settled goes through the settle alone,
+// which a person makes on any proposal and any other caller on a proposal its own credential wrote
+// (maySettle). The state route holds every other move of a node into or out of proposed or settled
+// to that one rule too, and refuses any other caller 403 STATE_NOT_PERMITTED: a move out of settled
+// undoes what a settle decided, a move out of proposed ends a proposal and counts a proposed check
+// or plan task as serving its requirement as a settle would, and a move into proposed takes a
+// requirement's gaps out of the coverage read and the approval request. Both routes share one body
 // (writeNodeStateAs), which records one writer for one person, and write through writeNodeState,
 // at graphstore.NoEvent: no event is appended and no delivery is sent, as for every node of these
 // kinds (reasoning_write.go), and the reads answer the new state at once, since every one of them
@@ -87,12 +87,12 @@ func nodeGone(kind, address string) error {
 
 // goneNotPermitted is the 403 STATE_NOT_PERMITTED of a move of target - a lens, a finding, a risk
 // or a constraint, the nodes the state route takes to gone (stateRefusal) - into gone by a caller
-// who is no person (spec requirement r-proposed, spec v59 R5). That move takes the node's whole
-// part_of subtree to gone with it, those nodes the caller may not see among them, so it is a
-// person's alone: a rule that read what stands under the node would tell the caller what stands
-// there. So the refusal reads nothing under the node and names the node alone, in the same words
-// whatever stands under it, and the node's own author is refused it as every other caller is; an
-// agent marks a node it wrote overtaken instead.
+// who is no person (spec requirement r-proposed). That move takes the node's whole part_of subtree
+// to gone with it, those nodes the caller may not see among them, so it is a person's alone: a
+// rule that read what stands under the node would tell the caller what stands there. So the
+// refusal reads nothing under the node and names the node alone, in the same words whatever stands
+// under it, and the node's own author is refused it as every other caller is; an agent marks a
+// node it wrote overtaken instead.
 func goneNotPermitted(target stateTarget) error {
 	return errorf(http.StatusForbidden, codeStateNotPermitted,
 		"this credential may not move the %s %s to gone: a person alone takes a lens, a finding, a risk or a constraint to gone, with everything that stands under it, and its author marks it overtaken instead",
