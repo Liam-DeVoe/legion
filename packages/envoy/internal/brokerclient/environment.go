@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The variables every program that holds one of these identities reads, so `agent-secrets`, its
@@ -86,24 +88,39 @@ func TradeSession(getenv func(string) string, own string) string {
 	return strings.TrimSpace(getenv(SessionVar))
 }
 
-// TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, in the
-// grammar the broker reads (oauthwire.ParseProjects), sorted and each once; nil when it is blank.
-// A value that is no list is an error naming the variable, never a list quietly cut short. It is
-// the declaration a Go trade naming its projects reads them through; no Go trade of this release
-// calls it. The TypeScript client reads the same variable the same way
-// (packages/broker-client/src/environment.ts, tradeProjects).
+// TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, read by
+// ParseProjectsSetting. It is the declaration a Go trade naming its projects reads them through;
+// no Go trade of this release calls it. The TypeScript client reads the same variable the same
+// way (packages/broker-client/src/environment.ts, tradeProjects).
 func TradeProjects(getenv func(string) string) ([]string, error) {
-	projects, err := oauthwire.ParseProjects(getenv(ProjectsVar))
+	return ParseProjectsSetting(ProjectsVar, getenv(ProjectsVar))
+}
+
+// ParseProjectsSetting is the projects raw names, in the grammar the broker reads
+// (oauthwire.ParseProjects), sorted and each once; nil when it is blank. setting is where raw came
+// from (ProjectsVar, or a flag such as --projects), which a refusal names (ProjectsRefusal).
+func ParseProjectsSetting(setting, raw string) ([]string, error) {
+	projects, err := oauthwire.ParseProjects(raw)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ProjectsVar, err)
+		return nil, ProjectsRefusal(setting)
 	}
 	return projects, nil
+}
+
+// ProjectsRefusal is the error for a projects setting that is no list: it names the setting and
+// the rule, never the value, and is never a list quietly cut short. A value the setting cannot
+// hold is where a credential pasted into the wrong place shows up, and oauthwire's own errors
+// quote the key they refuse. The helper's check of a register's projects says the same words.
+func ProjectsRefusal(setting string) error {
+	return fmt.Errorf("%s is not a list of project keys: at most %d keys, separated by white space, each named once and each %s",
+		setting, oauthwire.MaxProjects, contracts.ProjectKeyRule)
 }
 
 // MachineIdentity is the identity IdentityVar names, or nil when it names none, which is a
 // machine that trades nothing and is no error. A named identity whose own variables are missing
 // is an error naming each of them, since a deployment that asked for one and gave it nothing has
-// a mistake in it.
+// a mistake in it. A kind it does not know is an error naming the variable and the kinds it
+// takes, and not the value, which is where a credential pasted into the wrong variable shows up.
 func MachineIdentity(getenv func(string) string) (Source, error) {
 	kind := strings.TrimSpace(getenv(IdentityVar))
 	switch kind {
@@ -143,14 +160,16 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 			TokenAudience: audience, HTTP: HTTPClient(),
 		}, nil
 	default:
-		return nil, fmt.Errorf("%s=%q names no identity this machine can prove; it takes %s, %s or %s",
-			IdentityVar, kind, IdentityKubernetes, IdentityMetadata, IdentityPool)
+		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s or %s",
+			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool)
 	}
 }
 
 // SignInFlow is the device-flow client a person signs in with, or nil when the deployment
 // configures none. The client secret is read from its file here, so a refusal names the file
-// rather than failing at the first sign-in.
+// rather than failing at the first sign-in; it names the file by its variable, with the system's
+// reason alone (redact.File), and never its path, which for a person who pasted the secret itself
+// into the variable is the secret.
 func SignInFlow(getenv func(string) string) (*DeviceFlow, error) {
 	clientID := strings.TrimSpace(getenv(SignInClientIDVar))
 	secretFile := strings.TrimSpace(getenv(SignInClientSecretFileVar))
@@ -163,7 +182,7 @@ func SignInFlow(getenv func(string) string) (*DeviceFlow, error) {
 	}
 	secret, err := os.ReadFile(secretFile)
 	if err != nil {
-		return nil, fmt.Errorf("read the sign-in client's secret (%s): %w", SignInClientSecretFileVar, err)
+		return nil, fmt.Errorf("read the sign-in client's secret from the file %s names: %w", SignInClientSecretFileVar, redact.File(err))
 	}
 	issuer := strings.TrimSpace(getenv(SignInIssuerVar))
 	if issuer == "" {

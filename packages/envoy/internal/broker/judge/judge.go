@@ -14,14 +14,17 @@
 // the session has had withheld from it, and whether the request belongs to a private project —
 // and stops at the first that fails. Two of them refuse the request outright, since no grant could
 // follow: the policy now denies a key, or a key is withheld from the session. Every other failure
-// hands the request over; a private project's request is always a person's, since the judge's own
-// token names no person and may see no private project. A run whose checks pass reads what the
-// reason points at in Dispatch — the issue it names and the ask it cites — as data, and, if the
-// machine still shows the request pending (Runner.stillPending), puts it to one model through
+// hands the request over. The judge never grants a private project's request, since its own token
+// names no person and may see no private project: the project check hands such a request to its
+// person, and the grant asks again (requests.Machine.decisionFacts). The refusal's own write asks
+// Dispatch nothing, so it stands whatever project the request belongs to; the checks that lead to
+// a refusal read Dispatch as every check does. A run whose checks pass reads what the reason
+// points at in Dispatch — the issue it names and the ask it cites — as data, and, if the machine
+// still shows the request pending (Runner.stillPending), puts it to one model through
 // packages/envoy/agentloop, with the guidance of each key it decides as the instruction to follow
-// and everything an agent wrote as data to judge (D15). Grant is written with the approval
-// itself, in one transaction, and deny with the refusal itself; a model that gives no verdict
-// hands the request over.
+// and everything an agent wrote as data to judge (D15). Grant is written with the approval itself,
+// in one transaction, and deny with the refusal itself; a model that gives no verdict hands the
+// request over.
 //
 // Nothing a run does is on a caller's path. A run that goes past its budget, and a broker that
 // stops serving under one, write nothing at all, and the hold then runs out, which hands the
@@ -173,7 +176,9 @@ type Requests interface {
 	// no verdict, and an approval the state machine then refused or could not make. It answers
 	// what it did: for a row saying an approval was not applied, nothing at all when that
 	// approval's own row is there (its COMMIT applied and only the answer was lost), and applied
-	// requests.AppliedUnknown when that could not be read.
+	// requests.AppliedUnknown when that could not be read. That last row ends no hold: the
+	// approval it could not read may still hold the request's row, so the hold runs out by
+	// itself (requests.JudgeHold) and only then is the request its person's.
 	LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (requests.JudgedWrite, error)
 
 	// DenyJudged ends a request the judge holds as the judge's refusal: the denial, why as

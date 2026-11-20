@@ -403,7 +403,7 @@ EOF
 fake "$fakes/curl" <<'EOF'
 printf 'curl %s\n' "$*" >>"$state/curl.log"
 scenario="$(cat "$state/scenario")"
-url="" data="" out="" proxy="" proof="" authorization=""
+url="" data="" out="" proxy="" proxyuser="" proof="" authorization=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -d | --data | --data-raw) data="$2"; shift 2 ;;
@@ -422,6 +422,18 @@ while [ "$#" -gt 0 ]; do
       esac
       shift 2
       ;;
+    -K | --config)
+      # curl reads options from the file -K names; the driver gives it proxy-user alone.
+      while IFS= read -r line; do
+        case "$line" in
+          'proxy-user = "'*'"')
+            proxyuser="${line#proxy-user = \"}"
+            proxyuser="${proxyuser%\"}"
+            ;;
+        esac
+      done <"$2"
+      shift 2
+      ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
@@ -430,7 +442,8 @@ if [ -n "$proxy" ]; then
   secrets="$(cat "$state/current-stack")/fake-secrets.json"
   tagged="$(jq -r '[.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"] // ""][0] // ""' "$secrets")"
   refused=false
-  [ "$proxy" = "http://agent-secrets:pw-not-a-secret@127.0.0.1:5104" ] || refused=true
+  [ "$proxy" = "http://127.0.0.1:5104" ] || refused=true
+  [ "$proxyuser" = "agent-secrets:pw-not-a-secret" ] || refused=true
   [ "$authorization" = "Bearer agent-secrets-placeholder-not-a-secret" ] || refused=true
   [ "$url" = "https://priv.airlock.test/ok" ] || refused=true
   [ "$scenario" = airlock-first-refused ] && refused=true
@@ -549,6 +562,8 @@ exits() { [ "$RUN_RC" = "$1" ]; }
 says() { grep -qF -- "$1" "$RUN_OUT"; }
 says_not() { ! grep -qF -- "$1" "$RUN_OUT"; }
 fails() { [ "$(grep -c '^FAIL: ' "$RUN_OUT")" = "$1" ]; }
+# not_in_curl_args: no curl command line of the run (the fake's log of its arguments) holds text.
+not_in_curl_args() { ! grep -qF -- "$1" "$state/curl.log"; }
 # no_process_left: every process the run started was gone once the driver returned, its own
 # cleanup's doing; what outlived it the test has already reaped (outlived).
 no_process_left() { [ "$RUN_LEFT" = 0 ]; }
@@ -598,6 +613,9 @@ check "before F: PUB_KEY was written with no project" \
 check "before F: the driver waited out the broker's 30 s K3 cache before the refused request" grep -qx '35' "$state/sleeps"
 check "before F: alice's session named PRIV at enrollment" grep -qF 'register person=alice@example.com projects=PRIV' "$state/register.log"
 check "before F: carol's session naming nothing named no project" grep -qx 'register person=carol@example.com projects=' "$state/register.log"
+check "before F: the airlock calls reached curl (its log names the bound host)" grep -qF 'https://priv.airlock.test/ok' "$state/curl.log"
+check "before F: no curl command line carried the grant's proxy password" not_in_curl_args pw-not-a-secret
+check "before F: no curl command line carried the grant's placeholder" not_in_curl_args agent-secrets-placeholder-not-a-secret
 
 # F's machine check present: the dev-box row passes on F's refusal alone, and says so.
 run_driver f f --database-url "$admin_url"

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,13 +16,17 @@ import (
 )
 
 // slowAccess answers each question takes later, or gives up when its context ends first, as a
-// Dispatch that is slow to answer does.
+// Dispatch that is slow to answer does. asked, when set, counts the questions it was asked.
 type slowAccess struct {
 	inner projectaccess.Access
 	takes time.Duration
+	asked *atomic.Int32
 }
 
 func (s slowAccess) wait(ctx context.Context) error {
+	if s.asked != nil {
+		s.asked.Add(1)
+	}
 	select {
 	case <-time.After(s.takes):
 		return nil

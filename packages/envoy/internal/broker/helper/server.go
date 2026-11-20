@@ -615,14 +615,17 @@ func (s *Server) reclaimIdentity(sessionID string, rec Record, kept bool, projec
 // sessionProjects reads the projects a register or an enroll-session-key names as the broker's
 // enrollment route reads them: each element one project key, named once, in any order, held
 // sorted (oauthwire.ValidProjects), nil for none. An element is never split, so "PRIV CORE" is
-// refused as no project key rather than read as two projects.
+// refused as no project key rather than read as two projects. A refusal, which the helper sends
+// back to its caller, says what every other reader of a projects setting says
+// (brokerclient.ProjectsRefusal), naming the rule and never the value, since ValidProjects quotes
+// the key it refuses.
 func sessionProjects(projects []string) ([]string, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
 	sorted := slices.Sorted(slices.Values(projects))
 	if err := oauthwire.ValidProjects(sorted); err != nil {
-		return nil, fmt.Errorf("projects: %w", err)
+		return nil, brokerclient.ProjectsRefusal("projects")
 	}
 	return sorted, nil
 }
@@ -1112,7 +1115,7 @@ func heldPrincipal(err error) (string, bool) {
 // enrollSessionKey enrolls a key a launcher holds for a session on this machine — a broker-call
 // op (brokerCall) requiring no registered session (see Broker.EnrollSessionKey), so unlike sign
 // it does not check descendancy at all. An enrollment the helper cannot attempt for want of a
-// launcher credential logs cannotEnrollMsg, as a registered session's does. An enrollment whose
+// launcher credential logs cannotEnrollText, as a registered session's does. An enrollment whose
 // outcome the helper does not know (Broker.enrollUnder) answers ENROLL_OUTCOME_UNKNOWN
 // (enrollUnknown); a known failure answers ENROLL_FAILED with the failure as it came.
 func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string) Response {

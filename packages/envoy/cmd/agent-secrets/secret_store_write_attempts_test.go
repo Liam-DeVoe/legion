@@ -45,8 +45,10 @@ const (
 )
 
 // TestAnAWSStoreWriteIsJudgedByItsAttempts drives set, delete and restore through a real SDK
-// client, so the backend's attempt record runs. One attempt answered AccessDeniedException is a
-// refusal: the form names the refused sign-in, asks for no reread and the store is unchanged. A
+// client, so the backend's attempt record runs. A call whose every attempt was answered with a
+// code awsDefiniteRefusals lists is a refusal: one AccessDeniedException, where the form names the
+// refused sign-in, and a LimitExceededException the SDK retried as a throttle on every attempt
+// (a set past the version quota); either asks for no reread and leaves the store unchanged. A
 // first attempt that applied and lost its answer before a denied retry, and a service fault on
 // every attempt, are open outcomes: the form says so, claims nothing, asks for one reread, and
 // the store holds what the attempts did.
@@ -57,10 +59,12 @@ func TestAnAWSStoreWriteIsJudgedByItsAttempts(t *testing.T) {
 		steps                 []string
 		attempts, rereads     int
 		open                  bool
+		refusal               string
 		value                 string
 		wantDeleted           bool
 	}{
 		{name: "set: one AccessDenied", form: "set", op: "PutSecretValue", stdin: "v2", steps: []string{"deny"}, attempts: 1, value: writeAPIKeyV1},
+		{name: "set: LimitExceededException every attempt (a throttle the SDK retried)", form: "set", op: "PutSecretValue", stdin: "v2", steps: []string{"limit"}, attempts: 3, refusal: "LimitExceededException", value: writeAPIKeyV1},
 		{name: "set: applied, answer lost, retry denied", form: "set", op: "PutSecretValue", stdin: "v2", steps: []string{"apply-drop", "deny"}, attempts: 2, rereads: 1, open: true, value: "v2"},
 		{name: "set: InternalServiceError every attempt", form: "set", op: "PutSecretValue", stdin: "v2", steps: []string{"ise"}, attempts: 3, rereads: 1, open: true, value: writeAPIKeyV1},
 		{name: "delete: one AccessDenied", form: "delete", op: "DeleteSecret", steps: []string{"deny"}, attempts: 1, value: writeAPIKeyV1},
@@ -85,12 +89,17 @@ func TestAnAWSStoreWriteIsJudgedByItsAttempts(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d; want 1: stderr %q", code, stderr)
 			}
-			if c.open {
+			switch {
+			case c.open:
 				if !strings.Contains(stderr, openOutcome) || strings.Contains(stderr, storeRefused) {
 					t.Errorf("stderr %q; want the open outcome, and no refusal", stderr)
 				}
 				assertNoClaim(t, c.form, stdout, stderr)
-			} else if !strings.Contains(stderr, "AccessDeniedException") || !strings.Contains(stderr, storeRefused) || strings.Contains(stderr, openOutcome) {
+			case c.refusal != "":
+				if !strings.Contains(stderr, c.refusal) || strings.Contains(stderr, openOutcome) {
+					t.Errorf("stderr %q; want the store's refusal %s, and no open outcome", stderr, c.refusal)
+				}
+			case !strings.Contains(stderr, "AccessDeniedException") || !strings.Contains(stderr, storeRefused) || strings.Contains(stderr, openOutcome):
 				t.Errorf("stderr %q; want the refusal, naming the refused sign-in, and no open outcome", stderr)
 			}
 			if got := st.count(c.op); got != c.attempts {

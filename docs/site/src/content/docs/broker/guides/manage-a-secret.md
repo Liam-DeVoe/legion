@@ -392,12 +392,13 @@ and names the credential after it, `(as …)`, so where gcloud cannot be pointed
 metadata server, the well-known credentials file) you know whose sign-in to use.
 
 On AWS, Secrets Manager takes the value with the tags, so the secret is made in one call once the
-value is read. A `CreateSecret` the AWS SDK tried once and that was refused with an answer Secrets
-Manager gives before it acts - a name taken, access denied, a request, a parameter or a limit
-refused - says nothing was stored. Any other failure says that the store may hold the secret, with
-its value, or not, and names `agent-secrets secret show NAME` to tell which: a deadline, an outage,
-and any create the SDK tried more than once, since an attempt it retried may have made the secret,
-which the store then answers the retry with as a name already taken. Each exits 1. The broker serves
+value is read. A `CreateSecret` whose every attempt was refused with an answer Secrets Manager
+gives before it acts - a name taken, access denied, a request, a parameter or a limit refused, the
+last of which the AWS SDK retries as a throttle - says nothing was stored. Any other failure says
+that the store may hold the secret, with its value, or not, and names `agent-secrets secret show
+NAME` to tell which: a deadline, an outage, and any create one of whose attempts ended another
+way before the SDK retried it, since that attempt may have made the secret, which the store then
+answers the retry with as a name already taken. Each exits 1. The broker serves
 the secret from the next request. Secrets Manager refuses a name that is already taken, including
 one scheduled for deletion: [restore](#delete-and-restore) that one instead.
 
@@ -837,8 +838,19 @@ or at once when you ask for the reread yourself — one call, whichever process 
 that process tells the others:
 
 ```sh
-curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_DEPLOY_TOKEN/reread"
+u=${AGENT_SECRETS_URL:?set it to the broker address in ~/.config/agent-secrets/config} && curl -sSf -X POST "${u%"${u##*[!/]}"}/v1/secrets/DEMO_DEPLOY_TOKEN/reread"
 ```
+
+This is the reread the CLI prints. It strips the slashes an address typed by hand may end in, so
+the path is the broker's own whatever curl does with a doubled slash, and it exits non-zero on a
+refusal.
+
+A write can also end with an error that is no refusal: a service fault, an outage, a lost
+connection, or an AWS call the SDK retried. Such an error may follow a write the store carried
+out, so the form says `the store's answer leaves open whether this write landed`, exits 1, and
+prints the broker's answer to the reread without judging it, since the store may hold the write
+or not. It says what to do next: after a `set`, run it again, since `secret show` reads no value;
+after a `delete`, `restore` or `retag`, read the secret with the `secret show` it names.
 
 [Troubleshooting](/legion/broker/guides/troubleshooting/#managing-a-secret) lists the messages the
 `secret` forms print and what to do about each.

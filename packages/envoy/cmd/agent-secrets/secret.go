@@ -839,15 +839,15 @@ func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) in
 
 // outcomeUnknown is a store write's error that leaves open whether the write landed: the store
 // answered with no definite refusal, a service fault, an outage or a lost connection, which may
-// follow a call it carried out. An AWS call is a definite refusal only when it made one attempt
-// whose code awsDefiniteRefusals lists (awsOutcome); a GCP call, which the client makes once,
-// only for a code gcpDefiniteRefusal names (gcpOutcome). Its text is the store's error with that
-// said after it. It marks the error so a form says the outcome is unknown (writeUnknown) and asks
-// the broker to reread, rather than describe the store as it was before the write. It has no
-// Unwrap: the store's error is in its text alone, so no reader of a refusal (isAccessDenied,
-// refusedAs's sign-in advice, retag's shared-secret line) takes an open outcome for one. An access
-// denial on an SDK retry after an attempt that may have applied refuses nothing that is known to
-// be undone.
+// follow a call it carried out. An AWS call is a definite refusal only when every attempt it made
+// ended in a code awsDefiniteRefusals lists (awsAttempts.definiteRefusal, awsOutcome); a GCP call,
+// which the client makes once, only for a code gcpDefiniteRefusal names (gcpOutcome). Its text is
+// the store's error with that said after it. It marks the error so a form says the outcome is
+// unknown (writeUnknown) and asks the broker to reread, rather than describe the store as it was
+// before the write. It has no Unwrap: the store's error is in its text alone, so no reader of a
+// refusal (isAccessDenied, refusedAs's sign-in advice, retag's shared-secret line) takes an open
+// outcome for one. An access denial on an SDK retry after an attempt that may have applied
+// refuses nothing that is known to be undone.
 type outcomeUnknown struct{ err error }
 
 func (e outcomeUnknown) Error() string {
@@ -861,20 +861,32 @@ func writeUnknown(err error) bool {
 	return errors.As(err, &unknown)
 }
 
+// failWrite is how set, delete and restore end on a store write that failed: an open outcome
+// (writeUnknown) by failOpen, every other error, a definite refusal, by secretFailIn, as before.
+// The three forms call it, so a form that writes cannot leave out the reread an open outcome
+// needs. valueWrite is the set's.
+func failWrite(s *secretSession, stdout, stderr io.Writer, form, name string, err error, valueWrite bool) int {
+	if writeUnknown(err) {
+		return failOpen(s, stdout, stderr, form, name, err, valueWrite)
+	}
+	return secretFailIn(stderr, form, s, err)
+}
+
 // failOpen is how set, delete and restore end on a write whose answer leaves open whether it
 // landed (writeUnknown): the store's error, which says so, what to do next, and the broker's answer
 // to a reread, since the secret may have changed (rereadOpen). After a delete or a restore, next is
 // the `secret show` that reads whether the secret is deleted now. After a set (valueWrite), `secret
 // show` cannot tell: it reads the secret's versions and when it last changed, never a value, so
 // next is to run the set again, which stores the value either way. It exits 1, and claims nothing
-// about what the store holds.
+// about what the store holds. It prints err as it is: an open outcome is no refusal, so no sign-in
+// advice follows it (outcomeUnknown).
 func failOpen(s *secretSession, stdout, stderr io.Writer, form, name string, err error, valueWrite bool) int {
-	show := pipeCommand(s.backend.signInPrefix(), "secret", "show", name)
+	show := secretShowCommand(s, name)
 	next := fmt.Sprintf("Read whether it is deleted now with `%s`", show)
 	if valueWrite {
 		next = fmt.Sprintf("Run this set again to be sure the value is stored: `%s` does not read values", show)
 	}
-	fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s. %s\n", form, s.refusedAs(err), s.storeName(), next)
+	fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s. %s\n", form, err, s.storeName(), next)
 	rereadOpen(s, stdout, stderr, form, name)
 	return 1
 }
@@ -992,6 +1004,8 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 
 // reread is rereadAfter's reread: it asks the broker, prints its answer, and answers it, with ok
 // false when the answer contradicts the write or the broker could not be asked, which it printed.
+// It is for a write known to have landed: a write whose outcome is open is reread by rereadOpen,
+// which claims nothing of it.
 func reread(s *secretSession, stdout, stderr io.Writer, form, name string, wantServed bool, restorable *time.Time) (Reread, bool) {
 	r, err := s.broker.RereadSecret(s.ctx, name)
 	if err != nil {
@@ -1027,13 +1041,10 @@ func printReread(s *secretSession, stdout io.Writer, name string, r Reread, dele
 }
 
 // rereadOpen asks the broker to reread name after a write whose answer left open whether it
-// landed, and prints the broker's answer without judging it, since either outcome is possible.
-// When the broker cannot be asked, it says so and names the reread to ask for once the store
-// holds what the person wants, and nothing of when the broker would serve a change on its own:
-// that depends on the write, which may not have landed. The command reads the broker's address
-// from AGENT_SECRETS_URL, which this CLI may have read from its config file instead, so it stops
-// with a message naming that file where the shell has no such variable, and curl exits non-zero
-// naming the status of a broker's refusal (-sSf); the CLI prints no broker address itself.
+// landed (writeUnknown), and prints the broker's answer without judging it, since either outcome
+// is possible. When the broker cannot be asked, it says so and names the reread to ask for once
+// the store holds what the person wants, and nothing of when the broker would serve a change on
+// its own: that depends on the write, which may not have landed.
 func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
 	r, err := s.broker.RereadSecret(s.ctx, name)
 	if err != nil {
@@ -1044,10 +1055,20 @@ func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
 }
 
 // rereadCommand is the shell command that asks the broker to reread name: POST
-// /v1/secrets/{name}/reread at AGENT_SECRETS_URL, which stops naming the config file where the
-// shell has no such variable.
+// /v1/secrets/{name}/reread at the address brokerURLVar holds, without the slashes it ends in, as
+// brokerBaseURL reads it (the broker's mux answers a path with a doubled slash with a redirect,
+// which curl would not follow and -f would not fail on). It stops naming the config file where
+// the shell has no such variable, since this CLI may have read the address from that file, and
+// curl exits non-zero naming the status of a broker's refusal (-sSf). The CLI prints no broker
+// address itself, and name has passed policy.NameToSlug, so it holds no shell metacharacter.
 func rereadCommand(name string) string {
-	return fmt.Sprintf(`curl -sSf -X POST "${AGENT_SECRETS_URL:?set it to the broker address in ~/.config/agent-secrets/config}/v1/secrets/%s/reread"`, name)
+	return fmt.Sprintf(`u=${%s:?set it to the broker address in ~/.config/agent-secrets/config} && curl -sSf -X POST "${u%%"${u##*[!/]}"}/v1/secrets/%s/reread"`, brokerURLVar, name)
+}
+
+// secretShowCommand is the `secret show` that reads name's tags and versions under the sign-in
+// this session used: the command every line names that sends a person to read what a write left.
+func secretShowCommand(s *secretSession, name string) string {
+	return pipeCommand(s.backend.signInPrefix(), "secret", "show", name)
 }
 
 // secretView is what list and show print of one secret: never its value.
@@ -1446,10 +1467,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	if err := s.backend.set(s.ctx, slug, value); err != nil {
-		if writeUnknown(err) {
-			return failOpen(s, stdout, stderr, form, name, err, true)
-		}
-		return secretFailIn(stderr, form, s, err)
+		return failWrite(s, stdout, stderr, form, name, err, true)
 	}
 	fmt.Fprintf(stdout, "set a new value of %s in %s\n", name, s.storeName())
 	noteEdgeSpaces(stderr, form, name, value)
@@ -1481,10 +1499,7 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	defer s.Close()
 	deletion, err := s.backend.delete(s.ctx, slug)
 	if err != nil {
-		if writeUnknown(err) {
-			return failOpen(s, stdout, stderr, form, name, err, false)
-		}
-		return secretFailIn(stderr, form, s, err)
+		return failWrite(s, stdout, stderr, form, name, err, false)
 	}
 	fmt.Fprintf(stdout, "deleted %s in %s\n", name, s.storeName())
 	return rereadAfter(s, stdout, stderr, form, name, false, deletion)
@@ -1507,10 +1522,7 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	}
 	defer s.Close()
 	if err := s.backend.restore(s.ctx, slug); err != nil {
-		if writeUnknown(err) {
-			return failOpen(s, stdout, stderr, form, name, err, false)
-		}
-		return secretFailIn(stderr, form, s, err)
+		return failWrite(s, stdout, stderr, form, name, err, false)
 	}
 	fmt.Fprintf(stdout, "restored %s in %s\n", name, s.storeName())
 	return rereadAfter(s, stdout, stderr, form, name, true, nil)

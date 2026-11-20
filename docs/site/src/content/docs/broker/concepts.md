@@ -136,9 +136,11 @@ grant no enrollment comes back for.
 
 Every `session` enrollment records an **operator**: the person whose machine it runs on. The
 operator is the person who approved the machine login that enrolled it, never a value the launcher
-chooses. A `pod` enrollment records none, since the Legion daemon logs in as a service with its own
-Kubernetes token rather than as a person; it records the service account the pod's projected token
-proved instead.
+chooses. A `pod` enrollment records the service account the pod's projected token proved. It
+records no operator when a service's login enrolled it, since the Legion daemon logs in as a
+service with its own Kubernetes token rather than as a person. A pod whose account
+`BROKER_POD_OPERATORS` maps to a person records that person as its operator as well
+([a person's pod](#a-persons-pod)).
 
 ### When no broker is serving
 
@@ -330,14 +332,16 @@ approved a person's machine login is its operator. A lapsed or revoked login mea
 machine in again. A machine login nobody decides expires after 15 minutes, a fixed time rather than
 a setting (`machineLoginPendingTTL` in `packages/envoy/cmd/broker/main.go`). A person's machine
 logs in through the device grant alone: the earlier `POST /v1/launcher-credentials` login answers
-`405 Method Not Allowed` and its poll `GET /v1/launcher-credentials/{pending}` `404`. A service's login has no
-operator, so the machine-login page lists it for everyone signed in, and anyone may revoke it, which
-ends every pod it enrolled at once: a service login a person approved through a code before
-services logged in with their tokens, until it expires, and a service's token login, which names no
-approver. A service whose token login was revoked logs in again with its token at its next call,
-under a new credential, which enrolls the pods it launches next; a pod the revoke ended stays
-without secrets until it is replaced. To stop it logging in, remove its account from
-`BROKER_SERVICE_LOGINS` and redeploy the broker.
+`405 Method Not Allowed` and its poll `GET /v1/launcher-credentials/{pending}` `404`. A service's
+login has no operator. The machine-login page lists it for everyone signed in, and anyone may
+revoke it, which ends every pod it enrolled at once: a service login a person approved through a
+code before services logged in with their tokens, until it expires, and a service's token login,
+which names no approver. A service whose token login was revoked logs in again with its token at
+its next call, under a new credential, which enrolls the pods it launches next; a pod the revoke
+ended stays without secrets until it is replaced. To stop it logging in, remove its account from
+`BROKER_SERVICE_LOGINS` and redeploy the broker. A token login of an account that
+`BROKER_POD_OPERATORS` maps to a person is that person's own and no service's: the page lists it
+to that person alone, and only that person may revoke it ([a person's pod](#a-persons-pod)).
 
 A credential enrolls sessions only for its own operator: an enrollment naming anyone else is refused
 `OPERATOR_MISMATCH`. The broker's rate limiter caps how often anyone can start a machine login, per
@@ -481,9 +485,11 @@ A `requesters` list is read before owner and tier. Where a secret carries one, a
 person it does not name, and a pod whose service it does not name, is denied
 `requester-not-listed`, whatever the table below would have given it. An entry holding an `@` is a
 person and is matched against the session's person alone; one holding none is a service and is
-matched against the service the broker verified alone. A pod has no person and a session has no
-service, so each is matched only by an entry of its own sort, and a person whose login reads like
-a service name matches no service entry. A secret with no list is every session's to ask for.
+matched against the service the broker verified alone. A pod acts for no person unless
+`BROKER_POD_OPERATORS` maps its account to one, and then it has no service
+([a person's pod](#a-persons-pod)). A session has no service. So each is matched only by an entry
+of its own sort, and a person whose login reads like a service name matches no service entry. A
+secret with no list is every session's to ask for.
 
 A `dispatch-project` tag is read next, still before owner and tier. Where the tag names a private
 project, a session or pod whose credential does not name that project is denied
@@ -503,9 +509,11 @@ Who gets it then follows from those two tags alone:
 | `owner=shared`, `tier=human` | Approved by anyone who signs in to the broker. | Approved by anyone who signs in to the broker. |
 | A service's, `tier=agent` | Granted at once. | Denied; no one can approve it. |
 
-A session is its owner's own when its operator is the owner: the owner approved the machine login
-it enrolled under. A pod has no operator, so a pod asking for a person's agent-tier secret sends it
-to that person for approval.
+A session is its owner's own when its operator is the owner and one of two things holds: the owner
+approved the machine login it enrolled under, or it is a pod whose account `BROKER_POD_OPERATORS`
+maps to the owner ([a person's pod](#a-persons-pod)). Any other pod is not the owner's own, whether
+it acts for no person or for the person its account is mapped to, so its request for the owner's
+agent-tier secret goes to the owner for approval.
 
 Every row that sends a secret for approval needs the request to carry a reason: a request with
 none is denied instead of being put to a person
@@ -685,12 +693,50 @@ the pending and grant lists, with a line in the broker's log naming its record; 
 listed and decided as before. A decision reads the projects of both credentials a request has had:
 the one that asked, which the lists and the page read, and the one it hangs off now, which a
 session that moved to another box makes it; a person either would hide it from does not decide
-it. The model judge leaves every private project's request to a person
-([the model judge](#the-model-judge)), and its approval asks Dispatch again, afresh and not from
-the 30 seconds of answers the broker keeps, before it is written, so a project that turned private
-while the judge was reading, or a session that took the request over and names a private project,
-leaves the request to a person. A sign-in started from a private project's request names no
-approver to the provider, since the approver is part of what the page hides.
+it. The model judge grants no private project's request
+([the model judge](#the-model-judge)): its check leaves such a request to a person, and its
+approval asks Dispatch again, afresh and not from the 30 seconds of answers the broker keeps,
+before it is written, so a project that turned private while the judge was reading, or a session
+that took the request over and names a private project, leaves the request to a person. Its
+refusal's write asks Dispatch nothing, so a refusal is final whatever project the request belongs
+to; the checks that lead to it read Dispatch as every check does. A sign-in started from a
+private project's request names no approver to the provider, since the approver is part of what
+the page hides.
+
+### A person's pod
+
+A deployment can let a Kubernetes pod work for one person on the terms of that person's dev box:
+`BROKER_POD_OPERATORS` maps the pod's ServiceAccount to the person
+([Operate](/legion/broker/operate/#what-to-run)). Each such account logs in under a login service
+of its own, which `BROKER_SERVICE_LOGINS` names and no `BROKER_SERVICES` or `BROKER_VM_SERVICES`
+entry names. The pod enrolls itself with `agent-secrets enroll --pod --service <its login service>`.
+The login it makes with its own projected token carries the person as its operator, and so does
+its enrollment (`machine.Service.TokenLogin`, `enroll.PersonPodLogin`). A token of the account
+that is bound to no pod, such as one `kubectl create token` mints, logs in for no person and
+enrolls nothing.
+
+Such a pod is its person's own session in the table above. The person's agent-tier secrets are
+granted to it at once, the person's human-tier secrets go to the person for approval, and another
+person's secrets go to their owner. A `requesters` list that names the person admits the pod too.
+Its request for a shared human-tier secret waits in the person's Inbox, as a request of the
+person's box does. No service entry admits it, since its login service is no service the
+deployment registers, and it gets no service's secret.
+
+The pod's login enrolls that pod alone and names no session, so it never takes over a session of
+the person's box. The routes that list and revoke the person's machine logins and grants refuse the
+login `PERSON_POD_LOGIN`, so the pod lists and revokes none of them. The routes a service calls as
+itself refuse the pod's account `PERSON_ACCOUNT`. Dispatch's machine-login page lists the login to
+the person alone, and only that person may revoke it. The pod logs in again with its own token
+under a new credential, so a revoke ends what the login enrolled and does not keep the pod out.
+
+The broker reads the setting at each decision about the pod, not only when the pod enrolled
+(`requests.Machine.requester`). When the deployment takes the account out of the setting, or maps
+it to another person, the pod's enrollment acts for no person from its next call. A grant the pod
+got at once because it was the person stops releasing and is not reused, a grant a person approved
+still releases, and a grant of a secret whose `requesters` names the person ends for good. The
+enrollment's own record keeps the person it was made for, so the grant log and that person's
+**Live grants** still name them. [Operate](/legion/broker/operate/#what-to-run) says what else a
+removal or a move does.
 
 ## Requests and grants
 
@@ -970,11 +1016,18 @@ A pod that states no claim is its own pod's, and each slot of it, one role proce
 is its own slot's, so the roles of one pod read none of each other's requests.
 Any enrollment of the same owner reads the request (`agent-secrets status`) and cancels it
 (`agent-secrets cancel`), and every other one is refused `NOT_YOURS`
-(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerAndState`): a person reads their
-request from another box, the next pod of a claim cancels what the pod before it asked for, and a
-second machine of the same fleet, or another role of the same issue, reads neither.
+(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerAndState` and `Machine.owner`):
+a person reads their request from another box, the next pod of a claim cancels what the pod before
+it asked for, and a second machine of the same fleet, or another role of the same issue, reads
+neither.
 An enrollment that records no owner, every one made before the broker recorded owners, reads and
 cancels its own requests alone.
+A pod that `BROKER_POD_OPERATORS` maps to a person records that person as its owner, as the
+person's box does ([a person's pod](#a-persons-pod)).
+The broker reads the setting each time it compares owners, and the pod keeps that owner only while
+the setting maps its account to that person.
+After the deployment takes the account out of the setting, or maps it to another person, the pod
+reads and cancels its own requests alone, and the person's sessions read and cancel none of them.
 
 Reading and cancelling is all the owner adds for a person and for a machine: their grants still
 follow the session that asked, so a person's other session sees the request but never takes its
@@ -1243,13 +1296,18 @@ human-tier secret, or for a shared agent-tier secret its session's operator with
 names the approver `anyone`: anyone who signs in to the broker may decide it, and the
 broker records the email of whoever did. It waits in the Inbox of the person responsible for the
 agent that asked, which the broker records when the request is made, in this order: the session's
-operator (the person of an `agent-secrets login` sign-in, or the person who approved its machine
-login); for a fleet machine's own session, the person its `BROKER_VM_EXCHANGE_ACCOUNTS` entry
-names; for a Legion worker pod, the assignee of the Dispatch issue its claim names, which the broker
-reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for after three seconds. Where none of these
-names a person — a pod with no claim, a broker with no judge settings, a Dispatch that did not
-answer in time, an issue nobody is assigned to, a machine whose fleet names nobody — it waits in
-every person's Inbox, so no request waits where nobody sees it. A Dispatch read that failed or ran
+operator (the person of an `agent-secrets login` sign-in, the person who approved its machine
+login, or, for [a person's pod](#a-persons-pod), its person while `BROKER_POD_OPERATORS` still maps
+the pod's account to that person); for a fleet machine's own session, the person its
+`BROKER_VM_EXCHANGE_ACCOUNTS` entry names; for a Legion worker pod, the assignee of the Dispatch
+issue its claim names, which the broker reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for
+after three seconds. Where none of these names a person — a pod with no claim that acts for no
+person (a person's pod too, once the setting drops its account or maps it to another person), a
+broker with no judge settings, a Dispatch that did not answer in time, an issue nobody is assigned
+to, a machine whose fleet names nobody — it waits in every person's Inbox, so no request waits
+where nobody sees it. Where that person may not see the request, because it belongs to a private
+project they are not on, from when it was made or since, it waits in the Inbox of everyone who may
+([A private project's secrets](#a-private-projects-secrets)). A Dispatch read that failed or ran
 out of its three seconds is logged at WARN, naming the issue
 ([Health and logs](/legion/broker/operate/#health-and-logs)), so a broker that cannot read Dispatch
 is seen to list those requests for everyone. Who is asked changes nobody's right
@@ -1385,7 +1443,9 @@ Every run ends the request one of three ways:
 - **Refusal**, which is final: a `deny` verdict, a policy that now denies a key, or a key withheld
   from the session. The request is denied under the judge's actor, and the agent reads
   `the model judge refused this request: <reason>. This request will not be granted. Tell whoever
-  gave you this work.`; `agent-secrets` exits 77. Nothing tells the agent to try again.
+  gave you this work.`; `agent-secrets` exits 77. Nothing tells the agent to try again. A refusal
+  grants nothing, so its write asks Dispatch nothing, and a refusal the checks reached stands
+  while Dispatch cannot answer.
 - **Hand-over**, when the judge cannot decide: any other check fails, the model cannot be reached,
   gives no verdict or does not answer within the 20 seconds, or a Dispatch read fails. The request
   goes to its person once, as an ordinary card on the broker page. A run the broker lost, when it
@@ -1440,7 +1500,9 @@ slow to answer then fails the approval, and the request goes to its person. A ru
 writes its `request.judged` row on a context of its own, which the run's deadline does not cancel,
 so an approval that failed late still leaves its row; one whose answer was lost after it applied
 leaves only the row it wrote itself, one still committing is waited for, for half the time the row
-has, and where even that cannot tell, the row it writes says `applied` `unknown`. The broker
+has, and where even that cannot tell, the row it writes says `applied` `unknown`. Such a row
+ends no hold, since the approval may still be committing: the request reaches its person when the
+two minutes end, as a lost run's does. The broker
 writes nothing in Dispatch — no ask, no comment, no status — and reads nothing that belongs to a
 person. It reaches its model at the endpoint its settings name, presenting the broker machine's
 own Google identity token for the audience they name, or, where `BROKER_JUDGE_MODEL_ACCOUNT` names

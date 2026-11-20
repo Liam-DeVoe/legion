@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
@@ -370,8 +372,10 @@ func (m *Machine) logChannelsMissing(project string) {
 }
 
 // rowUnansweredMessage is the log line for a row an approver's list leaves out because the
-// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable): the
-// row is hidden from that list alone, failing closed, and the rest of the list is answered.
+// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable), or,
+// for a row whose responsible person is someone else (listedInStead), because a read failed or
+// the list's clock ran out: the row is hidden from that list alone, failing closed, and the rest
+// of the list is answered.
 const rowUnansweredMessage = "an approver's list leaves out a row whose project Dispatch could not be asked about; it is listed again once Dispatch answers"
 
 // logRowUnanswered writes rowUnansweredMessage for the one row key names, with attrs and err,
@@ -524,12 +528,13 @@ func privateProjects(secrets []SecretProject) []string {
 	return projects
 }
 
-// JudgeDispatchBound is how long the model judge may wait on Dispatch at one point of a run: all of
-// its reads before the model together — the policy check's (JudgePolicy), the project check's
-// (JudgeProject) and the issue check's, which package judge's Dispatch phase holds under one
-// JudgeDispatch — and, at the decision, the reads its approval makes before its transaction
-// (applyDecisionAttempt). A read it cuts short fails its check, and the request waits for its
-// person.
+// JudgeDispatchBound is how long the model judge may wait on Dispatch at one point of a run: its
+// reads before the ask together — the policy check's (JudgePolicy), the project check's
+// (JudgeProject) and the issue read's two GETs, which package judge's Dispatch phase holds under
+// one JudgeDispatch — and, at the decision, the reads its approval makes before its transaction
+// (applyDecisionAttempt). The ask read the reason may cite has a bound of its own of the same
+// length (judge's dispatchBound), on the run's context. A read it cuts short hands the request to
+// its person.
 const JudgeDispatchBound = 5 * time.Second
 
 // JudgeRowReserve is the part of a judge run's time no read of Dispatch may spend: JudgeDispatch
@@ -672,11 +677,12 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // decisionFacts is what the approve path reads of Dispatch for recordID before its transaction:
 // the state of each project the request's names are tagged with and the projects its credential
 // may still name (projectFacts), which the transaction's evaluation reads, and whether who may
-// decide the record at all. A person may when the person rule shows them the record (mayDecide).
-// The model judge may when the request is still of no private project (judgeMayDecide, over the
-// tagged projects' states alone, the ones its run's check read), which its run checked before the
-// model, and which a project turning private during the run or an adoption by an enrollment
-// naming a private project can have changed since. Both rules read the projects of two
+// decide the record at all. A person may when the person rule shows them the record (mayDecide),
+// to approve it or to refuse it. The model judge's grant may when the request is still of no
+// private project (judgeMayDecide, over the tagged projects' states alone, the ones its run's check
+// read), which its run checked before the model, and which a project turning private during the
+// run or an adoption by an enrollment naming a private project can have changed since; the judge's
+// refusal does not come here (applyDecisionAttempt). Both rules read the projects of two
 // credentials: the one the request hangs off now, which an adoption rewrites, and the one that
 // asked, which the append-only record names and the pending lists and the approval page read, so a
 // request either of them would hide from a reader is one that reader does not decide. For the
@@ -684,7 +690,9 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // needs, and asked of Dispatch afresh (projectaccess.Fresh): the run's own check filled the cache
 // well inside projectaccess.CacheTTL, and an answer read back from it could not show a change made
 // since. The facts and the rule's own reads are one decision, held to atDecision's bound together.
-// A refusal is record.ErrNotApprover.
+// A refusal is record.ErrNotApprover; a person's, for a record they may not see, is
+// pgx.ErrNoRows as well, since every read of the record answers them that way and the page that
+// decides tells them "no such record" (approval.Page.decide).
 func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre decisionRead, set *policy.Set) (projectFacts, error) {
 	if who.isJudge() {
 		bounded, cancel := JudgeDispatch(ctx)
@@ -722,7 +730,7 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 	case who.isJudge():
 		return projectFacts{}, fmt.Errorf("%w: the request now belongs to a private project, which the model judge leaves to a person", record.ErrNotApprover)
 	}
-	return projectFacts{}, fmt.Errorf("%w: the request belongs to a private project %s may not see", record.ErrNotApprover, record.CanonicalLogin(who.login))
+	return projectFacts{}, fmt.Errorf("%w: no such record: %w", record.ErrNotApprover, pgx.ErrNoRows)
 }
 
 // maySeeRecord is MaySee for a listing's row: names under the live policy, the projects of the

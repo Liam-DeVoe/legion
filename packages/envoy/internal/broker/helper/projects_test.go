@@ -40,9 +40,12 @@ func TestHelperKeepsASessionsProjectsAcrossARestart(t *testing.T) {
 	if other.OK || other.Code != CodeBadRequest || !strings.Contains(other.Error, "fixed at its first register") {
 		t.Fatalf("a register naming other projects for the session = %+v; want BAD_REQUEST saying the projects are fixed", other)
 	}
-	malformed := r.call(t, Request{Op: "register", SessionID: &id, Projects: []string{"priv"}})
-	if malformed.OK || malformed.Code != CodeBadRequest {
-		t.Fatalf("a register naming a key that is no project key = %+v; want BAD_REQUEST", malformed)
+	// A key that is no project key is where a credential pasted into the wrong place shows up,
+	// so the refusal names the rule and never the value.
+	const pasted = "hunter2pw-helper-projects"
+	malformed := r.call(t, Request{Op: "register", SessionID: &id, Projects: []string{pasted}})
+	if malformed.OK || malformed.Code != CodeBadRequest || strings.Contains(malformed.Error, pasted) || !strings.Contains(malformed.Error, "not a list of project keys") {
+		t.Fatalf("a register naming a key that is no project key = %+v; want BAD_REQUEST naming the rule and not the key", malformed)
 	}
 	r.callerPID.Store(0)
 

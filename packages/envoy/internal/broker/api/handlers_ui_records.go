@@ -246,7 +246,14 @@ func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerNam
 	dismissal, err := s.deps.Machine.Dismiss(r.Context(), recordID, body.Approver)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
+		// No record has the id, or it is a secret request of a private project the person may
+		// not see, which every read answers the same way.
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such credential request")
+		return
+	case errors.Is(err, requests.ErrProjectAccessUnavailable):
+		// Dispatch could not say whether the person may see the record's project, so nothing was
+		// dismissed; the same dismissal succeeds once Dispatch answers.
+		writeProjectAccessUnavailable(w, "dismiss credential request", err)
 		return
 	case errors.Is(err, record.ErrNotApprover):
 		writeError(w, http.StatusForbidden, "NOT_APPROVER", "only the record's approver, or anyone signed in for a request whose approver is anyone, may dismiss it")
