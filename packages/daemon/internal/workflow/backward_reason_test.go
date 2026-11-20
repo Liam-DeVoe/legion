@@ -159,7 +159,9 @@ func TestABackwardMoveReasonReachesTheNextTaskInABlock(t *testing.T) {
 // backward move's reason is the daemon's sentence and then the words of the role that asked. So
 // BackwardMoveAsker reads that role off the first line of each reason backwardMoveReason writes,
 // for every move back the daemon counts, with words and with none, and reads no role off a line
-// that opens with no such sentence: a message of the daemon's own, and a close's reason.
+// that opens with no such sentence: a message of the daemon's own, a close's reason, and a move
+// out of admitted, which no backward row serves (backward refuses it, so the daemon never writes
+// that sentence), so the asker answers nothing for admitted, where RoleFor names the architect.
 func TestBackwardMoveAskerReadsTheRoleOfEveryBackwardReason(t *testing.T) {
 	for _, pair := range phase.BackwardPairs() {
 		from, to, _ := phase.ParsePair(pair)
@@ -171,9 +173,10 @@ func TestBackwardMoveAskerReadsTheRoleOfEveryBackwardReason(t *testing.T) {
 		}
 	}
 	for _, line := range []string{"", "Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.",
-		intake.CloseRoot{Reason: "the human decided no change."}.Message()} {
+		intake.CloseRoot{Reason: "the human decided no change."}.Message(),
+		backwardMoveReason(phase.Admitted, phase.Planning, "replan")} {
 		if role, asked := BackwardMoveAsker(line); asked {
-			t.Errorf("BackwardMoveAsker(%q) = %q, want no role: the line opens with no backward move's sentence", line, role)
+			t.Errorf("BackwardMoveAsker(%q) = %q, want no role: the line opens with no sentence of a move back the daemon counts", line, role)
 		}
 	}
 }
