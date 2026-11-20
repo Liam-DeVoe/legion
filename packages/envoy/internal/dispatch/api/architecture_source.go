@@ -270,10 +270,6 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		returning `+architecture.SourceColumns,
 		key, sourceID))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeSourceNotFound(w, key, repo)
-			return
-		}
 		s.writeHandlerError(w, err)
 		return
 	}
