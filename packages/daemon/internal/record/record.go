@@ -1840,6 +1840,11 @@ type OutboxRow struct {
 	// a row that runs after the resume carries it, so the wake the row takes of a released role
 	// is that pause's held wake (internal/daemon's wakeForDelivery, store.Store.TakePodWake).
 	HeldByPause int64
+	// refence is what NewFencedRow filled of the row's fence from its issue as the queueing
+	// transaction held it, which the settle of a fact that queues the row sets again to the fence
+	// the issue stands at when the fact commits (Postgres.RefenceFactRows). A row read back from
+	// the store carries none.
+	refence fenceStamp
 }
 
 // ReleaseRetry is the bounded wait for a released todo child whose parent event has not reached the
@@ -2462,6 +2467,8 @@ type Store interface {
 	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
 	// changed at or after since, in key order: the issues the boot publishes.
 	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
+	// Enqueue queues row. A row NewFencedRow filled a phase entry of, queued in a ctx that keeps
+	// its fact's fenced rows (WithFencedRows), is kept for that fact's settle (RefenceFactRows).
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
@@ -2482,6 +2489,18 @@ type Store interface {
 	// caller's row is written beside it. A lapsed lease holds nothing and is taken out like any
 	// other.
 	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
+	// RefenceFactRows sets the fence of every row the fact of ctx queued with the fence its issue
+	// stood at then (WithFencedRows, NewFencedRow) to the fence that issue stands at in tx: a
+	// fact's own moves raise an issue's phase entry after rows of it are queued, and every row a
+	// fact queues is the entry's the fact leaves the issue at. Only the parts the stamp filled
+	// are set again: a writer that named its run keeps it. The fact's settle runs it once, after
+	// every handler (workflow.Engine.SettleFact).
+	RefenceFactRows(ctx context.Context, tx pgx.Tx) error
+	// IssuePodUID is the pod issue's claims run in (Fence.PodUID): the one pod the issue's claims
+	// that may run a process record a Sandbox locator of, or, where none of them records one, the
+	// one pod every claim of it that records one names; "" where its claims record none or name
+	// more than one, which fences no pod.
+	IssuePodUID(ctx context.Context, tx pgx.Tx, issue string) (string, error)
 	// OwedStarts is every pending worker start of the Dispatch project key project that waits for
 	// its issue's admission slot and that no live lease holds, a row whose lease has lapsed among
 	// them, oldest first by creation time and then id — the waiting line's own ordering key for

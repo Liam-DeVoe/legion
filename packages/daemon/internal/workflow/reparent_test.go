@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -255,7 +256,7 @@ func reparentedNotices(t *testing.T, pool *pgxpool.Pool, issue string) []record.
 		if err := json.Unmarshal([]byte(payload), &notice); err != nil {
 			t.Fatalf("decode a reparented notice of %s: %v", issue, err)
 		}
-		notices = append(notices, notice)
+		notices = append(notices, fencetest.Unfenced(notice).(record.Notice))
 	}
 	return notices
 }

@@ -1033,8 +1033,14 @@ type HandoffComplete struct {
 	// issue's own current generation and phase, and refuses a completion it can attribute to no run
 	// at all, so a fact reaching the workflow always names a run.
 	Generation uint64
-	Summary    string
-	Verdict    string
+	// Entry is the phase entry of the role's phases row the route held this completion to (api's
+	// entryFence, record.PhaseRow.Entry), 0 where that row named none. The workflow holds the
+	// completion to it again where it commits (workflow's handoff): a return to work raises the
+	// entry (R20 of dispatch://INFRA-3320), so a completion that passed the route's check before a
+	// stop and commits after the return is refused HANDOFF_STALE_ENTRY, whatever head it names.
+	Entry   int64
+	Summary string
+	Verdict string
 	// Commit is the commit the completion reports: for the planner, the implementer's implementing
 	// round, the tester and the reviewer the head their handoff record names, empty where a
 	// planner's, a tester's or a reviewer's record names none; and the commit retro and merging

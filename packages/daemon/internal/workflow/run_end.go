@@ -74,25 +74,33 @@ func (runs *factRuns) endOf(run runAt) StepEnd {
 }
 
 // OpenFact answers ctx carrying what the engine keeps of one fact while its handlers apply it: the
-// ends its moves name and the issues its writes touch (record.WithIssueWrites). A ctx that carries
-// them already, opened by another engine of the same fact, is answered as it is (intake.Settler).
+// ends its moves name, the issues its writes touch (record.WithIssueWrites) and the rows it queues
+// with the fence their issue stood at then (record.WithFencedRows). A ctx that carries them
+// already, opened by another engine of the same fact, is answered as it is (intake.Settler).
 func (e *Engine) OpenFact(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(factRunsKey{}).(*factRuns); !ok {
 		ctx = context.WithValue(ctx, factRunsKey{}, &factRuns{ends: map[runAt]StepEnd{}})
 	}
-	return record.WithIssueWrites(ctx)
+	return record.WithFencedRows(record.WithIssueWrites(ctx))
 }
 
 // SettleFact ends each run the fact left over (runOver), once the fact's last handler has applied
-// it, in its transaction: the runs of each issue the fact touched (intake.Settler). A second settle
-// of one fact settles nothing.
+// it, in its transaction: the runs of each issue the fact touched (intake.Settler). Then every row
+// the fact queued takes the fence its issue stands at now (record.Store.RefenceFactRows): a
+// fact's own moves raise an issue's phase entry after rows of it are queued — a transition's
+// status before its start, a return's notice before its worker's new entry — and each such row is
+// the entry's the fact leaves the issue at, so none is a late effect of the entry it was queued
+// beside. A second settle of one fact settles nothing.
 func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	runs, ok := ctx.Value(factRunsKey{}).(*factRuns)
 	if !ok || runs.settled {
 		return nil
 	}
 	runs.settled = true
-	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
+	if err := e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil); err != nil {
+		return err
+	}
+	return e.store.RefenceFactRows(ctx, tx)
 }
 
 // nameMoveEnd names the end of the run issue stands in that a move on trigger into to ends: the

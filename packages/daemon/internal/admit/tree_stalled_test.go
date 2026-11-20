@@ -721,7 +721,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedQuietRoot(t, pool, suspended, "I", phase.Implementing)
 		seedClaim(t, records, suspended, suspended, claim.RoleImplementer, supervise.StateSuspended)
 		inTx(t, pool, func(tx pgx.Tx) {
-			row, err := record.NewOutboxRow(suspended, record.Notice{Kind: "held", Role: claim.RoleImplementer,
+			row, err := record.NewFencedRow(context.Background(), tx, record.NewStore(), suspended, record.Notice{Kind: "held", Role: claim.RoleImplementer,
 				Phase: phase.Implementing, Reason: string(record.HoldEscalated)}, fixedNow)
 			if err != nil {
 				t.Fatalf("build the notice queued to %s's suspended role: %v", suspended, err)

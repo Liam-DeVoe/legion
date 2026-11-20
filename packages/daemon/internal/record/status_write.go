@@ -74,6 +74,12 @@ type StatusWrite struct {
 	// known for — one migration 20261102003600 gave its kind, queued by a release that fenced
 	// such a write on nothing — which writes as that release wrote it.
 	CloseGeneration uint64 `json:"closeGeneration,omitempty"`
+	// Generation and Entry are the issue's run and phase entry the write was queued at (Fence),
+	// which the outbox checks on the record before it writes: a write of an earlier one is not
+	// written (R20 of dispatch://INFRA-3320). CloseGeneration above is the release before's fence
+	// of a close, which it requires and this release keeps writing.
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
 }
 
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }

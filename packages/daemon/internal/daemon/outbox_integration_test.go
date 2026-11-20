@@ -187,13 +187,50 @@ func claimDueOutboxRow(t *testing.T, pool *store.Pool, records record.Store, now
 	return claimed
 }
 
+// mustOutboxRow is payload's row for issue due at now, fenced as every writer of this release
+// fences it (record.NewFencedRow): by the run, phase entry and pod issue stands at in the
+// database the test's isolatedOutboxPool made, as that database holds them when the row is built,
+// and by record.FirstFence, an unrecorded issue's, where the test made none. A part the payload
+// names itself is kept, so a case of an earlier run or entry names it.
 func mustOutboxRow(t *testing.T, issue string, payload record.OutboxPayload, now time.Time) record.OutboxRow {
 	t.Helper()
-	row, err := record.NewOutboxRow(issue, payload, now)
-	if err != nil {
+	pool := outboxTestPool(t)
+	if pool == nil {
+		row, err := record.NewOutboxRow(issue, record.Fenced(payload, record.FirstFence), now)
+		if err != nil {
+			t.Fatalf("new outbox row: %v", err)
+		}
+		return row
+	}
+	var row record.OutboxRow
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var err error
+		row, err = record.NewFencedRow(context.Background(), tx, record.NewStore(), issue, payload, now)
+		return err
+	}); err != nil {
 		t.Fatalf("new outbox row: %v", err)
 	}
 	return row
+}
+
+// outboxTestPools is the pool each test's isolatedOutboxPool made, by the test's name, which
+// mustOutboxRow reads a row's fence from.
+var outboxTestPools sync.Map
+
+// outboxTestPool is the pool isolatedOutboxPool made for t or for the test t runs under, nil
+// where none did.
+func outboxTestPool(t *testing.T) *store.Pool {
+	for name := t.Name(); name != ""; {
+		if pool, ok := outboxTestPools.Load(name); ok {
+			return pool.(*store.Pool)
+		}
+		slash := strings.LastIndex(name, "/")
+		if slash < 0 {
+			break
+		}
+		name = name[:slash]
+	}
+	return nil
 }
 
 func enqueueOutbox(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) {
@@ -217,7 +254,10 @@ func outboxRows(t *testing.T, pool *store.Pool) int {
 // (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
 func isolatedOutboxPool(t *testing.T) *store.Pool {
 	t.Helper()
-	return store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
+	pool := store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
+	outboxTestPools.Store(t.Name(), pool)
+	t.Cleanup(func() { outboxTestPools.CompareAndDelete(t.Name(), pool) })
+	return pool
 }
 
 func outboxSuffix(t *testing.T) string {

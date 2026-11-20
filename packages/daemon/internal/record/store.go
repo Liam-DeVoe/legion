@@ -2807,19 +2807,21 @@ func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error 
 	if !json.Valid(row.Payload) {
 		return fmt.Errorf("enqueue %s for %s: payload is not JSON", row.Kind, row.Issue)
 	}
+	var id int64
 	var err error
 	if row.CreatedAt.IsZero() {
-		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil)
+		err = tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
+			values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil).Scan(&id)
 	} else {
-		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.CreatedAt, row.LeaseToken, row.LeaseUntil)
+		err = tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.CreatedAt, row.LeaseToken, row.LeaseUntil).Scan(&id)
 	}
 	if err != nil {
 		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}
+	noteFencedRow(ctx, id, row)
 	return nil
 }
 
@@ -2833,7 +2835,84 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 		string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil).Scan(&id); err != nil {
 		return 0, fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}
+	noteFencedRow(ctx, id, row)
 	return id, nil
+}
+
+// RefenceFactRows sets the fence of each row of the fact of ctx that NewFencedRow filled to the
+// fence its issue stands at in tx (ReadFence), the parts the stamp filled alone: the entry, and
+// the generation where the writer named none. It reads each issue once and writes one update for
+// it, which changes only the rows whose fence moved since they were queued.
+func (s *Postgres) RefenceFactRows(ctx context.Context, tx pgx.Tx) error {
+	rows := fencedRowsOf(ctx)
+	byIssue := map[string][]fencedRow{}
+	var issues []string
+	for _, row := range rows {
+		if _, seen := byIssue[row.issue]; !seen {
+			issues = append(issues, row.issue)
+		}
+		byIssue[row.issue] = append(byIssue[row.issue], row)
+	}
+	for _, issue := range issues {
+		fence, err := ReadFence(ctx, tx, s, issue, false)
+		if err != nil {
+			return fmt.Errorf("read the fence %s stands at when its fact commits: %w", issue, err)
+		}
+		entries, both := []int64{}, []int64{}
+		for _, row := range byIssue[issue] {
+			if row.stamp.generation {
+				both = append(both, row.id)
+			} else {
+				entries = append(entries, row.id)
+			}
+		}
+		if _, err := tx.Exec(ctx, `update outbox set payload = case
+				when id = any($2::bigint[]) then payload || jsonb_build_object('generation', $3::bigint, 'entry', $4::bigint)
+				else payload || jsonb_build_object('entry', $4::bigint) end
+			where (id = any($1::bigint[] || $2::bigint[]) and (payload->>'entry')::bigint is distinct from $4)
+				or (id = any($2::bigint[]) and (payload->>'generation')::bigint is distinct from $3)`,
+			entries, both, int64(fence.Generation), fence.Entry); err != nil {
+			return fmt.Errorf("set the fence of %s's rows to the one its fact leaves it at: %w", issue, err)
+		}
+	}
+	return nil
+}
+
+// IssuePodUID reads the pod issue's claims run in (Store.IssuePodUID) off the Sandbox locators
+// the claims table records: an issue pod's one container is every role's, so its claims that
+// may run a process name one pod, and a claim a stop left suspended may still name the pod it
+// ran in before.
+func (s *Postgres) IssuePodUID(ctx context.Context, tx pgx.Tx, issue string) (string, error) {
+	rows, err := tx.Query(ctx, `select distinct locator->'sandbox'->>'podUid', state not in ('suspended', 'failed', 'retired')
+		from claims where issue = $1 and locator->>'runtime' = 'sandbox' and coalesce(locator->'sandbox'->>'podUid', '') <> ''`, issue)
+	if err != nil {
+		return "", fmt.Errorf("read the pod %s's claims run in: %w", issue, err)
+	}
+	defer rows.Close()
+	var running, recorded []string
+	for rows.Next() {
+		var pod string
+		var live bool
+		if err := rows.Scan(&pod, &live); err != nil {
+			return "", fmt.Errorf("read the pod %s's claims run in: %w", issue, err)
+		}
+		if live {
+			running = append(running, pod)
+		}
+		recorded = append(recorded, pod)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("read the pod %s's claims run in: %w", issue, err)
+	}
+	pods := running
+	if len(pods) == 0 {
+		pods = recorded
+	}
+	slices.Sort(pods)
+	if pods = slices.Compact(pods); len(pods) == 1 {
+		return pods[0], nil
+	}
+	return "", nil
 }
 
 // pendingPhaseStart is an issue's queued start of a phase worker: the supervise start row that

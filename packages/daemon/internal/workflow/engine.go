@@ -785,6 +785,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// The route held the completion to the entry the role's phases row named when it checked it
+	// (intake.HandoffComplete.Entry); a return to work raises that entry as a move back does (R20
+	// of dispatch://INFRA-3320), and so does any other start of the phase since, so a completion
+	// whose entry the row has left by its commit is of the work of an entry before it, whatever
+	// head it names, and is refused with nothing recorded.
+	if current && fact.Entry != 0 && row.Entry != 0 && fact.Entry != row.Entry {
+		return refused("HANDOFF_STALE_ENTRY", fmt.Sprintf("%s handed the %s phase %s again after this completion was checked: it was checked at entry %d and the phase is on entry %d now, whatever head it names; nothing was recorded. End this turn without completing: the task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
+			issue.Key, fact.Role, reported, fact.Entry, row.Entry)), nil
+	}
 	pr, err := e.store.PullRequest(ctx, tx, fact.Issue)
 	if err != nil {
 		return intake.Result{}, err

@@ -167,8 +167,9 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 }
 
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
-// decide, and when decide answers rows it writes them and the release's mark together, so the
-// view the decision rests on and the mark that records it are one atomic act.
+// decide, with the transaction, in which decide reads the fence its rows carry
+// (record.NewFencedRow), and when decide answers rows it writes them and the release's mark
+// together, so the view the decision rests on and the mark that records it are one atomic act.
 //
 // The mark records the ids the rows were given: first_row and last_row are the release's own
 // first and last, which is how a row of this release is told from a row of one that is over
@@ -190,7 +191,7 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // written, as a fault of the rule that decided it rather than of the database: the save of the
 // workspace is asked of the role the mark names, so a release without one and without the
 // second rule's kind is a release nobody can carry out.
-func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
+func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(context.Context, pgx.Tx, pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
 	if project == "" || issue == "" {
 		return false, errors.New("an idle release needs its project and its issue")
 	}
@@ -203,7 +204,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		if err != nil {
 			return err
 		}
-		mark, err := decide(view)
+		mark, err := decide(ctx, tx, view)
 		if err != nil || len(mark.Rows) == 0 {
 			return err
 		}

@@ -96,7 +96,7 @@ func TestTheReadsKeyedOnTheCallersIssuesReadThoseIssuesWhateverTreeEachStores(t 
 	})
 
 	enqueue := func(tx pgx.Tx, issue string) int64 {
-		row, err := NewOutboxRow(issue, Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, now)
+		row, err := NewFencedRow(ctx, tx, records, issue, Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 		var id int64

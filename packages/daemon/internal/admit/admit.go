@@ -2910,8 +2910,10 @@ func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	return true
 }
 
+// enqueue queues payload for issue due at now, fenced by the run and phase entry issue stands at
+// (record.NewFencedRow), which the fact's settle sets again to where the fact leaves the issue.
 func (a *Admission) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload, now time.Time) error {
-	row, err := record.NewOutboxRow(issue, payload, now)
+	row, err := record.NewFencedRow(ctx, tx, a.store, issue, payload, now)
 	if err != nil {
 		return fmt.Errorf("build %s outbox row for %s: %w", payload.OutboxKind(), issue, err)
 	}

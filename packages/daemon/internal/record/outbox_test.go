@@ -113,7 +113,12 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
 	}
+	// Each payload carries the fence a writer of this release gives it (Fenced), which therefore
+	// round-trips with it: a fenced kind's run, phase entry and pod, and nothing on a kind that
+	// carries none.
+	fence := Fence{Generation: 3, Entry: 5, PodUID: "pod-of-legion-208"}
 	for _, payload := range payloads {
+		payload := Fenced(payload, fence)
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
 			ctx := context.Background()
 			st := migratedStore(t)
@@ -192,7 +197,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 	records := NewStore()
 	enqueue := func(issue string, payload OutboxPayload) {
 		t.Helper()
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow: %v", err)
 		}
@@ -245,6 +250,13 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 	if pending("LEGION-208") {
 		t.Fatalf("PersonHandoverPending(LEGION-208) = true after its row finished, want false")
 	}
+}
+
+// unrecordedRow is NewOutboxRow of payload carrying the fence an issue the store records nothing of
+// stands at (FirstFence), as a writer of this release queues it for such an issue
+// (NewFencedRow): what a test that queues a row of a fenced kind for an unrecorded issue builds.
+func unrecordedRow(issue string, payload OutboxPayload, at time.Time) (OutboxRow, error) {
+	return NewOutboxRow(issue, Fenced(payload, FirstFence), at)
 }
 
 // Every kind the outbox stores runs on exactly one lane, and LaneOf names the lane whose kinds
@@ -873,7 +885,7 @@ func TestAMessageArtifactIsRefusedUnlessDispatchWouldFileItUnderItsName(t *testi
 		post("r", strings.Repeat("x", MaxMessageArtifactBytes)),
 		{Body: "a message that links no document"},
 	} {
-		if _, err := NewOutboxRow("LEGION-208", payload, now); err != nil {
+		if _, err := unrecordedRow("LEGION-208", payload, now); err != nil {
 			t.Errorf("NewOutboxRow of a message whose artifact Dispatch takes as named = %v, want it queued", err)
 		}
 	}
@@ -1144,6 +1156,7 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskReply, Root: "LEGION-1", Ref: "dispatch://LEGION-2/comment/c-1", Actor: "user:alice"},
 		Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"},
 	} {
+		payload := Fenced(payload, FirstFence)
 		row, err := NewOutboxRow("LEGION-1", payload, now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
@@ -1449,6 +1462,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	}
 
 	for _, notice := range every {
+		// The notice carries the fence its writer gives it (Fenced), and so does what the publish
+		// keeps of it: the re-held copy is that notice's, of its row's run and phase entry.
+		notice := Fenced(notice, FirstFence).(Notice)
 		t.Run(string(notice.Kind), func(t *testing.T) {
 			if _, err := NewOutboxRow("LEGION-208", notice, paced); err != nil {
 				t.Fatalf("the notice the daemon writes is refused before any publish: %v", err)

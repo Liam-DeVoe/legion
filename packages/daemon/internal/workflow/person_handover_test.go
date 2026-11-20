@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 )
 
 // parkedRootView is Dispatch's view of LEGION-208 as the daemon's prepare stage reads it for a
@@ -58,7 +59,7 @@ func statusWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.Statu
 		if err := json.Unmarshal(payload, &write); err != nil {
 			t.Fatalf("decode status write %s: %v", payload, err)
 		}
-		writes = append(writes, write)
+		writes = append(writes, fencetest.Unfenced(write).(record.StatusWrite))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate status writes: %v", err)
@@ -323,12 +324,13 @@ func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testi
 	t.Run("a pending re-assertion row", func(t *testing.T) {
 		pool := migratedPool(t)
 		handOver := record.ReassertStatusWrite("todo", "backlog")
-		row, err := record.NewOutboxRow("LEGION-208", handOver, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
-		if err != nil {
-			t.Fatal(err)
-		}
 		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-			return record.NewStore().Enqueue(context.Background(), tx, row)
+			store := record.NewStore()
+			row, err := record.NewFencedRow(context.Background(), tx, store, "LEGION-208", handOver, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+			if err != nil {
+				return err
+			}
+			return store.Enqueue(context.Background(), tx, row)
 		}); err != nil {
 			t.Fatalf("queue the re-assertion row: %v", err)
 		}

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -516,7 +518,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 	}
 
 	var decided IdleDecision
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
 		decided = IdleRelease(view, now, idlePeriod, true, idleContract)
 		if !decided.Release {
 			return store.IdleReleaseMark{}, nil

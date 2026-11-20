@@ -335,10 +335,9 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 	mark := fmt.Sprintf("%s#%d", key, notice.Resends)
 	notice.Resends++
 	notice.ResendOf = reported.row
-	row, err := record.NewOutboxRow(issue, notice, due)
-	if err != nil {
-		return fmt.Errorf("the copy is a notice the outbox refuses: %w", err)
-	}
+	// The copy keeps the fence of the row it copies, which the publish carried (record.Notice):
+	// it is that row's notice, of that run and phase entry. A copy of a row a release before this
+	// one queued names none, and takes the fence its issue stands at now (record.NewFencedRow).
 	queued, superseded := false, false
 	// The re-hold is its own transaction, so it owns the commit hook the row's write registers
 	// (projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
@@ -358,6 +357,10 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 			return err
 		}
 		queued = true
+		row, err := record.NewFencedRow(scoped, tx, r.records, issue, notice, due)
+		if err != nil {
+			return fmt.Errorf("the copy is a notice the outbox refuses: %w", err)
+		}
 		// A copy of a catch-up whose row still claims decisions (the confirmed route's answer, in the
 		// row's own run) takes those claims over before the row finishes and its deletion releases
 		// them, so no other start or catch-up names what the copy will.

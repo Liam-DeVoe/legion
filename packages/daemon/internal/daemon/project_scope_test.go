@@ -78,7 +78,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 		}
 		// Due a minute ago, so an outbox that claimed across projects would run it before any row
 		// this daemon's admission enqueues.
-		row, err := record.NewOutboxRow(running, record.OrdinaryStatusWrite("in_progress", "todo", ""), now.Add(-time.Minute))
+		row, err := record.NewFencedRow(ctx, tx, records, running, record.OrdinaryStatusWrite("in_progress", "todo", ""), now.Add(-time.Minute))
 		if err != nil {
 			return err
 		}

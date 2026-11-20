@@ -183,15 +183,18 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 	return e.store.Enqueue(ctx, tx, row)
 }
 
-// queuedRow is the one place this package builds an outbox row (record.NewOutboxRow), so it is the
-// one place every task the daemon queues for a worker passes, whichever path composed it: the rows
-// enqueue and enqueueAt write (a wake's start among them, wakeRow, and a ready worker's catch-up,
-// readyWorkerTask), the start of a phase worker (startOrOwe, which every start Engine.started
-// builds comes through) and a root architect's start that claims the decisions it names
-// (EnqueueNaming). It is where a task takes what every task of its worker must name: the
-// daemon's two sentences of the reviewer's review round (namingTheReviewRound), always the last
-// two of each task of the reviewer, in each phase, so a kind of task added later cannot be queued
-// without them.
+// queuedRow is the one place this package builds an outbox row (record.NewFencedRow), so it is the
+// one place every effect the daemon queues for an issue passes, whichever path composed it: the
+// rows enqueue and enqueueAt write (a wake's start among them, wakeRow, and a ready worker's
+// catch-up, readyWorkerTask), the start of a phase worker (startOrOwe, which every start
+// Engine.started builds comes through) and a root architect's start that claims the decisions it
+// names (EnqueueNaming). It is where an effect takes the fence of its issue's run and phase entry
+// (record.Fence, R17 and R20 of dispatch://INFRA-3320), so no kind of effect added later can be
+// queued unfenced, and where a fact's own later moves set that fence again at the fact's settle
+// (record.Store.RefenceFactRows, SettleFact). It is also where a task takes what every task of
+// its worker must name: the daemon's two sentences of the reviewer's review round
+// (namingTheReviewRound), always the last two of each task of the reviewer, in each phase, so a
+// kind of task added later cannot be queued without them.
 //
 // Only a start of the reviewer that carries a task and does not hold the sentences already is
 // named, so no other row reads the record for them. Such a start reads the phase its issue stands
@@ -206,7 +209,7 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
 	start, ok := payload.(record.SuperviseRequest)
 	if !ok || start.Op != "start" || start.Task == "" || start.Role != claim.RoleReviewer || start.RoundNamed {
-		return record.NewOutboxRow(issue, payload, at)
+		return record.NewFencedRow(ctx, tx, store, issue, payload, at)
 	}
 	standing, err := store.Issue(ctx, tx, issue)
 	if err != nil {
@@ -225,7 +228,7 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	}
 	start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, row)
 	start.RoundNamed = true
-	return record.NewOutboxRow(issue, start, at)
+	return record.NewFencedRow(ctx, tx, store, issue, start, at)
 }
 
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the

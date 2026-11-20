@@ -256,7 +256,7 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 		t.Fatalf("lease the tester's stop row: %v", err)
 	}
 	// A notice for the architect is held by the pause; a controller notice is not.
-	held, err := record.NewOutboxRow("LEGION-208", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-210 is done"}, pausedAt)
+	held, err := record.NewOutboxRow("LEGION-208", record.Fenced(record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-210 is done"}, record.FirstFence), pausedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

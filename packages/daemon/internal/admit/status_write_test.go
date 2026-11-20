@@ -284,7 +284,7 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 					if tc.finished {
 						return
 					}
-					row, err := record.NewOutboxRow("LEGION-1", *tc.queued, fixedNow)
+					row, err := record.NewFencedRow(ctx, tx, records, "LEGION-1", *tc.queued, fixedNow)
 					if err != nil {
 						t.Fatalf("build the queued status write: %v", err)
 					}

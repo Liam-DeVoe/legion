@@ -906,12 +906,12 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	records := record.NewStore()
 	held := runningRoot(issue, phase.Held)
 	held.Hold = &record.Hold{From: phase.Implementing}
-	suspend, err := record.NewOutboxRow(issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: claim.RolePlanner, Generation: 1}, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, held); err != nil {
+			return err
+		}
+		suspend, err := record.NewFencedRow(ctx, tx, records, issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: claim.RolePlanner, Generation: 1}, time.Now().UTC())
+		if err != nil {
 			return err
 		}
 		return records.Enqueue(ctx, tx, suspend)

@@ -44,10 +44,7 @@ import (
 )
 
 func TestOutboxDropsSupersededStatusWrite(t *testing.T) {
-	row, err := record.NewOutboxRow("LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
-	if err != nil {
-		t.Fatalf("new outbox row: %v", err)
-	}
+	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
 	row.ID = 42
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "backlog"}}
 	runner := &outbox{log: quietLogger(), dispatch: client}
@@ -104,10 +101,7 @@ func TestOutboxWritesAPersonsHandoverOnlyWhileItsLabelAndStatusStand(t *testing.
 }
 
 func TestOutboxFinishesMessageAlreadyPostedBeforeCrash(t *testing.T) {
-	row, err := record.NewOutboxRow("LEGION-208", record.MessagePost{Body: "Pull request checks are blocked."}, time.Now())
-	if err != nil {
-		t.Fatalf("new outbox row: %v", err)
-	}
+	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "Pull request checks are blocked."}, time.Now())
 	row.ID = 44
 	client := &outboxDispatch{bodies: []string{"Pull request checks are blocked.\n\n<!-- legion-outbox:44 -->"}}
 	runner := &outbox{log: quietLogger(), dispatch: client}

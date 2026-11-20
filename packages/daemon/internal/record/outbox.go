@@ -261,11 +261,15 @@ type OwedStart struct {
 // OutboxPayload is the sealed vocabulary of payloads a workflow may enqueue.
 type OutboxPayload interface{ OutboxKind() OutboxKind }
 
-// ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
-// it carries. The holder and the issue's record are read when the row runs, not when it is
-// queued, so a re-admission, a second park or a person who claims the issue meanwhile each end
-// the row on their own, with no generation or holder to fence it.
-type ClaimRelease struct{}
+// ClaimRelease releases the issue's Dispatch claim: the row's issue column and its fence are the
+// whole of what it carries. The holder and the issue's record are read when the row runs, not when
+// it is queued, so a second park or a person who claims the issue meanwhile each end the row on
+// their own, and a late row of an earlier run or phase entry (Fence) releases nothing of the run a
+// return opened.
+type ClaimRelease struct {
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
+}
 
 func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
@@ -281,6 +285,10 @@ func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 type MessagePost struct {
 	Body     string           `json:"body"`
 	Artifact *MessageArtifact `json:"artifact,omitempty"`
+	// Generation and Entry are the issue's run and phase entry the message was queued at (Fence):
+	// a message of an earlier one is not posted.
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
 }
 
 // MessageArtifact is the markdown document a message links. Name is the slug Dispatch files it
@@ -506,6 +514,13 @@ type Notice struct {
 	// kind carries none and goes to the architect that owns its issue (the daemon's
 	// noticeArchitect).
 	To string `json:"to,omitempty"`
+	// Generation and Entry are the run and the phase entry of the row's issue the notice was
+	// queued at (Fence): a notice of an earlier one is not delivered. A controller notice is the
+	// project's and carries neither: it is the same notice converted before its row is fenced
+	// (workflow's noticeWithController). The publish keeps them, so a re-held copy is fenced as
+	// its row was (the daemon's reholdNotice).
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -1171,6 +1186,11 @@ type SuperviseRequest struct {
 	// check's look (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a
 	// cancelled idle release (the daemon's outbox). Each hands its role work it was already on, or
 	// work no phase entry numbers at all.
+	//
+	// A stop (StopOp: a suspend, an issue close or an idle release's role stop) carries in it the
+	// phase entry of its issue the stop was queued at instead (Fence.Entry), never zero, beside its
+	// Generation and PodUID: a stop of an earlier run or phase entry stops nothing of the run a
+	// return opened (R17 and R20 of dispatch://INFRA-3320).
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
@@ -1287,6 +1307,10 @@ type SuperviseRequest struct {
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
+	// PodUID is the pod a stop's claim ran in when the stop was queued (Fence.PodUID), "" where its
+	// claims recorded none: a stop does nothing to a claim whose process runs in another pod now.
+	// Every other op carries none.
+	PodUID string `json:"podUid,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -1397,15 +1421,21 @@ type LingerClose struct {
 
 func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 
-// IssueSuspend stops an issue's pod after its close has stopped every role, and deletes the
-// Sandbox the roles ran in (runtime.IssueSuspender). Both workflow generations and this row's ID
-// fence a later re-admission or start. The issue keeps nothing: an ephemeral disk is its pod's own
-// and goes with the pod, and a kept volume goes with the Sandbox, so a later todo re-enters the
-// issue fresh on a Sandbox its next launch makes.
+// IssueSuspend stops an issue's pod after its close or stop has stopped every role, and deletes
+// the Sandbox the roles ran in (runtime.IssueSuspender). It is fenced by the issue's own run and
+// phase entry (Generation and Entry) and by the pod it was queued for (PodUID, "" where the issue's
+// claims recorded none): a late row of an earlier run or entry, and one whose pod the issue no
+// longer runs, deletes nothing (R17 of dispatch://INFRA-3320). Tree and TreeGeneration are the tree
+// the issue's record stores and that tree root's generation, which the release before requires of
+// the row and which this release does not read. The issue keeps nothing: an ephemeral disk is its
+// pod's own and goes with the pod, and a kept volume goes with the Sandbox, so a later return
+// re-enters the issue on a Sandbox its next launch makes.
 type IssueSuspend struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
 	TreeGeneration uint64 `json:"treeGeneration"`
+	Entry          int64  `json:"entry,omitempty"`
+	PodUID         string `json:"podUid,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
@@ -1419,12 +1449,15 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 //
 // It stops nothing, so a release cancelled here costs only the save, and it sits before the
 // release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release and takes the stored bundle with it (outbox.cancelRelease).
+// the whole release and takes the stored bundle with it (outbox.cancelRelease). It is fenced as an
+// IssueSuspend is, by the issue's run, phase entry and pod.
 type IssueBundle struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
 	TreeGeneration uint64     `json:"treeGeneration"`
 	Role           claim.Role `json:"role"`
+	Entry          int64      `json:"entry,omitempty"`
+	PodUID         string     `json:"podUid,omitempty"`
 }
 
 func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
@@ -1434,8 +1467,8 @@ func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 // runtime's release (runtime.IssueReleaser), which suspends the issue's Sandbox and waits its pod
 // out, keeps a Sandbox that owns the issue's kept volume and deletes every other Sandbox with the
 // role Secrets it owns, and records the release with the size of the bundle the save stored.
-// Both workflow generations and this row's ID fence a start or a re-admission that came after, as
-// an IssueSuspend's do.
+// It is fenced as an IssueSuspend is, by the issue's run, phase entry and pod, and the release's
+// own mark and this row's ID fence a start that came after.
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
 // task, and the next wake for one of the roles brings a new pod that restores the bundle before
@@ -1445,6 +1478,8 @@ type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
 	TreeGeneration uint64 `json:"treeGeneration"`
+	Entry          int64  `json:"entry,omitempty"`
+	PodUID         string `json:"podUid,omitempty"`
 }
 
 func (IssueRelease) OutboxKind() OutboxKind { return OutboxKindIssueRelease }
@@ -1501,6 +1536,10 @@ func (RetentionEnd) OutboxKind() OutboxKind { return OutboxKindRetentionEnd }
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
+	// Generation and Entry are the issue's run and phase entry the message was queued at (Fence):
+	// a message of an earlier one is not published.
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
 }
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
@@ -1647,8 +1686,9 @@ func (PlanRecord) OutboxKind() OutboxKind { return OutboxKindPlanRecord }
 // the push that creates a branch of a large repository, where it takes a push that moves one. A
 // start of the issue waits while the row is unfinished (outboxInOrder).
 type IssueBranch struct {
-	// Generation is the issue generation the branch is created for. A row of an earlier generation,
-	// or of a tree that lingers, finishes without acting.
+	// Generation is the issue generation the branch is created for. A row of an earlier generation
+	// finishes without acting. The branch is the run's, so it names no phase entry: it stays
+	// across a stop (R20 of dispatch://INFRA-3320).
 	Generation uint64 `json:"generation"`
 }
 
@@ -1667,11 +1707,13 @@ func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 // (ProductionCheck.OpenedAt), since a later merge of the same issue replaces the check and counts
 // its looks from one again — zero names no instance and is not fenced. Reason is what the wake
 // is, for the look's wake and the log: the agent's own wake, or the retry of a look nobody
-// reported.
+// reported. Generation is the run whose check it wakes: the check follows the close, where the
+// issue stands at no phase entry, so it names none (R17 of dispatch://INFRA-3320).
 type CheckWakeDue struct {
-	Look     int       `json:"look"`
-	OpenedAt time.Time `json:"openedAt,omitzero"`
-	Reason   string    `json:"reason"`
+	Look       int       `json:"look"`
+	OpenedAt   time.Time `json:"openedAt,omitzero"`
+	Reason     string    `json:"reason"`
+	Generation uint64    `json:"generation,omitempty"`
 }
 
 func (CheckWakeDue) OutboxKind() OutboxKind { return OutboxKindCheckWake }
@@ -1681,16 +1723,20 @@ func (CheckWakeDue) OutboxKind() OutboxKind { return OutboxKindCheckWake }
 // OpenedAt is the check instance the look is of (ProductionCheck.OpenedAt): a later merge of the
 // same issue replaces the check and counts its looks from one again, and a bound row of the
 // replaced check's look must not end the new check's; zero names no instance and is not fenced.
+// Generation is the run whose check it bounds, as CheckWakeDue's.
 type CheckLook struct {
-	Look     int       `json:"look"`
-	OpenedAt time.Time `json:"openedAt,omitzero"`
+	Look       int       `json:"look"`
+	OpenedAt   time.Time `json:"openedAt,omitzero"`
+	Generation uint64    `json:"generation,omitempty"`
 }
 
 func (CheckLook) OutboxKind() OutboxKind { return OutboxKindCheckLook }
 
 // CheckBound is the whole check's bound, due at its bound_at: it starts the check's last look, or
-// defers while a look is open.
-type CheckBound struct{}
+// defers while a look is open. Generation is the run whose check it bounds, as CheckWakeDue's.
+type CheckBound struct {
+	Generation uint64 `json:"generation,omitempty"`
+}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 
@@ -1714,6 +1760,10 @@ type PhaseEnded struct {
 	// MergeForward is the merge forward the move into awaiting_children dropped before it landed
 	// (PullRequest.MergeForward with Landed empty), nil where it dropped none.
 	MergeForward *DroppedMergeForward `json:"mergeForward,omitempty"`
+	// Generation and Entry are the issue's run and phase entry the message was queued at (Fence):
+	// a message of an earlier one is not published. So are each role message's below.
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
 }
 
 // DroppedMergeForward is a merge forward a move into awaiting_children dropped before it landed
@@ -1774,6 +1824,8 @@ type HookPrompt struct {
 	Counts      map[string]int `json:"counts"`
 	PullRequest string         `json:"pullRequest,omitempty"`
 	Prompt      string         `json:"prompt"`
+	Generation  uint64         `json:"generation,omitempty"`
+	Entry       int64          `json:"entry,omitempty"`
 }
 
 func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
@@ -1833,10 +1885,12 @@ func (p HookPrompt) Message(issue string) string {
 // asked only once its row's publish reached a session, so an ask that finished undelivered is
 // lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
-	Role  claim.Role `json:"role"`
-	Round string     `json:"round"`
-	Pod   string     `json:"pod,omitempty"`
-	Text  string     `json:"text"`
+	Role       claim.Role `json:"role"`
+	Round      string     `json:"round"`
+	Pod        string     `json:"pod,omitempty"`
+	Text       string     `json:"text"`
+	Generation uint64     `json:"generation,omitempty"`
+	Entry      int64      `json:"entry,omitempty"`
 }
 
 func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
@@ -1884,9 +1938,11 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // its pull request is not open at Head), and when the merger's claim is failed or retired. A merger
 // with no claim yet is no end: the row waits for it.
 type MergeQueueRemoval struct {
-	Number int    `json:"number"`
-	Head   string `json:"head"`
-	Unread bool   `json:"unread,omitempty"`
+	Number     int    `json:"number"`
+	Head       string `json:"head"`
+	Unread     bool   `json:"unread,omitempty"`
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
 }
 
 func (MergeQueueRemoval) OutboxKind() OutboxKind { return OutboxKindMergeQueueRemoval }
@@ -2004,6 +2060,8 @@ type MergeForwardMessage struct {
 	Phase       phase.Phase      `json:"phase"`
 	PullRequest int              `json:"pullRequest"`
 	Why         ConflictWhy      `json:"why,omitempty"`
+	Generation  uint64           `json:"generation,omitempty"`
+	Entry       int64            `json:"entry,omitempty"`
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
@@ -2151,11 +2209,24 @@ func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (Outbox
 // newPayloadRefusal refuses a payload this release queues without what a row of its kind written
 // by an earlier release lacks, and which that row is still decoded without (DecodeOutboxPayload):
 // a re-parent seed names the issue's run (R17 of dispatch://INFRA-3320), while a row of
-// INFRA-4728's shape names none (ReparentSeed.ReleaseBefore). Its phase entry may be the zero
-// entry of an issue no phase has started, which is told all the same.
+// INFRA-4728's shape names none (ReparentSeed.ReleaseBefore), and its phase entry may be the zero
+// entry of an issue no phase has started, which is told all the same. Every kind that carries a
+// fence (FenceOf) names its issue's run, and every one that carries a phase entry names that
+// too (Fence: neither is ever zero), so no effect is queued that a later run or entry could not
+// tell from its own (decision 10 of dispatch://INFRA-4730). A pod may be named by none
+// (Fence.PodUID).
 func newPayloadRefusal(payload OutboxPayload) error {
 	if seed, ok := payload.(ReparentSeed); ok && seed.Generation == 0 {
 		return fmt.Errorf("a re-parent seed names the issue's generation when its parent changed")
+	}
+	fence, carries := FenceOf(payload)
+	switch {
+	case !carries:
+		return nil
+	case fence.Generation == 0:
+		return fmt.Errorf("a %s row names the run of its issue it is queued for (record.Fence)", payload.OutboxKind())
+	case fence.Entry == 0 && entryFenced(payload):
+		return fmt.Errorf("a %s row names the phase entry of its issue it is queued for (record.Fence)", payload.OutboxKind())
 	}
 	return nil
 }

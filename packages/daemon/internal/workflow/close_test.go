@@ -312,31 +312,33 @@ func issueSuspensions(t *testing.T, pool *pgxpool.Pool, issue string) []record.I
 
 // An issue close is fenced as a suspend is: it acts unless a newer start has run against the claim
 // — a person set the done child todo again, whose run it must not end — and a row without an id is
-// never dropped. It names no linger, so no root is read for it; a tree close acts on its linger
-// alone.
+// never dropped. Nor does a stop act that is of an earlier run or phase entry than the fence its
+// issue stands at (record.Fence): a return raises the entry, so a stop queued before it stops
+// nothing of the run the return opened. A caller that holds no fence weighs the row ids alone, and
+// a stop that names no fence (a row of the release before) is fenced by them alone.
 func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
-	until := time.Date(2026, 9, 23, 5, 0, 0, 0, time.UTC)
-	lingering := &record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Generation: 7, LingerUntil: &until}
+	at := &record.Fence{Generation: 7, Entry: 4}
 	for _, tc := range []struct {
 		name      string
 		id        int64
 		stop      record.SuperviseRequest
 		lastStart int64
-		root      *record.Issue
+		at        *record.Fence
 		want      bool
 	}{
 		{name: "an issue close no start followed", id: 10, stop: record.SuperviseRequest{Op: "issue_close"}, lastStart: 4, want: true},
 		{name: "an issue close a newer start superseded", id: 10, stop: record.SuperviseRequest{Op: "issue_close"}, lastStart: 11, want: false},
 		{name: "an issue close with no id", id: 0, stop: record.SuperviseRequest{Op: "issue_close"}, lastStart: 11, want: true},
-		{name: "an issue close of a lingering tree reads no root", id: 10, stop: record.SuperviseRequest{Op: "issue_close"}, lastStart: 11, root: lingering, want: false},
 		{name: "a suspend a newer start superseded", id: 10, stop: record.SuperviseRequest{Op: "suspend"}, lastStart: 11, want: false},
-		{name: "a tree close of its linger", id: 10, stop: record.SuperviseRequest{Op: "tree_close", Linger: 7}, lastStart: 11, root: lingering, want: true},
-		{name: "a tree close with no root", id: 10, stop: record.SuperviseRequest{Op: "tree_close", Linger: 7}, lastStart: 4, want: false},
+		{name: "a suspend of the entry its issue stands at", id: 10, stop: record.SuperviseRequest{Op: "suspend", Generation: 7, Entry: 4}, lastStart: 4, at: at, want: true},
+		{name: "a suspend of an earlier phase entry", id: 10, stop: record.SuperviseRequest{Op: "suspend", Generation: 7, Entry: 3}, lastStart: 4, at: at, want: false},
+		{name: "an issue close of an earlier run", id: 10, stop: record.SuperviseRequest{Op: "issue_close", Generation: 6, Entry: 4}, lastStart: 4, at: at, want: false},
+		{name: "a suspend that names no fence", id: 10, stop: record.SuperviseRequest{Op: "suspend"}, lastStart: 4, at: at, want: true},
 		{name: "a start is not a stop", id: 10, stop: record.SuperviseRequest{Op: "start"}, lastStart: 4, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := StopActs(tc.id, tc.stop, tc.lastStart, tc.root); got != tc.want {
-				t.Fatalf("StopActs(%d, %s, %d, %v) = %t, want %t", tc.id, tc.stop.Op, tc.lastStart, tc.root != nil, got, tc.want)
+			if got := StopActs(tc.id, tc.stop, tc.lastStart, tc.at); got != tc.want {
+				t.Fatalf("StopActs(%d, %s, %d, %+v) = %t, want %t", tc.id, tc.stop.Op, tc.lastStart, tc.at, got, tc.want)
 			}
 		})
 	}

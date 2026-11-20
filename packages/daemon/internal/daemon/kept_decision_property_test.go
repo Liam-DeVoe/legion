@@ -2863,11 +2863,11 @@ func (r *keptRun) treeTopic(topic string) *keptTree {
 
 func (r *keptRun) enqueue(issue string, payload record.OutboxPayload) {
 	r.t.Helper()
-	row, err := record.NewOutboxRow(issue, payload, time.Now())
-	if err != nil {
-		r.fatalf("build an outbox row: %v", err)
-	}
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		row, err := record.NewFencedRow(r.ctx, tx, r.records, issue, payload, time.Now())
+		if err != nil {
+			return err
+		}
 		return r.records.Enqueue(r.ctx, tx, row)
 	}); err != nil {
 		r.fatalf("enqueue an outbox row: %v", err)

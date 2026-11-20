@@ -1448,7 +1448,7 @@ func TestHeldRowsListsLifecycleRowsBehindTheirIssuesRunningOne(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload, at time.Time) int64 {
-		row, err := NewOutboxRow(issue, payload, at)
+		row, err := unrecordedRow(issue, payload, at)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 		var id int64
@@ -1658,7 +1658,7 @@ func TestDueRowsListsOnlyTheRowsALaneMayRunNow(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	}
@@ -1709,7 +1709,7 @@ func TestADueLifecycleRowWaitsWhileItsIssuesLifecycleRowRuns(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) int64 {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 		var id int64
@@ -1788,7 +1788,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1},
 			WorkspaceRemove{Linger: 1},
 		} {
-			row, err := NewOutboxRow("LEGION-208", payload, now)
+			row, err := unrecordedRow("LEGION-208", payload, now)
 			must(t, err)
 			must(t, records.Enqueue(ctx, tx, row))
 		}
@@ -1879,7 +1879,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1},
 			OrdinaryStatusWrite("done", "in_progress", ""),
 		} {
-			row, err := NewOutboxRow("LEGION-208", payload, now)
+			row, err := unrecordedRow("LEGION-208", payload, now)
 			must(t, err)
 			must(t, records.Enqueue(ctx, tx, row))
 		}
@@ -1979,7 +1979,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
@@ -2054,7 +2054,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
@@ -2135,7 +2135,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
@@ -2146,7 +2146,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	// The re-hold's copy, queued in a transaction of its own and carrying the row's claims.
 	var copyID int64
 	inTx(t, st, func(tx pgx.Tx) {
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			Resends: 1, ResendOf: catchUp, CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		copyID, err = records.EnqueueID(ctx, tx, row)
@@ -2212,7 +2212,7 @@ func TestAStartWaitsForItsIssuesBranch(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	}

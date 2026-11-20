@@ -9,29 +9,35 @@ import (
 )
 
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
-// lastStart the newest start the outbox ran against the claim (its last_start_row). The record of
-// the issue's tree root it is handed decides nothing now: it was read for a tree close alone, which
-// no release of this daemon queues and which acts on nothing. The outbox executor asks it of every
-// suspend and issue close, and StartFor of every queued stop, so all read one rule. A suspend — an
-// issue's stop, or an interrupted run's — a release — the idle pod's, which keeps the session and
-// the phase — and an issue close — an issue's close as done — act unless a newer start has already
+// lastStart the newest start the outbox ran against the claim (its last_start_row) and at, where
+// the caller holds it, the fence the stop's issue stands at now (record.Fence). The outbox
+// executor asks it of every suspend and issue close with the fence it reads where the stop acts,
+// and actingStop of every queued stop with none, so all read one rule. A suspend — an issue's
+// stop, or an interrupted run's — a release — the idle pod's, which keeps the session and the
+// phase — and an issue close — an issue's close as done — act unless a newer start has already
 // run: that start replaced the run the stop was written for, so acting would stop the run it began
 // and retire the task with it, whatever the retry timing was. A row with no id is not older than
-// anything: the store gives every row one, and an unknown id must not silently drop a stop. Any
-// other operation is not a stop.
-func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, _ *record.Issue) bool {
-	switch stop.Op {
-	case "suspend", "release", "issue_close":
-		return id <= 0 || id >= lastStart
-	default:
+// anything: the store gives every row one, and an unknown id must not silently drop a stop. Nor
+// does a stop act whose run or phase entry the issue has left (record.Fence.Outlives): a return
+// raises the entry, so a stop of the entry before it stops nothing of the run the return opened,
+// even before the return's own starts have run (R20 of dispatch://INFRA-3320). A caller that holds
+// no fence weighs the row ids alone. Any other operation is not a stop.
+func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, at *record.Fence) bool {
+	if !stop.Stops() {
 		return false
 	}
+	if queued, _ := record.FenceOf(stop); at != nil && at.Outlives(queued) {
+		return false
+	}
+	return id <= 0 || id >= lastStart
 }
 
 // actingStop is the newest queued stop of run that will still act when the outbox runs it
 // (StopActs), by row id, and 0 when no queued stop will. The last start the outbox ran against the
 // claim (record.RoleClaim.LastStartRow, 0 for a role the daemon holds no claim row of) is what every
-// stop is weighed against.
+// stop is weighed against. run's rows hold no phase entry of the issue, so a stop is weighed
+// against no fence: one the executor will find late is counted as one that acts, which keeps a
+// start owed rather than taking one away.
 //
 // Such a stop undoes every start older than it, and it may run before them, so every rule that
 // reads it counts only a queued start newer than it: StartFor, asking whether a role's start is
@@ -40,11 +46,11 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, _ *record
 // asking whether a start is a root architect's next move, and catch_up.go's queuedRowCovers,
 // asking whether a queued row covers a ready claim. One body is what keeps them from reading the
 // same rows differently.
-func actingStop(run record.RoleRun, root record.Issue) int64 {
+func actingStop(run record.RoleRun, _ record.Issue) int64 {
 	lastStart := lastStartRow(run)
 	var stop int64
 	for _, queued := range run.Queued {
-		if StopActs(queued.ID, queued.Request, lastStart, &root) {
+		if StopActs(queued.ID, queued.Request, lastStart, nil) {
 			stop = max(stop, queued.ID)
 		}
 	}

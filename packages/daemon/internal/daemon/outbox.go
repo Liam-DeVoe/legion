@@ -499,11 +499,13 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 		follow, told = rule.refused(r, row, value, cause)
 	case record.MessagePost:
-		notice, err := record.NewOutboxRow(row.Issue, messagePostRefused(row.Issue, value, cause), r.now().UTC())
-		if err != nil {
-			return err
+		follow = func(ctx context.Context, tx pgx.Tx) error {
+			notice, err := record.NewFencedRow(ctx, tx, r.records, row.Issue, messagePostRefused(row.Issue, value, cause), r.now().UTC())
+			if err != nil {
+				return err
+			}
+			return r.records.Enqueue(ctx, tx, notice)
 		}
-		follow = func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, notice) }
 		told = func() {
 			r.log.Error("outbox Dispatch message refused and dropped; its architect is told", "row", row.ID, "issue", row.Issue, "error", kept)
 		}
@@ -686,11 +688,13 @@ func statusRefusalTold(r *outbox, row record.OutboxRow, payload record.StatusWri
 	if errors.As(cause, &failure) {
 		wrote = failure.wrote
 	}
-	notice, err := record.NewOutboxRow(row.Issue, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
-	if err != nil {
-		return func(context.Context, pgx.Tx) error { return err }, nil
+	follow := func(ctx context.Context, tx pgx.Tx) error {
+		notice, err := record.NewFencedRow(ctx, tx, r.records, row.Issue, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
+		if err != nil {
+			return err
+		}
+		return r.records.Enqueue(ctx, tx, notice)
 	}
-	follow := func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, notice) }
 	told := func() {
 		r.log.Error("outbox status write refused by Dispatch; its architect is told what the issue holds now",
 			"row", row.ID, "issue", row.Issue, "status", payload.Status,
@@ -866,11 +870,20 @@ func waitsForTheRoute(kind record.OutboxKind) bool {
 	return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish
 }
 
-// run is the executor of row's kind.
+// run is the executor of row's kind. An effect whose executor follows no protocol of its own
+// across its run — a write to Dispatch, a message to a role, a seed, the branch, a production
+// check's row — is checked against its issue's fence first (outlived, fencedHere): a late one of
+// an earlier run or phase entry finishes there without acting. The notice, the supervise stops,
+// the pod's suspension, save and release check theirs where they act, each in its executor.
 func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+	}
+	if fencedHere(payload) {
+		if late, err := r.outlived(ctx, row, payload); err != nil || late {
+			return err
+		}
 	}
 	switch value := payload.(type) {
 	case record.StatusWrite:
@@ -945,6 +958,20 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
+}
+
+// fencedHere says whether run checks payload's fence before its executor runs (outlived): every
+// fenced kind (record.FenceOf) but the notice, whose catch-up hands over what it named when it
+// does not publish (deliverNotice), the supervise stops (supervise), and the pod's suspension,
+// save and release, which check theirs under the store's and the runtime's own fences
+// (suspendIssue, bundleIssueWorkspace, releaseIssue).
+func fencedHere(payload record.OutboxPayload) bool {
+	switch payload.(type) {
+	case record.Notice, record.SuperviseRequest, record.IssueSuspend, record.IssueBundle, record.IssueRelease:
+		return false
+	}
+	_, carries := record.FenceOf(payload)
+	return carries
 }
 
 func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) error {
@@ -1592,7 +1619,19 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // A row the wake pacing held to its turn (record.Notice.PacedAt) writes the line a wake writes,
 // once, on the attempt that publishes it (noticeAnswered's wakeRan, notice_exceptions.go):
 // running the row is the wake only if the architect is given the catch-up to read.
+//
+// A notice that is no catch-up is of the run and phase entry its issue stood at when it was
+// queued (record.Notice's fence), and one of an earlier one tells no architect anything of the
+// issue as it stands now: it finishes here, unpublished and unrouted (outlived). A catch-up is
+// judged by its own supersession instead (deliverNotice), against its run and its architect's
+// launch, since it names what the issue is owed whatever entry it stands at and what it claims is
+// handed over only by that rule.
 func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
+	if payload.CatchUp == nil {
+		if late, err := r.outlived(ctx, row, payload); err != nil || late {
+			return err
+		}
+	}
 	if err := r.deliverNotice(ctx, row, payload); err != nil {
 		return err
 	}
@@ -2589,11 +2628,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// The claim runs nothing, so there is nothing to suspend.
 			return nil
 		}
-		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too.
-		if last := machine.Claim().LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
-			r.log.Info("outbox suspend superseded by a newer start; finished without acting",
-				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
-			return nil
+		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too,
+		// with the fence its issue stands at and the pod its claim runs in (stopActs).
+		if acts, err := r.stopActs(ctx, row, payload, machine.Claim()); err != nil || !acts {
+			return err
 		}
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
@@ -2631,6 +2669,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			hold, why := releaseHold(decision.Cause)
 			return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 		}
+		// A role stop of an earlier run or phase entry than the issue stands at now is a release
+		// the pod was given work after (R20 of dispatch://INFRA-3320): the release is cancelled as
+		// any release a start overtook is, rather than this one role being skipped.
+		if late, err := r.outlived(ctx, row, payload); err != nil {
+			return err
+		} else if late {
+			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldOvertaken, "the issue was handed a later phase entry or run after its release was marked")
+		}
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
@@ -2657,10 +2703,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		if last := machine.Claim().LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
-			r.log.Info("outbox issue close superseded by a newer start; finished without acting",
-				"row", row.ID, "issue", issue.Key, "role", payload.Role, "start-row", last)
-			return nil
+		if acts, err := r.stopActs(ctx, row, payload, machine.Claim()); err != nil || !acts {
+			return err
 		}
 		if err := machine.Handle(ctx, supervise.RequestIssueClose{Claim: token}); err != nil {
 			return fmt.Errorf("close the issue of claim %s: %w", token, err)
@@ -2672,6 +2716,39 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	default:
 		return fmt.Errorf("outbox row %d has unknown supervise operation %q", row.ID, payload.Op)
 	}
+}
+
+// stopActs is whether payload, a suspend or an issue close the outbox runs as row, still acts on
+// held, the claim it stops: workflow.StopActs's rule over the row ids, weighed with the fence its
+// issue stands at now (a stop of an earlier run or phase entry stops nothing of a later one), and
+// the pod held runs in, which must be the pod the stop was queued for where both name one
+// (record.OutlivesPod). It logs why a stop does not act.
+func (r *outbox) stopActs(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, held supervise.Claim) (bool, error) {
+	fence, err := r.fenceOf(ctx, row.Issue, false)
+	if err != nil {
+		return false, err
+	}
+	if !workflow.StopActs(row.ID, payload, held.LastStartRow, &fence) {
+		r.log.Info("outbox stop superseded by a newer start, or of an earlier run or phase entry; finished without acting",
+			"row", row.ID, "op", payload.Op, "issue", row.Issue, "role", payload.Role, "start-row", held.LastStartRow,
+			"generation", payload.Generation, "entry", payload.Entry, "current_generation", fence.Generation, "current_entry", fence.Entry)
+		return false, nil
+	}
+	if pod := claimPod(held); record.OutlivesPod(payload.PodUID, pod) {
+		r.log.Info("outbox stop of a pod its claim no longer runs in; finished without acting",
+			"row", row.ID, "op", payload.Op, "issue", row.Issue, "role", payload.Role, "pod", payload.PodUID, "current_pod", pod)
+		return false, nil
+	}
+	return true, nil
+}
+
+// claimPod is the pod held's process runs in, "" for a claim that records no Sandbox locator: a
+// tmux claim's, or one with no process.
+func claimPod(held supervise.Claim) string {
+	if held.Locator == nil || held.Locator.Sandbox == nil {
+		return ""
+	}
+	return held.Locator.Sandbox.PodUID
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will
@@ -2701,11 +2778,16 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 	return nil
 }
 
-// suspendIssue is the issue_suspend executor, the durable effect of a close, a park, a linger or a
+// suspendIssue is the issue_suspend executor, the durable effect of a close, a stop or a
 // production check's look: the runtime suspends the issue's Sandbox under its pod lock once the
 // store authorizes the close (store.IssueSuspension), waits its pod out and deletes it
 // (runtime.IssueSuspender). A pod the runtime deleted, or found gone, once the store authorized
 // it, ends the pause's hold of that pod (podDeleted).
+//
+// The row is fenced by its issue's own run, phase entry and pod (record.IssueSuspend), read under
+// that same lock (podStands): a row of an earlier run or entry deletes no pod a return made, and
+// one queued for a pod the issue's claims no longer run in deletes nothing (R17 of
+// dispatch://INFRA-3320: a cleanup deletes only its own issue's pod).
 func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value record.IssueSuspend) error {
 	if r.supervisor == nil {
 		return errors.New("issue suspension executor has no claim supervisor")
@@ -2718,6 +2800,9 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 		TreeGeneration: value.TreeGeneration, Row: row.ID}
 	authorized := false
 	if err := suspender.SuspendIssue(ctx, row.Issue, value.Tree, func(ctx context.Context) (bool, error) {
+		if stands, err := r.podStands(ctx, row, value); err != nil || !stands {
+			return false, err
+		}
 		act, err := r.trees.IssueSuspension(ctx, r.project, closing, record.OutOfWorkflow)
 		authorized = act && err == nil
 		return act, err
@@ -2725,6 +2810,43 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 		return err
 	}
 	return r.podDeleted(ctx, row.Issue, "the issue's close, stop or production check deleted its pod")
+}
+
+// podStands says whether payload, row's effect on its issue's pod (a suspension, a save or a
+// release), still acts on the pod its issue stands at now: it is of the run and the phase entry
+// the issue stands at (record.Fence.Outlives), and the pod it was queued for is the one the
+// issue's Sandbox holds now, where both name one (record.OutlivesPod). That pod is the runtime's
+// own answer where it gives one (runtime.IssuePodReader), the pod a deletion would take, and
+// otherwise the one the issue's claims record (record.Store.IssuePodUID). An outbox with no store
+// reads no fence, as outlived says. It logs why it does not act.
+func (r *outbox) podStands(ctx context.Context, row record.OutboxRow, payload record.OutboxPayload) (bool, error) {
+	if r.pool == nil {
+		return true, nil
+	}
+	queued, _ := record.FenceOf(payload)
+	now, err := r.fenceOf(ctx, row.Issue, true)
+	if err != nil {
+		return false, err
+	}
+	if r.supervisor != nil {
+		if reader, ok := r.supervisor.deps.Runtime.(runtime.IssuePodReader); ok {
+			if pod, read := reader.IssuePod(row.Issue); read {
+				now.PodUID = pod
+			}
+		}
+	}
+	switch {
+	case now.Outlives(queued):
+		r.log.Info("outbox pod effect of an earlier run or phase entry of its issue; acts on no pod", "row", row.ID,
+			"kind", row.Kind, "issue", row.Issue, "generation", queued.Generation, "entry", queued.Entry,
+			"current_generation", now.Generation, "current_entry", now.Entry)
+		return false, nil
+	case record.OutlivesPod(queued.PodUID, now.PodUID):
+		r.log.Info("outbox pod effect of a pod its issue no longer runs; acts on no pod", "row", row.ID,
+			"kind", row.Kind, "issue", row.Issue, "pod", queued.PodUID, "current_pod", now.PodUID)
+		return false, nil
+	}
+	return true, nil
 }
 
 // podDeleted ends the hold a project's pause has on issue's pod once a row has deleted that pod
@@ -2781,6 +2903,14 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		// departure 4 of dispatch://INFRA-3759).
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
+	}
+	// A save of an earlier run or phase entry than the issue stands at, or of a pod its claims
+	// no longer run in, is of a release the pod was given work after: it is cancelled, as any
+	// release a start overtook is (podStands).
+	if stands, err := r.podStands(ctx, row, payload); err != nil {
+		return err
+	} else if !stands {
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldOvertaken, "the issue was handed a later phase entry, run or pod after its release was marked")
 	}
 	bundler, ok := r.supervisor.deps.Runtime.(runtime.WorkspaceBundler)
 	if !ok {
@@ -2862,12 +2992,22 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		hold, why := releaseHold(first.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
+	if stands, err := r.podStands(ctx, row, payload); err != nil {
+		return err
+	} else if !stands {
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldOvertaken, "the issue was handed a later phase entry, run or pod after its release was marked")
+	}
 	// The runtime reads the store again under its pod lock, which is what orders the teardown
 	// against a physical start, and that read is the one the pod is taken on: it is kept here
 	// and acted on below. A runtime that takes the pod without asking leaves this read's answer
-	// standing, which is the same release.
+	// standing, which is the same release. The read under the lock holds the row to its issue's
+	// fence too (podStands), whose failure is a cancel as a start that overtook the release is.
 	decision := first
 	authorize := func(ctx context.Context) (bool, error) {
+		if stands, err := r.podStands(ctx, row, payload); err != nil || !stands {
+			decision = store.ReleaseDecision{Act: store.ReleaseCancel, Cause: store.ReleaseCauseOvertaken}
+			return false, err
+		}
 		inner, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
 		if err != nil {
 			return false, err
@@ -3682,16 +3822,12 @@ func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) 
 // already has is left where it is. A start of the issue waits for this row (the lifecycle lane's
 // ordering rule, record.Store.DueRows and ClaimRow), so a create GitHub refuses holds back the
 // issue's roles, each attempt logged with GitHub's answer, until one passes. A row of a generation
-// the issue has left finishes without acting: the starts it held back act on none.
-func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload record.IssueBranch) error {
+// the issue has left finishes without acting before it gets here (run's fence, outlived): the
+// starts it held back act on none.
+func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, _ record.IssueBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
 		return err
-	}
-	if payload.Generation != issue.Generation {
-		r.log.Info("outbox issue branch serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
-			"generation", payload.Generation, "current", issue.Generation)
-		return nil
 	}
 	if err := r.createBranch(ctx, issue); err != nil {
 		return fmt.Errorf("create the branch of %s, which its roles' starts wait for: %w", issue.Key, err)
@@ -3747,4 +3883,41 @@ func (r *outbox) issue(ctx context.Context, key string) (record.Issue, error) {
 		return record.Issue{}, fmt.Errorf("workflow issue %s is not recorded", key)
 	}
 	return *issue, nil
+}
+
+// fenceOf is the fence issue stands at as the record holds it now (record.ReadFence), with the
+// pod its claims run in where withPod: what each effect of it is checked against where it
+// commits.
+func (r *outbox) fenceOf(ctx context.Context, issue string, withPod bool) (record.Fence, error) {
+	var fence record.Fence
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		fence, err = record.ReadFence(ctx, tx, r.records, issue, withPod)
+		return err
+	}); err != nil {
+		return record.Fence{}, fmt.Errorf("read the fence of %s: %w", issue, err)
+	}
+	return fence, nil
+}
+
+// outlived says whether payload, row's effect, queued at the fence it names (record.FenceOf),
+// does nothing to its issue as the record holds it now: an effect of an earlier run or phase
+// entry (record.Fence.Outlives), which finishes without acting (R17 and R20 of
+// dispatch://INFRA-3320). It logs the finish. A kind that carries no fence, and a row that names
+// none (one a release before this one queued), is outlived by nothing, and so is every row of an
+// outbox with no store (a test's, as an outbox with no supervisor publishes as before): it holds
+// no record to read a fence from.
+func (r *outbox) outlived(ctx context.Context, row record.OutboxRow, payload record.OutboxPayload) (bool, error) {
+	queued, carries := record.FenceOf(payload)
+	if !carries || queued.Generation == 0 && queued.Entry == 0 || r.pool == nil {
+		return false, nil
+	}
+	now, err := r.fenceOf(ctx, row.Issue, false)
+	if err != nil || !now.Outlives(queued) {
+		return false, err
+	}
+	r.log.Info("outbox row of an earlier run or phase entry of its issue; finished without acting", "row", row.ID,
+		"kind", row.Kind, "issue", row.Issue, "generation", queued.Generation, "entry", queued.Entry,
+		"current_generation", now.Generation, "current_entry", now.Entry)
+	return true, nil
 }

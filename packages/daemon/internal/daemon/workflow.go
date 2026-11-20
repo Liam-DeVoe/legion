@@ -1420,6 +1420,8 @@ func (w *workflowRuntime) ensureWorkspace(ctx context.Context, issue string, rep
 // their issue message through (supervision.enqueue), and the narrowest thing that gives
 // supervision an outbox at all: rows to write, and no engine, no admission and no Dispatch client
 // behind it. Rows given together land together or not at all, so a stall is never half told.
+// Each takes the fence of its issue's run and phase entry in the transaction that writes it
+// (record.NewFencedRow), as every effect the daemon queues does.
 //
 // It answers whether it wrote them. Supervision builds its rows from a claim's issue with no
 // record read, and a claim of another project's issue, which the operator's spawn makes under
@@ -1431,17 +1433,13 @@ func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, paylo
 	if !claim.KeyOfProject(w.dispatchProject, issue) {
 		return false, nil
 	}
-	rows := make([]record.OutboxRow, 0, len(payloads))
-	for _, payload := range payloads {
-		row, err := record.NewOutboxRow(issue, payload, time.Now().UTC())
-		if err != nil {
-			return false, fmt.Errorf("enqueue a %s row of %s: %w", payload.OutboxKind(), issue, err)
-		}
-		rows = append(rows, row)
-	}
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		for _, row := range rows {
+		for _, payload := range payloads {
+			row, err := record.NewFencedRow(scoped, tx, w.records, issue, payload, time.Now().UTC())
+			if err != nil {
+				return fmt.Errorf("enqueue a %s row of %s: %w", payload.OutboxKind(), issue, err)
+			}
 			if err := w.records.Enqueue(scoped, tx, row); err != nil {
 				return fmt.Errorf("enqueue a %s row of %s: %w", row.Kind, issue, err)
 			}

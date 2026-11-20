@@ -800,7 +800,7 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant c
 	// daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
 	scoped, committed := intake.WithCommitHooks(r.Context())
 	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
-		row, err := record.NewOutboxRow(grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
+		row, err := record.NewFencedRow(scoped, tx, s.records, grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -878,7 +878,7 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 		retry.NextAt = now.Add(childReleaseBackoff << (retry.Attempts - 1))
 		retry.Exhausted = retry.Attempts >= maxChildReleaseAttempts
 		if retry.Exhausted {
-			row, err := record.NewOutboxRow(grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
+			row, err := record.NewFencedRow(scoped, tx, s.records, grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
 				Reason: fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d releases; inspect the tree before trying again", child.Key, parent, retry.Attempts)}, now)
 			if err != nil {
 				return err

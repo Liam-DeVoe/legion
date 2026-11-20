@@ -220,7 +220,7 @@ func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, sc
 		if issue == nil || !record.Stopped(*issue) {
 			continue
 		}
-		row, err := record.NewOutboxRow(key, record.ClaimRelease{}, time.Now().UTC())
+		row, err := record.NewFencedRow(ctx, tx, w.records, key, record.ClaimRelease{}, time.Now().UTC())
 		if err != nil {
 			return err
 		}

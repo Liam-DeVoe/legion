@@ -306,12 +306,13 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 			}
 			enqueueRequest := func(payload record.SuperviseRequest) int64 {
 				t.Helper()
-				row, err := record.NewOutboxRow(child.Key, payload, fixedNow)
-				if err != nil {
-					t.Fatal(err)
-				}
 				inTx(t, pool, func(tx pgx.Tx) {
-					if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
+					store := record.NewStore()
+					row, err := record.NewFencedRow(context.Background(), tx, store, child.Key, payload, fixedNow)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := store.Enqueue(context.Background(), tx, row); err != nil {
 						t.Fatalf("enqueue %s: %v", payload.Op, err)
 					}
 				})

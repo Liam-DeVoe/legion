@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 )
 
 // The documents of the steps these tests gate. gateDoc is the root's primary document, which the
@@ -117,7 +118,7 @@ func noticesOfKind(t *testing.T, pool *pgxpool.Pool, issue string, kind record.N
 		if err := json.Unmarshal(payload, &notice); err != nil {
 			t.Fatalf("decode a %s notice of %s: %v", kind, issue, err)
 		}
-		notices = append(notices, notice)
+		notices = append(notices, fencetest.Unfenced(notice).(record.Notice))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the %s notices of %s: %v", kind, issue, err)

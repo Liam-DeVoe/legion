@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -201,7 +202,7 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		// Decoded from the stored rows, so each field above crossed the wire; the hold's `reason`
 		// is read off the row's own keys, since a notice that carried one as "" decodes the same.
 		for _, payload := range got {
-			if _, err := record.NewOutboxRow(root.Key, payload, time.Now()); err != nil {
+			if _, err := record.NewOutboxRow(root.Key, record.Fenced(payload, record.FirstFence), time.Now()); err != nil {
 				t.Fatalf("the %T the failure wrote is no valid outbox payload: %v", payload, err)
 			}
 		}
@@ -422,7 +423,7 @@ func noticeRows(t *testing.T, pool *pgxpool.Pool) []record.OutboxPayload {
 		if err != nil {
 			t.Fatalf("decode notice row %d: %v", row.ID, err)
 		}
-		payloads = append(payloads, payload)
+		payloads = append(payloads, fencetest.Unfenced(payload))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the notice rows: %v", err)
