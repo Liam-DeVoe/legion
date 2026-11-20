@@ -222,8 +222,10 @@ func (s *server) v2MeRows() []routeRow {
 				"dismissed_through where it is given. Each time is RFC3339 and no more than a minute ahead of the server " +
 				"(400 INVALID_STATE). Both forms at once, neither, and a malformed filter are 400 INVALID_QUERY. " +
 				markWriteText + " Needs the person scope, which a project-scoped session's token does not hold. A " +
-				"credential that proved a session, a token the secrets broker issued, writes the agent marks of that " +
-				"session alone: an agent item of another session is 403 SESSION_SCOPE, and no item is written.",
+				"credential that proved a session, a token the secrets broker issued, writes through items the agent " +
+				"marks of that session alone: an agent item of another session is 403 SESSION_SCOPE, and no item is " +
+				"written. The filter form names no session, so with kind agent it marks the agent replies of every " +
+				"session, as POST /api/v1/me/inbox/read does.",
 			Handler:  s.patchMarksV2,
 			Resource: "marks", Kind: kindCollection, Key: "{kind}/{id}",
 			Body: requestBody{Kind: bodyJSON, Type: marksPatchV2Input{}},
