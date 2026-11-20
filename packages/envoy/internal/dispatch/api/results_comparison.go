@@ -31,11 +31,11 @@ import (
 // and an answer it drops at the bound is the one place a read-only read may ask GitHub where a
 // writer's stored row would answer.
 
-// resultsNow is the moment a results read takes each of its moments from: Deps.ResultsClock's,
-// or time.Now's where that is nil, as it is in every deployment.
+// resultsNow is the moment a results read takes each of its moments from: server.resultsClock's,
+// or time.Now's where that is nil, as it is on every server the deployment builds.
 func (s *server) resultsNow() time.Time {
-	if s.deps.ResultsClock != nil {
-		return s.deps.ResultsClock()
+	if s.resultsClock != nil {
+		return s.resultsClock()
 	}
 	return time.Now()
 }
@@ -193,9 +193,8 @@ type baseBranchAnswer struct {
 }
 
 func newComparisonReader(ctx context.Context, s *server, at string) *comparisonReader {
-	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
 	reader := &comparisonReader{
-		server: s, readOnly: caller.readOnlyCredential() != nil, at: at, repos: map[string]repositoryAnswer{},
+		server: s, readOnly: readOnlyCredential(ctx) != nil, at: at, repos: map[string]repositoryAnswer{},
 		defaults:     map[string]defaultBranchAnswer{},
 		baseBranches: map[string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},

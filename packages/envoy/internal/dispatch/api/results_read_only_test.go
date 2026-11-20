@@ -290,7 +290,7 @@ const (
 // parityTestSession is the session both tokens act for.
 const parityTestSession = "ses_parity"
 
-// parityClock is the clock both stacks' results reads take each moment from (Deps.ResultsClock).
+// parityClock is the clock both stacks' results reads take each moment from (server.resultsClock).
 // It stands still until the test moves it.
 type parityClock struct {
 	mu sync.Mutex
@@ -500,7 +500,7 @@ func newParityPair(t *testing.T, appKey string) *parityPair {
 			app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: appKey},
 			githubAPIBase: parityStandIn(t, pair.github, calls),
 		})
-		rig.served.deps.ResultsClock = pair.clock.now
+		rig.served.resultsClock = pair.clock.now
 		rig.broker.Says(token, answer)
 		return &parityStack{who: who, rig: rig, calls: calls, token: token}
 	}

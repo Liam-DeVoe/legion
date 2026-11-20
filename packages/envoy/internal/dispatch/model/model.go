@@ -80,14 +80,17 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a credential that may only read: a broker-issued token that holds the scope
-	// read (brokertoken.Caller.ReadOnly), which the secrets broker minted from a read entry or
-	// narrowed to reading because its trade asked for read. Dispatch answers it 403
-	// READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
+	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
+	// its verifier decided is read-only (brokertoken.Caller.ReadOnly), which the secrets broker
+	// minted from a read entry or narrowed to reading because its trade asked for read; and a
+	// read-only personal token, a row of agent_read_tokens, which a person made holding read
+	// alone or beside person (personalTokenActor in internal/dispatch/api). Dispatch answers it
+	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
 	// before anything else the route does. The scope itself is not among Scopes: those are what a
 	// route can require of a credential, and read meets no route's requirement; it narrows what
 	// this credential may call rather than widening it. whoami lists it as ScopeRead after
-	// Scopes. False for every other credential.
+	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
+	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
 	// Cut is the past time a read-only credential reads at (brokertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
