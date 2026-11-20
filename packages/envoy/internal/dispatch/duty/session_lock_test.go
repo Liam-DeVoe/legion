@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // heldSessionLock takes a connection of leases and the session-level advisory lock key on it.
@@ -38,7 +39,7 @@ func requireLockFree(t *testing.T, pool *store.Pool, key int64) {
 		t.Fatalf("acquire a connection of the shared pool: %v", err)
 	}
 	defer other.Release()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var taken bool
 		if err := other.QueryRow(ctx, `select pg_try_advisory_lock($1)`, key).Scan(&taken); err != nil {
@@ -51,7 +52,7 @@ func requireLockFree(t *testing.T, pool *store.Pool, key int64) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("lock %d is still held by another session 5s after FreeSessionLock returned", key)
+			t.Fatalf("lock %d is still held by another session at the test's deadline after FreeSessionLock returned", key)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

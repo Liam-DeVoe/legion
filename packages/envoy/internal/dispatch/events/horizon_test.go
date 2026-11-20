@@ -461,15 +461,15 @@ func TestHorizonStaysBelowAnOpenLowerWrite(t *testing.T) {
 // Transaction ids are instance-wide, so another test's write (another package's tests share the
 // Postgres instance and run beside this one), or this process's background database drops, can
 // hold one while the observation runs and leave a snapshot that proves nothing. The quiet case is
-// therefore built again, pausing between attempts so those transactions can end, for up to
-// thirty seconds, and the test logs the attempt it took. Twenty attempts back to back were not
-// enough when the module's packages ran together on two CPUs.
+// therefore built again, pausing between attempts so those transactions can end, until the test's
+// deadline less its cleanup, and the test logs the attempt it took. Twenty attempts back to back
+// were not enough when the module's packages ran together on two CPUs.
 func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for attempt := 1; ; attempt++ {
 		horizon := NewHorizon(database.Pool)
 		id := commitHorizonEvent(ctx, t, database)
@@ -483,7 +483,7 @@ func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("after %d attempts over 30 s no single observation proved itself: Safe = %d after committing id %d, Gap = %d",
+			t.Fatalf("after %d attempts, at the test's deadline, no single observation proved itself: Safe = %d after committing id %d, Gap = %d",
 				attempt, safe, id, gap)
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -1214,9 +1214,9 @@ func TestAPersistedHorizonIsReadByALaterProcessAndNotAcrossAReset(t *testing.T) 
 
 	newest := commitHorizonEvent(ctx, t, database)
 	persisted := int64(0)
-	for deadline := time.Now().Add(30 * time.Second); persisted < newest; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); persisted < newest; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the persisted horizon = %d after %s, want at least %d", persisted, 30*time.Second, newest)
+			t.Fatalf("the persisted horizon = %d at the test's deadline, want at least %d", persisted, newest)
 		}
 		if _, err := first.Safe(ctx); err != nil {
 			t.Fatalf("observe: %v", err)

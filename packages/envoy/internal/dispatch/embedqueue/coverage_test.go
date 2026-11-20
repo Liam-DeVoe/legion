@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The identities the coverage tests configure: one place's, and another's a row may carry from
@@ -299,7 +300,7 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 		defer close(done)
 		Run(ctx, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		items, current, lacking, failed, oldest := coverage(t, database, configuredIdentity)
 		if items == int64(seeded) && current == items && lacking == 0 && failed == 0 && oldest == nil {
@@ -307,14 +308,16 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			cancel()
-			t.Fatalf("after 30s of Run: items %d current %d lacking %d failed %d oldest %v, want every item current", items, current, lacking, failed, oldest)
+			t.Fatalf("at the test's deadline Run had left items %d current %d lacking %d failed %d oldest %v, want every item current", items, current, lacking, failed, oldest)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	cancel()
+	returned, cancelReturned := testdeadline.Answered(t, context.Background())
+	defer cancelReturned()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-returned.Done():
 		t.Fatal("Run did not return after its context ended")
 	}
 }
@@ -635,7 +638,7 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 	go func() {
 		passDone <- Cover(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, writer, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, writer, 1, testdeadline.StartupBound(t)); waiting < 1 {
 		t.Fatal("the pass never waited on the live write's row; the interleaving did not happen")
 	}
 	if err := writer.Commit(ctx); err != nil {
@@ -1437,12 +1440,14 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 		<-done
 	}()
 
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case <-proxy.paused:
-	case <-time.After(15 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the scan loop's claim of SIDE-2 never reached the client")
 	}
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `
@@ -1465,7 +1470,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	time.Sleep(500 * time.Millisecond)
 	releaseProxy()
 
-	deadline = time.Now().Add(20 * time.Second)
+	deadline = time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		items, current, lacking, failed, _ := coverage(t, database, configuredIdentity)
 		if items == 3 && current == 3 {

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // ───── one owner's writers across the two builds ───────────────────────────
@@ -192,13 +193,13 @@ func (b *twoBuilds) startNamed(t *testing.T, previous bool, application string) 
 	return b.b
 }
 
-// queuedBackend waits up to within for a backend whose connections carry application, and whose
-// current statement matches statement, to queue behind a lock holder holds (storetest.QueuedBehind),
-// and answers its process id and statement.
-func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, application string, statement *regexp.Regexp, within time.Duration) (uint32, string) {
+// queuedBackend waits until the test's deadline less its cleanup for a backend whose connections
+// carry application, and whose current statement matches statement, to queue behind a lock holder
+// holds (storetest.QueuedBehind), and answers its process id and statement.
+func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, application string, statement *regexp.Regexp) (uint32, string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(within)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		rows, err := database.Pool.Query(ctx, `
 			select pid, query from pg_stat_activity
@@ -225,8 +226,8 @@ func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, applicati
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no backend of %s running a statement matching %s queued behind the lock the test holds within %s; its backends waiting on a lock: %+v",
-				application, statement, within, backends)
+			t.Fatalf("no backend of %s running a statement matching %s queued behind the lock the test holds before the test's deadline; its backends waiting on a lock: %+v",
+				application, statement, backends)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -240,7 +241,7 @@ type crossBuildWrite struct {
 }
 
 // send sends w on another goroutine and delivers its answer. Nothing bounds the request
-// (trySend), so a row receives the answer with answerWithin.
+// (trySend), so a row receives the answer with awaitAnswer.
 func (w crossBuildWrite) send() <-chan httpAnswer {
 	answered := make(chan httpAnswer, 1)
 	go func() {
@@ -253,21 +254,19 @@ func (w crossBuildWrite) send() <-chan httpAnswer {
 	return answered
 }
 
-// answerBound is how long a row waits for a write's answer: far longer than any write takes once
-// nothing the test holds keeps it waiting, and far shorter than the suite's -timeout of 30
-// minutes, so a write that never answers fails its row rather than hanging the test binary.
-const answerBound = 60 * time.Second
-
-// answerWithin waits up to within for the answer on answered, and fails the test naming what, the
-// write that never answered, when within passes first. The failure ends the test, so its deferred
-// rollbacks let go of what the test holds and its cleanups stop each process.
-func answerWithin(t *testing.T, answered <-chan httpAnswer, within time.Duration, what string) httpAnswer {
+// awaitAnswer waits for the answer on answered until the test's deadline less its cleanup, and
+// fails the test naming what, the write that never answered, when that deadline passes first: a
+// write that never answers fails its row rather than hanging the test binary. The failure ends the
+// test, so its deferred rollbacks let go of what the test holds and its cleanups stop each process.
+func awaitAnswer(t *testing.T, answered <-chan httpAnswer, what string) httpAnswer {
 	t.Helper()
+	deadline, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case answer := <-answered:
 		return answer
-	case <-time.After(within):
-		t.Fatalf("%s never answered within %s", what, within)
+	case <-deadline.Done():
+		t.Fatalf("%s never answered before the test's deadline", what)
 		return httpAnswer{}
 	}
 }
@@ -309,9 +308,9 @@ func raceAcrossBuilds(t *testing.T, builds *twoBuilds, pairing ownerLockPairing,
 		t.Fatalf("hold the issue's row: %v", err)
 	}
 	firstAnswered := first.send()
-	firstPID, _ := queuedBackend(t, builds.database, holder, previousApplication, firstStatement, 20*time.Second)
+	firstPID, _ := queuedBackend(t, builds.database, holder, previousApplication, firstStatement)
 	secondAnswered := second.send()
-	secondPID, waitingOn := queuedBackend(t, builds.database, holder, currentApplication, secondStatement, 20*time.Second)
+	secondPID, waitingOn := queuedBackend(t, builds.database, holder, currentApplication, secondStatement)
 	if pairing == sameProtocolPairing {
 		for _, queued := range []struct {
 			pid  uint32
@@ -326,8 +325,8 @@ func raceAcrossBuilds(t *testing.T, builds *twoBuilds, pairing ownerLockPairing,
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return answerWithin(t, firstAnswered, answerBound, "the "+builds.previousName()+"'s write of the race, once the lock on the issue was let go,"),
-		answerWithin(t, secondAnswered, answerBound, "this build's write of the race, once the lock on the issue was let go,"),
+	return awaitAnswer(t, firstAnswered, "the "+builds.previousName()+"'s write of the race, once the lock on the issue was let go,"),
+		awaitAnswer(t, secondAnswered, "this build's write of the race, once the lock on the issue was let go,"),
 		waitingOn
 }
 
@@ -352,7 +351,7 @@ func raceAcrossBuilds(t *testing.T, builds *twoBuilds, pairing ownerLockPairing,
 func TestTwoBuildsSerialiseOneOwnersWritersBothWays(t *testing.T) {
 	builds := newTwoBuilds(t)
 	previous := builds.startNamed(t, true, previousApplication)
-	pairing, err := ownerLockPairingOf(registeredOwnerLockProtocol(t, builds.database, previous, builds.previousName(), 30*time.Second))
+	pairing, err := ownerLockPairingOf(registeredOwnerLockProtocol(t, builds.database, previous, builds.previousName()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +517,7 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 	defer pause.Rollback(ctx)
 	patched := crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
 		body: `{"labels_add":["current-build"]}`}.send()
-	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite, 20*time.Second)
+	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite)
 	t.Logf("this build's PATCH waits in %q", waitingOn)
 
 	options := builds.options(nil)
@@ -530,13 +529,13 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 	var gatePID uint32
 	var gateQuery string
 	booted := false
-	for deadline := time.Now().Add(60 * time.Second); gatePID == 0 && !booted; {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); gatePID == 0 && !booted; {
 		if gatePID, gateQuery = gateWaiter(t, builds.database, patchPID); gatePID != 0 {
 			break
 		}
 		booted = previous.healthyWithin(t, 50*time.Millisecond) == nil
 		if !booted && time.Now().After(deadline) {
-			t.Fatalf("the %s neither served nor waited for the owner lock gate within 60s:\n%s", builds.previousName(), previous.Output.String())
+			t.Fatalf("the %s neither served nor waited for the owner lock gate before the test's deadline:\n%s", builds.previousName(), previous.Output.String())
 		}
 	}
 	labelPrevious := crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
@@ -544,7 +543,7 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 	if booted {
 		t.Errorf("the %s served %s after it started while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want its boot to wait at its dashboard publish for that PATCH (the owner lock gate)",
 			builds.previousName(), time.Since(started).Round(time.Millisecond))
-		if answer := answerWithin(t, labelPrevious.send(), answerBound, "the "+builds.previousName()+"'s PATCH, sent while this build's PATCH was still paused,"); answer.status != http.StatusOK {
+		if answer := awaitAnswer(t, labelPrevious.send(), "the "+builds.previousName()+"'s PATCH, sent while this build's PATCH was still paused,"); answer.status != http.StatusOK {
 			t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 		}
 		if err := pause.Rollback(ctx); err != nil {
@@ -570,11 +569,11 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 		previous.waitHealthy(t)
 		t.Logf("the %s served %s after this build's PATCH was let go, %s after it started", builds.previousName(),
 			time.Since(released).Round(time.Millisecond), time.Since(started).Round(time.Millisecond))
-		if answer := answerWithin(t, labelPrevious.send(), answerBound, "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
+		if answer := awaitAnswer(t, labelPrevious.send(), "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
 			t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 		}
 	}
-	if answer := answerWithin(t, patched, answerBound, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
+	if answer := awaitAnswer(t, patched, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
 		t.Fatalf("this build's PATCH answered %s", answer)
 	}
 	var labels []string
@@ -585,8 +584,8 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 		t.Errorf("the issue's labels are %v; want this build's and the %s's both: the label the %s added once it served was lost under this build's PATCH, which read the labels before it",
 			labels, builds.previousName(), builds.previousName())
 	}
-	if answer := answerWithin(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["current-build-again"]}`}.send(), answerBound, "this build's second PATCH"); answer.status != http.StatusOK {
+	if answer := awaitAnswer(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build-again"]}`}.send(), "this build's second PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("this build's second PATCH answered %s", answer)
 	}
 	current.WaitForOutput(t, rowModeLine)
@@ -624,7 +623,7 @@ func (w heartbeatWatch) gaps() []time.Duration {
 
 // watchHeartbeat reads the server_processes row of instance every 100 ms until the stop it returns
 // is called, which answers what it saw, or the test ends. The stop fails the test when the watch's
-// read in flight has not returned within answerBound.
+// read in flight has not returned by the test's deadline less its cleanup.
 func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop func() heartbeatWatch) {
 	done := make(chan struct{})
 	seen := make(chan heartbeatWatch, 1)
@@ -660,11 +659,13 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 	t.Cleanup(end)
 	return func() heartbeatWatch {
 		end()
+		answered, cancel := testdeadline.Answered(t, context.Background())
+		defer cancel()
 		select {
 		case watch := <-seen:
 			return watch
-		case <-time.After(answerBound):
-			t.Fatalf("the watch of server process %s's heartbeat had not stopped %s after it was told to", instance, answerBound)
+		case <-answered.Done():
+			t.Fatalf("the watch of server process %s's heartbeat had not stopped by the test's deadline after it was told to", instance)
 			return heartbeatWatch{}
 		}
 	}
@@ -705,7 +706,7 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	defer pause.Rollback(ctx)
 	patched := crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
 		body: `{"labels_add":["current-build"]}`}.send()
-	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite, 20*time.Second)
+	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite)
 	t.Logf("this build's PATCH waits in %q", waitingOn)
 	stopWatch := watchHeartbeat(t, builds.database, instance)
 
@@ -719,7 +720,7 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	started := time.Now()
 	previous := startPrevious()
 	var gateQuery string
-	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(20 * time.Millisecond) {
 		var gatePID uint32
 		if gatePID, gateQuery = gateWaiter(t, builds.database, patchPID); gatePID != 0 {
 			break
@@ -730,7 +731,7 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the %s's registration did not wait for the owner lock gate within 60s:\n%s", builds.previousName(), previous.Output.String())
+			t.Fatalf("the %s's registration did not wait for the owner lock gate before the test's deadline:\n%s", builds.previousName(), previous.Output.String())
 		}
 	}
 	waiting := time.Now()
@@ -761,7 +762,7 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	if err := pause.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if answer := answerWithin(t, patched, answerBound, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
+	if answer := awaitAnswer(t, patched, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
 		t.Fatalf("this build's PATCH answered %s", answer)
 	}
 	watch := stopWatch()
@@ -785,8 +786,8 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 		previous = startPrevious()
 	}
 	previous.waitHealthy(t)
-	if answer := answerWithin(t, crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["previous-build"]}`}.send(), answerBound, "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
+	if answer := awaitAnswer(t, crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["previous-build"]}`}.send(), "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 	}
 	var labels []string
@@ -796,8 +797,8 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	if !slices.Contains(labels, "previous-build") || !slices.Contains(labels, "current-build") {
 		t.Errorf("the issue's labels are %v; want this build's and the %s's both", labels, builds.previousName())
 	}
-	if answer := answerWithin(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["current-build-again"]}`}.send(), answerBound, "this build's second PATCH"); answer.status != http.StatusOK {
+	if answer := awaitAnswer(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build-again"]}`}.send(), "this build's second PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("this build's second PATCH answered %s", answer)
 	}
 	current.WaitForOutput(t, rowModeLine)

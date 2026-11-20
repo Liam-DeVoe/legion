@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The listed identities every exchange test is written against: pods of three accounts of one
@@ -681,11 +682,11 @@ func postToken(tokenURL string, form url.Values, proof string) tokenAnswer {
 }
 
 // waitForBlocked returns once a backend running a statement matching like waits on a lock that
-// blocker holds, failing after ten seconds. Matching on the blocker, not only the statement,
-// keeps a test of another package sharing the database from answering for this one.
+// blocker holds, failing at the test's deadline less its cleanup. Matching on the blocker, not only
+// the statement, keeps a test of another package sharing the database from answering for this one.
 func waitForBlocked(t *testing.T, pool *pgxpool.Pool, blocker uint32, like string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
@@ -701,10 +702,11 @@ func waitForBlocked(t *testing.T, pool *pgxpool.Pool, blocker uint32, like strin
 }
 
 // waitForWaiting returns once backend pid waits on a lock in a statement matching like, failing
-// at once if the operation running there returns first, and after ten seconds.
+// at once if the operation running there returns first, and at the test's deadline less its
+// cleanup.
 func waitForWaiting(t *testing.T, pool *pgxpool.Pool, pid uint32, like string, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 5*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 5*time.Millisecond, func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before it waited on a lock in a statement matching %s", err, like)

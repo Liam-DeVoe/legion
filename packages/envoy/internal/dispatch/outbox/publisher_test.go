@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // answered is a channel already holding err, the outcome of a test publisher that answers each
@@ -1105,9 +1106,11 @@ func TestLoadRootCommentAuthorsTerminatesOnACycle(t *testing.T) {
 			_, ok, err = found.rootCommentAuthor(commentID)
 		}
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-answered.Done():
 		t.Fatal("loadRootCommentAuthors did not terminate on a cyclic reply_to chain")
 	}
 	if err != nil {

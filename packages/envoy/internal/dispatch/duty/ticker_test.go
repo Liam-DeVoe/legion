@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // fixJitter makes every jittered wait draw what draw answers for its bound, until the test ends.
@@ -104,8 +105,9 @@ func TestRunJitteredDoesNotStartWhenIdle(t *testing.T) {
 	})
 }
 
-// runLeasedDeadline bounds each wait for a pass below: far longer than any tick here takes, so
-// reaching it is a pass that never came, not a slow one.
+// runLeasedDeadline bounds the wait for the step's passes in the row below, and is that row's
+// subject: far shorter than the row's hour interval, so a loop that held its ticks to the interval
+// fails here, and far longer than its four steps of 100 ms take.
 const runLeasedDeadline = 30 * time.Second
 
 // A loop that speeds up while work remains - the block-index reconciliation asks for a two-second
@@ -183,12 +185,14 @@ func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 	}()
 	defer func() { stop(); <-done }()
 
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case began := <-ran:
 		if first := began.Sub(started); first < interval {
 			t.Errorf("the first pass came %v after start; want one interval, %v, in", first, interval)
 		}
-	case <-time.After(runLeasedDeadline):
-		t.Fatalf("no pass in %v with an interval of %v", runLeasedDeadline, interval)
+	case <-answered.Done():
+		t.Fatalf("no pass before the test's deadline with an interval of %v", interval)
 	}
 }

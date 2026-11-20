@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // holdName is the name every hold test takes; each test runs on a database of its own.
@@ -147,7 +148,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	if _, err := locker.Exec(ctx, `select 1 from duty_holds where name = $1 for update`, holdName); err != nil {
 		t.Fatalf("lock the hold's row: %v", err)
 	}
-	if waiting := storetest.WaitForLockWaiters(t, locker, 1, 5*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, locker, 1, testdeadline.StartupBound(t)); waiting < 1 {
 		t.Fatal("no renewal queued behind the locked row")
 	}
 

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -1421,10 +1422,12 @@ func runQueue(t *testing.T, deps Deps) {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		returned, cancelReturned := testdeadline.Answered(t, context.Background())
+		defer cancelReturned()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("Run did not return within 10s of its context ending")
+		case <-returned.Done():
+			t.Error("Run did not return before the test's deadline after its context ended")
 		}
 	})
 }

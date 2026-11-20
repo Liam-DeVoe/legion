@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A lone loop of a fixed cadence - the compaction, issue-ask repair and prune loops, each on
@@ -48,13 +49,15 @@ func TestRunLeasedServesEveryPeriodOfALoneLoopWhosePassesTakeTime(t *testing.T) 
 	}()
 	defer func() { stop(); <-done }()
 
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	var got []time.Time
 	for len(got) < passes-1 {
 		select {
 		case boundary := <-recorded:
 			got = append(got, boundary)
-		case <-time.After(runLeasedDeadline):
-			t.Fatalf("the loop recorded %d periods in %v with an interval of %v; want %d", len(got), runLeasedDeadline, interval, passes-1)
+		case <-answered.Done():
+			t.Fatalf("the loop recorded %d periods before the test's deadline with an interval of %v; want %d", len(got), interval, passes-1)
 		}
 	}
 	for i := 1; i < len(got); i++ {

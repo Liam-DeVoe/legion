@@ -7,13 +7,13 @@ import (
 	"net"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // One query reads the sessions the primary documents of a whole batch's issues credit, keyed by
@@ -79,9 +79,11 @@ func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 		recipients, err = loadCommentRecipients(context.Background(), database.Pool,
 			[]string{first, nested, cyclic, "00000000-0000-0000-0000-000000000099"})
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("loadCommentRecipients did not end on a cyclic reply_to chain")
 	}
 	if err != nil {

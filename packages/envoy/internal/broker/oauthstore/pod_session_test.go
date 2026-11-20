@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // registrarA and registrarB are two daemons' login accounts, the registrars the writes below
@@ -501,13 +502,15 @@ func TestTwoDaemonsFirstWritesOfOneNameAdmitOne(t *testing.T) {
 		stored, err := first.RegisterPodSession(ctx, registrarA, podA, session, kA, 1)
 		firstDone <- writeAnswer{stored, err}
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	var pid uint32
 	select {
 	case pid = <-heldBy:
 	case a := <-firstDone:
 		t.Fatalf("%s's first write of %s = %+v, %v before it was held open, want it held after its insert", registrarA, session, a.stored, a.err)
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s's first write of %s was not held open after its insert within ten seconds", registrarA, session)
+	case <-answered.Done():
+		t.Fatalf("%s's first write of %s was not held open after its insert before the test's deadline", registrarA, session)
 	}
 
 	go func() {
@@ -516,7 +519,7 @@ func TestTwoDaemonsFirstWritesOfOneNameAdmitOne(t *testing.T) {
 	}()
 	var answer writeAnswer
 	returnedWhileHeld := false
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(10 * time.Millisecond) {
 		select {
 		case answer = <-secondDone:
 			returnedWhileHeld = true
@@ -530,7 +533,7 @@ func TestTwoDaemonsFirstWritesOfOneNameAdmitOne(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s's write of %s had neither returned nor waited on a lock behind %s's held write (backend %d) after ten seconds; the last poll saw the backends %v waiting behind it",
+			t.Fatalf("%s's write of %s had neither returned nor waited on a lock behind %s's held write (backend %d) by the test's deadline; the last poll saw the backends %v waiting behind it",
 				registrarB, session, registrarA, pid, waiting)
 		}
 	}

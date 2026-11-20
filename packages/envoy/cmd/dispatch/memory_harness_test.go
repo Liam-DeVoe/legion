@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -90,10 +91,11 @@ func (h *memoryHarness) waitForSettlement(t *testing.T, upload uploadResult) {
 }
 
 // waitForSettled waits until a document has settled every write it has had: the settlement that
-// has read every update deletes the document's doc_settlements_pending row as it commits.
+// has read every update deletes the document's doc_settlements_pending row as it commits. It waits
+// until the test's deadline less its cleanup.
 func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var owed bool
 		if err := h.database.Pool.QueryRow(context.Background(),
@@ -401,7 +403,7 @@ func (h *memoryHarness) pendingSettlements(t *testing.T) []string {
 func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service) (documents, items, itemBlocks, texts int) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	var cursors docs.BlockIndexCursors
 	// liveAheadTicks counts the ticks in a row that indexed nothing and found a document live
 	// ahead: a document whose stored text is ahead of its latest version is moved on by a
@@ -432,7 +434,7 @@ func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service)
 			liveAheadTicks = 0
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the block index was still owed %d documents, %d items, %d item blocks and %d texts two minutes into the drain: %s",
+			t.Fatalf("the block index was still owed %d documents, %d items, %d item blocks and %d texts at the test's deadline: %s",
 				tick.OwedDocuments, tick.OwedItems, tick.OwedItemBlocks, tick.OwedTexts, strings.Join(h.owedDocumentNames(t), "; "))
 		}
 		if indexed == 0 {
@@ -595,12 +597,6 @@ func requireNoBlockIndexPass(t *testing.T, window string) {
 // lease's own name, which Postgres hashes with hashtext.
 const blockIndexLeaseNamespace int32 = 0x4C4F4F50
 
-// blockIndexLeaseWait bounds the wait for the lease. A pass reads one batch of each queue it
-// serves and gives the lease back, seconds at most, so this is a hang guard on a wait nothing
-// healthy reaches and not a time the wait is meant to spend: a wait that reaches it means the
-// pass never gave its lease back, and the window cannot be measured with the pass held off.
-const blockIndexLeaseWait = 2 * time.Minute
-
 // holdBlockIndexLease takes the block-index pass's own lease (docs.BlockIndexLease) and answers
 // the call that gives it back. duty.Exclusive takes that lease before every pass and skips the
 // pass where another session holds it, so no block-index pass runs while this test holds it:
@@ -618,7 +614,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 	if err != nil {
 		t.Fatalf("take a connection for the block-index lease: %v", err)
 	}
-	deadline := time.Now().Add(blockIndexLeaseWait)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var held bool
 		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
@@ -631,8 +627,8 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 		}
 		if time.Now().After(deadline) {
 			conn.Release()
-			t.Fatalf("the block-index pass held the %q lease for more than %s, so this window could not be measured with the pass held off:\n%s",
-				docs.BlockIndexLease, blockIndexLeaseWait, p.outputTail())
+			t.Fatalf("the block-index pass held the %q lease until the test's deadline, so this window could not be measured with the pass held off:\n%s",
+				docs.BlockIndexLease, p.outputTail())
 		}
 		// pg_try_advisory_lock answers false rather than queueing behind the holder, so a pass
 		// running at this moment is waited out here: it gives the lease back when it ends.

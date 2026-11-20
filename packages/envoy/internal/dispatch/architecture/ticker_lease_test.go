@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // architectureLeases is the pool an import pass takes its lease on, the one cmd/dispatch gives
@@ -38,9 +39,11 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 			<-release
 		})
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the other caller never took the architecture-import lease")
 	}
 

@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -247,7 +248,7 @@ func (r *rig) publishAll(t *testing.T) {
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var unpublished int
 		if err := r.database.Pool.QueryRow(context.Background(), `

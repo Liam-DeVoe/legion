@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // process is one envoy-dispatch process's outbox under test: its own pool, its own events broker
@@ -110,9 +111,11 @@ func startProcess(t *testing.T, name string, database *store.Store, url string, 
 	go func() { p.outbox.Run(ctx); close(done) }()
 	p.stop = sync.OnceFunc(func() {
 		cancel()
+		stopped, cancelStopped := testdeadline.Answered(t, context.Background())
+		defer cancelStopped()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-stopped.Done():
 			t.Errorf("%s's outbox did not stop", name)
 		}
 	})
@@ -439,7 +442,7 @@ func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 	counter := &sendCounter{}
 	first := startProcess(t, "first", database, url, counter)
 	second := startProcess(t, "second", storetest.SecondProcess(t, database), url, counter)
-	waitForOnePublisher(t, 10*time.Second, first, second)
+	waitForOnePublisher(t, testdeadline.StartupBound(t), first, second)
 
 	var written []model.Event
 	deadline := time.Now().Add(10 * time.Second)
@@ -454,7 +457,7 @@ func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	for _, event := range written {
-		waitForPublished(t, 5*time.Second, database, counter, event)
+		waitForPublished(t, testdeadline.StartupBound(t), database, counter, event)
 	}
 }
 
@@ -1038,16 +1041,18 @@ func TestAFallbackPassThatFilledItsClaimLeavesTheHolderDueAgain(t *testing.T) {
 	served := make(chan holdEnd, 1)
 	go func() { served <- outbox.serve(ctx, hold) }()
 
-	waitFor(t, 30*time.Second, fmt.Sprintf("all %d held copies published", copies), func() bool {
+	waitFor(t, testdeadline.StartupBound(t), fmt.Sprintf("all %d held copies published", copies), func() bool {
 		return publishedCopies(t, database, commentID) == copies
 	})
 	cancel()
+	returned, cancelReturned := testdeadline.Answered(t, context.Background())
+	defer cancelReturned()
 	select {
 	case end := <-served:
 		if end != stopping {
 			t.Fatalf("serve ended %q, want it to stop with its context", end)
 		}
-	case <-time.After(10 * time.Second):
+	case <-returned.Done():
 		t.Fatal("serve did not return once its context ended")
 	}
 }
@@ -1143,7 +1148,7 @@ func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 	started := time.Now()
 	go func() { served <- outbox.serve(ctx, hold) }()
 
-	waitFor(t, 30*time.Second, "a second pass of the claim that keeps failing", func() bool {
+	waitFor(t, testdeadline.StartupBound(t), "a second pass of the claim that keeps failing", func() bool {
 		return failedClaims(&logged) >= 2
 	})
 	if waited := time.Since(started); waited < retry.BaseDelay {
@@ -1151,12 +1156,14 @@ func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 			waited, retry.BaseDelay)
 	}
 	cancel()
+	returned, cancelReturned := testdeadline.Answered(t, context.Background())
+	defer cancelReturned()
 	select {
 	case end := <-served:
 		if end != stopping {
 			t.Fatalf("serve ended %q, want it to stop with its context", end)
 		}
-	case <-time.After(10 * time.Second):
+	case <-returned.Done():
 		t.Fatal("serve did not return once its context ended")
 	}
 }

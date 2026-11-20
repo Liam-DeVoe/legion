@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A person's edit notice is a row, not a timer: a process killed while the notice is still inside
@@ -29,11 +30,11 @@ func TestEditNoticeRestart(t *testing.T) {
 	// A close drops whatever the socket has not delivered - the read loop that would have taken
 	// the update breaks on the closed connection instead - so the room has to hold the edit before
 	// the browser leaves, and the process's own read of the document is where it shows.
-	waitForDocumentText(t, first, artifactID, "after\n", 10*time.Second)
+	waitForDocumentText(t, first, artifactID, "after\n")
 	// The last browser leaving settles the room at once (settleLastPeer), so the edit's version and
 	// its notice are written without waiting out the settle delay.
 	editor.Close()
-	waitForNotice(t, database, artifactID, 10*time.Second)
+	waitForNotice(t, database, artifactID)
 	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the first process: %v", err)
 	}
@@ -49,10 +50,10 @@ func TestEditNoticeRestart(t *testing.T) {
 
 	second := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	second.waitHealthy(t)
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for humanEditedEvents(t, second, key) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("no artifact.human_edited within 15 s of the second process's start:\n%s", second.Output.String())
+			t.Fatalf("no artifact.human_edited before the test's deadline after the second process's start:\n%s", second.Output.String())
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -61,13 +62,13 @@ func TestEditNoticeRestart(t *testing.T) {
 	}
 }
 
-// waitForDocumentText waits up to within for the process to render artifactID's document as want:
-// the room has taken the editor's update, which is what the settlement the editor's close runs
-// settles.
-func waitForDocumentText(t *testing.T, process *dispatchProcess, artifactID, want string, within time.Duration) {
+// waitForDocumentText waits until the test's deadline less its cleanup for the process to render
+// artifactID's document as want: the room has taken the editor's update, which is what the
+// settlement the editor's close runs settles.
+func waitForDocumentText(t *testing.T, process *dispatchProcess, artifactID, want string) {
 	t.Helper()
 	var markdown string
-	if !testwait.Holds(within, 50*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 50*time.Millisecond, func() bool {
 		answer := process.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", http.StatusOK)
 		var document struct {
 			Markdown string `json:"markdown"`
@@ -78,15 +79,16 @@ func waitForDocumentText(t *testing.T, process *dispatchProcess, artifactID, wan
 		markdown = document.Markdown
 		return markdown == want
 	}) {
-		t.Fatalf("the room holds %q within %v of the editor's edit, want %q:\n%s",
-			markdown, within, want, process.Output.String())
+		t.Fatalf("the room holds %q at the test's deadline after the editor's edit, want %q:\n%s",
+			markdown, want, process.Output.String())
 	}
 }
 
-// waitForNotice waits up to within for artifactID's pending edit notice to be written.
-func waitForNotice(t *testing.T, database *store.Store, artifactID string, within time.Duration) {
+// waitForNotice waits until the test's deadline less its cleanup for artifactID's pending edit
+// notice to be written.
+func waitForNotice(t *testing.T, database *store.Store, artifactID string) {
 	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 50*time.Millisecond, func() bool {
 		var pending int
 		if err := database.Pool.QueryRow(context.Background(),
 			`select count(*) from document_edit_notices where artifact_id = $1`, artifactID).Scan(&pending); err != nil {
@@ -94,7 +96,7 @@ func waitForNotice(t *testing.T, database *store.Store, artifactID string, withi
 		}
 		return pending == 1
 	}) {
-		t.Fatalf("the person's settled edit wrote no edit notice within %v", within)
+		t.Fatalf("the person's settled edit wrote no edit notice before the test's deadline")
 	}
 }
 

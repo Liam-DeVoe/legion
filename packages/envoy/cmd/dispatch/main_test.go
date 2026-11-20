@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // signInEnvironment is a cookie-identity boot environment with all four sign-in settings.
@@ -1024,7 +1025,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 
 	first := start(database)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !probe(first) {
 		if time.Now().After(deadline) {
 			t.Fatal("healthz never reported the only outbox publishing")
@@ -1041,7 +1042,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	if probe(first) {
 		t.Fatal("healthz reported a stopped outbox publishing")
 	}
-	deadline = time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(testdeadline.StartupBound(t))
 	for !probe(second) {
 		if time.Now().After(deadline) {
 			t.Fatal("healthz never reported the standby publishing once the holder stopped")

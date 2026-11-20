@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // backDateKeyLease moves the lease the row under key holds back by, past the lease a repeat
@@ -81,7 +82,7 @@ func TestAKeyedWriteAProcessDiedRunningIsTakenOverOnceItsLeaseLapses(t *testing.
 		}
 		return rows == 1
 	}
-	for deadline := time.Now().Add(30 * time.Second); !held(); time.Sleep(50 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); !held(); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("process A never claimed the key:\n%s", pair.a.Output.String())
 		}

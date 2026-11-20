@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // giveBackFixture is a broker with one live box session of checkOperator and two agent-tier
@@ -262,12 +263,14 @@ func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
 				_, err := f.Values(t.Context(), f.grantID, f.enrollmentID, nil, requests.ReleaseCall{})
 				answered <- err
 			}()
+			deadline, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
 			select {
 			case err := <-answered:
 				if (err != nil) != failing {
 					t.Fatalf("the release answered %v, want a failure %t", err, failing)
 				}
-			case <-time.After(10 * time.Second):
+			case <-deadline.Done():
 				close(held)
 				t.Fatal("the release did not answer while its give-back was held")
 			}

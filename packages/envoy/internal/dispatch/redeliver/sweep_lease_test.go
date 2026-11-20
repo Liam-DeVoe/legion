@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // webhookRedeliveryLease is the name the running sweep takes its lease under, written here as the
@@ -92,9 +93,11 @@ func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 			<-release
 		})
 	}()
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the other caller never took the webhook-redelivery lease")
 	}
 
@@ -107,7 +110,7 @@ func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 		defer close(done)
 		sweeper.Run(ctx, time.Hour, leases)
 	}()
-	for deadline := time.Now().Add(20 * time.Second); logs.count("dispatch duty: leased pass skipped", "lease="+webhookRedeliveryLease) == 0; {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); logs.count("dispatch duty: leased pass skipped", "lease="+webhookRedeliveryLease) == 0; {
 		if time.Now().After(deadline) {
 			cancel()
 			t.Fatalf("the running sweep never reported skipping the %s lease:\n%s", webhookRedeliveryLease, logs)

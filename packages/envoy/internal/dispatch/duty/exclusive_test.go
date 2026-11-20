@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -291,7 +292,7 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	go func() {
 		answered <- duty.Exclusive(stopping, leases, name, time.Now(), time.Hour, func(context.Context) { passRan = true })
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 4*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, testdeadline.StartupBound(t)); waiting < 1 {
 		t.Fatal("the gate's period read never queued behind duty_passes")
 	}
 	stop()
@@ -309,12 +310,14 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 		t.Fatalf("release duty_passes: %v", err)
 	}
 
+	returned, cancelReturned := testdeadline.Answered(t, context.Background())
+	defer cancelReturned()
 	select {
 	case ran := <-answered:
 		if ran {
 			t.Error("a gate stopped while it read its period reported a pass that ran")
 		}
-	case <-time.After(10 * time.Second):
+	case <-returned.Done():
 		t.Fatal("the gate stopped while it read its period did not return")
 	}
 	if passRan {

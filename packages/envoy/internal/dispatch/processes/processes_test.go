@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -214,10 +215,10 @@ func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 	registration := mustRegister(t, database, "c1", "K0")
 	ageHeartbeat(t, database, registration.ID, time.Hour)
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !slices.Contains(liveIDs(t, database), registration.ID) {
 		if time.Now().After(deadline) {
-			t.Fatal("a registered process aged past the live window was not live again within 10 s of heartbeats")
+			t.Fatal("a registered process aged past the live window was not live again by the test's deadline")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -264,10 +265,10 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 		cancel()
 		<-done
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for rowExists(t, database, old.ID) {
 		if time.Now().After(deadline) {
-			t.Fatal("the prune loop did not delete a row whose heartbeat is ten minutes and a second old within 10 s")
+			t.Fatal("the prune loop did not delete a row whose heartbeat is ten minutes and a second old by the test's deadline")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -368,8 +369,8 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 			_, results[i] = register(t, database, "c1", setting)
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
-		t.Fatalf("%d registrations queued behind the held registry within 10 s, want both", waiting)
+	if waiting := storetest.WaitForLockWaiters(t, gate, 2, testdeadline.StartupBound(t)); waiting < 2 {
+		t.Fatalf("%d registrations queued behind the held registry before the test's deadline, want both", waiting)
 	}
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the registry: %v", err)
@@ -510,13 +511,13 @@ func livePeer(t *testing.T, tx pgx.Tx, setting string) string {
 	return id
 }
 
-// waitForLive waits up to 10 s of heartbeats for id to be live again.
+// waitForLive waits until the test's deadline less its cleanup for id to be live again.
 func waitForLive(t *testing.T, database *store.Store, id, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !slices.Contains(liveIDs(t, database), id) {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s was not live again within 10 s of heartbeats", what)
+			t.Fatalf("%s was not live again by the test's deadline", what)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -660,10 +661,10 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 	}
 	// Three heartbeats stamped after the peer was written.
 	last := heartbeat()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for stamped := 0; stamped < 3; {
 		if time.Now().After(deadline) {
-			t.Fatalf("the live process's heartbeat stamped its row %d times in 10 s, want 3", stamped)
+			t.Fatalf("the live process's heartbeat stamped its row %d times by the test's deadline, want 3", stamped)
 		}
 		if at := heartbeat(); at.After(last) {
 			last = at

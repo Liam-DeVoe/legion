@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The principals a session name is claimed for here, spelled as the exchange spells them: a listed
@@ -257,11 +258,13 @@ func raceForName(t *testing.T, s *oauthstore.Store, pool *pgxpool.Pool, session,
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit %q's claim of %q: %v", first, session, err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	var a answer
 	select {
 	case a = <-answers:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%q's claim of %q did not end within ten seconds of %q's claim committing", second, session, first)
+	case <-answered.Done():
+		t.Fatalf("%q's claim of %q did not end before the test's deadline once %q's claim committed", second, session, first)
 	}
 	return firstTaken, a.taken, a.err
 }
