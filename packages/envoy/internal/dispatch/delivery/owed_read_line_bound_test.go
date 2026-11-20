@@ -11,8 +11,8 @@ import (
 // While a stored rename target that is no owner/name stands, the read owed under the old name is
 // read in every pass, and each read fails where the target is split into owner and name. The line
 // the pass writes for it names the target, which is a stored setting of any length, so it names it
-// to the 140 characters the name rule's own refusal shows (splitRepo): the line holds at most 140
-// characters of a target of 3,500, beside its other text.
+// to the 140 characters the name rule's own refusal shows (refs.SplitGitHubRepo): the line holds at
+// most 140 characters of a target of 3,500, beside its other text.
 func TestTheLineOfAnOwedReadUnderATargetWithNoSlashNamesTheTargetToABound(t *testing.T) {
 	fastPageRetries(t)
 	logs := captureLogs(t)
@@ -49,7 +49,7 @@ func TestTheLineOfAnOwedReadUnderATargetWithNoSlashNamesTheTargetToABound(t *tes
 	}
 }
 
-// shownTargetRunes is the cut splitRepo shows a repository name to.
+// shownTargetRunes is the cut refs.SplitGitHubRepo shows a repository name to.
 const shownTargetRunes = 140
 
 // longestRun is the length of the longest run of r in text.

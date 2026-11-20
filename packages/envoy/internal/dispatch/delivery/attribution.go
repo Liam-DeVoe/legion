@@ -14,13 +14,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A pull request's issue is the first issue its five ranked sources name that resolves to the
-// repository the pull request is in: a candidate ranked above it that resolves to another
-// repository, or to no repository at all, is passed over, and a pull request no candidate of
-// which resolves here is attributed to nobody, with the source "none". Every candidate of one
-// source ranks above any of the next (attributedTerms):
+// A pull request's issue is the issue whose external link is the pull request's own URL, in any
+// repository, and else the first issue its other four ranked sources name that resolves to the
+// repository the pull request is in: a candidate of those four ranked above it that resolves to
+// another repository, or to no repository at all, is passed over, and a pull request no candidate
+// of which is held attributes nobody, with the source "none". Every candidate of one source ranks
+// above any of the next (attributedTerms):
 //
-//  1. the issue whose external link is the pull request's own URL;
+//  1. the issue whose external link is the pull request's own URL, whatever repository the issue
+//     resolves to;
 //  2. the issue whose external link is a GitHub issue the body cites, a full
 //     github.com/<owner>/<repo>/issues/<n> URL or a bare #N in the pull request's own repository,
 //     the first such citation in body order;
@@ -39,7 +41,13 @@ import (
 //
 // The holding to the repository is the server's one repository-resolution rule, spliced into the
 // same statement as the candidates (refs.IssueRepoTerms, attributionHeld), so what an
-// attribution believes an issue's repository is can never disagree with the issue page.
+// attribution believes an issue's repository is can never disagree with the issue page. The link
+// to the pull request's own URL is exempt from it (attributionHeldFor): a link is a deliberate
+// act, and Dispatch links one pull request to one issue only, so an issue whose work spans two
+// repositories links the pull request it has in the second one, and that pull request is the
+// issue's (R19 of the spec of several open pull requests). A name in a title, a body, a branch or
+// a commit is no such act, and it is held to the pull request's repository. A fork's head is held
+// nowhere (own_head).
 //
 // One statement reads the five sources at read time, from the texts of one read of GitHub and
 // from the database (attributedTerms, below). Sources 1 and 2 read Dispatch's external links,
@@ -84,7 +92,8 @@ func appendUnique(list []string, values ...string) []string {
 // first 25 is held to the pull request's repository.
 const attributionCandidateBound = 25
 
-// attributionHeld is the condition one candidate passes to be the pull request's issue: it
+// attributionHeld is the condition a candidate of every source but the issue's own link to the
+// pull request's URL passes to be the pull request's issue (attributionHeldFor): it
 // resolves, through the server's one repository-resolution rule (refs.IssueRepoTerms, joined by
 // refs.IssueRepoJoin in the enclosing statement), to the repository the expression repo reads.
 // It is never null — a candidate whose issue row is missing, and one whose parent chain ran out
@@ -102,6 +111,17 @@ const attributionCandidateBound = 25
 func attributionHeld(repo string) string {
 	return `coalesce(not ` + refs.IssueRepoTooDeep +
 		` and lower(` + refs.CanonicalRepoSQL(refs.IssueRepoResolved) + `) = lower(` + refs.CanonicalRepoSQL(repo) + `), false)`
+}
+
+// attributionHeldFor is the condition one candidate, named by the source the expression source
+// reads, passes to be the pull request's issue. The issue whose external link is the pull
+// request's own URL is held in any repository: a person links an issue to one pull request, and
+// the link names that pull request wherever it is (R19 of the spec of several open pull
+// requests). A candidate of any other source is held where attributionHeld holds it, to the
+// repository the expression repo reads. Neither holds a pull request whose head is in a fork,
+// which the statement's own_head refuses before it names any candidate.
+func attributionHeldFor(source, repo string) string {
+	return `(` + source + ` = '` + string(sourceExternalLink) + `' or ` + attributionHeld(repo) + `)`
 }
 
 // attributionSubjects is the `subjects` term of the statement (attributedTerms): the distinct
@@ -172,7 +192,9 @@ var linkURLAsPullRequest = LinkURLAsPullRequestSQL("l.url")
 // stored name, for the schema that holds the reading. A caller adds its own select over
 // `attributed`, one row for each judged pull request: repo (the canonical name), number,
 // stored_repo and timeline_repo (the names its results row and its timeline row are stored under,
-// null where it has none), has_facts, known, fallback, issue_key and source.
+// null where it has none), has_facts, known, fallback, issue_key, source and linked (the issue
+// is a link's, and does not resolve to the pull request's repository: a reader of the issue's own
+// repository leaves the pull request out, and a reader of its heads names its repository).
 //
 //   - now_reading: the identity of the reading that runs now, and whether any texts row is on
 //     another. Each of min and max is one probe of pull_request_texts_reading, whatever the
@@ -190,9 +212,10 @@ var linkURLAsPullRequest = LinkURLAsPullRequestSQL("l.url")
 //     row.
 //   - named to picked: the five sources in the order of the list at the top of this file, from
 //     facts whose head is the pull request's own repository's (own_head), bounded at
-//     attributionCandidateBound and held to the pull request's repository (attributionHeld). A
-//     tie of rank and place, two links of one URL in two letter cases, is ended by the key in byte
-//     order, so no collation, plan or row order picks the issue.
+//     attributionCandidateBound and held to the pull request's repository (attributionHeld), but
+//     for a link of the pull request's own URL, which is held in any repository. A tie of rank
+//     and place, two links of one URL in two letter cases, is ended by the key in byte order, so
+//     no collation, plan or row order picks the issue.
 //   - attributed: one of three states. The rule's answer where the pull request has facts: its
 //     texts are current, and its messages are read or a held candidate of a higher source
 //     decides. Not known where its texts are current, its messages are not read and no held
@@ -279,11 +302,11 @@ func attributedTermsOver(schema, judged, texts string) string {
 		from (select named.*, row_number() over (partition by pr_repo, pr_number order by rank, n, key collate "C") place from named) r
 		where place <= ` + strconv.Itoa(attributionCandidateBound) + `
 	), ` + attributionSubjects + `, ` + refs.IssueRepoTerms + `, held as (
-		select c.pr_repo, c.pr_number, c.key, c.source, c.rank, c.n
+		select c.pr_repo, c.pr_number, c.key, c.source, c.rank, c.n, ` + attributionHeld("c.pr_repo") + ` as in_repo
 		from candidates c left join issues i on i.key = c.key ` + refs.IssueRepoJoin + `
-		where ` + attributionHeld("c.pr_repo") + `
+		where ` + attributionHeldFor("c.source", "c.pr_repo") + `
 	), picked as (
-		select distinct on (pr_repo, pr_number) pr_repo, pr_number, key, source
+		select distinct on (pr_repo, pr_number) pr_repo, pr_number, key, source, in_repo
 		from held order by pr_repo, pr_number, rank, n, key collate "C"
 	), attributed as (
 		select b.repo, b.number, b.stored_repo, b.timeline_repo, b.fallback, ` + hasFacts + ` as has_facts,
@@ -291,7 +314,8 @@ func attributedTermsOver(schema, judged, texts string) string {
 			case when ` + hasFacts + ` then p.key when b.texts_current then null else b.fallback end as issue_key,
 			case when ` + hasFacts + ` then coalesce(p.source, '` + string(sourceNone) + `')
 				when b.texts_current then '` + string(sourceNone) + `'
-				else coalesce(b.stored_source, '` + string(sourceNone) + `') end as source
+				else coalesce(b.stored_source, '` + string(sourceNone) + `') end as source,
+			coalesce(` + hasFacts + ` and not p.in_repo, false) as linked
 		from batch b left join picked p on p.pr_repo = b.repo and p.pr_number = b.number
 	)`
 }
@@ -364,6 +388,7 @@ type attributionStatements struct {
 	headAttributedTo      string
 	newestPullRequestHead string
 	baseBranchMergedFor   string
+	baseBranchMergedIn    string
 	pullRequestsNotKnown  string
 	pullRequestsOfIssues  string
 	syncAttributions      string
@@ -382,6 +407,7 @@ func attributionStatementsFor(schema string) *attributionStatements {
 		headAttributedTo:      byIssue + headAttributedToSelect,
 		newestPullRequestHead: byIssue + newestPullRequestHeadSelect,
 		baseBranchMergedFor:   byIssue + baseBranchMergedForSelect,
+		baseBranchMergedIn:    byIssue + baseBranchMergedInSelect,
 		pullRequestsNotKnown:  attributedTerms(schema, notKnownJudged) + notKnownSelect,
 		pullRequestsOfIssues:  attributedTerms(schema, timelineByIssues) + pullRequestsOfIssuesSelect,
 		syncAttributions:      syncAttributionsStatement(schema),

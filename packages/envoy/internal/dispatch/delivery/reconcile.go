@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -202,7 +203,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	headErr := r.reconcilePullRequestHeads(ctx, now, absences)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
 	// logged. At the GetSettings arm there is no delivery_settings row to write it in, or none
-	// that could be read; at the splitRepo and permission arms below, r.fail does write
+	// that could be read; at the deploy_repo split and permission arms below, r.fail does write
 	// last_error into that row, but last_error holds the one failure that ended the pass and the
 	// step list that would carry a second one (failures, record) does not exist yet. It is a
 	// step that reads GitHub all the same, so the pass's attempt notes it, as recordRead does.
@@ -223,7 +224,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		return
 	}
 	production := settings.Production()
-	owner, repo, err := splitRepo(settings.DeployRepo)
+	owner, repo, err := refs.SplitGitHubRepo(settings.DeployRepo)
 	if err != nil {
 		logHeadFailure()
 		slog.Error("dispatch delivery: deploy_repo setting", "error", err)
@@ -461,19 +462,20 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 
 // searchResultRepo recovers "owner/repo" from a search result's HTML URL
 // (https://github.com/<owner>/<repo>/pull/<n>): GitHub's search-issues response does not carry a
-// separate repository field, only the issue/PR's own URL.
+// separate repository field, only the issue/PR's own URL. It cuts the URL itself rather than
+// through refs.SplitGitHubRepo, whose name rule refuses the "repo/pull/N" the URL's tail is; the
+// name it answers meets that rule again where any read splits it into a GitHub path.
 func (r *Reconcile) searchResultRepo(pr FetchedPullRequest) (string, error) {
 	const prefix = "https://github.com/"
 	if len(pr.URL) <= len(prefix) || pr.URL[:len(prefix)] != prefix {
 		return "", fmt.Errorf("pull request URL %q does not start with %s", pr.URL, prefix)
 	}
-	rest := pr.URL[len(prefix):]
-	owner, repoTail, err := splitRepo(rest)
-	if err != nil {
-		return "", fmt.Errorf("pull request URL %q: %w", pr.URL, err)
-	}
-	// repoTail is "repo/pull/N"; keep only the repo segment.
+	// The tail is "owner/repo/pull/N"; keep only the owner and repo segments.
+	owner, repoTail, _ := strings.Cut(pr.URL[len(prefix):], "/")
 	repoName, _, found := strings.Cut(repoTail, "/")
+	if owner == "" || repoName == "" {
+		return "", fmt.Errorf("pull request URL %q: no owner/repo", pr.URL)
+	}
 	if !found {
 		return "", fmt.Errorf("pull request URL %q: no /pull/ segment", pr.URL)
 	}

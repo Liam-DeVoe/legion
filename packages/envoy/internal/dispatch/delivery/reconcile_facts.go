@@ -76,7 +76,7 @@ func (r *Reconcile) readFactsOf(
 		token, err := installations.repositoryToken(ctx, r.github, target.ref.Owner, target.ref.Repo)
 		switch {
 		case err == nil:
-		case repositoryUnreadable(err):
+		case RepositoryUnreadable(err):
 			fail(settle(ctx, target, factsNoAnswer))
 			continue
 		case limited.keep(err):
@@ -337,7 +337,7 @@ func (r *Reconcile) factsEntries(ctx context.Context) ([]factsEntry, error) {
 			&entry.fallback, &entry.refusedAt, &entry.newest); err != nil {
 			return nil, fmt.Errorf("read the facts line: %w", err)
 		}
-		owner, repo, err := splitRepo(canonical)
+		owner, repo, err := refs.SplitGitHubRepo(canonical)
 		if err != nil {
 			slog.Warn("dispatch delivery: a pull request of the facts line names no repository GitHub can have", "repo", canonical, "number", entry.target.ref.Number, "error", err)
 			continue

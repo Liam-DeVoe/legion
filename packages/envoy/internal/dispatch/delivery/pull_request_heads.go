@@ -24,9 +24,10 @@ import (
 // the merged population delivery_pull_requests keeps. pull_request_texts holds the facts GitHub
 // answered with that head: the head repository, the base, the title, the body, and the commit
 // messages where a read stored them. No writer of those facts decides an issue. One statement
-// gives the issue at each read, from those facts (attributedTerms): the first issue its ranked
-// sources name that resolves to the repository the pull request is in, and only where the head
-// branch is in that same repository, never a fork's. Where the commit messages are not read and
+// gives the issue at each read, from those facts (attributedTerms): the issue that links the pull
+// request's own URL, in any repository, and else the first issue its other ranked sources name
+// that resolves to the repository the pull request is in; and only where the head branch is in
+// the pull request's own repository, never a fork's. Where the commit messages are not read and
 // no higher source decides, the issue is not known. Where no texts describe the stored head, the
 // issue is the one the results row stores (R4's fallback). A child's pull request is attributed
 // to the child, so it answers for the child's own checks alone and never for a check of an issue
@@ -549,12 +550,13 @@ func upsertHeadUnderCanonicalName(ctx context.Context, pool *store.Pool, head Pu
 // is open or merged: the test a `before_merge` result's commit passes to stand at one of the
 // heads its check is compared with. A closed-unmerged pull request's head proves nothing. A
 // pull request attributed to another issue never answers for this one, so a child's pull request
-// never answers for a check above it. The issue is the statement's (attributedTerms), and only a
-// pull request with a results row has a head to answer. While a read of GitHub is owed for the
-// pull request (owedReadJoin), Dispatch does not know that the stored head is the head, so it
-// answers false for it. It is the question HeadsAttributedTo answers for one commit; no route asks
-// it, because each recorded result reads its commit through (api/results.go,
-// readThroughPullRequests), and this package's tests read a basis through it.
+// never answers for a check above it. The issue is the statement's (attributedTerms), which gives
+// a pull request the issue links by its URL in any repository, and only a pull request with a
+// results row has a head to answer. While a read of GitHub is owed for the pull request
+// (owedReadJoin), Dispatch does not know that the stored head is the head, so it answers false for
+// it. It is the question HeadsAttributedTo answers for one commit; no route asks it, because each
+// recorded result reads its commit through (api/results.go, readThroughPullRequests), and this
+// package's tests read a basis through it.
 func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
 	statements, err := attribution()
 	if err != nil {
@@ -585,15 +587,23 @@ var headAttributedToSelect = `
 // times are nil. HeadKnown is false too while a read of GitHub is owed for the pull request, and
 // HeadSHA and the times are then those of its results row. RefusedAs and RefusedSince name how
 // GitHub refuses that owed read and since when (model.HeadNotRead), and are empty unless the owed
-// read is a refusal.
+// read is a refusal. LinkedRepo is the repository of a pull request the statement gives the issue
+// by a link of its URL in a repository the issue does not resolve to (attributedTerms' linked),
+// under its canonical name lowercased, and "" for every other pull request: the reader names that
+// repository beside the number, which alone would read as a pull request of the issue's own
+// repository. Repo is the canonical name of the pull request's repository (refs.CanonicalRepoSQL),
+// for every pull request, which the record route reads to say which repository holds a commit
+// that heads it (api/results_linked.go, refuseUnknownCommit).
 type AttributedHead struct {
 	Number       int
+	Repo         string
 	HeadSHA      string
 	HeadKnown    bool
 	CheckedAt    *time.Time
 	EventAt      *time.Time
 	RefusedAs    string
 	RefusedSince *time.Time
+	LinkedRepo   string
 }
 
 // HeadsAttributedTo is every open or merged pull request attributed to issueKey, newest learned
@@ -601,7 +611,9 @@ type AttributedHead struct {
 // descending: the whole list HeadAttributedTo answers one commit of, which the results read names
 // as what a `before_merge` check's results are compared with (R3). The issue is the statement's
 // (attributedTerms), so the two reads keep one rule, and a commit HeadAttributedTo answers yes for
-// is a commit this list holds. A pull request with no results row, and one owed a read of GitHub
+// is a commit this list holds. The statement gives the issue a pull request it links by its URL
+// in any repository, so the list holds such a pull request of another repository too, naming
+// that repository (LinkedRepo). A pull request with no results row, and one owed a read of GitHub
 // (owedReadJoin), is a head Dispatch has not read.
 //
 // The order of the heads that are read is by the later of the two times, with a row carrying
@@ -623,7 +635,7 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 		var head AttributedHead
 		var refusedAs *string
 		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.HeadKnown, &head.CheckedAt, &head.EventAt,
-			&refusedAs, &head.RefusedSince); err != nil {
+			&refusedAs, &head.RefusedSince, &head.LinkedRepo, &head.Repo); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 		}
 		if refusedAs != nil {
@@ -640,10 +652,11 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 // headsAttributedToSelect is HeadsAttributedTo's select over the statement's terms by issue: a
 // left join with heads, so a pull request with a timeline row only is listed with no head, and a
 // left join with its owed read (owedReadJoin), so a pull request owed a read is listed with its
-// stored head and HeadKnown false.
+// stored head and HeadKnown false. A pull request the statement gives by a link in a repository
+// the issue does not resolve to names that repository, lowercased.
 var headsAttributedToSelect = `
 	select a.number, coalesce(h.head_sha, ''), h.repo is not null and o.reason is null, h.checked_at, h.event_at,
-		o.refused_as, o.refused_since
+		o.refused_as, o.refused_since, case when a.linked then lower(a.repo) else '' end, a.repo
 	from attributed a left join heads h on h.j_repo = a.repo and h.j_number = a.number
 	` + owedReadJoin + `
 	where a.issue_key = $1 and (h.repo is null or h.state in ('open', 'merged'))
@@ -666,12 +679,16 @@ type NewestHead struct {
 // NewestPullRequestHead is the head of the open pull request of the highest number attributed
 // to issueKey, or, where none is open, the final head of its merged pull request of the highest
 // number, and false where Dispatch holds neither. GitHub's numbers rise, so the highest is the
-// newest. Both are heads HeadsAttributedTo lists, so a result at the commit answered here stands
-// at one of the heads a `before_merge` check compares its results with. A closed-unmerged pull
-// request is no head, and a pull request with no results row has none. The repository is the
-// canonical name (refs.CanonicalRepoSQL), which GitHub answers the head's check runs under
-// (api/results_ci.go), whatever name the row is stored under. A pull request owed a read is
-// answered as before, with ReadOwed true.
+// newest. A pull request of the repository the issue resolves to comes before one the issue links
+// in another repository (attributedTerms' linked), since the numbers of two repositories say
+// nothing of which is newer: an issue's own repository answers where it holds a pull request of
+// the issue, as it did before a link could give the issue one of another repository. Both are
+// heads HeadsAttributedTo lists, so a result at the commit answered here stands at one of the
+// heads a `before_merge` check compares its results with. A closed-unmerged pull request is no
+// head, and a pull request with no results row has none. The repository is the canonical name
+// (refs.CanonicalRepoSQL), which GitHub answers the head's check runs under (api/results_ci.go),
+// whatever name the row is stored under. A pull request owed a read is answered as before, with
+// ReadOwed true.
 func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string) (NewestHead, bool, error) {
 	statements, err := attribution()
 	if err != nil {
@@ -694,7 +711,7 @@ var newestPullRequestHeadSelect = `
 	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
 	` + owedReadJoin + `
 	where a.issue_key = $1 and h.state in ('open', 'merged')
-	order by h.state = 'open' desc, a.number desc
+	order by a.linked, h.state = 'open' desc, a.number desc
 	limit 1`
 
 // BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
@@ -715,10 +732,12 @@ var newestPullRequestHeadSelect = `
 // pull request's head and so no row's head_sha, and HeadAttributedTo — which asks whether a
 // commit is such a head — can never answer for it. Keying by the issue rests on the rule of the
 // statement (own_head, attributionHeld). The rule gives a pull request to an issue only where its
-// head is a branch of the repository that issue resolves to. So the branch this answers is one
-// the issue's own work merged into. A pull request whose texts do not describe its stored head
-// keeps the issue its results row stores (R4's fallback): an earlier answer of the statement
-// (SyncAttributions), or what a writer of the release before stored.
+// head is a branch of the pull request's own repository, and this reads the pull requests of the
+// repository the issue resolves to alone: one the issue links in another repository is
+// BaseBranchMergedIn's. So the branch this answers is one the issue's own work merged into. A
+// pull request whose texts do not describe its stored head keeps the issue its results row
+// stores (R4's fallback): an earlier answer of the statement (SyncAttributions), or what a writer
+// of the release before stored.
 //
 // An empty answer is "no branch to measure against", which a merged row carrying no base_ref
 // gives as much as no merged row at all. The column is declared not null with the empty string
@@ -746,7 +765,44 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string)
 const baseBranchMergedForSelect = `
 	select h.base_ref
 	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
-	where a.issue_key = $1 and h.state = 'merged'
+	where a.issue_key = $1 and not a.linked and h.state = 'merged'
+	order by h.event_at desc nulls last, a.number desc
+	limit 1`
+
+// BaseBranchMergedIn is BaseBranchMergedFor for repoFull, a repository issueKey does not resolve
+// to: the branch the newest merged pull request that the statement gives the issue by a link of
+// its URL in repoFull merged into (attributedTerms' linked), and "" where Dispatch holds no merge
+// of such a pull request. An issue whose work spans two repositories links the pull request it
+// has in the second one, and BaseBranchMergedFor reads the repository the issue resolves to
+// alone, so it never names that merge. The results read measures an `after_merge` result whose
+// commit the second repository holds against the branch answered here
+// (api/results_comparison.go).
+//
+// The rows are ordered as BaseBranchMergedFor orders them, and the empty answer means what its
+// empty answer means: no branch to measure against. A link to a pull request of the repository
+// the issue resolves to is no linked pull request, so a repoFull the issue resolves to answers
+// "". repoFull is compared without case with the canonical name of each pull request, as every
+// other comparison of a repository here is.
+func BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
+	statements, err := attribution()
+	if err != nil {
+		return "", err
+	}
+	var branch string
+	err = pool.QueryRow(ctx, statements.baseBranchMergedIn, issueKey, repoFull).Scan(&branch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the merged linked pull request base branch of %s in %s: %w", issueKey, repoFull, err)
+	}
+	return branch, nil
+}
+
+const baseBranchMergedInSelect = `
+	select h.base_ref
+	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
+	where a.issue_key = $1 and a.linked and lower(a.repo) = lower($2::text) and h.state = 'merged'
 	order by h.event_at desc nulls last, a.number desc
 	limit 1`
 
@@ -771,7 +827,10 @@ const (
 // (refs.CanonicalRepoSQL), the name a read of GitHub answers under, and StoredUnder names the row
 // as it is stored. The read writes the row under the canonical name and drops the row under the
 // old name (upsertHeadUnderCanonicalName), so a row stored under a name that was renamed away is
-// offered once.
+// offered once. A row whose canonical name GitHub does not allow (refs.SplitGitHubRepo) is
+// offered never: no read can reach it, so it is warned of and stamped read here, as a row of a
+// repository the App cannot read is stamped (MarkPullRequestHeadChecked), and leaves the front of
+// the next batches rather than holding one of its places every pass.
 func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestRef, error) {
 	rows, err := pool.Query(ctx, `
 		select h.repo, `+refs.CanonicalRepoSQL("h.repo")+`, h.number from pull_request_heads h
@@ -783,22 +842,29 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 		return nil, fmt.Errorf("list the stale pull request heads: %w", err)
 	}
 	defer rows.Close()
-	var stale []PullRequestRef
+	var stale, unnamed []PullRequestRef
 	for rows.Next() {
 		var stored, canonical string
 		var number int
 		if err := rows.Scan(&stored, &canonical, &number); err != nil {
 			return nil, fmt.Errorf("list the stale pull request heads: %w", err)
 		}
-		owner, repo, err := splitRepo(canonical)
+		owner, repo, err := refs.SplitGitHubRepo(canonical)
 		if err != nil {
 			logging.FromContext(ctx).Warn("dispatch delivery: a stale pull request head names no repository GitHub can have", "repo", stored, "number", number, "error", err)
+			unnamed = append(unnamed, PullRequestRef{Number: number, StoredUnder: stored})
 			continue
 		}
 		stale = append(stale, PullRequestRef{Owner: owner, Repo: repo, Number: number, StoredUnder: stored})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the stale pull request heads: %w", err)
+	}
+	rows.Close()
+	for _, ref := range unnamed {
+		if err := MarkPullRequestHeadChecked(ctx, pool, ref.StoredUnder, ref.Number, now); err != nil {
+			logging.FromContext(ctx).Warn("dispatch delivery: stamp a stale pull request head no read can reach", "repo", ref.StoredUnder, "number", ref.Number, "error", err)
+		}
 	}
 	return stale, nil
 }
@@ -976,7 +1042,7 @@ func storePullRequestFacts(
 		}
 		return answer(), stampHeadRead(ctx, pool, head, *checkedAt, bounded)
 	}
-	owner, repo, err := splitRepo(canonical)
+	owner, repo, err := refs.SplitGitHubRepo(canonical)
 	if err != nil {
 		return answer(), err
 	}
@@ -1063,8 +1129,11 @@ func stampHeadRead(ctx context.Context, pool *store.Pool, head PullRequestHead, 
 // settles such a read; the pass over the stored rows reads no refusal. A pull request GitHub
 // cannot find (ErrPullRequestNotFound), and a repository the App cannot read (no installation,
 // or a repository or resource its token is refused), are refusals and leave the row as it is,
-// stamped so the batch moves on and does not warn about the same row every pass; a rate limit
-// comes back as the *githubapp.RateLimitError. The refusal carries the read GitHub refused: the
+// stamped so the batch moves on and does not warn about the same row every pass. A canonical
+// name GitHub does not allow (refs.SplitGitHubRepo's refs.ErrNotGitHubRepo) is stamped the same
+// way, before any GitHub call, and comes back as that error, so the reconcile warns of the row on
+// the pass that stamps it and not on every pass; a rate limit comes back as the
+// *githubapp.RateLimitError. The refusal carries the read GitHub refused: the
 // repository's canonical owner and name, the number, and the installation token the read was
 // refused with, which pullRequestAbsent asks GitHub with. The row is stamped even when the commit
 // messages could not be read: this pass is itself the retry, so the next one reads it again in
@@ -1089,13 +1158,19 @@ func RefreshPullRequestHead(
 	if err != nil {
 		return nil, nil, err
 	}
-	owner, repo, err := splitRepo(canonical)
+	owner, repo, err := refs.SplitGitHubRepo(canonical)
 	if err != nil {
+		// No read of GitHub can reach a name GitHub does not allow, so the row is stamped as an
+		// unreadable one is, and the error goes back: the reconcile warns of it on the pass that
+		// stamps it rather than on every pass.
+		if stamp := MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now); stamp != nil {
+			return nil, nil, errors.Join(err, stamp)
+		}
 		return nil, nil, err
 	}
 	token, err := installations.repositoryToken(ctx, client, owner, repo)
 	if err != nil {
-		if repositoryUnreadable(err) {
+		if RepositoryUnreadable(err) {
 			return nil, &pullRequestRefusal{err: err, owner: owner, repo: repo, number: number}, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
 		return nil, nil, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
@@ -1106,7 +1181,7 @@ func RefreshPullRequestHead(
 	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
 	if err != nil {
-		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
+		if errors.Is(err, ErrPullRequestNotFound) || RepositoryUnreadable(err) {
 			return nil, &pullRequestRefusal{err: err, owner: owner, repo: repo, number: number, token: token}, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
 		return nil, nil, err
@@ -1118,12 +1193,17 @@ func RefreshPullRequestHead(
 	return &FetchedFacts{Canonical: canonical, Owner: owner, Repo: repo, Token: token, Payload: payload, Texts: texts}, nil, nil
 }
 
-// repositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
+// RepositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
 // installed on none that covers it (githubapp.ErrNoInstallation), or its token is refused the
-// repository or the resource (githubapp.ErrRepositoryUnreadable). Neither is this row's own
-// problem and neither mends itself within a pass, so the row is stamped read rather than warned
-// about and left at the front of every batch.
-func repositoryUnreadable(err error) bool {
+// repository or the resource (githubapp.ErrRepositoryUnreadable, a 403 or 404 that
+// githubapp.RateLimit does not read as a rate limit; the pull request read makes its own 404
+// ErrPullRequestNotFound instead). Both are GitHub's answer about the repository and not a read
+// that failed: no retry changes either until someone gives the App the repository, while a rate
+// limit, a 5xx and a transport failure are reads to make again. So the reconcile stamps the row
+// read rather than warning about it and leaving it at the front of every batch, and the results
+// route counts a pull request an issue links in such a repository for nothing, as it counts one
+// GitHub answers 404 for (api/results_linked.go, linkedRepositoryHolds).
+func RepositoryUnreadable(err error) bool {
 	return errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrRepositoryUnreadable)
 }
 
@@ -1174,7 +1254,7 @@ func repositoryUnreadable(err error) bool {
 // canonicalised before anything is asked of GitHub or written (refs.CanonicalRepo), and no row
 // is ever written under a name a repository was renamed away from. The read-time caller has
 // canonicalised that name already, and so has the record-time caller, which resolves through
-// the same helper (api/results_comparison.go, server.checkIssueRepository); the rule reaches the
+// the same helper (api/issue_repo.go, server.checkIssueRepository); the rule reaches the
 // canonical name in one step, so this read changes nothing for either. It is here because this
 // function's key is its argument's, not its caller's, and a caller that hands over a name it
 // has not canonicalised must still write no row under a name a repository was renamed away
@@ -1347,7 +1427,13 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		// (owePullRequestRead) until an operator corrects the target.
 		return headRead{}, markHeadNotStored(fmt.Errorf("the canonical name of %s: %v", given, err))
 	}
-	owner, repo, _ := strings.Cut(repoFull, "/")
+	// The split holds the name to the rule every read that puts a stored name into a GitHub path
+	// holds it to (refs.SplitGitHubRepo), which also refuses a name that is empty, `.` or `..`
+	// once a trailing `.git` is trimmed: such a canonical name is a head not stored too.
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
+	if err != nil {
+		return headRead{}, markHeadNotStored(fmt.Errorf("the canonical name of %s: %v", given, err))
+	}
 	covered, err := headReadCovers(ctx, in.pool, repoFull, number, envelopeTime(payload["updated_at"]))
 	if err != nil {
 		return headRead{}, markHeadNotStored(err)
@@ -1361,7 +1447,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	owed := owedRevision(ctx, in.pool, repoFull, number)
 	token, err := in.github.RepositoryToken(ctx, owner, repo)
 	if err != nil {
-		if repositoryUnreadable(err) {
+		if RepositoryUnreadable(err) {
 			return in.oweRefusedRead(ctx, repoFull, number, err)
 		}
 		return headRead{}, markHeadNotStored(fmt.Errorf("mint installation token for %s PR #%d: %w", repoFull, number, err))
@@ -1379,7 +1465,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	}
 	pull, err := fetchPullRequestPayload(ctx, in.github, token, owner, repo, number)
 	if err != nil {
-		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
+		if errors.Is(err, ErrPullRequestNotFound) || RepositoryUnreadable(err) {
 			return in.oweRefusedRead(ctx, repoFull, number, err)
 		}
 		return headRead{}, markHeadNotStored(err)
