@@ -381,6 +381,8 @@ jobs:
       ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
       find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
+      changed_files_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.changed_files_test }}
+      apt_install_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.apt_install_test }}
       merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
       edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
@@ -485,21 +487,36 @@ jobs:
       # outputs above are all 'true'.
       filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || steps.verdicts.outputs.verdicts }}
     steps:
-      # On pull_request dorny/paths-filter reads the file list from the API and never reads the
-      # tree; merge_group diffs with git and needs the clone (a merge group diffs its
-      # base_sha..head_sha, fetching what the clone lacks). A dispatched run clones too, and
-      # filters nothing.
-      - if: github.event_name != 'pull_request'
+      # The change's files are read once, by .github/scripts/changed-files.sh, and handed to the
+      # three paths-filter steps below as a repository of their own: paths-filter reads them with
+      # one try and no retry - on a pull request one GitHub API read per step, on a merge group one
+      # fetch of the group's base - and one answer of "this diff is temporarily unavailable due
+      # to heavy server load" failed this job, and every job waiting on it, on pull request #4449
+      # (run 44595619799, attempt 1). The script makes three attempts at each read, counted, and
+      # fails naming the read after the third; its header says how the repository it writes keeps
+      # every filter's verdict the one paths-filter's own read reached. The checkout is the .github
+      # cone, where the script is, and on a merge group the head the script diffs from; its own
+      # fetch is checkout's, which makes three attempts too. A dispatched run selects every job
+      # through the outputs above and filters nothing, so it runs none of these steps: a step
+      # that failed here would fail `changes`, whose result every job's `if:` reads.
+      - if: github.event_name != 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          sparse-checkout: .github
           persist-credentials: false
-      # A dispatched run selects every job through the outputs above, so there is nothing to
-      # filter, and paths-filter has no diff base on workflow_dispatch: a step that failed here
-      # would fail `changes`, whose result every job's `if:` reads.
+      - name: List the change's files
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/changed-files.sh "$RUNNER_TEMP/changed-files"
+      # `base: HEAD` makes paths-filter read the changes of the repository in working-directory,
+      # `git diff HEAD`, on every event, and reach neither the API nor origin.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name != 'workflow_dispatch'
         with:
+          base: HEAD
+          working-directory: ${{ runner.temp }}/changed-files
           # Each filter names every file its job reads: the package and what its tests, typecheck
           # and build read outside it; the composite actions the job installs its tools through;
           # for Go, the closure of the packages the job compiles (`go list -deps -test`), the
@@ -1028,6 +1045,8 @@ jobs:
             daemon_go_tests:
               - *ci_router
               - '.github/workflows/ci-job-daemon-go.yaml'
+              # The Install tmux step runs it.
+              - '.github/scripts/apt-install.sh'
               - *go_workspace
               - 'packages/daemon/**'
               - *daemon_envoy_deps
@@ -1304,6 +1323,8 @@ jobs:
             claude_envoy:
               - *ci_router
               - '.github/workflows/ci-job-claude-envoy.yaml'
+              # The Install zsh step runs it.
+              - '.github/scripts/apt-install.sh'
               # .bun-version is also read by scripts/build.ts:23: the build depends on the Bun it
               # pins.
               - *bun_install
@@ -1656,6 +1677,20 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/find-pr-payload.test.sh'
               - '.github/scripts/find-pr-payload.sh'
+            changed_files_test: &changed_files_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/changed-files.test.sh'
+              - '.github/scripts/changed-files.sh'
+              # changed-files.sh sources it for its retry ladder, which the harness counts.
+              - '.github/scripts/gh-read.sh'
+            apt_install_test: &apt_install_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/apt-install.test.sh'
+              - '.github/scripts/apt-install.sh'
             merge_group_cancels_test: &merge_group_cancels_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1831,6 +1866,8 @@ jobs:
               - *ci_ok_report_test
               - *ci_ok_reconcile_test
               - *find_pr_payload_test
+              - *changed_files_test
+              - *apt_install_test
               - *merge_group_cancels_test
               - *main_bypass_check_test
               - *edited_migrations_base_test
@@ -2079,6 +2116,8 @@ jobs:
         id: filter2
         if: github.event_name != 'workflow_dispatch'
         with:
+          base: HEAD
+          working-directory: ${{ runner.temp }}/changed-files
           predicate-quantifier: some-with-excludes
           filters: |
             # The groups the filters below share. Each is the first step's list pattern for
@@ -2397,6 +2436,8 @@ jobs:
             pi_envoy:
               - *ci_router
               - '.github/workflows/ci-job-pi-envoy.yaml'
+              # The Install tmux step runs it.
+              - '.github/scripts/apt-install.sh'
               - *bun_install
               - 'packages/pi-envoy/**'
               - 'packages/pi-shared/src/**'
@@ -2525,6 +2566,8 @@ jobs:
             dispatch_ui:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-ui.yaml'
+              # The Install zsh step runs it.
+              - '.github/scripts/apt-install.sh'
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
@@ -3519,6 +3562,8 @@ jobs:
         id: filter3
         if: github.event_name != 'workflow_dispatch'
         with:
+          base: HEAD
+          working-directory: ${{ runner.temp }}/changed-files
           predicate-quantifier: some-with-excludes
           filters: |
             # The groups the filters below share: the first step's list pattern for pattern,
@@ -5344,6 +5389,8 @@ jobs:
       ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ needs.changes.outputs.ci_ok_reconcile_test }}
       find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
+      changed_files_test: ${{ needs.changes.outputs.changed_files_test }}
+      apt_install_test: ${{ needs.changes.outputs.apt_install_test }}
       merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
       edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
