@@ -317,10 +317,11 @@ func DriftedExcerpts(ctx context.Context, q Queryer, limit int, at time.Time) ([
 // failed yet. The exponent is held at 30, past which every delay a caller passes is the ceiling,
 // so the doubling never leaves double precision.
 //
-// at is the moment the wait counts from, which the caller reads from the clock DriftedExcerpts
-// judges the row by: the reconciliation's own, clock.Real in production and a test's fake. It is
-// the caller's rather than the database's now() so that a test moves its clock past a backoff
-// instead of waiting out a minute of the database's.
+// at is the moment the wait counts from: the deferral's own, read as the caller defers, so a
+// document deferred late in a long pass still waits its whole backoff. The caller reads it from
+// the clock DriftedExcerpts judges the row by: the reconciliation's own, clock.Real in production
+// and a test's fake. It is the caller's rather than the database's now() so that a test moves its
+// clock past a backoff instead of waiting out a minute of the database's.
 func DeferExcerpts(ctx context.Context, q Execer, fromID string, version int, base, ceiling time.Duration, at time.Time) error {
 	if _, err := q.Exec(ctx, `
 		insert into reference_excerpt_backoff as b (artifact_id, version, attempts, next_attempt_at)

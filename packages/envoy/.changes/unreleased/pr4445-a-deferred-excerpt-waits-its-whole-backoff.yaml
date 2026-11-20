@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A document whose reference excerpts Dispatch defers after a long reconciliation pass waits its
+  whole backoff from the deferral. The backoff used to count from the moment the pass started, so a
+  document deferred after a pass that had run longer than its backoff was due again at once, and the
+  next pass read it again.
