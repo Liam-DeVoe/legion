@@ -1026,3 +1026,50 @@ func TestLegionMergeRerunRemovesTheMergeAKilledRunLeft(t *testing.T) {
 		})
 	}
 }
+
+// Another merge of the same two parents that appears while the run makes its own, as a second
+// `legion merge` in the same workspace or a role's `jj new` of the two would make it. The run
+// either makes its merge, holding git's merge, or exits 3 having made nothing: then no merge
+// commit of its own stays, and the only new visible commit is the other merge. A merge of its
+// own left by an exit 3 holds jj's merge of the parents, c where git's holds b, and the help's
+// "The command made nothing" is then false.
+func TestLegionMergeMakesNothingWhenAnotherMergeOfTheParentsAppears(t *testing.T) {
+	r := newMergeRepo(t)
+	r.minimalCase(2)
+	r.setEnv()
+	first, second := r.id(mergeFirst), r.id("main")
+	before := r.snapshot()
+	runner := &stepRunner{
+		step: func(args []string, _ [][]string) bool {
+			return slices.Contains(args, "new") && slices.Contains(args, "--message="+mergeMessage)
+		},
+		fail: func(ctx context.Context, c jjmerge.Command) ([]byte, error) {
+			other := jjmerge.Command{Dir: c.Dir, Args: []string{"jj", "--ignore-working-copy", "new", "--no-edit", first, second, "-m", "another run's merge"}}
+			if _, err := (jjmerge.Exec{}).Run(ctx, other); err != nil {
+				return nil, err
+			}
+			return jjmerge.Exec{}.Run(ctx, c)
+		},
+	}
+	var stdout, stderr strings.Builder
+	code := runMerge(context.Background(), runner, r.ws, mergeMessage, []string{mergeFirst, mergeSecond}, &stdout, &stderr)
+	if !runner.hit {
+		t.Fatalf("the merge never reached its jj new; it ran %q", runner.ran)
+	}
+	other := r.id(fmt.Sprintf(`children(%s) & children(%s) & description(substring:"another run's merge")`, first, second))
+	switch code {
+	case 0:
+		r.wantMergeHolds(mergeFirst, "main", "f", "b\n")
+	case 3:
+		want := slices.Sorted(slices.Values(append(slices.Clone(before.visible), other)))
+		if got := r.visible(); !slices.Equal(got, want) {
+			var merges []string
+			for _, id := range strings.Fields(r.read("log", "--no-graph", "-r", fmt.Sprintf("children(%s) & children(%s)", first, second), "-T", `commit_id ++ "\n"`)) {
+				merges = append(merges, fmt.Sprintf("%s holds %q at f, description %q", id, r.show(id, "f"), r.template(id, "description")))
+			}
+			t.Errorf("legion merge exited 3, and the visible commits are\n%q\nwant those before the command and the other merge\n%q\nthe merges of the two parents:\n%s\nstderr:\n%s", got, want, strings.Join(merges, "\n"), stderr.String())
+		}
+	default:
+		t.Errorf("legion merge = %d, want 0 or 3\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+}
