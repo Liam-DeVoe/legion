@@ -371,7 +371,17 @@ func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T)
 // after it, by an eviction or an update round or a park and unpark, has a workspace provisioned
 // from everything they pushed: sending it the bundle would run `jj edit` and
 // `jj bookmark set --allow-backwards` back over all of it.
+//
+// The same holds where the replacement pod's start had no time left to send the bundle: the
+// start still takes the pod's attempt, which the refusal closes.
 func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testing.T) {
+	t.Run("the replacement pod's start sends its bundle hop", func(t *testing.T) { replacementRefusedByClockSkew(t, false) })
+	t.Run("the replacement pod's start has no time left for its bundle hop", func(t *testing.T) { replacementRefusedByClockSkew(t, true) })
+}
+
+// replacementRefusedByClockSkew is TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt,
+// with the replacement pod's start left no time for its bundle hop where skipped is set.
+func replacementRefusedByClockSkew(t *testing.T, skipped bool) {
 	st := migratedStore(t)
 	saved := savedWorkspaceBundle()
 	// The node that took the bundle is a minute ahead of the API server that stamps the pods.
@@ -382,6 +392,9 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	}))
+	if skipped {
+		g.r.launchers.startReserve = time.Hour
+	}
 	spec := workerSpec(t)
 	g.spawn(spec)
 	refused := g.pod(SandboxName(spec.Claim))
@@ -399,6 +412,7 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 		t.Fatalf("delete the refused pod: %v", err)
 	}
 	g.advance(time.Hour)
+	g.r.launchers.startReserve = g.opts.TerminationGrace
 	g.eventually("the pod after the refused one", func() bool {
 		pod := g.pod(SandboxName(spec.Claim))
 		if pod == nil || pod.UID == refused.UID {

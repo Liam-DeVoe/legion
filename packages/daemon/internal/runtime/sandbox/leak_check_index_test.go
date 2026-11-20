@@ -552,11 +552,18 @@ func TestANegativeIndexPollIsRefused(t *testing.T) {
 const testStartReserve = time.Second
 
 // bundleSeam is a store of one saved workspace bundle for any pod, counting how often it was
-// asked for it: each ask is the bundle's one restore attempt spent.
-type bundleSeam struct{ takes atomic.Int32 }
+// asked for it: each ask is the bundle's one restore attempt spent. err, when set, is a store
+// that does not answer the ask.
+type bundleSeam struct {
+	takes atomic.Int32
+	err   error
+}
 
 func (b *bundleSeam) take(context.Context, string, string, time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	b.takes.Add(1)
+	if b.err != nil {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, b.err
+	}
 	return savedWorkspaceBundle(), runtime.WorkspaceBundleSend, nil
 }
 
@@ -612,8 +619,9 @@ func TestASilentHopLeavesTheStartItsReserve(t *testing.T) {
 }
 
 // A start with no more than its reserve left sends neither hop: no slice of the index, and no
-// slice of a saved bundle, whose one restore attempt it does not spend, since the store is not
-// asked. It sends its start frame, and says why it sent nothing before it.
+// slice of a saved bundle. It still takes the bundle's one restore attempt for its pod, so no
+// later start of the pod is sent the bundle over what this start's role does. It sends its start
+// frame, and says why it sent nothing before it.
 func TestAStartWithNoMoreThanItsReserveLeftSendsNeitherHop(t *testing.T) {
 	var logs lockedLog
 	seam := &bundleSeam{}
@@ -630,11 +638,68 @@ func TestAStartWithNoMoreThanItsReserveLeftSendsNeitherHop(t *testing.T) {
 	if frames := l.frames(); len(frames) != 1 || frames[0].FrameType() != shimwire.TypeLauncherStart {
 		t.Fatalf("the launcher was sent %v, want its start alone", frameTypes(frames))
 	}
-	if takes := seam.takes.Load(); takes != 0 {
-		t.Fatalf("the store was asked for the saved bundle %d time(s), want none: each ask spends its one restore attempt", takes)
+	if takes := seam.takes.Load(); takes != 1 {
+		t.Fatalf("the store was asked for the saved bundle %d time(s), want once: the ask is what closes this pod's one restore attempt", takes)
 	}
 	if text := logs.String(); strings.Count(text, "level=WARN") != 2 {
 		t.Fatalf("the daemon logged %q, want a warning for each hop it did not send", text)
+	}
+}
+
+// A start that skips the saved bundle's hop closes its pod's one restore attempt in the store, so
+// a later start in the same pod, with all the time it needs, is sent no slice of the bundle: the
+// pod's first role has worked in that workspace since, and a restore there would move the issue's
+// bookmarks back over that work. The bundle stays whole in the store.
+func TestALaterStartOfAPodWhoseBundleHopWasSkippedIsSentNoBundle(t *testing.T) {
+	st, saved := leakCheckStore(t)
+	var logs lockedLog
+	d := newLaunchers(nil, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle, nil, nil, slogTo(&logs))
+	d.startReserve = time.Hour
+	l := &indexLauncher{}
+	connectIndexLauncher(t, d, workerToken, "uid-pod-skipped", false, l)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 30*time.Second, time.Second))
+	defer cancel()
+	if err := d.start(ctx, workerToken, "uid-pod-skipped", shimwire.LauncherStart{ID: "start-with-little-left", Generation: 1, Argv: []string{"true"}}); err != nil {
+		t.Fatalf("the first start: %v", err)
+	}
+
+	d.startReserve = 0
+	later, cancelLater := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelLater()
+	err := d.start(later, workerToken, "uid-pod-skipped", shimwire.LauncherStart{ID: "a-later-start", Generation: 2, Argv: []string{"true"}})
+	if got := countOf(l.frames(), shimwire.TypeLauncherBundle); got != 0 {
+		t.Fatalf("the later start of the pod was sent %d slice(s) of the saved bundle (%v), want none: the first start closed the pod's attempt", got, frameTypes(l.frames()))
+	}
+	if err != nil {
+		t.Fatalf("the later start: %v", err)
+	}
+	if size, held, err := st.WorkspaceBundleSize(context.Background(), testTree); err != nil || !held || size != len(saved.Bundle) {
+		t.Fatalf("the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
+	}
+	if text := logs.String(); !strings.Contains(text, "stays in the daemon's database") {
+		t.Fatalf("the daemon logged %q, want the skipped send's warning to say where the work is", text)
+	}
+}
+
+// A store that does not answer the ask for the saved bundle stops the start: its pod's one
+// restore attempt may still be open, and a role started now would work in a workspace a later
+// start could be sent the bundle over. No start frame goes, and the error says why; the
+// supervisor's next launch asks again.
+func TestAStoreThatDoesNotAnswerTheBundleAskStopsTheStart(t *testing.T) {
+	var logs lockedLog
+	seam := &bundleSeam{err: errors.New("take the workspace bundle of " + testTree + ": connection refused")}
+	d := reserveLaunchers(t, readsOf(testIndex(rigNow)), seam, &logs)
+	l := &indexLauncher{}
+	connectIndexLauncher(t, d, workerToken, "uid-pod-unanswered", false, l)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 30*time.Second, time.Second))
+	defer cancel()
+
+	err := d.start(ctx, workerToken, "uid-pod-unanswered", shimwire.LauncherStart{ID: "start-without-the-store", Generation: 1, Argv: []string{"true"}})
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("the start answered %v, want it stopped naming the store's error", err)
+	}
+	if got := countOf(l.frames(), shimwire.TypeLauncherStart); got != 0 {
+		t.Fatalf("the launcher was sent %v, want no start", frameTypes(l.frames()))
 	}
 }
 
