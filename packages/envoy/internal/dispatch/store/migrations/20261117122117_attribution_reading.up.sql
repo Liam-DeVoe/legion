@@ -33,8 +33,12 @@
 --                        (set search_path from current).
 --   attribution_reading()
 --                        the identity of the reading: the md5 of the body of attribution_keys as
---                        the catalog stores it (prosqlbody), its strictness and its settings, the
---                        source and the settings of the trigger function, and the major version
+--                        the catalog stores it (prosqlbody), with every place in its source text
+--                        left out (the :location, :stmt_location and :stmt_len fields, which
+--                        Postgres 16 fills and Postgres 17 writes as -1), so a restore that
+--                        creates the function again from its own definition keeps the identity;
+--                        its strictness and its settings, the source and the settings of the
+--                        trigger function, and the major version
 --                        of Postgres. No session setting, locale, collation version or minor
 --                        version enters it; a major version can change the engine of the
 --                        patterns, and pg_upgrade creates the function again. It is sql with an
@@ -100,7 +104,9 @@ create function %1$I.attribution_reading() returns text
 language sql stable parallel safe
 set search_path = pg_catalog
 begin atomic
-  select pg_catalog.md5(p.prosqlbody::text || ' ' || p.proisstrict::text || ' ' || coalesce(p.proconfig::text, '')
+  select pg_catalog.md5(pg_catalog.regexp_replace(p.prosqlbody::text,
+      '[[:space:]]:(location|stmt_location|stmt_len) -?[0-9]+', '', 'g')
+    || ' ' || p.proisstrict::text || ' ' || coalesce(p.proconfig::text, '')
     || ' ' || t.prosrc || ' ' || coalesce(t.proconfig::text, '')
     || ' ' || (pg_catalog.current_setting('server_version_num')::integer / 10000)::text)
   from pg_catalog.pg_proc p, pg_catalog.pg_proc t

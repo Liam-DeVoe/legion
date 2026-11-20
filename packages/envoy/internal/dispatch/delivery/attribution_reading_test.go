@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -749,10 +750,11 @@ func TestTheReadingIdentityIgnoresEverySessionSetting(t *testing.T) {
 	t.Logf("the identity took %d value, the identity of pg_get_functiondef %d", len(identities), len(controls))
 }
 
-// The identity is the digest of the stored body, the options of the reading and of the trigger
-// function, the trigger function's source and the major version of Postgres, and nothing else:
-// no minor version enters it. Control in the same test: the same digest over the full version
-// is another value.
+// The identity is the digest of the stored body with every place in its source text left out,
+// the options of the reading and of the trigger function, the trigger function's source and the
+// major version of Postgres, and nothing else: no minor version enters it. Controls in the same
+// test: the same digest over the full version is another value, and so is the digest over the
+// body with its places kept.
 func TestTheReadingIdentityIsTheStoredBodyAndTheMajorVersion(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	schema := readingSchema(t, ctx, pool)
@@ -769,16 +771,45 @@ func TestTheReadingIdentityIsTheStoredBodyAndTheMajorVersion(t *testing.T) {
 	if _, err := fmt.Sscan(version, &number); err != nil {
 		t.Fatalf("server_version_num %q: %v", version, err)
 	}
-	digest := func(version string) string {
+	digest := func(body, version string) string {
 		sum := md5.Sum([]byte(strings.Join([]string{body, strict, options, source, triggerOptions, version}, " ")))
 		return hex.EncodeToString(sum[:])
 	}
+	placeless := sourcePlaces.ReplaceAllString(body, "")
 	identity := currentReading(t, ctx, pool, schema)
-	if want := digest(fmt.Sprint(number / 10000)); identity != want {
-		t.Errorf("attribution_reading() = %s, want %s, the digest of the stored body, the options, the trigger's source and major version %d", identity, want, number/10000)
+	if want := digest(placeless, fmt.Sprint(number/10000)); identity != want {
+		t.Errorf("attribution_reading() = %s, want %s, the digest of the stored body without its places, the options, the trigger's source and major version %d", identity, want, number/10000)
 	}
-	if full := digest(version); identity == full {
+	if full := digest(placeless, version); identity == full {
 		t.Errorf("the control: the digest over the full version %s equals the identity", version)
+	}
+	if placeless == body {
+		t.Fatalf("the control: the stored body holds no place field, so leaving them out is not tested")
+	}
+	if kept := digest(body, fmt.Sprint(number/10000)); identity == kept {
+		t.Errorf("the control: the digest over the body with its places kept equals the identity")
+	}
+}
+
+// sourcePlaces matches each field of a stored body that records a place in the source text, which
+// Postgres 16 fills and Postgres 17 writes as -1.
+var sourcePlaces = regexp.MustCompile(`\s:(location|stmt_location|stmt_len) -?[0-9]+`)
+
+// A logical restore creates attribution_keys again from the text pg_get_functiondef gives, which is
+// not the migration's text, while the reading is the same, so the identity is the same. Postgres 16
+// stores in prosqlbody where each node stood in the source text, so the identity leaves those
+// places out; were they kept, every texts row would read as keyed by another reading after each
+// such restore. Control in the same test: a changed body gives another identity.
+func TestTheReadingIdentitySurvivesARestoreOfItsText(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	change := prepareReadingChange(t, ctx, pool)
+	applyReading(t, ctx, pool, change.original)
+	if identity := currentReading(t, ctx, pool, change.schema); identity != change.identity {
+		t.Errorf("after attribution_keys is created again from its own definition the reading is %s, want %s", identity, change.identity)
+	}
+	applyReading(t, ctx, pool, change.changed)
+	if identity := currentReading(t, ctx, pool, change.schema); identity == change.identity {
+		t.Errorf("the control: a changed body keeps the identity %s", identity)
 	}
 }
 

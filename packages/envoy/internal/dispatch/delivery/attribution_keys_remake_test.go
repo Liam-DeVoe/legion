@@ -14,8 +14,8 @@ import (
 // readingChange is a change of the reading as a later migration makes it. original is the reading
 // as the catalog holds it (pg_get_functiondef). changed is the same function with one statement
 // more before its select: each text gets the same keys, and the identity of the reading changes.
-// From Postgres 17 a comment or white space does not change the identity: the catalog stores the
-// parsed body (prosqlbody), with no comment and no place in the text.
+// A comment or white space does not change the identity: the catalog stores the parsed body
+// (prosqlbody), with no comment, and the identity leaves out the places in the text it records.
 type readingChange struct {
 	schema, original, changed, identity string
 }

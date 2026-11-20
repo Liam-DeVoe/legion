@@ -2774,7 +2774,7 @@ The release before names neither the table nor the new columns, and its writes o
 Migration `20261117122117_attribution_reading` creates the reading, `attribution_keys(repo, head_ref, title, body, messages)`: the issue keys the title and the body name, the GitHub issues the body cites, the keys of the head branch and the keys of the commit messages, each in text order (the five sources, `delivery/attribution.go`).
 Every pattern of it runs under the collation `"C"`, so each database the guard admits gives the same keys, and each list keeps only entries of at most 1,024 bytes, so the reading keeps no key and no cited URL above that.
 The trigger `pull_request_texts_keys` sets a texts row's four key columns from its own new texts, and `reading` to `attribution_reading()`, at each insert and update, so a writer cannot store keys.
-`attribution_reading()` is the identity of the reading: an md5 of the body of `attribution_keys` as the catalog stores it, its settings, the source and settings of the trigger function, and the major version of PostgreSQL.
+`attribution_reading()` is the identity of the reading: an md5 of the body of `attribution_keys` as the catalog stores it, with every place in its source text left out, its settings, the source and settings of the trigger function, and the major version of PostgreSQL.
 A reader takes a row's stored keys only where its `reading` is the identity that runs now, and reads the keys from the row's texts where it is not.
 It writes the catalog alone and creates the trigger under `SHARE ROW EXCLUSIVE` on `pull_request_texts`; the release before names neither function nor the trigger, and writes no texts row; its census answers `0`.
 
