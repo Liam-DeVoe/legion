@@ -40,7 +40,8 @@ jobs:
     # is the other packages' already, and they measured 28 s and 46 s under -race on a dev box,
     # where cmd/listener took 785 s here (run 43875539224), so the sum stands. Each forced-order
     # step then compiles a hooked nats-server and the packages above it under the detector again,
-    # up to 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66.
+    # up to 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66 in
+    # all.
     timeout-minutes: 75
     services:
       postgres:
