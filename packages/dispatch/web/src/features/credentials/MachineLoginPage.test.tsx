@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type { RecordResponse } from "../../api/types";
 import { MachineLoginPage } from "./MachineLoginPage";
 
@@ -28,8 +29,18 @@ function machineRecord(overrides: Partial<RecordResponse> = {}): RecordResponse 
   };
 }
 
-function renderPage() {
+/** The page, signed in as a restricted member when `restricted` is set: the shell holds
+ *  `/auth/whoami`'s answer before any page draws, so it is seeded here as the shell holds it. */
+function renderPage(restricted = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (restricted) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, {
+      event_head: "0",
+      kind: "user",
+      login: "erin@outside.example",
+      member_kind: "restricted",
+    });
+  }
   return render(
     <MemoryRouter initialEntries={["/credentials/machine"]}>
       <QueryClientProvider client={queryClient}>
@@ -38,6 +49,38 @@ function renderPage() {
     </MemoryRouter>
   );
 }
+
+// A restricted member approves the device login of their own agents on this page, and Dispatch
+// refuses them the list of the deployment's machine logins (403 DEPLOYMENT_READ_REFUSED), so the
+// page asks them for none: the code form alone, which looks up and approves their own login.
+test("a restricted member's page looks up and approves their own login and lists no machine logins", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ approver: "erin@outside.example" });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
+
+  try {
+    renderPage(true);
+
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+    expect(await screen.findByText("worker-7.example.com")).toBeDefined();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(approveCredentialRecord).toHaveBeenCalledTimes(1));
+    expect(getMachineLogins).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+  }
+});
 
 test("code -> lookup -> Approve posts the looked-up code", async () => {
   const user = userEvent.setup();

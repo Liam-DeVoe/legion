@@ -1077,7 +1077,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. */
+    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. A restricted member looks up at their browser alone, and is answered only a machine login of their own, whose approver is them and which names no service; any other record, and any lookup by their tokens, is 403 RESTRICTED_MEMBER, naming none of its facts. */
     post: operations["postApiV1CredentialRequestsMachineLookup"];
     delete?: never;
     options?: never;
@@ -1094,7 +1094,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. */
+    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs, and any by their tokens, is 403 RESTRICTED_MEMBER. */
     post: operations["postApiV1CredentialRequestsByIdApprove"];
     delete?: never;
     options?: never;
@@ -1111,7 +1111,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. */
+    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs, and any by their tokens, is 403 RESTRICTED_MEMBER. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
     delete?: never;
     options?: never;

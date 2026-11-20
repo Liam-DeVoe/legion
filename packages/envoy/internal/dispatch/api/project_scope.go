@@ -115,6 +115,9 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // A row of the deployment (scopeDeployment) is refused to a viewer that is not open — a
 // restricted member, or a credential that lists projects — as the read of the deployment's rows
 // is (withinReadScope): what it writes belongs to no project such a viewer could be held to.
+// The one exception is a restricted member at a browser on the rows that decide a machine login
+// (restrictedDecisionRoutes), whose handlers hold that member to a login of their own: never their
+// personal token and never a broker token, so no agent of theirs decides a credential.
 // Every other row reaches its handler, whose loaders answer an object the viewer does not see as
 // missing (the file comment).
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
@@ -122,18 +125,26 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		return handler
 	}
 	deployment := route.Scope == scopeDeployment
+	ownLogin := restrictedDecisionRoutes[route.Method+" "+route.Pattern]
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.withCallerResolved(r)
 		reader, ok := s.readerOf(w, r)
 		if !ok {
 			return
 		}
-		if deployment && !reader.Viewer.Open {
+		if deployment && !reader.Viewer.Open && !(ownLogin && reader.Viewer.Restricted && atBrowser(r)) {
 			s.refuseDeploymentWrite(w, r, route, reader.Viewer.Restricted)
 			return
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}
+}
+
+// atBrowser reports whether the caller withCallerResolved resolved is a person at a browser, whose
+// sign-in proved them, rather than any credential an agent holds.
+func atBrowser(r *http.Request) bool {
+	caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+	return ok && caller.err == nil && caller.human
 }
 
 // withCallerResolved is r with its caller resolved once (optionalActor) and kept in its context,

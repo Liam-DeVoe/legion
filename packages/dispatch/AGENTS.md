@@ -1187,6 +1187,11 @@ record on. `app.tsx` routes `/credentials/*` to the Inbox, and React Router rank
 machine path above the splat, so every other `/credentials/...` path - an old link to a single
 record among them - opens the Inbox. A secret request is decided on the broker's own page,
 which the Inbox row links; Dispatch serves no page of its own for one.
+The machine page is a restricted member's page too, the one credential page they reach: `app.tsx`
+routes it outside `DeploymentPages`, they approve there the device login of their own agents (the
+server relays only a login whose approver is them, `ownMachineLogin` in
+`packages/envoy/internal/dispatch/api/credential_requests.go`), and the page draws no
+`MachineLoginsSection` for them, whose list the server refuses them (`useRestrictedMember`).
 The machine page looks a pending machine login up by the 8-character code the operator typed
 (`POST /api/v1/credential-requests/machine-lookup`), and renders `CredentialRecordFacts.tsx`
 (kind, which reads "Machine login" since the lookup returns nothing else; identifiers; lifetime;

@@ -1280,19 +1280,22 @@ test("a restricted member's Priorities and Pipeline addresses answer Page not fo
   }
 });
 
-// The broadcasts and the machine logins are the deployment's own rows, which Dispatch refuses a
-// restricted member (403 DEPLOYMENT_READ_REFUSED), and a machine login is decided by a
-// deployment write: those pages are no page of theirs either, and answer Page not found without
-// a read. A full member's Broadcasts page reads the broadcasts, as it always did.
-test("a restricted member's Broadcasts and machine-login addresses answer Page not found", async () => {
+// The broadcasts are the deployment's own rows, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED): that page is no page of theirs, and answers Page not found without a
+// read. The machine-login page is theirs, the one credential page they reach: they approve there
+// the device login of their own agents, and it reads no list of the deployment's machine logins.
+// A full member's Broadcasts page reads the broadcasts, as it always did.
+test("a restricted member's Broadcasts addresses answer Page not found, and their machine-login page draws without the deployment's logins", async () => {
   const reads = [
     spyOn(api, "listBroadcasts").mockResolvedValue([]),
     spyOn(api, "getBroadcast").mockRejectedValue(new Error("no broadcast read is expected")),
     spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] }),
-    spyOn(api, "getCredentialCapabilities").mockResolvedValue({ machine_code_page: true }),
   ];
+  const capabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    machine_code_page: true,
+  });
   try {
-    for (const path of ["/agents/broadcasts", "/agents/broadcasts/b-1", "/credentials/machine"]) {
+    for (const path of ["/agents/broadcasts", "/agents/broadcasts/b-1"]) {
       const { teardown } = renderShellAt(BOB_RESTRICTED, path);
       try {
         expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
@@ -1300,6 +1303,15 @@ test("a restricted member's Broadcasts and machine-login addresses answer Page n
       } finally {
         teardown();
       }
+    }
+
+    const machine = renderShellAt(BOB_RESTRICTED, "/credentials/machine");
+    try {
+      expect(await screen.findByRole("heading", { name: "Enter machine login code" })).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
+      for (const read of reads) expect(read).not.toHaveBeenCalled();
+    } finally {
+      machine.teardown();
     }
 
     const { teardown } = renderShellAt(
@@ -1314,6 +1326,7 @@ test("a restricted member's Broadcasts and machine-login addresses answer Page n
     }
   } finally {
     for (const read of reads) read.mockRestore();
+    capabilities.mockRestore();
   }
 });
 

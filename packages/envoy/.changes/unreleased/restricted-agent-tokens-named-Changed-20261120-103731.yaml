@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  Dispatch lets a restricted member decide one credential: at their browser, a machine login of
+  their own, which is how an outside person approves the device login of their own agents. The
+  machine-login page is theirs now, without its list of machine logins, and
+  `POST /api/v1/credential-requests/machine-lookup`, `.../{id}/approve` and `.../{id}/deny` relay
+  their lookup or decision only for a login whose approver is them and which names no service.
+  Every other record, a shared one included, and every decision through their personal token or a
+  broker token stays `403 RESTRICTED_MEMBER`, and the broker is asked to decide nothing. A broker
+  token of project scope `named` that records the credential a person made, the account it was
+  approved by or when it was made, is held to that account as a `person` token is; an operator
+  entry's, which records neither, is held to none, as before.
+time: 2026-11-20T10:37:31Z
+custom:
+    Issue: restricted-agent-tokens-named

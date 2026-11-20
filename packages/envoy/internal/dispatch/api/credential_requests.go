@@ -12,6 +12,11 @@
 // lowercase form, as the approver, which the broker takes on Dispatch's word, and never forward
 // the browser's body, so nothing a browser sends can name the approver.
 //
+// A restricted member decides one kind of record here, at a browser alone: a pending machine login
+// of their own, which is how an outside person approves the device login of their own agents
+// (ownMachineLogin). Every other decision of theirs is refused before the broker is asked to make
+// it.
+//
 // These decisions write no Dispatch event - the broker records the decision itself - so the agent
 // that made one for its person is recorded on Dispatch's own access-log line instead
 // (noteActingAgent), which is the only record of the decision Dispatch keeps.
@@ -24,12 +29,66 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// restrictedDecisionRoutes are the three rows of the deployment a restricted member reaches, and
+// at a browser alone (withinProjectScope): the lookup of a machine login by the code its machine
+// shows, and that login's approve and deny. Each handler then holds the member to a pending machine
+// login of their own (ownMachineLogin). A personal token and a broker token acting for a restricted
+// member are refused all three as every deployment write is, so no agent of theirs decides any
+// credential, their own machine's included.
+var restrictedDecisionRoutes = map[string]bool{
+	"POST /api/v1/credential-requests/machine-lookup": true,
+	"POST /api/v1/credential-requests/{id}/approve":   true,
+	"POST /api/v1/credential-requests/{id}/deny":      true,
+}
+
+// restrictedCaller reports whether the caller is a restricted member, read from the reader
+// withinProjectScope resolved for this request.
+func (s *server) restrictedCaller(w http.ResponseWriter, r *http.Request) (restricted, ok bool) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return false, false
+	}
+	return reader.Viewer != nil && reader.Viewer.Restricted, true
+}
+
+// ownMachineLogin looks up at the broker the machine login whose code lookup carries (the body of
+// its POST /v1/machine-logins/lookup), and answers the broker's record when it is login's own: a
+// machine login (record.KindLauncherCredential) whose approver is login, which no shared record's
+// sentinel approver (record.AnyoneApprover) is, and which names no service; and, where recordID is
+// not empty, the record recordID names, so a member's own code decides no other record. The broker
+// names a machine login's token after its approver (exchange.Set.Machine), and holds a restricted
+// member's to one project, so this is the one credential such a member may decide; the broker
+// itself refuses a decision of one no longer pending. Any other record — another person's machine
+// login, a service's, which anyone signed in may deny, a shared secret's request, a secret request
+// of the member's own — is 403 RESTRICTED_MEMBER, naming none of its facts; a lookup the broker
+// refused is relayed as the broker answered it. It answers false once it has written the answer.
+func ownMachineLogin(w http.ResponseWriter, r *http.Request, client *agentsecrets.Client, login string, lookup json.RawMessage, recordID string) (json.RawMessage, bool) {
+	answer, err := client.MachineLookup(r.Context(), lookup)
+	if err != nil {
+		relayBrokerResponse(w, nil, err)
+		return nil, false
+	}
+	var looked wire.RecordResponse
+	own := json.Unmarshal(answer, &looked) == nil &&
+		looked.Kind == record.KindLauncherCredential && (looked.Service == nil || *looked.Service == "") &&
+		model.CanonicalLogin(looked.Approver) == login &&
+		(recordID == "" || looked.RecordID == recordID)
+	if !own {
+		writeError(w, codeRestrictedMember, http.StatusForbidden,
+			"a restricted member decides only a pending machine login of their own, which names them as its approver and no service, by the code their machine shows")
+		return nil, false
+	}
+	return answer, true
+}
 
 // noteActingAgent names the agent behind a decision on this request's access-log line: the
 // session the act names, and otherwise the personal token, by its owner, which is what the line
@@ -204,6 +263,9 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	if !s.restrictedDecisionAllowed(w, r, client, actor, decision.Code) {
+		return
+	}
 	subject, generation, err := s.approverStanding(r, actor)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
@@ -290,6 +352,30 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	return subject, generation, nil
 }
 
+// restrictedDecisionAllowed answers whether an approve or a deny may go on to the broker: at once
+// for a caller who is no restricted member, and for one only when the code they typed names a
+// pending machine login of their own, the record the path names (ownMachineLogin). It runs before
+// approverStanding, so the caller's standing is still read last, right before the broker is asked
+// to decide. It answers false once it has written the refusal.
+func (s *server) restrictedDecisionAllowed(w http.ResponseWriter, r *http.Request, client *agentsecrets.Client, actor model.Actor, code *string) bool {
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok || !restricted {
+		return ok
+	}
+	if code == nil {
+		writeError(w, codeRestrictedMember, http.StatusForbidden,
+			"a restricted member decides only a pending machine login of their own, by the code their machine shows, and this decision carries none")
+		return false
+	}
+	lookup, err := json.Marshal(wire.MachineLookupRequest{Code: *code})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return false
+	}
+	_, ok = ownMachineLogin(w, r, client, actor.ID, lookup, r.PathValue("id"))
+	return ok
+}
+
 func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -304,6 +390,9 @@ func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.restrictedDecisionAllowed(w, r, client, actor, decision.Code) {
+		return
+	}
 	if _, _, err := s.approverStanding(r, actor); err != nil {
 		s.writeAuthenticationError(w, err)
 		return
@@ -312,6 +401,8 @@ func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	relayBrokerResponse(w, body, err)
 }
 
+// lookupMachineCredential relays the lookup of a machine login by the code the person typed. A
+// restricted member is answered only a pending machine login of their own (ownMachineLogin).
 func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -324,6 +415,16 @@ func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request)
 	}
 	relayBody, ok := s.readRelayBody(w, r)
 	if !ok {
+		return
+	}
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
+	if restricted {
+		if own, ok := ownMachineLogin(w, r, client, actor.ID, relayBody, ""); ok {
+			relayBrokerResponse(w, own, nil)
+		}
 		return
 	}
 	body, err := client.MachineLookup(r.Context(), relayBody)
