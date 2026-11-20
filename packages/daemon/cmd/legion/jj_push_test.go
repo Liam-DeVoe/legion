@@ -32,10 +32,11 @@ import (
 //   - the tmux form: the bin directory that workerbin.Install writes for that legion, first on
 //     PATH, with the real jj (or a recording jj ahead of it) after it.
 //
-// Every row runs under both forms. The file names nothing the step's change adds: the table's
-// variable is written out, and every command's environment is built here. So it compiles and runs
-// at the base too, where docker/jj hands no push to `legion jj` and workerbin.Install writes no jj;
-// there the tests of a change fail, and those of what stays pass.
+// Every row runs under both forms. The file names nothing the step's change adds but jjIDWords and
+// jjIDWord, which TestTheRevisionReaderFindsEachCommitIDWord alone reads: the table's variable is
+// written out, and every command's environment is built here. So every other test of it compiles
+// and runs at the base too, without that one, where docker/jj hands no push to `legion jj` and
+// workerbin.Install writes no jj; there the tests of a change fail, and those of what stays pass.
 
 // rolePushVariable is the table of every role's identity that the daemon writes into a role
 // process's environment.
@@ -1299,6 +1300,138 @@ func rolePushTwoRemotes(t *testing.T, f *rolePushFixture, first []string) {
 	f.pushAndCheck(rolePushTwoRemoteSecond, second)
 }
 
+// rolePushRevsetRows are the pushes whose revision argument names a commit by its commit id inside
+// a revset, each of commits that the other role's jj new made and the implementer described, each
+// pushed by the implementer, with the setup that makes the repository and answers the push's
+// arguments and what it must leave.
+func rolePushRevsetRows() []struct {
+	name  string
+	setup func(f *rolePushFixture) ([]string, rolePushWant)
+} {
+	impl, rev := rolePushImplementer, rolePushReviewer
+	work := func(f *rolePushFixture, parent, title string) rolePushChange {
+		return f.commitOn(rev, impl, parent, rolePushMessage(title, "implementer"))
+	}
+	return []struct {
+		name  string
+		setup func(f *rolePushFixture) ([]string, rolePushWant)
+	}{
+		{name: "-c <C1> | <C2>, two commits on main", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			c1, c2 := work(f, "main", "work 1"), work(f, "main", "work 2")
+			want := rolePushSends("push-"+c1.change[:12], c1, "implementer", impl)
+			sent := rolePushSends("push-"+c2.change[:12], c2, "implementer", impl)
+			want.refs = append(want.refs, sent.refs...)
+			want.rewrites = append(want.rewrites, sent.rewrites...)
+			return []string{"git", "push", "-c", c1.commit + " | " + c2.commit}, want
+		}},
+		// -r sends a bookmark that points at the commit, and jj refuses to make a remote bookmark
+		// for one that tracks nothing.
+		{name: "-r ::<C>, a tracked bookmark on C", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			f.track("legion/K-1")
+			c := work(f, "main", "work")
+			f.bookmark("legion/K-1", c.commit)
+			return []string{"git", "push", "-r", "::" + c.commit}, rolePushSends("legion/K-1", c, "implementer", impl)
+		}},
+		{name: "-c present(<the first 12 hex digits of C>)", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			c := work(f, "main", "work")
+			return []string{"git", "push", "-c", "present(" + c.commit[:12] + ")"}, rolePushSends("push-"+c.change[:12], c, "implementer", impl)
+		}},
+		// The step rewrites C alone, and its metaedit rebases D onto the new C: the D of the real
+		// push is the rebased D, whose parent is the new C.
+		{name: "--named nm=<D>-, D a commit on C", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			c := work(f, "main", "C")
+			d := work(f, c.commit, "D")
+			return []string{"git", "push", "--named", "nm=" + d.commit + "-"}, rolePushSends("nm", c, "implementer", impl)
+		}},
+	}
+}
+
+// A commit id inside a revision argument's revset, each of `C1 | C2`, `::C`, a prefix of C in
+// present() and the D of `D-`, is the rewritten commit in the real push, and the rest of the
+// argument goes to it as the role wrote it: the remote's commits have their trailers' authors,
+// the step prints each rewrite, and no change is divergent.
+func TestACommitIDInsideARevsetSendsTheRewrittenCommit(t *testing.T) {
+	t.Parallel()
+	for _, row := range rolePushRevsetRows() {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				args, want := row.setup(f)
+				f.pushAndCheck(args, want)
+			})
+		})
+	}
+}
+
+// The step finds the commit-id words of a revision argument as jj's revset grammar reads it
+// (jjIDWords), in order: each identifier that is lower-case hex as a whole and that jj reads as a
+// symbol, before or after an operator (`|`, `&`, `~`, `::`, `..`, `-`, `+`) or inside a function's
+// parentheses, and no word inside a string, of a function's name, of a pattern, of a keyword
+// argument's name, beside `@`, or of an identifier with a `-`, a `.` or a `*` inside it. A
+// number is such a word too: the step's read of the argument with the word replaced
+// (jjStep.pushWords) is what leaves it as the role wrote it. A word's place is in the push's word
+// that holds the argument, past the option's own spelling.
+func TestTheRevisionReaderFindsEachCommitIDWord(t *testing.T) {
+	t.Parallel()
+	c, d := "0123456789abcdef0123456789abcdef01234567", "fedcba9876543210fedcba9876543210fedcba98"
+	for _, row := range []struct {
+		revision string
+		want     []string
+	}{
+		{revision: c, want: []string{c}},
+		{revision: c + "|" + d, want: []string{c, d}},
+		{revision: c + " | " + d, want: []string{c, d}},
+		{revision: "::" + c, want: []string{c}},
+		{revision: c + "::", want: []string{c}},
+		{revision: c + "::" + d, want: []string{c, d}},
+		{revision: c + "-", want: []string{c}},
+		{revision: c + "--", want: []string{c}},
+		{revision: c + "+", want: []string{c}},
+		{revision: c + ".." + d, want: []string{c, d}},
+		{revision: "~" + c + " & mutable()", want: []string{c}},
+		{revision: "present(" + c + ")", want: []string{c}},
+		{revision: "present(" + c[:12] + ")", want: []string{c[:12]}},
+		{revision: "commit_id(" + c + ")", want: []string{c}},
+		{revision: "ancestors(" + c + ", 2)", want: []string{c, "2"}},
+		{revision: "a-b"},
+		{revision: "abc-def"},
+		{revision: "abc--def"},
+		{revision: "abc*"},
+		{revision: "abc.def"},
+		{revision: `description("abc")`},
+		{revision: `description("a \"` + c + `\" b")`},
+		{revision: `description('` + c + `')`},
+		{revision: "exact:abc"},
+		{revision: "description(exact:abc)"},
+		{revision: "abc:def"},
+		{revision: "f(abc = " + c + ")", want: []string{c}},
+		{revision: "abc@origin"},
+		{revision: "main@abc"},
+		{revision: "abc@"},
+		{revision: "@"},
+		{revision: "@-"},
+		{revision: "kkmpptxzrspxrzommnulwmwkkqwworpl"},
+		{revision: "abc(" + c + ")", want: []string{c}},
+	} {
+		var got []string
+		for _, w := range jjIDWords(row.revision, 0, 0) {
+			got = append(got, row.revision[w.start:w.end])
+		}
+		if !slices.Equal(got, row.want) {
+			t.Errorf("jjIDWords(%q) found %q, want %q", row.revision, got, row.want)
+		}
+	}
+	for _, row := range []struct {
+		word   string
+		offset int
+	}{{word: "-c" + c, offset: 2}, {word: "--change=" + c, offset: 9}, {word: "nm=" + c + "-", offset: 3}} {
+		if got, want := jjIDWords(row.word, 4, row.offset), []jjIDWord{{index: 4, start: row.offset, end: row.offset + len(c)}}; !slices.Equal(got, want) {
+			t.Errorf("jjIDWords(%q, 4, %d) = %v, want %v", row.word, row.offset, got, want)
+		}
+	}
+}
+
 // rolePushRefusedRows are the pushes that make a bookmark of their own, -c and --named, of a
 // commit id: of @-, and of @- whose change is divergent. sameSecond is whether the row runs a
 // second time with one fixed JJ_TIMESTAMP (rolePushFixedTimestamp), its retry in the second of
@@ -2299,7 +2432,8 @@ func rolePushHelpOptions(help string) []rolePushOption {
 }
 
 // rolePushEveryArgument is every argument of every row of these tests' pushes that the row writes
-// out, ahead of its setup (rolePushCannotReadIDRows' setups answer theirs, each a --named).
+// out, ahead of its setup (rolePushCannotReadIDRows' setups answer theirs, each a --named, and
+// rolePushRevsetRows' theirs, each a -c, a -r or a --named).
 func rolePushEveryArgument() []string {
 	var words []string
 	for _, rows := range [][]rolePushRow{rolePushAuthorRows(), rolePushFormRows(), rolePushUntouchedRows(), rolePushStartedRows()} {
