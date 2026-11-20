@@ -45,8 +45,8 @@ var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted"
 // answered the same way. A cancel that lands after the check goes unseen: the publish is made.
 //
 // A publish nats.go refused for the close of conn, which it refuses before writing anything
-// (nats.go v1.53.1 nats.go:4575-4580), and a flush it answered with that close, a drop while the
-// flush's PONG was due among them (processOpErr, nats.go:3577), answer ErrConnectionLost on a
+// (nats.go v1.55.0 nats.go:4738-4745), and a flush it answered with that close, a drop while the
+// flush's PONG was due among them (processOpErr, nats.go:3673), answer ErrConnectionLost on a
 // client still running, the first unsent (lostIfClosed): conn is the client's connection the
 // publish was made on. A caller inside Request (requestConfirmed, RequestCore,
 // StartRequestStoredTo) gets the same answer it gets from its binding, and PublishCoreContext's

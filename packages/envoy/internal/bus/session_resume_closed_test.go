@@ -40,7 +40,7 @@ func newestMsgID(t *testing.T, subject string) string {
 
 // A delete whose resume record's send goes out on the JetStream context of a connection the
 // session consumers' client has just replaced, which nats.go refuses with its close
-// (nats.ErrConnectionClosed, nats.go v1.53.1 nats.go:4573-4576), sends the record again on the
+// (nats.ErrConnectionClosed, nats.go v1.55.0 nats.go:4738-4741), sends the record again on the
 // replacement, and the stream stores it once: the write carries a Nats-Msg-Id it drew for its own
 // sends (recordResumeFloorAt), and its second send carries the same one. The delete then answers
 // the floor it recorded and deletes the consumer, where an answer of the closed error, which

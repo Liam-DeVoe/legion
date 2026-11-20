@@ -2,7 +2,7 @@ package bus
 
 // Rows for the three answers a read of a connection's state gives through the probe (requestRead,
 // requestLife, the life's own goroutine): up, down, and "unknown", a read the probe's budget ended
-// (heldLockBudget). A caller that holds a lock lets its lock go on "unknown"; one that holds none
+// (ConnLockWait). A caller that holds a lock lets its lock go on "unknown"; one that holds none
 // waits for nats.go's own answer within its context; a real "down" answers the loss at once. Each
 // row decides by counted events or by order, and a row that fails ends at the test's deadline.
 
@@ -98,10 +98,8 @@ func TestASlowReadUnderALockAnswersTheLossAtOnce(t *testing.T) {
 // The controls are the wait not bounded by the request's context, which gives no answer until the
 // handshake ends, and "unknown" read as the loss, which never begins the wait.
 func TestANoLockRequestDuringAHeldHandshakeEndsAtItsOwnContext(t *testing.T) {
-	client, proxy := proxiedClient(t)
-	proxy.Cut()
-	hold := proxy.HoldConnectAnswers()
-	awaitHeld(t, hold)
+	client, hold := proxiedClient(t)
+	awaitHeld(t, hold.Hold())
 	always := func() bool { return true }
 	client.requestReadSlow.Store(&always)
 	defer client.requestReadSlow.Store(nil)
@@ -115,12 +113,12 @@ func TestANoLockRequestDuringAHeldHandshakeEndsAtItsOwnContext(t *testing.T) {
 	}()
 	for deadline := time.Now().Add(testnats.Remaining(t)); client.ProbesForTest() == before; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
-			proxy.Restore()
+			hold.Release()
 			t.Fatal("the request never began its wait for nats.go's own answer by the test's deadline")
 		}
 	}
 	cancel()
-	if err := awaitBeforeHoldEnds(t, proxy, hold, answered, "the request's answer at its context's end"); !errors.Is(err, context.Canceled) || errors.Is(err, ErrConnectionLost) {
+	if err := awaitBeforeHoldEnds(t, hold, answered, "the request's answer at its context's end"); !errors.Is(err, context.Canceled) || errors.Is(err, ErrConnectionLost) {
 		t.Fatalf("a request whose context ended while it waited for nats.go's own answer answered %v, want its context's end", err)
 	}
 }

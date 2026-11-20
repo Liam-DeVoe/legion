@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/session"
 )
 
-// probeBudget is the probe's budget (bus's heldLockBudget): the seam below spends it on each read it
+// probeBudget is the probe's budget (bus.ConnLockWait): the seam below spends it on each read it
 // makes read "down", as a read nats.go's lock keeps waiting does on a loaded box, so a caller that
 // retries on each "down" retries no faster than it would there.
-const probeBudget = 100 * time.Millisecond
+const probeBudget = bus.ConnLockWait
 
 // requireNoErrorLog fails the test when the rig's listener logged at ERROR.
 func requireNoErrorLog(t *testing.T, rig *sweepRig) {

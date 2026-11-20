@@ -98,14 +98,14 @@ func TestADeleteWhoseConnectionIsClosedReleasesTheSessionsLockAndDeletesOnceItIs
 // reconnect - as a hub whose auth service has not answered the CONNECT holds it for its
 // authorization timeout - releases the session's lock while the handshake is still held, and
 // deletes once the connection is back. nats.go holds its connection lock through the whole
-// handshake (doReconnect, nats.go v1.53.1 :3458-3485), and every read of its state waits for it;
+// handshake (doReconnect, nats.go v1.55.0 :3554-3581), and every read of its state waits for it;
 // the delete's first consumer call asks bus's probe of the connection's status (connForRequest),
 // which waits for nats.go's lock at most its 100 ms budget, answers the loss, and the delete
 // releases the lock and waits for the connection with nothing held (relockAfterReconnect).
 //
-// The order is made certain: the proxy holds the server's answer to the reconnect's CONNECT until
-// the row restores it (testnats.Proxy.HoldConnectAnswers), and the row holds the session's lock
-// until the delete waits for it, as the row above does.
+// The order is made certain: the hold keeps the server's answer to the reconnect's CONNECT until
+// the row releases it (testnats.HandshakeHold), and the row holds the session's lock until the
+// delete waits for it, as the row above does.
 //
 // The control is this row with bus's connForRequest reading conn.IsConnected() in place of the
 // probe: the delete holds the session's lock for as long as the handshake is held, and the row
@@ -113,14 +113,14 @@ func TestADeleteWhoseConnectionIsClosedReleasesTheSessionsLockAndDeletesOnceItIs
 // held, and bounds the wait only by the test's deadline.
 func TestADeleteDuringAHeldReconnectHandshakeReleasesTheSessionsLockWhileItIsHeld(t *testing.T) {
 	rig := newSweepRig(t)
-	proxy := testnats.StartProxy(t, testnats.URL(t))
-	consumers, err := bus.ConnectSessionConsumers([]string{proxy.URL()}, 0, nil, bus.WithConnectTimeout(testnats.Remaining(t)))
+	hold := testnats.StartHandshakeHold(t, testnats.URL(t))
+	consumers, err := bus.ConnectSessionConsumers([]string{hold.URL()}, 0, nil, bus.WithConnectTimeout(testnats.Remaining(t)))
 	if err != nil {
-		t.Fatalf("connect the session consumers through the proxy: %v", err)
+		t.Fatalf("connect the session consumers through the handshake hold: %v", err)
 	}
 	t.Cleanup(rig.deps.consumers.consumers.Close)
 	rig.deps.consumers.consumers = consumers
-	t.Cleanup(proxy.Restore)
+	t.Cleanup(hold.Release)
 	const sessionID = "ses_delete_held_handshake"
 	rig.register(t, sessionID)
 	rig.now.advance(sweepLapse)
@@ -128,10 +128,8 @@ func TestADeleteDuringAHeldReconnectHandshakeReleasesTheSessionsLockWhileItIsHel
 	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 	defer cancel()
 
-	proxy.Cut()
-	hold := proxy.HoldConnectAnswers()
 	select {
-	case <-hold.Held():
+	case <-hold.Hold():
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("no reconnect's CONNECT reached the server through the hold by the test's deadline")
 	}
@@ -143,7 +141,7 @@ func TestADeleteDuringAHeldReconnectHandshakeReleasesTheSessionsLockWhileItIsHel
 	held()
 	for deadline := time.Now().Add(testnats.Remaining(t)); lockUsers(locks, sessionID) != 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
-			proxy.Restore()
+			hold.Release()
 			t.Fatal("the delete still held the session's lock at the test's deadline, during the held handshake: it waited for nats.go's connection lock with the session's lock held")
 		}
 	}
@@ -159,7 +157,7 @@ func TestADeleteDuringAHeldReconnectHandshakeReleasesTheSessionsLockWhileItIsHel
 	}
 	rig.requireConsumer(t, sessionID)
 
-	proxy.Restore()
+	hold.Release()
 	var gone bool
 	select {
 	case gone = <-deleted:

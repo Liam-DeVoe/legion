@@ -282,7 +282,7 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 // replacing until ctx ends: a relay frame on a session's DeliverSubject, which the stream does not
 // store, so it travels on the connection the frame's message was pulled and is answered on. A
 // publish nats.go refused for that connection's close, which it refuses before writing anything
-// (nats.go v1.53.1 nats.go:4575-4580), answers ErrConnectionLost, unsent, on a client still running
+// (nats.go v1.55.0 nats.go:4738-4745), answers ErrConnectionLost, unsent, on a client still running
 // (lostIfClosed).
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 	if err := s.client.connForCall(ctx); err != nil {

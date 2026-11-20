@@ -24,7 +24,7 @@ func (c *Client) AwaitingConnectionForTest() bool { return c.awaitingFirstConnec
 
 // ProbeReadsDownForTest makes each read of c's connection's status through the probe (connProber)
 // that its callers make within the probe's budget answer "unknown", as a read nats.go's lock kept
-// waiting past heldLockBudget does, while down reports true, until the function it answers takes
+// waiting past ConnLockWait does, while down reports true, until the function it answers takes
 // the seam out; a caller that holds a lock reads that as the connection down. Those reads are
 // LostNow's and the wait for a connection of a call whose caller holds a lock (connForRequest,
 // connForCall) on any client - a client whose callers all hold a lock (withLossAtOnce), and a call

@@ -126,8 +126,8 @@ type SessionPull struct {
 // call of the pull's own on that connection - its subscribe, its pull request and the drain Detach
 // makes - and an acknowledgement of a message it delivered, when nats.go refused it for that
 // connection's close, on a client still running and while the connection is still the client's
-// (lostIfClosed): nats.go refuses each of them before it writes anything (nats.go v1.53.1
-// nats.go:4575-4580, :5030-5035, :5432).
+// (lostIfClosed): nats.go refuses each of them before it writes anything (nats.go v1.55.0
+// nats.go:4738-4745, :5200-5201, :5602-5603).
 func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*SessionPull, error) {
 	name, err := sessionConsumerNameOf(sessionID)
 	if err != nil {

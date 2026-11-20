@@ -71,8 +71,8 @@ var markedCalls = []struct {
 // before it sends (connForCall), and the context a forward builds for itself, which keeps the
 // caller's mark (StartRequestStoredTo). A caller that held its lock across a wait for the
 // reconnect would hold it for the whole handshake. Each case builds its own client through its own
-// proxy, so one case's wait cannot end another's hold. It decides by events: the answer must come
-// while the handshake is held, and before the call begins any wait - for the reconnect
+// handshake hold, so one case's wait cannot end another's hold. It decides by events: the answer
+// must come while the handshake is held, and before the call begins any wait - for the reconnect
 // (ensureConnWithContext's, WithReconnectWaitTick) or for nats.go's own answer about the connection
 // (requestReadUntil's, answerWaitTick), either of which a caller with no lock makes and a caller
 // with one never does. A case that fails ends at that wait or at the test's deadline.
@@ -94,23 +94,21 @@ func TestAMarkedCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 					}
 				}
 			}
-			proxy := testnats.StartProxy(t, testnats.URL(t))
-			client, err := ConnectOwningStream([]string{proxy.URL()}, WithReplicas(1), WithConnectTimeout(testnats.Remaining(t)),
+			hold := testnats.StartHandshakeHold(t, testnats.URL(t))
+			client, err := ConnectOwningStream([]string{hold.URL()}, WithReplicas(1), WithConnectTimeout(testnats.Remaining(t)),
 				WithReconnectWaitTick(tick("a wait for the reconnect")))
 			if err != nil {
-				t.Fatalf("connect the main client through the proxy: %v", err)
+				t.Fatalf("connect the main client through the handshake hold: %v", err)
 			}
 			t.Cleanup(client.Close)
-			t.Cleanup(proxy.Restore)
+			t.Cleanup(hold.Release)
 			kv := lostReplyBucket(t, client)
 			// The caller asks first, as every pass under a lock does, and hears the connection up;
 			// the drop comes after that answer.
 			if lost := client.LostNow(); lost != nil {
 				t.Fatalf("the main client's question before the drop answered %v, want up", lost)
 			}
-			proxy.Cut()
-			hold := proxy.HoldConnectAnswers()
-			awaitHeld(t, hold)
+			awaitHeld(t, hold.Hold())
 			answerTick := tick("a wait for nats.go's own answer")
 			client.answerWaitTick.Store(&answerTick)
 			ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
@@ -128,12 +126,12 @@ func TestAMarkedCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 				default:
 				}
 			case what := <-waited:
-				proxy.Restore()
+				hold.Release()
 				t.Fatalf("the %s made under a lock began %s, with its caller's lock held", marked.name, what)
 			case <-hold.Ended():
 				t.Fatalf("the %s gave no answer while the handshake was held", marked.name)
 			case <-time.After(testnats.Remaining(t)):
-				proxy.Restore()
+				hold.Release()
 				t.Fatalf("the %s gave no answer by the test's deadline while the handshake was held", marked.name)
 			}
 		})

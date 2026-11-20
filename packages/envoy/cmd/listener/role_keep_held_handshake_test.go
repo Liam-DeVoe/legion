@@ -15,9 +15,9 @@ import (
 // still held: each pass asks the main client first whether its connection is up
 // (bus.Client.LostNow), the handover returns the loss, and drainKeptRole waits for the connection
 // with the guard let go (bus.Reconnected), so another handover of the role, or the sweep's test of
-// it, is not held behind a handshake. Once the proxy is restored the handover runs again under the
-// guard and ends. The keep sweep's read of a lane head under the role's guard (sweptLaneHead) is
-// the row's second case, and gives the guard up the same way.
+// it, is not held behind a handshake. Once the hold is released (testnats.HandshakeHold) the
+// handover runs again under the guard and ends. The keep sweep's read of a lane head under the
+// role's guard (sweptLaneHead) is the row's second case, and gives the guard up the same way.
 //
 // The row decides by events and reads no clock to pass: the call's probe read under the guard,
 // then the row's own take of the guard while the handshake is still held, bounded only by the
@@ -48,21 +48,19 @@ func TestAHandoverDuringAHeldMainClientHandshakeGivesTheRolesGuardUp(t *testing.
 		}},
 	} {
 		t.Run(start.name, func(t *testing.T) {
-			proxy := testnats.StartProxy(t, testnats.URL(t))
-			client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithConnectTimeout(testnats.Remaining(t)))
+			hold := testnats.StartHandshakeHold(t, testnats.URL(t))
+			client, err := bus.ConnectOwningStream([]string{hold.URL()}, bus.WithReplicas(1), bus.WithConnectTimeout(testnats.Remaining(t)))
 			if err != nil {
-				t.Fatalf("connect the main client through the proxy: %v", err)
+				t.Fatalf("connect the main client through the handshake hold: %v", err)
 			}
 			t.Cleanup(client.Close)
-			t.Cleanup(proxy.Restore)
+			t.Cleanup(hold.Release)
 			harness := newListenerDeliveryHarnessOn(t, client)
 			cfg := harness.config
 			const role = "kept-held-handshake"
 
-			proxy.Cut()
-			hold := proxy.HoldConnectAnswers()
 			select {
-			case <-hold.Held():
+			case <-hold.Hold():
 			case <-time.After(testnats.Remaining(t)):
 				t.Fatal("no reconnect's CONNECT of the main client reached the server through the hold by the test's deadline")
 			}
@@ -87,15 +85,15 @@ func TestAHandoverDuringAHeldMainClientHandshakeGivesTheRolesGuardUp(t *testing.
 			select {
 			case <-entered:
 			case <-ctx.Done():
-				proxy.Restore()
+				hold.Release()
 				t.Fatalf("%s never asked the main client's probe while it held role %s's guard, by the test's deadline: its reads under the guard wait for the handshake", start.name, role)
 			}
 			// Then the guard is taken, bounded only by the test's deadline: the handshake is held
-			// until the row restores the proxy, so a take that comes first is the call giving the
+			// until the row releases the hold, so a take that comes first is the call giving the
 			// guard up during the handshake.
 			release, taken := cfg.roleKeepDrains.hold(ctx, role)
 			if !taken {
-				proxy.Restore()
+				hold.Release()
 				t.Fatalf("%s still held role %s's guard at the test's deadline, during the main client's held handshake: it waited for that client's connection with the guard held", start.name, role)
 			}
 			release()
@@ -105,7 +103,7 @@ func TestAHandoverDuringAHeldMainClientHandshakeGivesTheRolesGuardUp(t *testing.
 			default:
 			}
 
-			proxy.Restore()
+			hold.Release()
 			select {
 			case err := <-ended:
 				if err != nil {

@@ -17,16 +17,14 @@ import (
 const probeCallers = 1000
 
 // Callers that ask the probe while nats.go holds its lock for a reconnect's handshake share one
-// read of nats.go's state (connProber.probe): each answers down at heldLockBudget, and the
+// read of nats.go's state (connProber.probe): each answers down at ConnLockWait, and the
 // handshake, however long, leaves one goroutine waiting on nats.go's lock, not one per caller.
 //
 // The control is this row with probe starting a read for each caller: the count is probeCallers.
 func TestCallersDuringAHeldHandshakeShareOneProbe(t *testing.T) {
-	client, proxy := proxiedClient(t, withLossAtOnce())
+	client, hold := proxiedClient(t, withLossAtOnce())
 	conn := client.Connection()
-	proxy.Cut()
-	hold := proxy.HoldConnectAnswers()
-	awaitHeld(t, hold)
+	awaitHeld(t, hold.Hold())
 	before := client.ProbesForTest()
 	var callers sync.WaitGroup
 	var up atomic.Int64
@@ -92,7 +90,7 @@ func TestACloseAnswerAfterTheCloseIsLostThoughAnEarlierProbeIsInFlight(t *testin
 }
 
 // A request on a client whose callers can hold a lock (withLossAtOnce) whose probe reads a false
-// "down" - the read a loaded box keeps waiting past heldLockBudget, made here by the test's seam -
+// "down" - the read a loaded box keeps waiting past ConnLockWait, made here by the test's seam -
 // is not sent, answers ErrConnectionLost, unsent, and lands on its retry: Reconnected reads nats.go
 // itself, which says the connection is connected, and the request made again reads the probe
 // again. A false "down" costs the caller one retry and nothing else.

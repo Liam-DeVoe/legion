@@ -112,9 +112,9 @@ var heldClientKinds = []struct {
 }
 
 // awaitBeforeHoldEnds waits for answered while hold still holds the handshake: a row that passes
-// reads the answer before the row restores the proxy, which ends the hold, and one that fails ends
-// at the test's deadline. It decides by that order alone.
-func awaitBeforeHoldEnds[T any](t *testing.T, proxy *testnats.Proxy, hold *testnats.ConnectHold, answered <-chan T, what string) T {
+// reads the answer before the row releases the hold, and one that fails ends at the test's
+// deadline. It decides by that order alone.
+func awaitBeforeHoldEnds[T any](t *testing.T, hold *testnats.HandshakeHold, answered <-chan T, what string) T {
 	t.Helper()
 	select {
 	case got := <-answered:
@@ -127,7 +127,7 @@ func awaitBeforeHoldEnds[T any](t *testing.T, proxy *testnats.Proxy, hold *testn
 	case <-hold.Ended():
 		t.Fatalf("%s did not come while the handshake was held", what)
 	case <-time.After(testnats.Remaining(t)):
-		proxy.Restore()
+		hold.Release()
 		t.Fatalf("%s did not come by the test's deadline while the handshake was held: it waited for nats.go's connection lock, which the handshake holds", what)
 	}
 	var zero T
@@ -149,17 +149,17 @@ func TestACloseAnswerDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 	for _, kind := range heldClientKinds {
 		t.Run(kind.name, func(t *testing.T) {
 			gate := newLifeEndHold()
-			client, proxy := proxiedClient(t, append([]ConnectOption{withLifeEndGate(gate.gate)}, kind.options...)...)
+			client, hold := proxiedClient(t, append([]ConnectOption{withLifeEndGate(gate.gate)}, kind.options...)...)
 			t.Cleanup(gate.release)
 			ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 			defer cancel()
 			_, finish := client.bindRequest(kind.held(ctx))
 			conn := client.Connection()
-			hold := proxy.HoldConnectAnswers()
+			held := hold.HoldNext()
 			if err := conn.ForceReconnect(); err != nil {
 				t.Fatalf("force a reconnect: %v", err)
 			}
-			awaitHeld(t, hold)
+			awaitHeld(t, held)
 			select {
 			case <-gate.held:
 			case <-time.After(testnats.Remaining(t)):
@@ -167,7 +167,7 @@ func TestACloseAnswerDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 			}
 			answered := make(chan error, 1)
 			go func() { answered <- finish(natsgoClosedAnswer) }()
-			if err := awaitBeforeHoldEnds(t, proxy, hold, answered, "the close answer"); !errors.Is(err, ErrConnectionLost) {
+			if err := awaitBeforeHoldEnds(t, hold, answered, "the close answer"); !errors.Is(err, ErrConnectionLost) {
 				t.Fatalf("the close answer read during the held handshake answered %v, want ErrConnectionLost", err)
 			}
 		})
@@ -177,7 +177,7 @@ func TestACloseAnswerDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 // A request's read of its connection made while nats.go is in a reconnect's handshake, by a caller
 // that holds a lock across the request, answers within the probe's budget, on either kind of client:
 // requestLife reads the connection by the probe (requestRead), which answers a lock held past
-// heldLockBudget "unknown", and the request is not sent. A caller holding a session's lock across
+// ConnLockWait "unknown", and the request is not sent. A caller holding a session's lock across
 // the main client's calls asks LostNow first; a reconnect that starts between that answer and the
 // request's own read holds the read here, not the lock. It decides by order: requestLife must
 // return while the handshake is still held.
@@ -187,16 +187,14 @@ func TestACloseAnswerDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 func TestARequestsReadDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 	for _, kind := range heldClientKinds {
 		t.Run(kind.name, func(t *testing.T) {
-			client, proxy := proxiedClient(t, kind.options...)
-			proxy.Cut()
-			hold := proxy.HoldConnectAnswers()
-			awaitHeld(t, hold)
+			client, hold := proxiedClient(t, kind.options...)
+			awaitHeld(t, hold.Hold())
 			answered := make(chan context.Context, 1)
 			go func() {
 				life, _, _ := client.requestLife(kind.held(t.Context()))
 				answered <- life
 			}()
-			if life := awaitBeforeHoldEnds(t, proxy, hold, answered, "the request's read of its connection"); life.Err() == nil {
+			if life := awaitBeforeHoldEnds(t, hold, answered, "the request's read of its connection"); life.Err() == nil {
 				t.Fatal("a request made during the held handshake was bound to a running life, want the ended one")
 			}
 		})
@@ -218,7 +216,7 @@ func TestALifeWhoseGoroutineIsHeldEndsAtTheNextRequestDuringAHeldReconnect(t *te
 	for _, kind := range heldClientKinds {
 		t.Run(kind.name, func(t *testing.T) {
 			stage := newUnarmedStageHold("register")
-			client, proxy := proxiedClient(t, append([]ConnectOption{withLifeListenGate(stage.gate)}, kind.options...)...)
+			client, hold := proxiedClient(t, append([]ConnectOption{withLifeListenGate(stage.gate)}, kind.options...)...)
 			t.Cleanup(stage.release)
 			endRunningLife(client)
 			stage.arm()
@@ -230,11 +228,9 @@ func TestALifeWhoseGoroutineIsHeldEndsAtTheNextRequestDuringAHeldReconnect(t *te
 			case <-time.After(testnats.Remaining(t)):
 				t.Fatal("the life's listener goroutine never started")
 			}
-			proxy.Cut()
-			hold := proxy.HoldConnectAnswers()
-			awaitHeld(t, hold)
+			awaitHeld(t, hold.Hold())
 			go client.requestLife(kind.held(ctx))
-			if err := awaitBeforeHoldEnds(t, proxy, hold, inflight, "the request in flight's answer"); !errors.Is(err, ErrConnectionLost) {
+			if err := awaitBeforeHoldEnds(t, hold, inflight, "the request in flight's answer"); !errors.Is(err, ErrConnectionLost) {
 				t.Fatalf("the request in flight answered %v, want ErrConnectionLost", err)
 			}
 		})
@@ -257,7 +253,7 @@ func TestALifeWhoseListenerRegistersDuringAHeldReconnectEndsAtTheDrop(t *testing
 	for _, kind := range heldClientKinds {
 		t.Run(kind.name, func(t *testing.T) {
 			stage := newUnarmedStageHold("register")
-			client, proxy := proxiedClient(t, append([]ConnectOption{withLifeListenGate(stage.gate)}, kind.options...)...)
+			client, hold := proxiedClient(t, append([]ConnectOption{withLifeListenGate(stage.gate)}, kind.options...)...)
 			t.Cleanup(stage.release)
 			endRunningLife(client)
 			stage.arm()
@@ -270,16 +266,14 @@ func TestALifeWhoseListenerRegistersDuringAHeldReconnectEndsAtTheDrop(t *testing
 				t.Fatal("the life's listener goroutine never started")
 			}
 			dropped := client.ConnectionChanged()
-			proxy.Cut()
-			hold := proxy.HoldConnectAnswers()
-			awaitHeld(t, hold)
+			awaitHeld(t, hold.Hold())
 			select {
 			case <-dropped:
 			case <-time.After(testnats.Remaining(t)):
 				t.Fatal("the client never reported the drop by the test's deadline")
 			}
 			stage.release()
-			if err := awaitBeforeHoldEnds(t, proxy, hold, inflight, "the request in flight's answer"); !errors.Is(err, ErrConnectionLost) {
+			if err := awaitBeforeHoldEnds(t, hold, inflight, "the request in flight's answer"); !errors.Is(err, ErrConnectionLost) {
 				t.Fatalf("the request in flight answered %v, want ErrConnectionLost", err)
 			}
 		})

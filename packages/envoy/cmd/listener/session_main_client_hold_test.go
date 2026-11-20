@@ -20,7 +20,7 @@ import (
 // connection answers within the probe's budget too (bus.Client.connForRequest, requestRead). Either
 // one answers the loss, and the delete releases the lock and waits for the connection with nothing
 // held (relockAfterReconnect). The session consumers' client is direct, so only the main client's
-// handshake is held. Once the proxy is restored the delete goes on.
+// handshake is held. Once the hold is released (testnats.HandshakeHold) the delete goes on.
 //
 // The control removes both protections: the leader read made without asking the main client first,
 // on the delete's context without its mark. Removing either alone leaves the other, and the row
@@ -30,13 +30,13 @@ import (
 // by the test's deadline.
 func TestADeleteDuringAHeldMainClientHandshakeReleasesTheSessionsLock(t *testing.T) {
 	url := testnats.URL(t)
-	proxy := testnats.StartProxy(t, url)
-	client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithConnectTimeout(testnats.Remaining(t)))
+	hold := testnats.StartHandshakeHold(t, url)
+	client, err := bus.ConnectOwningStream([]string{hold.URL()}, bus.WithReplicas(1), bus.WithConnectTimeout(testnats.Remaining(t)))
 	if err != nil {
-		t.Fatalf("connect the main client through the proxy: %v", err)
+		t.Fatalf("connect the main client through the handshake hold: %v", err)
 	}
 	t.Cleanup(client.Close)
-	t.Cleanup(proxy.Restore)
+	t.Cleanup(hold.Release)
 	now := &stateClock{}
 	rig := sweepOver(newSessionConsumerRigOn(t, client, url, sweepSessionOptions(sweepRecordTTL, now)...), now)
 	const sessionID = "ses_delete_main_held_handshake"
@@ -46,10 +46,8 @@ func TestADeleteDuringAHeldMainClientHandshakeReleasesTheSessionsLock(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 	defer cancel()
 
-	proxy.Cut()
-	hold := proxy.HoldConnectAnswers()
 	select {
-	case <-hold.Held():
+	case <-hold.Hold():
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("no reconnect's CONNECT of the main client reached the server through the hold by the test's deadline")
 	}
@@ -61,7 +59,7 @@ func TestADeleteDuringAHeldMainClientHandshakeReleasesTheSessionsLock(t *testing
 	held()
 	for deadline := time.Now().Add(testnats.Remaining(t)); lockUsers(locks, sessionID) != 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
-			proxy.Restore()
+			hold.Release()
 			t.Fatal("the delete still held the session's lock at the test's deadline, during the main client's held handshake: it waited for that client's connection lock with the session's lock held")
 		}
 	}
@@ -71,7 +69,7 @@ func TestADeleteDuringAHeldMainClientHandshakeReleasesTheSessionsLock(t *testing
 	default:
 	}
 
-	proxy.Restore()
+	hold.Release()
 	select {
 	case gone := <-deleted:
 		if !gone {

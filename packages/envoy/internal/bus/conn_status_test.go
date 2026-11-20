@@ -15,24 +15,26 @@ import (
 )
 
 // heldAnswerWait is the timeout a row gives a Drain it makes while a handshake is held
-// (testnats.Proxy.HoldConnectAnswers). No row waits on it for an answer: a row decides by order,
+// (testnats.HandshakeHold). No row waits on it for an answer: a row decides by order,
 // an answer while the handshake is still held, and bounds the wait only by the test's deadline.
 const heldAnswerWait = 10 * time.Second
 
-// proxiedClient is a client of its own through a proxy of its own, whose dials and handshakes
-// nats.go's own timeout does not end before the test's deadline (WithConnectTimeout), so a held
-// handshake lasts until the row restores the proxy. The proxy is restored before the client
-// closes, since nats.go's Close waits for its connection lock, which a held handshake holds.
-func proxiedClient(t *testing.T, options ...ConnectOption) (*Client, *testnats.Proxy) {
+// proxiedClient is a client of its own through a handshake hold of its own (testnats.HandshakeHold),
+// whose dials and handshakes nats.go's own timeout does not end before the test's deadline
+// (WithConnectTimeout), so a held handshake lasts until the row releases the hold. The hold is
+// released and the proxy restored before the client closes, since nats.go's Close waits for its
+// connection lock, which a held handshake holds.
+func proxiedClient(t *testing.T, options ...ConnectOption) (*Client, *testnats.HandshakeHold) {
 	t.Helper()
-	proxy := testnats.StartProxy(t, testnats.URL(t))
-	client, err := Connect([]string{proxy.URL()}, append([]ConnectOption{WithConnectTimeout(testnats.Remaining(t))}, options...)...)
+	hold := testnats.StartHandshakeHold(t, testnats.URL(t))
+	client, err := Connect([]string{hold.URL()}, append([]ConnectOption{WithConnectTimeout(testnats.Remaining(t))}, options...)...)
 	if err != nil {
-		t.Fatalf("connect through the proxy: %v", err)
+		t.Fatalf("connect through the handshake hold: %v", err)
 	}
 	t.Cleanup(client.Close)
-	t.Cleanup(proxy.Restore)
-	return client, proxy
+	t.Cleanup(hold.Restore)
+	t.Cleanup(hold.Release)
+	return client, hold
 }
 
 // waitForNatsStatus waits until nats.go's own status of conn satisfies want, reading it as any
@@ -48,11 +50,12 @@ func waitForNatsStatus(t *testing.T, conn *nats.Conn, what string, want func(nat
 	}
 }
 
-// awaitHeld waits until hold holds a client's handshake.
-func awaitHeld(t *testing.T, hold *testnats.ConnectHold) {
+// awaitHeld waits until held, the channel a handshake hold's Hold or HoldNext returns, is closed: a
+// client's CONNECT has reached the server through the hold, so its handshake is held.
+func awaitHeld(t *testing.T, held <-chan struct{}) {
 	t.Helper()
 	select {
-	case <-hold.Held():
+	case <-held:
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("no reconnect's CONNECT reached the server through the hold by the test's deadline")
 	}
@@ -161,16 +164,14 @@ func TestACloseAnswerInTheRequestsOwnRunStaysNatsGos(t *testing.T) {
 // A request through Request on a client whose callers can hold a lock (withLossAtOnce), made while
 // the hub holds the handshake of its connection's reconnect, is not sent, and answers
 // ErrConnectionLost, unsent, while the handshake is still held: requestLife reads the connection's
-// status by the probe, which waits at most heldLockBudget for nats.go's lock, where nats.go's own
+// status by the probe, which waits at most ConnLockWait for nats.go's lock, where nats.go's own
 // IsConnected waits for the whole handshake.
 //
 // The control is this row with requestLife reading conn.IsConnected() on such a client: the
 // request gives no answer while the handshake is held, and the row fails at the test's deadline.
 func TestARequestDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
-	client, proxy := proxiedClient(t, withLossAtOnce())
-	proxy.Cut()
-	hold := proxy.HoldConnectAnswers()
-	awaitHeld(t, hold)
+	client, hold := proxiedClient(t, withLossAtOnce())
+	awaitHeld(t, hold.Hold())
 	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
 	var sends atomic.Int64
@@ -186,7 +187,7 @@ func TestARequestDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 	select {
 	case err = <-answered:
 	case <-time.After(testnats.Remaining(t)):
-		proxy.Restore()
+		hold.Release()
 		t.Fatal("a request made during the held handshake gave no answer by the test's deadline: it waited for nats.go's connection lock, which the handshake holds")
 	}
 	if !errors.Is(err, ErrConnectionLost) || !requestUnsent(err) || sends.Load() != 0 {
@@ -203,11 +204,11 @@ func TestARequestDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 // answers ErrConnectionLost at once, unsent, while the handshake is still held: its caller holds the
 // session's lock, the shared stream read or a relay's restart turn, and releases it before it waits
 // for the connection (Reconnected). nats.go holds its connection lock through the whole handshake
-// (doReconnect, nats.go:3458-3485), as a hub whose auth service has not answered the CONNECT holds
-// it for its authorization timeout; the call reads the connection's status by the probe
-// (connForRequest, requestLife), which waits for nats.go's lock at most heldLockBudget. Each kind
-// of request the client's calls make under a session's lock or a relay's turn has a row, as in
-// lossAtOnceRow. Once the proxy is restored the handshake ends, Reconnected reports the connection
+// (doReconnect, nats.go v1.55.0 :3554-3581), as a hub whose auth service has not answered the
+// CONNECT holds it for its authorization timeout; the call reads the connection's status by the
+// probe (connForRequest, requestLife), which waits for nats.go's lock at most ConnLockWait. Each
+// kind of request the client's calls make under a session's lock or a relay's turn has a row, as in
+// lossAtOnceRow. Once the hold is released the handshake ends, Reconnected reports the connection
 // back, and the call answers.
 //
 // The control is this row with connForRequest reading conn.IsConnected(): the first call, the
@@ -220,13 +221,13 @@ func TestASessionConsumerCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	proxy := testnats.StartProxy(t, url)
-	consumers, err := ConnectSessionConsumers([]string{proxy.URL()}, 0, nil, WithConnectTimeout(testnats.Remaining(t)))
+	hold := testnats.StartHandshakeHold(t, url)
+	consumers, err := ConnectSessionConsumers([]string{hold.URL()}, 0, nil, WithConnectTimeout(testnats.Remaining(t)))
 	if err != nil {
-		t.Fatalf("connect the session consumers through the proxy: %v", err)
+		t.Fatalf("connect the session consumers through the handshake hold: %v", err)
 	}
 	t.Cleanup(consumers.Close)
-	t.Cleanup(proxy.Restore)
+	t.Cleanup(hold.Release)
 	filter := []string{contracts.AgentSubject(contracts.NoProject, sessionID)}
 	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
@@ -234,9 +235,7 @@ func TestASessionConsumerCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 		t.Fatalf("create the session's consumer: %v", err)
 	}
 
-	proxy.Cut()
-	hold := proxy.HoldConnectAnswers()
-	awaitHeld(t, hold)
+	awaitHeld(t, hold.Hold())
 	calls := []struct {
 		name string
 		call func(context.Context) error
@@ -262,7 +261,7 @@ func TestASessionConsumerCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 		select {
 		case err = <-answered:
 		case <-time.After(testnats.Remaining(t)):
-			proxy.Restore()
+			hold.Release()
 			t.Fatalf("%s made during the held handshake gave no answer by the test's deadline: it waited for nats.go's connection lock, which the handshake holds", call.name)
 		}
 		var answer *connectionLost
@@ -277,7 +276,7 @@ func TestASessionConsumerCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 		lost = err
 	}
 
-	proxy.Restore()
+	hold.Release()
 	if !Reconnected(ctx, lost) {
 		t.Fatal("Reconnected did not report the connection back once the hold ended")
 	}

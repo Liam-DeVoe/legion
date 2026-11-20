@@ -292,8 +292,8 @@ func TestAnAckOnARunningClientsClosedConnectionIsLost(t *testing.T) {
 
 // A pull's own request made once the running client's connection the pull is on has closed, before
 // the client has ended that connection's life, answers ErrConnectionLost, unsent, rather than the
-// nats.ErrConnectionClosed nats.go refuses it with before writing anything (nats.go v1.53.1
-// nats.go:4575): the order a close gives a pull whose next round starts at the close, since the
+// nats.ErrConnectionClosed nats.go refuses it with before writing anything (nats.go v1.55.0
+// nats.go:4740): the order a close gives a pull whose next round starts at the close, since the
 // pull sends its request while it reads the life as running (SessionPull.pull). The gate holds the
 // life's end (withLifeEndGate), so the request is made in that order whatever the box's speed, and
 // Reconnected matches its answer once the gate is released and the hold restored.

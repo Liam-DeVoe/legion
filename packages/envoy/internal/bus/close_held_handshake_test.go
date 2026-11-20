@@ -30,10 +30,8 @@ func TestAStopDuringAHeldHandshakeLeavesTheClientsLockFree(t *testing.T) {
 		{"Drain", func(c *Client) { _ = c.Drain(heldAnswerWait) }},
 	} {
 		t.Run(stop.name, func(t *testing.T) {
-			client, proxy := proxiedClient(t)
-			proxy.Cut()
-			hold := proxy.HoldConnectAnswers()
-			awaitHeld(t, hold)
+			client, hold := proxiedClient(t)
+			awaitHeld(t, hold.Hold())
 			reached := make(chan struct{})
 			var once sync.Once
 			// The test's cleanup closes the client again, so the hook runs more than once.
@@ -46,7 +44,7 @@ func TestAStopDuringAHeldHandshakeLeavesTheClientsLockFree(t *testing.T) {
 			select {
 			case <-reached:
 			case <-time.After(testnats.Remaining(t)):
-				proxy.Restore()
+				hold.Release()
 				t.Fatalf("%s never reached its call into nats.go by the test's deadline", stop.name)
 			}
 			answered := make(chan struct{})
@@ -59,7 +57,7 @@ func TestAStopDuringAHeldHandshakeLeavesTheClientsLockFree(t *testing.T) {
 			case <-hold.Ended():
 				t.Fatalf("Connection gave no answer while %s waited for the held handshake: the stop held the client's lock", stop.name)
 			case <-time.After(testnats.Remaining(t)):
-				proxy.Restore()
+				hold.Release()
 				t.Fatalf("Connection gave no answer by the test's deadline while %s waited for the held handshake: the stop held the client's lock", stop.name)
 			}
 			select {
@@ -67,7 +65,7 @@ func TestAStopDuringAHeldHandshakeLeavesTheClientsLockFree(t *testing.T) {
 				t.Fatalf("Connection answered only once the held handshake had ended")
 			default:
 			}
-			proxy.Restore()
+			hold.Release()
 			select {
 			case <-stopped:
 			case <-time.After(testnats.Remaining(t)):

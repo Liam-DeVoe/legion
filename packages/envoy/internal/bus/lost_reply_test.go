@@ -24,7 +24,8 @@ import (
 // context has not fired when it comes; and the client is not connected when it comes. Every wait
 // is bounded by the test's deadline alone (testnats.Remaining). So a loaded or starved box can make
 // a row slow, never fail it; a request that waits for its own deadline, or for the reconnect,
-// fails it.
+// fails it. Each row logs its answer's time after the cut and after nats.go's own report of the
+// drop (dropReport), for a check that bounds the bus's part; the rows themselves bound neither.
 
 // ownWait is the deadline a row gives the request it holds: five seconds short of what the test
 // binary's deadline leaves, so the request's own deadline fires, and fails the row with its own
@@ -58,11 +59,14 @@ const (
 // the request's own (ownWait), waits until the hold has withheld its reply and, for a request that
 // flushes, forwarded that flush's PONG, so the request is past its publish and its flush and
 // waiting for its reply, then cuts the connection (testnats.ReplyHold.Cut). It requires send to
-// fail with ErrConnectionLost while its own context is still running and while connected, the
-// client's own report, is still false, and only then restores the hold, so the client reconnects
-// for what the row does next. Every wait is bounded by the test's deadline alone.
-func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, connected func() bool, prefix string, flush flushes, send func(ctx context.Context) error) {
+// fail with ErrConnectionLost while its own context is still running and while client's own report
+// of whether it is connected is still false, and only then restores the hold, so the client
+// reconnects for what the row does next. It logs the answer's time after the cut and after
+// nats.go's own report of the drop (dropReport). Every wait is bounded by the test's deadline
+// alone.
+func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, client *Client, prefix string, flush flushes, send func(ctx context.Context) error) {
 	t.Helper()
+	report := watchDropReport(t, client.Connection())
 	own, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
 	held := hold.Hold(prefix)
@@ -87,8 +91,9 @@ func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, connected func
 	defer hold.Restore()
 	select {
 	case err := <-answered:
-		took := time.Since(dropped)
-		reconnected := connected()
+		answeredAt := time.Now()
+		took := answeredAt.Sub(dropped)
+		reconnected := client.Connected()
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("the request on %s whose reply the drop lost answered %v %s after the drop, want ErrConnectionLost", prefix, err, took)
 		}
@@ -98,7 +103,7 @@ func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, connected func
 		if reconnected {
 			t.Fatalf("the request on %s whose reply the drop lost answered %v only once the client was connected again, want it failed while the client was disconnected", prefix, err)
 		}
-		t.Logf("the request on %s whose reply the drop lost failed %s after the drop, its own deadline still running and the client still disconnected: %v", prefix, took, err)
+		t.Logf("the request on %s whose reply the drop lost failed %s after the drop and %s after nats.go reported the drop, its own deadline still running and the client still disconnected: %v", prefix, took, report.since(t, answeredAt), err)
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatalf("the request on %s whose reply the drop lost was still waiting at the test's deadline, want it failed at the drop", prefix)
 	}
@@ -175,7 +180,7 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			client, hold := heldClient(t)
-			requireLostAtTheDrop(t, hold, client.Connected, row.prefix, row.flush, row.prepare(t, client))
+			requireLostAtTheDrop(t, hold, client, row.prefix, row.flush, row.prepare(t, client))
 		})
 	}
 }
@@ -219,7 +224,7 @@ func TestAStreamReadTheDropCutOffReleasesTheCallsWaitingOnIt(t *testing.T) {
 		t.Fatalf("connect the session consumers: %v", err)
 	}
 	t.Cleanup(consumers.Close)
-	requireLostAtTheDrop(t, hold, consumers.client.Connected, "$JS.API.STREAM.INFO."+Stream, withFlush, func(ctx context.Context) error {
+	requireLostAtTheDrop(t, hold, consumers.client, "$JS.API.STREAM.INFO."+Stream, withFlush, func(ctx context.Context) error {
 		_, err := consumers.StreamID(ctx)
 		return err
 	})
@@ -267,6 +272,7 @@ func TestAPullWhoseConnectionDropsEndsAtTheDrop(t *testing.T) {
 		t.Fatalf("pull the session's consumer: %v", err)
 	}
 	t.Cleanup(pull.Stop)
+	report := watchDropReport(t, consumers.client.Connection())
 	answered := make(chan error, 1)
 	go func() {
 		_, err := pull.Next(context.Background())
@@ -283,14 +289,15 @@ func TestAPullWhoseConnectionDropsEndsAtTheDrop(t *testing.T) {
 	defer hold.Restore()
 	select {
 	case err := <-answered:
-		took := time.Since(dropped)
+		answeredAt := time.Now()
+		took := answeredAt.Sub(dropped)
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("the pull whose connection dropped ended %s after the drop with %v, want ErrConnectionLost before it stalled", took, err)
 		}
 		if consumers.client.Connected() {
 			t.Fatalf("the pull whose connection dropped ended %s after the drop only once the client was connected again, want it ended while the client was disconnected", took)
 		}
-		t.Logf("the pull whose connection dropped ended %s after the drop, the client still disconnected: %v", took, err)
+		t.Logf("the pull whose connection dropped ended %s after the drop and %s after nats.go reported the drop, the client still disconnected: %v", took, report.since(t, answeredAt), err)
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("the pull whose connection dropped was still waiting at the test's deadline, want it ended at the drop")
 	}
@@ -328,6 +335,7 @@ func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) 
 		t.Fatalf("pull the session's consumer: %v", err)
 	}
 	t.Cleanup(pull.Stop)
+	report := watchDropReport(t, consumers.client.Connection())
 	dropped := make(chan time.Time, 1)
 	var once sync.Once
 	pull.beforeWait = func() {
@@ -355,15 +363,55 @@ func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) 
 	}
 	select {
 	case err := <-answered:
-		took := time.Since(at)
+		answeredAt := time.Now()
+		took := answeredAt.Sub(at)
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("the pull whose connection dropped before its wait ended %s after the drop with %v, want ErrConnectionLost before it stalled", took, err)
 		}
 		if consumers.client.Connected() {
 			t.Fatalf("the pull whose connection dropped before its wait ended %s after the drop only once the client was connected again, want it ended while the client was disconnected", took)
 		}
-		t.Logf("the pull whose connection dropped before its wait ended %s after the drop, the client still disconnected: %v", took, err)
+		t.Logf("the pull whose connection dropped before its wait ended %s after the drop and %s after nats.go reported the drop, the client still disconnected: %v", took, report.since(t, answeredAt), err)
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("the pull whose connection dropped before its wait was still waiting at the test's deadline, want it ended at the drop")
+	}
+}
+
+// dropReport is when nats.go reported a connection's drop to a status listener the row registered
+// before the cut (watchDropReport), as a goroutine parked on that listener reads it. A row logs its
+// answer's time after that report as well as after the cut: nats.go reports the drop as its read
+// loop sees the close, which is where the bus can first act on it, and a close packet the loopback
+// lost reaches that read loop only at TCP's retransmit, 200 ms or more after the cut. The time
+// after the report leaves that delivery out and counts the bus's own part.
+type dropReport struct {
+	at <-chan time.Time
+}
+
+// watchDropReport registers a status listener on conn and starts the goroutine that stamps its
+// first report of a drop (reconnecting, disconnected or closed). The listener is removed at the
+// test's end.
+func watchDropReport(t *testing.T, conn *nats.Conn) dropReport {
+	t.Helper()
+	reports := conn.StatusChanged(nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
+	t.Cleanup(func() { conn.RemoveStatusListener(reports) })
+	at := make(chan time.Time, 1)
+	go func() {
+		if _, open := <-reports; open {
+			at <- time.Now()
+		}
+	}()
+	return dropReport{at: at}
+}
+
+// since is how long after nats.go's report of the drop answeredAt was, negative when the answer's
+// goroutine was read first. It fails the test when nats.go reported no drop by the test's deadline.
+func (r dropReport) since(t *testing.T, answeredAt time.Time) time.Duration {
+	t.Helper()
+	select {
+	case reported := <-r.at:
+		return answeredAt.Sub(reported)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("nats.go reported no drop of the connection by the test's deadline")
+		return 0
 	}
 }

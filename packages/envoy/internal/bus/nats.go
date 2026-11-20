@@ -230,7 +230,7 @@ func WithImmediateReconnect() DialOption {
 
 // WithConnectTimeout bounds each dial of the client's connections and its handshake at d, the
 // first connection's and every reconnect's, in place of connectTimeout. A test that holds a
-// handshake (testnats.Proxy.HoldConnectAnswers) sets it above the hold, so the handshake lasts as
+// handshake (testnats.HandshakeHold) sets it above the hold, so the handshake lasts as
 // long as the hold does and nats.go's own timeout does not end it first.
 func WithConnectTimeout(d time.Duration) DialOption {
 	return func(o *connectOpts) { o.connectTimeout = d }
@@ -422,11 +422,15 @@ type Client struct {
 	// ConnectionChanged makes the next one when a caller takes it.
 	connChanged chan struct{}
 	// prober reads Conn's status (connProber) for every request's own read and for LostNow: within
-	// heldLockBudget for a caller that holds a lock, and within the request's context for one that
+	// ConnLockWait for a caller that holds a lock, and within the request's context for one that
 	// holds none (requestRead); under mu, made for each connection the first time it is asked
 	// (proberLocked). probeDown is a test's seam (ProbeReadsDownForTest), nil outside tests.
 	prober    *connProber
 	probeDown atomic.Pointer[func() bool]
+	// windowLife answers whether the life a publish window pinned has ended (connLife,
+	// window.current): it follows Conn's lives from nats.go's own reports, under mu, made for each
+	// connection the first time a window pins it (windowLifeLocked).
+	windowLife *connLife
 	// requestReadSlow is a row's seam on a request's own read (requestRead): while it answers true,
 	// that read's budgeted part answers "unknown", as a read a loaded box keeps waiting does. nil
 	// outside tests.
@@ -435,12 +439,12 @@ type Client struct {
 	lifeReadSlow atomic.Pointer[func() bool]
 	// stopHook is a test's seam on the stop's calls into nats.go (stopCall), nil outside tests.
 	stopHook func()
-	// life is the life of lifeConn that requests are bound to (Request, requestLife), under mu: a
-	// context endLife ends, with ErrConnectionLost as its cause, at the first drop of lifeConn its
-	// own status listener is sent, and lifeReconnects is nats.go's reconnect count of lifeConn when
-	// it began. lifeListening is whether the life's goroutine has received that listener, so
-	// nats.go's own reports reach it. nil before the client's first request on a connected
-	// connection.
+	// life answers whether a request's connection was lost under it (Request, requestLife): the
+	// life of lifeConn that requests are bound to, under mu, a context endLife ends, with
+	// ErrConnectionLost as its cause, at the first drop of lifeConn its own status listener is sent,
+	// and lifeReconnects is nats.go's reconnect count of lifeConn when it began. lifeListening is
+	// whether the life's goroutine has received that listener, so nats.go's own reports reach it.
+	// nil before the client's first request on a connected connection.
 	life           context.Context
 	endLife        context.CancelCauseFunc
 	lifeConn       *nats.Conn
@@ -906,7 +910,7 @@ func (c *Client) JS() nats.JetStreamContext {
 // It reads nats.go's state after it lets the client's lock go, so a wait for a reconnect's
 // handshake, which that read can make, holds no caller of the client's lock; it is exact, so none
 // of its readers - the dispatch outbox's loss grace, the health checks, the keeper's pass - acts on
-// a "down" the probe's budget (heldLockBudget) would give under load.
+// a "down" the probe's budget (ConnLockWait) would give under load.
 func (c *Client) Connected() bool {
 	conn := c.Connection()
 	return conn != nil && conn.Status() == nats.CONNECTED
@@ -919,6 +923,16 @@ func (c *Client) proberLocked() *connProber {
 		c.prober = newConnProber(c.Conn)
 	}
 	return c.prober
+}
+
+// windowLifeLocked is the life of the client's connection that windows pin (connLife), made the
+// first time a window asks for that connection, for a caller that holds c.mu. It calls nothing of
+// nats.go's: the life registers its status listener on a goroutine of its own (newConnLife).
+func (c *Client) windowLifeLocked() *connLife {
+	if c.windowLife == nil || c.windowLife.conn != c.Conn {
+		c.windowLife = newConnLife(c.Conn)
+	}
+	return c.windowLife
 }
 
 // probeConn is the probe's read of conn's status and reconnect count (connProber.probe), or, when
@@ -948,7 +962,7 @@ func (c *Client) readConnState(conn *nats.Conn, seamed bool) (status nats.Status
 }
 
 // upNow reports whether conn is connected now (statusUp) by the probe, without a wait for a
-// reconnect's dial or handshake past heldLockBudget, and nats.go's reconnect count with an up
+// reconnect's dial or handshake past ConnLockWait, and nats.go's reconnect count with an up
 // answer.
 func (c *Client) upNow(conn *nats.Conn) (up bool, reconnects uint64) {
 	status, reconnects, answered := c.probeConn(conn)
@@ -1122,7 +1136,7 @@ func (c *Client) subscribeCore(next recoverableSubscription) (*nats.Subscription
 // connection's close, on a client still running, answers ErrConnectionLost (lostIfClosed), whose
 // retry waits for the connection that replaces it (Reconnected); the registration stays all the
 // same, so the recovery binds it there. A core subscribe nats.go refused sent nothing (nats.go
-// v1.53.1 nats.go:5030-5035); a JetStream one may have sent its consumer lookup or create first.
+// v1.55.0 nats.go:5200-5201); a JetStream one may have sent its consumer lookup or create first.
 func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.Conn, js nats.JetStreamContext) (*nats.Subscription, error) {
 	c.subscriptionsMu.Lock()
 	subscription := &c.subscriptions[next.transport]
@@ -1228,8 +1242,8 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 	// A valid handle is one on the client's connection: the client replaces only a connection that
 	// nats.go has closed, and that close ends every subscription on it. So the unsubscribe and the
 	// drain below act on conn, and one nats.go refuses for its close, which it does before
-	// writing anything (nats.go v1.53.1 nats.go:5315-5322, :5432), is that connection's loss on a
-	// client still running (lostIfClosed).
+	// writing anything (nats.go v1.55.0 nats.go:5486-5487, :5602-5603), is that connection's
+	// loss on a client still running (lostIfClosed).
 	conn := c.Connection()
 	// Taken before the state it guards is read, so that an event between the two still wakes the
 	// watch below.
@@ -2336,7 +2350,7 @@ func unacknowledged(err error, mayHold bool) error {
 // (WithLockHeld), it answers the loss instead, so the caller releases what it holds before it
 // waits. The closed connection's own error comes back from a client that was stopped
 // (lostOrClosed), and from the JetStream context of a connection the client replaced as the send
-// began, which nats.go refuses before it writes anything (nats.go v1.53.1 nats.go:4573-4576), and
+// began, which nats.go refuses before it writes anything (nats.go v1.55.0 nats.go:4738-4741), and
 // such a publish is sent again on the connection connForRequest serves: the replacement, or the
 // one Drain still drains. That is ensureConnWithContext's wait for every caller but one that
 // holds a lock across the publish - every caller on a client that answers a loss at once
@@ -2510,8 +2524,8 @@ func cursorMoved(err error) error {
 //
 // A publish or a flush that nats.go answered with the close of the client's connection - the
 // connection closed under it, or, for the flush, dropped while its PONG was due, which nats.go
-// answers as a close (processOpErr clears the pending flushes, nats.go v1.53.1 nats.go:3577 and
-// :5947-5949) - answers ErrConnectionLost on a client still running (publishConfirmed), so its
+// answers as a close (processOpErr clears the pending flushes, nats.go v1.55.0 nats.go:3673 and
+// :6129-6131) - answers ErrConnectionLost on a client still running (publishConfirmed), so its
 // caller reads it as the lost connection it is rather than as a closed one.
 func (c *Client) PublishCoreContext(ctx context.Context, subject string, item contracts.Envelope) error {
 	if err := checkSubject(subject); err != nil {

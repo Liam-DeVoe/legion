@@ -15,30 +15,28 @@ import (
 // while the hub holds the handshake of the main client's reconnect, answers ErrConnectionLost
 // while the handshake is still held: the read is bound under its caller's context, so its request
 // answers "unknown" as the loss and never begins a wait for nats.go's own answer. The registry is
-// opened on a main client through a proxy, so the claim read's handle is that client's. It decides
-// by events: the answer must come before the read begins a wait for nats.go's own answer
-// (bus.Client.AnswerWaitForTest), and while the handshake is held; a row that fails ends at that
-// wait or at the test's deadline.
+// opened on a main client through a handshake hold (testnats.HandshakeHold), so the claim read's
+// handle is that client's. It decides by events: the answer must come before the read begins a
+// wait for nats.go's own answer (bus.Client.AnswerWaitForTest), and while the handshake is held; a
+// row that fails ends at that wait or at the test's deadline.
 //
 // The control is the claim read bound with context.Background() rather than its caller's context:
 // the read holds no mark, begins the wait, and fails.
 func TestARoleClaimReadUnderAGuardDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
-	proxy := testnats.StartProxy(t, testnats.URL(t))
-	client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithConnectTimeout(testnats.Remaining(t)))
+	hold := testnats.StartHandshakeHold(t, testnats.URL(t))
+	client, err := bus.ConnectOwningStream([]string{hold.URL()}, bus.WithReplicas(1), bus.WithConnectTimeout(testnats.Remaining(t)))
 	if err != nil {
-		t.Fatalf("connect the main client through the proxy: %v", err)
+		t.Fatalf("connect the main client through the handshake hold: %v", err)
 	}
 	t.Cleanup(client.Close)
-	t.Cleanup(proxy.Restore)
+	t.Cleanup(hold.Release)
 	registry := openRegistry(t, client.Connection())
 	t.Cleanup(registry.StopWatch)
 	if lost := client.LostNow(); lost != nil {
 		t.Fatalf("the main client's question before the drop answered %v, want up", lost)
 	}
-	proxy.Cut()
-	hold := proxy.HoldConnectAnswers()
 	select {
-	case <-hold.Held():
+	case <-hold.Hold():
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("no reconnect's CONNECT reached the server through the hold by the test's deadline")
 	}
@@ -68,12 +66,12 @@ func TestARoleClaimReadUnderAGuardDuringAHeldHandshakeAnswersAtOnce(t *testing.T
 		default:
 		}
 	case <-waited:
-		proxy.Restore()
+		hold.Release()
 		t.Fatal("the role claim read under a guard began a wait for nats.go's own answer, with the guard held")
 	case <-hold.Ended():
 		t.Fatal("the role claim read gave no answer while the handshake was held")
 	case <-time.After(testnats.Remaining(t)):
-		proxy.Restore()
+		hold.Release()
 		t.Fatal("the role claim read gave no answer by the test's deadline while the handshake was held")
 	}
 }
