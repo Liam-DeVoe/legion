@@ -107,7 +107,11 @@ name: Dispatch unit suite repeated
 # in run 44723942168 (each job's whole time less that step's: the job's setup, checkout, Bun and
 # `bun install` before the step, and 2 s of upload after it), so the three more web legs of the
 # two shards add about 70 s of runner time a run, and GitHub rounds six web jobs up to a whole
-# minute where it rounded three.
+# minute where it rounded three. Measured as GitHub bills it: run 44723942168, the last with one
+# web leg a round, billed 124 minutes (51 of them its three web legs), and run 44749684592, the
+# first with two shards and the sweep of useIssueDrafts.test.ts computed once a process, billed
+# 137 (61 of them its six web legs); its longest web leg's job took 707 s, against 1,170 s in the
+# run before.
 
 on:
   schedule:
@@ -152,10 +156,10 @@ jobs:
     # over every completed leg of the runs the test step's comment names, took at most 34 s in a
     # web leg (run 44500465080, round 1), 29 s in a web-cold leg (run 44622961898, round 2) and
     # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
-    # 3 minutes: 19 + 1 = 20 minutes for a web leg, 3 + 1 = 4 for a web-cold leg and 30 + 3 = 33
-    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 998 s for a web leg
-    # (run 44622961898, round 3, stopped on its step limit), 157 s for a web-cold leg (run
-    # 44622961898, round 3, the same) and 1,575 s for a harness leg (run 44389203951, round 1).
+    # 3 minutes: 14 + 1 = 15 minutes for a web leg, 4 + 1 = 5 for a web-cold leg and 30 + 3 = 33
+    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 707 s for a web leg
+    # (run 44749684592, round 3, shard 1/2), 192 s for a web-cold leg (run 44749684592, round 3)
+    # and 1,575 s for a harness leg (run 44389203951, round 1).
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
@@ -181,13 +185,13 @@ jobs:
           - lane: web
             shards: 2
             reruns: 20
-            step_minutes: 19
-            job_minutes: 20
+            step_minutes: 14
+            job_minutes: 15
           - lane: web-cold
             shards: 1
             reruns: 1
-            step_minutes: 3
-            job_minutes: 4
+            step_minutes: 4
+            job_minutes: 5
           - lane: harness
             shards: 1
             reruns: 20
@@ -251,28 +255,23 @@ jobs:
       # request's run tests GitHub's merge of its head with main, so it grows with main's suite: a
       # web run read 4,885 rows in run 44023917835 and 6,916 in run 44622961898.
       #
-      # Web: 69 legs took 507 to 972 s. The slowest, run 44622961898 at 8214635248bb (web lane,
-      # round 3, job 135909218942, seed 353492291), was stopped by main's 16-minute limit after
-      # 972 s, so it is a lower bound and not a time. Its bun.log, the leg's uploaded artifact,
-      # holds 138,247 of the 138,320 results the run's two finished web legs each wrote: all but
-      # 73 results of the 20th rerun of web/src/features/inbox/Inbox.test.tsx, which the run's
-      # round 2 leg took 7.0 s for. So the whole step is estimated at 972 + 7 = 979 s, and
-      # 979 x 1.15 = 1,126 s, 19 minutes. The two finished legs of that run took 808 and 916 s.
+      # Web: the six sharded legs of run 44749684592 at 132a1ed654 (the first run of the two
+      # shards with useIssueDrafts.test.ts's sweep computed once a process) took 480 to 684 s, the
+      # most in round 3, shard 1/2 (job 136334011228), so 684 x 1.15 = 787 s, 14 minutes. The run
+      # before it, at e81649ec3d (44738093077), had each shard 1/2 leg stopped at the unsharded
+      # 19-minute limit, 961 s of its 1,148 s the sweep's 20 reruns; its shard 2/2 legs took 469 to
+      # 633 s.
       #
       # Harness: 66 legs took 967 to 1,529 s, the most in run 44389203951, round 1, so
       # 1,529 x 1.15 = 1,758 s, 30 minutes.
       #
-      # Web-cold: 78 legs took 66 to 133 s. The three legs of run 44622961898 were stopped by
-      # main's two-minute limit: round 2 had written all 6,916 results, and rounds 1 and 3 had
-      # written 6,539 and 6,545 of them at 133 s, so 133 x 6,916 / 6,539 = 141 s is the estimate,
-      # and 141 x 1.15 = 162 s, 3 minutes.
+      # Web-cold: the legs of the three runs since the lane's last derivation took 97 to 161 s,
+      # the most in run 44749684592, round 3, so 161 x 1.15 = 186 s, 4 minutes. The 78 legs before
+      # them took 66 to 133 s.
       #
-      # The limits are derived from the suite's size on 2026-11-19: a step that is stopped on a leg
-      # whose rows were passing is the signal to derive them again.
-      #
-      # The web limits are still those of a leg of the whole lane, kept for its shards until the
-      # first run of the shards is measured: no web shard had run when the lane was split. The
-      # change after that run derives them again by this rule from the sharded legs' times.
+      # The web and web-cold limits are derived from the suite's size on 2026-11-20 and the harness
+      # limit from its size on 2026-11-19: a step that is stopped on a leg whose rows were passing
+      # is the signal to derive them again.
       #
       # The seed. A leg's seed is the first 32 bits of the SHA-256 of the run's id and the lane,
       # plus the round, modulo 2^32: a number Bun's `--seed` takes (0 to 2^32 - 1). So the two
