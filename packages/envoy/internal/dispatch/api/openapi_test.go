@@ -544,3 +544,85 @@ func openAPITaggedRequired(goType reflect.Type) []string {
 	sort.Strings(required)
 	return required
 }
+
+// openAPIPromoted is the struct TestAFieldAnEmbeddedPointerPromotesIsNotRequired embeds: one field
+// with no omitempty, which the marshaller writes wherever the struct is there to write it from.
+type openAPIPromoted struct {
+	Count int `json:"count"`
+}
+
+// openAPIPromotedByPointer carries openAPIPromoted's field through an embedded pointer, as
+// writeAdvice carries documentBlocks'.
+type openAPIPromotedByPointer struct {
+	Kind string `json:"kind"`
+	*openAPIPromoted
+}
+
+// openAPIPromotedByValue carries the same field embedded by value.
+type openAPIPromotedByValue struct {
+	Kind string `json:"kind"`
+	openAPIPromoted
+}
+
+// openAPIPromotedThroughValue carries it a level further down: embedded by value, through a
+// struct that embeds the pointer itself.
+type openAPIPromotedThroughValue struct {
+	Kind string `json:"kind"`
+	openAPIPromotedPointerHolder
+}
+
+type openAPIPromotedPointerHolder struct {
+	*openAPIPromoted
+}
+
+// A field an embedded pointer promotes is in the object only while the pointer is set:
+// encoding/json leaves out every field of a nil embedded pointer, so the server answers an issue
+// write with no decision_blocks in its advice whatever that field's tag says, and a document that
+// required it refused the server's own answer. The same struct embedded by value is always
+// written, and its field stays required. Each row's zero value is marshalled beside it, so what the
+// row expects is Go's own reading and not the emitter's, and `kind`, the owner's own field, is
+// held required too, so a schema with no required at all cannot pass for one that left `count` out.
+func TestAFieldAnEmbeddedPointerPromotesIsNotRequired(t *testing.T) {
+	emitter, _ := newOpenAPIEmitter()
+	for _, row := range []struct {
+		value    any
+		required bool
+	}{
+		{value: openAPIPromotedByPointer{}, required: false},
+		{value: openAPIPromotedThroughValue{}, required: false},
+		{value: openAPIPromotedByValue{}, required: true},
+	} {
+		goType := reflect.TypeOf(row.value)
+		name := openAPISchemaName(goType)
+		marshalled, err := json.Marshal(row.value)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", openAPIGoTypeName(goType), err)
+		}
+		var object map[string]any
+		if err := json.Unmarshal(marshalled, &object); err != nil {
+			t.Fatalf("read back %s: %v", openAPIGoTypeName(goType), err)
+		}
+		if _, written := object["count"]; written != row.required {
+			t.Fatalf("the row for %s expects count required=%v, and its zero value marshals to %s",
+				openAPIGoTypeName(goType), row.required, marshalled)
+		}
+		if _, err := emitter.schema(row.value); err != nil {
+			t.Fatal(err)
+		}
+		schema, declared := emitter.reflector.SpecEns().ComponentsEns().Schemas[name]
+		if !declared {
+			t.Fatalf("reflecting %s declared no schema %s", openAPIGoTypeName(goType), name)
+		}
+		required := openAPIRequiredOf(t, name, schema)
+		if !slices.Contains(required, "kind") {
+			t.Errorf("%s requires %v, without kind, the field it declares itself", name, required)
+		}
+		if slices.Contains(required, "count") != row.required {
+			t.Errorf("%s requires %v, and the marshaller writes count on its zero value: %v",
+				name, required, row.required)
+		}
+	}
+	if len(emitter.failures) > 0 {
+		t.Fatalf("the emit failed: %v", emitter.failures)
+	}
+}

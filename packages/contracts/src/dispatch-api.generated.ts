@@ -4834,8 +4834,8 @@ export interface components {
     };
     DocumentWriteAdvice: {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
-      decision_blocks: number;
-      decision_blocks_added: number;
+      decision_blocks?: number;
+      decision_blocks_added?: number;
       moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
       unparsed_openers?: components["schemas"]["UnparsedOpeners"];
@@ -6766,8 +6766,8 @@ export interface components {
     };
     WriteAdvice: {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
-      decision_blocks: number;
-      decision_blocks_added: number;
+      decision_blocks?: number;
+      decision_blocks_added?: number;
       declined_asks?: components["schemas"]["AdviceDeclinedAsk"][];
       issue_status: string;
       legion_managed_status?: boolean;

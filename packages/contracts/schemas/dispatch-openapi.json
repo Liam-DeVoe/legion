@@ -20579,10 +20579,6 @@
             "$ref": "#/components/schemas/UnparsedOpeners"
           }
         },
-        "required": [
-          "decision_blocks",
-          "decision_blocks_added"
-        ],
         "type": "object"
       },
       "DuplicateCandidate": {
@@ -29177,9 +29173,7 @@
         "required": [
           "issue_status",
           "session_writes_since_human",
-          "your_open_asks",
-          "decision_blocks",
-          "decision_blocks_added"
+          "your_open_asks"
         ],
         "type": "object"
       },
