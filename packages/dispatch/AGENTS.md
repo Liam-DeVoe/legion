@@ -38,13 +38,13 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
   - `components/SelectionBar.tsx`: the bar shown while rows are marked.
 
-  - `components/TableShell.tsx`: the markup of every table.
+  - `components/TableShell.tsx`: a table with no search, sort or filter; `DataTable` is the one with them.
 
   - `components/DataTable.tsx`: the table core, over TanStack Table.
 
   - `components/Pager.tsx`: a table's pager.
 
-  - `components/Chip.tsx`: a narrowing that is on.
+  - `components/Chip.tsx`: the one interactive chip, a toggle or a removable value.
 
 - `lib/page-address.ts`: the one module that reads and writes a page's narrowing in the address.
 
