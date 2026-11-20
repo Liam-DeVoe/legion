@@ -758,7 +758,7 @@ test("a kept correction is written into the answer of a read it was kept for, an
 });
 
 /** The document a margin shows on CORE-1: its spec. */
-const SPEC = {
+const SPEC: Artifact = {
   created_at: "2026-11-19T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "doc-1",
@@ -771,7 +771,7 @@ const SPEC = {
   session_id: null,
   slug: "spec",
   versions: [],
-} as unknown as Artifact;
+};
 
 // The architect's ruling of 2026-11-20 13:35Z, item 2: a write made after a correction's event
 // from an answer read before it. A margin action on a comment (`useMarginItems`) writes its value
@@ -844,11 +844,11 @@ test("a margin action refused after its comment's delete puts back no word of th
   }
 });
 
-// A kept edit is written again into each answer that lands while a read out at its arrival is
-// out, and an answer composed after a later edit, whose event has not arrived yet, carries that
-// edit's time: the kept edit's older time never moves it back. The list holds no copy of the post
-// at the edit, so the edit writes nothing there and is kept for the read out. Its delete's facts
-// would apply whatever the answer said.
+// A kept edit is written into the answer the read it was kept for lands, and an answer composed
+// after a later edit, whose event has not arrived yet, carries that edit's time: the kept edit's
+// older time never moves it back. The list holds no copy of the post at the edit, so the edit
+// writes nothing there and is kept for the read out. Its delete's facts would apply whatever the
+// answer said.
 test("an answer that lands carrying a later edit than a kept one keeps its own edit's time", async () => {
   const list = ["issue-messages", "CORE-1"];
   const later = "2026-11-20T00:45:00.5Z";
