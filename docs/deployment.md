@@ -364,8 +364,10 @@ own arguments, but for a commit id of a hidden commit, hidden by the step's rewr
 push: the push gets the one visible commit that replaced it, where there is one.
 That holds for a commit id anywhere inside a revision argument's revset, such as `C1 | C2`, `::C`,
 `C-` or `present(C)`, whole or as a prefix of one commit, and every other word of the argument
-(`@`, a bookmark, a change id, a function, a string, a number) reaches the push as written; where
-jj refuses the argument with a word replaced, it reaches the push as written.
+(`@`, a bookmark, a change id, a function, a quoted string) reaches the push as written.
+A number or an unquoted pattern that starts the id of one commit the step rewrote is read as that
+commit's id too; where jj refuses the argument with such a word replaced, as it refuses a full id
+in a number's place, the argument reaches the push as written.
 It changes no commit that a remote bookmark holds and no immutable commit.
 It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
 the table.
