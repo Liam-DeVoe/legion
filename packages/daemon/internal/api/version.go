@@ -2466,7 +2466,49 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 192: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 196: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -2498,12 +2540,12 @@ package api
 // claim view's delivery loses `deliveredAt`, since no prompt is acknowledged; the failure causes
 // gain `never_reconnected`, a claim a daemon restart restored ready, idle or working whose shim
 // never said hello within the registration deadline while its process lived, which a caller from
-// a pod whose claims record a contract below 192 is served as `never_registered` in `failure.cause`
+// a pod whose claims record a contract below 196 is served as `never_registered` in `failure.cause`
 // and `pendingCause` (withoutNeverReconnected), since its plugin reads both through a strict enum
 // and refuses the whole body for a word it does not name; and
 // `GET /legion/v1/state` carries `unseenTaskValues`, every running claim whose value nobody
 // reported seeing for a whole first bound (`{claim, issue, role, task, writtenAt}`), which a
-// caller from a pod whose claims record a contract below 192 is served the body without (api's
+// caller from a pod whose claims record a contract below 196 is served the body without (api's
 // stateFor, withoutUnseenTaskValues), as one below 133 is served every issue without `mergeWait`,
 // one below 111 the issues without the tree's quiet time (withoutQuietTime) and one below 98 the
 // admission block without `held`. They are the last two rows of stateNarrowings, after 178's, and
@@ -2565,11 +2607,18 @@ package api
 // (#4175 and #4543) and 186 (#4495 and #4573) declared by open pull requests, so 187 was the
 // lowest number above 178 that none declared. It took 192 at the forward merge of 2026-11-20 that
 // brought main in at 1c7c8253678fedad99b5142defc5824e2c57b9a8, which carried 188,
-// cybermonklabs/legion#4543, the entry right above and the number the base now carries: a reading
+// cybermonklabs/legion#4543, then the number the base then carried: a reading
 // of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request on 2026-11-20
 // found 189 (#3831, #4592 and #4596), 190 (#4493 and #4578) and 191 (#4495) declared by open pull
-// requests, so 192 was the lowest number above 188 that none declared. Read the base's own number
+// requests, so 192 was the lowest number above 188 that none declared. It took 196 at the forward
+// merge of 2026-11-20 that brought main in at a4cd4949fce7e9ce6d135abeb6ed7815f2fcfc9c, which
+// carried 189, cybermonklabs/legion#4581, the entry right above and the number the base now
+// carries: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request
+// on 2026-11-20 found 189 (#4592, #4596 and #4611), 190 (#4578), 191 (#2230, #4049, #4495 and
+// #4573), 192 (#4173, #4175, #4182, #4193, #4273, #4392 and #4580), 193 (#3659, #3712, #4065,
+// #4432, #4539 and #4553), 194 (#3831 and #4030) and 195 (#4493 and #4590) declared by open pull
+// requests, so 196 was the lowest number above 189 that none declared. Read the base's own number
 // and every open pull request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 192
+const DaemonAPIVersion = 196

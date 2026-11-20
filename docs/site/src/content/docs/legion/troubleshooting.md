@@ -1493,7 +1493,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   delivery of the daemon's own tells its agent what the relaunch ended`): a numbered task of
   origin `notice`, whose delivery id starts `relaunch:`, which the worker takes and which the
   report naming its number finishes as any task, or the end of its turn for a worker whose plugin
-  is below contract 192 and names no task in its reports. A newer task replaces
+  is below contract 196 and names no task in its reports. A newer task replaces
   it while no take of it is accepted, and carries the sentence in front of itself instead. The
   same task is given when the claim's held task is dropped rather than taken: the issue left the
   task's phase, the task is an ask an older daemon queued for an update round, or a root
