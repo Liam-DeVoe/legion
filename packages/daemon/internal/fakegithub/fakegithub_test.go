@@ -343,6 +343,12 @@ func TestTheDaemonsOwnClientsReadEachRESTAndGraphQLAnswer(t *testing.T) {
 		if status := call(t, s, http.MethodPost, "/graphql", write.Token, map[string]string{"query": "{viewer{login}}"}, &viewer); status != http.StatusOK || viewer.Data.Viewer.Login != bot {
 			t.Errorf("GraphQL viewer = %d %q, want %s", status, viewer.Data.Viewer.Login, bot)
 		}
+		if status := call(t, s, http.MethodGet, "/", write.Token, nil, nil); status != http.StatusOK {
+			t.Errorf("GET / with a held token = %d, want 200: gh auth status fails on any other answer", status)
+		}
+		if status := call(t, s, http.MethodGet, "/", "ghs_unknown", nil, nil); status != http.StatusUnauthorized {
+			t.Errorf("GET / with a token the server does not take = %d, want 401", status)
+		}
 		var named struct {
 			ID int64 `json:"id"`
 		}

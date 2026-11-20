@@ -30,6 +30,7 @@ import (
 //     JWT, which the server verifies against the App's key;
 //   - token mode's reads of a token (appauth's tokencommand.go): GraphQL `{viewer{login}}`, GET
 //     /apps/{slug} and GET /installation/repositories;
+//   - a pod's `gh auth status`: GET /, the API root, which it reads with the token it holds;
 //   - a repository's name, default branch and visibility: GET /repos/{owner}/{repo}
 //     (ghbranch.Read, the leak guard's REST visibility read), and the leak guard's GraphQL
 //     visibility read (leakguard.VisibilityGraphQLArgs);
@@ -294,6 +295,11 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	segments := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	get := r.Method == http.MethodGet
 	switch {
+	case r.URL.Path == "/" && get:
+		// gh auth status reads the API root with the token it holds and fails on any answer but
+		// 200. GitHub's root answers an installation token with no X-OAuth-Scopes header, since
+		// such a token has no scopes, and a refused token was answered 401 above.
+		answer(w, http.StatusOK, map[string]string{"current_user_url": API + "/user"})
 	case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
 		s.graphQL(w, r, who)
 	case segments[0] == "app":

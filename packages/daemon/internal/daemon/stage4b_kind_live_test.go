@@ -452,13 +452,8 @@ func (r *stage4bLive) githubCredential() {
 	}
 	status, err := r.agentShell(pod, claim.RoleImplementer, "LEGION_GH_PATH=/usr/local/bin/gh LEGION_GH_OWNERS_DIR="+stage4bGhOwnersDir+
 		" GH_CONFIG_DIR="+configDir+" GH_TOKEN= GITHUB_TOKEN= GH_HOST= gh auth status 2>&1")
-	if !strings.Contains(status, "x-access-token") {
-		// What a reader of the failure needs, read where it happened: the wrapper's status, the
-		// real gh on the same files, and the newest lines of the wrapper's call log.
-		why, _ := r.agentShell(pod, claim.RoleImplementer, "GH_CONFIG_DIR="+configDir+" gh auth status >/dev/null 2>&1; echo \"wrapper exit $?\"; "+
-			"GH_CONFIG_DIR="+configDir+" /usr/local/bin/gh auth status 2>&1 | grep -v 'Token:' | sed -n 1,3p; echo \"real gh exit $?\"; "+
-			"tail -n 5 \"${XDG_STATE_HOME:-$HOME/.local/state}/legion-gh/calls.log\" 2>&1")
-		t.Errorf("gh auth status in the implementer's namespaces names no x-access-token account: %q (%v); what the role sees: %s", status, err, why)
+	if err != nil || !strings.Contains(status, "x-access-token") {
+		t.Errorf("gh auth status in the implementer's namespaces names no x-access-token account, or failed: %q (%v)", status, err)
 	}
 	hashes := map[claim.Role]string{}
 	for role, app := range map[claim.Role]string{claim.RoleImplementer: r.implement.Slug, claim.RoleArchitect: r.review.Slug} {
@@ -564,12 +559,14 @@ func (r *stage4bLive) viewer(pod string, role claim.Role) string {
 var agentGhEnv = []string{leakguard.CheckVar, leakguard.CheckerVar, "LEGION_GH_PATH", "LEGION_GH_OWNERS_DIR", "GH_CONFIG_DIR", "PATH"}
 
 // agentShell runs script in role's namespaces of pod with agentGhEnv as role's agent holds it
-// (agentEnviron), so a command there meets what the agent's own bash would.
+// (agentEnviron), so a command there meets what the agent's own bash would. Its output comes back
+// whatever the command's status, as roleExec's does, so a checkpoint that fails on a status still
+// reads what the command printed.
 func (r *stage4bLive) agentShell(pod string, role claim.Role, script string) (string, error) {
 	in := func(command ...string) (string, error) { return r.roleExec(pod, role, command...) }
 	out, err := agentShellIn(in, script)
 	if err != nil {
-		return "", fmt.Errorf("the %s's agent shell in %s: %w", role, pod, err)
+		return out, fmt.Errorf("the %s's agent shell in %s: %w", role, pod, err)
 	}
 	return out, nil
 }
