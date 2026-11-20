@@ -219,6 +219,47 @@ A process is given a NATS nkey seed only after its NATS server has nkey users (t
 which keeps a `no_auth_user` fallback): a server with no users sends no nonce, and the Go client
 refuses the nkey (`nats: nkeys not supported by the server`) instead of connecting without it.
 
+## Recreating a listener's durable
+
+Each listener reads the `ENVOY_NOTIFICATIONS` stream through one durable consumer of its machine,
+`listener-<machine id>` (`bus.ListenerDurable`). A machine id that holds a character NATS refuses
+in a consumer name gets that character escaped: `host.example.internal` names
+`listener-host%2Eexample%2Einternal`. Use the name that the listener's error gives.
+
+The listener refuses to bind a durable that has an idle heartbeat, or an ack policy other than
+`explicit`, because NATS cannot change either in place. The start logs
+`subscribe refused, shutting down` and exits 1. The line's `error` names the durable and each such
+setting.
+
+What a delete costs: a listener that finds no durable creates one at deliver policy `new`
+(`startListenerSubscription` in `cmd/listener/durable.go`). That durable reads only the messages
+the stream stores after the create. It never reads a message stored before the create, and that
+includes each message the old durable had not acknowledged. Each session's own consumer still
+delivers such a message to its session. But this listener's own decision on the message goes with
+the old durable. For a message on a session's agent subject, that decision is the wake report of
+a session with no record, which brings a released Legion pod back. Only another listener's
+durable can still decide the message. Another listener leaves a message to a session whose
+interest row names this listener (`session.AgentOwnedElsewhere`). With no other listener to
+decide the message, its wake is lost, and the released pod that it would wake stays released.
+
+To keep the durable's cursor, recreate it from its own config at one past its ack floor. Do it
+while no listener runs for that machine. A listener that reads the durable between the delete and
+the add, at its start or in its self-health rebuild, creates it again at deliver policy `new`
+before the add can recreate it at its cursor.
+
+```bash
+d='listener-<machine id>'
+nats consumer info ENVOY_NOTIFICATIONS "$d" --json > "$d.json"
+jq '(.ack_floor.stream_seq + 1) as $next | .config | del(.idle_heartbeat, .flow_control) | .ack_policy = "explicit" | .deliver_policy = "by_start_sequence" | .opt_start_seq = $next' "$d.json" > "$d.recreate.json"
+nats consumer rm ENVOY_NOTIFICATIONS "$d" -f
+nats consumer add ENVOY_NOTIFICATIONS --config "$d.recreate.json"
+```
+
+The listener's next start applies the rest of its consumer policy to the recreated durable (its
+filter subjects, ack wait, max ack pending, max deliver and inactive threshold) and binds it. It
+keeps the durable's start. The durable then delivers again each message past the ack floor that
+the old durable had acknowledged out of order.
+
 ## Dispatch configuration
 
 Generate the agent token once and record it, with the external database URL, in

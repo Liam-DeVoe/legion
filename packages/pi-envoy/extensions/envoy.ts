@@ -393,7 +393,9 @@ const MOVED_SESSION_REFUSAL = `The message was not sent: ${MOVED_SESSION_REASON}
 /**
  * Aside and Steer go through `pi.sendMessage` on every OMP build; BTW only where the host has a
  * side turn (`sideTurn` in src/side-turn.ts), so a host without one advertises every capability
- * but that one.
+ * but that one. So every registration of this extension advertises at least `aside` and `steer`,
+ * and a plain send to its session never reads `no_receiver`: the listener gives that answer only
+ * to a running session that advertises no delivery mode.
  */
 const CAPABILITIES_WITHOUT_BTW: readonly DeliveryCapability[] = DELIVERY_CAPABILITIES.filter(
   (capability) => capability !== "btw"
@@ -4421,7 +4423,13 @@ export default function envoyExtension(hostApi: PiApi): void {
   // Legion pane runs, the exit disposes no session, so a SIGTERM emits no `session_shutdown`,
   // and this callback is the stop. The interactive mode disposes the session from an exit
   // callback of its own, so there both ends come together, and the second waits for the stop
-  // the first began.
+  // the first began. A `/new`, a fork and a branch are no stop: they move this instance to
+  // another session and reach neither end, so this stop and its release do not run for them.
+  // The session the host left is deregistered on its own (`deregisterSession`, from
+  // `restoreLocalSessionState`). A `task` subagent's instance runs this stop at its own
+  // `session_shutdown`, but it holds no role and registered nothing, so it sends the listener
+  // nothing: its hand-back finds no hold (`handBackAllHolds`), and its `sessionID` is empty, so
+  // `deregisterSession` returns at once.
   let stopping: Promise<void> | undefined;
   let cancelStopAtExit: (() => void) | undefined;
   const stopSession = (context: SessionContext): Promise<void> => {

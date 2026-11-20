@@ -1,7 +1,7 @@
 // The policy for a message on the agent subject of a session this listener finds no record of:
 // the one wait before the session's wake is reported, the set that caps how many first deliveries
-// of such messages wait at once and expires a slot whose message never comes back, and the report
-// itself.
+// of such messages wait at once and expires a slot whose message never comes back, the report
+// itself, and a read of the session record that did not answer (unreadAgentDelivery).
 
 package main
 

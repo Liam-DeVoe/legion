@@ -654,9 +654,12 @@ func noConsumerRemedy(body listenerwire.SubscribeRequest) string {
 // the registration asks for none: @sjawhar/pi-envoy at or above consumerPluginMinimumVersion. Every
 // such build opens its relay subject whenever it opens its agent subject, and hands each frame that
 // arrives there to its consumer delivery, whether or not its registration asked for a consumer
-// (receive in packages/envoy-client/src/consumer-delivery.ts, from 14.1.0 on). The builds from
-// 16.2.1 to 17.7.0 ask only while that subject is open and no cursor of their replay engine is
-// marked from_start. A pass that cannot reach NATS sets that mark, and only an answer of
+// (receive in packages/envoy-client/src/consumer-delivery.ts, from 14.1.0 on). claude-envoy, and
+// @sjawhar/pi-envoy from 17.8.0 on, ask at every registration they send, and send none while
+// their relay subject is closed (registerWithRelay in
+// packages/envoy-client/src/consumer-delivery.ts). The builds from 14.1.0 to 17.7.0 ask only
+// while that subject is open, and those from 16.2.1 on only while no cursor of their replay
+// engine is marked from_start. A pass that cannot reach NATS sets that mark, and only an answer of
 // POST /v1/replay clears it, a route this listener no longer serves. Refused, such a session would
 // never register (dispatch://INFRA-3589, R21).
 //

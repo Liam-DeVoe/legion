@@ -707,8 +707,15 @@ const senderStampReadTimeout = 1 * time.Second
 // and a store or a bus that did not answer earns the 503 that asks the sender to try the same
 // route again. A target with no entry within the gone horizon raises the wake report whatever the
 // record says, exactly where a 404 always raised it; one whose probe met no responders raises
-// none, as a lingering entry never did, and nor does a no_receiver target, which runs. A target
-// that cannot take the payload's delivery mode (deliveryModeVerdict for a session with an entry,
+// none, as a lingering entry never did, and nor does a no_receiver target, which runs. The route
+// publishes that report off its answer, and again until the stream acknowledges it, the grant
+// refuses it, wakeReportBudget ends or the listener stops (reportAgentWake, publishWakeReport). A
+// message the route stores for a target with no entry is on the session's agent subject, so each
+// listener's durable reads it too. When the session still has no entry within the gone horizon
+// after the one wait, the listener the session's interest row names, or each listener when the
+// session has no row, stores one more wake report (noRecordAgentDelivery). The daemon takes the
+// first wake of a released role and no second one (TakePodWake). A target that cannot take the
+// payload's delivery mode (deliveryModeVerdict for a session with an entry,
 // stoppedDeliveryModeVerdict for one with only a record) is the 403 naming it. Every one of those
 // answers is written through record, so this route's one line per request is written with it.
 //

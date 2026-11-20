@@ -270,6 +270,10 @@ func isExceptionsTopic(topic string) bool {
 // the delivery path (publishDeliveryException) and the publish route's unheld-role refusal
 // (publishRefusalException, role_lane_refusal.go) cannot drift apart.
 //
+// Each exception is an event of its own: a new event id (id.New), and the dedupe key
+// envoy.exception.<that id>. So no exception is named after the message it reports. Its
+// SourceEventID, and its payload's event_id and dedupe_key, name that message.
+//
 // The exception carries the original machine payload, so a large original would make an envelope
 // past the server's max payload, which NATS refuses whole (bus.ErrTooLarge). The delivery path has
 // always carried it and keeps doing so; a caller that must not fail that way passes a bound, and a
