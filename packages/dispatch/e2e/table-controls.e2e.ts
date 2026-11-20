@@ -38,11 +38,13 @@ import {
   editArtifact,
   getArtifact,
   getInbox,
+  getMyState,
   listIssueArtifacts,
   listMyReplies,
   mintAgentToken,
   patchIssue,
   putArchitectureSource,
+  putIssueState,
   putRepoProject,
   replyToMessageDelivery,
   resolveAsk,
@@ -5556,6 +5558,94 @@ test("a Conversation turn resolved elsewhere while its Reply holds the focus han
     });
     if (holder.turn !== null) {
       wrong.push(`at ${size.width} px: the focus is on ${holder.name} in the turn ${holder.turn}`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): two widths, each with an issue and three comments pinned, and one card unpinned.
+// INFRA-3135, round 19 (the tester's, measured in builds Jobs infra-3135-r19h and -r19b at
+// 89072a56 and e9ed2743): the reader holds the focus on a pinned card's Unpin on the issue
+// margin's Pinned tab when their other device unpins that card, a loss the reader did not cause.
+// At both commits the focus goes into the next card - its Unpin in Chromium, its author link in
+// Firefox and WebKit - at 1440 and 1280 px: the tab draws each card as an <article> in a <div>
+// (`features/margin/PinnedTab.tsx`), which is no row by `ROW_SELECTOR` and carries no marker
+// (`components/row-marker.ts`), so the rescue takes the next card's control for a control in no
+// row. The architect's rule of 2026-11-19: a loss the reader did not cause moves the focus into
+// no other row of a list. A focused control taken away, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus
+// row (e2e/playwright.config.ts).
+test("a pinned card unpinned on another device while its Unpin holds the focus hands the focus into no other card @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 800, width: 1280 },
+  ]) {
+    const issue = await createIssue({ project: "CORE", title: `Pinned at ${size.width} px` });
+    const markers: string[] = [];
+    for (const turn of [1, 2, 3]) {
+      const made = await createComment(
+        issue.key,
+        { body: `Pinned turn ${turn}.` },
+        SURFACE_SESSION
+      );
+      markers.push(`pinned_items:comment:${made.id}`);
+    }
+    // The reader's own state of the issue, as their other device reads it before it writes.
+    const state = async () => {
+      const mine = (await getMyState("alice"))[issue.key];
+      return { dismissed: mine?.dismissed ?? [], seq: mine?.seq ?? 0 };
+    };
+    const before = await state();
+    await putIssueState(
+      issue.key,
+      { dismissed: [...before.dismissed, ...markers], seq: before.seq + 1 },
+      { login: "alice" }
+    );
+    await page.setViewportSize(size);
+    await page.goto(`/issues/${issue.key}`);
+    const margin = page.getByTestId("margin-sheet");
+    await margin.getByRole("tab", { name: "Pinned" }).click();
+    const cards = margin.getByRole("article");
+    await expect(cards).toHaveCount(3);
+    const second = cards.filter({ hasText: "Pinned turn 2." });
+    const unpin = second.getByRole("button", { name: "Unpin" });
+    await unpin.focus();
+    await expect(unpin).toBeFocused();
+    const now = await state();
+    await putIssueState(
+      issue.key,
+      { dismissed: now.dismissed.filter((marker) => marker !== markers[1]), seq: now.seq + 1 },
+      { login: "alice" }
+    );
+    await expect(second).toHaveCount(0);
+    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const named =
+        active?.getAttribute("aria-label") ||
+        active?.textContent?.replace(/\s+/g, " ").trim().slice(0, 40);
+      return {
+        card:
+          active
+            ?.closest('[data-testid="margin-sheet"] article')
+            ?.textContent?.replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 30) ?? null,
+        name: `${active?.tagName.toLowerCase()} "${named}"`,
+      };
+    });
+    if (holder.card !== null) {
+      wrong.push(
+        `at ${size.width} px: the focus is on ${holder.name} in the card "${holder.card}"`
+      );
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
