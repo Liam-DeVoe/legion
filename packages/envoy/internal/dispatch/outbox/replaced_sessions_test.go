@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -201,11 +202,13 @@ func lapseOnceListening(t *testing.T, stopped *store.Store, standby *Outbox) fun
 
 // heldEnding holds every statement that ends sessions (store.Pool.EndSessionsOf) for hold, or
 // until its context ends, whichever comes first, as a statement queued behind a slow database
-// would, and records when each began, the deadline its context carried, and how it ended.
+// would, and records when each began, the deadline its context carried, and how it ended. begun
+// counts the statements it has begun to hold.
 type heldEnding struct {
-	hold time.Duration
-	mu   sync.Mutex
-	held []heldStatement
+	hold  time.Duration
+	begun atomic.Int32
+	mu    sync.Mutex
+	held  []heldStatement
 }
 
 // heldStatement is one statement heldEnding held. cut is its context's error when the context
@@ -230,6 +233,7 @@ func (h *heldEnding) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.
 	}
 	deadline, _ := ctx.Deadline()
 	began := time.Now()
+	h.begun.Add(1)
 	var cut error
 	select {
 	case <-ctx.Done():
@@ -262,7 +266,7 @@ func (h *heldEnding) statements() []heldStatement {
 // in the statement, so the check of that bound needs no margin: a bound a nanosecond past the
 // budget fails it. The try must end by that deadline. The took line's start and the first batch's
 // start must follow the try's end, and the batch's must come before the second try, given
-// recordTimeout, waits its 3 s out and ends the sessions.
+// recordTimeout, waits its 3 s out and ends the sessions, which it logs by name after the took line.
 func TestAStandbyWhoseEndingOfTheOldSessionsIsSlowPublishesWithinWhatTheTakeOverLeft(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -285,9 +289,9 @@ func TestAStandbyWhoseEndingOfTheOldSessionsIsSlowPublishesWithinWhatTheTakeOver
 	go func() { standby.Run(runCtx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 	lapse()
-	waitFor(t, outboxHangGuard, "the standby ending the lapsed holder's sessions and sending its first batch", func() bool {
+	waitFor(t, outboxHangGuard, "the standby ending the lapsed holder's sessions after its late take-over and sending its first batch", func() bool {
 		text := logged.String()
-		return strings.Contains(text, replacedSessionsLine) && strings.Contains(text, sentBatchLine)
+		return strings.Contains(text, lateEndingDoneLine) && strings.Contains(text, sentBatchLine)
 	})
 	hold := standby.hold.Load()
 	if hold == nil {
@@ -332,6 +336,63 @@ func TestAStandbyWhoseEndingOfTheOldSessionsIsSlowPublishesWithinWhatTheTakeOver
 	if !batchStarted.Before(second.ended) {
 		t.Errorf("the first batch started at %s, %v after the took line and not before the ending beside it answered at %s: the ending held the batch back",
 			batchStarted.Format(time.RFC3339Nano), batchStarted.Sub(started).Round(time.Millisecond), second.ended.Format(time.RFC3339Nano))
+	}
+	if _, doneAt := logLine(text, lateEndingDoneLine); doneAt < tookAt {
+		t.Errorf("the late ending's done line came at %d, before the took line at %d:\n%s", doneAt, tookAt, text)
+	}
+	if failed, _ := logLine(text, lateEndingFailedLine); failed != "" {
+		t.Errorf("the late ending logged a failure beside its done line: %s", failed)
+	}
+}
+
+// The ending a late take-over leaves beside the first batch ends when the standby stops, and says
+// so by name: the standby's Run returns, which it does only once that ending has (Outbox.endings),
+// and the ending logs that it did not end the previous holder's sessions, with the cause "the
+// outbox stopped". The ending is held until its context ends, so only the stop can end it: a
+// goroutine the stop did not reach would hold Run for recordTimeout and end with another cause.
+func TestALateTakeOversEndingStopsWithTheStandbyAndSaysSo(t *testing.T) {
+	var logged lockedBuffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+	stopped := storetest.Open(t)
+	held := &heldEnding{hold: time.Hour}
+	standbyStore := tracedStore(t, storetest.SecondProcess(t, stopped), held)
+	standby := New(Deps{
+		Store: standbyStore, Publisher: &recordingPublisher{},
+		Broker: events.NewBroker(), Listen: standbyStore.Pool.Listener,
+	})
+	lapse := lapseOnceListening(t, stopped, standby)
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { standby.Run(runCtx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	lapse()
+	waitFor(t, outboxHangGuard, "the standby's late take-over and the ending beside its first batch", func() bool {
+		_, tookAt := logLine(logged.String(), tookHoldLine)
+		return tookAt >= 0 && held.begun.Load() == 2
+	})
+	stopping := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(outboxHangGuard):
+		t.Fatalf("the standby's Run did not return within %v of its stop, with its late ending held", outboxHangGuard)
+	}
+	returned := time.Since(stopping)
+	statements := held.statements()
+	text := logged.String()
+	t.Logf("Run returned %v after the stop; the ending statements: %+v", returned.Round(time.Millisecond), statements)
+	if len(statements) != 2 {
+		t.Fatalf("the standby ended the sessions in %d statements, want the bounded try and the late ending:\n%s", len(statements), text)
+	}
+	if !errors.Is(statements[1].cut, context.Canceled) {
+		t.Errorf("the late ending ended with %v, want cut by the standby's stop", statements[1].cut)
+	}
+	failed, _ := logLine(text, lateEndingFailedLine)
+	if cause := logAttribute(failed, "cause"); cause != "the outbox stopped" {
+		t.Errorf("the late ending's failure line names the cause %q, want %q:\n%s", cause, "the outbox stopped", text)
+	}
+	if doneLine, _ := logLine(text, lateEndingDoneLine); doneLine != "" {
+		t.Errorf("the late ending logged that it ended the sessions, though the stop cut it: %s", doneLine)
 	}
 }
 

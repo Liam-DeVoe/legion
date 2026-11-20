@@ -518,6 +518,38 @@ func (o *Outbox) endReplacedSessions(ctx context.Context, previous uuid.UUID, de
 // ended. cmd/dispatch's two-process rows wait on its words.
 const endedSessionLine = "dispatch outbox: ended a database session of the publisher hold's previous holder"
 
+// The lines endLateSessions logs as its ending of a late take-over's sessions ends: done, or not
+// done with its cause (lateEndingCause).
+const (
+	lateEndingDoneLine   = "dispatch outbox: ended the previous holder's sessions after a late take-over"
+	lateEndingFailedLine = "dispatch outbox: did not end the previous holder's sessions after a late take-over"
+)
+
+// endLateSessions ends the sessions of previous, which tryHold gave up on at the take-over's
+// budget, under recordTimeout and no longer than ctx lasts, and logs how that ending ended, by name:
+// lateEndingDoneLine, or lateEndingFailedLine with its cause. publish runs it on a goroutine of its
+// own beside the first scan, with ctx Run's own, so it ends when the process stops publishing for
+// good, and Run waits for it (endings) before it returns.
+func (o *Outbox) endLateSessions(ctx context.Context, previous uuid.UUID) {
+	if err := o.endReplacedSessions(ctx, previous, time.Now().Add(recordTimeout)); err != nil {
+		slog.Error(lateEndingFailedLine, "instance", o.instance, "previous", previous, "cause", lateEndingCause(ctx, err))
+		return
+	}
+	slog.Info(lateEndingDoneLine, "instance", o.instance, "previous", previous)
+}
+
+// lateEndingCause names why endLateSessions's ending, under ctx, ended with err.
+func lateEndingCause(ctx context.Context, err error) string {
+	switch {
+	case ctx.Err() != nil:
+		return "the outbox stopped"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "the ending did not answer within recordTimeout"
+	default:
+		return "the ending failed"
+	}
+}
+
 // publish runs this process as the holder of hold until it stops (serve), then releases the hold
 // and returns why it stopped. The release comes on every end, a lost hold's too: serve also ends
 // lost when a record found the hold another's with the loss deadline still ahead, and the release
@@ -529,7 +561,7 @@ const endedSessionLine = "dispatch outbox: ended a database session of the publi
 // sessions of the holder this take replaced, or given up on them at the take-over's budget and
 // logged the take-over late. Sessions it gave up on (unended) are ended here once more, under
 // recordTimeout as a record is, on a goroutine of their own beside the first scan, which their
-// ending holds none of; Run waits for that goroutine before it returns.
+// ending holds none of (endLateSessions); Run waits for that goroutine before it returns.
 //
 // The line that ends the turn is written before the release, and carries two bounds on the moment
 // this process stopped publishing, stopped and stopped_by. The order matters to a reader of the
@@ -607,7 +639,7 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 		// A mark of its own (store.ForConcurrentWorker): the batches' statements mark ctx's, and
 		// this ending must neither be refused under theirs nor refuse theirs under its own.
 		ending := store.ForConcurrentWorker(ctx)
-		o.endings.Go(func() { _ = o.endReplacedSessions(ending, previous, time.Now().Add(recordTimeout)) })
+		o.endings.Go(func() { o.endLateSessions(ending, previous) })
 	}
 	end := o.serve(ctx, hold)
 	returned := time.Now()

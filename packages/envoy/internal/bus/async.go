@@ -230,8 +230,8 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 // ended answers ctx's end alone, so the caller reads it as its own stop, not as NATS lost.
 //
 // It holds pinning only to read and to set the pin. The first send's wait for a connection, and its
-// reads of the connection, are made with it released and end at wait, plus one
-// connectionReadBound for those reads, whatever nats.go is doing (Bounded): nats.go holds its
+// reads of the connection, are made with it released and end at wait plus the bound pinFirst gives
+// those reads, whatever nats.go is doing (Bounded): nats.go holds its
 // connection lock through a reconnect's dial and handshake. The check of a pinned connection waits
 // for no lock nats.go holds (current), so no send of the window waits for a handshake, nor behind
 // another send that does.
