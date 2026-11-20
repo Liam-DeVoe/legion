@@ -105,6 +105,34 @@ func TestAPullRequestLinkMadeAfterTheHeadIsStoredReachesEveryReader(t *testing.T
 	wantReaders(t, ctx, pool, "ACME-151", headOf(151), `at head false, newest none, base "", window [], of issues []`)
 }
 
+// The first source in GitHub's /issues/ form of the number, the URL `dispatch issue --external`
+// stores (linkedPullRequest): an issue links the pull request after its head is stored, and no
+// pass runs. The reader by key and each reader by issue, of the results and of the timeline, give
+// the new answer at once, and lose it at once when the link goes. Control in the same test: #156
+// has no texts, so its stored issue (none) stays its answer.
+func TestAPullRequestLinkInItsIssuesFormMadeAfterTheHeadIsStoredReachesEveryReader(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	statementIssues(t, ctx, pool, "ACME-155")
+	storeChangedPullRequests(t, ctx, pool, statementRepo, nil,
+		statementRow{number: 155, branch: "work/none", title: "no key", texts: readTexts("")},
+		statementRow{number: 156, branch: "work/none", title: "no key"})
+	wantAnswer(t, ctx, pool, statementRepo, 155, "nobody from none")
+	wantListed(t, ctx, pool, "ACME-155")
+	for _, number := range []int{155, 156} {
+		changeIssueLink(t, ctx, pool, "ACME-155", fmt.Sprintf("https://github.com/%s/issues/%d", statementRepo, number), "url", true)
+	}
+	wantAnswer(t, ctx, pool, statementRepo, 155, "ACME-155 from external_link")
+	wantListed(t, ctx, pool, "ACME-155", "#155")
+	wantReaders(t, ctx, pool, "ACME-155", headOf(155), `at head true, newest acme/stmt#155, base "main", window [acme/stmt#155], of issues [acme/stmt#155]`)
+	wantAnswer(t, ctx, pool, statementRepo, 156, "nobody from none, no facts")
+	for _, number := range []int{155, 156} {
+		changeIssueLink(t, ctx, pool, "ACME-155", fmt.Sprintf("https://github.com/%s/issues/%d", statementRepo, number), "url", false)
+	}
+	wantAnswer(t, ctx, pool, statementRepo, 155, "nobody from none")
+	wantListed(t, ctx, pool, "ACME-155")
+	wantReaders(t, ctx, pool, "ACME-155", headOf(155), `at head false, newest none, base "", window [], of issues []`)
+}
+
 // The second source: an issue links a GitHub issue that the body of the pull request cites. The
 // external create writes only such links, with the kind github_issue.
 func TestAGitHubIssueLinkOfACitedIssueMadeAfterTheHeadIsStoredReachesEveryReader(t *testing.T) {
