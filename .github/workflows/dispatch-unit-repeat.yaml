@@ -74,15 +74,15 @@ name: Dispatch unit suite repeated
 # docs/testing.md says what it needs.
 #
 # What it costs. One scheduled run a week of nine legs, one run of nine legs on each push to a pull
-# request that changes this file, the tool or the web-cold lane's preload, and any
-# `workflow_dispatch`. Every leg runs on a standard GitHub-hosted runner, and this repository is
-# public. GitHub's "Billing and usage" page
+# request that changes this file, the tool, its progress preload or the web-cold lane's preload,
+# and any `workflow_dispatch`. Every leg runs on a standard GitHub-hosted runner, and this
+# repository is public. GitHub's "Billing and usage" page
 # (https://docs.github.com/en/actions/concepts/billing-and-usage, which the runner pricing
 # reference, https://docs.github.com/en/billing/reference/actions-runner-pricing, links) says:
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
 # runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the runs that
-# the notes' measurement reads took 115 to 128 minutes (runs 44712651976, 44709413418 and
-# 44726566359), and $0, since those minutes are free here.
+# the notes' measurement reads took 115 to 164 minutes (runs 44712651976, 44709413418,
+# 44726566359, 44751162563 and 44751677485), and $0, since those minutes are free here.
 
 on:
   schedule:
@@ -139,25 +139,25 @@ jobs:
         include:
           - lane: web
             reruns: 20
-            slowest_seconds: 1133 # run 44726566359 at main, round 3, estimated from its log
-            other_steps_seconds: 31 # run 44696645178, round 3
-            deadline_seconds: 2280 # 2 x 1,133 = 2,266 s, up to the next whole minute
-            step_minutes: 40 # 2,280 + 60 s kill-after + 60 s of slack = 2,400 s
-            job_minutes: 42 # 40 + 2 x 31 s = 62 s, up to the next whole minute, 2
+            slowest_seconds: 1661 # run 44751162563, round 1
+            other_steps_seconds: 37 # run 44751162563, round 3
+            deadline_seconds: 3360 # 2 x 1,661 = 3,322 s, up to the next whole minute
+            step_minutes: 58 # 3,360 + 60 s kill-after + 60 s of slack = 3,480 s
+            job_minutes: 60 # 58 + 2 x 37 s = 74 s, up to the next whole minute, 2
           - lane: web-cold
             reruns: 1
-            slowest_seconds: 133 # run 44701469309, round 2
+            slowest_seconds: 158 # run 44751677485, round 1
             other_steps_seconds: 28 # run 44712085178, round 2
-            deadline_seconds: 300 # 2 x 133 = 266 s, up to the next whole minute
-            step_minutes: 7 # 300 + 60 s kill-after + 60 s of slack = 420 s
-            job_minutes: 8 # 7 + 2 x 28 s = 56 s, up to the next whole minute, 1
+            deadline_seconds: 360 # 2 x 158 = 316 s, up to the next whole minute
+            step_minutes: 8 # 360 + 60 s kill-after + 60 s of slack = 480 s
+            job_minutes: 9 # 8 + 2 x 28 s = 56 s, up to the next whole minute, 1
           - lane: harness
             reruns: 20
-            slowest_seconds: 1439 # run 44712085178, round 2
+            slowest_seconds: 1441 # run 44751162563, round 2
             other_steps_seconds: 229 # run 44709413418, round 1, whose zsh install is most of it
-            deadline_seconds: 2880 # 2 x 1,439 = 2,878 s, up to the next whole minute
-            step_minutes: 50 # 2,880 + 60 s kill-after + 60 s of slack = 3,000 s
-            job_minutes: 58 # 50 + 2 x 229 s = 458 s, up to the next whole minute, 8
+            deadline_seconds: 2940 # 2 x 1,441 = 2,882 s, up to the next whole minute
+            step_minutes: 51 # 2,940 + 60 s kill-after + 60 s of slack = 3,060 s
+            job_minutes: 59 # 51 + 2 x 229 s = 458 s, up to the next whole minute, 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -30,11 +30,15 @@ and the step to the matrix's values.
 
 ### What was measured, on 2026-11-20
 
-The step times of every leg of the ten runs of the workflow before 11:00Z that day (runs
-44681726917 to 44712651976, pull requests and hand-started runs on five branches, each a merge of
-its head with main or that head), and of run 44726566359, which was started by hand at main
-`1c7c825367` for this reading: 33 legs a lane, read from
-`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts.
+The step times of every leg of 13 runs of the workflow, read from
+`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 39 legs a
+lane:
+
+- the ten runs before 11:00Z that day (runs 44681726917 to 44712651976, pull requests and
+  hand-started runs on five branches, each a merge of its head with main or that head);
+- run 44726566359, started by hand at main `1c7c825367`;
+- runs 44751162563 (started by hand) and 44751677485 (the pull request's own), at the head of
+  the pull request that set these budgets, on main `5570d0acd2`.
 
 A leg stopped before Bun ended has no time of its own, and no report. Its time is estimated from
 its `bun.log`, which holds a result line for each row that ended: the step's time, times the
@@ -43,15 +47,20 @@ holds.
 
 | Lane | Legs whose Bun ended by itself | Legs stopped before Bun ended | Slowest | Old step budget |
 | --- | --- | --- | --- | --- |
-| web | 17, 726 to 963 s | 16, by the budget at 972 or 973 s | 1,133 s, estimated: run 44726566359 at main, round 3, 108,062 of 125,920 results at 972 s | 16 minutes |
-| web-cold | 31, 94 to 133 s; 9 of them past the budget, so their steps failed with no row failed | 2, by the budget at 132 and 133 s | 133 s, run 44701469309, round 2 | 2 minutes |
-| harness | 32, 1,075 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,439 s, run 44712085178, round 2 | 30 minutes |
+| web | 23, 726 to 1,661 s | 16, by the budget at 972 or 973 s, estimated at most 1,133 s | 1,661 s, run 44751162563, round 1 | 16 minutes |
+| web-cold | 37, 94 to 158 s; 9 of them past the budget, so their steps failed with no row failed | 2, by the budget at 132 and 133 s | 158 s, run 44751677485, round 1 | 2 minutes |
+| harness | 38, 1,075 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,441 s, run 44751162563, round 2 | 30 minutes |
 
-The harness lane's slowest leg is read over the 24 legs of the branches that change no harness
+The web lane grew within the day: main's `a8067fcd51` (11:41Z) added
+`web/src/features/issue/useIssueDrafts.test.ts`, whose rows took 1,168 s together over a leg's 20
+runs, and its rows a run went from 6,296 (run 44726566359) to 6,462 (run 44751162563). So the
+two runs on main `5570d0acd2` hold the slowest web and web-cold legs.
+
+The harness lane's slowest leg is read over the 30 legs of the branches that change no harness
 row. Pull request #4236 adds harness rows whose real-time waits take minutes, and its 9 legs took
 1,651 to 2,301 s; it sets its own harness budget, and 2,301 s is inside the deadline set here.
 
-The other steps took at most 31 s in a web leg (run 44696645178, round 3), 28 s in a web-cold leg
+The other steps took at most 37 s in a web leg (run 44751162563, round 3), 28 s in a web-cold leg
 (run 44712085178, round 2) and 229 s in a harness leg (run 44709413418, round 1, most of it zsh's
 install).
 
@@ -59,19 +68,18 @@ install).
 
 The old budgets were the slowest leg plus 15 per cent, measured over the workflow's runs of
 2026-11-17 to 2026-11-19, when a web run read 4,885 to 5,189 rows; main's suite then grew to
-6,296 rows a run (run 44726566359). So in the 33 legs of each lane above, the budget stopped 16
-web and 2 web-cold legs before Bun ended, and failed 9 more web-cold legs after Bun had ended.
-Three of those nine are the web-cold failures of the hour of 09:00Z on 2026-11-20 (jobs
-136196998929, 136166391921 and 136207986486): in each, Bun had ended by itself with 6,214 rows
-passed and none failed, after 125.0, 131.3 and 125.4 s, and the tool had written a clean report,
-when the step's two-minute budget failed the step. No row was running long; the lane was.
+6,462 rows a run. So in the first 11 runs above, the budget stopped 16 web and 2 web-cold legs
+before Bun ended, and failed 9 more web-cold legs after Bun had ended. Three of those nine are the
+web-cold failures of the hour of 09:00Z on 2026-11-20 (jobs 136196998929, 136166391921 and
+136207986486): in each, Bun had ended by itself with 6,214 rows passed and none failed, after
+125.0, 131.3 and 125.4 s, and the tool had written a clean report, when the step's two-minute
+budget failed the step. No row was running long; the lane was.
 
 ### What a run costs now
 
-A run that passes takes what it took before: the three runs measured cost 115 to 128 billed
-minutes, and $0, since standard runners are free for a public repository. The budgets bound only
-a leg that hangs: at most 42 minutes for a web leg, 8 for a web-cold leg and 58 for a harness
-leg.
+A run that passes takes what its rows take: the runs read cost 115 to 164 billed minutes, and $0,
+since standard runners are free for a public repository. The budgets bound only a leg that hangs:
+at most 60 minutes for a web leg, 9 for a web-cold leg and 59 for a harness leg.
 
 ### When to measure again
 

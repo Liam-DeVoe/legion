@@ -666,12 +666,15 @@ test(
 );
 
 test(
-  "a leg stopped while a row never ends names that row and exits 1",
+  "a leg stopped while rows never end names each of them and exits 1",
   async () => {
     // The lie: the leg that reaches its deadline is ended from outside and names nothing, as
     // three web-cold legs did at their two-minute budget. Here the tool itself, on a copy of the
-    // package whose one row spins without yielding, gets the SIGTERM `timeout` sends at the
-    // deadline, once that row has begun.
+    // package with two files whose rows spin without yielding, gets the SIGTERM `timeout` sends
+    // at the deadline, once both rows have begun. Both workers are in a row at that moment
+    // whatever the machine's load: an earlier form of this row stopped the leg while a file of
+    // passing rows could still be running or not, and failed 6 of 120 runs in the harness legs of
+    // runs 44751162563 and 44751677485 when that file's worker was still in it.
     const directory = scratch();
     const tools = join(directory, "e2e", "tools");
     const rows = join(directory, "e2e", "__tests__");
@@ -680,25 +683,31 @@ test(
     for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
       copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
     }
+    // Two workers, whatever the machine's CPUs, so the two files run beside each other.
     await Bun.write(
       join(directory, "package.json"),
-      `${JSON.stringify({ name: "stopped-leg", private: true, scripts: { "test:harness": "bun test --parallel --timeout 60000" } })}\n`
+      `${JSON.stringify({ name: "stopped-leg", private: true, scripts: { "test:harness": "bun test --parallel=2 --timeout 60000" } })}\n`
     );
-    const mark = join(directory, "began");
-    await Bun.write(join(rows, "steady.test.ts"), passes);
+    const spinning = (row: string, mark: string) =>
+      `test(${JSON.stringify(row)}, () => {\n  writeFileSync(${JSON.stringify(mark)}, "");\n  for (;;) {}\n});\n`;
+    const marks = [join(directory, "spins-began"), join(directory, "beside-began")];
     await Bun.write(
       join(rows, "spins.test.ts"),
       `import { test } from "bun:test";\nimport { writeFileSync } from "node:fs";\n\n` +
-        `test("before the spin", () => {});\n` +
-        `test("spins for ever", () => {\n  writeFileSync(${JSON.stringify(mark)}, "");\n  for (;;) {}\n});\n` +
+        `test("before the spin", () => {});\n${spinning("spins for ever", marks[0])}` +
         `test("after the spin", () => {});\n`
     );
+    await Bun.write(
+      join(rows, "beside.test.ts"),
+      `import { test } from "bun:test";\nimport { writeFileSync } from "node:fs";\n\n` +
+        spinning("spins beside it", marks[1])
+    );
     const out = join(directory, "out");
-    // The driver starts the tool, waits for the planted row to write its mark (or for the tool
-    // to end first), and then sends the tool alone the SIGTERM the step's `timeout` sends.
+    // The driver starts the tool, waits for both planted rows to write their marks (or for the
+    // tool to end first), and then sends the tool alone the SIGTERM the step's `timeout` sends.
     const driver =
-      '"$@" & tool=$!; until [ -e "$MARK" ] || ! kill -0 "$tool" 2>/dev/null; do sleep 0.05; done; ' +
-      'kill -TERM "$tool" 2>/dev/null; wait "$tool"';
+      '"$@" & tool=$!; until { [ -e "$MARK_A" ] && [ -e "$MARK_B" ]; } || ! kill -0 "$tool" 2>/dev/null; ' +
+      'do sleep 0.05; done; kill -TERM "$tool" 2>/dev/null; wait "$tool"';
     const { code, stdout } = await runBounded({
       argv: [
         "bash",
@@ -723,14 +732,25 @@ test(
         PATH: process.env.PATH ?? "",
         TMPDIR: tmpdir(),
         GITHUB_ACTIONS: "true",
-        MARK: mark,
+        MARK_A: marks[0],
+        MARK_B: marks[1],
       },
       from: import.meta.url,
     });
     expect(code).toBe(1);
     const report: Report = JSON.parse(readFileSync(join(out, "report.json"), "utf8"));
     expect(report.stop?.signal).toBe("SIGTERM");
-    expect(report.stop?.running).toEqual([
+    const running = [...(report.stop?.running ?? [])].sort((one, other) =>
+      one.file.localeCompare(other.file)
+    );
+    expect(running).toEqual([
+      expect.objectContaining({
+        file: "e2e/__tests__/beside.test.ts",
+        run: 1,
+        place: "row",
+        rowsBegun: 1,
+        rowName: "spins beside it",
+      }),
       expect.objectContaining({
         file: "e2e/__tests__/spins.test.ts",
         run: 1,
@@ -738,13 +758,19 @@ test(
         rowName: "spins for ever",
       }),
     ]);
-    // Bun's own `(worker crashed)` testcase for the file the stop ended says the stop came before
-    // its results: the report names the file so, and makes no failing row of it.
+    // Bun's own `(worker crashed)` testcase for each file the stop ended says the stop came
+    // before its results: the report names the file so, and makes no failing row of it.
     expect(report.failingRows).toEqual([]);
-    expect(report.stop?.unreported).toContain("e2e/__tests__/spins.test.ts");
+    expect([...(report.stop?.unreported ?? [])].sort()).toEqual([
+      "e2e/__tests__/beside.test.ts",
+      "e2e/__tests__/spins.test.ts",
+    ]);
     expect(kinds(report)).toEqual(["stopped"]);
     expect(stdout).toMatch(
       /^::error file=packages\/dispatch\/e2e\/__tests__\/spins\.test\.ts,title=Running when the leg was stopped::e2e\/__tests__\/spins\.test\.ts: in row [1-3], "spins for ever", of run 1 of 2, /m
+    );
+    expect(stdout).toMatch(
+      /^::error file=packages\/dispatch\/e2e\/__tests__\/beside\.test\.ts,title=Running when the leg was stopped::e2e\/__tests__\/beside\.test\.ts: in row 1, "spins beside it", of run 1 of 2, /m
     );
     // The record of where each file was stays beside the report.
     expect(readFileSync(join(out, "progress.jsonl"), "utf8")).toContain('"event":"start"');
@@ -858,17 +884,17 @@ test(
       expect(text).toContain(from);
       return budgetProblems(text.replace(from, to)).problems;
     };
-    expect(planted("deadline_seconds: 2280", "deadline_seconds: 2200")).toEqual([
-      "web: deadline_seconds 2200 is under 2 x the slowest 1133 s",
+    expect(planted("deadline_seconds: 3360", "deadline_seconds: 3300")).toEqual([
+      "web: deadline_seconds 3300 is under 2 x the slowest 1661 s",
     ]);
-    expect(planted("slowest_seconds: 1439", "slowest_seconds: 1500")).toEqual([
-      "harness: deadline_seconds 2880 is under 2 x the slowest 1500 s",
+    expect(planted("slowest_seconds: 1441", "slowest_seconds: 1500")).toEqual([
+      "harness: deadline_seconds 2940 is under 2 x the slowest 1500 s",
     ]);
-    expect(planted("step_minutes: 7 ", "step_minutes: 6 ")).toEqual([
-      "web-cold: step_minutes 6 is under the deadline, the 60 s kill-after and 60 s",
+    expect(planted("step_minutes: 8 ", "step_minutes: 7 ")).toEqual([
+      "web-cold: step_minutes 7 is under the deadline, the 60 s kill-after and 60 s",
     ]);
-    expect(planted("job_minutes: 58 ", "job_minutes: 57 ")).toEqual([
-      "harness: job_minutes 57 is under step_minutes and 2 x the other steps' 229 s",
+    expect(planted("job_minutes: 59 ", "job_minutes: 58 ")).toEqual([
+      "harness: job_minutes 58 is under step_minutes and 2 x the other steps' 229 s",
     ]);
     expect(
       planted(`--kill-after=60 \${{ matrix.deadline_seconds }}`, "--kill-after=60 600")
