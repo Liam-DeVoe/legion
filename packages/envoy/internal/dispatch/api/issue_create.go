@@ -266,7 +266,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if input.External == "" {
 		ancestors := []string{}
 		if parentKey != "" {
-			chain, err := refs.IssueAncestors(r.Context(), s.deps.Store.Pool, parentKey)
+			// As the caller sees it: a parent of a project the caller may not see costs the
+			// rows a parent nobody holds costs, and the create refuses both alike below.
+			chain, err := refs.IssueAncestorsAsSeen(r.Context(), s.deps.Store.Pool, who, parentKey)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return

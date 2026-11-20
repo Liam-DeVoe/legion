@@ -134,6 +134,14 @@ func lockRows(second, step string) []lockRow {
 		{"POST /api/v1/issues/{key}/handoffs/{phase}", callerSharedToken, http.MethodPost,
 			with(path("/api/v1/issues/{key}/handoffs/build"), issueBody(`{`+probeActor+`,"body":"{\"next\":\"walked\"}"}`)),
 			holdIssueOwner, http.StatusCreated, notFound},
+		// Only the issue's project's daemon writes the set, so the caller is that daemon over the
+		// deployment's shared token, which sees the public projects alone: PRIV's daemon writing
+		// through it is blind to PRIV.
+		{"PUT /api/v1/issues/{key}/role-holders", callerSharedToken, http.MethodPut,
+			with(path("/api/v1/issues/{key}/role-holders"), func(keys lockKeys) string {
+				return `{"actor":{"kind":"session","id":` + quoted("legion-daemon:"+keys.project) + `},"holders":[]}`
+			}),
+			holdIssueOwner, http.StatusOK, `404 {"code":"ISSUE_NOT_FOUND","error":"no issue NOPE-1"}`},
 	}
 }
 
