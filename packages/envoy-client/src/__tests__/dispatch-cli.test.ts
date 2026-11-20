@@ -3189,7 +3189,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // changes the reserve with it.
   test("the reserve's copy of Dispatch's token-check wait is Go's introspectTimeout", () => {
     const go = readFileSync(
-      join(import.meta.dir, "..", "..", "..", "envoy", "internal", "brokertoken", "introspect.go"),
+      join(import.meta.dir, "..", "..", "..", "envoy", "internal", "ciphertoken", "introspect.go"),
       "utf8"
     );
     const seconds = /^const introspectTimeout = (\d+) \* time\.Second$/m.exec(go)?.[1];
