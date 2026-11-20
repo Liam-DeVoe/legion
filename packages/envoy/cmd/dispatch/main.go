@@ -1091,23 +1091,26 @@ func main() {
 	go reconcile.Run(ctx, deliveryReconcileLeases)
 	// waitIntakes waits for both intakes to stop once ctx is cancelled; StartIntakes returns it as
 	// a sync.OnceFunc, so a second call returns once the first has. The shutdown runs it before it
-	// closes the database pool: an intake releases its duty.Hold through that pool as it stops,
-	// and a hold left in place for its TTL names the stopped process's deliver subject, which a
-	// process of the build before holds, binding by lookup, goes on delivering at, so the next
-	// holder would read that binding as a dead holder's and take it over. Every exit after the
-	// intakes start runs it too (exitAfterIntakes, stopIntakesOnExit, and the stop during the
-	// registry's admission wait), since each intake can hold its durable before this process
-	// serves anything. With no NATS client there is nothing to wait for.
+	// closes the database pool: it closes the intakes' NATS clients after their Runs return, then
+	// waits for any hand-back finalizer to release its duty.Hold through that pool. A hold left in
+	// place for its TTL names the stopped process's deliver subject, which a process of the build
+	// before holds, binding by lookup, goes on delivering at, so the next holder would read that
+	// binding as a dead holder's and take it over. Every exit after the intakes start runs it too
+	// (exitAfterIntakes, stopIntakesOnExit until shutdown runs, and the stop during the registry's
+	// admission wait), since each intake can hold its durable before this process serves anything;
+	// shutdown runs it within its one deadline. With no NATS client there is nothing to wait for.
 	waitIntakes := func() {}
+	// shutdownRan is set as main hands the intakes' stop to shutdown (below): from then on main's
+	// deferred stop of them only cancels (stopIntakesOnExit).
+	shutdownRan := false
 	if natsClient != nil {
 		// The intake and the job intake (LEGION-690) each bind a durable, so each takes a client of
-		// its own (delivery.StartIntakes). Their Runs return once ctx is cancelled; each begins
-		// stopping then, at the signal, beside the HTTP drain and the document shutdown, and
-		// returns once a message still in its handler has been acknowledged, or given up at its
-		// stop budget from the signal and handed back, with the messages behind it handed back too
-		// and the intake's hold released, so another process takes its durable over at once and
-		// the clients close after it. Each connects in the background as the publisher does, and
-		// its poll takes the durable's hold once it has.
+		// its own (delivery.StartIntakes). Their Runs begin stopping at the signal beside the HTTP
+		// drain and document shutdown, and return once a message in a handler has been acknowledged or
+		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
+		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
+		// connects in the background as the publisher does, and its poll takes the durable's hold once
+		// it has.
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
@@ -1117,9 +1120,10 @@ func main() {
 		}
 		waitIntakes = stopIntakes
 		// A stop before serving (the admission wait, below) returns without shutdown, and a panic
-		// before serving unwinds past it, so the intakes are stopped here too; after shutdown has
-		// waited for them, this returns at once.
-		defer stopIntakesOnExit(cancel, waitIntakes)
+		// before serving unwinds past it, so the intakes are stopped here too. Once shutdown has run
+		// it has waited for them within its deadline, or given up on them there, and this only
+		// cancels.
+		defer func() { stopIntakesOnExit(cancel, waitIntakes, shutdownRan) }()
 	} else {
 		slog.Info("dispatch delivery: no NATS client — intake is idle; the reconcile alone still runs")
 	}
@@ -1254,8 +1258,13 @@ func main() {
 		apiBackground.Wait()
 		appCtx.Architecture().Close()
 	}
+	shutdownRan = true
 	shutdown(stopping, server, documentService, database.Pool, waitBackground, waitIntakes,
 		deregisterAfterDrain(registration), outboxStopped)
+	// The lines shutdown logged are written before the stops main defers run: those close the
+	// server's own NATS clients, and a close waits for its connection's lock (bus.Client.Close),
+	// which a write can hold to its one-minute write deadline, past the runtime's kill.
+	logs.Flush(logFlushTimeout)
 	if serveErr != nil {
 		fatal("dispatch: serve", "error", serveErr)
 	}
@@ -1270,13 +1279,22 @@ func defaultDataDir() (string, error) {
 }
 
 // stopIntakesOnExit is main's deferred stop of the intakes: it cancels the process context, then
-// waits for them (waitIntakes). The intakes' Runs return only once that context ends, and main's own
-// deferred cancel, made before the intakes start, runs after this one; so a panic between the
-// intakes' start and serveUntilStopped -- in routes.New, newHTTPServer or joinRegistry -- would
-// otherwise wait here forever, with the panic unprinted and the intake still consuming. On every
-// other way out the context has already ended, and the cancel does nothing.
-func stopIntakesOnExit(cancel context.CancelFunc, waitIntakes func()) {
+// waits for them (waitIntakes), unless shutdown has run (afterShutdown). The intakes' Runs return
+// only once that context ends, and main's own deferred cancel, made before the intakes start, runs
+// after this one; so a panic between the intakes' start and serveUntilStopped -- in routes.New,
+// newHTTPServer or joinRegistry -- would otherwise wait here forever, with the panic unprinted and
+// the intake still consuming. On every other way out the context has already ended, and the cancel
+// does nothing. Once shutdown has run it has waited for the intakes' stop within its one deadline,
+// or given up on it there, and logged so; a wait here would wait for that same stop (waitIntakes is
+// a sync.OnceFunc, so a second call waits for the first) past the deadline and the margin the exit
+// is kept (shutdownMargin), until the runtime's kill. A stop that has not finished by then leaves
+// each hold it still keeps where it is: the exit ends the hold's renewal with its connection, and
+// the hold lapses at its TTL, as it would at the kill.
+func stopIntakesOnExit(cancel context.CancelFunc, waitIntakes func(), afterShutdown bool) {
 	cancel()
+	if afterShutdown {
+		return
+	}
 	waitIntakes()
 }
 

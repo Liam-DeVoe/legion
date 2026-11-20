@@ -21,10 +21,14 @@ import (
 const stopGrace = 30 * time.Second
 
 // shutdownMargin is what the shutdown's deadline leaves of stopGrace for the steps that run once
-// the ordered shutdown is over: closing the pools once nothing is in use (milliseconds), the stops
-// main defers, writing the log lines still buffered (logs.Flush, bounded by logFlushTimeout, 2 s)
-// and the process's exit. A process that gives up at the deadline still says why and exits on its
-// own, rather than being killed mid-line.
+// the ordered shutdown is over: closing the pools once nothing is in use (milliseconds), writing
+// the log lines still buffered (logs.Flush, bounded by logFlushTimeout, 2 s), which main does as
+// shutdown returns, the stops main defers, and the process's exit. None of those stops waits for
+// the intakes' stop, which shutdown has already waited for or given up on (stopIntakesOnExit), so
+// a process that gives up at the deadline still says why and exits on its own, rather than being
+// killed mid-line. The one deferred stop that can still wait is the close of the server's own
+// publisher or agent-stream NATS client, which waits for its connection's lock (bus.Client.Close)
+// as an intake's close does; the lines shutdown logged are written before it.
 const shutdownMargin = 3 * time.Second
 
 // documentReserve is the least of the shutdown's deadline the document service gets: the HTTP drain
@@ -134,13 +138,22 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 //     handler finishes and is acknowledged, or is given up and handed back to NATS, delivery's
 //     intakeStopBudget (15 s) after the signal at the latest, the one deadline of that stop, which
 //     counts from the signal and which a take-over under way at the signal spends rather than
-//     extends. Each intake then releases its hold through the lease pool, so another process takes
-//     its durable over at once. That budget ends well inside this shutdown's deadline, so it never
-//     makes the shutdown longer than the stages above already can. It comes before the pools close
-//     because nothing else keeps them open for a handler: one waiting on GitHub holds no
-//     connection, so stage 5 finds the pools idle, and its writes would fail on a closed pool once
-//     GitHub answered, with its message acknowledged all the same, and because a hold released
-//     through a closed pool is a hold left in place for its TTL.
+//     extends. Each intake then releases its hold through the lease pool once its hand-backs have
+//     reached the server, so another process takes its durable over at once. A hand-back still
+//     pending then is settled when waitIntakes closes each intake's NATS client through its
+//     durable, sent in its close flush or dropped with the connection; waitIntakes then waits for
+//     its finalizer to release the hold through the lease pool. That normally ends well inside
+//     this shutdown's deadline. One exception can outlive it: Client.Close waits for nats.go's
+//     connection lock, which a write can hold until its one-minute write deadline, then a
+//     finalizer can spend up to intakeHoldRenew (5 s) releasing its hold. shutdown stops waiting
+//     at the deadline then, and the process exits without that stop: main's deferred stop of the
+//     intakes only cancels once shutdown has run (stopIntakesOnExit). The exit is as safe as the
+//     kubelet's kill: it ends the connection and the renewal, the hold lapses, and a hand-back
+//     still waiting for the lock never reaches the server. It comes before the pools close because
+//     nothing else keeps them open for a handler: one waiting on GitHub holds no connection, so
+//     stage 5 finds the pools idle, and its writes would fail on a closed pool once GitHub
+//     answered, with its message acknowledged all the same. A hold's finalizer has already
+//     released its hold before waitIntakes returns.
 //  5. It waits until every request has answered and no connection of writePools is in use.
 //  6. It waits for the events outbox to stop, so its last batch is recorded and its publisher
 //     hold released through the pools before they close (waitForOutbox); a process with no
