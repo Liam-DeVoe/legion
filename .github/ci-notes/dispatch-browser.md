@@ -269,14 +269,15 @@ reached over those 24 legs, in seconds:
 The three uploads are three steps of this job and not one, so the sum below counts each
 of them: 3 + 2 + 4, not 4.
 
-The browser step's maximum is now 486 s: the shared search, sort and filter controls'
-rows of dispatch://INFRA-3135 (e2e/table-controls.e2e.ts) took shard 3 to 486 s in full-lane
-runs 44176775681 and 44230393182 and 485 s in 44239098359, whose shard 4 took 469 s. main's
-merge-group run 44234702002 took 365, 218, 378 and 269 s, so those rows add 107 s to shard 3
-and 200 s to shard 4. 486 x 1.15 = 559 s -> 10 min, the budget the step carries. The
-9 minutes held at #2958's merged head (maxima 381 s, 355 s and 283 s, under 419 s), and the
-474 s main measured once was taken on the bare runner with the Playwright install still in
-the job.
+The browser step's maximum is now 593 s: shard 4 of full-lane run 44740043506, at
+dispatch://INFRA-3135's head 29f08cab with main 1c7c8253 merged, took 593 s and its shards
+353, 386, 534 and 593 s; full-lane run 44742684670 at 7d71bf0c took 430, 322, 521 and
+581 s. main's merge-group run 44735067614 at 5570d0ac took 475, 292, 414 and 450 s, so the
+shared search, sort and filter controls' rows (e2e/table-controls.e2e.ts) add 131 to 143 s
+to shard 4 and 107 to 120 s to shard 3. 593 x 1.15 = 682 s -> 12 min, the budget the step
+carries. It carried 10 minutes while its maximum was 486 s (full-lane runs 44176775681 and
+44230393182, shard 3), and 9 while it was 419 s; the 474 s main measured once was taken on
+the bare runner with the Playwright install still in the job.
 
 The browser step was the one step of this job that carried a budget, so the job's budget was
 that budget plus the maxima above of every step without one, which summed to 219 s:
@@ -298,8 +299,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 600 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,364 s, 22 min 44 s, rounded up to the 23 minutes
+browser step's 720 s, the two download attempts' 120 s each, and the steps without a
+budget at 219 - 5 - 45 + 355 = 524 s: 1,484 s, 24 min 44 s, rounded up to the 25 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -347,7 +348,7 @@ run-broker.sh serves from.
 
 The step budget note above does not count this step, which is new here. It copies one
 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 23 minutes leaves hold it.
+that rounding up to 25 minutes leaves hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -464,9 +465,9 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 10`, is the 10 minutes the job's head derives by the rule from this
-step's maximum, 486 s, which the shared controls' rows of dispatch://INFRA-3135 set and the
-job's head lists with its runs: 486 x 1.15 = 559 s.
+The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives by the rule from this
+step's maximum, 593 s, which the shared controls' rows of dispatch://INFRA-3135 set with the
+rows main has added since, and which the job's head lists with its runs: 593 x 1.15 = 682 s.
 
 ## Why the file store's address is set on the step and not in the environment
 
