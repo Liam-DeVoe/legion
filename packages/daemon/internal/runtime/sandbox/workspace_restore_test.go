@@ -21,19 +21,10 @@ import (
 const testRelease int64 = 11
 
 // savedBundleRepo is the repository every save of these tests was work of
-// (workspace_bundles.repo). The rig records no issue in the issues table, so the take reads no
-// repository to disagree with it and refuses none of these bundles by it
+// (workspace_bundles.repo). The rig records testTree with no repository (bundleStore), so the
+// take reads no repository to disagree with it and refuses none of these bundles by it
 // (store.TakeWorkspaceBundleForRestore).
 const savedBundleRepo = "acme/widgets"
-
-// savedBundles is the store's take as the runtime asks it (runtime.SavedWorkspaceBundle), read by
-// the rule of a deployment that configures no rename (ghrepo.Renames.Left). The rig records no
-// issue, so the record names no repository and the rule refuses none of these bundles.
-func savedBundles(st *store.Store) runtime.SavedWorkspaceBundle {
-	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		return st.TakeWorkspaceBundleForRestore(ctx, issue, podUID, podCreated, ghrepo.Renames{}.Left)
-	}
-}
 
 // savedWorkspaceBundle is a release's saved work as the store holds it: more than one
 // shimwire.LauncherBundlePayloadBytes of git bundle, so the hop to the launcher is a sequence of
@@ -55,6 +46,30 @@ func savedWorkspaceBundle() runtime.WorkspaceBundle {
 	}
 }
 
+// bundleStore is a migrated store whose issues table records testTree under the rig's project,
+// as the release that saved a bundle of it leaves it: the store answers a take only for an issue
+// the asking project records (store.Store.TakeWorkspaceBundleForRestore).
+func bundleStore(t *testing.T) *store.Store {
+	t.Helper()
+	st := migratedStore(t)
+	if _, err := st.Pool().Exec(context.Background(), `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $1, 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, testTree); err != nil {
+		t.Fatalf("record %s: %v", testTree, err)
+	}
+	return st
+}
+
+// takeBundle is st's take of a release's saved work for a pod of the rig's project, as the daemon
+// wires it into the runtime (internal/daemon's savedWorkspaceBundle), read by the rule of a
+// deployment that configures no rename (ghrepo.Renames.Left). The record names no repository, so
+// the rule refuses none of these bundles.
+func takeBundle(st *store.Store) runtime.SavedWorkspaceBundle {
+	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+		return st.TakeWorkspaceBundleForRestore(ctx, testProject, issue, podUID, podCreated, ghrepo.Renames{}.Left)
+	}
+}
+
 // frameTypes names what a launcher was sent, for a failure an operator reads.
 func frameTypes(frames []shimwire.Frame) []string {
 	types := make([]string, 0, len(frames))
@@ -70,13 +85,13 @@ func frameTypes(frames []shimwire.Frame) []string {
 // launcher is told to start any role, since the launcher restores the bundle into the workspace
 // ahead of the role's command (internal/launcher).
 func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = savedBundles(st), st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	g.spawn(spec)
@@ -139,14 +154,14 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 // would `jj edit` that workspace back to the saved head and move each bookmark
 // `--allow-backwards` over all of it.
 func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	const refusal = "git bundle unbundle: object not found"
 	g := newRig(t, nil, withFailedRestore(refusal), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = savedBundles(st), st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -192,9 +207,9 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 // (workflow.IdleHoldBundleUnrestored). The store knows that pod by the uid the save recorded,
 // so it is the pod's identity and not its clock that leaves the attempt where it belongs.
 func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = savedBundles(st), st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	g.spawn(spec)
@@ -285,7 +300,7 @@ func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *test
 // which is the whole of the work, since the teardown of that newer release took the disk it came
 // off.
 func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	ctx := context.Background()
 	first := savedWorkspaceBundle()
 	if err := st.PutWorkspaceBundle(ctx, testTree, first.Release, savedBundleRepo, first); err != nil {
@@ -299,7 +314,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatalf("save the second release's bundle: %v", err)
 	}
 
-	d := newLaunchers(nil, savedBundles(st), st.DeleteRestoredWorkspaceBundle, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(nil, takeBundle(st), st.DeleteRestoredWorkspaceBundle, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, err := bundleFrames(testTree, first)
@@ -308,7 +323,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	}
 	d.restoreReported(session, shimwire.LauncherRestored{ID: frames[0].ID, Release: first.Release, OK: true})
 
-	kept, take, err := savedBundles(st)(ctx, testTree, "pod-uid", rigNow)
+	kept, take, err := takeBundle(st)(ctx, testTree, "pod-uid", rigNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,14 +349,14 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 // the attempt before it sends a slice, because a send it could not finish leaves it knowing
 // nothing of what that pod's workspace now holds.
 func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	const refusal = "launcher_bundle sequence rebuilt to another digest than its slices declared"
 	g := newRig(t, nil, withRefusedBundle(refusal), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = savedBundles(st), st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -389,7 +404,7 @@ func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T)
 // from everything they pushed: sending it the bundle would run `jj edit` and
 // `jj bookmark set --allow-backwards` back over all of it.
 func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	// The node that took the bundle is a minute ahead of the API server that stamps the pods.
 	saved.At = rigNow.Add(time.Minute)
@@ -397,7 +412,7 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = savedBundles(st), st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
 	}))
 	spec := workerSpec(t)
 	g.spawn(spec)

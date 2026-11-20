@@ -207,8 +207,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// path writes nothing about a slot: a root keeps the row it was started with through its
 	// whole wait (record.KeepsSlot), so its resume takes no new one (admit's slotFor), and where
 	// it stands in the line is the `waitingLine` on its own state, which the projection writes
-	// (api.WaitingLineView). An architect reads the rule in
-	// skills/legion-architect/references/acceptance.md and references/design-gate.md. The members
+	// (api.WaitingLineView). An architect reads the rule in its role prompt,
+	// packages/daemon/internal/prompts/roles/architect-root.md. The members
 	// the opening releases are started by admission's own pass over this same fact, which gives
 	// each the slot its first phase needs (record.Waiting's LineFirstPhase).
 	switch {
@@ -254,7 +254,9 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // Before anything is marked or sent, the gates as the record holds them now are asked whether an
 // approval of the document followed the review (SupersedingApproval), whichever path carried the review
 // here: one did, and the review is not the person's word any more, so it is neither told nor
-// marked; the processed mark stays the second guard, against telling one review twice.
+// marked; the processed mark stays the second guard, against telling one review twice. The
+// notice this queues is asked again at its delivery (the daemon's readNoticeTree), since an
+// approval can follow while the row waits for its architect.
 func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, artifact string, version int, reason, reviewer string, mark record.EventMark, notify bool) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -830,7 +832,8 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 // is still the person's words: it is told, with its own version and reason, unless an approval came
 // after it (SupersedingApproval, asked of the gate as the event found it, since the review applied
 // clears the approval that would answer it), which the person gave in its place. Every changes
-// notice asks that same function, here, at a registration and where it is sent (tellChanges).
+// notice asks that same function, here, at a registration, where it is queued (tellChanges) and
+// where it is delivered (the daemon's readNoticeTree).
 //
 // Every design-changes-requested notice goes through tellChanges, which sends it once per review
 // whatever carries it (the live event, a registration's read, the gate seed's read) and in whatever
@@ -940,8 +943,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// This opening writes nothing about a slot: a root keeps the row it was started with
 		// through its whole wait (record.KeepsSlot), so its resume takes no new one (admit's
 		// slotFor), and where it stands in the line is the `waitingLine` on its own state,
-		// which the projection writes (api.WaitingLineView). An architect reads the rule in
-		// skills/legion-architect/references/acceptance.md and references/design-gate.md.
+		// which the projection writes (api.WaitingLineView). An architect reads the rule in its
+		// role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()

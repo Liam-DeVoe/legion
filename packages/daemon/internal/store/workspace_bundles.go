@@ -71,10 +71,24 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 
 // TakeWorkspaceBundleForRestore answers the bundle issue's last release saved for the pod of
 // podUID, created at podCreated, whose launcher it is about to be sent to, and records in the
-// same statement what that ask did to the bundle. It answers runtime.WorkspaceBundleNone, having
-// recorded nothing, when the issue has no bundle — one never released, one whose restore the
-// launcher confirmed, one whose release a wake cancelled — when the row already carries an
-// attempt, and when the pod asking is the pod the work came off (source_pod_uid).
+// same statement what that ask did to the bundle. project is the token of the daemon whose pod
+// asks (claim.ProjectToken). It answers runtime.WorkspaceBundleNone, having recorded nothing, when
+// the issue has no bundle of project's — one never released, one whose restore the launcher
+// confirmed, one whose release a wake cancelled, one of an issue project does not record — when
+// the row already carries an attempt, and when the pod asking is the pod the work came off
+// (source_pod_uid).
+//
+// A bundle is project's only where project records its issue (issues.project, the Dispatch key
+// the token lowercases). The row names no project, and its release's mark, which does, is gone
+// once the release has finished, so the issue's record stands in for it. That holds because
+// the one writer of a bundle is the save of an idle release (PutWorkspaceBundle, run by
+// internal/daemon's bundleIssueWorkspace from the release's save row). A daemon's outbox runs
+// only the rows of its own project's keys (record's DueRows), and a release only marks a pod
+// whose issue its project records (ReleaseIdleIssue, readIdleView). So a bundle of an issue this
+// project does not record was saved by another project's daemon on a database the two share,
+// for that daemon's own pod. The operator's spawn makes a claim of such an issue under this
+// project's token, and a new pod of that claim would otherwise spend the other daemon's one
+// attempt and leave that daemon's pod nothing to restore.
 //
 // One attempt per bundle is the rule, and this statement is where it is kept. The launcher's own
 // record of the restore it ran lives in the process that ran it: a roles container that restarts
@@ -114,9 +128,10 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // nothing is sent. The pod's workspace is a clone of the issue's repository now and holds none
 // of the saved commits' bases, so the bundle could not be applied there at all, and the daemon
 // writes on the issue where the work is instead (internal/daemon's bundleRepositoryMessage). A
-// row whose repo is empty — one saved before the column — and an issue the record does not hold
-// are each read as an empty name, so neither refuses anything: nothing recorded the one, and an
-// unread record is never a statement that the issue has left anything.
+// row whose repo is empty — one saved before the column — and a record that names no repository
+// are each read as an empty name, so neither refuses anything: a name nothing recorded is never a
+// statement that the issue has left anything. An issue project does not record is answered
+// nothing before any of this (the paragraph on whose bundle it is, above).
 //
 // A refusal for the repository moves the row out of workspace_bundles and into
 // workspace_bundles_refused, in the transaction that records it. workspace_bundles holds one
@@ -143,7 +158,10 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // The row stays for every other refusal. A bundle nothing restored holds the issue's pod
 // (workflow.IdleHoldBundleUnrestored) and keeps the work in the database until the issue's own
 // work is over (outbox's dropReleasedWork), which is what the launcher's notice tells the roles.
-func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time, left func(saved, recorded string) bool) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issue, podUID string, podCreated time.Time, left func(saved, recorded string) bool) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	if project == "" {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the project whose pod asks", issue)
+	}
 	if podUID == "" {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the pod it is sent to", issue)
 	}
@@ -156,13 +174,15 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		// The lock is taken here, before left is asked, so the row the update below records the
 		// answer on is the row whose repository was read, and a second pod asking at once waits
-		// and then finds the attempt taken.
+		// and then finds the attempt taken. The join is also the project's rule: a row of an
+		// issue project does not record is no row here, and is left as it was.
 		var saved, recorded string
 		if err := tx.QueryRow(ctx, `select b.repo, coalesce(i.repo, '')
-			from workspace_bundles b left join issues i on i.key = b.issue
+			from workspace_bundles b join issues i on i.key = b.issue
 			where b.issue = $1 and b.attempt_pod_uid is null and b.source_pod_uid <> $2
+				and lower(i.project) = $3
 			for update of b`,
-			issue, podUID).Scan(&saved, &recorded); err != nil {
+			issue, podUID, project).Scan(&saved, &recorded); err != nil {
 			return err
 		}
 		refuseRepository := left(saved, recorded)
@@ -326,7 +346,7 @@ func (s *Store) RecordBundleRefusal(ctx context.Context, project, issue string, 
 			return nil
 		}
 		for _, row := range tell {
-			if _, err := insertOutboxRow(ctx, tx, issue, row); err != nil {
+			if _, err := insertOutboxRow(ctx, tx, project, issue, row); err != nil {
 				return err
 			}
 		}

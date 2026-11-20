@@ -214,7 +214,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 	rig.s = &supervision{
 		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval,
-			enqueue: (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox},
+			enqueue: (&workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: quietLogger()}).enqueueOutbox},
 		runtime: rt, supervisor: sup,
 		refreshGate: supervise.NewRefreshGate(0),
 	}

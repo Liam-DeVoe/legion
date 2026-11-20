@@ -2376,7 +2376,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":   {"key", "claimed_by", "claim_seq"},
 		"slots":             {"issue", "index", "admitted_at"},
 		"processed_events":  {"source", "event_id", "processed_at"},
-		"outbox":            {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark"},
+		"outbox":            {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {
@@ -2696,9 +2696,9 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one
 // replaces it (an approval after a changes request of the same spec), an older one arriving late
-// does not. A read names them all, newest first and ties by reference, and leaves them; the forget
-// of what a delivered start named deletes exactly those, so a decision kept on a named reference
-// since stays for the next start to name.
+// does not. A read names them all, newest first and ties by reference, and leaves them, and a read
+// of one reference names the one it keeps; the forget of what a delivered start named deletes
+// exactly those, so a decision kept on a named reference since stays for the next start to name.
 func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2711,7 +2711,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	for _, decision := range []ParkedDecision{
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskAnswered, Actor: "user:alice", At: t0},
 		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignChangesRequested, Actor: "user:alice", At: t0},
-		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second)},
+		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskResolved, Actor: "user:bob", At: t0.Add(time.Second)},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskAnswered, Actor: "user:carol", At: t0.Add(-time.Second)},
 	} {
@@ -2726,7 +2726,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		must(t, err)
 	})
 	want := []ParkedDecision{
-		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second)},
+		{Issue: "LEGION-210", Ref: spec, Decision: DecisionDesignApproved, Actor: "user:alice", At: t0.Add(2 * time.Second), Seq: 12},
 		{Issue: "LEGION-210", Ref: ask, Decision: DecisionAskResolved, Actor: "user:bob", At: t0.Add(time.Second)},
 	}
 	if len(named) != len(want) {
@@ -2738,6 +2738,18 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 			t.Fatalf("read[%d] = %#v, want %#v: each ref keeps its newest decision", i, got, want[i])
 		}
 	}
+	inTx(t, st, func(tx pgx.Tx) {
+		kept, err := records.KeptDecision(ctx, tx, "LEGION-210", spec)
+		must(t, err)
+		if kept == nil || kept.Decision != DecisionDesignApproved || kept.Actor != "user:alice" || !kept.At.Equal(want[0].At) || kept.Seq != 12 {
+			t.Fatalf("the decision kept on %s = %#v, want the newest, %#v, with its mark", spec, kept, want[0])
+		}
+		for _, other := range []struct{ issue, ref string }{{"LEGION-210", "dispatch://LEGION-210/ask/b"}, {"LEGION-211", spec}} {
+			if kept, err := records.KeptDecision(ctx, tx, other.issue, other.ref); err != nil || kept != nil {
+				t.Fatalf("the decision %s keeps on %s = %#v, %v; want none", other.issue, other.ref, kept, err)
+			}
+		}
+	})
 	inTx(t, st, func(tx pgx.Tx) {
 		again, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
 		must(t, err)
@@ -2757,6 +2769,9 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		must(t, err)
 		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" {
 			t.Fatalf("after the forget %#v, want only the decision kept since it was named", left)
+		}
+		if kept, err := records.KeptDecision(ctx, tx, "LEGION-210", ask); err != nil || kept != nil {
+			t.Fatalf("the decision kept on %s after the forget = %#v, %v; want none", ask, kept, err)
 		}
 	})
 }

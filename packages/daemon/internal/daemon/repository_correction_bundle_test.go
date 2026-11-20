@@ -49,7 +49,7 @@ func TestRepositoryCorrectionTellsTheIssueWhereItsSavedWorkIs(t *testing.T) {
 	correctRecord(t, pool, records, issue.Key, "zeta/tools", "main", time.Now().UTC())
 
 	var told []string
-	take := tellBundleRepositoryRefused(st, unrenamed,
+	take := tellBundleRepositoryRefused(st, "legion", unrenamed,
 		func(_ context.Context, key, body string) error {
 			if key != issue.Key {
 				t.Errorf("the daemon wrote on %s, want %s: the work is that issue's", key, issue.Key)
@@ -126,7 +126,7 @@ func TestARenamedRepositorysBundleIsRestored(t *testing.T) {
 
 	mapping := newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "acme/gadgets")))
 	var told []string
-	take := tellBundleRepositoryRefused(st, mapping.left,
+	take := tellBundleRepositoryRefused(st, "legion", mapping.left,
 		func(_ context.Context, _, body string) error {
 			told = append(told, body)
 			return nil
@@ -160,7 +160,7 @@ func TestRepositoryCorrectionWritesNothingOnTheOtherBundleOutcomes(t *testing.T)
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
 
 	var told []string
-	take := tellBundleRepositoryRefused(st, unrenamed,
+	take := tellBundleRepositoryRefused(st, "legion", unrenamed,
 		func(_ context.Context, _, body string) error {
 			told = append(told, body)
 			return nil

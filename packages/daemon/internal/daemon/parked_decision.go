@@ -59,7 +59,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	}
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
-	outcome, fresh, recorded, superseded := record.RelayNone, false, false, false
+	outcome, fresh, recorded := record.RelayNone, false, false
+	var superseded *workflow.Approval
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		marked, err := r.records.MarkProcessed(scoped, tx, parkedDecisionSource, key)
@@ -72,7 +73,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			return err
 		}
 		recorded = true
-		if superseded, err = r.decisionSuperseded(scoped, tx, issue, notice, decision); err != nil || superseded {
+		if superseded, err = r.decisionSuperseded(scoped, tx, issue, notice, decision); err != nil || superseded != nil {
 			return err
 		}
 		// The decision is kept at Dispatch's mark of the review it reports (record.Notice.Review),
@@ -96,8 +97,9 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision handled before under this key", args...)
 	case !recorded:
 		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
-	case superseded:
-		r.log.Info("outbox parked decision not relayed: the person approved a later version since", append(args, "version", notice.Version)...)
+	case superseded != nil:
+		r.log.Info("outbox parked decision not relayed: the person's approval followed it",
+			append(args, "version", notice.Version, "approved", superseded.Version)...)
 	case outcome == record.RelaySent:
 		r.log.Info("outbox parked decision sent to the controller", args...)
 	case outcome == record.RelayKept:
@@ -112,19 +114,71 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	return nil
 }
 
-// decisionSuperseded says whether the spec decision notice carries on issue is no longer the
-// person's word, by the one predicate (workflow.SupersedingApproval) over the gate of issue as the
-// record holds it now: the gate of the step whose document notice.Ref names
-// (workflow.RefSuperseded), at the version the notice carries and at Dispatch's mark of the review
-// (record.Notice.Review), which this release puts on every design decision's notice. A notice an
-// earlier release queued carries no mark, and is asked at its version alone.
-func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (bool, error) {
+// decisionSuperseded is the approval that took the place of the spec decision notice carries on
+// issue, nil while that decision is still the person's word, by the one predicate
+// (workflow.SupersedingApproval) over the gate of issue as tx reads it: the gate of the step whose
+// document notice.Ref names (workflow.RefSuperseded), at the version the notice carries and at
+// Dispatch's mark of the review (record.Notice.Review), which this release puts on every design
+// decision's notice. A notice an earlier release queued carries no mark, and is asked at its
+// version alone. Every outbox reader of a queued decision asks it here: the relay to the
+// controller (parkDecision), the publish of that relay when it is a changes request
+// (relayedChangesAnswered, which asks at the mark of the decision the relay kept, since the
+// controller notice carries none) and the delivery of a changes request to the architect
+// (readNoticeTree), and the line each logs for a superseded decision names the approved version.
+func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (*workflow.Approval, error) {
 	gates, err := r.records.GatesOf(ctx, tx, issue)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	d := workflow.Decision{Kind: decision, Version: notice.Version, Mark: notice.Review}
-	return workflow.RefSuperseded(gates, r.gatedSteps, issue, notice.Ref, d) != nil, nil
+	return workflow.RefSuperseded(gates, r.gatedSteps, issue, notice.Ref, d), nil
+}
+
+// relayedChangesAnswered says whether the changes request a parked-decision controller notice
+// relays is no longer the person's word, and then writes the one line that finishes its row
+// unpublished. parkDecision asked when it wrote the row, but the row waits as long as no session
+// holds the controller's claim (controllerNotice), and the person can approve the version
+// meanwhile, so the publish asks again on every attempt.
+//
+// It reads the decision the relay kept beside the row (record.RelayParkedDecision), the one the
+// row's issue keeps on payload.Ref (record.Store.KeptDecision), because that row carries
+// Dispatch's mark of the review and the controller notice does not: a changes request is never
+// asked at its version alone. The row's absence is itself the answer: a kept decision goes only
+// once nothing is owed for it, forgotten as superseded (workflow.ForgetSuperseded), told to an
+// architect by a start or a catch-up, or cleared with its generation. A kept row of another kind
+// is the person's later decision on the same document, which replaced the request (newest per
+// reference, record.Store.AddParkedDecision) and is told on its own. A kept changes request is
+// asked of the gates at its own mark (decisionSuperseded), in the same read-only transaction, so
+// the row and the gates are one snapshot of the record.
+func (r *outbox) relayedChangesAnswered(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) (bool, error) {
+	var kept *record.ParkedDecision
+	var approval *workflow.Approval
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		if kept, err = r.records.KeptDecision(ctx, tx, row.Issue, payload.Ref); err != nil || kept == nil ||
+			kept.Decision != record.DecisionDesignChangesRequested {
+			return err
+		}
+		approval, err = r.decisionSuperseded(ctx, tx, row.Issue, record.Notice{Kind: "design-changes-requested", Ref: payload.Ref,
+			Version: payload.Version, Review: record.EventMark{Seq: kept.Seq, At: kept.At}}, record.DecisionDesignChangesRequested)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read whether the changes request relayed for %s is still the person's word: %w", row.Issue, err)
+	}
+	args := []any{"row", row.ID, "issue", row.Issue, "ref", payload.Ref, "version", payload.Version}
+	switch {
+	case kept == nil:
+		r.log.Info("outbox parked changes request finished without publishing: nothing is kept for it any more", args...)
+	case kept.Decision != record.DecisionDesignChangesRequested:
+		r.log.Info("outbox parked changes request finished without publishing: the person's later decision replaced it",
+			append(args, "kept", kept.Decision)...)
+	case approval != nil:
+		r.log.Info("outbox parked changes request finished without publishing: the person's approval followed it",
+			append(args, "approved", approval.Version)...)
+	default:
+		return false, nil
+	}
+	return true, nil
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

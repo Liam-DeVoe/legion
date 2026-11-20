@@ -678,9 +678,12 @@ type Prompt struct {
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
 //
-// Code is the machine-readable reason Oh My Pi gives beside a refusal's `error`, where it gives
-// one (rpc-types.ts: "`code` is an optional machine-readable reason"), and "" where it gives none.
-// It is what the daemon decides on; Error is words for a person (CodeSessionBusy).
+// Code is Oh My Pi's class of a refusal, where it gives one, and "" where it gives none: a refused
+// request's error response carries it at the top level, right after Error (`RpcResponse` in
+// packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag).
+// For a `prompt` or `abort_and_prompt` its one value is `session_busy`: the prompt was refused, or
+// failed, because the agent was busy (docs/rpc.md there). It is what the daemon decides on; Error
+// is words for a person (CodeSessionBusy).
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
@@ -690,10 +693,13 @@ type Response struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
-// CodeSessionBusy is the code of a refusal the agent makes because it is in a turn of its own:
-// Oh My Pi's word for that refusal on every RPC command that can meet it, and the code the Claude
-// Code bridge gives its own. It is the only way the daemon reads a busy agent; a refusal that
-// says so in words alone is not one (internal/stream's PromptRefusalOutcome).
+// CodeSessionBusy is the code of a refusal or a failure the agent gives because it is busy: Oh My
+// Pi's word for it on every RPC command that can meet it, and the code the Claude Code bridge
+// gives its own. At the pinned tag one code covers three refusals (rpc-busy-code.ts there): a
+// prompt sent while a turn streams, a session busy with maintenance or user work, and a prompt
+// that waited 30 s while another run held the agent. The daemon reads each as the agent's busy
+// answer, and it is the only way the daemon reads a busy agent; a refusal that says so in words
+// alone is not one (internal/stream's PromptRefusalOutcome).
 const CodeSessionBusy = "session_busy"
 
 // StateData is the get_state answer's payload. IsStreaming is absent rather than false when the
@@ -754,16 +760,22 @@ type PromptResult struct {
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
 // provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
-// with `status: \"error\"`". Oh My Pi writes it for a prompt whose last assistant message ended
-// with stopReason "error" — a provider request its own retries could not get through, where
-// Retryable says it may still succeed later — and for one it failed outright before any turn.
+// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts,
+// and docs/rpc.md, of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
+// whose last assistant message ended with stopReason "error" — a provider request its own retries
+// could not get through, where Retryable says it may still succeed later — and for one it failed
+// outright before any turn.
+//
+// Code is Oh My Pi's class of the failure, when it gives one, and it declares two values there:
+// `cost_cap`, the session reached `session.maxCost`, and `session_busy`, the agent was busy: the
+// prompt was refused, or it waited at least 30 s and another run still held the agent.
 //
 // Message is the reason a failed prompt is recorded with (PromptResult.Reason), for a person to
-// read. Code is Oh My Pi's machine-readable reason where it gives one — CodeSessionBusy for a
-// prompt that failed because the agent was in a turn of its own — and it, not Message, is what a
-// failure is told apart by (PromptResult.Code). The other members are modelled so the frame
-// survives this package whole, the way every other frame does: a decode that kept only what
-// today's reader wants would quietly drop the provider, the model and the status behind a failure
+// read, and internal/stream carries Retryable, HTTPStatus, Provider and Model onto its own
+// PromptResult event. Code, not Message, is what a failure is told apart by (PromptResult.Code):
+// CodeSessionBusy is the agent's busy answer. Every member is modelled so the frame survives this
+// package whole, the way every other frame does. A decode that kept only what today's reader
+// wants would quietly drop the class, the provider, the model and the status behind a failure
 // from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
@@ -775,7 +787,7 @@ type PromptError struct {
 }
 
 // Reason is Oh My Pi's message for work that ended in an error, and the empty string for work
-// that did not.
+// that did not: the reason a failed prompt is recorded with.
 func (f PromptResult) Reason() string {
 	if f.Error == nil {
 		return ""

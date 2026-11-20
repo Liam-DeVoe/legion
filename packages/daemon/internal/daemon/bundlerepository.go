@@ -13,12 +13,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// tellBundleRepositoryRefused is the store's take of an issue's saved workspace bundle
-// (store.Store.TakeWorkspaceBundleForRestore) as the runtime asks it, with the one thing the
-// daemon owes a person added to it: the bundle the store refused because it is of a repository
-// the issue has left is told on the issue itself (bundleRepositoryMessage, written through
-// write). Every other outcome passes through untouched, and the refusal passes through as it
-// was: the pod still starts on what its own fetch provisioned.
+// tellBundleRepositoryRefused is the store's take of an issue's saved workspace bundle for a pod
+// of project (savedWorkspaceBundle, store.Store.TakeWorkspaceBundleForRestore) as the runtime
+// asks it, with the one thing the daemon owes a person added to it: the bundle the store refused
+// because it is of a repository the issue has left is told on the issue itself
+// (bundleRepositoryMessage, written through write). Every other outcome passes through
+// untouched, and the refusal passes through as it was: the pod still starts on what its own
+// fetch provisioned. A bundle of an issue project does not record is answered nothing by the
+// store, so no message is ever written on another project's issue from here.
 //
 // Whether the issue has left the bundle's repository is left's to say, and the daemon hands it
 // the rule a pod built from a repository is read by too (repositories.left, repositoryDrift), so
@@ -42,13 +44,14 @@ import (
 // below, where the error is logged and the work stays in the database. A rig that builds the
 // runtime by hand passes a writer of its own (controller_sweep_kind_test.go's
 // noWriteOnIssue).
-func tellBundleRepositoryRefused(st *store.Store, left func(saved, recorded string) bool,
+func tellBundleRepositoryRefused(st *store.Store, project string, left func(saved, recorded string) bool,
 	write func(ctx context.Context, issue, body string) error, log *slog.Logger) runtime.SavedWorkspaceBundle {
 	if log == nil {
 		log = slog.Default()
 	}
+	take := savedWorkspaceBundle(st, project, left)
 	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		bundle, outcome, err := st.TakeWorkspaceBundleForRestore(ctx, issue, podUID, podCreated, left)
+		bundle, outcome, err := take(ctx, issue, podUID, podCreated)
 		if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository {
 			return bundle, outcome, err
 		}

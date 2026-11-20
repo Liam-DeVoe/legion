@@ -309,7 +309,7 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 	t.Run("pending task with no phase", func(t *testing.T) {
 		h, _, _ := newEntryHarness(t)
 		planner := planned(t, h)
-		queueTask(t, h, planner.token, "outbox:wake", workflow.WakeTask(pods.WakeRoleMessage, "notifications.role.legion-legion-legion-208-planner"), 0, 1)
+		queueTask(t, h, planner.token, "outbox:wake", workflow.WakeTask(pods.WakeRoleMessage, "notifications.role.legion-legion-legion-208-planner", workflow.StoppedByRelease), 0, 1)
 		if pending := planner.claimNow(t).Pending; pending == nil || pending.Phase != "" || !pending.ConfirmedAt.IsZero() {
 			t.Fatalf("the planner holds %+v, want the wake's task of no phase, unconfirmed: the case's own premise", pending)
 		}
@@ -325,7 +325,7 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 		seedIssueAt(t, h, "LEGION-208", phase.Testing)
 		seedEntry(t, h, "LEGION-208", claim.RoleTester, 1)
 		tester := untaskedClaim(t, h, "LEGION-208", claim.RoleTester)
-		holdingTask(t, h, tester, supervise.RequestDeliver{Task: workflow.WakeTask(pods.WakeRoleMessage, "notifications.role.legion-legion-legion-208-tester"),
+		holdingTask(t, h, tester, supervise.RequestDeliver{Task: workflow.WakeTask(pods.WakeRoleMessage, "notifications.role.legion-legion-legion-208-tester", workflow.StoppedByRelease),
 			ID: "outbox:wake", Generation: 1})
 		tester.owesNothing(t)
 		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "HANDOFF_NO_RUN")
