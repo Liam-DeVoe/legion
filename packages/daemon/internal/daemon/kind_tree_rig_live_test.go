@@ -1010,12 +1010,15 @@ type kindRule struct {
 	spent bool
 }
 
-// kindSeen is one Messages request: when it came, its whole body, its last message's text and
-// whether it streams.
+// kindSeen is one Messages request: when it came, its whole body, the text of its turn and
+// whether it streams. The turn is every message after the request's last assistant message
+// (turnOf): pi-envoy hands a session's first Envoy card to an idle RPC host as a follow-up that
+// starts no turn, and the turn it then starts ends with its own wake notice after the card, so
+// the card is not the request's last message.
 type kindSeen struct {
 	at     time.Time
 	body   string
-	last   string
+	turn   string
 	stream bool
 }
 
@@ -1078,10 +1081,11 @@ func (s *kindStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var request struct {
+		messagesRequest
 		Stream bool `json:"stream"`
 	}
 	_ = json.Unmarshal(body, &request)
-	seen := kindSeen{at: time.Now(), body: string(body), last: readStandinRequest(body, time.Now()).last, stream: request.Stream}
+	seen := kindSeen{at: time.Now(), body: string(body), turn: blocksText(turnOf(request.messagesRequest)), stream: request.Stream}
 	text := string(body)
 	switch {
 	case strings.Contains(text, compactSummaryMarker):

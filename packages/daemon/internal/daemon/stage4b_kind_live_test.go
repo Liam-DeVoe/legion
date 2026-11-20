@@ -292,7 +292,7 @@ func (r *stage4bLive) issueIndependence() {
 
 	marker := "Kind proof planning operation " + r.tree1
 	record := r.writeRecord(r.tree1, planner.Session, "plan")
-	r.model.callOn(func(seen kindSeen) bool { return strings.Contains(seen.last, marker) }, "legion",
+	r.model.callOn(func(seen kindSeen) bool { return strings.Contains(seen.turn, marker) }, "legion",
 		map[string]any{"op": "handoff_complete", "summary": "Planned the one-file smoke change."})
 	r.send(planner.Session, marker+": complete planning now.")
 	r.await(r.tree1+" in implementing", kindTreeWait, func() bool { return r.state().Issues[r.tree1].Phase == string(phase.Implementing) })
@@ -462,7 +462,7 @@ func (r *stage4bLive) githubCredential() {
 
 	since := time.Now()
 	jj := "Kind proof jj operation " + r.tree1
-	r.model.callOn(func(seen kindSeen) bool { return strings.Contains(seen.last, jj) }, "bash", map[string]any{"command": "jj undo --help | head -n 1"})
+	r.model.callOn(func(seen kindSeen) bool { return strings.Contains(seen.turn, jj) }, "bash", map[string]any{"command": "jj undo --help | head -n 1"})
 	r.send(implementer.Session, jj+": run jj undo --help.")
 	r.await("the implementer's bash to read jj undo --help's first line", 5*time.Minute, func() bool {
 		return len(r.model.requests(since, "Undo the last operation")) > 0
@@ -470,7 +470,7 @@ func (r *stage4bLive) githubCredential() {
 	push := "Kind proof push operation " + r.tree1
 	workspace := "/legion/workspaces/" + r.repo.Slug() + "/" + strings.ToLower(r.tree1)
 	before := len(r.kind.GitHub.Deliveries())
-	r.model.callOn(func(seen kindSeen) bool { return strings.Contains(seen.last, push) }, "bash", map[string]any{"command": fmt.Sprintf(
+	r.model.callOn(func(seen kindSeen) bool { return strings.Contains(seen.turn, push) }, "bash", map[string]any{"command": fmt.Sprintf(
 		"cd %s && mkdir -p smoke && echo %s > smoke/%s.md && jj commit -m 'Add the smoke file' && jj bookmark set legion/%s -r @- && jj git push --bookmark legion/%s",
 		workspace, r.tree1, strings.ToLower(r.tree1), r.tree1, r.tree1)})
 	r.send(implementer.Session, push+": commit and push the smoke file.")
