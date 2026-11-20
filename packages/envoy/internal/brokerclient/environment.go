@@ -178,8 +178,8 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 			RequestURL: requestURL, RequestToken: requestToken, Audience: audience, HTTP: HTTPClient(),
 		}, nil
 	default:
-		return nil, fmt.Errorf("%s=%q names no identity this machine can prove; it takes %s, %s, %s or %s",
-			IdentityVar, kind, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s, %s or %s",
+			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
 	}
 }
 

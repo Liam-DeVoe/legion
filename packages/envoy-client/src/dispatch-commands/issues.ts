@@ -735,8 +735,13 @@ export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, u
   return tool === "dispatch_result" && args["retract"] === undefined;
 }
 
-/** `dispatch result`: record one result of one check of an issue's Verification document, or, as
- *  the CLI's dry run, ask Dispatch for the pull-request body line the record would print. */
+/** `dispatch result`: record one result of one check of an issue's Verification document, or,
+ *  with `project`, a CI job's result of a check of the spec files, or, as the CLI's dry run, ask
+ *  Dispatch for the pull-request body line the record would print. It prints the recorded result's
+ *  id as `dispatch results` prints it, `Result <id>`, which `--retract` takes. What it prints back
+ *  of the answer is text a session wrote (a retraction's reason, a check's words in the pull
+ *  request line), so it prints by the runner log's one-line rule (runner-log.ts): no line break of
+ *  it starts a line. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
   if (optionalString(args, "project") !== undefined) {
