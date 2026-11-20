@@ -1983,7 +1983,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		role := r.supervisedClaim(token).Role
 		return role != claim.RoleArchitect && phase.RoleFor(issue.Phase) != role
 	}
-	return r.heldDelivery(ctx, row, token, "role message", moved, func() error {
+	return r.heldDelivery(ctx, row, token, "role message", stopped != 0, moved, func() error {
 		err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 		if errors.Is(err, notify.ErrHolderUnresponsive) {
 			// A wait, not a failure: settle logs a wait.ErrWaiting at INFO, then DEBUG, and at WARN
@@ -2030,7 +2030,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 
 // heldMessageOwed is the held role message's debt, and the one statement of it (R4 of
 // dispatch://INFRA-3759, roleMessage): the pause of the stop under which role message row is owed
-// to the role of claim view, and 0 where it is not owed. A row a pause held
+// to the role of claim view, and 0 where it is not owed. A hook prompt a pause held owes its role
+// the same way (hookPrompt). A row a pause held
 // (record.OutboxRow.HeldByPause) for a role a pause stopped, the claim's newest stop that ended
 // `stopped` (store.StoppedByAPause), whichever pause made that stop and whichever held the row,
 // stays owed until the role holds its topic and the row's publish reaches it. The debt ends
@@ -2123,7 +2124,15 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	}
 	moved := func(issue record.Issue) bool { return issue.Phase != payload.To }
 	fields := []any{"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count}
-	return r.heldDelivery(ctx, row, token, "hook prompt", moved, func() error {
+	// owed is whether a pause still owes the row its role (heldMessageOwed), as a role message's
+	// debt is read: such a row is not asked whether its hold ended (heldDelivery).
+	var owed int64
+	if r.supervisor != nil {
+		if owed, err = r.heldMessageOwed(ctx, row, r.supervisedClaim(token)); err != nil {
+			return err
+		}
+	}
+	return r.heldDelivery(ctx, row, token, "hook prompt", owed != 0, moved, func() error {
 		// A role whose pod was released is not "no live session holds the role": its session is
 		// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and
 		// the row's first attempt after that resume has launched publishes (wakeForDelivery). A
@@ -2163,20 +2172,26 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 
 // heldDelivery runs the delivery of a role message or a hook prompt (what) under the hold rule
 // both share (R5). A row a try held whose hold has ended since — its claim ended, or moved says
-// its phase moved on — finishes undelivered (holdEnded). A row the listener stored for the session
-// that now holds its role again finishes with no new publish (storedForItsSession). Otherwise
-// publish runs. Where it answers that no session holds the role and nothing was kept
-// (notify.ErrNoHolder), the row is held for a claim that keeps its session (heldForItsSession),
-// or finishes undelivered with undelivered's line. The gate's refusal of a claim that records a
-// session it does not hold (heldBack, a claim.Refusal) answers that same error and is no wait: the
-// process that holds that session is another claim's, so the row finishes undelivered, as every
-// row the gate refuses does. A routine wait publish answers of its own (routineWaiting: a role
-// message a project's pause still owes its role) is returned as it is, never held or finished.
-// Every other failure publish answers keeps the row's retry, a publish the listener stored for a
-// holder as that stored copy (storedAnswer), so the retry records it.
-func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token claim.Token, what string, moved func(record.Issue) bool, publish func() error, undelivered func(error)) error {
-	if ended, err := r.holdEnded(ctx, row, token, what, moved); err != nil || ended {
-		return err
+// its phase moved on — finishes undelivered (holdEnded), except a row a project's pause still owes
+// its role (owed, heldMessageOwed): that row ends on its debt's own end events alone, so neither
+// the claim the pause stopped nor its phase moving on ends it, and a row R5 held before the pause
+// still reaches the role once it is back, as main's rule for a row a pause owes says. A row the
+// listener stored for the session that now holds its role again finishes with no new publish
+// (storedForItsSession). Otherwise publish runs. Where it answers that no session holds the role
+// and nothing was kept (notify.ErrNoHolder), the row is held for a claim that keeps its session
+// (heldForItsSession), or finishes undelivered with undelivered's line. The gate's refusal of a
+// claim that records a session it does not hold (heldBack, a claim.Refusal) answers that same
+// error and is no wait: the process that holds that session is another claim's, so the row
+// finishes undelivered, as every row the gate refuses does. A routine wait publish answers of its
+// own (routineWaiting: a role message a project's pause still owes its role) is returned as it
+// is, never held or finished. Every other failure publish answers keeps the row's retry, a
+// publish the listener stored for a holder as that stored copy (storedAnswer), so the retry
+// records it.
+func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token claim.Token, what string, owed bool, moved func(record.Issue) bool, publish func() error, undelivered func(error)) error {
+	if !owed {
+		if ended, err := r.holdEnded(ctx, row, token, what, moved); err != nil || ended {
+			return err
+		}
 	}
 	if r.storedForItsSession(row, token, what) {
 		return nil
