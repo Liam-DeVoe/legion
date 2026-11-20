@@ -229,6 +229,12 @@ broker's CPU time from `utime` and `stime` in `/proc/<pid>/stat` and its peak me
 from `VmRSS` in `/proc/<pid>/status`, sampled every two seconds, since these two are
 `dev-airlock.sh`'s children and not the check's.
 
+The grant's proxy password and placeholder stay out of a command's arguments, which
+every process of the pod reads in `/proc/<pid>/cmdline`. `load` reads the proxy URL from
+`--proxy-file` and the bearer from `--header-file`, and refuses `--proxy` and `--header`;
+curl reads the proxy from a config (`-K`) and the header from standard input; and the
+clone reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` path.
+
 The document's other checks are Go tests. `k3`, `k4`, `k5` and `k8a` are
 `TestAMethodOrPathTheEntryDoesNotAllowIsRefused` and
 `TestTheProxyRefusesTheAddressesItMustNeverDial` (`internal/broker/airlockproxy`),

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/airlock-check.sh
 #
-# Runs check k9 of the airlock's verification document
-# (dispatch://INFRA-1352/artifact/verification-md) end to end: under a ten-minute load of
+# Runs check k9 of the airlock's verification document end to end: under a ten-minute load of
 # generated traffic no call fails, the proxy adds at most 100 ms at the median against a plain
 # tunnel, and each broker process passes at most half its wall time in CPU and at most 1 GiB of
-# memory, which are INFRA-1352's rules for the broker. The `broker-multiprocess` job of `ci.yaml`
-# runs it in merge groups and on a pull request that carries the `full-ci` label.
+# memory, which are the document's rules for the broker. The `broker-multiprocess` job of
+# `ci.yaml` runs it in merge groups and on a pull request that carries the `full-ci` label.
 #
 # The script starts the local stack the check needs (scripts/dev-airlock.sh), runs the check's
 # steps against it, runs the negative control on a second stack, stops the stack, and prints:
@@ -49,8 +48,8 @@ usage() {
 	cat <<'EOF'
 usage: airlock-check.sh k9 [--keep-stack]
 
-Runs check k9 of dispatch://INFRA-1352/artifact/verification-md and prints one CHECK line for
-each property the check's outcome sentence names, after a line saying what it got.
+Runs check k9 of the airlock's verification document and prints one CHECK line for each
+property the check's outcome sentence names, after a line saying what it got.
 
   k9             the one check this script runs
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
@@ -283,8 +282,10 @@ release() { # <name> <ttl>
 	PROXY_PASSWORD="$(printf '%s' "$RELEASE_JSON" | jq -r '.airlock.proxy_password // ""')"
 }
 
-# proxy_for is the proxy URL of this grant at one address, credential and all. It is passed to
-# curl and never printed.
+# proxy_for is the proxy URL of this grant at one address, credential and all. It is never
+# printed, and never a command's argument, which every process of the pod reads in
+# /proc/<pid>/cmdline: dev-airlock-stands load reads it from --proxy-file and curl from a config
+# (-K), each given as a <(…) path.
 proxy_for() { printf 'http://agent-secrets:%s@%s' "$PROXY_PASSWORD" "$1"; }
 
 records() { curl -sS "$AIRLOCK_RECORDS_URL/records/$1"; }
@@ -384,7 +385,7 @@ check_k9() {
 		sleep 0.25
 	done
 	echo "airlock-check: k9 is measuring the baseline through a plain tunnel for 60 seconds..." >&2
-	"$STANDS_BIN" load load --proxy "http://$plain" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+	"$STANDS_BIN" load load --proxy-file <(printf 'http://%s\n' "$plain") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
 		--rate 50 --seconds 60 --out "$WORK_DIR/k9/baseline.json" >/dev/null 2>"$WORK_DIR/k9/baseline.err"
 
 	local before=() after=() wall_before wall_after rss="$WORK_DIR/k9/rss.log"
@@ -395,8 +396,8 @@ check_k9() {
 	for pid in "${pids[@]}"; do before+=("$(k9_cpu "$pid")"); done
 	wall_before="$(date +%s.%N)"
 	echo "airlock-check: k9 is opening 50 connections a second through the airlock for ten minutes..." >&2
-	"$STANDS_BIN" load load --proxy "$proxy" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
-		--header "$PLACEHOLDER" --rate 50 --seconds 600 --out "$WORK_DIR/k9/load.json" \
+	"$STANDS_BIN" load load --proxy-file <(printf '%s\n' "$proxy") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+		--header-file <(printf '%s\n' "$PLACEHOLDER") --rate 50 --seconds 600 --out "$WORK_DIR/k9/load.json" \
 		>/dev/null 2>"$WORK_DIR/k9/load.err"
 	wall_after="$(date +%s.%N)"
 	for pid in "${pids[@]}"; do after+=("$(k9_cpu "$pid")"); done
@@ -433,14 +434,14 @@ check_k9() {
 
 	# The upload, the answer with a gap in it, the upgrade and the clone.
 	echo "airlock-check: k9 is uploading 50 MiB, waiting out a 90-second gap and cloning..." >&2
-	"$STANDS_BIN" load upload --proxy "$proxy" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
-		--header "$PLACEHOLDER" --size $((50 * 1024 * 1024)) --out "$WORK_DIR/k9/upload.json" >/dev/null 2>&1
-	"$STANDS_BIN" load gap --proxy "$proxy" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
-		--header "$PLACEHOLDER" --gap 90 --out "$WORK_DIR/k9/gap.json" >/dev/null 2>&1
+	"$STANDS_BIN" load upload --proxy-file <(printf '%s\n' "$proxy") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+		--header-file <(printf '%s\n' "$PLACEHOLDER") --size $((50 * 1024 * 1024)) --out "$WORK_DIR/k9/upload.json" >/dev/null 2>&1
+	"$STANDS_BIN" load gap --proxy-file <(printf '%s\n' "$proxy") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+		--header-file <(printf '%s\n' "$PLACEHOLDER") --gap 90 --out "$WORK_DIR/k9/gap.json" >/dev/null 2>&1
 	local s_mark
 	s_mark="$(records_count s)"
-	"$STANDS_BIN" load upgrade --proxy "$proxy" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
-		--header "$PLACEHOLDER" --out "$WORK_DIR/k9/upgrade.json" >/dev/null 2>&1
+	"$STANDS_BIN" load upgrade --proxy-file <(printf '%s\n' "$proxy") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+		--header-file <(printf '%s\n' "$PLACEHOLDER") --out "$WORK_DIR/k9/upgrade.json" >/dev/null 2>&1
 
 	# The clone goes through the same proxy on an ordinary CONNECT: github.com is no bound host,
 	# so nothing is swapped into it and what is proved is that the tunnel carries a clone.
@@ -477,8 +478,8 @@ check_k9() {
 	# connection is this run's own gap connection on the second broker's proxy port, so what is
 	# stopped is the process carrying it.
 	local stopped="${pids[-1]}" after_stop
-	"$STANDS_BIN" load gap --proxy "http://agent-secrets:$PROXY_PASSWORD@${BROKER_PROXY_ADDRS[-1]}" \
-		--host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" --header "$PLACEHOLDER" --gap 8 \
+	"$STANDS_BIN" load gap --proxy-file <(proxy_for "${BROKER_PROXY_ADDRS[-1]}") \
+		--host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" --header-file <(printf '%s\n' "$PLACEHOLDER") --gap 8 \
 		--out "$WORK_DIR/k9/stopped.json" >/dev/null 2>&1 &
 	local gap_pid=$!
 	sleep 3
@@ -492,7 +493,7 @@ check_k9() {
 	local after_stop="" status ok=0 i
 	for i in 1 2 3 4; do
 		status="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
-			--proxy "$proxy" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr -d '\n')"
+			-K <(printf 'proxy = "%s"\n' "$proxy") -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr -d '\n')"
 		after_stop="$after_stop $status"
 		[ "$status" = 200 ] && ok=$((ok + 1))
 	done
@@ -510,8 +511,8 @@ check_k9() {
 	start_stack --idle-seconds 60
 	stack_facts
 	release AIRLOCK_DEMO_TOKEN 30m
-	"$STANDS_BIN" load gap --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" --host s.airlock.test \
-		--ca "$AIRLOCK_CA_CERT_FILE" --header "$PLACEHOLDER" --gap 90 \
+	"$STANDS_BIN" load gap --proxy-file <(proxy_for "${AIRLOCK_PROXY_URL##*://}") --host s.airlock.test \
+		--ca "$AIRLOCK_CA_CERT_FILE" --header-file <(printf '%s\n' "$PLACEHOLDER") --gap 90 \
 		--out "$WORK_DIR/k9/control-gap.json" >/dev/null 2>&1
 	local control_second
 	control_second="$(jq -r '.second // ""' "$WORK_DIR/k9/control-gap.json")"

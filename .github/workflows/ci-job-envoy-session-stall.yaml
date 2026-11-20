@@ -33,7 +33,7 @@ jobs:
   envoy-session-stall:
     # x86_64: the pinned Oh My Pi the session rig's third part runs ships linux-x64 alone.
     runs-on: ubuntu-24.04
-    # The four steps after the moved-approval advice (two Dispatch proofs, the session-title test
+    # The four steps after the comment mention (two Dispatch proofs, the session-title test
     # and the version-pin test) took about five minutes in a Legion pod on top of the 20 the
     # other steps were held to. No runner has timed them yet: the first run measures them, and
     # this limit becomes that time with headroom.
@@ -125,6 +125,12 @@ jobs:
       # open approval request back from the person is the field the CLI reads and prints.
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
+      # target, which is what lets an agent write to the owner of a subject and leave the retry
+      # to Dispatch.
+      - name: Comment mention of the real CLI against a real Dispatch
+        run: bun test src/__tests__/comment-mention.live.test.ts
         working-directory: packages/envoy-client
       # A person's approval pins the bytes of the version they approved, and the real `dispatch`
       # CLI against a real Dispatch server of this tree prints the hash of that version's UTF-8

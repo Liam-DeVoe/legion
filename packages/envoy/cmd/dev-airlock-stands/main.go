@@ -17,7 +17,8 @@
 //	dev-airlock-stands front --listen <host:port> [--backend <host:port> ...] [--backends-file <path>]
 //	dev-airlock-stands enroll-pod --url <broker> --token-file <path> --pod-token-file <path>
 //	                   --pod-uid <uid> --thumbprint <thumbprint> [--service <name>] [--session <id>]
-//	dev-airlock-stands load <load|tunnel|upload|gap|upgrade> [--proxy <url>] [--host <name>] ...
+//	dev-airlock-stands load <load|tunnel|upload|gap|upgrade> [--proxy-file <path>] [--header-file <path>]
+//	                   [--host <name>] ...
 //
 // The stack and its check need three more small things of their own, and they are modes of this
 // one command rather than commands of their own so that it builds one binary: `front`, one TCP
