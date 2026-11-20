@@ -176,10 +176,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // spec block `e2e/review-seed.ts` points the decision at.
     //
     // The margin is a column beside the document at the wide layout's width and a bottom sheet
-    // below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
-    // acceptance"), so the card is on the screen at a desktop width and nowhere narrower. The
-    // phone row of this page waits on the dot alone, as the Inbox row waits on its heading
-    // alone.
+    // below it, shut until a button opens it (`web/src/features/margin/MarginSheet.tsx`), so the
+    // card is on the screen at a desktop width and nowhere narrower. The phone row of this page
+    // waits on the dot alone, as the Inbox row waits on its heading alone.
     ready: (page) => {
       const connected = page.getByRole("status", { name: "connected" });
       const wideEnoughForMargin = wideLayout(page);
@@ -430,7 +429,8 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
     // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
     // container, the only renderer whose pixels this comparison is ever against
-    // (`packages/dispatch/AGENTS.md`, the four steps for a route this layer gains).
+    // (`packages/dispatch/AGENTS.md`, "Accessibility and visual review": baselines come only
+    // from the pinned container).
     layers: bothLayers,
     name: "person",
     path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
