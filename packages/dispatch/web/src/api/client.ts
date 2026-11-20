@@ -1915,12 +1915,13 @@ export class DispatchApiClient {
     return this.read("/api/v1/credential-grants", {}, { approver: "me" });
   }
 
-  /** Revoke a grant as the signed-in viewer, its approver or its enrollment's operator, whatever
-   *  project it touches. The operator's revoke of an automatic grant also ends that session's other
-   *  automatic grants of those secrets and makes it ask before it gets them again. A grant whose
-   *  approver is anyone, revoked by a viewer named nowhere on it, is 404 when it belongs to a
-   *  private project the viewer may not see, and 503 `PROJECT_ACCESS_UNAVAILABLE` while the broker
-   *  cannot ask Dispatch. */
+  /** Revoke a grant as the signed-in viewer: its approver, or the person its enrollment acts for,
+   *  ends it whatever project it touches. The operator's revoke of an automatic grant also ends that
+   *  session's other automatic grants of those secrets and makes it ask before it gets them again.
+   *  A grant revoked by a viewer it does not name is 404 when it belongs to a private project the
+   *  viewer may not see, and 503 `PROJECT_ACCESS_UNAVAILABLE` while the broker cannot ask Dispatch;
+   *  of the grants the viewer may see, they end one whose approver is anyone, and any other is 403
+   *  `NOT_APPROVER`. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
   }

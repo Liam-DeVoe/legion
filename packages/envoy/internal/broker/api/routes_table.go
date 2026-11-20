@@ -397,9 +397,10 @@ func routes() []apiRoute {
 		// List the live grants of the named person's sessions, automatic or approved, and those the
 		// person approved, whatever project they touch. The person is the one the caller names.
 		{http.MethodGet, "/v1/grants", accountAuth(relaysDecisions, (*server).listGrantsForApprover)},
-		// End a grant as its approver or as its enrollment's operator, whatever project it touches
-		// and whether or not Dispatch answers, or, for a grant the model judge approved in anyone's
-		// stead, as anyone the grant's private project, if it has one, lets see it. The operator's
+		// End a grant as its approver or as the person its enrollment acts for (an unmapped person's
+		// pod acts for no one), whatever project it touches and whether or not Dispatch answers,
+		// or, for a grant the model judge approved in anyone's stead, as anyone the grant's private
+		// project, if it has one, lets see it. The operator's
 		// revoke also withholds the secrets the grant's request got automatically from that session,
 		// even when the grant had already ended: its other grants that got them automatically end
 		// too, and it asks before it gets them again. To anyone else, a grant id no grant has and a
