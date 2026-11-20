@@ -27,8 +27,8 @@ import (
 	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -671,7 +671,7 @@ func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 		// A deployment that admits all three: a broker, whose proofs name the deployment's own
 		// origin, and a service-account token issuer.
 		const origin = "http://dispatch.test"
-		broker := brokertokentest.NewStubBroker(t)
+		broker := ciphertokentest.NewStubBroker(t)
 		accountToken := filepath.Join(t.TempDir(), "account-token")
 		if err := os.WriteFile(accountToken, []byte("an-account-token-of-dispatch"), 0o600); err != nil {
 			t.Fatal(err)
@@ -686,11 +686,11 @@ func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 			"DISPATCH_OIDC_AUDIENCE":                    "dispatch",
 		})
 		other.send(t, http.MethodGet, "/api/v1/me/going/settings", "", asUser("alice"))
-		caller := brokertokentest.NewCaller(t)
+		caller := ciphertokentest.NewCaller(t)
 		const brokerToken = "a-person-scoped-broker-token"
-		broker.Says(brokerToken, brokertoken.Introspection{
-			Active: true, Session: "ses_b1c2d3e4f5a6", Person: "alice", ProjectScope: brokertoken.ProjectScopePerson,
-			Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: caller.JKT(),
+		broker.Says(brokerToken, ciphertoken.Introspection{
+			Active: true, Session: "ses_b1c2d3e4f5a6", Person: "alice", ProjectScope: ciphertoken.ProjectScopePerson,
+			Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: caller.JKT(),
 		})
 		for _, refused := range []struct {
 			name   string

@@ -19,7 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -399,7 +399,7 @@ func TestTheGrantResolvesAsTheRequestWould(t *testing.T) {
 		broker := newBrokerCaller(t)
 		const brokerToken = "a-person-scoped-broker-token"
 		answer := liveNamedToken(broker.jkt)
-		answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
+		answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, nil
 		rig.brokered.broker.Says(brokerToken, answer)
 		for _, refused := range []struct {
 			name    string
