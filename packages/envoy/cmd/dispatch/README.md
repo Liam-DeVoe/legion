@@ -31,54 +31,8 @@ Each item below names a variable, then its purpose.
   The settlements and compaction pools' connections carry none, since their folds' read-only transactions may sit idle for longer, and the live, rooms, text-trees, horizon, leases, registry, listen and health pools carry none, since they take nothing a request's write waits on.
   The 70 seconds is computed rather than chosen: the longest a request transaction sits idle by design is one cold read of a document's stored history (60 seconds, `store.ColdReadBound`), which a check-result write waits out with its transaction open under two issue row locks (`api/results.go` into `docs/read_cache.go`), plus the 5 seconds the rollback that ends it is bounded by (`store.RollbackTimeout`) and a 5-second margin.
   Raising the cold read's bound raises this one with it, since the document service's own bound is that constant.
-  A request-pool connection also carries `lock_timeout` of 10 seconds, the write lock bound (`store.lockWait`, the commit's own bound), and each request-pool transaction sets the same bound for itself, `set local lock_timeout`, in the message that carries its `BEGIN` (`store.Pool.Begin`), so every lock a request waits for - a row, an advisory lock, a lock no bounded wait of its own covers - is refused once it has waited that long: Postgres cancels the statement with `lock_not_available` (`55P03`), the transaction rolls back, and the request is answered `503 DATABASE_BUSY` with `Retry-After` (`store.IsPoolBusy`).
-  An admitted write has no deadline of its own, so without the bound a write that met a held lock kept its connection and its admission place for as long as the lock's holder held the lock.
-  The bound is set in both places on purpose.
-  The connection's covers a statement run outside a transaction.
-  The transaction's holds on whatever server connection the transaction runs on, also behind a pooler that hands each transaction a different server connection.
-  Sending it with the `BEGIN` adds no round trip: pgx sends an argument-less statement as one simple-protocol message, which may carry both statements.
-  The bounded waits that set a bound of their own keep and restore the transaction's value around their lock, inside a savepoint, so they still refuse without aborting the transaction.
-  The connection's bound is a startup parameter, so `RESET ALL` and `DISCARD ALL` give it back.
-  A new request-pool connection whose session does not carry it, such as one a pooler opened after dropping the startup parameter, is refused at connect with an error that names the setting.
-  So a deployment behind a pooler that does not pass `lock_timeout` through as a startup parameter, a transaction-mode pooler in particular, must set it on the database role, `ALTER ROLE <role> SET lock_timeout = '10s'` (or less), so that a statement outside a transaction is bounded and the connection is accepted.
-  A deployment that reaches Postgres directly, or through a proxy that forwards the connection as it is, needs nothing more.
-  Two request-pool transactions opt out, the boot's dashboard publish and prune: each waits for its locks until the publish's own 60-second deadline instead (`store.WaitForLocksUntilDeadline`).
-  A publish of the same build by another process holds the build's row, and a publish of another build holds an asset path both builds store, across its whole upload, one statement per file, and a prune waits for every publish in flight.
-  The migration runner, which also runs on the request pool, sets its own 5-second bound on every migration (`pgmigrate.LockTimeout`).
-  Every other pool's connection asks for no bound, `lock_timeout` of `0`, as a startup parameter (`store.configurePool`), and Postgres ranks a client's startup parameter above a setting of the database role or of the database, so those pools wait for a lock as they did before the request pool had a bound, and a connection string's own `lock_timeout` is replaced on every pool.
-  Behind a pooler that drops startup parameters the `0` is dropped too, and the role's setting then reaches every pool, because every pool connects as the one login `DATABASE_URL` names: a lock wait on any of them is refused `55P03` once it has waited as long as the setting says.
-  This is what each pool's work does with such a refusal, at the 10 seconds above (a shorter setting can also end first the waits that have a bound of their own):
-  - settlements: a settlement that stops short on the refusal has written nothing into its room, and `store.Unserved` counts the refusal (`store.IsPoolBusy`), so the settlement ends as one the database did not serve, logged at WARN, and the settlement resumption settles the document from its pending-settlement row, failing no room.
-    A shutdown's settlement waits for the document's lock 100 ms at most, under its own bound, and the sweep of a room's unrecorded marks after a settlement logs the error and leaves the marks to the next settlement's sweep.
-  - compaction: a check or a compaction the refusal ends is logged at WARN, and the compaction queue tries the room again later with backoff, as it does a room whose lock it found held (a compaction takes the document's lock without waiting).
-    The hourly sweep hands such a room to the queue, and a sweep whose list of documents the refusal ends logs an ERROR and leaves them to the next hour's sweep.
-  - background: each loop logs the failed statement and goes on as it does after any failed statement:
-    - the embedding queue scans again at its next wake or timer;
-    - the embeddings `project_key` fill tries again five minutes later;
-    - the term-statistics refresh goes on to the next project, and a failed list of projects waits for the next pass, ten minutes later;
-    - the task-progress reconciliation tries a failed batch again a few times and leaves what is left to the next start;
-    - the reference-excerpt reconciliation defers a document it could not read or record, and tries again after its back-off;
-    - the edit-notice sweep runs again after its minimum gap, and a notice it could not send stays due;
-    - the block-index reconciliation skips an item it could not index, which stays owed to the next tick;
-    - the issue-ask repair keeps an issue it could not repair for its next interval;
-    - the settlement resumption's query, the schema-admission re-check, the Legion sampler, the server registry's prune, the fleet build announcer, the webhook redelivery sweep, the CI reconcile pass, the architecture importer's ticker and the delivery reconcile each run again at their next pass;
-    - the delivery intake acknowledges an event whose handling failed, which the delivery reconcile's next pass covers, and hands back for redelivery an envelope whose pull request head was not stored; the job intake leaves a run's jobs to the read its run's end makes;
-    - the GitHub App client sends a request whose read of the shared rate limits failed, and logs a limit it could not record;
-    - the record of GitHub reads keeps the attempt before the one it could not record, which `GET /healthz` then names;
-    - the comment mention sender leaves an attempt it could not send pending, for the delivery sweep once its claim lapses, and the delivery sweep tries a delivery it could not resume at its next sweep;
-    - the one retry of a related-item check's record, the store of the listener's answer for an issue's routes and the store of the display trees a read built store nothing.
-  - outbox: the publisher's batch that the refusal ends records nothing, so its events stay unpublished, and the scan is tried again a second later (`retry.BaseDelay`); a claim or record of the mentions' fallback copies that it ends is logged and counts as a failed scan, tried again the same second later.
-    The publisher hold's renewal waits no longer than its own renewal interval, one second, and a take of the hold that the refusal ends is logged and tried again a second later.
-  - room appends: a room's batch takes the document's advisory lock with no bound of its own, so the refusal ends the batch, which stores nothing, and fails the room, as every statement the database refuses there does.
-  - rooms: a room load reads only, so it waits only behind a table lock that a migration or other DDL holds; the refusal fails the load, a document socket waiting on it is refused as a call the database did not serve, and a settlement's warm-up load ends the settlement as above.
-  - live: the live-update readers read only, as room loads do; the event stream relay and the delivery hub log a failed read and read again, and an events subscription's replay returns the error to the subscription it serves.
-  - listen: the listening connections wait for no lock, since `LISTEN` takes none that `lock_timeout` bounds, and the room sync's `NOTIFY` sender, whose commit is the one statement there that waits for a lock (Postgres's notification queue lock), gives up one batch's sends at 2 seconds first (`docs.roomSyncSendTimeout`).
-  - leases: a lease is taken with `pg_try_advisory_lock`, which never waits, every lease statement is bounded at 5 seconds (`duty.LeaseCall`), and a delivery intake's take of its hold and each renewal of it at the hold's 5-second renewal interval, so those bounds end those waits first; an intake's record of its token that the refusal ends is logged, and the intake stops delivering and takes its durable over again on its next attempt.
-  - horizon: an observation reads only, and one that fails is logged while the live readers wait for the next; the write of the proven horizon is bounded at 2 seconds, and a failed one is logged and leaves the stored horizon as it was.
-  - text-trees: the display tree fill logs the pass the refusal ends, and its next pass goes on from what is stored.
-  - registry: a heartbeat is bounded at 2 seconds, and a failed one is logged and the next tick tries again; the boot's registration sets `lock_timeout` to `0` for its own transaction, `set local` in the message that carries its `BEGIN` (`store.RawPool.BeginWaitingForLocks`), so it waits for the registry's lock (`pg_advisory_xact_lock`) until the lock is free, as it does with no role setting, and the setting cannot fail the boot there.
-  - health: the probe's read is bounded at 2 seconds (`store.healthProbeTimeout`), so its bound ends the wait first, and `/healthz` reports the database unreachable.
-    The boot's one probe of the database (`store.Pool.HealthyWithin`) reads in a read-only transaction that sets `lock_timeout` to `0` in the message that carries its `BEGIN`, so it waits past the role's setting, up to its own 30 seconds (`bootProbeTimeout`), as it does with no role setting.
+  A request-pool connection also carries `lock_timeout` of 10 seconds, and every other pool's connection `0`:
+  *Lock waits on the database*, below, says why and what each pool's work does when that bound refuses a wait.
 
 - `DISPATCH_AGENT_TOKEN`
 
@@ -351,6 +305,84 @@ When no GitHub App credentials are configured, the server still starts, but the 
 For a Google Cloud deployment, use `envoy-infra:gcp:Dispatch` from `packages/envoy/infra`.
 It supplies the private Cloud SQL connection, the tailnet entry point, and the pod environment this binary needs;
 see that component's README for its inputs, the IAM grant it writes and the one the consumer writes.
+
+## Lock waits on the database
+
+A request-pool connection carries `lock_timeout` of 10 seconds, the write lock bound (`store.lockWait`, the commit's own bound), and each request-pool transaction sets the same bound for itself, `set local lock_timeout`, in the message that carries its `BEGIN` (`store.Pool.Begin`), so every lock a request waits for - a row, an advisory lock, a lock no bounded wait of its own covers - is refused once it has waited that long: Postgres cancels the statement with `lock_not_available` (`55P03`), the transaction rolls back, and the request is answered `503 DATABASE_BUSY` with `Retry-After` (`store.IsPoolBusy`).
+An admitted write has no deadline of its own, so without the bound a write that met a held lock kept its connection and its admission place for as long as the lock's holder held the lock.
+The bound is set in both places on purpose.
+The connection's covers a statement run outside a transaction.
+The transaction's holds on whatever server connection the transaction runs on, also behind a pooler that hands each transaction a different server connection.
+Sending it with the `BEGIN` adds no round trip: pgx sends an argument-less statement as one simple-protocol message, which may carry both statements.
+The bounded waits that set a bound of their own keep and restore the transaction's value around their lock, inside a savepoint, so they still refuse without aborting the transaction.
+The connection's bound is a startup parameter, so `RESET ALL` and `DISCARD ALL` give it back.
+A new request-pool connection whose session does not carry it, such as one a pooler opened after dropping the startup parameter, is refused at connect with an error that names the setting.
+So a deployment behind a pooler that does not pass `lock_timeout` through as a startup parameter, a transaction-mode pooler in particular, must set it on the database role, `ALTER ROLE <role> SET lock_timeout = '10s'` (or less), so that a statement outside a transaction is bounded and the connection is accepted.
+A deployment that reaches Postgres directly, or through a proxy that forwards the connection as it is, needs nothing more.
+Two request-pool transactions opt out, the boot's dashboard publish and prune: each waits for its locks until the publish's own 60-second deadline instead (`store.WaitForLocksUntilDeadline`).
+A publish of the same build by another process holds the build's row, and a publish of another build holds an asset path both builds store, across its whole upload, one statement per file, and a prune waits for every publish in flight.
+The migration runner, which also runs on the request pool, sets its own 5-second bound on every migration (`pgmigrate.LockTimeout`).
+Every other pool's connection asks for no bound, `lock_timeout` of `0`, as a startup parameter (`store.configurePool`), and Postgres ranks a client's startup parameter above a setting of the database role or of the database, so those pools wait for a lock as they did before the request pool had a bound, and a connection string's own `lock_timeout` is replaced on every pool.
+Behind a pooler that drops startup parameters the `0` is dropped too, and the role's setting then reaches every pool, because every pool connects as the one login `DATABASE_URL` names: a lock wait on any of them is refused `55P03` once it has waited as long as the setting says.
+This is what each pool's work does with such a refusal, at the 10 seconds above (a shorter setting can also end first the waits that have a bound of their own):
+
+- settlements: a settlement that stops short on the refusal has written nothing into its room, and `store.Unserved` counts the refusal (`store.IsPoolBusy`), so the settlement ends as one the database did not serve, logged at WARN, and the settlement resumption settles the document from its pending-settlement row, failing no room.
+  A shutdown's settlement waits for the document's lock 100 ms at most, under its own bound, and the sweep of a room's unrecorded marks after a settlement logs the error and leaves the marks to the next settlement's sweep.
+
+- compaction: a check or a compaction the refusal ends is logged at WARN, and the compaction queue tries the room again later with backoff, as it does a room whose lock it found held (a compaction takes the document's lock without waiting).
+  The hourly sweep hands such a room to the queue, and a sweep whose list of documents the refusal ends logs an ERROR and leaves them to the next hour's sweep.
+
+- background: each loop logs the failed statement and goes on as it does after any failed statement:
+
+  - the embedding queue scans again at its next wake or timer;
+
+  - the embeddings `project_key` fill tries again five minutes later;
+
+  - the term-statistics refresh goes on to the next project, and a failed list of projects waits for the next pass, ten minutes later;
+
+  - the task-progress reconciliation tries a failed batch again a few times and leaves what is left to the next start;
+
+  - the reference-excerpt reconciliation defers a document it could not read or record, and tries again after its back-off;
+
+  - the edit-notice sweep runs again after its minimum gap, and a notice it could not send stays due;
+
+  - the block-index reconciliation skips an item it could not index, which stays owed to the next tick;
+
+  - the issue-ask repair keeps an issue it could not repair for its next interval;
+
+  - the settlement resumption's query, the schema-admission re-check, the Legion sampler, the server registry's prune, the fleet build announcer, the webhook redelivery sweep, the CI reconcile pass, the architecture importer's ticker and the delivery reconcile each run again at their next pass;
+
+  - the delivery intake acknowledges an event whose handling failed, which the delivery reconcile's next pass covers, and hands back for redelivery an envelope whose pull request head was not stored; the job intake leaves a run's jobs to the read its run's end makes;
+
+  - the GitHub App client sends a request whose read of the shared rate limits failed, and logs a limit it could not record;
+
+  - the record of GitHub reads keeps the attempt before the one it could not record, which `GET /healthz` then names;
+
+  - the comment mention sender leaves an attempt it could not send pending, for the delivery sweep once its claim lapses, and the delivery sweep tries a delivery it could not resume at its next sweep;
+
+  - the one retry of a related-item check's record, the store of the listener's answer for an issue's routes and the store of the display trees a read built store nothing.
+
+- outbox: the publisher's batch that the refusal ends records nothing, so its events stay unpublished, and the scan is tried again a second later (`retry.BaseDelay`); a claim or record of the mentions' fallback copies that it ends is logged and counts as a failed scan, tried again the same second later.
+  The publisher hold's renewal waits no longer than its own renewal interval, one second, and a take of the hold that the refusal ends is logged and tried again a second later.
+
+- room appends: a room's batch takes the document's advisory lock with no bound of its own, so the refusal ends the batch, which stores nothing, and fails the room, as every statement the database refuses there does.
+
+- rooms: a room load reads only, so it waits only behind a table lock that a migration or other DDL holds; the refusal fails the load, a document socket waiting on it is refused as a call the database did not serve, and a settlement's warm-up load ends the settlement as above.
+
+- live: the live-update readers read only, as room loads do; the event stream relay and the delivery hub log a failed read and read again, and an events subscription's replay returns the error to the subscription it serves.
+
+- listen: the listening connections wait for no lock, since `LISTEN` takes none that `lock_timeout` bounds, and the room sync's `NOTIFY` sender, whose commit is the one statement there that waits for a lock (Postgres's notification queue lock), gives up one batch's sends at 2 seconds first (`docs.roomSyncSendTimeout`).
+
+- leases: a lease is taken with `pg_try_advisory_lock`, which never waits, every lease statement is bounded at 5 seconds (`duty.LeaseCall`), and a delivery intake's take of its hold and each renewal of it at the hold's 5-second renewal interval, so those bounds end those waits first; an intake's record of its token that the refusal ends is logged, and the intake stops delivering and takes its durable over again on its next attempt.
+
+- horizon: an observation reads only, and one that fails is logged while the live readers wait for the next; the write of the proven horizon is bounded at 2 seconds, and a failed one is logged and leaves the stored horizon as it was.
+
+- text-trees: the display tree fill logs the pass the refusal ends, and its next pass goes on from what is stored.
+
+- registry: a heartbeat is bounded at 2 seconds, and a failed one is logged and the next tick tries again; the boot's registration sets `lock_timeout` to `0` for its own transaction, `set local` in the message that carries its `BEGIN` (`store.RawPool.BeginWaitingForLocks`), so it waits for the registry's lock (`pg_advisory_xact_lock`) until the lock is free, as it does with no role setting, and the setting cannot fail the boot there.
+
+- health: the probe's read is bounded at 2 seconds (`store.healthProbeTimeout`), so its bound ends the wait first, and `/healthz` reports the database unreachable.
+  The boot's one probe of the database (`store.Pool.HealthyWithin`) reads in a read-only transaction that sets `lock_timeout` to `0` in the message that carries its `BEGIN`, so it waits past the role's setting, up to its own 30 seconds (`bootProbeTimeout`), as it does with no role setting.
 
 ## Webhook redelivery
 
