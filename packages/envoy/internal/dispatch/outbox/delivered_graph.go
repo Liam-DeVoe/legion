@@ -29,13 +29,15 @@ type graphWrite struct {
 // resolvedRole is a role of a batch as its resolution left it: the event that first routed to it
 // in the order the batch reads its events, or, for a role no destination of the batch names, the
 // event that first named it in its payload (addressedRoles), which is the cause the store records;
-// the session holding it, empty for a role read unclaimed or whose holder is gone; and whether the
-// resolution reached the claim at all, which a role only a payload names never does. A claim that
-// could not be read states nothing, and the role keeps the holder the store holds.
+// the session holding it, empty for a role read unclaimed or whose holder is gone; whether the
+// resolution reached the claim at all, which a role only a payload names never does; and when the
+// publisher read that holder (roleForward.resolvedAt), which dates the claim. A claim that could
+// not be read states nothing, and the role keeps the holder the store holds.
 type resolvedRole struct {
-	event    int64
-	holder   string
-	resolved bool
+	event      int64
+	holder     string
+	resolved   bool
+	resolvedAt time.Time
 }
 
 // deliveredGraph is what the settled events of one record state about the people and agents of
@@ -95,6 +97,12 @@ type resolvedRole struct {
 // role a comment's mention names on an issue routed elsewhere. Nothing read such a role's claim,
 // so it is written with its page and the page's part_of and no held_by; a role a destination of
 // the batch resolved keeps that resolution.
+//
+// at dates every row the record states but two: a role's held_by and its holder's part_of the
+// role are dated by when the batch resolved the role's holder (resolvedRole.resolvedAt), because
+// the store orders those claims by that time (graphstore's claimArms). A record is written once
+// its owner's sends are answered, and owners publish independently, so the order records land in
+// is neither the order of their events nor the order their resolutions were made in.
 func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.Time) graphWrite {
 	roles := map[string]resolvedRole{}
 	var roleOrder []string
@@ -120,7 +128,7 @@ func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.T
 				continue
 			}
 			holder, resolved := resolvedHolder(dest.forward)
-			roles[dest.role] = resolvedRole{event: cause, holder: holder, resolved: resolved}
+			roles[dest.role] = resolvedRole{event: cause, holder: holder, resolved: resolved, resolvedAt: dest.forward.resolvedAt}
 			roleOrder = append(roleOrder, dest.role)
 		}
 		kind, id, delivers := deliveredItem(event.event)
@@ -167,7 +175,7 @@ func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.T
 		write.claims = append(write.claims, graphstore.Claim{
 			FromKind: graphstore.KindRole, FromID: role, Kind: graphstore.TupleHeldBy,
 			ToKind: toKind, ToID: claim.holder,
-			At: at, Who: graphWriter, SourceEvent: claim.event,
+			At: claim.resolvedAt, Who: graphWriter, SourceEvent: claim.event,
 		})
 		// A session holds one role at a time, so the first role of this batch that resolved to
 		// it is the one it is part of; a second would state two parents from one read. The
@@ -181,7 +189,7 @@ func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.T
 		}
 		held[claim.holder] = struct{}{}
 		write.claims = append(write.claims,
-			partOf(graphstore.KindSession, claim.holder, graphstore.KindRole, role, at, claim.event))
+			partOf(graphstore.KindSession, claim.holder, graphstore.KindRole, role, claim.resolvedAt, claim.event))
 	}
 	for _, session := range sessionOrder {
 		cause := sessions[session]
