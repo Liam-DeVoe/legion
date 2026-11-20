@@ -476,6 +476,18 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
             {isPrivate ? "Private" : "Public"}
           </p>
         </div>
+        {/* A project private before its full switch is hidden as any private project, while its
+            own namespace, stores and message gate come only with its full switch; Dispatch's
+            answer says so, and the panel says it beside the visibility. */}
+        {isPrivate && access.data.private_before_full_switch === true ? (
+          <p
+            className={`mt-1 text-sm font-medium ${textPrimaryOnCanvas}`}
+            data-testid="access-before-full-switch"
+          >
+            This project is private before its full switch: Dispatch hides it as any private
+            project, while its own namespace, stores and message gate come with its full switch.
+          </p>
+        ) : null}
         <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
           Every full member can see a public project. A private project is seen only by its owner
           and the people and groups below. A restricted member, who signs in from outside the
