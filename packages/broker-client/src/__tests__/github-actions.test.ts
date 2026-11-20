@@ -7,6 +7,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   ACTIONS_TOKEN_URL_VAR,
@@ -17,7 +18,7 @@ import { SUBJECT_TOKEN_TYPE_GITHUB } from "../wire";
 
 const makeDirectory = temporaryDirectories("broker-client-github-actions");
 
-const REQUEST_TOKEN = "runner-request-bearer";
+const REQUEST_TOKEN = fixtureSecret("actions");
 
 const servers: { stop: (closeActive?: boolean) => void }[] = [];
 afterAll(() => {
@@ -53,7 +54,8 @@ function stubRunner(answer: (n: number) => Response): { url: string; asked: Runn
 }
 
 test("a job's token is asked of the runner's endpoint with its bearer and the audience, at every read", async () => {
-  const runner = stubRunner((n) => Response.json({ count: 1, value: `job.oidc.token.${n}` }));
+  const tokens = [fixtureSecret("actions"), fixtureSecret("actions")] as const;
+  const runner = stubRunner((n) => Response.json({ count: 1, value: tokens[n - 1] }));
   const source = githubActionsIdentity({
     requestUrl: runner.url,
     requestToken: REQUEST_TOKEN,
@@ -61,11 +63,11 @@ test("a job's token is asked of the runner's endpoint with its bearer and the au
   });
 
   expect(await source.read()).toEqual({
-    token: "job.oidc.token.1",
+    token: tokens[0],
     tokenType: SUBJECT_TOKEN_TYPE_GITHUB,
   });
   // The broker takes a run's token once, so each trade asks the runner for a new one.
-  expect((await source.read()).token).toBe("job.oidc.token.2");
+  expect((await source.read()).token).toBe(tokens[1]);
   const asked = {
     path: "/_apis/idtoken",
     query: { "api-version": "2.0", audience: "example-audience" },
@@ -140,7 +142,7 @@ test("a runner URL that is no URL is an error naming the variable, and asks noth
     audience: "example-audience",
     fetchImpl: (async (input: string | URL | Request) => {
       asked.push(input);
-      return Response.json({ value: "a.token" });
+      return Response.json({ value: fixtureSecret("actions") });
     }) as typeof fetch,
   });
   const refusal = await source.read().then(
@@ -155,14 +157,16 @@ test("a runner URL that is no URL is an error naming the variable, and asks noth
 
 test("a job's token file is read as the workflow run's token at every read, and an empty one is refused", async () => {
   const path = join(makeDirectory(), "run-token");
-  await writeFile(path, "first.run.token\n", { mode: 0o600 });
+  const first = fixtureSecret("actions");
+  const second = fixtureSecret("actions");
+  await writeFile(path, `${first}\n`, { mode: 0o600 });
   const source = workflowRunTokenFile(path);
   expect(await source.read()).toEqual({
-    token: "first.run.token",
+    token: first,
     tokenType: SUBJECT_TOKEN_TYPE_GITHUB,
   });
-  await writeFile(path, "second.run.token\n");
-  expect((await source.read()).token).toBe("second.run.token");
+  await writeFile(path, `${second}\n`);
+  expect((await source.read()).token).toBe(second);
   expect(source.describe()).toContain(path);
   await writeFile(path, "  \n");
   expect(source.read()).rejects.toThrow(`${path} is empty`);
