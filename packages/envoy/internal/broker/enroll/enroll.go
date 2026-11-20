@@ -105,16 +105,18 @@ var (
 	ErrSessionHeld = errors.New("another identity holds this session name")
 	// ErrKeyBindsReadToken refuses a launcher credential minted or moved onto a key a live read
 	// token is bound to (keyBindsReadToken): a key that signs launcher proofs is bound to no
-	// read token, and a read token's key signs no launcher proof. Nothing is written.
+	// read token, and a read token's key signs no launcher proof. Nothing is written. KeyHeld does
+	// not report it: each caller answers it with a refusal of its own, which names the read token
+	// and the cure, a new key.
 	ErrKeyBindsReadToken = errors.New("a live read token is bound to this key, and a key that signs launcher proofs binds no read token")
 )
 
-// KeyHeld reports whether err refuses a launcher credential's key because something else holds
-// it: another live credential (a unique violation, store.IsUniqueViolation) or a live read token
-// (ErrKeyBindsReadToken). Each caller answers both with the one refusal it gives a key that is
-// taken.
+// KeyHeld reports whether err refuses a launcher credential's key because another live
+// credential holds it (a unique violation, store.IsUniqueViolation). A key a live read token is
+// bound to is ErrKeyBindsReadToken, which KeyHeld leaves to the caller: the two refusals name
+// different holders and different cures.
 func KeyHeld(err error) bool {
-	return store.IsUniqueViolation(err) || errors.Is(err, ErrKeyBindsReadToken)
+	return store.IsUniqueViolation(err)
 }
 
 type Credential struct {
@@ -357,10 +359,10 @@ func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Quer
 // reaches them is refused: a device login's approval, the token login route, a Google machine's
 // trade and a person's.
 //
-// The refusal is ErrKeyBindsReadToken, naming the key. Each caller answers it with the refusal it
-// already gives a key another live credential holds: machine.ErrKeyHoldsLiveCredential (409
-// KEY_HOLDS_LIVE_CREDENTIAL) for an approval and a token login, and oauth.ErrMachineKeyTaken
-// (invalid_grant) for a trade.
+// The refusal is ErrKeyBindsReadToken, naming the key. Each caller answers it with a refusal of
+// its own beside the one it gives a key another live credential holds (KeyHeld):
+// machine.ErrKeyBindsReadToken (409 KEY_BINDS_READ_TOKEN) for an approval and a token login, and
+// oauth.ErrMachineKeyBindsReadToken (invalid_grant, with a hint of its own) for a trade.
 func keyBindsReadToken(ctx context.Context, db oauthstore.Querier, thumbprint string) error {
 	held, err := oauthstore.KeyHoldsReadToken(ctx, db, thumbprint)
 	if err != nil {

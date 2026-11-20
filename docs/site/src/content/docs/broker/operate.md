@@ -715,9 +715,11 @@ A person's read trade whose sign-in holds no launcher credential yet is refused
 `400 invalid_grant` too, naming the cure: one ordinary trade of the sign-in, which `agent-secrets`
 makes and which renews the credential. A driver that renews a read token for a copy elsewhere
 keeps the sign-in trading ordinarily as well. The other side of the key rule is refused where a
-key another live credential holds is refused: a device login's approval and a token login whose
-key a live read token is bound to are `409 KEY_HOLDS_LIVE_CREDENTIAL`, and a Google machine's or a
-person's trade is `400 invalid_grant`.
+key another live credential holds is refused, with a code or a hint of its own that names the read
+token and the cure, a new key: a device login's approval and a token login whose key a live read
+token is bound to are `409 KEY_BINDS_READ_TOKEN`, beside the `409 KEY_HOLDS_LIVE_CREDENTIAL` of a
+key another live credential holds, and a Google machine's or a person's trade is
+`400 invalid_grant`.
 
 The broker keeps a token narrowed to reading in a table of its own, which migration 0040 adds
 (`oauth_narrowed_access_tokens`), and decides at each introspection whether it is still live: its

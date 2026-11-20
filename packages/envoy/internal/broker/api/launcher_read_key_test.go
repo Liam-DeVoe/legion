@@ -78,7 +78,7 @@ func (ts *testServer) launcherState(t *testing.T) string {
 // credentials, their sign-in's on one box, their second sign-in's on another, and a machine login
 // they approved, and a read token traded with a holder proof is bound to the holder's key. The
 // key rule keeps that key off every launcher credential: a token login with it is answered 409
-// KEY_HOLDS_LIVE_CREDENTIAL and leaves no credential on the key. So a launcher proof signed with
+// KEY_BINDS_READ_TOKEN and leaves no credential on the key. So a launcher proof signed with
 // that key and naming each credential's lid is answered 401 LAUNCHER_INVALID on POST
 // /v1/enrollments, DELETE /v1/enrollments/{id}, POST /v1/operator/machines/{id}/revoke and POST
 // /v1/operator/grants/{id}/revoke, and changes nothing: a launcher proof authenticates only with
@@ -114,8 +114,8 @@ func TestALaunchersProofSignedWithAReadTokensKeyIsRefused(t *testing.T) {
 		t.Fatalf("the read token is bound to %s, want the holder's key %s", bound, keyThumbprint(t, holder))
 	}
 	if status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), ts.daemonRequest(t, holder)); status != http.StatusConflict ||
-		decode[wireError](t, body).Code != "KEY_HOLDS_LIVE_CREDENTIAL" {
-		t.Fatalf("a token login with the read token's key = %d %s, want 409 KEY_HOLDS_LIVE_CREDENTIAL", status, body)
+		decode[wireError](t, body).Code != "KEY_BINDS_READ_TOKEN" {
+		t.Fatalf("a token login with the read token's key = %d %s, want 409 KEY_BINDS_READ_TOKEN", status, body)
 	}
 	var onHolder int
 	if err := ts.Store.Pool.QueryRow(ctx, `select count(*) from launcher_credentials where key_thumbprint = $1`, keyThumbprint(t, holder)).Scan(&onHolder); err != nil {

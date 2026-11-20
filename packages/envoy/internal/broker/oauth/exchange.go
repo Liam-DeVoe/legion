@@ -1186,7 +1186,8 @@ func personDeclinesNothing() error {
 //
 // A key another live credential holds is invalid_grant rather than a server error: the broker's
 // state refuses it and the machine fixes it by making a key of its own, which is what every
-// machine does.
+// machine does. A key a live read token is bound to is invalid_grant too, with a hint of its own
+// (keyBindsReadTokenHint).
 func (p *Provider) machineCredential(ctx context.Context, r *http.Request, session *oauthstore.ExchangeSession) (string, MachineCredential, error) {
 	subjectToken := session.GetSubjectToken()
 	identity := exchange.ReadGoogleIdentity(subjectToken)
@@ -1212,6 +1213,9 @@ func (p *Provider) machineCredential(ctx context.Context, r *http.Request, sessi
 		if errors.Is(err, ErrMachineKeyTaken) {
 			return "", MachineCredential{}, oauth2.ErrInvalidGrant.WithHint("Another live machine login holds the key this proof was signed with. A machine makes a key of its own.").WithWrap(err).WithDebugError(err)
 		}
+		if errors.Is(err, ErrMachineKeyBindsReadToken) {
+			return "", MachineCredential{}, oauth2.ErrInvalidGrant.WithHint(keyBindsReadTokenHint).WithWrap(err).WithDebugError(err)
+		}
 		return "", MachineCredential{}, oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
 	if session.Extra == nil {
@@ -1223,6 +1227,11 @@ func (p *Provider) machineCredential(ctx context.Context, r *http.Request, sessi
 	session.Extra[oauthwire.ExtraCredentialID] = id
 	return id, cred, nil
 }
+
+// keyBindsReadTokenHint is the hint of a machine's trade and a person's refused because a live
+// read token is bound to the key the trade's proof was signed with (ErrMachineKeyBindsReadToken):
+// a read token's key signs no launcher proof, so the cure is a new key.
+const keyBindsReadTokenHint = "A live read token is bound to the key this proof was signed with. Make a new key."
 
 // personSignIn records the sign-in the person's trade belongs to
 // (ExchangeConfig.PersonSignIns), in the exchange's own transaction, and refuses a trade whose
@@ -1357,6 +1366,9 @@ func (p *Provider) personCredential(ctx context.Context, r *http.Request, sessio
 	if err != nil {
 		if errors.Is(err, ErrMachineKeyTaken) {
 			return "", MachineCredential{}, oauth2.ErrInvalidGrant.WithHint("Another live machine login holds the key this proof was signed with. A sign-in makes a box key of its own.").WithWrap(err).WithDebugError(err)
+		}
+		if errors.Is(err, ErrMachineKeyBindsReadToken) {
+			return "", MachineCredential{}, oauth2.ErrInvalidGrant.WithHint(keyBindsReadTokenHint).WithWrap(err).WithDebugError(err)
 		}
 		return "", MachineCredential{}, oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}

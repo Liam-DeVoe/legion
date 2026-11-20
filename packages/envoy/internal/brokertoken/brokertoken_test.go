@@ -520,15 +520,15 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 // narrowed word narrows, with the answer's cut. Without the switch, and to SessionCaller, each is
 // ErrNotASession, as a build that predates the words refuses it.
 //
-// The switch widens the rule by nothing else. With it, these are ErrNotASession too: read person
-// on a narrowed word that may not hold person, approve or machine beside read, the two words in
-// the other order or read named twice, no scope at all, a read-none token naming a person or a
-// project, a read-named token whose projects break the named rules, a cut on a token that writes,
-// a cut on the read entry's token (the word none, which no trade that asks for read and a cut
-// carries), and a cut that is not an RFC 3339 time. The controls are the golden machine login's
-// answer with a cut, which the switch accepts with its cut, and the named token with no cut,
-// which both verifiers accept unmarked, so each refusal of a cut is the cut's. Each row goes
-// through Verify and through Live.
+// The switch widens the rule by nothing else. With it, these are ErrNotASession too: read person,
+// in either order, on a narrowed word that may not hold person, approve or machine beside read,
+// read named twice, no scope at all, a read-none token naming a person or a project, a read-named
+// token whose projects break the named rules, a cut on a token that writes, a cut on the read
+// entry's token (the word none, which no trade that asks for read and a cut carries), and a cut
+// that is not an RFC 3339 time. The controls are the golden machine login's answer with a cut,
+// which the switch accepts with its cut, and the named token with no cut, which both verifiers
+// accept unmarked, so each refusal of a cut is the cut's. Each row goes through Verify and through
+// Live.
 func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T) {
 	caller := newSigner(t)
 	const session = "ses_narrowed"
@@ -599,7 +599,7 @@ func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T)
 		row{name: "approve beside read", answer: scoped("pod-entry", "read approve")},
 		row{name: "approve beside read person", answer: scoped("machine-login", "read person approve")},
 		row{name: "machine beside read", answer: scoped("machine-login", "read machine")},
-		row{name: "person before read", answer: scoped("machine-login", "person read")},
+		row{name: "person before read on read-named", answer: scoped("pod-entry", "person read")},
 		row{name: "read named twice", answer: scoped("read-entry", "read read")},
 		row{name: "a narrowed word with no scope", answer: scoped("pod-entry", "")},
 		row{name: "read-none naming a person", answer: changed("read-entry", func(answer *brokertoken.Introspection) {
@@ -675,6 +675,74 @@ func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T)
 			got, err := brokertoken.SessionCaller(row.answer)
 			if !errors.Is(err, wantErr) || !reflect.DeepEqual(got, row.without) {
 				t.Fatalf("SessionCaller = %+v, %v; want %+v, %v", got, err, row.without, wantErr)
+			}
+		})
+	}
+}
+
+// TestShapeOfReadsTheScopeAsASet: a scope is a set of words, whose order means nothing (RFC
+// 6749, section 3.3). So each golden answer of a narrowed person's token, whose scope the broker
+// grants as read person, reads the same with its scope written person read: the same Caller,
+// marked read-only and carrying its cut, to a verifier that serves a read-only token, and the
+// same refusal to one that does not and to SessionCaller, as a read-only token's shape reads from
+// outside. Each row goes through Verify and through Live.
+func TestShapeOfReadsTheScopeAsASet(t *testing.T) {
+	caller := newSigner(t)
+	const session = "ses_scope_set"
+	answers := brokertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	var kinds []string
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		if answers[kind].Scope == "read person" {
+			kinds = append(kinds, kind)
+		}
+	}
+	if len(kinds) == 0 {
+		t.Fatal("no golden answer carries the scope read person")
+	}
+	reordered := func(kind string) brokertoken.Introspection {
+		answer := answers[kind]
+		answer.Projects = slices.Clone(answer.Projects)
+		answer.Scope = "person read"
+		return answer
+	}
+
+	for _, serves := range []bool{false, true} {
+		// The bucket is wide enough for both tokens of every kind: what is under test is the answer.
+		rig := newRig(t, func(options *brokertoken.Options) {
+			options.ServesReadOnly = serves
+			options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: 4 * len(kinds)}
+		})
+		verifier := "without the switch"
+		if serves {
+			verifier = "with the switch"
+		}
+		for _, kind := range kinds {
+			t.Run(verifier+"/"+kind, func(t *testing.T) {
+				granted, written := "a-token-of-"+kind+"-granted", "a-token-of-"+kind+"-reordered"
+				rig.broker.Says(granted, answers[kind])
+				rig.broker.Says(written, reordered(kind))
+				for _, read := range []struct {
+					name string
+					call func(context.Context, *http.Request) (brokertoken.Caller, error)
+				}{{"Verify", rig.verifier.Verify}, {"Live", rig.verifier.Live}} {
+					want, wantErr := read.call(t.Context(), caller.at(resourcePath, granted))
+					if serves && (wantErr != nil || !want.ReadOnly) {
+						t.Fatalf("%s of the scope read person = %+v, %v; want a read-only Caller", read.name, want, wantErr)
+					}
+					got, err := read.call(t.Context(), caller.at(resourcePath, written))
+					if !reflect.DeepEqual(got, want) || (err == nil) != (wantErr == nil) || (wantErr != nil && !errors.Is(err, wantErr)) {
+						t.Fatalf("%s of the scope person read = %+v, %v; want %+v, %v, as the scope read person reads", read.name, got, err, want, wantErr)
+					}
+				}
+			})
+		}
+	}
+	for _, kind := range kinds {
+		t.Run("SessionCaller/"+kind, func(t *testing.T) {
+			want, wantErr := brokertoken.SessionCaller(answers[kind])
+			got, err := brokertoken.SessionCaller(reordered(kind))
+			if !reflect.DeepEqual(got, want) || !errors.Is(err, wantErr) || (err == nil) != (wantErr == nil) {
+				t.Fatalf("SessionCaller of the scope person read = %+v, %v; want %+v, %v, as the scope read person reads", got, err, want, wantErr)
 			}
 		})
 	}
