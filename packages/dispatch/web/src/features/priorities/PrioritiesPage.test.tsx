@@ -601,7 +601,9 @@ test("a row counts the work in flight, waiting and parked, shows its newest even
 // nothing scrolls sideways: the place and the title take the whole box, each header stands on
 // one line, the `#` header offers its sort and no filter, the one cell of the place holds the
 // grip and the disclosure that opens the row, and the title's cell names the owner, the three
-// counts under their headers' words and the newest event (INFRA-2947, R7).
+// counts under their headers' words and the newest event (INFRA-2947, R7). The tab offers no
+// Columns control there, since the one cell names every field whatever is shown, and the box's
+// right border is the one line at the title's right: no divider of the pinned columns beside it.
 test("on a phone the table draws the place and one cell, which names the owner, the counts and the newest event", async () => {
   page(FIFTEEN, [], true, "/priorities", PHONE_BOX);
   const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
@@ -619,10 +621,18 @@ test("on a phone the table draws the place and one cell, which names the owner, 
     { filter: false, name: "#▲", oneLine: true, width: "76px" },
     { filter: true, name: "Priority", oneLine: true, width: `${PHONE_BOX - 76}px` },
   ]);
+  expect(
+    within(screen.getByRole("region", { name: "Priorities" })).queryByRole("button", {
+      name: "Columns",
+    })
+  ).toBeNull();
+  const divided = (cell: HTMLElement) => cell.className.split(" ").includes("border-r");
+  expect(screen.getAllByRole("columnheader").map(divided)).toEqual([false, false]);
   const cells = within(row).getAllByRole("cell");
   const [place, title] = cells;
   if (place === undefined || title === undefined) throw new Error("the row draws no two cells");
   expect(cells).toHaveLength(2);
+  expect(cells.map(divided)).toEqual([false, false]);
   expect(
     within(place)
       .getAllByRole("button")

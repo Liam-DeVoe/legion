@@ -1,6 +1,6 @@
 import { flexRender, type Row } from "@tanstack/react-table";
 import type { ReactNode } from "react";
-import type { LineProps } from "../../components/DataTable";
+import { drawsPinnedDivider, type LineProps } from "../../components/DataTable";
 import { borderDefault, focusVisibleRing, selectedCardBg, surfaceBg } from "../../theme/classes";
 
 /**
@@ -50,7 +50,7 @@ export function TableBodyRow<Row_>({
         const pinned = cell.column.getIsPinned() === "left";
         return (
           <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""}`}
+            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${surfaceBg}` : ""} ${drawsPinnedDivider(cell.column, false) ? "border-r" : ""}`}
             key={cell.id}
             style={{
               width: cell.column.getSize(),

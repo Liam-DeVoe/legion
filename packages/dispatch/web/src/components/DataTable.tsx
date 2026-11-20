@@ -1,4 +1,5 @@
 import {
+  type Column,
   type ColumnDef,
   type ColumnFiltersState,
   type ExpandedState,
@@ -277,6 +278,21 @@ export interface LineProps {
   readonly measure: (element: Element | null) => void;
 }
 
+/** Whether a cell of `column` draws the divider at the pinned columns' right edge: it is the
+ *  last pinned column, and something the box scrolls under it follows it - another column, or
+ *  the cell each row draws after its columns (`trailing`). Pinned columns that nothing follows
+ *  end where the table does, which on a phone's box is the box's own right border (the
+ *  priorities table's place and title), and a divider there would draw that line twice. The
+ *  header row and each row's cells ask it alike, so the line runs the table's height or not at
+ *  all. */
+export function drawsPinnedDivider<Row>(column: Column<Row, unknown>, trailing: boolean): boolean {
+  return (
+    column.getIsPinned() === "left" &&
+    column.getIsLastColumn("left") &&
+    (trailing || !column.getIsLastColumn())
+  );
+}
+
 /** What one row of a table is called, singular and plural. Both are spelled out because no
  *  rule turns one into the other: "priority" is "priorities", never "prioritys". */
 export interface RowNoun {
@@ -392,6 +408,7 @@ export function DataTable<Row>({
                     <TableHeaderCell
                       compact={layout.responsive.compact}
                       counts={header.column.id === openFilter ? filterCounts : EMPTY_COUNTS}
+                      divider={drawsPinnedDivider(header.column, trailingWidth > 0)}
                       dragColumn={dragColumn}
                       header={header}
                       noun={noun}
@@ -451,6 +468,7 @@ function TableHeaderCell<TData>({
   compact,
   counts,
   dragColumn,
+  divider,
   header,
   noun,
   openFilter,
@@ -467,6 +485,8 @@ function TableHeaderCell<TData>({
   compact: boolean;
   counts: ReadonlyMap<string, number>;
   dragColumn: string | undefined;
+  /** Whether it draws the pinned columns' divider at its right (`drawsPinnedDivider`). */
+  divider: boolean;
   header: Header<TData, unknown>;
   /** What one row of this table is, which this cell's filter menu counts in. */
   noun: RowNoun;
@@ -500,7 +520,7 @@ function TableHeaderCell<TData>({
   return (
     <th
       aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
-      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
+      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${divider ? "border-r" : ""}`}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();
       }}

@@ -12,14 +12,18 @@ import { ColumnsMenu } from "../project/issues-table-controls";
 
 /** The search, the group-by and the column control every table on these pages carries, with
  *  whatever else its own page puts beside them, each at the one height of a toolbar's controls
- *  from 1280 px up (`toolbarControlHeight`). */
+ *  from 1280 px up (`toolbarControlHeight`). A phone's box (`compact`) draws no column control:
+ *  its one cell names every field whatever the reader shows (`PRIORITY_PHONE_HIDDEN`), so a
+ *  choice of columns there would change nothing the reader sees. */
 export function TableToolbar<Row>({
   children,
+  compact,
   searchLabel,
   searchPlaceholder,
   table,
 }: {
   children?: ReactNode;
+  compact: boolean;
   searchLabel: string;
   searchPlaceholder: string;
   table: Table<Row>;
@@ -57,7 +61,7 @@ export function TableToolbar<Row>({
             ))}
         </select>
       </label>
-      <ColumnsMenu columns={table.getAllLeafColumns()} />
+      {compact ? null : <ColumnsMenu columns={table.getAllLeafColumns()} />}
       {children}
     </div>
   );

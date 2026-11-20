@@ -34,7 +34,10 @@ const WORK_PREFIX = "w";
  *  divider falls after Title as each fault list's does: the registry's pins count the Priority
  *  column this table opens hidden, which in that box left Title no room to stay pinned. Its key
  *  is its own, not the one a scoped table without a layout keeps (`IssuesTable`), whose stored
- *  layouts were written for a project's opening set and would show that set again here. */
+ *  layouts were written for a project's opening set and would show that set again here. Its
+ *  status bar draws the counts alone, with the names in a legend under it, where the segments
+ *  with their names are wider than the bar (`statusLegend`): beside the margin at 1280 px a
+ *  priority's work in eight statuses is, and the bar cut "Retro" at its edge. */
 const WORK_LAYOUT = {
   key: "priority-page-work",
   opens: ["key", "title", "status", "project"],
@@ -46,6 +49,7 @@ const WORK_LAYOUT = {
     status: { min: 150, size: 150 },
   },
   wrapTitles: true,
+  statusLegend: true,
 } as const;
 
 /** The way back to the priorities page, above the page's header as above an empty page. */

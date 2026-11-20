@@ -82,8 +82,12 @@ export function IssuesTable({
    *  Title takes that width too, and the selection's bar keeps Start next. `wrapTitles: true`
    *  draws each row's title whole, however many lines it takes, where a project's table clamps
    *  it to two lines that end in '…': a table read by its titles, as each fault list of the
-   *  priorities page and a priority's work table are. Each of those gives its own; unset, the
-   *  table opens as a project's table does. */
+   *  priorities page and a priority's work table are. `statusLegend: true` draws each segment of
+   *  the status bar as its count alone where the segments with their names are wider than the
+   *  bar, and the names in a legend under it (`IssueTableStatus`), so no name is cut at the
+   *  bar's edge: each of those tables stands in a box narrower than a project's, whose bar keeps
+   *  its names and scrolls sideways on a phone. Each of those gives its own; unset, the table
+   *  opens as a project's table does. */
   layout?: {
     readonly key: string;
     readonly opens: readonly IssueTableColumnId[];
@@ -91,6 +95,7 @@ export function IssuesTable({
     readonly rowActions?: boolean;
     readonly pins?: readonly IssueTableColumnId[];
     readonly wrapTitles?: boolean;
+    readonly statusLegend?: boolean;
   };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
@@ -349,7 +354,12 @@ export function IssuesTable({
           </p>
         ) : null}
         {/* Issues by status: a click shows only that status, a second click every status. */}
-        <IssueTableStatus table={table} items={allItems} epics={epics} />
+        <IssueTableStatus
+          epics={epics}
+          items={allItems}
+          legend={ownLayout?.statusLegend}
+          table={table}
+        />
         {picked === null ? null : (
           /* What the table is narrowed to, and the way back to every row: removing the chip
              clears `only=` and leaves every other control where the reader set it. */

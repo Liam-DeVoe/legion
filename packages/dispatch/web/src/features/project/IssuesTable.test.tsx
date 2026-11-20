@@ -1033,6 +1033,75 @@ test("the status bar has no Done cell while closed issues are unloaded", async (
   expect(screen.getByRole("option", { name: "Done, not loaded" })).toBeDefined();
 });
 
+/** The unit DOM lays nothing out: the status bar `bar` px wide, and the hidden copy of its
+ *  segments with their names `names` px wide, which the bar is measured against. */
+function sizeStatusBar(bar: number, names: number) {
+  const measured = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.matches('fieldset[aria-label="Issues by status"]')) return new DOMRect(0, 0, bar, 28);
+    if (this.matches('[aria-hidden="true"] > .w-max')) return new DOMRect(0, 0, names, 28);
+    return measured.call(this);
+  });
+  restores.push(() => rect.mockRestore());
+}
+
+const TWO_STATUSES = [issue("CORE-1"), issue("CORE-2", { status: "in_progress" })];
+const LEGEND_LAYOUT = {
+  key: "legend",
+  opens: ["key", "title", "status"],
+  statusLegend: true,
+} as const;
+
+// A table that asks for it (`statusLegend`) draws each segment's count alone where the segments
+// with their names are wider than the bar: each still named by its status, to a reader and in
+// its tooltip, and the names in a legend under the bar, in the bar's order, each beside a swatch
+// of its status's colour.
+test("a status bar narrower than its names draws the counts alone and the names in a legend", async () => {
+  sizeStatusBar(200, 300);
+  table(TWO_STATUSES, "", undefined, { layout: LEGEND_LAYOUT });
+  const bar = await screen.findByRole("group", { name: "Issues by status" });
+  await waitFor(() =>
+    expect(
+      within(bar)
+        .getAllByRole("button")
+        .map((segment) => [segment.textContent, segment.getAttribute("aria-label"), segment.title])
+    ).toEqual([
+      ["1", "Todo 1", "Todo: 1"],
+      ["1", "In progress 1", "In progress: 1"],
+    ])
+  );
+  const legend = bar.nextElementSibling;
+  expect(legend?.tagName).toBe("UL");
+  expect([...(legend?.children ?? [])].map((item) => item.textContent)).toEqual([
+    "Todo",
+    "In progress",
+  ]);
+  expect(legend?.querySelector("span")?.className).toContain("bg-sky-400");
+});
+
+// Where the names fit, or where the table does not ask for it, as a project's does not, each
+// segment draws its name and its count and no legend stands under the bar.
+for (const [what, layout, names] of [
+  ["a bar its names fit", LEGEND_LAYOUT, 150],
+  ["a project's bar", undefined, 300],
+] as const) {
+  test(`${what} draws each name beside its count, with no legend`, async () => {
+    sizeStatusBar(200, names);
+    table(TWO_STATUSES, "", undefined, { layout });
+    const bar = await screen.findByRole("group", { name: "Issues by status" });
+    await waitFor(() =>
+      expect(
+        within(bar)
+          .getAllByRole("button")
+          .map((segment) => segment.textContent)
+      ).toEqual(["Todo 1", "In progress 1"])
+    );
+    expect(bar.nextElementSibling).toBeNull();
+  });
+}
+
 test("Claimed by picks the issues nobody is working, and ?unclaimed=1 still opens that view", async () => {
   const user = userEvent.setup();
   // A person's claim is never takeable, whatever the agent registry says, so it is held here.

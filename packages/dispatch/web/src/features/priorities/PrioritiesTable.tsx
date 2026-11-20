@@ -225,6 +225,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     <section aria-label="Priorities" className="space-y-3">
       <div className="space-y-3" ref={attachAbove}>
         <TableToolbar
+          compact={compact}
           searchLabel="Search priorities"
           searchPlaceholder="Search priorities: title, owner"
           table={table}

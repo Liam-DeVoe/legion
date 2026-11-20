@@ -66,8 +66,10 @@ const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
 
 /** How each column renders and sorts, for the reader `userState` describes, with each title
  *  whole where the table wraps its titles (`wrapTitles`) and in two lines that end in '…'
- *  otherwise. Keyed by the registry's own ids, so a typo or a column with no rendering fails to
- *  compile. Everything else about a column — whether it filters, what a row files under, what
+ *  otherwise, and each claim whole there too, its holder's name wrapping rather than cut
+ *  (`ClaimChip`'s `wraps`). Keyed by the registry's own ids, so a typo or a column with no
+ *  rendering fails to compile. Everything else about a column — whether it filters, what a row
+ *  files under, what
  *  it groups by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the
  *  model, so the two never disagree. */
 const renderings = (
@@ -235,7 +237,7 @@ const renderings = (
   claim: {
     header: "Claimed by",
     accessorFn: (item) => item.claimedBy,
-    cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} />,
+    cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} wraps={wrapTitles} />,
   },
   asks: {
     header: "Open asks",

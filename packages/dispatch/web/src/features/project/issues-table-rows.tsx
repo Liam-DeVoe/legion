@@ -2,7 +2,7 @@ import { flexRender, type Row } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
-import { DataTableGroupRow } from "../../components/DataTable";
+import { DataTableGroupRow, drawsPinnedDivider } from "../../components/DataTable";
 import {
   borderDefault,
   focusVisibleRing,
@@ -59,7 +59,7 @@ export function IssueRow({
         const pinned = cell.column.getIsPinned() === "left";
         return (
           <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
+            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${drawsPinnedDivider(cell.column, onStartNext !== undefined) ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
             key={cell.id}
             style={{
               width: cell.column.getSize(),

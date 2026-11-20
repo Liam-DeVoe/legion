@@ -44,11 +44,12 @@ const FAULT_OPENS = ["key", "title", "status", "claim", "updated", "project"] as
 /** The widths each fault list gives the columns it opens with, in place of the Issues table's
  *  own, so its columns fit the box a 1280 px window gives it, 910 px, with every header whole, and
  *  Title, which takes the rest, as wide as they leave it. Neither list holds an issue in Legion's
- *  queue, so neither draws the row's actions after its columns (`listsQueued`). */
+ *  queue, so neither draws the row's actions after its columns (`listsQueued`). Each list gives
+ *  Claimed by its own width (below), in which a holder's chip wraps whole however long the
+ *  session's name is (`wrapTitles` draws the claims so, `ClaimChip`'s `wraps`). */
 const FAULT_WIDTHS = {
   key: { min: 96, size: 96 },
   project: { min: 72, size: 72 },
-  claim: { min: 132, size: 132 },
   updated: { min: 116, size: 116 },
 } as const;
 
@@ -56,15 +57,26 @@ const FAULT_WIDTHS = {
  *  list names besides the priority each issue is parked under, and when the work was moved
  *  there and by whom; it names no reason, since nothing records one until
  *  dispatch://INFRA-2934 does. Each draws its titles whole (`wrapTitles`): a fault row is read by
- *  its title, and production's run to 194 characters, which two lines of Title cut in most. */
+ *  its title, and production's run to 194 characters, which two lines of Title cut in most. Each
+ *  draws its status bar's counts alone, with the names in a legend under it, where the
+ *  segments with their names are wider than the bar (`statusLegend`): on a phone the in-flight
+ *  statuses' names are, and a bar that scrolled them sideways cut "In progress" and "Retro". */
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
   opens: FAULT_OPENS,
   // Its statuses are the in-flight ones, the longest of whose pills, "Needs review" (133 px in
   // Chromium at 1440 and at 1280), the Issues table's own Status width cuts at the column's
-  // edge: this one holds it inside the cell's padding, and the room it takes is Title's.
-  widths: { ...FAULT_WIDTHS, status: { min: 156, size: 156 } },
+  // edge: this one holds it inside the cell's padding, and the room it takes is Title's. Who
+  // holds an issue reads on one line where the session's name is as short as the seed's agents'
+  // - the widest, "Claimed by Reviewer · 1 minute ago", takes 262.5 px with the cell's padding
+  // in Chromium at 1280 - and wraps onto more where it is longer; Title keeps 162 px there.
+  widths: {
+    ...FAULT_WIDTHS,
+    claim: { min: 264, size: 264 },
+    status: { min: 156, size: 156 },
+  },
   wrapTitles: true,
+  statusLegend: true,
 } as const;
 const PARKED_LAYOUT = {
   key: "priorities-parked",
@@ -76,14 +88,17 @@ const PARKED_LAYOUT = {
   // statuses', and a move is a time and a name, which wrap onto two lines, the time over the
   // name. The Advances column holds each priority's chip and its title after it, which wraps
   // whole, at no more than 160 px: Title, which takes the rest, is the column a reader reads a
-  // row by.
+  // row by, and keeps 160 px at 1280 because Claimed by is narrower here than on the other
+  // list, its chip wrapping whole onto a second line, the age under the holder.
   widths: {
     ...FAULT_WIDTHS,
     advances: { min: 160, size: 160 },
+    claim: { min: 152, size: 152 },
     status: { min: 112, size: 112 },
     moved: { min: 112, size: 112 },
   },
   wrapTitles: true,
+  statusLegend: true,
 } as const;
 
 /** The page's three tabs, by the words each reads before its one count (INFRA-3221, R13). */
