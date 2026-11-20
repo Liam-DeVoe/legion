@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -221,24 +222,30 @@ const dispatchValueSequencesMigration = 20261120055717
 // it from the schema that precedes it.
 func preReleaseStore(t *testing.T) *store.Store {
 	t.Helper()
-	ctx := context.Background()
-	st, err := store.Open(ctx, testdb.Database(t, "legion_first_boot"))
+	st, _ := storeWithholding(t, "legion_first_boot", issueSlotsMigration, dispatchValueSequencesMigration)
+	return st
+}
+
+// storeWithholding is a database of the test's own, named after database, carrying every embedded
+// migration but versions, each applied as Store.Migrate applies it (applyMigrationsByHand), so a
+// later Store.Migrate, the test's own or a booting daemon's, applies the versions it withholds. It
+// answers the store, for the test's seeds and reads, and its URL, for a daemon's configuration.
+func storeWithholding(t *testing.T, database string, versions ...int) (*store.Store, string) {
+	t.Helper()
+	dsn := testdb.Database(t, database)
+	st, err := store.Open(context.Background(), dsn)
 	if err != nil {
-		t.Fatalf("open the pre-release store: %v", err)
+		t.Fatalf("open the store of %s: %v", database, err)
 	}
 	t.Cleanup(st.Close)
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	withheld := make([]migrations.Migration, 0, len(all))
-	for _, migration := range all {
-		if migration.Version != issueSlotsMigration && migration.Version != dispatchValueSequencesMigration {
-			withheld = append(withheld, migration)
-		}
-	}
-	applyMigrationsByHand(t, st, withheld)
-	return st
+	applyMigrationsByHand(t, st, slices.DeleteFunc(all, func(migration migrations.Migration) bool {
+		return slices.Contains(versions, migration.Version)
+	}))
+	return st, dsn
 }
 
 // applyMigrationsByHand applies each migration of set to st, in the order set holds them, as

@@ -76,6 +76,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		{fact: intake.DispatchIssue{Key: "LEGION-900", Seq: 4, Status: "todo"}, rows: []string{"LEGION-900"}},
 		{name: "ControllerTick with observations", fact: intake.ControllerTick{Observed: []intake.IssueStatus{
 			{Key: "LEGION-901", Project: testProject, Status: "done", Seq: 6}}}, rows: []string{"LEGION-901"}},
+		// A turn with nothing waiting reads nothing from Dispatch, which is almost every turn.
 		{name: "ControllerTick with no observation", fact: intake.ControllerTick{}},
 		{fact: intake.ChildAdoption{Tree: "LEGION-800", Children: []intake.AdoptedChild{
 			{Issue: "LEGION-902", Parent: "LEGION-800", Status: "todo", Seq: 7}}}, rows: []string{"LEGION-902"}},
@@ -234,27 +235,6 @@ func TestMirrorWritesEveryRowAControllerTickObserved(t *testing.T) {
 	}
 	if got := mirrored(t, pool, records); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the mirror holds %#v, want %#v", got, want)
-	}
-}
-
-// A turn with nothing waiting reads nothing from Dispatch, so its tick observes nothing and
-// writes nothing: that is the tick exactly as it was before the re-read existed, which is almost
-// every turn.
-func TestMirrorWritesNothingForATickThatObservedNothing(t *testing.T) {
-	pool := migratedPool(t)
-	records := record.NewStore()
-	mirror := NewMirror(records, testProject)
-	inTx(t, pool, func(tx pgx.Tx) {
-		result, err := mirror.Apply(context.Background(), tx, intake.ControllerTick{})
-		if err != nil {
-			t.Fatalf("apply the controller tick: %v", err)
-		}
-		if result.Refusal != nil {
-			t.Fatalf("the mirror refused %#v; it decides nothing", result.Refusal)
-		}
-	})
-	if got := mirrored(t, pool, records); len(got) != 0 {
-		t.Fatalf("the mirror holds %#v after a tick that observed nothing, want nothing", got)
 	}
 }
 

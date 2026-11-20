@@ -11,9 +11,10 @@
 -- Dispatch has no issue delete, and never moves an issue between projects, so no key ever stops
 -- existing and none ever changes its project, and nothing in the daemon re-projects a row. A
 -- reading changes a value of a row only at a higher sequence than that value's own
--- (20261120055717_dispatch_issue_value_sequences). Rows are removed at one boot only: the first
--- boot of a project on the release of that migration empties that project's rows and fills them
--- again from its listing.
+-- (20261120055717_dispatch_issue_value_sequences). Rows are removed only by a boot that takes its
+-- project's refill mark: the first boot of a project on the release of that migration, and the
+-- first boot after that migration's way back marks the project again, empties that project's
+-- rows and fills them again from its listing.
 create table dispatch_issues (
     key text primary key,
     project text not null,

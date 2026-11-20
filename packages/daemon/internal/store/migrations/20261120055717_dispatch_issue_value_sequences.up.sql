@@ -40,8 +40,9 @@
 -- columns, so each value it writes leaves that value's sequence behind it. A rollback to it
 -- therefore runs the way back, the last paragraph of this header (migrations.WayBack), with every
 -- daemon of the database stopped, before the earlier image is pinned: it marks each project that
--- has rows again, so that project's next boot on this release refills them, at the cost of one
--- listing of each project at that boot. Every daemon that shares the database moves together, on
+-- has rows again, so that project's next boot on this release refills them. The refill makes no
+-- call to Dispatch of its own: that boot deletes the project's rows and writes one row for each
+-- issue of the listing every boot reads. Every daemon that shares the database moves together, on
 -- the way up and on the way back, since the copy and its marks hold every project's rows.
 -- docs/kubernetes.md, "Rolling back the release that fences each value of the copy of Dispatch's
 -- issues", carries the same statement, and internal/store's

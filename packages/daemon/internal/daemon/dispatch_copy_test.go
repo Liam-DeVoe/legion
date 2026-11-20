@@ -203,9 +203,7 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 // nothing leaves P waiting. C's event at 6 shows C under another parent, and after that one fact P
 // has started its first phase: the event's own admission pass read C under its new parent, so the
 // wait ended in that pass and not at a later fact. With the mirror after admission in the handler
-// list, P would still wait after the event. The test passes at main too, whose copy takes a
-// parent from a newer reading as this one does; it holds the order of the handlers against a
-// later change.
+// list, P would still wait after the event, so the test holds the order of the handlers.
 func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
 	const root, child, elsewhere = "CAPTURE-1", "CAPTURE-3", "CAPTURE-9"
 	ctx := context.Background()
@@ -218,7 +216,7 @@ func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
 	holdSlot(t, pool, root)
 	openTree(t, pool, "CAPTURE", root)
 	seedTickMirror(t, pool, root, "in_progress", 1)
-	seedCopyGate(t, pool, record.DesignGate{Issue: root, ArtifactID: "artifact-1", LatestVersion: 1})
+	putOutboxGate(t, pool, record.NewStore(), record.DesignGate{Issue: root, ArtifactID: "artifact-1", LatestVersion: 1})
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(ctx, tx, record.DispatchReading{Key: child, Project: "CAPTURE", Seq: 5,
 			Status: record.Carry("backlog"), Parent: record.Carry(root), Blockers: record.Carry[[]string](nil)})
@@ -445,16 +443,6 @@ func recordedPhase(t *testing.T, w *workflowRuntime, key string) phase.Phase {
 	return recorded.Phase
 }
 
-// seedCopyGate records gate.
-func seedCopyGate(t *testing.T, pool *store.Pool, gate record.DesignGate) {
-	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutGate(context.Background(), tx, gate)
-	}); err != nil {
-		t.Fatalf("record the design gate of %s: %v", gate.Issue, err)
-	}
-}
-
 // seedLiveTree records tree as a running root of this project in planning, as api's
 // adoptionHarness records its live tree: holding an admission slot, its tree lifecycle open under
 // the workflow and its spec's gate approved, so a todo child that joins it with a slot free
@@ -467,5 +455,5 @@ func seedLiveTree(t *testing.T, pool *store.Pool, tree string) {
 	holdSlot(t, pool, tree)
 	openTree(t, pool, "CAPTURE", tree)
 	approved := 1
-	seedCopyGate(t, pool, record.DesignGate{Issue: tree, ArtifactID: "artifact-" + tree, LatestVersion: 1, ApprovedVersion: &approved})
+	putOutboxGate(t, pool, record.NewStore(), record.DesignGate{Issue: tree, ArtifactID: "artifact-" + tree, LatestVersion: 1, ApprovedVersion: &approved})
 }

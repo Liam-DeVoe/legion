@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
-	"slices"
 	"sync/atomic"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/store/migrations"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // copyRefillLine is the line the boot that refills its project's rows of the copy of Dispatch's
@@ -49,7 +46,9 @@ func TestTheFirstBootRefillsTheCopyFromAListingOnce(t *testing.T) {
 			}
 		})
 	})
-	st, dsn := releaseBeforeCopyRefill(t)
+	// The database as the release before dispatchValueSequencesMigration leaves it, so the boot's
+	// own Store.Migrate applies that one over the rows seeded here.
+	st, dsn := storeWithholding(t, "legion_copy_refill", dispatchValueSequencesMigration)
 	cfg.PostgresDSN = dsn
 	pool := st.Pool()
 	project := cfg.Project
@@ -107,29 +106,6 @@ func TestTheFirstBootRefillsTheCopyFromAListingOnce(t *testing.T) {
 	}
 }
 
-// releaseBeforeCopyRefill is a database of this test's own as the release before
-// dispatchValueSequencesMigration leaves it: every other embedded migration, each applied as
-// Store.Migrate applies it (applyMigrationsByHand), so the boot's own Store.Migrate applies that
-// one over the rows the test seeds. It answers the store, for the test's seeds and reads, and its
-// URL, for the daemon's configuration.
-func releaseBeforeCopyRefill(t *testing.T) (*store.Store, string) {
-	t.Helper()
-	dsn := testdb.Database(t, "legion_copy_refill")
-	st, err := store.Open(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("open the store of the release before the copy's refill: %v", err)
-	}
-	t.Cleanup(st.Close)
-	all, err := migrations.All()
-	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
-	}
-	applyMigrationsByHand(t, st, slices.DeleteFunc(all, func(migration migrations.Migration) bool {
-		return migration.Version == dispatchValueSequencesMigration
-	}))
-	return st, dsn
-}
-
 // listedBacklog is one summary of a Dispatch listing: key in backlog at seq under parent ("" for
 // none), with no label and no claim, which admission takes nothing of.
 func listedBacklog(key, parent string, seq int64) map[string]any {
@@ -158,19 +134,19 @@ func copyRows(t *testing.T, pool *store.Pool) map[string]copyRow {
 		t.Fatalf("read the copy: %v", err)
 	}
 	defer rows.Close()
-	copied := map[string]copyRow{}
+	held := map[string]copyRow{}
 	for rows.Next() {
 		var key string
 		var row copyRow
 		if err := rows.Scan(&key, &row.status, &row.parent, &row.blockers, &row.parentSeq, &row.seq); err != nil {
 			t.Fatalf("scan a row of the copy: %v", err)
 		}
-		copied[key] = row
+		held[key] = row
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the copy: %v", err)
 	}
-	return copied
+	return held
 }
 
 // refillMarks is the refilled_at of every project's refill mark, as Postgres spells it, by

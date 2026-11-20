@@ -32,10 +32,7 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 	if labels == nil {
 		labels = []string{}
 	}
-	var parent *string
-	if value := carriedOr(reading.Parent, ""); value != "" {
-		parent = &value
-	}
+	parent := ParentOf(carriedOr(reading.Parent, ""))
 	// Each value carried is inserted at the reading's sequence, and each one not carried at 0.
 	// Over a row that exists, each value the reading carries changes, with its sequence, only where
 	// no reading has written it (0) or an older one did; the where clause skips a reading that

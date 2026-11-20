@@ -18,10 +18,10 @@ const valueSequencesRelease = "the release that fences each value of the copy of
 // sequence of the newest reading the row took (dispatch_seq), the sequence of each value, and the
 // two values no release before this one wrote.
 type copyRowSequences struct {
-	Dispatch, Status, Parent, Blockers int64
-	Labels                             []string
-	Rank                               string
-	LabelsSeq, RankSeq                 int64
+	DispatchSeq, StatusSeq, ParentSeq, BlockersSeq int64
+	Labels                                         []string
+	Rank                                           string
+	LabelsSeq, RankSeq                             int64
 }
 
 // 20261120055717 gives each value of the copy of Dispatch's issues (dispatch_issues) the sequence
@@ -73,7 +73,7 @@ func TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack(t *testing.T) {
 		for rows.Next() {
 			var key string
 			var row copyRowSequences
-			if err := rows.Scan(&key, &row.Dispatch, &row.Status, &row.Parent, &row.Blockers, &row.Labels, &row.Rank,
+			if err := rows.Scan(&key, &row.DispatchSeq, &row.StatusSeq, &row.ParentSeq, &row.BlockersSeq, &row.Labels, &row.Rank,
 				&row.LabelsSeq, &row.RankSeq); err != nil {
 				t.Fatalf("read the copy's sequences: %v", err)
 			}
@@ -85,10 +85,10 @@ func TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack(t *testing.T) {
 		return got
 	}
 	migrated := map[string]copyRowSequences{
-		"ACME-1":  {Dispatch: 5, Status: 5, Parent: 5, Blockers: 5, Labels: []string{}},
-		"ACME-2":  {Dispatch: 7, Status: 7, Parent: 7, Blockers: 7, Labels: []string{}},
-		"OTHER-1": {Dispatch: 9, Status: 9, Parent: 9, Blockers: 9, Labels: []string{}},
-		"LOST-1":  {Dispatch: 3, Status: 3, Parent: 3, Blockers: 3, Labels: []string{}},
+		"ACME-1":  {DispatchSeq: 5, StatusSeq: 5, ParentSeq: 5, BlockersSeq: 5, Labels: []string{}},
+		"ACME-2":  {DispatchSeq: 7, StatusSeq: 7, ParentSeq: 7, BlockersSeq: 7, Labels: []string{}},
+		"OTHER-1": {DispatchSeq: 9, StatusSeq: 9, ParentSeq: 9, BlockersSeq: 9, Labels: []string{}},
+		"LOST-1":  {DispatchSeq: 3, StatusSeq: 3, ParentSeq: 3, BlockersSeq: 3, Labels: []string{}},
 	}
 	if got := read(); !reflect.DeepEqual(got, migrated) {
 		t.Fatalf("the copy after the migration = %+v, want %+v: status, parent and blockers at each row's dispatch_seq, labels empty and rank '' at 0",
@@ -96,7 +96,7 @@ func TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack(t *testing.T) {
 	}
 
 	exec(releaseBeforesInsert + `('ACME-3', 'ACME', 'todo', '{}', 11, 'ACME-1')`)
-	if got, want := read()["ACME-3"], (copyRowSequences{Dispatch: 11, Labels: []string{}}); !reflect.DeepEqual(got, want) {
+	if got, want := read()["ACME-3"], (copyRowSequences{DispatchSeq: 11, Labels: []string{}}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the release before's row after the migration = %+v, want %+v: every value it wrote at sequence 0, labels empty and rank ''",
 			got, want)
 	}

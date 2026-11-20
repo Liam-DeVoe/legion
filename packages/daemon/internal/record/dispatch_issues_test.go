@@ -482,23 +482,26 @@ func TestTakingARefillMarkEmptiesOnlyThatProjectsRowsOnce(t *testing.T) {
 func TestTheCopyIndexesItsParentColumn(t *testing.T) {
 	st := migratedStore(t)
 	inTx(t, st, func(tx pgx.Tx) {
-		rows, err := tx.Query(t.Context(), `select indexdef from pg_indexes where schemaname = current_schema() and tablename = 'dispatch_issues'`)
+		// Each index of the table, with whether its first key column is parent (pg_index.indkey[0];
+		// an expression has no column there).
+		type index struct {
+			Definition string
+			OnParent   bool
+		}
+		rows, err := tx.Query(t.Context(), `select pg_get_indexdef(i.indexrelid), coalesce(a.attname = 'parent', false)
+			from pg_index i left join pg_attribute a on a.attrelid = i.indrelid and a.attnum = i.indkey[0]
+			where i.indrelid = 'dispatch_issues'::regclass order by 1`)
 		must(t, err)
-		definitions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		indexes, err := pgx.CollectRows(rows, pgx.RowToStructByPos[index])
 		must(t, err)
 		var onParent []string
-		for _, definition := range definitions {
-			// An index's definition reads `CREATE INDEX <name> ON <table> USING <method> (<key columns>)`.
-			_, columns, _ := strings.Cut(definition, " USING ")
-			_, columns, _ = strings.Cut(columns, "(")
-			first, _, _ := strings.Cut(columns, ")")
-			first, _, _ = strings.Cut(first, ",")
-			if strings.TrimSpace(first) == "parent" {
-				onParent = append(onParent, definition)
+		for _, found := range indexes {
+			if found.OnParent {
+				onParent = append(onParent, found.Definition)
 			}
 		}
 		if len(onParent) != 1 {
-			t.Fatalf("indexes of dispatch_issues whose first key column is parent = %q, want one; the table's indexes are %q", onParent, definitions)
+			t.Fatalf("indexes of dispatch_issues whose first key column is parent = %q, want one; the table's indexes are %+v", onParent, indexes)
 		}
 		t.Logf("the copy's index on its parent column: %s", onParent[0])
 	})

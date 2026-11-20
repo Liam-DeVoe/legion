@@ -2426,7 +2426,8 @@ insert into public.dispatch_issue_refills (project) select distinct project from
 ```
 
 The same statement is the last paragraph of the migration's header, which `migrations.WayBack` returns.
-It costs one listing of each project, at the next boot of that project on this release.
+The refill makes no call to Dispatch of its own.
+At the next boot of each project on this release, the daemon deletes the rows of that project and writes one row for each issue of the listing that every boot reads.
 No other statement is necessary: the earlier release reads none of the new columns and the new table, so they can stay.
 
 **Every daemon sharing the database moves together.**

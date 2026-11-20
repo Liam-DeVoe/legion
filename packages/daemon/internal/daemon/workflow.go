@@ -1199,13 +1199,13 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 			if refilled {
-				listed := make(map[string]bool, len(scope))
+				inListing := make(map[string]bool, len(scope))
 				for _, summary := range scope {
-					listed[summary.Key] = true
+					inListing[summary.Key] = true
 				}
 				unlisted := make([]string, 0, len(removed))
 				for _, key := range removed {
-					if !listed[key] {
+					if !inListing[key] {
 						unlisted = append(unlisted, key)
 					}
 				}
