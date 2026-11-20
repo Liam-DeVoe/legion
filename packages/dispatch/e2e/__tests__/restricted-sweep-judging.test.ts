@@ -423,9 +423,11 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   );
 
   test(
-    "a refusal other than 403 or 404 that names the project's object is a FAIL",
+    "a refusal other than 403 or 404 for the project's object, where a missing one is refused 404, is a FAIL",
     async () => {
-      // As the server writes it (api/owner.go): the issue in prose, and the route it names.
+      // As the server writes it (api/owner.go): the issue in prose, and the route it names. The
+      // prose names no row; the refusal itself says the document exists, which a missing one's
+      // 404 does not.
       const refusal = {
         code: "ARTIFACT_LINKED",
         error: `artifact belongs to issue ${tgt.issue}; use /api/v1/issues/${tgt.issue}/...`,
@@ -435,7 +437,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/artifacts/{id}/comments"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/artifacts/{id}/comments: the member is answered 400 holding ${tgt.issue}, a row of TGT: ${JSON.stringify(refusal)}`,
+        `GET /api/v1/artifacts/{id}/comments: the member is answered 400 for TGT's object, otherwise than a missing one answered 404: ${JSON.stringify(refusal)}`,
       ]);
       expect(code).toBe(1);
     },
@@ -475,6 +477,74 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       const { stdout } = await sweep([at("/api/v1", 200, index)], { rows: ["/api/v1"] });
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain("\nok      GET /api/v1: 200, no row of TGT (can fail)\n");
+    },
+    rowLimit("short")
+  );
+
+  // Every form a person or an agent cites the project's items by, each in the member's own row
+  // (an OWN item of their inbox): inside prose it names no row of the project and the run is no
+  // FAIL, and as the whole value the server writes it is a row, which names its key. The prose
+  // rows are the control of the whole-value rows, and the whole-value rows of the prose rows.
+  const forms: { form: string; text: string; marker: string }[] = [
+    { form: "a plain issue key", text: tgt.issue, marker: tgt.issue },
+    { form: "a reference", text: `${scheme}${tgt.issue}`, marker: tgt.issue },
+    { form: "an issue path", text: `/issues/${tgt.issue}`, marker: tgt.issue },
+    { form: "a project path", text: "/projects/TGT", marker: "TGT" },
+    {
+      form: "a dashboard URL",
+      text: `https://dispatch.example/issues/${tgt.issue}`,
+      marker: tgt.issue,
+    },
+  ];
+  /** The member's own inbox item, OWN's, whose body is `body`. */
+  const ownItem = (body: string) => [
+    { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", issue_key: "OWN-1", body },
+  ];
+
+  test.each(forms)(
+    "$form inside prose of the member's own row is no FAIL",
+    async ({ text }) => {
+      const body = `This follows ${text}, the target plan.`;
+      const { stdout } = await sweep([at("/api/v1/inbox", 200, ownItem(body))], {
+        rows: ["/api/v1/inbox"],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain("\nok      GET /api/v1/inbox: 200, no row of TGT (can fail)\n");
+    },
+    rowLimit("short")
+  );
+
+  test.each(forms)(
+    "$form as the whole value of the member's row is a FAIL naming it",
+    async ({ text, marker }) => {
+      const { code, stdout } = await sweep([at("/api/v1/inbox", 200, ownItem(text))], {
+        rows: ["/api/v1/inbox"],
+      });
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/inbox: the member is answered 200 holding ${marker}, a row of TGT: ${JSON.stringify(ownItem(text))}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // A list filtered by the project's key answers the member's own row, whose prose names that key:
+  // the same answer for the project and for a missing one, which the comparison must read alike,
+  // though the key is a fill on one side only. The search route takes the project as a filter.
+  test(
+    "a filter by the project that answers the member's own prose naming its key, as a missing one is answered, is no FAIL",
+    async () => {
+      const own = [{ issue_key: "OWN-1", snippet: "See /projects/TGT for the plan." }];
+      const searches: Leak = {
+        matches: (seen) => seen.startsWith("/api/v1/search?"),
+        status: 200,
+        body: own,
+      };
+      const { stdout } = await sweep([searches], { rows: ["/api/v1/search"] });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        "\nok      GET /api/v1/search?q=<title>&project=: 200, as a missing one is answered (can fail)\n"
+      );
     },
     rowLimit("short")
   );

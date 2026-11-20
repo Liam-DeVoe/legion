@@ -879,10 +879,15 @@ that names a project's object (read from the API document). A direct message to 
 worked in the project alone is read by its own routes too, and every read the GitHub proxy
 forwards (`/api/github/rest/`, `githubapi/proxy.go`'s `readable`) is called with a repository only
 the project's issues resolve to. Each answer must be 404, 403, what a missing object is answered,
-or one that holds no row of the project; a 2xx for the project's object where a missing one is
-refused is a row of it too, since it says the object exists, and a proxy read must answer as a
-repository the App is not installed on does. A session or a person the lookup read in the project
-that works in no project the member sees is a row of it as well. It also holds both sockets: the
+or one that holds no row of the project; any answer for the project's object (a 2xx, or a refusal
+other than 403 and 404) where a missing one is answered otherwise is a row of it too, since it
+says the object exists, and a proxy read must answer as a repository the App is not installed on
+does. A string an answer holds is a row when it is, whole, the project's key, an issue key of it
+or an object the lookup found; a string with no whitespace (a reference, a path, a URL) is one
+too when such a key or object stands in it as a whole part between `/ : # ? & =`, and prose
+counts only whole, since a member's own comment may cite the project's items. A session or a
+person the lookup read in the project that works in no project the member sees is a row of it as
+well. It also holds both sockets: the
 member is not admitted to the room of the project's document, while the same probe admits them to
 a document of their own, and the member's event feed, open for the whole of `SWEEP_LIVE_SECONDS`
 (60 by default), is sent no event of the project while the full member comments on

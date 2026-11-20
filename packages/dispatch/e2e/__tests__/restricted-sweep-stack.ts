@@ -340,8 +340,36 @@ async function seed(
     title: "A child of the target reef",
     parent: first,
   });
-  await send(origin, asCarol, "POST", `/api/v1/issues/${first}/comments`, 201, {
+  const remark = await send(origin, asCarol, "POST", `/api/v1/issues/${first}/comments`, 201, {
     body: "A remark.",
+  });
+  // A comment of bob's own project that cites the target's issue in prose by each form a person
+  // or an agent writes: a reference, as the server spells one (read from the remark's own node),
+  // the bare key, a dashboard URL and a project path. The member reads it in OWN's events, the
+  // people pages and search, and none of it is a row of the target.
+  const remarkId =
+    typeof remark === "object" && remark !== null && "id" in remark && typeof remark.id === "string"
+      ? remark.id
+      : undefined;
+  if (remarkId === undefined)
+    throw new Error(`the remark answered no id: ${JSON.stringify(remark)}`);
+  const node = await send(origin, asCarol, "GET", `/api/v1/comments/${remarkId}/blocks`, 200);
+  const ref =
+    typeof node === "object" &&
+    node !== null &&
+    "item" in node &&
+    typeof node.item === "object" &&
+    node.item !== null &&
+    "ref" in node.item &&
+    typeof node.item.ref === "string"
+      ? node.item.ref
+      : "";
+  const prefix = ref.slice(0, ref.indexOf(`${first}/`));
+  if (prefix === "") throw new Error(`the remark's node names no reference of ${first}: ${ref}`);
+  await send(origin, asCarol, "POST", "/api/v1/issues/OWN-1/comments", 201, {
+    body:
+      `This follows ${prefix}${first}, the target plan, and ${first} itself. ` +
+      `See https://dispatch.example/issues/${first} and /projects/${target} for the plan.`,
   });
   await send(origin, agent, "POST", `/api/v1/issues/${first}/comments`, 201, {
     body: "An agent remark.",

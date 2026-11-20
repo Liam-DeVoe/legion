@@ -32,20 +32,25 @@
 #                   SWEEP_WRITE_ISSUE, which the full member's own feed, open over the same window,
 #                   is sent.
 #
-# "A row of the project" is a JSON member name or string value that is the project's key or holds
-# an issue key of the project, an id the lookup found, the title of the issue the lookup filled
-# with, or a session or a person of the project: one the lookup read as an author in the project
-# that the full member finds in none of the projects the member sees, nor is the member. A body
-# that is not JSON is read for the same markers, and a socket's refused upgrade is read by the
-# body the server wrote. Each answer is read for them once the values the path was filled with
-# are masked, since an answer may echo what it was asked, and before it is compared with
-# anything, so an answer alike for a missing object excuses no row. Filled paths are also called
-# with objects that do not exist: a 2xx for the project's object where a missing one is refused
-# says the object exists, and is a row of it too, whatever the body holds. Every RFC 3339 instant
-# and the durations a read measures are masked before two answers are compared. A session, a
-# person, a repository, a priority, a broadcast and a delivery run belong to no project, so a row
-# filled only with them is held to the markers alone. A line about the full member's feed names
-# its frames' types and ids, never what they hold.
+# "A row of the project" is a JSON member name or string value (`row_rule`) that is, whole, the
+# project's key or a marker: an issue key of the project, an id the lookup found, the title of the
+# issue the lookup filled with, or a session or a person of the project, one the lookup read as an
+# author in the project that the full member finds in none of the projects the member sees, nor
+# is the member. A string with no whitespace, a value the server wrote, is one too when the key,
+# an issue key or a marker stands in it as a whole part between separators: a reference, a path,
+# a URL. A string with whitespace is prose, which counts only whole: a member's own comment may
+# cite the project's items, and the route index names example keys. A body that is not JSON is
+# read line by line by the same rule, and a socket's refused upgrade is read by the body the
+# server wrote. Each answer is read for them once the values the path was filled with are masked,
+# since an answer may echo what it was asked, and before it is compared with anything, so an
+# answer alike for a missing object excuses no row. Filled paths are also called with objects
+# that do not exist: any answer for the project's object (a 2xx, or a refusal other than 403 and
+# 404) where a missing one is answered otherwise says the object exists, and is a row of it too,
+# whatever the body holds. Every RFC 3339 instant and the durations a read measures are masked
+# before two answers are compared. A session, a person, a repository, a priority, a broadcast and
+# a delivery run belong to no project, so a row filled only with them is held to the markers
+# alone. A line about the full member's feed names its frames' types and ids, never what they
+# hold.
 #
 # Each row also says whether it can fail: a filled row can when the full member is answered the
 # project's object otherwise than a missing one, a list when the full member's answer holds a row
@@ -642,46 +647,62 @@ if [ -n "$conversation_session" ]; then
   fi
 fi
 [ -z "$issue_title" ] || [ "${#issue_title}" -lt 8 ] || printf '%s\n' "$issue_title" >>"$work/values"
-# write_markers: the markers file marker_in reads, from `values`, the project's key and the
-# reference prefix the server writes (`ref_prefix`, which may be unknown and empty).
+# write_markers: the markers file marker_in reads: the project's key, the found values (`values`,
+# one a line) by value, and each found value that holds a separator, with its regex spelling, for
+# the one rule that reads a value inside a reference.
 write_markers() {
-  jq -Rn --arg key "$project" --arg ref "$ref_prefix" \
-    '{key: $key, ref: $ref, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
+  jq -Rn --arg key "$project" '
+    [inputs | select(length > 0)] as $found
+    | {key: $key,
+       issue: ("^" + $key + "-[1-9][0-9]*$"),
+       separator: "[/:#?&=]",
+       values: (($found | map({(.): true}) | add) // {}),
+       multi: [$found[] | select(test("[/:#?&=]") and (test("\\s") | not))
+         | {value: ., re: gsub("(?<c>[.*+?^${}()|\\[\\]\\\\])"; "\\\(.c)")}]}' \
     "$work/values" >"$work/markers.json" || unknown 'jq could not write the markers'
 }
 write_markers
 
-# marker_in FILE prints the first marker of the project in FILE. In a JSON body, a member name or
-# string value is a marker when it is the project's key, an issue key of the project as the whole
-# string, a reference the server writes to one: an issue key followed by `/` or `#` (a reference
-# key such as `KEY-1/spec`), `/issues/KEY-n` or `/projects/KEY` in a path, or the server's
-# reference prefix followed by the key, or when it is or holds a value the lookup found (a value
-# of at least 8 bytes that is no issue key may stand inside a longer string). An issue key inside
-# prose is no marker: the route index's own text names example keys of any project. A JSON stream
-# is read in full; false and null are JSON too. A body jq cannot read as JSON is read with grep
-# for the same references, the project's key as a JSON string and the found values. One jq a
-# body: the sweep reads thousands.
+# The one rule that says whether a string an answer holds is a row of the project, as a jq
+# function of the string and the markers file. A string is one when it is, whole, the project's
+# key or a value the lookup found (an id, the issue's title, a session of the project alone). A
+# string with no whitespace in it is a value the server wrote - a key, an id, a reference, a
+# path or a URL - and it is one too when the key, an issue key of the project or a found value
+# stands in it as a whole part between separators (`/ : # ? & =`) or its ends: `KEY-12`,
+# `KEY-12/spec`, a reference prefix and `KEY-12`, `/issues/KEY-12`, `/projects/KEY`, a dashboard
+# URL, `session:<id>`. A string with whitespace in it is prose, and only a whole match counts
+# there: the route index's own text names example keys of any project, and a member's own
+# comment may cite the project's items by any of those forms.
+# shellcheck disable=SC2016 # the `$` names in it are jq's variables, never the shell's
+readonly row_rule='
+  def row($m):
+    . as $s
+    | if $s == $m.key or $m.values[$s] != null then $s
+      elif ($s | test("\\s")) then empty
+      else first(
+          ($s | splits($m.separator)
+            | select(. == $m.key or $m.values[.] != null
+                or (startswith($m.key + "-") and test($m.issue)))),
+          ($m.multi[] | . as $v
+            | select($s | test("(^|" + $m.separator + ")" + $v.re + "(" + $m.separator + "|$)"))
+            | $v.value))
+      end;'
+
+# marker_in FILE prints the first string FILE holds that `row_rule` names a row of the project.
+# A JSON body (a stream is read in full; false and null are JSON too) is read as each of its member
+# names and string values. A body jq cannot read as JSON is read as each of its lines and each
+# double-quoted string in them, by the same rule. An answer no jq reads is recorded as unproven,
+# never as clean. One jq a body: the sweep reads thousands.
 marker_in() {
-  jq -r -s --slurpfile m "$work/markers.json" '$m[0] as $m
-      | ($m.key + "-[1-9][0-9]*") as $k
-      | ("^(?<issue>" + $k + ")([/#].*)?$") as $own
-      | ("/issues/(?<issue>" + $k + ")([^A-Za-z0-9]|$)") as $path
-      | ("/projects/" + $m.key + "([^A-Za-z0-9-]|$)") as $project
-      | ("^(?<issue>" + $k + ")([^A-Za-z0-9]|$)|^" + $m.key + "([/#]|$)") as $referenced
-      | first(.[] | .. | ((objects | keys[]), strings) | . as $value
-        | if . == $m.key then $m.key
-          elif test($own) then capture($own).issue
-          elif test($path) then capture($path).issue
-          elif test($project) then $m.key
-          elif $m.ref != "" and (split($m.ref)[1:] | any(test($referenced))) then $m.ref + $m.key
-          else $m.values | keys[] | select(. as $marker | $value == $marker
-            or (($marker | length) >= 8 and ($marker | test("^" + $k + "$") | not)
-              and ($value | contains($marker)))) end) // empty' "$1" 2>/dev/null ||
-    { grep -E -o "/issues/$project-[1-9][0-9]*" "$1" | sed 's|^/issues/||'
-      grep -E -x "$project(-[1-9][0-9]*)?" "$1"
-      ! grep -F -q "\"$project\"" "$1" || printf '%s\n' "$project"
-      grep -F -o -f "$work/values" "$1"
-    } 2>/dev/null | head -n 1
+  jq -r -s --slurpfile m "$work/markers.json" "$row_rule"'
+    $m[0] as $m | first(.[] | .. | ((objects | keys[]), strings) | row($m)) // empty' "$1" 2>/dev/null &&
+    return
+  jq -r -R -s --slurpfile m "$work/markers.json" "$row_rule"'
+    $m[0] as $m
+    | first(splits("\n") | select(length > 0)
+        | (., (split("\"") as $parts | $parts | keys[] | select(. % 2 == 1) | $parts[.]))
+        | row($m)) // empty' "$1" 2>/dev/null ||
+    printf 'an answer the markers could not be read in: %s\n' "$(head_of "$1" 120)" >>"$work/unknown"
 }
 
 # masked FILE VALUE... masks literal fills, their URL and JSON encodings, every RFC 3339 instant
@@ -758,11 +779,14 @@ counted() {
 # judge LABEL TARGET MISSING STRICT TARGET_FILLS MISSING_FILLS: the row LABEL, called as TARGET
 # (filled with the project's objects) and, where an answer needs it, as MISSING (filled with
 # objects that do not exist). The fills are newline-separated lists of the values each side was
-# filled with, masked before two answers are compared. STRICT is 1 when an object of the
-# project fills the row, which then must answer the member as a missing one, or refuse.
+# filled with. An answer is read for rows with its own side's fills masked; two answers are
+# compared with both sides' fills masked in each, since an answer may hold a fill's text that is
+# no echo of it - a member's own comment that names the project's key - and that text must read
+# alike on both sides. STRICT is 1 when an object of the project fills the row, which then must
+# answer the member as a missing one, or refuse.
 judge() {
   local label=$1 target=$2 missing=$3 strict=$4 t_fills=$5 m_fills=$6 rt rm ft fm can=0 marker line mt mm
-  local -a t_list m_list
+  local -a t_list m_list both_list
   t_list=() m_list=()
   while IFS= read -r line; do [ -z "$line" ] || t_list+=("$line"); done <<EOF
 $t_fills
@@ -770,6 +794,7 @@ EOF
   while IFS= read -r line; do [ -z "$line" ] || m_list+=("$line"); done <<EOF
 $m_fills
 EOF
+  both_list=(${t_list[@]+"${t_list[@]}"} ${m_list[@]+"${m_list[@]}"})
   # Whether the row can fail: the full member is answered the project's object otherwise than a
   # missing one, or a row of it beyond what the request echoes. A failed missing-object request
   # establishes nothing.
@@ -778,8 +803,8 @@ EOF
   if is_2xx "$ft" && [ "$strict" = 1 ]; then
     call full "$missing" "$work/fm"
     fm=$status
-    mt=$(masked "$work/ft" ${t_list[@]+"${t_list[@]}"}) || unknown 'could not mask the full member answer'
-    mm=$(masked "$work/fm" ${m_list[@]+"${m_list[@]}"}) || unknown 'could not mask the missing-object control'
+    mt=$(masked "$work/ft" ${both_list[@]+"${both_list[@]}"}) || unknown 'could not mask the full member answer'
+    mm=$(masked "$work/fm" ${both_list[@]+"${both_list[@]}"}) || unknown 'could not mask the missing-object control'
     if is_judgeable "$fm" && { [ "$fm" != "$ft" ] || [ "$mt" != "$mm" ]; }; then
       can=1
     fi
@@ -810,10 +835,10 @@ EOF
     printf 'ok      %s: %s (%s)\n' "$label" "$rt" "$can_text"
     return
   fi
-  mt=$(masked "$work/rt" ${t_list[@]+"${t_list[@]}"}) || unknown 'could not mask the member answer'
+  mt=$(masked "$work/rt" ${both_list[@]+"${both_list[@]}"}) || unknown 'could not mask the member answer'
   call restricted "$missing" "$work/rm"
   rm=$status
-  mm=$(masked "$work/rm" ${m_list[@]+"${m_list[@]}"}) || unknown 'could not mask the missing-object answer'
+  mm=$(masked "$work/rm" ${both_list[@]+"${both_list[@]}"}) || unknown 'could not mask the missing-object answer'
   if [ "$rm" = "$rt" ] && [ "$mt" = "$mm" ]; then
     printf 'ok      %s: %s, as a missing one is answered (%s)\n' "$label" "$rt" "$can_text"
   elif is_2xx "$rt" && [ "$strict" = 0 ]; then
@@ -821,7 +846,9 @@ EOF
   elif is_2xx "$rt" && is_refusal "$rm"; then
     # The object exists for the member where a missing one does not, an empty answer included.
     fail "$label: the member is answered $rt for $project's object, where a missing one is refused $rm: $(head_of "$work/rt")"
-  elif is_2xx "$rt" && is_judgeable "$rm"; then
+  elif [ "$strict" = 1 ] && is_judgeable "$rm"; then
+    # Any answer of its own for the project's object, a refusal such as 400 ARTIFACT_LINKED
+    # included, where a missing one is answered otherwise, says the object exists.
     fail "$label: the member is answered $rt for $project's object, otherwise than a missing one answered $rm: $(head_of "$work/rt")"
   else
     unproven "$label: the member is answered $rt, where a missing one is answered $rm: $(head_of "$work/rt")"
@@ -1081,8 +1108,8 @@ judge_proxy() {
   call "$full_browser" "$missing" "$work/fm"
   fm=$status
   if is_judgeable "$ft" || [ "${ft#5}" != "$ft" ]; then
-    mt=$(masked "$work/ft" "$name") || unknown 'could not mask a proxy answer'
-    mm=$(masked "$work/fm" no-such-repo) || unknown 'could not mask a proxy answer'
+    mt=$(masked "$work/ft" "$name" no-such-repo) || unknown 'could not mask a proxy answer'
+    mm=$(masked "$work/fm" "$name" no-such-repo) || unknown 'could not mask a proxy answer'
     [ "$ft" = "$fm" ] && [ "$mt" = "$mm" ] || can=1
   fi
   counted "$can"
@@ -1096,8 +1123,8 @@ judge_proxy() {
       return
       ;;
   esac
-  mt=$(masked "$work/rt" "$name") || unknown 'could not mask a proxy answer'
-  mm=$(masked "$work/rm" no-such-repo) || unknown 'could not mask a proxy answer'
+  mt=$(masked "$work/rt" "$name" no-such-repo) || unknown 'could not mask a proxy answer'
+  mm=$(masked "$work/rm" "$name" no-such-repo) || unknown 'could not mask a proxy answer'
   if [ "$rt" = "$rm" ] && [ "$mt" = "$mm" ]; then
     printf 'ok      %s: %s, as a repository the App is not installed on (%s)\n' "$label" "$rt" "$can_text"
   elif [ "$rt" = 403 ] && [ -z "$(masked_marker "$work/rt" "$name")" ]; then
