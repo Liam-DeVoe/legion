@@ -179,22 +179,97 @@ export function gitBlobId(bytes: Uint8Array): string {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
-/** The frontmatter of the skill in `dir`, as Oh My Pi reads it for the listing: its `description`
- *  ("" when it has none), and whether it is hidden from the listing, which Oh My Pi does for
- *  `hide: true` or `disable-model-invocation: true` (extensibility/skills.ts at the pinned tag). */
+/** An ambiguous plain scalar of a frontmatter line, as Oh My Pi finds one. */
+const PLAIN_SCALAR_KEY_VALUE = /^(\s*[A-Za-z_][\w-]*:\s+)(\S.*?)(\s*)$/;
+/** The first characters of a value that is no plain scalar. */
+const FLOW_OR_EXPLICIT_VALUE_START = new Set(['"', "'", "[", "{", "|", ">", "!", "&", "*", "#"]);
+
+/** `text`'s frontmatter block parsed as one YAML mapping, tabs read as two spaces, or null. */
+function yamlRecord(text: string): Record<string, unknown> | null {
+  const loaded: unknown = Bun.YAML.parse(text.replaceAll("\t", "  "));
+  if (typeof loaded !== "object" || loaded === null || Array.isArray(loaded)) return null;
+  return { ...loaded };
+}
+
+/**
+ * The frontmatter of a SKILL.md's text, read as Oh My Pi's `parseFrontmatter` reads a skill's
+ * with its defaults (packages/utils/src/frontmatter.ts of cybermonklabs/oh-my-pi at the tag
+ * v18.18.6-sami.20261117-013345, the pin): CRLF as LF; leading HTML comments before the opening
+ * `---` dropped, and comments inside the block; the block from after `---` to the next line that
+ * starts `---`; parsed as YAML with each tab replaced by two spaces; when that fails, parsed again
+ * with each plain scalar that holds `: ` quoted (`quoteAmbiguousPlainScalars`); when that fails
+ * too, each `key: value` line read on its own, a value that does not parse as YAML kept as its
+ * text. Top-level kebab-case keys become camelCase. A text with no block has none (`{}`).
+ */
+export function readFrontmatter(content: string): Record<string, unknown> {
+  let text = content.replace(/\r\n?/g, "\n");
+  const comments = /^(?:(?:\s*<!--[\s\S]*?-->)+)/.exec(text);
+  if (comments && /^\s*---/.test(text.slice(comments[0].length))) {
+    text = text.slice(comments[0].length).replace(/^\s+/, "");
+  }
+  if (!text.startsWith("---")) return {};
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) return {};
+  const block = text.slice(4, end).replace(/<!--[\s\S]*?-->/g, "");
+  let read: Record<string, unknown> | null | undefined;
+  try {
+    read = yamlRecord(block);
+  } catch {
+    let quoted = false;
+    const repaired = block
+      .split("\n")
+      .map((line) => {
+        const match = PLAIN_SCALAR_KEY_VALUE.exec(line);
+        const value = match?.[2]?.trimEnd() ?? "";
+        if (!value.includes(": ") || FLOW_OR_EXPLICIT_VALUE_START.has(value[0] ?? "")) return line;
+        quoted = true;
+        return `${match?.[1]}${JSON.stringify(value)}${match?.[3]}`;
+      })
+      .join("\n");
+    try {
+      read = quoted ? yamlRecord(repaired) : undefined;
+    } catch {
+      read = undefined;
+    }
+    if (read === undefined) {
+      read = {};
+      for (const line of block.split("\n")) {
+        const match = /^([\w-]+):\s*(.*)$/.exec(line);
+        if (match?.[1] === undefined) continue;
+        const raw = (match[2] ?? "").trim();
+        let value: unknown = raw;
+        if (raw !== "") {
+          try {
+            const parsed: unknown = Bun.YAML.parse(raw);
+            if ((parsed !== null && typeof parsed !== "object") || Array.isArray(parsed)) {
+              value = parsed;
+            }
+          } catch {
+            // The value's own text stands.
+          }
+        }
+        read[match[1]] = value;
+      }
+    }
+  }
+  return Object.fromEntries(
+    Object.entries(read ?? {}).map(([key, value]) => [
+      key.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()),
+      value,
+    ])
+  );
+}
+
+/** The frontmatter of the skill in `dir`, as Oh My Pi reads it for the listing (`readFrontmatter`):
+ *  its `description` ("" when it has none), and whether it is hidden from the listing, which Oh My
+ *  Pi does for `hide: true` or `disable-model-invocation: true` (extensibility/skills.ts at the
+ *  pinned tag). */
 export function skillFrontmatter(dir: string): { description: string; hidden: boolean } {
-  const text = readFileSync(path.join(dir, "SKILL.md"), "utf8");
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/.exec(text)?.[1];
-  const parsed: unknown = frontmatter === undefined ? undefined : Bun.YAML.parse(frontmatter);
-  const field = (name: string): unknown =>
-    typeof parsed === "object" && parsed !== null ? Reflect.get(parsed, name) : undefined;
-  const description = field("description");
+  const frontmatter = readFrontmatter(readFileSync(path.join(dir, "SKILL.md"), "utf8"));
+  const description = frontmatter.description;
   return {
     description: typeof description === "string" ? description : "",
-    hidden:
-      field("hide") === true ||
-      field("disable-model-invocation") === true ||
-      field("disableModelInvocation") === true,
+    hidden: frontmatter.hide === true || frontmatter.disableModelInvocation === true,
   };
 }
 
@@ -205,10 +280,15 @@ interface Ran {
   readonly stderr: string;
 }
 
-/** Runs `argv` to its end. */
+/** Runs `argv` to its end, or until `timeoutMs` has passed, when it is ended and its stderr says
+ *  so. */
 async function run(
   argv: readonly string[],
-  options: { readonly cwd?: string; readonly env?: Record<string, string | undefined> } = {}
+  options: {
+    readonly cwd?: string;
+    readonly env?: Record<string, string | undefined>;
+    readonly timeoutMs?: number;
+  } = {}
 ): Promise<Ran> {
   const child = Bun.spawn([...argv], {
     cwd: options.cwd,
@@ -216,13 +296,19 @@ async function run(
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).arrayBuffer(),
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  return { code, stdout: new Uint8Array(stdout), stderr };
+  const ended = child.signalCode !== null && options.timeoutMs !== undefined;
+  return {
+    code,
+    stdout: new Uint8Array(stdout),
+    stderr: ended ? `${stderr}\ntimed out after ${options.timeoutMs} ms` : stderr,
+  };
 }
 
 /** Runs `argv` and throws, naming it and its last error lines, when it fails. */
@@ -273,31 +359,130 @@ async function eachLimited<T>(
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
 }
+/** How many times one `gh` read is made before it fails, by default. */
+export const GH_TRIES = 5;
+/** The wait before a read's second try; each try after waits twice the one before, at most
+ *  GH_MAX_WAIT_MS. A rate limit waits until its reset instead, at most GH_MAX_RATE_WAIT_MS. */
+const GH_FIRST_WAIT_MS = 2_000;
+const GH_MAX_WAIT_MS = 60_000;
+const GH_MAX_RATE_WAIT_MS = 15 * 60_000;
+/** The longest one `gh` read may run: an API read, and a tarball. */
+const GH_READ_TIMEOUT_MS = 120_000;
+const GH_TARBALL_TIMEOUT_MS = 900_000;
+/** A failure worth another try: a network error (a timeout, a reset or refused connection, a
+ *  name that did not resolve), or an HTTP 5xx, as gh reports them on stderr. */
+const TRANSIENT_GH =
+  /i\/o timeout|timed out|timeout|connection reset|connection refused|reset by peer|ECONNRESET|ECONNREFUSED|TLS handshake|no such host|temporary failure|broken pipe|unexpected EOF|HTTP 5\d\d/i;
+/** A rate limit, primary or secondary, as gh reports it. */
+const RATE_LIMITED_GH = /rate limit|HTTP 429/i;
+
+/** What `ghSource` takes beside the binary: how many tries a read gets, and the wait (a test's). */
+export interface GhOptions {
+  readonly tries?: number;
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * The value of the first try of `attempt` that exits 0. A try that fails transiently or on a rate
+ * limit (`TRANSIENT_GH`, `RATE_LIMITED_GH`) is made again after a growing wait, or after the rate
+ * limit's reset (gh prints no `retry-after` header on stderr, so the reset is read from
+ * `rate_limit`, and a limit whose reset cannot be read waits a minute), at most `tries` times in
+ * all; any other failure, or the last try's, throws naming `command`, each try's error and the
+ * count.
+ */
+async function ghRetried<T>(
+  command: string,
+  attempt: () => Promise<{ readonly code: number; readonly stderr: string; readonly value: T }>,
+  options: GhOptions,
+  rateReset: () => Promise<number | undefined>
+): Promise<T> {
+  const tries = options.tries ?? GH_TRIES;
+  const sleep = options.sleep ?? Bun.sleep;
+  const errors: string[] = [];
+  for (let n = 1; ; n++) {
+    const ran = await attempt();
+    if (ran.code === 0) return ran.value;
+    const said = ran.stderr.trim().split("\n").slice(-4).join(" / ") || "no error text";
+    errors.push(`try ${n}: exit ${ran.code}: ${said}`);
+    const limited = RATE_LIMITED_GH.test(ran.stderr);
+    const transient = limited || TRANSIENT_GH.test(ran.stderr);
+    if (!transient || n >= tries) {
+      throw new Error(
+        `\`${command}\` failed on ${n === 1 ? "its one try" : `each of ${n} tries`}${transient ? "" : " (not a transient failure, so not tried again)"}: ${errors.join("; ")}`
+      );
+    }
+    let wait = Math.min(GH_FIRST_WAIT_MS * 2 ** (n - 1), GH_MAX_WAIT_MS);
+    if (limited) {
+      const reset = await rateReset();
+      const untilReset = reset === undefined ? 60_000 : reset * 1000 - Date.now() + 1_000;
+      wait = Math.min(Math.max(wait, untilReset), GH_MAX_RATE_WAIT_MS);
+    }
+    await sleep(wait);
+  }
+}
 
 /**
  * The repositories as GitHub serves them, read with `gh api` GET calls only: a file from its
  * contents, a directory from the commit's recursive tree and each blob, the whole repository from
- * its tarball. A tree GitHub cuts short (`truncated`) is read from the tarball instead.
+ * its tarball. A tree GitHub cuts short (`truncated`) is read from the tarball instead. Each read
+ * is tried again on a transient failure (`ghRetried`), so one network error stops no screen.
  */
-export function ghSource(gh = "gh"): RepoSource {
+export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
   const trees = new Map<string, Promise<{ entries: TreeEntry[]; truncated: boolean }>>();
+  // When the rate limit resets, in seconds since the epoch, or undefined when it cannot be read.
+  const rateReset = async (): Promise<number | undefined> => {
+    const ran = await run([gh, "api", "--method", "GET", "rate_limit"], {
+      timeoutMs: GH_READ_TIMEOUT_MS,
+    });
+    try {
+      const reset: unknown = JSON.parse(new TextDecoder().decode(ran.stdout))?.resources?.core
+        ?.reset;
+      return ran.code === 0 && typeof reset === "number" ? reset : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const api = async (route: string, raw: boolean): Promise<Uint8Array> => {
     const accept = raw ? ["-H", "Accept: application/vnd.github.raw"] : [];
-    return (await mustRun([gh, "api", "--method", "GET", ...accept, route])).stdout;
+    const argv = [gh, "api", "--method", "GET", ...accept, route];
+    return ghRetried(
+      argv.join(" "),
+      async () => {
+        const ran = await run(argv, { timeoutMs: GH_READ_TIMEOUT_MS });
+        return { code: ran.code, stderr: ran.stderr, value: ran.stdout };
+      },
+      options,
+      rateReset
+    );
   };
   const tarball = async (repo: string, commit: string, dest: string): Promise<void> => {
     mkdirSync(dest, { recursive: true });
     const archive = `${dest}.tar.gz`;
     try {
-      const child = Bun.spawn([gh, "api", "--method", "GET", `repos/${repo}/tarball/${commit}`], {
-        stdin: "ignore",
-        stdout: Bun.file(archive),
-        stderr: "pipe",
-      });
-      const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-      if (code !== 0) {
-        throw new Error(`gh api repos/${repo}/tarball/${commit} failed: ${stderr.trim()}`);
-      }
+      const argv = [gh, "api", "--method", "GET", `repos/${repo}/tarball/${commit}`];
+      await ghRetried(
+        argv.join(" "),
+        async () => {
+          const child = Bun.spawn(argv, {
+            stdin: "ignore",
+            stdout: Bun.file(archive),
+            stderr: "pipe",
+            timeout: GH_TARBALL_TIMEOUT_MS,
+          });
+          const [stderr, code] = await Promise.all([
+            new Response(child.stderr).text(),
+            child.exited,
+          ]);
+          const ended = child.signalCode !== null;
+          return {
+            code,
+            stderr: ended ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms` : stderr,
+            value: undefined,
+          };
+        },
+        options,
+        rateReset
+      );
       await mustRun(["tar", "-xzf", archive, "-C", dest, "--strip-components=1"]);
     } finally {
       rmSync(archive, { force: true });

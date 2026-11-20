@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -17,10 +18,12 @@ import {
   buildContext,
   type ContextOptions,
   cacheKey,
+  ghSource,
   gitBlobId,
   legionRole,
   localSource,
   PROMPTS_GO,
+  readFrontmatter,
   skillFrontmatter,
 } from "./context";
 
@@ -407,4 +410,115 @@ describe.skipIf(goMissing && !onActions)("a Legion context", () => {
       ],
     });
   }, 300_000);
+});
+
+// A SKILL.md's frontmatter as Oh My Pi 18.18.6 reads it (packages/utils/src/frontmatter.ts at the
+// pin): a block plain YAML refuses is repaired, or read line by line, never a throw.
+test("a description holding ': ' in a plain scalar is read whole, as Oh My Pi repairs it", () => {
+  const text =
+    "---\nname: lookup\ndescription: Use to look things up. Examples: current events, prices\n---\n\n# Lookup\n";
+  expect(() =>
+    Bun.YAML.parse("description: Use to look things up. Examples: current events")
+  ).toThrow();
+  expect(readFrontmatter(text)).toEqual({
+    name: "lookup",
+    description: "Use to look things up. Examples: current events, prices",
+  });
+  writeTree(path.join(dir, "colon"), { "SKILL.md": text });
+  expect(skillFrontmatter(path.join(dir, "colon"))).toEqual({
+    description: "Use to look things up. Examples: current events, prices",
+    hidden: false,
+  });
+});
+
+test("a tab in the frontmatter is read as two spaces, and kebab-case keys as camelCase", () => {
+  const text =
+    "---\r\nname: tabbed\r\nmetadata:\r\n\tkind: made-up\r\ndescription: Tabbed.\r\ndisable-model-invocation: true\r\n---\r\n";
+  expect(readFrontmatter(text)).toEqual({
+    name: "tabbed",
+    metadata: { kind: "made-up" },
+    description: "Tabbed.",
+    disableModelInvocation: true,
+  });
+});
+
+test("a block no repair parses is read one key: value line at a time, a value YAML refuses kept as its text", () => {
+  const text =
+    "<!-- a made-up comment -->\n---\nname: broken\ndescription: [unclosed: list\nhide-me: x\n  nested: [also\ndisable-model-invocation: true\n---\nBody.\n";
+  expect(readFrontmatter(text)).toEqual({
+    name: "broken",
+    description: "[unclosed: list",
+    hideMe: "x",
+    disableModelInvocation: true,
+  });
+  writeTree(path.join(dir, "broken"), { "SKILL.md": text });
+  expect(skillFrontmatter(path.join(dir, "broken"))).toEqual({
+    description: "[unclosed: list",
+    hidden: true,
+  });
+  expect(readFrontmatter("# No frontmatter\n")).toEqual({});
+});
+
+/** A stand-in `gh` that answers its first `fails` calls with a network timeout on stderr, then
+ *  with `answer`; each call is counted in the file `count`. */
+function standinGh(name: string, fails: number, answer: string): { gh: string; count: string } {
+  const root = path.join(dir, name);
+  const count = path.join(root, "count");
+  const gh = path.join(root, "gh");
+  writeTree(root, {
+    gh: `#!/bin/sh
+n=$(cat ${JSON.stringify(count)} 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > ${JSON.stringify(count)}
+if [ "$n" -le ${fails} ]; then
+  echo 'Get "https://api.example.test/repos/acme/project/contents/AGENTS.md": dial tcp: lookup api.example.test: i/o timeout' >&2
+  exit 1
+fi
+printf '%s' ${JSON.stringify(answer)}
+`,
+  });
+  chmodSync(gh, 0o755);
+  return { gh, count };
+}
+
+test("a gh read that times out twice is tried again after a growing wait and answers", async () => {
+  const { gh, count } = standinGh("gh-twice", 2, "# Project");
+  const waits: number[] = [];
+  const source = ghSource(gh, { sleep: async (ms) => void waits.push(ms) });
+  const bytes = await source.file("acme/project", COMMIT, "AGENTS.md");
+  expect(new TextDecoder().decode(bytes)).toBe("# Project");
+  expect(readFileSync(count, "utf8").trim()).toBe("3");
+  expect(waits).toEqual([2_000, 4_000]);
+});
+
+test("a gh read that always fails stops after its tries, naming the command, each try's error and the count", async () => {
+  const { gh, count } = standinGh("gh-always", 99, "");
+  const waits: number[] = [];
+  const source = ghSource(gh, { tries: 3, sleep: async (ms) => void waits.push(ms) });
+  const failed = await source
+    .file("acme/project", COMMIT, "AGENTS.md")
+    .then(() => "answered")
+    .catch((error: unknown) => String(error));
+  expect(failed).toContain(
+    `\`${gh} api --method GET -H Accept: application/vnd.github.raw repos/acme/project/contents/AGENTS.md?ref=${COMMIT}\` failed on each of 3 tries`
+  );
+  for (const n of [1, 2, 3]) expect(failed).toContain(`try ${n}: exit 1: `);
+  expect(failed.match(/i\/o timeout/g)?.length).toBe(3);
+  expect(readFileSync(count, "utf8").trim()).toBe("3");
+  expect(waits).toEqual([2_000, 4_000]);
+});
+
+test("a gh read that fails for good, such as a 404, is not tried again", async () => {
+  const root = path.join(dir, "gh-missing");
+  writeTree(root, { gh: "#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n" });
+  chmodSync(path.join(root, "gh"), 0o755);
+  const waits: number[] = [];
+  const failed = await ghSource(path.join(root, "gh"), {
+    sleep: async (ms) => void waits.push(ms),
+  })
+    .file("acme/project", COMMIT, "missing.md")
+    .catch((error: unknown) => String(error));
+  expect(failed).toContain("failed on its one try (not a transient failure, so not tried again)");
+  expect(failed).toContain("try 1: exit 1: gh: Not Found (HTTP 404)");
+  expect(waits).toEqual([]);
 });
