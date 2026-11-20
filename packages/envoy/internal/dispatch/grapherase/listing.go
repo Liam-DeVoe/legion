@@ -201,7 +201,7 @@ var derivedTables = map[string][]derivedRows{
 	"comments":     {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
 	"document_blocks": {
 		{where: `held.node_kind = bound.kind and held.node_address = bound.id`},
-		{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = any(bound.ancestors)`},
+		{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = any(bound.excerpt_blocks)`},
 	},
 	"block_refs":           {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
 	"document_block_texts": {{where: `held.artifact_id = nullif(bound.document, '')::uuid and (held.block_id = bound.block or exists (select 1 from unnest(bound.text_blocks, bound.text_versions) as rewritten (block_id, version) where rewritten.block_id = held.block_id and rewritten.version = held.version))`}},
@@ -221,11 +221,11 @@ var derivedTables = map[string][]derivedRows{
 }
 
 // leftBound is the one row of values every statement of readLeft reads its derivation from, so
-// each binds the same fifteen parameters whichever of them its table's predicate names.
+// each binds the same sixteen parameters whichever of them its table's predicate names.
 const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::text[] as texts, $4::text as document,
 	$5::text as block, $6::text[] as ancestors, $7::bigint[] as events, $8::int[] as numbers, $9::text as window_kind,
 	$10::text as owner_key, $11::text as spec_issue, $12::text as project, $13::text[] as histories,
-	$14::text[] as text_blocks, $15::int[] as text_versions)`
+	$14::text[] as text_blocks, $15::int[] as text_versions, $16::text[] as excerpt_blocks)`
 
 // readLeft searches every column of every table a text can be written into for the erased texts,
 // and lists each row it finds that does not derive from the node - by its table, its primary key
@@ -240,7 +240,9 @@ const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::t
 // leaves holding those bytes, beside the line naming it redacted. The text of a block holding the
 // node's block is passed over only at a version the redaction rewrites (readAncestorTexts): at a
 // version the node's block did not stand in, the same words are that block's own, which the run
-// leaves.
+// leaves. Its row of document_blocks is passed over only where the redaction rewrites its excerpt
+// (readAncestorExcerpts): an excerpt cut from such a version is left as it is, and searched as
+// any other row is.
 //
 // The search names no store, so a table a later build adds is listed without anyone adding it
 // here. A bytea is searched for the texts' UTF-8 bytes, since its text form is hex, and a json
@@ -275,12 +277,16 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 	for index, text := range read.blockTexts {
 		textBlocks[index], textVersions[index] = text.blockID, text.version
 	}
+	excerptBlocks := make([]string, len(read.excerpts))
+	for index, excerpt := range read.excerpts {
+		excerptBlocks[index] = excerpt.blockID
+	}
 	histories := make([]string, 0, len(read.margins)+1)
 	for _, replaced := range read.replacedHistories() {
 		histories = append(histories, replaced.document.artifact)
 	}
 	args := []any{e.Kind, e.ID, read.texts, document, read.blockID, read.ancestors, eventIDs, read.numbers,
-		windowKind, ownerKey, read.document.specIssue(), read.project, histories, textBlocks, textVersions}
+		windowKind, ownerKey, read.document.specIssue(), read.project, histories, textBlocks, textVersions, excerptBlocks}
 	held := map[string][]string{}
 	for _, column := range columns {
 		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures") {

@@ -204,12 +204,19 @@ func TestListMyAnswersListsAnAnswerStoredInAnotherCase(t *testing.T) {
 			answersToAsk++
 		}
 	}
-	// Each half is held on its own, so a read that drops one half's rows names that half.
-	if answers.Total != 2 || len(answers.Rows) != 2 || replies != 1 {
+	// Each half is held on its own, so a read that drops one half's rows names that half, and the
+	// counts are held apart from both: the total, and the rows the page lists.
+	if replies != 1 {
 		t.Errorf("alice's answers = %#v, want her one reply %s, stored under \"Alice\" by an earlier build", answers, reply.ID)
 	}
-	if answers.Total != 2 || len(answers.Rows) != 2 || answersToAsk != 1 {
+	if answersToAsk != 1 {
 		t.Errorf("alice's answers = %#v, want her one answer to ask %s, stored under \"Alice\" by an earlier build", answers, answeredAsk.ID)
+	}
+	if answers.Total != 2 {
+		t.Errorf("alice's answers hold %d row(s) in total, want 2: her one reply and her one answer", answers.Total)
+	}
+	if len(answers.Rows) != 2 {
+		t.Errorf("alice's answers list %d row(s) on the page, want 2: her one reply and her one answer", len(answers.Rows))
 	}
 }
 

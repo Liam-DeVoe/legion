@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -56,11 +57,11 @@ func markStaleDocuments(ctx context.Context, database *store.Store, rule int) ([
 
 // StaleDocumentsStatement is markStaleDocuments' selection: at most $2 documents past $1, in id
 // order, that another release indexed after this release's store last stated them and that hold
-// no mark of the marking rule $3 or a higher one. A mark of a lower rule is read as no mark, so
-// markStaleBatch raises it to $3.
-const StaleDocumentsStatement = `
+// no mark of the marking rule $3 or a higher one. A mark of a lower rule is read as no mark
+// (refs.OwedMarkAbsent), so markStaleBatch raises it to $3.
+var StaleDocumentsStatement = `
 	select artifact_id::text from document_block_versions
-	where store_version < version and (store_owed_at is null or store_owed_rule < $3::integer)
+	where store_version < version and ` + refs.OwedMarkAbsent("", "$3::integer") + `
 	  and artifact_id > $1::uuid
 	order by artifact_id
 	limit $2
@@ -96,11 +97,11 @@ func markStaleBatch(ctx context.Context, database *store.Store, batch []string, 
 
 // StaleBatchMarkStatement is markStaleBatch's mark, at the marking rule $2, of each document of
 // $1 whose store still stands below its version and that holds no mark of $2 or a higher rule:
-// a mark of a lower rule is read as no mark and raised to $2, keeping its time, and a document
-// that holds no mark takes $2 and now. It answers the documents it marked.
-const StaleBatchMarkStatement = `
+// a mark of a lower rule is read as no mark (refs.OwedMarkAbsent) and raised to $2, keeping its
+// time, and a document that holds no mark takes $2 and now. It answers the documents it marked.
+var StaleBatchMarkStatement = `
 	update document_block_versions set store_owed_at = coalesce(store_owed_at, now()), store_owed_rule = $2::integer
 	where artifact_id = any($1::uuid[]) and store_version < version
-	  and (store_owed_at is null or store_owed_rule < $2::integer)
+	  and ` + refs.OwedMarkAbsent("", "$2::integer") + `
 	returning artifact_id::text
 `

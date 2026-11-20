@@ -607,6 +607,44 @@ func OwedMarkListed(row, rule string) string {
 		` or ` + row + `.store_version is null or ` + row + `.store_version < ` + row + `.version)`
 }
 
+// OwedRuleKept is the rule a statement that marks a document owed a block index at the marking
+// rule rule, a SQL expression, writes into store_owed_rule of the document_block_versions row row:
+// where a mark stands (store_owed_at), the higher of its rule and rule, so a mark of a higher rule
+// stays that rule's to drain; where none stands, rule, whatever rule a mark cleared before left
+// on the row, since the rule is read only where a mark stands. Every statement that keeps or
+// raises the rule of a mark standing on the row reads this one text: docs'
+// oweDocumentIndexStatement, RebuildMarkStatement and graphcensus's BlockBatchMarkStatement.
+//
+// row names the row as the statement reads it, or is empty where the statement names its columns
+// unqualified. beforeElse is the whitespace written before the expression's else arm, which is
+// the layout of the statement it stands in: the marking rule's digest is taken over the bytes of
+// each such statement (docs' TestTheMarkingRuleNamesTheStatementsItMarksWith), so each keeps the
+// layout that digest records.
+func OwedRuleKept(row, rule, beforeElse string) string {
+	return `case when ` + owedColumn(row, "store_owed_at") + ` is null then ` + rule + beforeElse +
+		`else greatest(` + owedColumn(row, "store_owed_rule") + `, ` + rule + `) end`
+}
+
+// OwedMarkAbsent is the condition under which a statement that marks a document owed a block
+// index at the marking rule rule, a SQL expression, reads the document_block_versions row row as
+// holding no mark: the row holds none (store_owed_at null), or holds a mark of a lower rule, which
+// the statement raises to rule and whose time it keeps. A mark of rule or a higher rule is left as
+// it is, and so is its rule. docs' markVersionedDocuments, in its selection and its update alike,
+// and graphcensus's StaleDocumentsStatement and StaleBatchMarkStatement read this one condition.
+// row is as OwedRuleKept reads it.
+func OwedMarkAbsent(row, rule string) string {
+	return `(` + owedColumn(row, "store_owed_at") + ` is null or ` + owedColumn(row, "store_owed_rule") + ` < ` + rule + `)`
+}
+
+// owedColumn names column of the document_block_versions row row, or the column alone where row
+// is empty, as the statement reading it names its columns.
+func owedColumn(row, column string) string {
+	if row == "" {
+		return column
+	}
+	return row + "." + column
+}
+
 // OwedBlockIndexDebts is one row per document a build of the marking rule $1 owes a block index -
 // its version null, or this build's own mark on it that such a build lists (store_owed_at,
 // blockStand.owed, OwedMarkListed) - each dated by the write that owed it: the created_at of the

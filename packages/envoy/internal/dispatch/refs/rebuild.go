@@ -160,16 +160,15 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 // (store_owed_at), as docs' oweDocumentIndexStatement sets them on one document. A mark the
 // document already holds keeps its time and keeps the higher of its rule and $1, so a mark of a
 // higher rule stays that rule's to drain; where no mark stands the row takes $1, whatever rule a
-// mark cleared before left on it, since the rule is read only where a mark stands. It is a named
-// statement so the test that holds the marking rule to its statements reads it
+// mark cleared before left on it, since the rule is read only where a mark stands (OwedRuleKept).
+// It is a named statement so the test that holds the marking rule to its statements reads it
 // (TestTheMarkingRuleNamesTheStatementsItMarksWith).
-const RebuildMarkStatement = `
+var RebuildMarkStatement = `
 	insert into document_block_versions (artifact_id, store_owed_at, store_owed_rule)
 	select id, now(), $1::integer from artifacts where kind = 'doc'
 	on conflict (artifact_id) do update set version = null,
 		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at),
-		store_owed_rule = case when document_block_versions.store_owed_at is null then excluded.store_owed_rule
-			else greatest(document_block_versions.store_owed_rule, excluded.store_owed_rule) end
+		store_owed_rule = ` + OwedRuleKept("document_block_versions", "excluded.store_owed_rule", "\n\t\t\t") + `
 `
 
 func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, error) {

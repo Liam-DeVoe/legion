@@ -242,10 +242,10 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 // (refs.BlockIndexMarkingRule). Every such document is marked, whatever mark it holds: a mark
 // standing there is dated again, and keeps the higher of its rule and $2, so a mark of a higher
 // rule stays that rule's to drain. Where no mark stands the row takes $2, whatever rule a mark
-// cleared before left on it, since the rule is read only where a mark stands.
-const BlockBatchMarkStatement = `
+// cleared before left on it, since the rule is read only where a mark stands (refs.OwedRuleKept).
+var BlockBatchMarkStatement = `
 	update document_block_versions set store_owed_at = now(),
-		store_owed_rule = case when store_owed_at is null then $2::integer else greatest(store_owed_rule, $2::integer) end
+		store_owed_rule = ` + refs.OwedRuleKept("", "$2::integer", " ") + `
 	where artifact_id = any($1::uuid[])
 `
 

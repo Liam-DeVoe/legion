@@ -109,12 +109,13 @@ var readEventPage = `
 // re-locks them, which is the order graphcensus's lockBlockDocuments takes several of them in: a
 // writer holding several such rows and this statement can never each hold one the other waits
 // for. It decides on the rows as it locks them, in the write phase, so a row a version's index
-// stated meanwhile is not marked.
-const markVersionedDocuments = `
+// stated meanwhile is not marked. Its selection and its update read one condition of no mark
+// (refs.OwedMarkAbsent).
+var markVersionedDocuments = `
 	with held as (
 		select b.artifact_id from document_block_versions b
 		where b.artifact_id = any($1::uuid[])
-		  and (b.store_owed_at is null or b.store_owed_rule < $2::integer)
+		  and ` + refs.OwedMarkAbsent("b", "$2::integer") + `
 		  and not coalesce(b.store_version = b.version, false)
 		order by b.artifact_id
 		for no key update of b
@@ -122,7 +123,7 @@ const markVersionedDocuments = `
 	marked as (
 		update document_block_versions b set store_owed_at = coalesce(b.store_owed_at, now()), store_owed_rule = $2::integer
 		from held
-		where b.artifact_id = held.artifact_id and (b.store_owed_at is null or b.store_owed_rule < $2::integer)
+		where b.artifact_id = held.artifact_id and ` + refs.OwedMarkAbsent("b", "$2::integer") + `
 		returning b.artifact_id
 	)
 	select count(*) from marked`

@@ -1041,7 +1041,9 @@ func TestAPassTheFenceRefusesCommitsNothing(t *testing.T) {
 		`select version from document_block_versions where artifact_id = $1::uuid`, document.artifact).Scan(&stands); err != nil {
 		t.Fatalf("read the revision the document stands at: %v", err)
 	}
-	if stands == nil || *stands != newer {
-		t.Errorf("the document stands at %v after the refused pass, want the newer revision %d", stands, newer)
+	if stands == nil {
+		t.Errorf("the document stands at no revision after the refused pass, want the newer revision %d", newer)
+	} else if *stands != newer {
+		t.Errorf("the document stands at %v after the refused pass, want the newer revision %d", *stands, newer)
 	}
 }
