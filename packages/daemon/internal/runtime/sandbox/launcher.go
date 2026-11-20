@@ -62,9 +62,13 @@ type launchers struct {
 	indexMu        sync.Mutex
 	index          leakguard.Index
 	indexFrames    []shimwire.LauncherLeakCheckIndex
-	// startReserve is how much of a start's own time the hops it sends before its start frame
-	// leave for that frame (beforeTheStart), startFrameReserve outside the tests. indexTurns is
-	// each token's one push of the index (takeIndexTurn), under mu.
+	// startReserve is how much of a start's own time the hops it sends before its start frame, and
+	// never stops on, leave for that frame (beforeTheStart): the saved bundle's (restoreWorkspace)
+	// and the leak check index's (serveLeakCheckIndex). A runtime sets it to its termination grace
+	// (configureProber), which is what a launch's bound gives the start frame past the launcher
+	// wait's deadline (launchBound, relaunch's starting), so those hops end by that deadline; zero,
+	// for a launchers built outside a runtime, reserves nothing. indexTurns is each token's one
+	// push of the index (takeIndexTurn), under mu.
 	startReserve time.Duration
 	indexTurns   map[claim.Token]*indexTurn
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
@@ -127,8 +131,8 @@ type launcherSession struct {
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
 	guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		startReserve: startFrameReserve, indexTurns: map[claim.Token]*indexTurn{},
-		saved: saved, restored: restored, guardKilled: guardKilled, volume: volume, log: log}
+		indexTurns: map[claim.Token]*indexTurn{},
+		saved:      saved, restored: restored, guardKilled: guardKilled, volume: volume, log: log}
 }
 
 // accept registers a launcher connection of the pod of issue, created at podCreated. The newest
@@ -605,13 +609,6 @@ func (s *launcherSession) installedLeakCheckIndex() string {
 	defer s.mu.Unlock()
 	return s.leakCheckIndexSHA256
 }
-
-// startFrameReserve is how much of a start's own time the hops it sends before its start frame,
-// and never stops on, leave for that frame: the saved bundle's (restoreWorkspace) and the leak
-// check index's (serveLeakCheckIndex). The frame's write is bounded by apiTimeout (request), and
-// the launcher answers it once it has applied a saved bundle and started the child, so a launcher
-// that answers neither hop still has this long to be sent its start and to answer it.
-const startFrameReserve = apiTimeout
 
 // beforeTheStart is ctx ended d.startReserve before ctx's own deadline: the bound of a hop a start
 // sends before its start frame and never stops on. Where no more than the reserve is left there is

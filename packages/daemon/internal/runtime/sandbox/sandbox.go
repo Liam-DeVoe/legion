@@ -439,6 +439,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
 		opts.VolumeReported, r.log)
 	r.launchers.leakCheckIndex = opts.LeakCheckIndex
+	r.launchers.startReserve = opts.TerminationGrace
 	r.leakCheckIndexPoll = opts.LeakCheckIndexPoll
 	if r.leakCheckIndexPoll == 0 {
 		r.leakCheckIndexPoll = leakCheckIndexPoll
