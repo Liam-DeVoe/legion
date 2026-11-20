@@ -1574,7 +1574,7 @@ test.skipIf(skip)(
         COMPLETE,
         [
           call("bash", {
-            command: `printf '%s' '${body}' | bun ${DISPATCH_CLI} handoff-write --issue STALL-2 --phase implement --body-file -`,
+            command: `printf '%s' '${body}' | ${process.execPath} ${DISPATCH_CLI} handoff-write --issue STALL-2 --phase implement --body-file -`,
           }),
         ],
         [{ type: "text", text: "Recorded version 2 of the implement handoff." }],
