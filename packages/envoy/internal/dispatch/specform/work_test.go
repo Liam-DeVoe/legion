@@ -18,10 +18,11 @@ const workSamples = 3
 // workBound how many times its work may grow: work in proportion to the text grows about 16 times,
 // n log n work at most about 22 times for the smallest n of the table, and work for each pair of
 // units about 256 times. So a walk for each pair breaks the bound once it is a fifteenth of the
-// work of the smaller text. Measured on a machine of 288 cores, in 20 runs of each at a load
-// average of 262 to 2,295 and in 11 more runs of the table, one under -race, at 158 to 1,058: the
-// worst growth of this table was 24.0, and the least growth of a row whose walk was made a walk
-// for each pair (each walk that a row is for, broken in turn) was 54.1.
+// work of the smaller text. Measured on a machine of 288 cores for the table's present sizes: in 10
+// plain runs of the table at a load average of 138 to 310 (the race build claims no bound), the
+// worst growth was 28.7 (the row "many addresses of a pull request"); and with each walk that a
+// row is for made a walk for each pair in turn, the least growth of a broken row was 39.0 (the
+// ste-lint walk).
 const (
 	workScale = 16
 	workBound = 32
