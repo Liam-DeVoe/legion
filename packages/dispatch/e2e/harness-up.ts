@@ -36,16 +36,25 @@
 import { startStacks, stopStacks } from "./harness-pool";
 import { shellQuote } from "./local-instance-support";
 
+// SIGINT is this script's own once the stack is up: the pool hands that signal back then
+// (`e2e/harness-pool.ts`, `unwatchInterrupt`), and the stack's processes are this process's
+// children, each started detached, in a session of its own (`e2e/local-instance-support.ts`), so
+// a Ctrl-C does not reach them and would otherwise leave them serving loopback ports. The
+// listener is armed before the start, never after it: the pool takes its own listener off as
+// the start returns, and Bun, as Node does, puts a signal back to its default action when its
+// last listener goes, so an interrupt between that and a listener armed here afterwards would
+// end this process by that default and leave the stack running
+// (`e2e/__tests__/harness-up.test.ts`). An interrupt during the start is the pool's as well: it
+// cancels the start, which stops what it began, and `startStacks` rejects.
+const interrupted = Promise.withResolvers<void>();
+process.once("SIGINT", () => interrupted.resolve());
 const [stack] = await startStacks(1);
 for (const [variable, value] of Object.entries(stack.env)) {
   console.log(`export ${variable}=${shellQuote(value)}`);
 }
 console.log("export DISPATCH_E2E_REUSE_SERVERS=1");
 
-// Until the caller stops it. SIGINT is this script's own: the pool hands that
-// signal back once its stacks are up (`e2e/harness-pool.ts`, `unwatchInterrupt`), so from here
-// on nothing else handles it, and the stack's processes are this process's children, which a
-// Ctrl-C would otherwise leave serving loopback ports.
+// Until the caller stops it.
 //
 // SIGTERM is not listened for here. The pool keeps its own listener for that one as long as the
 // stack is up, and that listener stops this same stack and then re-raises the signal, so this
@@ -53,8 +62,6 @@ console.log("export DISPATCH_E2E_REUSE_SERVERS=1");
 // twice at once: the other caller finds the Supervisor's children already taken and goes on to
 // `pg_ctl -m immediate stop` and to clear the run directory under a server that is still
 // shutting down, which the server reports as a failed deregistration (dispatch://INFRA-1410).
-const interrupted = Promise.withResolvers<void>();
-process.once("SIGINT", () => interrupted.resolve());
 await interrupted.promise;
 // The stack wrote its output to this process's stderr rather than to a log directory, which is
 // what a run of one stack does, so there are no logs to keep.
