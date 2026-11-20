@@ -33,7 +33,7 @@ type event struct {
 }
 
 // version is one row of search_text_versions as the rules decide it, before the batch's insert
-// makes its vector.
+// makes its vector (insertVersions).
 type version struct {
 	Kind       string  // "issue", "comment", "message" or "ask"
 	ID         string  // the issue's key, or the comment's, message's or ask's uuid
@@ -43,9 +43,21 @@ type version struct {
 	EventSeq   int32
 	StartedAt  time.Time
 	// Text is the item's own text the version holds: an issue's title, a comment's or a
-	// message's body, or an ask's question. It is nil where neither the event nor an earlier
-	// version of the item gives it, as for an artifact.version of an issue with no version yet.
+	// message's body as its event carries it, or an ask's question. It is nil where neither the
+	// event nor an earlier version of the item gives it, as for an artifact.version of an issue
+	// with no version yet, and on an ask's version read from the table, whose row keeps its
+	// question only inside its body.
 	Text *string
+	// Body is the text the row's body column holds, which the rules compare with the item's
+	// latest version's to tell whether an event changed it: an issue's title, a comment's or a
+	// message's whole body (decideVersions reads it from another source where the event cut
+	// it), and an ask's question, a space and askSearchSuffix of its options and answer. The
+	// insert makes an ask's stored body in SQL, through ask_search_suffix, from Text, Options
+	// and Answer.
+	Body string
+	// BodyFrom is where Body came from: bodyFromEvent, bodyFromRow, bodyFromBlocks or
+	// bodyFromCut, the values of the row's body_from.
+	BodyFrom string
 	// BodyTruncated is whether the event cut the post's body, which is then read whole from
 	// another source.
 	BodyTruncated bool
@@ -57,6 +69,10 @@ type version struct {
 	// them yet.
 	SpecArtifactID *string
 	SpecVersion    *int32
+	// SpecSize is the size in bytes of the primary document version an artifact.version names
+	// (its payload's version.size), the markdown the row's vector is made from, which a batch
+	// counts; 0 on every other row.
+	SpecSize int64
 }
 
 // latestVersion answers an item's latest version, in the table or earlier in the batch, or nil
@@ -67,14 +83,6 @@ type latestVersion func(kind, id string) *version
 // latest version. started is false for an event that changes none of the item's text, such as an
 // issue.updated that keeps the title.
 type rule func(e event, latest latestVersion) (v version, started bool, err error)
-
-// versionRules holds the rule of each event type that can start a version. Every other type is
-// in unchangingTypes: TestEveryEventTypeIsSortedForTheKeywordFill holds each member of
-// contracts.DispatchEventTypes in exactly one of the two.
-var versionRules = map[string]rule{}
-
-// unchangingTypes names each event type that changes no searchable text, with the reason.
-var unchangingTypes = map[string]string{}
 
 // errNoRule is versionOf's answer for an event of a type versionRules holds no rule for.
 var errNoRule = errors.New("no keyword version rule reads this event type")
