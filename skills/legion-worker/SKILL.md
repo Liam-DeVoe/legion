@@ -51,7 +51,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 ## Deployment instructions
 
-They override this skill, except: no deferrals; the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows; and the gate: each `before_merge` check's reviewed head's own line reads yes only from the implementer and from the tester, or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and require `REQUEST_CHANGES` naming the check, with no wait; and the production check after the close (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`).
+They override this skill, except: no deferrals; the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows; the implementer's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/pr-body.md#what-a-result-is`); and the production check after the close (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`).
 
 ## References
 

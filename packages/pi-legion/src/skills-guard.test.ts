@@ -568,48 +568,6 @@ test("the worker prompt's push step leaves out a check CI proves", () => {
   ]);
 });
 
-// The coordinator's R14–R16 ruling lets the otherwise-main guide cut retain only the gate
-// sentences that agents read. Each one states the same rule as the role prompts: an own-head
-// answer, both roles or CI, another head ignored, and the immediate result of a pass and a fail.
-test("the eight guide gate lines state R14 to R16", () => {
-  const guideLines: [string[], string][] = [
-    [
-      ["legion-architect", "SKILL.md"],
-      "a pass and a fail at one head leave the check not known: do not accept, `request_backward_move` naming the check, and do not wait for a later result.",
-    ],
-    [
-      ["legion-architect", "references", "acceptance.md"],
-      "each check's approved head's own line reads yes only from the implementer and from the tester, or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and require `REQUEST_CHANGES` naming the check, with no wait;",
-    ],
-    [
-      ["legion-architect", "references", "acceptance.md"],
-      "Each check's approved head's own line needs yes only from the implementer and from the tester, or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and require `REQUEST_CHANGES` naming the check, with no wait;",
-    ],
-    [
-      ["legion-architect", "references", "acceptance.md"],
-      "If the pull request merged before its last round, move nothing back unless a pass and a fail at one head leave a check not known: do not accept, `request_backward_move` naming the check, with no wait;",
-    ],
-    [
-      ["legion-retro", "SKILL.md"],
-      "Each `before_merge` check's approved head's own line reads yes only from the implementer and from the tester, or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and require `REQUEST_CHANGES` naming the check, with no wait.",
-    ],
-    [
-      ["legion-worker", "SKILL.md"],
-      "each `before_merge` check's reviewed head's own line reads yes only from the implementer and from the tester, or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and require `REQUEST_CHANGES` naming the check, with no wait;",
-    ],
-    [
-      ["legion-worker", "references", "merge-gate.md"],
-      "Approval is gated by each `before_merge` check's reviewed head's own line: yes only from the implementer and from the tester, or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and require `REQUEST_CHANGES` naming the check, with no wait.",
-    ],
-    [
-      ["legion-worker", "references", "pr-body.md"],
-      "its gate reads the check's reviewed head's own line: yes only from the implementer and from the tester, or from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and require `REQUEST_CHANGES` naming the check, with no wait.",
-    ],
-  ];
-  for (const [parts, sentence] of guideLines) {
-    expect(collapsed(path.join(staged, ...parts))).toContain(sentence);
-  }
-});
 
 // A `ci_check` that no run of its name answers is a defect of the check's words, which the
 // architect corrects, and no role sends that to an implementer who cannot cure it

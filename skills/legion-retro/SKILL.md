@@ -31,10 +31,8 @@ with a WAITING line naming the defect and the answer you wait on.
 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, the
    tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) and the review at the
-   version your task's `Handoff:` line names (`--phase review --version <n>`). Each `before_merge`
-   check's approved head's own line reads yes only from the implementer and from the tester, or
-   from CI for `ci_check`; another head counts nothing; a pass and a fail there are not known and
-   require `REQUEST_CHANGES` naming the check, with no wait. The body's `Checks` block carries each.
+   version your task's `Handoff:` line names (`--phase review --version <n>`). A pass must stand at
+   the approved head for every `before_merge` check, and the body's `Checks` block carries each.
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs
      (`skill://legion-worker/references/ci-checks.md`). A `ci_check` check has no pass standing at
      that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or
