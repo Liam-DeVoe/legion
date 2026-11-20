@@ -50,6 +50,15 @@ export interface IssueTreeView {
    *  while the tree keeps the last names. A read that runs again after it failed goes on
    *  standing failed until it answers. */
   readonly namesFailure: NamesFailure | undefined;
+  /** Whether the names the tree is built from are held: the batched names read has answered, or
+   *  the tree holds no address for it to name, and the one more read, of what a typed block's
+   *  words cite, has answered wherever it is asked (`useIssueTree`). A plan task's or a
+   *  callout's words come from those names alone, so until then such a node has none, and a view
+   *  that reads the nodes' words - a words filter's count, or its line that nothing holds the
+   *  words - waits on it. A read's last answer stands while its read of a new set of addresses
+   *  is out or has failed (`namesFailure`), so the names stay held then; a first read that fails
+   *  holds none, and this is false until a read answers. */
+  readonly namesHeld: boolean;
   readonly root: TreeNode;
 }
 
@@ -381,6 +390,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     ];
     return [...new Map(ordered.map((target) => [target.ref, target])).values()];
   }, [extra, first, moreAnswer]);
+  // Whether the names the tree is built from are held (`IssueTreeView.namesHeld`): the first
+  // read holds an answer, or the tree holds no address for it to name, and the one more read
+  // holds an answer of its own where it is asked - not none, and not the empty answer that stood
+  // while nothing was left for it to name (`NO_MORE_TARGETS`), which it keeps until it answers.
+  const namesHeld =
+    (first !== undefined || (treeRead && refs.length === 0)) &&
+    (extra.length === 0 || (moreAnswer !== undefined && moreAnswer !== NO_MORE_TARGETS));
   // The reads that stand failed, which the names in hand stand through (above). The second read
   // fails only where something is left for it to name: where nothing is, its query is disabled.
   const targetsFailed = standsFailed(targets);
@@ -434,7 +450,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     [first, firstTree, named, reads]
   );
   return useMemo(
-    () => ({ blocksHeld: documents.held, blocksRead: documents.read, namesFailure, root }),
-    [documents.held, documents.read, namesFailure, root]
+    () => ({
+      blocksHeld: documents.held,
+      blocksRead: documents.read,
+      namesFailure,
+      namesHeld,
+      root,
+    }),
+    [documents.held, documents.read, namesFailure, namesHeld, root]
   );
 }

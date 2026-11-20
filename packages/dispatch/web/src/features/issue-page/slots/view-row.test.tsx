@@ -5,10 +5,11 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import { issueResultsQuery } from "../../../api/queries";
-import type { ArtifactBlock } from "../../../api/types";
+import type { ArtifactBlock, ReferenceTarget } from "../../../api/types";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
+import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { issueDetails, KEY, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
@@ -74,13 +75,14 @@ function answerReads() {
   };
 }
 
-/** The view row of the fixtures' issue at its own address, under the page's providers. Each case
- *  draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the row of five. */
-function renderViewRow(client: QueryClient) {
+/** The view row of the fixtures' issue at `path`, its own address unless given, under the page's
+ *  providers. Each case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is
+ *  the row of five. */
+function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation")) {
   const issue = issueDetails();
   const route = { key: issue.key, kind: "issue" } as const;
   return render(
-    <MemoryRouter initialEntries={[presetPath(KEY, "conversation")]}>
+    <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <ProvidersSlot issue={issue} route={route}>
@@ -208,6 +210,66 @@ test("the view row draws no count while the reader's login is out, and the real 
         drawnCounts(view.container),
         "the row did not draw the real counts once the reader's login had answered"
       ).toEqual(ANSWERED_COUNTS)
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
+// Under a words filter a plan task's or a callout's words come from the names read alone, so
+// until that read answered Plan matched none of the issue's steps and drew 0 as its count, which a
+// names read that failed left for good. Under one the row draws no count, unit word or flag until
+// the names are held, and the real counts once they are.
+test("under a words filter the view row draws no count while the names read is out, and the real counts once it has answered", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const client = newClient();
+  const reads = answerReads();
+  // The spec holds a step too, which the Plan view counts, and whose words come from the names
+  // read alone.
+  reads.blocks.mockImplementation(
+    (id: string) =>
+      Promise.resolve(
+        id === "artifact-spec"
+          ? [
+              requirementBlock("r1"),
+              requirementBlock("r2"),
+              { ...requirementBlock("t1"), type: "plan_task" },
+            ]
+          : []
+      ) as never
+  );
+  const step = buildDispatchReference({
+    block: { id: "t1" },
+    key: KEY,
+    kind: "artifact",
+    slug: SPEC_SLUG,
+  });
+  // The names read, held out until the case answers it with the step's words.
+  const names = Promise.withResolvers<{ targets: ReferenceTarget[] }>();
+  reads.names.mockReturnValue(names.promise as never);
+  const view = renderViewRow(client, `${presetPath(KEY, "conversation")}?q=lanterns`);
+  try {
+    // The names are read once every other read of the tree has answered.
+    await waitFor(() => expect(reads.names, "the names were never read").toHaveBeenCalled());
+    expect(client.isFetching(), "a read other than the names' is still out").toBe(1);
+    expect(drawnCounts(view.container), "the row drew a count with the names read out").toEqual({});
+    expect(
+      view.getByRole("toolbar").textContent,
+      "a control drew more than its name with the names read out"
+    ).toBe(NAMES_ALONE);
+
+    await act(async () =>
+      names.resolve({
+        targets: [{ gone: false, kind: "block", name: "Hang the lanterns first.", ref: step }],
+      })
+    );
+    await waitFor(() =>
+      expect(
+        drawnCounts(view.container).plan,
+        "Plan did not count the step its words match once the names read had answered"
+      ).toBe("1")
     );
   } finally {
     view.unmount();

@@ -919,6 +919,89 @@ test("one more read that fails for words that cite more keeps the names it gave,
   }
 });
 
+// The names' line stands for the one more read alone where that read fails and the first holds:
+// it counts that read's failures, says it runs again while it does, and its Retry asks that read
+// again and not the first. Once that read answers, nothing has failed any more.
+test("one more read that fails while the first holds says so, and its Retry asks that read again", async () => {
+  const cited = "dispatch://CORE-7";
+  const words = `Draw the tree as ${cited} asks.`;
+  let failing = true;
+  // Where set, the one more read stays out until it settles.
+  let out: Promise<void> | undefined;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    // The one more read names only what the task's words cite, so it never names the task.
+    if (!refs.includes(TASK_REF)) {
+      await out;
+      if (failing) throw new Error("the names read failed");
+    }
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        return target.ref === cited
+          ? { ...target, kind: "issue", name: "The cited issue" }
+          : target;
+      }),
+    };
+  });
+  // No retry: the one more read fails on its first attempt.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        const tree = useIssueTree(issue);
+        return { name: useKnownReferenceName(cited), tree };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeDefined());
+    expect(asked, "the first read was not read once, and the one more read after it").toHaveLength(
+      2
+    );
+    expect(asked[1]).toEqual([cited]);
+    expect(view.result.current.tree.namesFailure?.failure).toBe(1);
+    expect(view.result.current.tree.namesFailure?.retrying).toBe(false);
+    expect(view.result.current.name).toBeUndefined();
+
+    // Its Retry reads the one more read again, and the first not: while that read is out the
+    // names still stand failed, busy.
+    failing = false;
+    const again = Promise.withResolvers<void>();
+    out = again.promise;
+    await act(async () => view.result.current.tree.namesFailure?.retry());
+    await waitFor(() => expect(view.result.current.tree.namesFailure?.retrying).toBe(true));
+    expect(view.result.current.tree.namesFailure?.failure).toBe(1);
+    expect(asked, "the Retry read other than the one more read again").toEqual([
+      asked[0],
+      [cited],
+      [cited],
+    ]);
+    out = undefined;
+    await act(async () => again.resolve());
+    await waitFor(() => expect(view.result.current.tree.namesFailure).toBeUndefined());
+    expect(view.result.current.name).toBe("The cited issue");
+    expect(asked).toHaveLength(3);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // The one more read's kept answer stands only for what it is asked for now. A plan task's words
 // cite two issues, which the one more read names. Then the first issue is renamed and a comment
 // cites it, so the first read names it now, with its new name; the one more read is asked for the
