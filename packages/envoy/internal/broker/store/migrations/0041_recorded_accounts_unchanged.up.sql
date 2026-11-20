@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0038_recorded_accounts_unchanged.up.sql
+-- packages/envoy/internal/broker/store/migrations/0041_recorded_accounts_unchanged.up.sql
 -- A credential's account is written once, when the credential is made, and never changed: the
 -- account a person's sign-in on a machine records (person_signins' issuer and subject), the
 -- account that approved a machine login (launcher_credentials' approver_issuer and

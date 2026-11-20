@@ -643,7 +643,7 @@ is `403 APPROVER_REPLACED`, and its sign-in to the approval page is a `403` page
 account holds the address, with no session made. The new holder's sign-ins, machine logins and
 approval-page sessions are untouched, made before the revoke reached the broker or after it, and
 so is every service's machine login. A sign-in, machine login or approval-page session from a
-broker before migration `0037_person_subjects` records no account, so the revoke ends it too, and
+broker before migration `0040_person_subjects` records no account, so the revoke ends it too, and
 if it was the new holder's, that machine signs in or logs in again and the holder signs in to the
 page again. One lock per address orders the revoke with each trade, approval, page sign-in and
 page decision of that address, so nothing the replaced account makes in the meantime outlives it,
@@ -677,7 +677,7 @@ can reach the broker after a later one, and its answer goes to no one; one Dispa
 on is answered so only when Dispatch's session generation for the address is below the broker's,
 so Dispatch leaves that revocation owed, logs it at ERROR and counts it
 (`envoy_dispatch_broker_revocations_superseded_total`). The broker's migration
-`0037_person_subjects` says how such a revoke can arrive.
+`0040_person_subjects` says how such a revoke can arrive.
 
 Reset or restore the broker's database and Dispatch's together, never one alone, for the reason
 [the Dispatch runbook](/legion/dispatch/running-dispatch/#signing-people-in) gives, which also

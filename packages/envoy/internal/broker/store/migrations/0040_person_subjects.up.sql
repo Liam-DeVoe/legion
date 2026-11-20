@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0037_person_subjects.up.sql
+-- packages/envoy/internal/broker/store/migrations/0040_person_subjects.up.sql
 -- An address is held by one account of the identity provider at a time, and Dispatch decides
 -- which. When another Google account takes an address Dispatch holds for a person, Dispatch
 -- names the account it replaced, by its issuer and its `sub` (POST /v1/person-subjects/revoke),
@@ -18,7 +18,7 @@
 -- Each is null on every row written before this migration, and on a machine login whose approval
 -- an older Dispatch relayed: such a row is read as possibly the replaced account's, and the revoke
 -- ends it too. A sign-in row with none recorded is ended by its next trade, which writes a row of
--- its own (0038 refuses any change of a recorded account). The two columns of each pair are set
+-- its own (0041 refuses any change of a recorded account). The two columns of each pair are set
 -- together or not at all, and neither is ever empty, so a row either names one account or says
 -- plainly that it names none. An issuer is stored as oidc.CanonicalIssuer spells it, which is the
 -- spelling Dispatch names it by.
