@@ -4074,10 +4074,12 @@ DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dis
 ```sh
 DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [DISPATCH_BIN=<envoy-dispatch>] [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+  [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE=<commit>] [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=<envoy-dispatch>] \
   bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
 ```
 
 Runs on any Linux host with `go`, `bun`, `curl`, `psql`, `openssl` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker.
+`older-rows` also takes `git` and `tar`, to build the release before, and, in a checkout that does not hold that commit (a shallow CI checkout), a fetch of that one commit from the checkout's `origin`.
 It proves `comparisonReader` (`packages/envoy/internal/dispatch/api/results_comparison.go`) and `recordPullRequestHead` (`packages/envoy/internal/dispatch/delivery/pull_request_heads.go`) on the wire:
 the real `envoy-dispatch` records each result and says where its commit stands against the commits and branches its check compares with, and the head a `before_merge` result is compared with moves only because a pull-request event reached the bus.
 Two of its cases prove the rest of that answer:
@@ -4097,7 +4099,8 @@ Each item below names an input and its default, then what it means.
   In a Legion pod, a database that `createdb` makes on the server `LEGION_TEST_PG_DSN` names holds `vector`, so it serves.
   The run leaves what it wrote there for inspection.
   The driver reads it too, as `VERIFICATION_RESULTS_E2E_DATABASE_URL`, for the fixtures no route of Dispatch can write and the answers no route gives (the driver's header lists them):
-  stored pull request rows as the release before writes them, with no texts, texts rows, timeline rows, owed reads, partial rows, a second key reading, and the delete of the reconcile's records of its passes at the boundary of each pass
+  texts rows, timeline rows, owed reads, partial rows, stored pull request rows as the release before writes them for the cases other than `older-rows` and `key-reading-changes`, a second key reading, and the delete of the reconcile's records of its passes at the boundary of each pass.
+  The rows of `older-rows` and of `key-reading-changes`' own pull requests are the servers' own writes: the release before's build, and the build under test
 
 - `DISPATCH_BIN` — unset
 
@@ -4109,6 +4112,17 @@ Each item below names an input and its default, then what it means.
   The script reads it before it drops the inherited variables, and refuses a value that is not a readable file.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
+
+- `VERIFICATION_RESULTS_E2E_RELEASE_BEFORE` — `1c7c8253678fedad99b5142defc5824e2c57b9a8`
+
+  the commit of the release before this change, whose build writes `older-rows`' database: main at the commit the change's branch last merged.
+  The script takes its `packages/envoy` with `git archive` and builds `./cmd/dispatch`: from this checkout's repository where it holds the commit, else from a bare repository of the run's own that fetches that one commit at depth 1 from `origin`.
+  The working copy is never touched
+
+- `VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN` — unset
+
+  a prebuilt `envoy-dispatch` of that commit, which the run copies in place of building it.
+  Neither variable is read when `VERIFICATION_RESULTS_E2E_ONLY` names another case, since `older-rows` does not run then
 
 - `VERIFICATION_RESULTS_E2E_ONLY` — unset
 
@@ -4142,6 +4156,10 @@ The App key is what makes the delivery intake run at all, and every GitHub call 
 The server also runs its delivery reconcile every two seconds, and its first pass as it starts (`DISPATCH_TEST_HOOKS=1`, `DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=2s`, `DISPATCH_TEST_RECONCILE_AT_START=1`), in place of the five minutes a deployment runs it at:
 the cases' answers hold while passes run beside them.
 A case that reads the answers of exactly one pass is a one-pass phase, which the section below the cases describes.
+
+`older-rows` runs before every case, on a database the release before's build wrote (`older_rows_upgrade`).
+That build starts on the emptied database and migrates it, with a NATS of `older-rows`' own, and stores the case's 300 pull requests itself from their events and one pass of its own reconcile; then this checkout's build starts on that database and `older-rows`' two phases run.
+The script then empties the database again, removes the driver's state file and starts the run's own NATS, so the cases and every later phase start from nothing, with no delivery settings, as they would with no `older-rows` before them.
 
 The driver, `verification-results.ts`, acts as one session with the agent token (each write naming the session as `actor`) and as the person `alice` through `GET /auth/_dev/signin`.
 It also runs the `dispatch` command as a process: the `bin/dispatch.ts` that `VERIFICATION_RESULTS_E2E_DISPATCH_CLI` names, else this checkout's `packages/envoy-client/bin/dispatch.ts`.
@@ -4287,8 +4305,14 @@ each pass also reads again the open pull requests the earlier cases left in `acm
   The pass moves both stored rows from the parent to the child, the merged one included, and appends one `issue.pull_request_attribution_changed` on the parent and one on the child for each, and none for the push.
   Its log line counts `facts_left` and `reads_left` 0, and `dispatch attribution` prints 0 for both
 
-- `older-rows` — issues `L0` to `L5`, `N0` to `N5` and `D0` to `D5`, each with a `before_merge` check, and 300 merged pull requests `#7001` to `#7300` (i = n − 7000) on `legion/N(i % 6)`.
-  The driver stores them as the release before left them: `#7001` to `#7240` with a results row stored as `L(i % 6)` and read by GitHub and no texts, `#7221` to `#7240` of them under `acme/old-name`; `#7001` to `#7060` with a timeline row of `D(i % 6)` too, and `#7051` to `#7060` stored as no issue; `#7241` to `#7260` stored as `L(i % 6)` and not read; and `#7261` to `#7300` with a timeline row of `D(i % 6)` alone.
+- `older-rows` — 300 merged pull requests `#7001` to `#7300` (i = n − 7000, j = i % 6), each on `legion/N(j)` with the body `Follows D(j). Closes L(j).` (`#7051` to `#7060`: `Follows D(j).`), as GitHub answers them from the start.
+  The release before's build stores them, under the delivery settings its intake needs to take any event (deploy repository `acme/attribution-deploy`).
+  First the issues `L(j)` are made, with `acme/old-name` the project's default repository, and the merged events of `#7221` to `#7240` are published under that name.
+  Then the repository is renamed to `acme/attribution-live`, and the events of `#7001` to `#7220` and `#7241` to `#7260` are published.
+  Its intake stores 260 results rows with no texts, as `L(j)` by `title_body` and `#7051` to `#7060` as no issue, and the timeline rows of `#7001` to `#7060`, whose author is of the settings' population.
+  The issues `D(j)` follow, and one pass of its reconcile: the pass resolves those timeline rows again to `D(j)`, and its merged search stores `#7261` to `#7300` as timeline rows of `D(j)` alone.
+  The issues `N(j)` come last; they take the keys that the branches named before they existed.
+  The driver checks every row that build left before this build starts.
   It reads before the pass, then after one pass, then sets every stored issue back to `L(i % 6)` and reads after one more pass
 
   before the pass, each results row's stored answer holds:
@@ -4305,10 +4329,12 @@ each pass also reads again the open pull requests the earlier cases left in `acm
   The rule gives each pull request to `B(k)` by its branch; after the link, `#10107` to `T7`; after the move, the 50 pull requests of `B8` to `T8` by the body.
   The new issue takes the key the probe foretold and compares with `#15001` alone
 
-- `key-reading-changes` — on the rows of `rule-reaches-each-row`.
+- `key-reading-changes` — 5,000 merged pull requests of its own, `#20001` to `#25000` (k = (n − 20000) % 100), on `legion/<B(k) in lower case>` with the body `Follows T(k). Work of B(k).`, and the rows of `rule-reaches-each-row`.
+  The script starts the server with its reconcile every two seconds (`one_pass_phase key-reading-changes --store-every-2s`); the driver publishes the merged events of the 5,000, waits until the intake has stored each, and then until the passes have read the 5,000 by the batched query.
+  So a negative control's build stores them as it stores any pull request.
   The driver records the key reading that `dispatch attribution` prints, then, while no server runs, applies `fixtures/attribution_reading_b.sql`: the lock and `create or replace function attribution_keys` whose branch reading takes no upper case, so `legion/<lower case>` names nothing
 
-  at the boundary, the reading differs from the recorded one, each pull request is `T(k)`'s and no `B(k)`'s, the new issue compares with nothing, and the reads of GitHub are 0: the statement computes the keys of each row on another reading from its texts.
+  at the boundary, the reading differs from the recorded one, each of the 5,000 and each pull request of `rule-reaches-each-row` is `T(k)`'s and no `B(k)`'s, the new issue compares with nothing, and the reads of GitHub are 0: the statement computes the keys of each row on another reading from its texts.
   Within 60 s, `dispatch attribution` prints 0 pull requests whose keys wait, and the log holds a new line `dispatch delivery: keys remade`
 
 - `facts-only` — issues `F1` and `F2`, and the open pull request `#16001` on `legion/F2` with the body `Follows F1. Closes F2.`, which GitHub also names as the pull request of an earlier commit.
@@ -4386,8 +4412,8 @@ DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
 git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 ```
 
-The seven checks take their negative controls from `DISPATCH_BIN` and `VERIFICATION_RESULTS_E2E_ONLY`, so the checkout does not change, except two whose mutation is a file of the driver.
-A build of an older commit comes from a detached worktree of that commit; a mutated build of this tree is `go build -overlay` with the changed file beside it, never a commit.
+The seven checks take their negative controls from `DISPATCH_BIN` and `VERIFICATION_RESULTS_E2E_ONLY`, so the checkout does not change, except one whose mutation is a file of the driver.
+A build of an older commit comes from a detached worktree of that commit; a mutated build of this tree is `go build -overlay` with the changed file beside it, never a commit, and a build with one more migration is a copy of `packages/envoy` with the file added, since the migrations are embedded.
 The head of `5ea6b2ffb2` writes no attribution line, so its runs give `VERIFICATION_RESULTS_E2E_OLD_BUILD=1`; the last control shows that a run without it fails the boundary when the line is missing.
 
 ```sh
@@ -4396,6 +4422,11 @@ go -C "$TMPDIR/<base tree>/packages/envoy" build -o "$TMPDIR/envoy-dispatch-old"
 git -C <checkout> worktree remove --force "$TMPDIR/<base tree>"
 go -C packages/envoy build -overlay <overlay.json> -o "$TMPDIR/envoy-dispatch-mutant" ./cmd/dispatch
 
+# A migration that gives each results row stored before it texts made of what the row stores (its
+# head, branch, base, title and time, no body, the commit messages read and empty): the rows the
+# release before wrote are judged by those texts before their read:
+DATABASE_URL=… DISPATCH_BIN=<build with that migration> VERIFICATION_RESULTS_E2E_ONLY=older-rows bash scripts/e2e/verification-results.sh
+# → FAIL older-rows: #7001 is not a basis of L1 before its read (L1 is <key>, which compares with 0 pull request(s))
 # attributedTerms answers the picked key for a row with no facts, in place of its fallback:
 DATABASE_URL=… DISPATCH_BIN=<mutant> VERIFICATION_RESULTS_E2E_ONLY=older-rows bash scripts/e2e/verification-results.sh
 # → FAIL older-rows: #7001 is not a basis of L1 before its read (L1 is <key>, which compares with 0 pull request(s))
@@ -4408,12 +4439,12 @@ DATABASE_URL=… DISPATCH_BIN=<5ea6b2ffb2> VERIFICATION_RESULTS_E2E_ONLY=rule-re
 # → FAIL rule-reaches-each-row: after the rows of the release before, 4950 of 5000 pull requests are
 #   under T0 to T99 and 50 under B0 to B99 at the boundary, and the fake answered 50 read(s) of pull
 #   requests; 4950 differ from the rule, …
-# A driver whose fixture of key-reading-changes stores B(k) on each row and deletes its texts (a
-# build that stores keys and no texts), with this tree's build:
-DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=key-reading-changes bash <tree with that driver>/scripts/e2e/verification-results.sh
-# → FAIL key-reading-changes: after the change of the reading, 500 of 5000 pull requests are under
-#   T0 to T99 and 4500 under B0 to B99 at the boundary, and the fake answered 500 read(s) of pull
-#   requests; …
+# upsertHead stores the issue the rule gives from the texts of each write, and keeps no texts row (a
+# build that stores the keys and no texts):
+DATABASE_URL=… DISPATCH_BIN=<mutant> VERIFICATION_RESULTS_E2E_ONLY=key-reading-changes bash scripts/e2e/verification-results.sh
+# → FAIL key-reading-changes: after the change of the reading, 500 of the 5,000 pull requests the server
+#   stored are under T0 to T99 and 4500 under B0 to B99, and the fake answered 500 read(s) of pull
+#   requests; 4500 differ from the reading, …
 # recordPullRequestHead takes the head branch from the envelope's head_ref:
 DATABASE_URL=… DISPATCH_BIN=<mutant> VERIFICATION_RESULTS_E2E_ONLY=facts-only bash scripts/e2e/verification-results.sh
 # → FAIL facts-only: F1 (<key>) compares with #16001 after the envelope with no head_ref, want F2 (<key>) alone

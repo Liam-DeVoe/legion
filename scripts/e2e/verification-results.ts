@@ -14,16 +14,19 @@
 // after it starts the server again with a start pass and an interval of one hour. That is the
 // boundary of one complete pass (prepareOnePass, awaitOnePass). Before its first case the driver
 // checks its counter of pull request reads, and the phase `boundary` checks the boundary of one
-// pass.
+// pass. older-rows has two halves more, which run first, through the release before's build:
+// `--phase older-rows-release-writes` and `--phase older-rows-release-pass` (the section
+// "older-rows").
 //
 // The seven checks of the attribution run as such phases, in the project ATT and its repository
 // acme/attribution-live, in this order (the section "the seven checks"):
-//   older-rows             300 rows as the release before left them hold their stored issue
-//                          before any pass, and one pass reads each of them and leaves none.
+//   older-rows             300 rows that the release before's build wrote hold their stored
+//                          issue before any pass, and one pass reads each of them and leaves none.
 //   rule-reaches-each-row  the rule reaches 5,000 rows with texts at the read, with no read of
 //                          GitHub: after a person's link, a move of an issue to another
 //                          repository and a new issue that a stored branch names, too.
-//   key-reading-changes    a second key reading reaches the same rows with no read of GitHub.
+//   key-reading-changes    a second key reading reaches 5,000 pull requests that the server under
+//                          test stored, with no read of GitHub.
 //   facts-only             no writer takes a fact from the envelope.
 //   read-compares          a results read compares with the pull request that it learns, and says
 //                          what it does not know yet.
@@ -38,7 +41,7 @@
 //     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
 //     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
 //     bun scripts/e2e/verification-results.ts \
-//       [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert] \
+//       [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass] \
 //       <dispatch-url> <nats-url> <fake-github-url>
 //
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
@@ -54,9 +57,11 @@
 // rows as the release before writes them, with no texts; texts rows as a read of this build
 // writes them; timeline rows, owed reads and partial rows; a second key reading
 // (fixtures/attribution_reading_b.sql); and the delete of the reconcile's records of its passes at
-// each phase's boundary. It reads SQL for the answers that no route gives: the issue and the source
-// a row records, its texts and branch keys, the delivery rows of limit-of-one, the records of the
-// passes and whether a process holds the reconcile's lease.
+// each phase's boundary. It writes no row of older-rows and no row of key-reading-changes' own
+// 5,000 pull requests: the servers store those from events, passes and the API. It reads SQL for
+// the answers that no route gives: the issue and the source a row records, its texts and branch
+// keys, the delivery rows of limit-of-one, the records of the passes and whether a process holds
+// the reconcile's lease.
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
 // follows, and the exit status is 1 when any case failed. The first case,
@@ -71,7 +76,9 @@
 // Until stores-agree, the run writes no delivery settings, as a deployment that never configured
 // the delivery timeline holds none: the intake writes a pull request's head row from its envelope
 // all the same, and every head of the cases before the phases reaches Dispatch that way.
-// stores-agree and limit-of-one write the settings their passes need.
+// stores-agree and limit-of-one write the settings their passes need. older-rows writes them
+// through the release before's build, whose intake takes no event without them, on a database the
+// shell empties before the cases.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,7 +126,7 @@ if (
   (phaseAt !== -1 && phaseArg === undefined)
 ) {
   process.stderr.write(
-    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<log> VERIFICATION_RESULTS_E2E_STATE=<file> [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] bun verification-results.ts [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert] <dispatch-url> <nats-url> <fake-github-url>\n"
+    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<log> VERIFICATION_RESULTS_E2E_STATE=<file> [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] bun verification-results.ts [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass] <dispatch-url> <nats-url> <fake-github-url>\n"
   );
   process.exit(2);
 }
@@ -264,6 +271,9 @@ const attributionInstallation = 259;
 const betaRepo = "beta/tools";
 const betaDeployRepo = "beta/deploy";
 const betaInstallation = 258;
+/** The deploy repository of older-rows' delivery settings, on the installation of the seven
+ *  checks: the release before's intake takes no event without settings. */
+const olderRowsDeployRepo = "acme/attribution-deploy";
 /** The repositories whose reads of pull requests a case of the seven checks counts. */
 const attributionRepos = [attributionRepo, attributionSecondRepo, attributionOldName];
 
@@ -272,6 +282,10 @@ const attributionRepos = [attributionRepo, attributionSecondRepo, attributionOld
  *  (upsertHeadRow). */
 const attributionUpdatedAt = "2026-11-10T00:00:00Z";
 const releaseBeforeEventAt = "2026-11-09T00:00:00Z";
+/** The first and the last of key-reading-changes' own pull requests, which the server under test
+ *  stores (the section "key-reading-changes"). */
+const readingFirst = 20001;
+const readingLast = 25000;
 
 /** The head commit of pull request `number` of the seven checks: its number in hex, padded to 40
  *  characters with `pad`. Another pad gives another head of the same pull request. */
@@ -887,10 +901,11 @@ async function prepareOnePass(): Promise<string> {
  *  by its period: both must be there, at one boundary, at the period of one hour. The lease must
  *  be free, and the log must hold one more attribution line than at the fixture (linesBefore).
  *  A control of a build before that line (VERIFICATION_RESULTS_E2E_OLD_BUILD=1) writes no such
- *  line, so for it the boundary rests on the records and the lease alone. A log with no such line
- *  still fails a run that does not give that setting. Every phase's answer rests on this boundary,
- *  so any other reading stops the driver (setupFailed). It answers what it read. */
-async function awaitOnePass(linesBefore: number): Promise<string> {
+ *  line, so for it the boundary rests on the records and the lease alone, and so does the pass
+ *  of the release before's build that older-rows waits for (`countLines` false). A log with no
+ *  such line still fails a run that does not give that setting. Every phase's answer rests on this
+ *  boundary, so any other reading stops the driver (setupFailed). It answers what it read. */
+async function awaitOnePass(linesBefore: number, countLines = !oldBuild): Promise<string> {
   const deadline = Date.now() + onePassWaitMs;
   const records = () =>
     sql(
@@ -927,16 +942,16 @@ async function awaitOnePass(linesBefore: number): Promise<string> {
     kept !== wanted ||
     new Set(rows.map((row) => row[2])).size !== 1 ||
     leaseHeld ||
-    (lines !== 1 && !oldBuild)
+    (lines !== 1 && countLines)
   ) {
     setupFailed(
       "the boundary of one pass",
-      `duty_passes holds ${shown}, want ${reconcileLease} and ${reconcileLease}/${onePassPeriodNs} at one boundary, each of period ${onePassPeriodNs} ns; the lease is ${leaseHeld ? "still held" : "free"}; the log holds ${lines} more attribution line(s) than at the fixture, want ${oldBuild ? "any (VERIFICATION_RESULTS_E2E_OLD_BUILD=1)" : "1"}`
+      `duty_passes holds ${shown}, want ${reconcileLease} and ${reconcileLease}/${onePassPeriodNs} at one boundary, each of period ${onePassPeriodNs} ns; the lease is ${leaseHeld ? "still held" : "free"}; the log holds ${lines} more attribution line(s) than at the fixture, want ${countLines ? "1" : "any (a build before that line)"}`
     );
   }
-  return oldBuild
-    ? `one pass: duty_passes holds ${shown}; the lease is free; the log holds ${lines} more attribution line(s), not counted: VERIFICATION_RESULTS_E2E_OLD_BUILD=1 names a build before that line`
-    : `one pass: duty_passes holds ${shown}; the lease is free; the log holds 1 more attribution line`;
+  return countLines
+    ? `one pass: duty_passes holds ${shown}; the lease is free; the log holds 1 more attribution line`
+    : `one pass: duty_passes holds ${shown}; the lease is free; the log holds ${lines} more attribution line(s), not counted: the server is a build before that line`;
 }
 
 /** Each line `dispatch delivery: pull request attribution` of the server's log, oldest first, as
@@ -1020,7 +1035,9 @@ async function attributionCounts(): Promise<AttributionCounts> {
  *  that started with no pass, where the shell asks for them; and `assert`, the case after the
  *  start pass, given what awaitOnePass read. `prepare`, `before` and `assert` are parts of the case
  *  `caseName`. `baseOf` names the cases of the seven checks that stand on this phase's writes:
- *  under VERIFICATION_RESULTS_E2E_ONLY, the phase writes for them and asserts nothing. */
+ *  under VERIFICATION_RESULTS_E2E_ONLY, the phase writes for them and asserts nothing.
+ *  `releaseWrites` and `releasePass` are older-rows' two halves through the release before's build
+ *  (the shell's older_rows_upgrade), which run before every other. */
 interface OnePassPhase {
   readonly assert: (pass: string) => Promise<string | undefined>;
   readonly baseOf?: readonly SevenCheck[];
@@ -1028,6 +1045,8 @@ interface OnePassPhase {
   readonly caseName: string;
   readonly fixture?: () => Promise<void>;
   readonly prepare?: () => Promise<string | undefined>;
+  readonly releasePass?: () => Promise<string | undefined>;
+  readonly releaseWrites?: () => Promise<string | undefined>;
 }
 
 // --- setup ---------------------------------------------------------------------------------------
@@ -1166,8 +1185,9 @@ if (phaseArg !== undefined) {
       assert: olderRowsAfterOnePass,
       before: olderRowsBeforeThePass,
       caseName: "older-rows",
-      fixture: olderRowsFixture,
-      prepare: olderRowsIssues,
+      fixture: resetPullReads,
+      releasePass: olderRowsReleasePass,
+      releaseWrites: olderRowsReleaseWrites,
     },
     "older-rows-set-back": {
       assert: olderRowsAfterTheSetBack,
@@ -1203,7 +1223,7 @@ if (phaseArg !== undefined) {
       assert: readingAfterOnePass,
       caseName: "key-reading-changes",
       fixture: readingFixture,
-      prepare: readingRecorded,
+      prepare: readingStored,
     },
     "facts-only": {
       assert: factsOnlyAfterOnePass,
@@ -1236,12 +1256,13 @@ if (phaseArg !== undefined) {
       prepare: limitSettings,
     },
   };
-  const [, name = "", half] = /^(.+)-(prepare|fixture|before|assert)$/.exec(phaseArg) ?? [];
+  const [, name = "", half] =
+    /^(.+)-(prepare|fixture|before|assert|release-writes|release-pass)$/.exec(phaseArg) ?? [];
   const phase = onePassPhases[name];
   if (phase === undefined || half === undefined) {
     setupFailed(
       `phase ${phaseArg}`,
-      `no one-pass phase answers --phase ${phaseArg}; the phases are ${Object.keys(onePassPhases).join(", ")}, each with -prepare, -fixture, -before or -assert`
+      `no one-pass phase answers --phase ${phaseArg}; the phases are ${Object.keys(onePassPhases).join(", ")}, each with -prepare, -fixture, -before or -assert, and older-rows with -release-writes and -release-pass too`
     );
   }
   if (onlyCase !== "" && !sevenChecks.some((check) => check === onlyCase)) {
@@ -1289,6 +1310,17 @@ if (phaseArg !== undefined) {
     }
     void nats.close();
     process.exit(0);
+  }
+  if (half === "release-writes" || half === "release-pass") {
+    const step = half === "release-writes" ? phase.releaseWrites : phase.releasePass;
+    if (step === undefined) {
+      setupFailed(
+        `phase ${phaseArg}`,
+        `the phase ${name} has no half ${half}: only older-rows runs on the release before`
+      );
+    }
+    await runCase(phase.caseName, step);
+    summarise();
   }
   const passKey = `${name}/pass`;
   if (half === "fixture") {
@@ -2731,78 +2763,285 @@ function sqlKeys(keys: readonly string[]): string {
 
 // --- older-rows ----------------------------------------------------------------------------------
 //
-// v-older-rows. 300 merged pull requests #7001 to #7300 (index i = n - 7000) on the branch
-// legion/N(i % 6), as the release before left them: #7001 to #7240 with a results row and no
-// texts, stored as L(i % 6) and read by GitHub, #7221 to #7240 of them under acme/old-name, a name
-// the case's repository had; #7001 to #7060 with a timeline row of D(i % 6) too, and #7051 to
-// #7060 stored as no issue; #7241 to #7260 stored as L(i % 6) and not read; #7261 to #7300 with a
-// timeline row of D(i % 6) alone. Before any pass, each results row's stored answer holds, and
-// D(j) names its pull requests as heads Dispatch has not read, with no read of GitHub. One pass
-// reads all 300 and leaves none to read, and each is then N(i % 6)'s. A second pass, after each
-// stored issue is set back to L(i % 6), reads GitHub for none and leaves each under N(i % 6).
+// v-older-rows, on a database that the release before's build wrote (the shell's
+// older_rows_upgrade, which runs it before any other case). 300 merged pull requests #7001 to
+// #7300 (index i = n - 7000, j = i % 6), each on the branch legion/N(j) with the body
+// `Follows D(j). Closes L(j).` (#7051 to #7060: `Follows D(j).`), as GitHub answers them from the
+// start (olderRowsPull). The release before's build stores them itself, under the delivery
+// settings that its intake needs to take any event:
+//   - with the issues L(j) alone made and acme/old-name the project's default repository, the
+//     merged events of #7221 to #7240 under that name; then, the repository renamed to
+//     acme/attribution-live, the events of #7001 to #7220 and #7241 to #7260. Its intake stores
+//     each results row from its event with no texts, which it has nowhere to store, as L(j): the
+//     body names it, and no candidate above it names an issue, N(j) being none yet. It stores
+//     #7051 to #7060 as no issue. The author of #7001 to #7060 is of the settings' population, so
+//     the intake stores their timeline rows too, as L(j) or no issue;
+//   - then the issues D(j), and one pass of its reconcile. The pass resolves the timeline rows of
+//     #7001 to #7060 again from their stored inputs, whose first issue is now D(j), and leaves each
+//     merged results row as the rule of its day judged it. Its merged search finds #7261 to #7300
+//     and stores their timeline rows alone, as D(j);
+//   - then the issues N(j), which take the keys that the branches named before they existed
+//     (keysAfter, seedForetoldIssues).
+// This checkout's build then starts on that database. Before any pass, each results row's stored
+// answer holds (L(j), or no issue over the timeline's D(j)), and D(j) names #7261 to #7300 as heads
+// Dispatch has not read, with no read of GitHub. One pass reads all 300 and leaves none to read,
+// and each is then N(j)'s, #7221 to #7240 under acme/attribution-live. A second pass, after each
+// stored issue is set back to L(j), reads GitHub for none and leaves each under N(j).
 
 /** older-rows' issue of a list (L, N or D) for pull request `number`, by its index i % 6. */
 function olderRowsIssue(keys: readonly string[], number: number): string {
   return keys[(number - 7000) % 6] ?? "";
 }
 
-/** older-rows, before the fixture: the issues L0 to L5, N0 to N5 and D0 to D5. */
-async function olderRowsIssues(): Promise<string | undefined> {
-  const names = (letter: string) => [0, 1, 2, 3, 4, 5].map((j) => `${letter}${j}`);
-  const L = await seedAttributionIssues(names("L"));
-  const N = await seedAttributionIssues(names("N"));
-  const D = await seedAttributionIssues(names("D"));
-  writeSevenState({ olderRows: { D, L, N } });
-  note(`L0 to L5 are ${L.join(", ")}; N0 to N5 are ${N.join(", ")}; D0 to D5 are ${D.join(", ")}`);
+/** The names of older-rows' six issues of one list: L0 to L5, N0 to N5 or D0 to D5. */
+function olderRowsNames(list: "D" | "L" | "N"): string[] {
+  return [0, 1, 2, 3, 4, 5].map((j) => `${list}${j}`);
+}
+
+/** older-rows' pull request `number` as GitHub answers it from the start of the case. Its author
+ *  is of the settings' population where a timeline row comes of it, and the merged search finds
+ *  #7261 to #7300. */
+function olderRowsPull(number: number): FakePullRequest {
+  const { D, L, N } = sevenPart("olderRows");
+  return {
+    author: number <= 7060 || number >= 7261 ? "octocat" : "implementer[bot]",
+    base_ref: "main",
+    body:
+      number >= 7051 && number <= 7060
+        ? `Follows ${olderRowsIssue(D, number)}.`
+        : `Follows ${olderRowsIssue(D, number)}. Closes ${olderRowsIssue(L, number)}.`,
+    commit_messages: [`Work on change ${number}.`],
+    head_ref: `legion/${olderRowsIssue(N, number)}`,
+    head_repo: attributionRepo,
+    head_sha: attributionSha(number),
+    merge_commit_sha: attributionSha(number, "e"),
+    merged: true,
+    searched: number >= 7261,
+    state: "closed",
+    title: `Change ${number}`,
+    updated_at: attributionUpdatedAt,
+  };
+}
+
+/** The merged event of older-rows' pull request `number` under the repository name `under`, as
+ *  GitHub sent it: GitHub's facts under the name the repository had then, at the time of the
+ *  merge, before which GitHub's later update time of the pull request lies. */
+function olderRowsEvent(number: number, under: string): Record<string, string> {
+  const pull = olderRowsPull(number);
+  return {
+    action: "closed",
+    author: pull.author ?? "",
+    base_ref: pull.base_ref ?? "main",
+    body: pull.body ?? "",
+    head_ref: pull.head_ref ?? "",
+    head_repo: under,
+    head_sha: pull.head_sha,
+    kind: "pr",
+    merge_commit_sha: pull.merge_commit_sha ?? "",
+    merged: "true",
+    number: String(number),
+    repo: under,
+    title: pull.title,
+    updated_at: releaseBeforeEventAt,
+    url: `https://github.com/${under}/pull/${number}`,
+  };
+}
+
+/** Answers whether `probe` answered true within `ms`, asking it every pollMs. */
+async function awaitTrue(probe: () => Promise<boolean>, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (await probe()) return true;
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(pollMs);
+  }
+}
+
+/** How many lines of the server's log bind the intake's durable of pull request events. */
+function eventsBoundLines(): number {
+  return readFileSync(dispatchLog, "utf8")
+    .split("\n")
+    .filter(
+      (line) =>
+        line.includes('msg="dispatch delivery: NATS consumer bound"') &&
+        line.includes("name=delivery-events")
+    ).length;
+}
+
+/** The keys that the next `count` issues of the project ATT take after `keys`, whose newest is the
+ *  newest key it gave. */
+function keysAfter(keys: readonly string[], count: number): string[] {
+  const newest = Math.max(...keys.map((key) => Number(key.slice(attributionProject.length + 1))));
+  return Array.from({ length: count }, (_, at) => `${attributionProject}-${newest + 1 + at}`);
+}
+
+/** Makes the issues `names` one after another, so each takes the next key of the project, and
+ *  answers a failure where one takes another key than `foretold` gives it. */
+async function seedForetoldIssues(
+  names: readonly string[],
+  foretold: readonly string[]
+): Promise<string | undefined> {
+  for (const [at, name] of names.entries()) {
+    const [made] = await seedAttributionIssues([name]);
+    if (made !== foretold[at]) {
+      return `the issue ${name} took ${made}, want ${foretold[at]}, the key that GitHub's answers name`;
+    }
+  }
   return undefined;
 }
 
-/** older-rows' fixture, while no server runs: GitHub's answer for the 300 pull requests, under
- *  the case's repository only, and the rows of the release before. */
-async function olderRowsFixture(): Promise<void> {
-  const { D, L, N } = sevenPart("olderRows");
-  const pulls: Record<string, FakePullRequest> = {};
-  for (let number = 7001; number <= 7300; number++) {
-    pulls[String(number)] = {
-      base_ref: "main",
-      body: `The work of change ${number}.`,
-      commit_messages: [`Work on change ${number}.`],
-      head_ref: `legion/${olderRowsIssue(N, number)}`,
-      head_repo: attributionRepo,
-      head_sha: attributionSha(number),
-      merge_commit_sha: attributionSha(number, "e"),
-      merged: true,
-      state: "closed",
-      title: `Change ${number}`,
-      updated_at: attributionUpdatedAt,
-    };
-  }
-  await seedAttribution(attributionRepo, (seeded) => ({
-    ...seeded,
-    pulls: { ...seeded.pulls, ...pulls },
-  }));
-  const index = "(n - 7000) % 6 + 1";
-  const stored = `case when n between 7221 and 7240 then '${attributionOldName}' else '${attributionRepo}' end`;
-  await sql(
-    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
-       attribution_source, title, url, event_at, checked_at, github_read_at)
-     select ${stored}, n, lpad(to_hex(n), 40, 'f'), 'legion/' || (${sqlKeys(N)})[${index}], 'main',
-       'merged', case when n between 7051 and 7060 then null else (${sqlKeys(L)})[${index}] end,
-       case when n between 7051 and 7060 then 'none' else 'title_body' end, 'Change ' || n,
-       'https://github.com/' || ${stored} || '/pull/' || n, '${releaseBeforeEventAt}', now(),
-       case when n between 7241 and 7260 then null else now() end
-     from generate_series(7001, 7260) n`
-  );
-  await sql(
-    `insert into delivery_pull_requests (repo, number, title, url, author, merged_at, issue_key)
-     select '${attributionRepo}', n, 'Change ' || n, 'https://github.com/${attributionRepo}/pull/' || n,
-       'octocat', now() - interval '1 day', (${sqlKeys(D)})[${index}]
-     from generate_series(7001, 7300) n where n <= 7060 or n >= 7261`
-  );
+/** The count that `statement` answers. */
+async function countOf(statement: string): Promise<number> {
+  return Number(await sql(statement));
+}
+
+/** older-rows, through the release before's build started with no pass at its start: the project
+ *  with acme/old-name its default repository, the issues L(j), GitHub's answers, the delivery
+ *  settings, the merged events of #7221 to #7240 under the old name, the rename, the events of
+ *  #7001 to #7220 and #7241 to #7260, and the issues D(j). It waits for the intake's bind and for
+ *  each event's row. The keys of D(j) and N(j) are foretold, since GitHub's answers name them before
+ *  they exist. */
+async function olderRowsReleaseWrites(): Promise<string | undefined> {
+  await asPerson("POST", "/api/v1/projects", { key: attributionProject, name: "Attribution" });
+  await asSession("PUT", `/api/v1/settings/repo-projects/${attributionOldName}`, {
+    default: true,
+    project: attributionProject,
+  });
+  const L = await seedAttributionIssues(olderRowsNames("L"));
+  const D = keysAfter(L, 6);
+  const N = keysAfter(D, 6);
+  writeSevenState({ olderRows: { D, L, N } });
   note(
-    `older-rows: 260 results rows with no texts (#7221 to #7240 under ${attributionOldName}, #7241 to #7260 not read), and timeline rows of #7001 to #7060 and #7261 to #7300`
+    `L0 to L5 are ${L.join(", ")}; GitHub's answers name ${D.join(", ")} for D0 to D5 and ${N.join(", ")} for N0 to N5, the keys the next issues take`
   );
-  await resetPullReads();
+  const pulls: Record<string, FakePullRequest> = {};
+  for (let number = 7001; number <= 7300; number++) pulls[String(number)] = olderRowsPull(number);
+  const permissions = { actions: "read", contents: "read", pull_requests: "read" };
+  await seedRepositories(
+    {},
+    {
+      [attributionRepo]: {
+        ...permissions,
+        commits: Object.values(sevenCommits),
+        default_branch: "main",
+        installation_id: attributionInstallation,
+        pulls,
+      },
+      [olderRowsDeployRepo]: {
+        ...permissions,
+        default_branch: "main",
+        installation_id: attributionInstallation,
+      },
+    }
+  );
+  const bound = eventsBoundLines();
+  await asPerson("PUT", "/api/v1/settings/delivery", deliverySettings(olderRowsDeployRepo));
+  if (!(await awaitTrue(async () => eventsBoundLines() > bound, 60_000))) {
+    return "the release before's intake bound no durable of pull request events within 60 s of its delivery settings";
+  }
+  note(
+    `the delivery settings name ${olderRowsDeployRepo}; the release before's intake bound its durable`
+  );
+  const publish = async (first: number, last: number, under: string) => {
+    for (let number = first; number <= last; number++) {
+      await publishEnvelope(olderRowsEvent(number, under));
+    }
+  };
+  const stored = (under: string, first: number, last: number) =>
+    countOf(
+      `select count(*) from pull_request_heads where repo = '${under}' and number between ${first} and ${last}`
+    );
+  await publish(7221, 7240, attributionOldName);
+  if (
+    !(await awaitTrue(async () => (await stored(attributionOldName, 7221, 7240)) === 20, 120_000))
+  ) {
+    return `the release before stored ${await stored(attributionOldName, 7221, 7240)} of the 20 results rows of #7221 to #7240 under ${attributionOldName} within 120 s of their events`;
+  }
+  await asSession("PUT", `/api/v1/settings/repo-projects/${attributionRepo}`, {
+    default: true,
+    project: attributionProject,
+  });
+  await asSession("PUT", `/api/v1/settings/repo-projects/${attributionOldName}`, {
+    project: attributionProject,
+    renamed_to: attributionRepo,
+  });
+  note(
+    `${attributionOldName} is renamed to ${attributionRepo}, now the project's default repository`
+  );
+  await publish(7001, 7220, attributionRepo);
+  await publish(7241, 7260, attributionRepo);
+  const timeline = () =>
+    countOf(
+      `select count(*) from delivery_pull_requests where repo = '${attributionRepo}' and number between 7001 and 7060`
+    );
+  const settled = async () =>
+    (await stored(attributionRepo, 7001, 7260)) === 240 && (await timeline()) === 60;
+  if (!(await awaitTrue(settled, 300_000))) {
+    return `the release before stored ${await stored(attributionRepo, 7001, 7260)} of the 240 results rows under ${attributionRepo} and ${await timeline()} of the 60 timeline rows of #7001 to #7060 within 300 s of their events`;
+  }
+  const rows = await sql(
+    `select coalesce(issue_key, 'no issue') || ' by ' || attribution_source || ': ' || count(*)
+     from pull_request_heads where number between 7001 and 7300 group by issue_key, attribution_source
+     order by 1`
+  );
+  note(`the release before stored 260 results rows with no texts: ${rows.replaceAll("\n", "; ")}`);
+  const failure = await seedForetoldIssues(olderRowsNames("D"), D);
+  if (failure !== undefined) return failure;
+  note(`D0 to D5 are ${D.join(", ")}`);
+  await prepareOnePass();
+  return undefined;
+}
+
+/** older-rows, through the release before's build started again with one pass at its start: that
+ *  pass; the results rows and the timeline rows it leaves, each as the section above says; then the
+ *  issues N(j). */
+async function olderRowsReleasePass(): Promise<string | undefined> {
+  note(await awaitOnePass(0, false));
+  const { D, L, N } = sevenPart("olderRows");
+  const read = async (statement: string) =>
+    new Map(
+      (await sql(statement))
+        .split("\n")
+        .filter((row) => row !== "")
+        .map((row) => {
+          const [number = "", answer = ""] = row.split("|");
+          return [Number(number), answer] as const;
+        })
+    );
+  const results = await read(
+    `select number, repo || ' ' || coalesce(issue_key, 'no issue') from pull_request_heads
+     where number between 7001 and 7300`
+  );
+  const timeline = await read(
+    `select number, coalesce(issue_key, 'no issue') from delivery_pull_requests
+     where repo = '${attributionRepo}' and number between 7001 and 7300`
+  );
+  const differ: string[] = [];
+  for (let number = 7001; number <= 7300; number++) {
+    const under = number >= 7221 && number <= 7240 ? attributionOldName : attributionRepo;
+    const stored = number >= 7051 && number <= 7060 ? "no issue" : olderRowsIssue(L, number);
+    const wanted = [
+      ["results row", results.get(number), number <= 7260 ? `${under} ${stored}` : undefined],
+      [
+        "timeline row",
+        timeline.get(number),
+        number <= 7060 || number >= 7261 ? olderRowsIssue(D, number) : undefined,
+      ],
+    ] as const;
+    for (const [row, got, want] of wanted) {
+      if (got !== want) differ.push(`#${number} ${row} ${got ?? "none"}, want ${want ?? "none"}`);
+    }
+  }
+  note(
+    `after the release before's pass: ${results.size} results rows and ${timeline.size} timeline rows of #7001 to #7300; ${differ.length} differ from what the release before writes`
+  );
+  if (differ.length > 0) {
+    return `the release before's build left ${differ.length} row(s) of older-rows other than it writes them: ${differ.slice(0, 5).join("; ")}`;
+  }
+  const failure = await seedForetoldIssues(olderRowsNames("N"), N);
+  if (failure !== undefined) return failure;
+  note(`N0 to N5 are ${N.join(", ")}`);
+  return undefined;
 }
 
 /** older-rows, before any pass, through a server that started with no pass: each pull request
@@ -3195,17 +3434,137 @@ async function ruleNewIssue(pass: string): Promise<string | undefined> {
 
 // --- key-reading-changes -------------------------------------------------------------------------
 //
-// v-key-reading-changes, on rule-reaches-each-row's rows. With the server down, the driver applies
-// fixtures/attribution_reading_b.sql, a second reading on which a branch in lower case names
-// nothing. At the boundary of one pass the reading differs from the one recorded before, and each
-// pull request is T(k)'s and no B(k)'s, with no read of GitHub: the statement computes the keys of
-// each row on another reading from its texts. Then the key remake loop writes the keys again.
+// v-key-reading-changes, on 5,000 pull requests of its own that the server under test stores:
+// #20001 to #25000 (k = (n - 20000) % 100), merged, on the branch legion/<B(k) in lower case> with
+// the body `Follows T(k). Work of B(k).`, as rule-reaches-each-row's are. The shell starts the
+// server with its reconcile every 2 seconds (one_pass_phase --store-every-2s). The driver
+// publishes their merged events; the server's intake takes each and reads it from GitHub, and its
+// passes read each once more by the batched query, which reads the commit messages too. So a
+// negative control's build stores them as that build stores any pull request. Then, with the
+// server down, the driver applies fixtures/attribution_reading_b.sql, a second reading on which a
+// branch in lower case names nothing. At the boundary of one pass the reading differs from the one
+// recorded before, and each of the 5,000 is T(k)'s and no B(k)'s, with no read of GitHub: the
+// statement computes the keys of each row on another reading from its texts. rule-reaches-each-
+// row's 5,000 rows are T(k)'s too. Then the key remake loop writes the keys again.
+
+/** key-reading-changes' pull request `number` as GitHub answers it. */
+function readingPull(number: number): FakePullRequest {
+  const { B, T } = sevenPart("rule");
+  const k = (number - 20000) % 100;
+  return {
+    base_ref: "main",
+    body: `Follows ${T[k]}. Work of ${B[k]}.`,
+    commit_messages: [`Work on change ${number}.`],
+    head_ref: `legion/${String(B[k]).toLowerCase()}`,
+    head_repo: attributionRepo,
+    head_sha: attributionSha(number),
+    merge_commit_sha: attributionSha(number, "e"),
+    merged: true,
+    state: "closed",
+    title: `Change ${number}`,
+    updated_at: attributionUpdatedAt,
+  };
+}
+
+/** key-reading-changes, before its fixture, through the server started with its reconcile every 2
+ *  seconds: GitHub's answers for its 5,000 pull requests and their merged events; the wait until
+ *  the intake has stored each, and then until the passes have read the 5,000 by the batched query,
+ *  or each has texts whose commit messages are read; and the reading `dispatch attribution` prints.
+ *  The waits are for those facts, whatever the build stores, and fail the case only when a build
+ *  stores nothing for 600 s. */
+async function readingStored(): Promise<string | undefined> {
+  const pulls: Record<string, FakePullRequest> = {};
+  for (let number = readingFirst; number <= readingLast; number++) {
+    pulls[String(number)] = readingPull(number);
+  }
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: { ...seeded.pulls, ...pulls },
+  }));
+  await resetPullReads();
+  for (const [number, pull] of Object.entries(pulls)) {
+    await publishEnvelope({
+      action: "closed",
+      base_ref: pull.base_ref ?? "main",
+      body: pull.body ?? "",
+      head_ref: pull.head_ref ?? "",
+      head_repo: pull.head_repo,
+      head_sha: pull.head_sha,
+      kind: "pr",
+      merge_commit_sha: pull.merge_commit_sha ?? "",
+      merged: "true",
+      number,
+      repo: attributionRepo,
+      title: pull.title,
+      updated_at: pull.updated_at ?? attributionUpdatedAt,
+      url: `https://github.com/${attributionRepo}/pull/${number}`,
+    });
+  }
+  const range = `repo = '${attributionRepo}' and number between ${readingFirst} and ${readingLast}`;
+  const stored = () => countOf(`select count(*) from pull_request_heads where ${range}`);
+  if (!(await awaitTrue(async () => (await stored()) === 5000, 600_000))) {
+    return `the server stored ${await stored()} of the 5,000 pull requests #${readingFirst} to #${readingLast} within 600 s of their events`;
+  }
+  note(
+    `the server's intake stored the 5,000 pull requests #${readingFirst} to #${readingLast} from their events`
+  );
+  const batched = async () => {
+    const response = await fetch(new URL("/__fixture/requests", githubUrl));
+    const { pulls: reads } = (await response.json()) as {
+      pulls: Record<string, Record<string, number>>;
+    };
+    return reads[attributionRepo]?.graphql_pulls ?? 0;
+  };
+  const read = () =>
+    countOf(
+      `select count(*) from pull_request_texts where ${range} and commit_messages is not null`
+    );
+  if (
+    !(await awaitTrue(async () => (await batched()) >= 5000 || (await read()) === 5000, 600_000))
+  ) {
+    return `600 s after the server stored them, its passes had read ${await batched()} of the 5,000 pull requests by the batched query, and ${await read()} have texts with their commit messages`;
+  }
+  note(
+    `the server's passes read ${await batched()} of them by the batched query; ${await read()} have texts with their commit messages`
+  );
+  return readingRecorded();
+}
 
 /** key-reading-changes, before its fixture: the reading `dispatch attribution` prints. */
 async function readingRecorded(): Promise<string | undefined> {
   const counts = await attributionCounts();
   writeSevenState({ reading: { recorded: counts.reading } });
   note(`dispatch attribution prints the key reading ${counts.reading}`);
+  return undefined;
+}
+
+/** key-reading-changes after the change of the reading: each of its 5,000 pull requests is T(k)'s
+ *  and no B(k)'s, through GET /api/v1/issues/{key}/results, and the fake answered no read of a
+ *  pull request since the fixture. */
+async function readingReads(): Promise<string | undefined> {
+  const { B, T } = sevenPart("rule");
+  const answers = await checkPullsOf([...B, ...T]);
+  const reads = await caseReads();
+  const holders = holdersOf(answers);
+  let [underB, underT] = [0, 0];
+  for (let number = readingFirst; number <= readingLast; number++) {
+    const held = holders.get(number) ?? [];
+    if (held.some((key) => B.includes(key))) underB++;
+    if (held.some((key) => T.includes(key))) underT++;
+  }
+  const differ = ownersDiffer(
+    answers,
+    readingFirst,
+    readingLast,
+    (number) => T[(number - 20000) % 100]
+  );
+  note(
+    `after the change of the reading: ${underB} of the 5,000 pull requests the server stored are under B0 to B99 and ${underT} under T0 to T99; ${differ.length} differ from the reading`
+  );
+  note(reads.shown);
+  if (differ.length > 0 || reads.count > 0) {
+    return `after the change of the reading, ${underT} of the 5,000 pull requests the server stored are under T0 to T99 and ${underB} under B0 to B99, and the fake answered ${reads.count} read(s) of pull requests; ${differ.length} differ from the reading${differ.length > 0 ? `, the first: ${differ.slice(0, 5).join("; ")}` : ""}`;
+  }
   return undefined;
 }
 
@@ -3232,8 +3591,9 @@ async function readingFixture(): Promise<void> {
   await resetPullReads();
 }
 
-/** key-reading-changes, after one pass: another reading, each pull request T(k)'s, no read of
- *  GitHub; then, within 60 s, no row whose keys wait, and the log line of the remake. */
+/** key-reading-changes, after one pass: another reading, each of its own pull requests and each of
+ *  rule-reaches-each-row's T(k)'s, no read of GitHub; then, within 60 s, no row whose keys wait,
+ *  and the log line of the remake. */
 async function readingAfterOnePass(pass: string): Promise<string | undefined> {
   note(pass);
   const { recorded, remadeLines = 0 } = sevenPart("reading");
@@ -3244,6 +3604,8 @@ async function readingAfterOnePass(pass: string): Promise<string | undefined> {
   if (counts.reading === recorded) {
     return `the key reading is ${counts.reading} at the boundary, the reading recorded before the change`;
   }
+  const own = await readingReads();
+  if (own !== undefined) return own;
   const failure = await ruleReads("the change of the reading", true);
   if (failure !== undefined) return failure;
   const { newIssue } = sevenPart("rule");

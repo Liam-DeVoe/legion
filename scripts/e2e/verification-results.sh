@@ -54,10 +54,24 @@
 # rule-reaches-each-row, key-reading-changes, facts-only, read-compares, stores-agree and
 # limit-of-one (the driver's header says what each one proves).
 #
+# older-rows runs first, on a database that the build of the release before wrote, before this
+# checkout's build has started on it at all (older_rows_upgrade). The release before's build
+# migrates the emptied database and stores older-rows' 300 merged pull requests itself, from their
+# events and from one pass of its own reconcile, under the delivery settings it needs to take any
+# event; then this checkout's build starts on that database and older-rows' phases run on it. The
+# run then empties the database again and starts a NATS of its own, so the cases and every phase
+# after them start from nothing, with no delivery settings, as they did before older-rows came
+# first. key-reading-changes' 5,000 pull requests are stored by the server under test too: its
+# intake takes their events and its passes, every two seconds, read each of them once more
+# (one_pass_phase --store-every-2s), so a negative control's build that stores another way stores
+# them that way.
+#
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] \
 #     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
 #     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
+#     [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE=<commit>] \
+#     [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=<envoy-dispatch of that commit>] \
 #     bash scripts/e2e/verification-results.sh
 #
 # DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
@@ -85,6 +99,16 @@
 # writes the named case stands on; the second, set to 1, names a server built before the
 # attribution line of a pass, as DISPATCH_BIN built from a commit before that line is, so the
 # boundary of one pass does not count that line.
+# VERIFICATION_RESULTS_E2E_RELEASE_BEFORE names the commit of the release before this change, whose
+# build writes older-rows' database: 1c7c8253678fedad99b5142defc5824e2c57b9a8 unless it is given,
+# which is main at the commit this change's branch last merged. Its packages/envoy is taken with
+# `git archive` and built: from this checkout's own repository where that holds the commit, else
+# from a bare repository of the run's own that fetches that one commit from this checkout's
+# `origin`, since a CI checkout is shallow and holds its own head alone; either way this working
+# copy is never touched, and git and tar join the prerequisites.
+# VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN names a prebuilt envoy-dispatch of that commit
+# instead, which the run copies as it copies DISPATCH_BIN. Neither is read when
+# VERIFICATION_RESULTS_E2E_ONLY names another case, since older-rows does not run then.
 #
 # The ports are VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT
 # (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already
@@ -123,6 +147,12 @@ database_url=${DATABASE_URL:-}
 dispatch_port=${VERIFICATION_RESULTS_E2E_DISPATCH_PORT:-19061}
 envoy_port=${VERIFICATION_RESULTS_E2E_ENVOY_PORT:-19063}
 github_port=${VERIFICATION_RESULTS_E2E_GITHUB_PORT:-19065}
+release_before=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE:-1c7c8253678fedad99b5142defc5824e2c57b9a8}
+release_before_bin=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN:-}
+# older-rows runs in a whole run and in its own negative control (the driver skips it under any
+# other VERIFICATION_RESULTS_E2E_ONLY), and only then is the release before built.
+older_rows=''
+case "${VERIFICATION_RESULTS_E2E_ONLY:-}" in '' | older-rows) older_rows=1 ;; esac
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
@@ -158,7 +188,8 @@ cleanup() {
     rm -rf "$work"
     echo "verification results e2e: PASS in $((SECONDS - started))s"
   else
-    rm -rf "${work:?}/bin" "${work:?}/nats-store"
+    rm -rf "${work:?}/bin" "${work:?}/nats-store" "${work:?}/older-rows-nats-store" \
+      "${work:?}/release-before" "${work:?}/release-before.git"
     echo "verification results e2e: FAIL at $check after $((SECONDS - started))s (logs: $work)" >&2
   fi
   exit "$rc"
@@ -187,6 +218,16 @@ if [ -n "$dispatch_cli" ]; then
   fi
   dispatch_cli=$(cd "$(dirname "$dispatch_cli")" && pwd)/$(basename "$dispatch_cli")
 fi
+if [ -n "$older_rows" ]; then
+  if [ -n "$release_before_bin" ]; then
+    [ -x "$release_before_bin" ] ||
+      fail "VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=$release_before_bin is not an executable file"
+  else
+    for tool in git tar; do
+      command -v "$tool" >/dev/null || fail "$tool is not on PATH: older-rows takes the release before's tree with git archive"
+    done
+  fi
+fi
 for port in "$dispatch_port" "$envoy_port" "$github_port"; do
   if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
     fail "'$port' is not a port"
@@ -205,6 +246,28 @@ fi
 note "database host $db_host (URL not printed)"
 pass
 
+# release_before_tree takes the release before's packages/envoy into $work/release-before and sets
+# release_before_sha. The tree is the commit's own, taken out of a repository and never checked
+# out, so this working copy is never touched: this checkout's own repository where it holds the
+# commit, else a bare repository of the run's own that fetches that one commit, at depth 1, from
+# this checkout's `origin`, since a CI checkout is shallow and holds its own head alone.
+release_before_tree() {
+  local source=$root url
+  if ! release_before_sha=$(git -C "$root" rev-parse --verify --quiet "$release_before^{commit}" 2>/dev/null); then
+    url=$(git -C "$root" remote get-url origin 2>/dev/null) ||
+      fail "this checkout holds no commit $release_before and names no origin to fetch it from; give VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN, an envoy-dispatch built from it"
+    source=$work/release-before.git
+    git init -q --bare "$source" || fail "could not make the repository $source"
+    git -C "$source" fetch -q --no-tags --depth=1 "$url" "$release_before" ||
+      fail "could not fetch the release before, $release_before, from $url"
+    release_before_sha=$(git -C "$source" rev-parse --verify --quiet "FETCH_HEAD^{commit}") ||
+      fail "the fetch of $release_before from $url brought no commit"
+  fi
+  mkdir -p "$work/release-before"
+  git -C "$source" archive "$release_before_sha" packages/envoy | tar -x -C "$work/release-before" ||
+    fail "could not take the tree of $release_before_sha"
+}
+
 begin build
 work=$(mktemp -d "${TMPDIR:-/tmp}/verification-results.XXXXXXXX")
 evidence=$work
@@ -221,6 +284,16 @@ fi
 dispatch_bin=$work/bin/envoy-dispatch
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"
+if [ -n "$older_rows" ] && [ -n "$release_before_bin" ]; then
+  cp "$release_before_bin" "$work/bin/envoy-dispatch-release-before" ||
+    fail "could not copy VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=$release_before_bin"
+  note "the release before's envoy-dispatch is a copy of VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=$release_before_bin"
+elif [ -n "$older_rows" ]; then
+  release_before_tree
+  go -C "$work/release-before/packages/envoy" build -o "$work/bin/envoy-dispatch-release-before" ./cmd/dispatch ||
+    fail "the release before's ./cmd/dispatch did not build"
+  note "built the release before's envoy-dispatch from $release_before_sha"
+fi
 pass
 
 begin reset-database
@@ -231,12 +304,21 @@ empty_public_schema "$database_url" || fail "could not empty the database's publ
 pass
 
 begin nats
-# The port is the kernel's pick (`-p -1`), read back from the line the server logs once it listens.
-start_process nats "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
-await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$work/logs/nats.log"
-nats_port=$(report_port "$work/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
-  fail "natsd logged no client port; see $work/logs/nats.log"
-nats_url=nats://127.0.0.1:$nats_port
+# start_nats STORE starts natsd with its store in STORE, on the port the kernel picks (`-p -1`),
+# read back from the line the server logs once it listens, and sets nats_url. older-rows runs on a
+# NATS of its own, which older_rows_upgrade stops before it starts the run's own.
+start_nats() {
+  start_process nats "$work/bin/natsd" -p -1 -store_dir "$1"
+  await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$work/logs/nats.log"
+  nats_port=$(report_port "$work/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
+    fail "natsd logged no client port; see $work/logs/nats.log"
+  nats_url=nats://127.0.0.1:$nats_port
+}
+if [ -n "$older_rows" ]; then
+  start_nats "$work/older-rows-nats-store"
+else
+  start_nats "$work/nats-store"
+fi
 note "JetStream on $nats_url"
 pass
 
@@ -255,7 +337,7 @@ github_url=http://127.0.0.1:$github_port
 note "fake GitHub on $github_url"
 pass
 
-begin dispatch
+begin identity
 # The server gets this environment and nothing else. Identity is the production cookie, minted at
 # the dev sign-in route (DISPATCH_DEV_SIGNIN=1) with a signing key the process generates for itself;
 # HOME and the XDG directories name nothing, so no envoy.json, data directory or AWS profile of the
@@ -272,10 +354,11 @@ begin dispatch
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
-# start_dispatch INTERVAL [AT_START] starts envoy-dispatch with the delivery reconcile ticking every
-# INTERVAL and, unless AT_START is given empty, its first pass as it starts, and waits for it to
-# answer /healthz. Each start appends to $work/logs/dispatch.log, which the driver reads
-# (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
+# start_dispatch INTERVAL [AT_START [BINARY]] starts envoy-dispatch with the delivery reconcile
+# ticking every INTERVAL and, unless AT_START is given empty, its first pass as it starts, and waits
+# for it to answer /healthz. BINARY is this checkout's build unless it names another, which only
+# older_rows_upgrade does, for the release before's. Each start appends to
+# $work/logs/dispatch.log, which the driver reads (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
 start_dispatch() {
   start_process dispatch env -i \
     PATH="$PATH" \
@@ -301,12 +384,11 @@ start_dispatch() {
     DISPATCH_WEB_DIST="$work/web-dist" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" \
     NATS_URLS="$nats_url" \
-    "$dispatch_bin"
+    "${3:-$dispatch_bin}"
   await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
     curl -fsS --max-time 2 "$dispatch_url/healthz"
 }
-start_dispatch 2s
-note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"
+export VERIFICATION_RESULTS_E2E_DISPATCH_LOG=$work/logs/dispatch.log
 pass
 
 export VERIFICATION_RESULTS_E2E_DISPATCH_LOG=$work/logs/dispatch.log
@@ -345,10 +427,12 @@ stop_dispatch() {
   until_true 30 "envoy-dispatch to stop listening on $dispatch_port" dispatch_port_closed
 }
 
-# one_pass_phase PHASE [--read-before-the-pass] runs the driver's phase PHASE around one complete
-# pass of the delivery reconcile (the driver's section "the tooling of one complete pass"). First
-# the driver makes the phase's writes that need a server (--phase PHASE-prepare), while the server
-# of the step before still runs. Then the shell stops the server by its recorded pid and has the
+# one_pass_phase PHASE [--read-before-the-pass | --store-every-2s] runs the driver's phase PHASE
+# around one complete pass of the delivery reconcile (the driver's section "the tooling of one
+# complete pass"). First the driver makes the phase's writes that need a server (--phase
+# PHASE-prepare), while the server of the step before still runs; with --store-every-2s, through
+# the server started again with its reconcile every 2 seconds, so its own passes read what its
+# intake stored in those writes. Then the shell stops the server by its recorded pid and has the
 # driver write the phase's fixture while no server runs. With --read-before-the-pass, it starts the
 # server with no pass at its start and the next pass an hour away, has the driver read the fixture
 # through it (--phase PHASE-before), and stops it again. Then it starts the server with a pass at
@@ -356,6 +440,11 @@ stop_dispatch() {
 # whose assert the driver skipped (VERIFICATION_RESULTS_E2E_ONLY) prints `skip PHASE`, never `ok`.
 one_pass_phase() {
   begin "$1"
+  if [ "${2:-}" = --store-every-2s ]; then
+    stop_dispatch
+    start_dispatch 2s
+    note "envoy-dispatch started again, its delivery reconcile every 2s, for the writes of $1"
+  fi
   driver --phase "$1-prepare"
   stop_dispatch
   driver --phase "$1-fixture"
@@ -376,20 +465,63 @@ one_pass_phase() {
   fi
 }
 
+# older_rows_upgrade runs older-rows on a database the release before wrote (the driver's section
+# "older-rows" says what each build writes there). The release before's build starts on the
+# emptied database and migrates it, with no pass at its start and its next an hour away, and the
+# driver writes through it: the project, the issues L(j), the delivery settings, the events of 260
+# merged pull requests, under the repository's old name and then its new one, and the issues D(j).
+# It starts again with a pass at its start, which the driver waits for before it makes the issues
+# N(j), and stops. Then older-rows' two phases run on this checkout's build, the first with a read
+# before its pass. Last, the database is emptied again and the run's own NATS starts in place of
+# older-rows' own, so the cases and the phases after them start from nothing: the delivery
+# settings that only the release before needed go with it.
+older_rows_upgrade() {
+  local release=$work/bin/envoy-dispatch-release-before
+  begin older-rows-release-before
+  start_dispatch 1h '' "$release"
+  note "the release before's envoy-dispatch started, with no pass at its start and its delivery reconcile every 1h"
+  driver --phase older-rows-release-writes
+  stop_dispatch
+  start_dispatch 1h 1 "$release"
+  note "the release before's envoy-dispatch started again, with one pass at its start"
+  driver --phase older-rows-release-pass
+  stop_dispatch
+  pass
+  one_pass_phase older-rows --read-before-the-pass
+  one_pass_phase older-rows-set-back
+  begin after-older-rows
+  stop_dispatch
+  empty_public_schema "$database_url" || fail "could not empty the database's public schema"
+  rm -f "$work/driver-state.json"
+  stop_pid "$nats_pid"
+  nats_pid=''
+  rm -rf "$work/older-rows-nats-store"
+  mv "$work/logs/nats.log" "$work/logs/older-rows-nats.log"
+  start_nats "$work/nats-store"
+  note "the database is empty again, and the run's own JetStream is on $nats_url"
+  pass
+}
+
+[ -z "$older_rows" ] || older_rows_upgrade
+
+begin dispatch
+start_dispatch 2s
+note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"
+pass
+
 check=cases
 driver
 one_pass_phase boundary
 one_pass_phase k-attribution
 # The seven checks of the attribution (the driver's section "the seven checks"), in the order the
 # driver's cases need: each phase that wants no read of GitHub runs before stores-agree writes
-# the delivery settings, since a pass with settings reads GitHub for its other steps.
-one_pass_phase older-rows --read-before-the-pass
-one_pass_phase older-rows-set-back
+# the delivery settings, since a pass with settings reads GitHub for its other steps. older-rows
+# ran before the cases (older_rows_upgrade).
 one_pass_phase rule-reaches-each-row
 one_pass_phase rule-reaches-each-row-link
 one_pass_phase rule-reaches-each-row-move
 one_pass_phase rule-reaches-each-row-new-issue
-one_pass_phase key-reading-changes
+one_pass_phase key-reading-changes --store-every-2s
 one_pass_phase facts-only
 one_pass_phase read-compares
 one_pass_phase stores-agree --read-before-the-pass
