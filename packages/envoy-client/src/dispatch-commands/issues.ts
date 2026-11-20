@@ -1,9 +1,15 @@
 import type {
   Advised,
-  CheckResultRecorded,
+  BasisLearnedAt,
+  CheckBasis,
+  CheckBlock,
+  CheckCI,
+  CheckPassStands,
+  CheckResult,
   ClaimedIssue,
   DuplicateCandidate,
   Issue,
+  IssueCheckResults,
   IssueComponents,
   IssueComponentsInput,
   IssueDetails,
@@ -25,7 +31,6 @@ import { relatedCheckLines } from "../related-check";
 import { printable, printableJson, printableLine, printableStrings } from "../runner-log";
 import { pageSummaryText, searchAnswer } from "../search-answer";
 import { otherAdviceLines, renderAdvice } from "./advice";
-import { formatCheckResults } from "./check-results";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -722,6 +727,41 @@ async function specCheckResultsCommand(
             ...results.map(specCheckResultLine),
           ].join("\n");
   return { text, details: { project, commit, results: results.length } };
+}
+
+/** How many characters a `--brief` result reading keeps when it stands at no compared commit. */
+const BRIEF_READING_CHARACTERS = 200;
+
+/** The words a reader acts on when Dispatch could not compare a check's results. */
+const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
+  no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
+  repository_unreadable: "Dispatch cannot read the repository",
+  read_failed: "a read Dispatch made did not answer",
+};
+
+function learnedText(learned: BasisLearnedAt): string {
+  if (learned.kind === "read_at") return `Dispatch read it ${learned.at}`;
+  return `GitHub updated it ${learned.at}`;
+}
+
+function basisText(basis: CheckBasis): string {
+  const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
+  if (basis.kind === "pull_request") {
+    const number = basis.pull_request === undefined ? "" : `#${basis.pull_request} `;
+    return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
+  }
+  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
+  return `the commit you named, ${basis.commit ?? ""}${learned}`;
+}
+
+function basisPlace(basis: CheckBasis): string {
+  if (basis.kind === "pull_request") {
+    return basis.pull_request === undefined
+      ? "the head of a pull request"
+      : `the head of pull request #${basis.pull_request}`;
+  }
+  if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
+  return "the commit you named";
 }
 
 /** The first of R4's two facts: where one result's commit stands against what its check compared
