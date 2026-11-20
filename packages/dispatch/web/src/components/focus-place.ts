@@ -1168,8 +1168,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * rather than going to what is drawn in its place, as the Inbox's and the Board's own Escape leave
  * it on the page.
  * The control a loss the reader caused lands on in the row that moved up, or walks back to, is
- * scrolled into view (`land`); what stands where the element stood after a loss they caused, a
- * control given back, and a modal dialog's own stop are focused with no scroll.
+ * scrolled into view (`land`), and so is a control given back after a loss they caused; what
+ * stands where the element stood after a loss they caused, a control given back after a loss
+ * they did not cause, and a modal dialog's own stop are focused with no scroll.
  *
  * A loss the reader can no longer see is not answered: the element was scrolled out of their
  * sight - out of the viewport, or out of a scroll box around it - before it went, or before the
