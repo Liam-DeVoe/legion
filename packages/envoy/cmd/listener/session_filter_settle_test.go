@@ -4,13 +4,16 @@ package main
 // after a pause, under the session's lock for each attempt alone, until the consumer filters on
 // the row the bucket holds or the session is gone (settleAgain, settleLoop). The cases here make
 // the bus refuse the writes of an unsubscribe's refollow for a while and then answer them, and
-// hold the filter to the row the bucket holds within one pause of the bus answering; and stop
-// the loop by deleting the session's record while the bus still refuses.
+// hold the filter to the row the bucket holds within one pause of the bus answering; stop the
+// loop by deleting the session's record while the bus still refuses; and move the row under every
+// pass of a confirm's attempt, which ends out of passes and leaves the newest row to the loop.
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +22,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // settleRefusals is how many of the settle's writes the bus refuses in the cases below before
@@ -177,6 +181,69 @@ func TestASettleOfASessionThatIsGoneStopsTryingByName(t *testing.T) {
 	// The consumer the refollow could not write is left as it was, filtering on the topic the
 	// unsubscribe removed: no session reads it, and the record's delete is what takes it.
 	requireFilters(t, rig, sessionID, kept, dropped)
+}
+
+// A fence out of passes names the session and both revisions at WARN, and the settle loop then
+// writes the filter of the newest row, with no heartbeat behind it. The hook below stores a row in
+// each pass of the confirm's own attempt, after the pass has read the row it plans from
+// (moveRowUnder), so every write that attempt makes is outrun and it ends holding the row of its
+// last plan, one row behind the bucket: that window is what the line reports. The row then stops
+// moving, and the loop's attempt after its pause plans from the newest row and ends on it
+// (fenceFilterWrite, settleAgain). The hook stays in place until the loop has run, so no write of
+// it races the loop's read of it, and moves the row in the confirm's own passes alone.
+func TestAFenceOutOfPassesNamesBothRevisionsAndTheSettleLoopWritesTheNewestRow(t *testing.T) {
+	a := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_exhausted"
+	const kept = "notifications.dispatch.issue.FENCEOUTKEPT.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+
+	topics, passes := []string{kept}, 0
+	a.deps.consumers.afterRepairPlan = func() {
+		passes++
+		if passes > filterFenceAttempts {
+			return
+		}
+		topic := fmt.Sprintf("notifications.dispatch.issue.FENCEOUT%d.>", passes)
+		topics = append(topics, topic)
+		moveRowUnder(t, a, sessionID, topic)
+	}
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	wrote, newest := requireFenceExhaustionLogged(t, a, sessionID)
+	awaitSettled(a)
+	a.deps.consumers.afterRepairPlan = nil
+
+	if passes <= filterFenceAttempts {
+		t.Fatalf("the repair and the settle loop made %d passes, want the %d of the confirm's attempt and the loop's after them", passes, filterFenceAttempts)
+	}
+	if newest <= wrote {
+		t.Errorf("the line names revision %d written and %d newest, want a newest above it", wrote, newest)
+	}
+	again := settleLines(t, a, sessionID, settleAgainLine)
+	if len(again) != 1 || again[0].Why != fenceOutrun.String() || again[0].After != repairAfterRegistration {
+		t.Errorf("the settle loop started %d attempts again (%+v), want one, after the registration's repair that was left on an older row", len(again), again)
+	}
+	// The newest row, with no heartbeat behind it: the settle loop wrote it.
+	requireFilters(t, a, sessionID, topics...)
+	a.store(t, "notifications.dispatch.issue.FENCEOUT"+strconv.Itoa(filterFenceAttempts)+".comment")
+	a.awaitPending(t, sessionID, 1)
+}
+
+// moveRowUnder adds topic to sessionID's interest row with one bucket write and sets the
+// session's consumer filter to the row it stored with one consumer call, as a registration
+// answered on another listener does, and fails the test when either fails. A hook of a repair's
+// pass calls it once the pass has read the row it plans from (afterRepairPlan), so the pass's
+// write carries the row this one replaced, and changes the consumer: a pass whose write found
+// the consumer as its plan asks would send nothing and end the fence (filterWriteSettled).
+func moveRowUnder(t *testing.T, rig *sessionConsumerRig, sessionID, topic string) {
+	t.Helper()
+	row, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{topic})
+	if err != nil {
+		t.Errorf("store %s under the pass's plan: %v", topic, err)
+		return
+	}
+	if err := rig.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, rig.deps.consumers.sessionConsumerFilter(sessionID, row.Topics)); err != nil {
+		t.Errorf("set the consumer of %s to the row stored under the pass's plan: %v", sessionID, err)
+	}
 }
 
 // settleLine is what the settle loop's lines name (settleAgainLine, settleSettledLine,

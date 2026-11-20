@@ -21,10 +21,11 @@ package main
 // no further: a fence that reads it corrects a write built from the cache, so only a case
 // without one pins that write's own read to the bucket.
 //
-// The last two cases hold a confirm open over such a registration in every pass rather than in
-// one: the fence writes again from the newest row until the row stops moving, and a row that
-// never stops outruns its passes, which it reports at WARN and leaves to the settle loop, whose
-// attempt after a pause writes the newest row (settleAgain).
+// One case moves the row under a confirm in every pass rather than in one, and the fence writes
+// again from the newest row until the row stops moving (TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow).
+// A row that never stops outruns its passes, which the fence reports at WARN and leaves to the
+// settle loop; that case is session_filter_settle_test.go's, with the helper both use to move the
+// row (moveRowUnder).
 
 import (
 	"context"
@@ -421,15 +422,13 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 	rig.awaitPending(t, sessionID, 1)
 }
 
-// A fence whose row stops moving ends on the newest row, however many of its passes the
-// registrations on another listener outran. The hook below stores a row and sets the consumer's
-// filter from it in every pass but the last, as a registration answered on another listener
-// does, so each of this listener's writes carries the row the pass before it read; the last pass
-// plans from a row nothing replaces, writes it, and reads the same revision back, which is where
-// the loop ends (fenceFilterWrite, filterFenceAttempts).
+// A fence whose row stops moving ends on the newest row, however many of its passes another
+// writer outran. The hook below stores a row in every pass but the last, after the pass has read
+// the row it plans from (moveRowUnder), so each of this listener's writes carries the row the
+// bucket has just replaced; the last pass plans from a row nothing replaces, writes it, and reads
+// the same revision back, which is where the loop ends (fenceFilterWrite, filterFenceAttempts).
 func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 	a := newSessionConsumerRig(t)
-	b := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_converges"
 	const kept = "notifications.dispatch.issue.FENCEPASSKEPT.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
@@ -440,10 +439,11 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 			return
 		}
 		moves++
-		topics = append(topics, fmt.Sprintf("notifications.dispatch.issue.FENCEPASS%d.>", moves))
-		b.subscribe(t, consumerRegistration(sessionID, "epoch-1", topics...))
+		topic := fmt.Sprintf("notifications.dispatch.issue.FENCEPASS%d.>", moves)
+		topics = append(topics, topic)
+		moveRowUnder(t, a, sessionID, topic)
 	}
-	// The heartbeat whose confirm those registrations outrun, pass after pass.
+	// The heartbeat whose confirm that writer outruns, pass after pass.
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 	a.deps.consumers.afterRepairPlan = nil
 
@@ -451,56 +451,11 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 		t.Fatalf("the row moved under %d of the repair's passes, want %d, one short of the fence's own", moves, filterFenceAttempts-1)
 	}
 	requireFilters(t, a, sessionID, topics...)
-	if logs := a.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) {
+	if logs := a.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) || strings.Contains(logs, settleAgainLine) {
 		t.Errorf("a fence that ended on the newest row must report nothing left behind:\n%s", logs)
 	}
-	b.store(t, "notifications.dispatch.issue.FENCEPASS"+strconv.Itoa(moves)+".comment")
-	b.awaitPending(t, sessionID, 1)
-}
-
-// A fence out of passes names the session and both revisions at WARN, and the settle loop then
-// writes the filter of the newest row, with no heartbeat behind it. The hook below stores a row
-// and sets the consumer's filter from it in each pass of the confirm's own attempt, so every
-// write that attempt makes is outrun and it ends holding the row of its last plan, one row behind
-// the bucket: that window is what the line reports. The row then stops moving, and the loop's
-// attempt after its pause plans from the newest row and ends on it (fenceFilterWrite,
-// settleAgain). The hook stays in place until the loop has run, so no write of it races the
-// loop's read of it, and moves the row in the confirm's own passes alone.
-func TestAFenceOutOfPassesNamesBothRevisionsAndTheSettleLoopWritesTheNewestRow(t *testing.T) {
-	a := newSessionConsumerRig(t)
-	b := newSessionConsumerRig(t)
-	const sessionID = "ses_fence_exhausted"
-	const kept = "notifications.dispatch.issue.FENCEOUTKEPT.>"
-	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
-
-	topics, passes := []string{kept}, 0
-	a.deps.consumers.afterRepairPlan = func() {
-		passes++
-		if passes > filterFenceAttempts {
-			return
-		}
-		topics = append(topics, fmt.Sprintf("notifications.dispatch.issue.FENCEOUT%d.>", passes))
-		b.subscribe(t, consumerRegistration(sessionID, "epoch-1", topics...))
-	}
-	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
-	wrote, newest := requireFenceExhaustionLogged(t, a, sessionID)
-	awaitSettled(a)
-	a.deps.consumers.afterRepairPlan = nil
-
-	if passes <= filterFenceAttempts {
-		t.Fatalf("the repair and the settle loop made %d passes, want the %d of the confirm's attempt and the loop's after them", passes, filterFenceAttempts)
-	}
-	if newest <= wrote {
-		t.Errorf("the line names revision %d written and %d newest, want a newest above it", wrote, newest)
-	}
-	again := settleLines(t, a, sessionID, settleAgainLine)
-	if len(again) != 1 || again[0].Why != fenceOutrun.String() || again[0].After != repairAfterRegistration {
-		t.Errorf("the settle loop started %d attempts again (%+v), want one, after the registration's repair that was left on an older row", len(again), again)
-	}
-	// The newest row, with no heartbeat behind it: the settle loop wrote it.
-	requireFilters(t, a, sessionID, topics...)
-	b.store(t, "notifications.dispatch.issue.FENCEOUT"+strconv.Itoa(filterFenceAttempts)+".comment")
-	b.awaitPending(t, sessionID, 1)
+	a.store(t, "notifications.dispatch.issue.FENCEPASS"+strconv.Itoa(moves)+".comment")
+	a.awaitPending(t, sessionID, 1)
 }
 
 // A corrective pass that finds the consumer already filtering on what the newest row asks ends
