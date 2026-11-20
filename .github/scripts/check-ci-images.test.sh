@@ -421,6 +421,34 @@ run_check tree "$root"
 check "the gate rejects a docker action" "$(is "$status" 1)"
 check "the gate names the docker action" "$(contains "$out" 'docker:// actions can pull before checkout')"
 
+echo "case: a job that calls a workflow outside this tree, whose services the gate cannot read"
+# The runner pulls the services and the container a called workflow's jobs declare before
+# checkout, as it does a job's own, and this check reads only this tree's files: a call of
+# another repository's workflow, or of this repository's at another ref, is refused by name.
+n=0
+for called in "octo-org/shared-ci/.github/workflows/postgres-tests.yaml@0123456789abcdef0123456789abcdef01234567" \
+  "cybermonklabs/legion/.github/workflows/ci-job-envoy-smoke.yaml@0123456789abcdef0123456789abcdef01234567"; do
+  n=$((n + 1))
+  root=$(fixture "foreign-workflow-$n")
+  cat >> "$root/.github/workflows/ci.yaml" <<YAML
+  called:
+    uses: $called
+YAML
+  run_check tree "$root"
+  check "the gate rejects a job that calls $called" "$(is "$status" 1)"
+  check "and names the job, the line and the workflow" \
+    "$(contains "$out" "ci.yaml:14: the called job calls $called, a workflow outside this tree")"
+  check "and says it cannot read that workflow's services or container" \
+    "$(contains "$out" "the image gate cannot read that workflow's services or container")"
+done
+root=$(fixture local-workflow)
+cat >> "$root/.github/workflows/ci.yaml" <<YAML
+  called:
+    uses: ./.github/workflows/ci-job-envoy-smoke.yaml
+YAML
+run_check tree "$root"
+check "a job that calls this tree's own workflow passes" "$(is "$status" 0)"
+
 echo "case: each mode runs its own half"
 # The tree mode's refusals read files, and the package mode's one refusal reads ghcr.io. This
 # tree carries a refusal of the tree half (a Go string on another registry, rule 4) and a package

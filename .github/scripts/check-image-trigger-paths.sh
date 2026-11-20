@@ -1662,9 +1662,9 @@ for workflow, document in documents.items():
         if not isinstance(job, dict):
             continue
         called = str(job.get("uses", ""))
-        # .github/scripts/check-ci-images.sh relies on this refusal too: a called workflow of
-        # another repository declares services and containers that check never reads, so one
-        # from ghcr.io with no credentials would bring back the runner's login before checkout.
+        # .github/scripts/check-ci-images.sh refuses the same call for its own reason: it cannot
+        # read the services or the container a called workflow of another repository declares,
+        # and a ghcr.io one with no credentials brings back the runner's login before checkout.
         if called and not called.startswith("./.github/workflows/"):
             problems.append(
                 f"::error file={workflow}::{workflow}: jobs.{job_name} calls {called}, a "

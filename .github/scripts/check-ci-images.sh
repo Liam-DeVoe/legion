@@ -102,11 +102,13 @@
 # cannot read the image the runner pulls or its credentials; a bare image, because it cannot set
 # `credentials:`; any other value, because it names no image this check can read. A
 # `uses: docker://` action is refused: it can add the same pre-checkout pull without a
-# credentials field. A job that calls another repository's workflow
-# (`jobs.<id>.uses: <owner>/<repo>/.github/workflows/<file>@<ref>`) runs the services and
-# containers of a file this check does not read; .github/scripts/check-image-trigger-paths.sh,
-# a step of the same lint job, refuses by name every job-level `uses:` that is not a
-# `./.github/workflows/` call, and this rule relies on that refusal.
+# credentials field. A job that calls a workflow other than one of this tree's
+# (`jobs.<id>.uses:` that does not start with `./`, such as
+# `<owner>/<repo>/.github/workflows/<file>@<ref>`) is refused by name: the runner pulls the
+# services and the container that workflow's jobs declare before checkout, as it does a job's
+# own, and this check cannot read that workflow's services or container. A call of this tree's
+# own workflow (`./.github/workflows/<file>`) passes, because this check reads that file.
+# .github/scripts/check-image-trigger-paths.sh refuses the same call for a reason of its own.
 #
 # IN PACKAGE MODE:
 #
@@ -1233,6 +1235,15 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
     jobs = parsed.get("jobs")
     if isinstance(jobs, dict):
         holders.extend(job for job in jobs.values() if isinstance(job, dict))
+        for name, job in jobs.items():
+            called = job.get("uses") if isinstance(job, dict) else None
+            if called is not None and not (isinstance(called, str) and called.startswith("./")):
+                problems.append(
+                    f"{path}:{key_line(job, 'uses')}: the {name} job calls {one_line(called)}, a "
+                    "workflow outside this tree, and the image gate cannot read that workflow's "
+                    "services or container, which the runner pulls before checkout. Call a "
+                    "./.github/workflows/ workflow of this tree, whose jobs this check reads."
+                )
     runs = parsed.get("runs")
     if isinstance(runs, dict):
         holders.append(runs)
