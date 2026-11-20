@@ -6911,6 +6911,7 @@ The release does five things, in this order:
    Then it asks once more for each claim stored suspended by an idle release's `released`, so that the release's suspension takes that claim over by rank and the next boot starts it.
    A claim held by the daemon's own suspension keeps it, since that source ranks above `project_release`, and the next boot does not start that claim.
    Then it deletes the pod's Sandbox, with the pod and its disk.
+   A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is the Sandbox's own claim, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
    A pod it asked nothing is deleted as soon as its last read and its stop are done.
    A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
    The daemon pushes nothing for a role.
