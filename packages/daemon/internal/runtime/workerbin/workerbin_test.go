@@ -38,6 +38,31 @@ func otherGitDir(t *testing.T) string {
 	return dir
 }
 
+// standInImageJJ points imageJJ at a stand-in for the image's jj wrapper, a script in a new
+// directory, until the test ends, and answers that directory.
+func standInImageJJ(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	jj := filepath.Join(dir, "jj")
+	if err := os.WriteFile(jj, []byte("#!/bin/sh\necho image-jj\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous := imageJJ
+	imageJJ = jj
+	t.Cleanup(func() { imageJJ = previous })
+	return dir
+}
+
+// otherJJDir is a new directory that holds an executable jj that is not the image's.
+func otherJJDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "jj"), []byte("#!/bin/sh\necho another-jj\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // entryNames is the names of what dir holds, in order.
 func entryNames(t *testing.T, dir string) []string {
 	t.Helper()
@@ -216,6 +241,61 @@ func TestInstallWritesNoGitWrapperWhereTheImagesGitLeadsPath(t *testing.T) {
 	if got, want := strings.TrimSpace(string(out)), filepath.Join(image, "git"); got != want {
 		t.Fatalf("command -v git under Path = %q, want the image's git %q", got, want)
 	}
+}
+
+// Where the first jj on path after bin is not the image's jj wrapper, Install writes bin's jj: a
+// 0700 script that execs the installing legion's `legion jj --after` with bin's own absolute path,
+// both single-quoted, so a pane's push runs the step and every other command runs the next jj.
+// Where it is the image's wrapper, which runs the step itself, Install writes no jj and removes the
+// one an earlier run wrote, so a shell under Path finds the image's.
+func TestInstallWritesAJJUnlessTheImagesWrapperIsNext(t *testing.T) {
+	image := standInImageJJ(t)
+	t.Run("another jj next on PATH", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "state dir")
+		if err := Install(root, "/opt/legion state/legion", otherJJDir(t)+":"+image); err != nil {
+			t.Fatalf("Install: %v", err)
+		}
+		bin := LauncherDir(root)
+		script := filepath.Join(bin, "jj")
+		contents, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatalf("jj: %v", err)
+		}
+		if want := "#!/bin/sh\nexec '/opt/legion state/legion' jj --after '" + bin + "' -- \"$@\"\n"; string(contents) != want {
+			t.Fatalf("jj = %q, want %q", contents, want)
+		}
+		if info, err := os.Stat(script); err != nil {
+			t.Fatalf("jj stat: %v", err)
+		} else if info.Mode().Perm() != 0o700 {
+			t.Fatalf("jj mode = %o, want 0700", info.Mode().Perm())
+		}
+	})
+	t.Run("the image's wrapper next on PATH", func(t *testing.T) {
+		root := t.TempDir()
+		stale := filepath.Join(LauncherDir(root), "jj")
+		if err := Install(root, "/opt/legion", otherJJDir(t)+":"+image); err != nil {
+			t.Fatalf("Install: %v", err)
+		}
+		if _, err := os.Stat(stale); err != nil {
+			t.Fatalf("the first Install wrote no jj: %v", err)
+		}
+		path := image + ":" + otherJJDir(t)
+		if err := Install(root, "/opt/legion", path); err != nil {
+			t.Fatalf("Install: %v", err)
+		}
+		if _, err := os.Stat(stale); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("bin/jj after an Install whose next jj is the image's wrapper: %v, want it removed", err)
+		}
+		shell := exec.Command("sh", "-c", "command -v jj")
+		shell.Env = []string{"PATH=" + Path(path, root)}
+		out, err := shell.Output()
+		if err != nil {
+			t.Fatalf("command -v jj: %v", err)
+		}
+		if got, want := strings.TrimSpace(string(out)), filepath.Join(image, "jj"); got != want {
+			t.Fatalf("command -v jj under Path = %q, want the image's jj %q", got, want)
+		}
+	})
 }
 
 // The git Install reads on path leaves out bin itself, written as it is, with a trailing slash,
