@@ -1,11 +1,17 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
-import type { TreeNode } from "./issue-tree";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { drawnLine, firstLineOf, type ParentLine, type TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView } from "./presets";
+import { lineWordsOf } from "./projection-fixture";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The page with no filter on and the four filters as views of the one tree: with no filter on
@@ -62,11 +68,21 @@ function drawn(root: TreeNode, preset: Preset, query = ""): string[] {
   return idsOf(view.rootRow ? rows : rows.slice(1));
 }
 
+/** The one line a row draws for `line`'s parent (`NodeRow.tsx`'s `ParentLink`): the parent's
+ *  words projected by the shared reader (`lineWordsOf`), cut by R1's first-line rule, and the
+ *  page's word for its kind where they hold none. */
+function drawnParentLine(line: ParentLine): string {
+  const words = lineWordsOf(line);
+  return words === "" ? NODE_TYPE_NAMES[line.type] : drawnLine(firstLineOf(words));
+}
+
 /** Every node the view draws, by id, with the line its parent is drawn as where it has one. */
 function parentLines(root: TreeNode): Record<string, string> {
   const lines: Record<string, string> = {};
   const walk = (at: TreeNode): void => {
-    if (at.parentLine !== undefined) lines[at.id] = `${at.parentLine.type}: ${at.parentLine.line}`;
+    if (at.parentLine !== undefined) {
+      lines[at.id] = `${at.parentLine.type}: ${drawnParentLine(at.parentLine)}`;
+    }
     for (const child of at.children) walk(child);
   };
   walk(root);
@@ -249,7 +265,8 @@ test("the Decisions count holds an agent's decision under an answered question a
 });
 
 // R26, R18: the parent a filter draws as no row is one line on its child's row, and carries the
-// parent's own address where the model gives it one, so the line is the link to that node.
+// parent's own address where the model gives it one, so the line is the link to that node, and
+// the parent's own words, which the row projects its line from.
 test("a parent line carries the parent's own address", () => {
   const root = node("CORE-1", "issue", [
     statement("spec#b-r1", [node("plan#b-t1", "plan_task")], {
@@ -261,11 +278,11 @@ test("a parent line carries the parent's own address", () => {
   expect(lines).toEqual([
     {
       id: "spec#b-r1",
-      line: "spec#b-r1",
       reference: "dispatch://CORE-1/spec#b-r1",
+      text: "spec#b-r1",
       type: "requirement",
     },
-    { id: "comment-1", line: "comment-1", type: "comment" },
+    { id: "comment-1", text: "comment-1", type: "comment" },
   ]);
 });
 
@@ -291,7 +308,9 @@ test("a parent's line draws its ellipsis only where the cut ended inside a sente
   ]);
   const view = presetView(root, "spec", "");
   expect(drawn(root, "spec")).toEqual(["spec#b-r1", "spec#b-r2"]);
-  const [long, short] = view.root.children.map((row) => row.parentLine?.line);
+  const [long, short] = view.root.children.map((row) =>
+    row.parentLine === undefined ? undefined : drawnParentLine(row.parentLine)
+  );
   // The one sentence runs past the limit, so the line stops inside it and says it carries on.
   expect(long).toEndWith("…");
   expect(long).toBe(`${kept}…`);
@@ -299,7 +318,7 @@ test("a parent's line draws its ellipsis only where the cut ended inside a sente
   expect(short).toBe("Which layout does the page take?");
 });
 
-// A parent's line is cut from the parent's first block (`lineWords`), so a parent whose reading
+// A parent's line is cut from the parent's first block (`lineReading`), so a parent whose reading
 // opens with a heading draws that heading alone, and never the heading run into the paragraph
 // after it. A parent with no reading is read the same way from its stored text, whose heading
 // marker is markup.
@@ -345,7 +364,8 @@ test("a parent with no words is drawn on its child's row as its kind's word, nev
     "plan#b-t3": `ask: ${NODE_TYPE_NAMES.ask}`,
   });
   for (const row of view.root.children) {
-    expect(row.parentLine?.line).not.toBe(row.parentLine?.id);
+    const line = row.parentLine;
+    expect(line === undefined ? undefined : drawnParentLine(line)).not.toBe(line?.id);
   }
 });
 

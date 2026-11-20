@@ -540,12 +540,29 @@ export const markdownClassName =
 /** What one reference a projected text writes resolved to, under its `dispatch://` reference
  *  (`MarkdownHeadline.addresses`): `name`, what the reference reads as standing on its own - its
  *  target's current name, or undefined where Dispatch answered that its target does not exist or
- *  exists with no name of its own, where it reads as the words its author wrote (R8) - and
+ *  exists with no name of its own, where it reads as the words its author wrote (R8) - `key`, an
+ *  issue's key, which the words write before its name as a link to an issue reads (`RefLink`) and
+ *  which is kept apart from it, so a surface that sets the key apart reads the name alone; and
  *  `mention`, what a party's mention of it reads as, undefined where the mention keeps its
- *  author's words. A reference the map does not hold has not been read yet. */
+ *  author's words. A reference the lookup does not answer has not been read yet. */
 export interface ReferenceName {
+  readonly key?: string;
   readonly name: string | undefined;
   readonly mention: string | undefined;
+}
+
+/** What each reference a projected text writes resolved to, by its `dispatch://` reference: a
+ *  map, or a view over the sources a caller names references from, read through without a copy
+ *  of them (`plain-text.tsx`). `undefined` for a reference not read yet. */
+export interface ReferenceNameLookup {
+  get(reference: string): ReferenceName | undefined;
+}
+
+/** The words `answer` names its reference by standing on its own: an issue's key and then its
+ *  name, and any other target's name. Undefined where it names none. */
+function standingName(answer: ReferenceName | undefined): string | undefined {
+  const name = answer?.name;
+  return name === undefined || answer?.key === undefined ? name : `${answer.key} ${name}`;
 }
 
 /** What a caller knows of the references a projected text writes: what each one resolved to
@@ -560,7 +577,7 @@ export interface ReferenceName {
  *  markdown or no project list to read leaves either out, and every reference the words hold is
  *  named. */
 export interface ReferenceNaming {
-  readonly names: ReadonlyMap<string, ReferenceName>;
+  readonly names: ReferenceNameLookup;
   readonly questions?: Readonly<Record<string, string>>;
   readonly cited?: ReadonlySet<string>;
   readonly projects?: ReadonlySet<string>;
@@ -666,7 +683,7 @@ function nameReferences(
         ? found.form === "address" && found.text.startsWith("dispatch://")
           ? shortForm(target.route)
           : found.text
-        : (naming.names.get(target.reference)?.name ?? found.text);
+        : (standingName(naming.names.get(target.reference)) ?? found.text);
     named += `${text.slice(cursor, found.start)}${drawn}`;
     cursor = found.end;
   }
@@ -713,7 +730,7 @@ function linkDrawn(
     return href.startsWith("dispatch://") ? shortForm(route) : undefined;
   }
   const answer = naming.names.get(reference);
-  return reads === "mention" ? answer?.mention : answer?.name;
+  return reads === "mention" ? answer?.mention : standingName(answer);
 }
 
 /** The link mark over a text node, if any. */
@@ -766,9 +783,12 @@ export function linkWordsAt(
  *  space. A line ends at every block boundary, at a hard break, and at a newline in a text or an
  *  HTML value - which is where a code block's lines end, and a block of HTML's, which the engine
  *  draws as one `html` node holding all of its lines. A table's row is the exception: it reads as
- *  one line, every boundary or break inside it a space, so its cells read in a row. A link's
- *  words name no reference of their own, as a rendered body links none there, and a link a hard
- *  break cuts is read once, as the one link it is (`linkWordsAt`). */
+ *  one line, every boundary or break inside it a space, so its cells read in a row. An item of an
+ *  ordered list opens on its number, as a rendered body draws it: the list's `order` and the
+ *  item's place in it, written before the first words the item holds, wherever they stand, so
+ *  `1. Stand the harness up.` keeps its `1.` and `1. - a` reads `1. a`, never a line of `1.`
+ *  alone. A link's words name no reference of their own, as a rendered body links none there,
+ *  and a link a hard break cuts is read once, as the one link it is (`linkWordsAt`). */
 function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedText[] {
   const lines: ProjectedText[] = [];
   let words = "";
@@ -779,6 +799,10 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
   // The link being read, and whether a name was written in place of its words: the text nodes
   // after its first, which formatting inside the link cuts its words into, then add nothing.
   let reading: { link: Mark; drawn: boolean } | undefined;
+  // The numbers of the ordered list's items opened and not written yet, an item's after the
+  // items it stands in, and where the innermost of those items ends: written before the first
+  // words it holds, and dropped where it ends holding none.
+  let numbers: { readonly end: number; readonly text: string } | undefined;
   const breakLine = (position: number): void => {
     if (position < rowEnd) {
       words += " ";
@@ -795,6 +819,10 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
     for (const [index, line] of text.split("\n").entries()) {
       if (index > 0) {
         breakLine(position);
+      }
+      if (numbers !== undefined && (position >= numbers.end || line.trim() !== "")) {
+        words += position < numbers.end ? numbers.text : "";
+        numbers = undefined;
       }
       if (!name) {
         words += line;
@@ -842,6 +870,12 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
       breakLine(position);
       if (node.type.name === "table_row" || node.type.name === "table_header_row") {
         rowEnd = position + node.nodeSize;
+      }
+      if (node.type.name === "list_item" && parent?.type.name === "ordered_list") {
+        const order = parent.attrs.order;
+        const number = `${(typeof order === "number" ? order : 1) + index}. `;
+        const within = numbers !== undefined && position < numbers.end ? numbers.text : "";
+        numbers = { end: position + node.nodeSize, text: `${within}${number}` };
       }
     } else if (node.isLeaf) {
       words += " ";
@@ -941,21 +975,12 @@ export function useMarkdownHeadline(
   const [headline, setHeadline] = useState<MarkdownHeadline>();
   useLayoutEffect(() => {
     const fit = (document: ProseMirrorNode | undefined): void => {
-      if (document === undefined) {
-        setHeadline(undefined);
-        return;
-      }
-      // The line is read from the parsed document, never from the markdown, by the projection
-      // that reads a whole text, so the two cannot disagree on what a line holds.
-      const projected = firstLine ? firstLineOf(document, naming) : plainWords(document, naming);
-      const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
-      const cut = characters.length > max;
-      setHeadline({
-        addresses: projected.addresses,
-        questions: projected.questions,
-        cut,
-        text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
-      });
+      const next =
+        document === undefined ? undefined : headlineOf(document, max, naming, firstLine);
+      // A projection again over facts that change nothing of the line - a name read for a
+      // reference it does not hold, a lookup made anew - keeps the headline in hand, so its
+      // caller draws nothing again.
+      setHeadline((current) => (sameHeadline(current, next) ? current : next));
     };
     if (tree !== undefined) {
       return drawWithEngine(tree, fit);
@@ -976,4 +1001,39 @@ export function useMarkdownHeadline(
     );
   }, [firstLine, markdown, max, naming, tree]);
   return headline;
+}
+
+/** Whether two headlines read the same: the same words, cut alike, from the same references. */
+function sameHeadline(
+  one: MarkdownHeadline | undefined,
+  other: MarkdownHeadline | undefined
+): boolean {
+  if (one === undefined || other === undefined) return one === other;
+  return (
+    one.text === other.text &&
+    one.cut === other.cut &&
+    one.questions === other.questions &&
+    one.addresses.length === other.addresses.length &&
+    one.addresses.every((address, at) => other.addresses[at] === address)
+  );
+}
+
+/** The headline of a parsed document (`useMarkdownHeadline`). The line is read from the parsed
+ *  document, never from the markdown, by the projection that reads a whole text, so the two
+ *  cannot disagree on what a line holds. */
+function headlineOf(
+  document: ProseMirrorNode,
+  max: number,
+  naming: ReferenceNaming,
+  firstLine: boolean
+): MarkdownHeadline {
+  const projected = firstLine ? firstLineOf(document, naming) : plainWords(document, naming);
+  const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
+  const cut = characters.length > max;
+  return {
+    addresses: projected.addresses,
+    questions: projected.questions,
+    cut,
+    text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
+  };
 }

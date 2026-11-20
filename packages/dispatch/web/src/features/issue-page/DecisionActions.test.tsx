@@ -29,6 +29,11 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../refs/reference-names";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -688,4 +693,64 @@ test("a decision whose answer carried no reading quotes its first paragraph's ma
     "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow."
   );
   expect(await quoteOf({ text, text_tree: undefined })).toBe("A log is enough.");
+});
+
+/** What the page's batched read publishes for the Change quote's row: the issue `CORE-7`, named. */
+const QUOTE_NAMES: PublishedReferences = {
+  ambiguous: new Set(),
+  asked: new Set(["dispatch://CORE-7"]),
+  gone: new Set(),
+  readings: new Map([["dispatch://CORE-7", { words: "Draw the rows" }]]),
+  unnamed: new Set(),
+};
+
+/** Publishes `QUOTE_NAMES` while it is drawn, as the page publishes its batched read. */
+function Named({ children }: { children: ReactNode }): ReactNode {
+  usePublishReferenceNames(QUOTE_NAMES);
+  return children;
+}
+
+// R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is
+// anchored to as the reader reads the decision - the plain-text projection of its first block,
+// a reference in it read as its target's name - while the change it sends is still anchored to
+// the decisions document's own words, which the server matches (`pmdoc.FindQuote`).
+test("the Change quotes its block's plain-text projection and anchors to the document's own words", async () => {
+  const written = "The presets read dispatch://CORE-7 first.";
+  const text = `## One tree, five presets\n\n${written}`;
+  const cited: Decision = { ...decision, text, text_tree: displayTree(text) };
+  const answer = { ...read, decisions: [cited] };
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["decisions", KEY], answer);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
+  const documentText = spyDocumentText(`# Decisions of CORE-1\n\n${text}`);
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>
+        <Named>
+          <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+        </Named>
+      </ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-quote").textContent).toBe(
+        "The presets read CORE-7 Draw the rows first."
+      )
+    );
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls[0]?.[1]?.anchor?.quote).toBe(written);
+  } finally {
+    view.unmount();
+    decisions.mockRestore();
+    documentText.mockRestore();
+    createComment.mockRestore();
+  }
 });

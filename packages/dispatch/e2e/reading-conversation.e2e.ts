@@ -237,6 +237,14 @@ test("node-row-words: a comment's row on the new issue page draws every form but
   // A person's comment is a node of the outline; a thread no person wrote in is the history's
   // and draws no row (`agents-only.ts`), so the text is the reader's own.
   const comment = await createComment(world.host.key, { body: readingText(world) });
+  // What each one-reference read asked for (`GET /api/v1/references?to=`): the row names a bare
+  // key, an address and a short id from the page's one batched read, so none of them is asked
+  // for on its own (`plain-text.tsx`'s `useReferenceNames`).
+  const askedAlone: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/references") askedAlone.push(url.searchParams.get("to") ?? "");
+  });
 
   await withIssuePage(page.context(), READER);
   await openIssue(page, world.host.key);
@@ -244,6 +252,15 @@ test("node-row-words: a comment's row on the new issue page draws every form but
   // The row's words are in no link or button, so the comment draws as a block of the renderer
   // with its references linked (`RowText.tsx`).
   await expectRowReadsForms(rowWords(nodeRow(page, comment.id)), world);
+  const batched = formReadings(world)
+    .filter(({ form }) => form === "bare-key" || form === "address" || form === "short-id")
+    .flatMap(({ form, reference, written }) =>
+      form === "short-id" ? [reference, written] : [reference]
+    );
+  expect(
+    askedAlone.filter((to) => batched.includes(to)),
+    "a reference the page's batched read names was read on its own"
+  ).toEqual([]);
 });
 
 /**

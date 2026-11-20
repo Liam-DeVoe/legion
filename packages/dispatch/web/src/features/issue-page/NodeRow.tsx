@@ -3,7 +3,9 @@ import {
   type CSSProperties,
   type ReactNode,
   type RefObject,
+  useCallback,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -30,8 +32,9 @@ import {
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { usePlainHeadline } from "../refs/plain-text";
 import { ReferenceHostIs } from "../refs/reference-host";
-import { buildReferencePath, parseNodeReference } from "../refs/routes";
+import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
@@ -39,10 +42,11 @@ import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import {
+  chipName,
   drawnLine,
   firstLineOf,
   isStatement,
-  lineWords,
+  lineReading,
   type NodeAnswer,
   type NodeChip,
   type ParentLine,
@@ -51,7 +55,7 @@ import {
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
-import { chipWords } from "./node-row-chip";
+import { documentWord } from "./node-row-chip";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
@@ -68,7 +72,8 @@ import {
   type NodeType,
   nodeStateWord,
 } from "./page-words";
-import { documentWord, RowText, useOutOfTabOrder } from "./RowText";
+import { RowText, useOutOfTabOrder } from "./RowText";
+import { titleReading } from "./tree-drafts";
 
 /**
  * One row of the issue's outline, and the body it opens on focus (R1, R6, R9, R34, and the
@@ -223,15 +228,20 @@ export function NodeRow({
   // which its document's blocks draw before the coverage read brings them - draws them cut, and
   // one that brings the same words in new objects leaves the row as it stands (`useClamp`).
   const clamp = useClamp(words, cuttable, node.tree ?? node.text);
+  // A reference in the words takes its name after they are first drawn - the page's batched
+  // read answers last, and a party's own read after it - and its words can run longer or shorter
+  // than the words written: the row measures its cut again, as for words of another value
+  // (`useClamp`), so no word is cut short of the room or drawn past it (INFRA-1196 decision 350).
+  const redrawn = useCallback(() => {
+    const element = words.current;
+    if (cuttable && element !== null) clampRedrawn(element);
+  }, [cuttable]);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
   const press = useRowOnScreen(row, focused);
 
   const depth = level - 1;
-  // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
-  // drawing of a node is cut, so a heading never runs into the paragraph after it.
-  const first = firstLineOf(lineWords(node));
   // How many nodes a folded branch holds: on its one line, and after its words once its focus
   // or its pin draws them whole, so the reader still knows what the fold hides (R1).
   const count =
@@ -310,9 +320,7 @@ export function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              <span data-node-first-line="" {...authorText}>
-                {drawnLine(first)}
-              </span>
+              <FirstLine node={node} />
               {count === null ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>{count}</span>
               )}
@@ -332,6 +340,7 @@ export function NodeRow({
                 <RowText
                   focused={focused}
                   markdown={node.text}
+                  onRedrawn={redrawn}
                   source={node.source}
                   tabStops={tabStops}
                   tree={node.tree}
@@ -423,6 +432,45 @@ export function NodeRow({
         {threadRead === undefined || oneLine ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
+  );
+}
+
+/**
+ * A node's one line (R1), as every place that draws one draws it - a folded branch's line and a
+ * parent's line under a filter: its node's first line, projected from its words by the shared
+ * plain-text projection (`lineReading`) and cut by R1's first-line rule (`firstLineOf`), with an
+ * ellipsis only where the cut ended inside a sentence (`drawnLine`), so a heading never runs into
+ * the paragraph after it. A reference in it reads as the same reference in the node's row does
+ * (`RowText.tsx`): as its target's current name once it resolves, and as the words its author
+ * wrote until then (R8, INFRA-1196 decision 350); and a numbered step keeps its number (decisions
+ * 66 and 88). Each role is read by the issue the node's record is on. `line` is `undefined` until
+ * the projection has answered, which is one pre-paint commit on a page whose engine is loaded,
+ * and `""` for a node whose words hold none. `reads` draws nothing and the caller mounts it where
+ * it draws the line.
+ */
+function useNodeLine(
+  node: Pick<TreeNode, "source" | "text" | "tree" | "type">,
+  { surface }: { readonly surface: "node-row-first-line" | "node-row-parent-line" }
+): { line: string | undefined; reads: ReactNode } {
+  const { source, text: stored, tree, type } = node;
+  const reading = useMemo(() => lineReading({ text: stored, tree, type }), [stored, tree, type]);
+  const { reads, text } = usePlainHeadline(
+    "tree" in reading ? reading.tree : undefined,
+    "markdown" in reading ? reading.markdown : undefined,
+    { firstLine: "markdown" in reading, issue: source?.issue, surface }
+  );
+  const words = "none" in reading ? "" : text?.text;
+  return { line: words === undefined ? undefined : drawnLine(firstLineOf(words)), reads };
+}
+
+/** A folded branch's one line (`useNodeLine`): empty until the projection has answered. */
+function FirstLine({ node }: { node: TreeNode }): ReactNode {
+  const { line, reads } = useNodeLine(node, { surface: "node-row-first-line" });
+  return (
+    <span data-node-first-line="" {...authorText}>
+      {reads}
+      {line ?? ""}
+    </span>
   );
 }
 
@@ -1123,18 +1171,21 @@ export function NodeEdges({
   /** Whether a chip's link keeps its place in the tab order (`NodeRow`'s `tabStops`). */
   tabStops?: boolean;
 }): ReactNode {
+  // A chip reads a role by the issue the node's record is on, as the node's own words do.
+  const issue = node.source?.issue;
   return (
     <>
       {node.alsoUnder.map((chip) => (
         <Chip
           chip={chip}
+          issue={issue}
           key={`also:${chip.ref}`}
           label={CONTROL_LABELS.also_under}
           tabStops={tabStops}
         />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} key={chip.ref} label={chip.label} tabStops={tabStops} />
+        <Chip chip={chip} issue={issue} key={chip.ref} label={chip.label} tabStops={tabStops} />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -1147,26 +1198,33 @@ export function NodeEdges({
 
 /**
  * One tie of the node that is not the spine, on the node's own line (ruling 5): the page's word
- * for the tie where it has one, then the target by its short name where the model holds one, and
- * until then by its first words, cut at a word within 32 characters (`chipWords`), as the link a
- * reader follows to it; a whole document by the page's word for one, because today's model
- * holds no title for a document and its name is its file name (`documentWord`, part G's R4). No
- * address, slug or document name is drawn in its place (R22), save one: a short reference that
- * two or more targets answer to (`ambiguous`) names no one target, so it is drawn as its author
- * wrote it, as words with no link, and never as a target deleted (decision 62). A target nothing
- * answers to now says so. A chip whose target the batched reference read has not named yet
- * draws nothing until it does - "the names come last and all at once" (`useIssueTree.ts`) - and
- * neither does one the read named with no words at all: there is nothing to name it by. A
- * target's name is plain words already (`tree-drafts.ts`'s `treeContext` names every kind of
- * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
- * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
+ * for the tie where it has one, then the target by its name, cut as a chip's words are
+ * (`chipName`): a block's first line, and at a word within 32 characters, as the link a reader
+ * follows to it; a whole document by the page's word for one, because today's model holds no
+ * title for a document and its name is its file name (`documentWord`, part G's R4). No address,
+ * slug or document name is drawn in its place (R22), save one: a short reference that two or
+ * more targets answer to (`ambiguous`) names no one target, so it is drawn as its author wrote
+ * it, as words with no link, and never as a target deleted (decision 62). A target nothing
+ * answers to now says so.
+ *
+ * The name is the chip's address as the shared plain-text projection reads it standing alone:
+ * its target's current name (R8), which for a target the page's batched read answered is the
+ * name the page published for it (`refs/reference-names.tsx`), whole, projected from the
+ * target's own words in plain words with no list or block reading, so "1. Stand the harness up."
+ * keeps its number (decisions 66 and 88); a party by its own name (R5), its role read by the
+ * issue the node's record is on (`issue`); and an issue by its key and title. A chip whose
+ * target has no name yet draws nothing until it has one - "the names come last and all at once"
+ * (`useIssueTree.ts`) - which the projection's own answer says (`names`): a chip draws no
+ * address.
  */
 function Chip({
   chip,
+  issue,
   label,
   tabStops,
 }: {
   chip: NodeChip;
+  issue: string | undefined;
   label?: string;
   tabStops: boolean;
 }): ReactNode {
@@ -1177,20 +1235,38 @@ function Chip({
   const ambiguous = chip.ambiguous === true;
   const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
-  const word = ambiguous ? undefined : documentWord(target);
-  const words = ambiguous ? chip.ref : (word ?? chipWords(chip.name));
-  if (!gone && words === "") return null;
-  const route = chip.gone || target === undefined || target.kind === "person" ? undefined : target;
+  // A whole document by the page's word for it, which the chip carries (`tree-drafts.ts`'s
+  // `documentWord`), and the word for any document where it carries none.
+  const anyDocument = ambiguous ? undefined : documentWord(target);
+  const carried =
+    chip.reading !== undefined && "words" in chip.reading ? chip.reading.words : undefined;
+  const word = anyDocument === undefined ? undefined : (carried ?? anyDocument);
+  // The address as one text run, which the projection reads as the reference it is.
+  const address = useMemo(() => titleReading(chip.ref), [chip.ref]);
+  const { names, reads, text } = usePlainHeadline(
+    ambiguous || gone || word !== undefined ? undefined : address,
+    undefined,
+    { issue, surface: "node-row-chip" }
+  );
+  // The one reference the projection read, and whether it named it: one it holds no name for
+  // reads as the address written, which a chip never draws.
+  const reference = text?.addresses[0];
+  const named = reference !== undefined && names.get(reference)?.name !== undefined;
+  const name = text !== undefined && named ? chipName(target, text.text) : "";
+  const words = ambiguous ? chip.ref : (word ?? name);
+  if (!gone && words === "") return reads;
+  const href = chip.gone || target === undefined ? undefined : referenceHref(target);
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (
     <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
+      {reads}
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
       {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
       {gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
-      ) : route === undefined ? (
+      ) : href === undefined ? (
         // An address as written may run longer than the line, so it alone may wrap.
         <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>
           {words}
@@ -1203,7 +1279,7 @@ function Chip({
           className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
           data-chip-name=""
           tabIndex={tabStops ? undefined : -1}
-          to={buildReferencePath(route)}
+          to={href}
           {...marks}
         >
           {words}
@@ -1213,26 +1289,32 @@ function Chip({
   );
 }
 
-/** The parent's own first line, as the link a reader follows to that node where the model gives
- *  it an address (R18, and R26: a step's row reaches the statement it serves), and as words with
- *  no link where that address names a person, whom no page shows (R5). Out of the tab order, as
- *  every other control inside a row is, unless `tabStops` holds: `f` steps to it and Enter
- *  follows it. */
+/** The parent's own first line, as every one line of a node is drawn (`useNodeLine`), and the
+ *  page's word for its kind where its words hold none (R22): as the link a reader follows to
+ *  that node where the model gives it an address (R18, and R26: a step's row reaches the
+ *  statement it serves), and as words with no link where that address names a person, whom no
+ *  page shows (R5). Out of the tab order, as every other control inside a row is, unless
+ *  `tabStops` holds: `f` steps to it and Enter follows it. */
 function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
   const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
-  const route = parent === undefined || parent.kind === "person" ? undefined : parent;
-  return route === undefined ? (
+  const href = parent === undefined ? undefined : referenceHref(parent);
+  const { line: drawn, reads } = useNodeLine(line, { surface: "node-row-parent-line" });
+  // Nothing until the projection answers, one pre-paint commit on a page whose engine is loaded.
+  const words = drawn === "" ? NODE_TYPE_NAMES[line.type] : (drawn ?? "");
+  return href === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
-      {line.line}
+      {reads}
+      {words}
     </span>
   ) : (
     <Link
       className={`dispatch-inline-link min-w-0 break-words underline decoration-page-bullet underline-offset-[3px] ${pageQuietText}`}
       tabIndex={tabStops ? undefined : -1}
-      to={buildReferencePath(route)}
+      to={href}
       {...authorText}
     >
-      {line.line}
+      {reads}
+      {words}
     </Link>
   );
 }

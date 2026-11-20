@@ -42,6 +42,7 @@ export type DispatchWritingBox =
   | "broadcast"
   | "architecture-reason"
   | "priority-description"
+  | "issue-title"
   | "delivery-production-jobs"
   | "delivery-population-authors"
   | "delivery-excluded-repos";
@@ -68,6 +69,7 @@ export type DispatchWritingBox =
  * - `architecture-reason`: why an issue touches no component.
  * - `priority-description`: a priority's description, which every reader of the priority reads
  *   and which is sent to nobody.
+ * - `issue-title`: an issue's title.
  * - `delivery-settings`: the delivery settings of this Dispatch.
  */
 export type DispatchWriting =
@@ -86,6 +88,7 @@ export type DispatchWriting =
   | "approval-reason"
   | "architecture-reason"
   | "priority-description"
+  | "issue-title"
   | "delivery-settings";
 
 /** One row of DISPATCH_WRITING_BOXES: one write of one box. */
@@ -541,6 +544,19 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     issueRows: false,
     reach: "Description of P1",
     write: "priority-description",
+  },
+  // The new issue page's title, which is its own editor (`IssueTitleRow.tsx`): a `textarea` so
+  // it wraps as the heading it stands over does, where today's page edits the title in an
+  // `<input>`. Neither takes a picker.
+  {
+    box: "issue-title",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueTitleRow.tsx"],
+    issueRows: true,
+    reach: "Issue title",
+    reason: "A title is one line of text that holds no markup, so the box takes no picker.",
+    write: "issue-title",
   },
   // Settings' delivery form. These three take no picker, and the spec's exclusion is why.
   {

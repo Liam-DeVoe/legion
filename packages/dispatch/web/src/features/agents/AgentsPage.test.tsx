@@ -1430,12 +1430,15 @@ test("a direct message refused on an Agents row goes with the issue pick, and it
     await within(planner).findByText("Couldn't send — Dispatch refused the message");
 
     await pickIssue(user, planner, "CORE-1");
-    await waitFor(() => expect(field.value).toBe("@Planner Status please"));
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() =>
+      expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) Status please")
+    );
     expect(within(planner).queryByText(/This message was written/)).not.toBeInTheDocument();
     await user.click(within(planner).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(page.createComment).toHaveBeenCalledTimes(1));
     expect(page.createComment.mock.calls.map(([issue, input]) => [issue, input.body])).toEqual([
-      ["CORE-1", "@Planner Status please"],
+      ["CORE-1", "[@Planner](dispatch://agent/planner-session) Status please"],
     ]);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(1);
     expect(page.createComment.mock.calls[0]?.[2].key).not.toBe(
@@ -1473,7 +1476,8 @@ test("an upload refused on an Agents row's issue goes with the pick, and its Ret
     await expand(user, planner, "Planner");
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await pickIssue(user, planner, "CORE-1");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)"));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await within(planner).findByText("That file is too large.");
@@ -1511,7 +1515,8 @@ test("an upload that lands after an Agents row's issue pick joins the message at
     await expand(user, planner, "Planner");
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await pickIssue(user, planner, "CORE-1");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)"));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
@@ -3965,8 +3970,10 @@ test("a refused send's row shows its message formatted on one line, with its who
       "Stop the deploy check main report back"
     );
     expect(preview.querySelector("ol, li, p")).toBeNull();
+    // The hover text is the shared projection, which writes an ordered list's item with its
+    // number as a rendered body draws it (INFRA-1196 decisions 66 and 88): `1. check` keeps `1.`.
     await waitFor(() =>
-      expect(preview).toHaveAttribute("title", "Stop the deploy check main report back")
+      expect(preview).toHaveAttribute("title", "Stop the deploy 1. check main 2. report back")
     );
   } finally {
     page.view.unmount();

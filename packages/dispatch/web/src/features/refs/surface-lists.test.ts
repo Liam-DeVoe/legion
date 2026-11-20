@@ -159,9 +159,11 @@ const READING_CONSTRUCTS: readonly ReadingConstruct[] = [
     hooks: [],
     name: "a mount of the reference card",
   },
+  // `useNodeLine` is the new issue page's one line of a node, which hands its `surface` on to
+  // the projection it is made of (`NodeRow.tsx`).
   {
     elements: ["PlainText"],
-    hooks: ["usePlainHeadline"],
+    hooks: ["usePlainHeadline", "useNodeLine"],
     name: "a mount of the plain-text projection",
   },
 ];
@@ -1066,10 +1068,56 @@ interface Props {
   readonly props: string;
 }
 
+/** A value declared as one of the dashboard's own records that carry a writer's stored text
+ *  (`PROSE_RECORDS`), by the record's type name. */
+interface ProseRecord {
+  readonly record: string;
+}
+
 /** What a name in a function holds: the stored-prose field it was read from, `PROJECTED`, a
- *  value reached through a holder of a field named like the dashboard's own words, or a
- *  component's props. */
-type Held = string | typeof PROJECTED | Through | Props;
+ *  value reached through a holder of a field named like the dashboard's own words, a
+ *  component's props, or one of the dashboard's records that carry a stored text. */
+type Held = string | typeof PROJECTED | Through | Props | ProseRecord;
+
+/**
+ * The dashboard's own records that carry a writer's stored text under a field the contract's
+ * scan cannot name, each by the type name it is declared under, with the paths of its fields
+ * that hold that text: the new issue page's node, the reading a chip names its target by, and
+ * the line a filter names a parent by. A value declared as one of them - a prop, a parameter -
+ * is that text: handed whole to a call whose answer is drawn, as G's folded line once handed a
+ * node to `firstLineOf(lineWords(node))`, it draws it, and so does one of those fields read off
+ * it, as `chipWords(chip.reading.markdown)` would, unless the call is the projection, whose
+ * answer is its line. A chip's `reading.words` is the page's word for a document and no
+ * writer's.
+ */
+const PROSE_RECORDS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["NodeChip", ["reading.markdown", "reading.tree"]],
+  ["ParentLine", ["text", "tree"]],
+  ["TreeNode", ["text", "tree"]],
+]);
+
+/** The record type `type` names (`PROSE_RECORDS`): a reference to it by name, never a list. */
+function recordOf(type: ts.TypeNode | undefined): string | undefined {
+  if (type === undefined) return undefined;
+  if (ts.isTypeReferenceNode(type) && ts.isIdentifier(type.typeName)) {
+    return PROSE_RECORDS.has(type.typeName.text) ? type.typeName.text : undefined;
+  }
+  return undefined;
+}
+
+/** The record type a destructured prop is declared as, read off its parameter's type literal:
+ *  `{ node: TreeNode }` declares `node` a node. */
+function declaredRecord(parameter: ts.ParameterDeclaration, prop: string): string | undefined {
+  const literal = parameter.type;
+  if (literal === undefined || !ts.isTypeLiteralNode(literal)) return undefined;
+  const member = literal.members.find(
+    (one): one is ts.PropertySignature =>
+      ts.isPropertySignature(one) &&
+      (ts.isIdentifier(one.name) || ts.isStringLiteral(one.name)) &&
+      one.name.text === prop
+  );
+  return recordOf(member?.type);
+}
 
 /** Whether `expression` is a call of a projection hook. */
 function isProjection(expression: ts.Expression): boolean {
@@ -1368,10 +1416,30 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
     reading.delete(key);
     return field;
   };
+  /** The record a name holds (`PROSE_RECORDS`), or `undefined` for any other value. */
+  const recordHeld = (name: ts.Identifier): string | undefined => {
+    const what = heldAs(name);
+    return typeof what === "object" && "record" in what ? what.record : undefined;
+  };
+  /** The stored text a member chain off a record reads (`PROSE_RECORDS`): the path of the field
+   *  it reads, as `reading.markdown` of `chip.reading?.markdown`, where that field holds one. */
+  const recordField = (leaf: ts.Expression, record: string): string | undefined => {
+    const path: string[] = [];
+    for (let at = leaf; !ts.isIdentifier(at); ) {
+      if (ts.isPropertyAccessExpression(at)) path.unshift(at.name.text);
+      if (!(ts.isPropertyAccessExpression(at) || ts.isNonNullExpression(at))) return undefined;
+      at = at.expression;
+    }
+    const read = path.join(".");
+    return PROSE_RECORDS.get(record)?.some((field) => `${read}.`.startsWith(`${field}.`))
+      ? read
+      : undefined;
+  };
   const fieldOf = (leaf: ts.Expression): string | undefined => {
     if (ts.isIdentifier(leaf)) {
       const what = heldAs(leaf);
-      return typeof what === "string" ? what : undefined;
+      // A record handed whole holds its stored text, which a call whose answer is drawn draws.
+      return typeof what === "string" ? what : recordHeld(leaf);
     }
     if (ts.isCallExpression(leaf) && !isProjection(leaf)) {
       const name = ts.isIdentifier(leaf.expression) ? leaf.expression.text : "";
@@ -1395,6 +1463,11 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
     }
     const root = rootOf(leaf.expression);
     const what = root === undefined ? undefined : heldAs(root);
+    const record = root === undefined ? undefined : recordHeld(root);
+    const recorded = record === undefined ? undefined : recordField(leaf, record);
+    if (recorded !== undefined) {
+      return recorded;
+    }
     // A component's own props, read off the object they come in: what a mount hands the prop.
     if (typeof what === "object" && "props" in what && leaf.expression === root) {
       const given = handedField(what.props, leaf.name.text);
@@ -1465,6 +1538,13 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
     ) {
       hold(node.parent, node.name.text, { props: ownerName(node) ?? "" });
     }
+    // A value declared as one of the records that carry a stored text, as `node: TreeNode`.
+    if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
+      const record = recordOf(node.type);
+      if (record !== undefined) {
+        hold(node.parent, node.name.text, { record });
+      }
+    }
     if (
       ts.isBindingElement(node) &&
       ts.isIdentifier(node.name) &&
@@ -1478,9 +1558,25 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
       // has: it holds the field that mount hands it.
       if (ts.isParameter(root)) {
         const given = field === undefined ? undefined : handedField(ownerName(root), field);
+        const record =
+          field === undefined || node.parent !== root.name
+            ? undefined
+            : declaredRecord(root, field);
         if (given !== undefined) {
           hold(scopeOf(node), node.name.text, given);
+        } else if (record !== undefined) {
+          hold(scopeOf(node), node.name.text, { record });
         }
+      } else if (
+        field !== undefined &&
+        ts.isVariableDeclaration(root) &&
+        root.initializer !== undefined &&
+        ts.isIdentifier(root.initializer) &&
+        node.parent === root.name &&
+        PROSE_RECORDS.get(recordHeld(root.initializer) ?? "")?.includes(field) === true
+      ) {
+        // A field that holds the stored text, destructured off a record: `{ text } = node`.
+        hold(scopeOf(node), node.name.text, field);
       } else if (
         field !== undefined &&
         STORED_PROSE_FIELDS.has(field) &&
@@ -1671,6 +1767,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     file: `${FEATURES}/inbox/useInboxSelection.ts`,
     holds: "the server's own words for why it refused a snooze",
     written: "first.reason",
+  },
+  {
+    file: `${FEATURES}/issue-page/IssueActionsMenu.tsx`,
+    holds:
+      "the page's own words for one of the issue's actions, or for its write while it saves (`CONTROL_LABELS`, `ANSWER_LINES`), as the old header's Pin, Close and Reopen draw theirs",
+    written: "action.text",
   },
   {
     file: `${FEATURES}/issue-page/NodeRow.tsx`,
@@ -2259,10 +2361,11 @@ const CI_WORKFLOW = ".github/workflows/ci.yaml";
 
 /**
  * The globs of `dispatch_references`, the paths filter of `CI_WORKFLOW`'s `changes` job that
- * starts the reference rows on a pull request. A dorny/paths-filter step's `filters` input is
- * either the filters themselves, one YAML string, or the path of a file that holds them, which
- * is how the job reads them now (`.github/ci-filters.yaml`), so a path is read from the
- * repository and a string is parsed as it stands. The filter is read from whichever step
+ * starts the reference rows on a pull request. The job's dorny/paths-filter step names the file
+ * that holds its filters (`.github/ci-filters.yaml`), so the file the input names is read from
+ * the repository. An input that is no file's path - filters written inline, which the action
+ * also takes - is read as no filters at all, so the guard row below that reads the filter fails
+ * rather than this reading YAML the job does not. The filter is read from whichever step
  * declares it, and a reading that finds it in none or in more than one finds no filter. A
  * filter may name a group of others through its anchor, so the list is flattened, as
  * dorny/paths-filter flattens it. The step reads its patterns with the `some-with-excludes`
@@ -2273,14 +2376,17 @@ function referenceFilter(): { include: Bun.Glob[]; exclude: Bun.Glob[] } {
   const workflow = Bun.YAML.parse(readFileSync(join(REPO_ROOT, CI_WORKFLOW), "utf8")) as {
     jobs?: { changes?: { steps?: { with?: { filters?: string } }[] } };
   };
-  const filtersOf = (input: string): string =>
-    /^[\w./-]+\.ya?ml$/u.test(input.trim())
-      ? readFileSync(join(REPO_ROOT, input.trim()), "utf8")
-      : input;
   const declaring = (workflow.jobs?.changes?.steps ?? [])
-    .map((step) => step.with?.filters)
+    .map((step) => step.with?.filters?.trim())
     .filter((input): input is string => input !== undefined)
-    .map((input) => Bun.YAML.parse(filtersOf(input)) as Record<string, unknown> | null)
+    .map((input) =>
+      /^[\w./-]+\.ya?ml$/u.test(input)
+        ? (Bun.YAML.parse(readFileSync(join(REPO_ROOT, input), "utf8")) as Record<
+            string,
+            unknown
+          > | null)
+        : null
+    )
     .filter((groups) => groups?.dispatch_references !== undefined);
   const patterns = (declaring.length === 1 ? [declaring[0]?.dispatch_references] : [])
     .flat(Number.POSITIVE_INFINITY)
@@ -2779,6 +2885,39 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
       "fixture.tsx:3 question a JSX child",
       "fixture.tsx:4 body a JSX child",
       "fixture.tsx:6 reason the aria-valuetext attribute",
+    ]);
+  });
+
+  // The new issue page's node, chip and parent line carry a writer's stored text under fields the
+  // contract's scan cannot name (`PROSE_RECORDS`). G's folded line drew a node handed whole to a
+  // call, `firstLineOf(lineWords(node))`, and its chip a call on the chip's name, and the walk
+  // saw neither: a call on a record, or on such a field of it, now draws what it is handed,
+  // while the projection of the same fields draws its line.
+  test("a call handed a record that carries a stored text, or such a field of it, draws it; the projection does not", () => {
+    const source = [
+      "function FoldedLine({ node }: { node: TreeNode }) {",
+      "  const first = firstLineOf(lineWords(node));",
+      "  return <span>{drawnLine(first)}</span>;",
+      "}",
+      "function Chip({ chip }: { chip: NodeChip }) {",
+      '  return <a>{chipWords(chip.reading?.markdown ?? "")}</a>;',
+      "}",
+      "const parentWords = (line: ParentLine) => <i>{cut(wordsOf(line.tree), 40)}</i>;",
+      "function Line({ node }: { node: TreeNode }) {",
+      "  const { text: stored, tree } = node;",
+      "  const { reads, text } = usePlainHeadline(tree, stored);",
+      "  return (",
+      "    <span>",
+      "      {reads}",
+      '      {drawnLine(firstLineOf(text?.text ?? ""))}',
+      "    </span>",
+      "  );",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual([
+      "fixture.tsx:3 TreeNode a JSX child",
+      "fixture.tsx:6 reading.markdown a JSX child",
+      "fixture.tsx:8 tree a JSX child",
     ]);
   });
 

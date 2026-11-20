@@ -1371,10 +1371,14 @@ export const dispatchToolSpecs = [
       mentions: z
         .array(z.string())
         .describe(
-          "Optional targets the comment mentions: role:<name> (lowercase letters, digits and -), " +
-            "which reaches the session holding that role, or session:<id> (letters, digits, _ " +
-            "and -); at most 10, none named twice. Dispatch delivers the comment to each target, " +
-            "retries a send that does not go through, and records every attempt on the comment."
+          "Optional targets the comment mentions beside the ones its body names: role:<name> " +
+            "(lowercase letters, digits and -), which reaches the session holding that role, or " +
+            "session:<id> (letters, digits, _ and -); none named twice here. The agents and roles " +
+            "the body names as references (dispatch://agent/<id>, dispatch://role/<token>) are " +
+            "delivered to as well and count toward the same limit of 10, each party once however " +
+            "often it is named; a person the body names is told nothing and counts for nothing. " +
+            "Dispatch delivers the comment to each target, retries a send that does not go " +
+            "through, and records every attempt on the comment."
         )
         .optional(),
       images: imagesArgument(z, "the issue (or the project document's project)"),
