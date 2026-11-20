@@ -289,14 +289,16 @@ func DispatchDurables() []string {
 // send a missed delivery to the webhook listener again. It also denies the listener's resume lane
 // (resumeLane).
 //
-// It keeps the rest of the listener's own lanes, the kept lane (bus.KeptTopicPrefix), and the wake
-// topic (bus.LegionWakeTopic), since this user publishes them. The outbox keeps a role route's copy
-// on the kept lane (internal/dispatch/outbox/role.go). The listener beside envoy-dispatch keeps a
-// role message with no holder there and moves the kept lane's drain cursors
-// (cmd/listener/role_keep.go). It also reports role and agent wakes and its listener_ready on the
-// wake topic (cmd/listener/wake.go). It keeps every session's agent subject too
-// (contracts.LegacyAgentSubject): Dispatch queues a person's targeted message there for a session
-// no store of the listener's holds (internal/dispatch/api/message_queue_publish.go).
+// It keeps the rest of the listener's own lanes, the kept lane (bus.KeptTopicPrefix) and the
+// takeover lane (bus.TakeoverSubjectPrefix), and the wake topic (bus.LegionWakeTopic), since this
+// user publishes them. The outbox keeps a role route's copy on the kept lane
+// (internal/dispatch/outbox/role.go). The listener beside envoy-dispatch keeps a role message with
+// no holder there and moves the kept lane's drain cursors (cmd/listener/role_keep.go). Its sweep
+// also runs the passes of the takeover records, and a pass writes its record again on the takeover
+// lane (cmd/listener/role_takeover.go). It also reports role and agent wakes and its
+// listener_ready on the wake topic (cmd/listener/wake.go). It keeps every session's agent subject
+// too (contracts.LegacyAgentSubject): Dispatch queues a person's targeted message there for a
+// session no store of the listener's holds (internal/dispatch/api/message_queue_publish.go).
 func Dispatch(machineID string) Permissions {
 	listener := publishing(listenerGrant(machineID), dispatchLane)
 	publish := listener.Publish

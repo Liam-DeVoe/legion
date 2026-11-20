@@ -170,6 +170,24 @@ func roleForwards(listener *listenerProcess, eventID string) int {
 	})
 }
 
+// keptForwards counts the lines of roleForwards that forward a kept copy of eventID: the kept
+// lane's walk writes kept_at on its line (finishRoleForward), and no other forward does.
+func keptForwards(listener *listenerProcess, eventID string) int {
+	return countRecords(listener, "listener role forwarded", func(record map[string]any) bool {
+		_, kept := record["kept_at"]
+		return record["event_id"] == eventID && kept
+	})
+}
+
+// relayHandovers counts the lines in which listener says its session relay copied the role
+// message eventID, a frame of sessionID's own consumer, to the role's kept lane, because the
+// role's claim named another session, or none, when the relay read the frame (takeOverFrame).
+func relayHandovers(listener *listenerProcess, sessionID, eventID string) int {
+	return countRecords(listener, "listener session relay copied a role message to the role's kept lane: another session holds the role, or none does", func(record map[string]any) bool {
+		return record["session_id"] == sessionID && record["event_id"] == eventID
+	})
+}
+
 // durableInfo reads the machine's durable.
 func (r *replayRig) durableInfo(t *testing.T) *natsgo.ConsumerInfo {
 	t.Helper()
@@ -194,13 +212,16 @@ func deliverPolicyName(policy natsgo.DeliverPolicy) string {
 //
 // Row a stores an agent message for a session with no record and a role message, and only then
 // starts a listener under a machine id with no durable. The listener creates its durable, and
-// within the wait and a margin it reports no wake and forwards no role message for either: it
-// takes neither message at all. Row b stores an agent message for another session with no record
-// and sends a role message to the role's holder after the start: the listener reports the wake
-// after the wait and forwards the role message, as any listener does. Row c stops the listener,
-// stores an agent message while no listener runs, and starts a listener under the same machine
-// id: it binds the durable it finds, which keeps its cursor and its start, and reports the wake of
-// that message, and takes nothing its durable had already acknowledged.
+// within the wait and a margin it reports no wake and forwards no role message for either: its
+// durable takes neither message at all. The role message is stored on its holder's own subject,
+// so the holder's own consumer still delivers it, and its relay may hand it to the role's kept
+// lane, whose walk forwards it to the holder (takeOverFrame); the row allows that forward alone.
+// Row b stores an agent message for another session with no record and sends a role message to
+// the role's holder after the start: the listener reports the wake after the wait and forwards the
+// role message, as any listener does. Row c stops the listener, stores an agent message while no
+// listener runs, and starts a listener under the same machine id: it binds the durable it finds,
+// which keeps its cursor and its start, and reports the wake of that message, and takes nothing
+// its durable had already acknowledged.
 func TestANewListenerDurableDoesNotReplayTheStream(t *testing.T) {
 	rig := startReplayRig(t)
 	stale := "ses_l24_stale_" + id.New()
@@ -225,8 +246,17 @@ func TestANewListenerDurableDoesNotReplayTheStream(t *testing.T) {
 		if got := aloneReceived(listener, staleItem.EventID); got != 0 {
 			t.Errorf("the new listener's durable handed it the message stored before its start %d times, want never", got)
 		}
-		if got := roleForwards(listener, staleRole.EventID); got != 0 {
-			t.Errorf("the new listener forwarded the role message stored before its start %d times, want never", got)
+		// The holder's own consumer starts at the start of the holder's subject, so its relay
+		// reads the forward stored there before this listener started, as it reads every message
+		// stored for the session. A relay that reads that frame before the claim below lands copies
+		// it to the role's kept lane (takeOverFrame), and the kept lane's walk then forwards the
+		// copy to the role's holder, which is the same session. That is the session's own consumer
+		// at work, not the durable. So the listener forwards the message itself never, and from
+		// the kept lane only a copy the holder's relay made.
+		kept := keptForwards(listener, staleRole.EventID)
+		handed := relayHandovers(listener, replayHolder, staleRole.EventID)
+		if direct := roleForwards(listener, staleRole.EventID) - kept; direct != 0 || kept > handed {
+			t.Errorf("the new listener forwarded the role message stored before its start %d times itself and %d times from the kept lane, where the holder's relay copied it %d times; want never itself, and from the kept lane only a copy the holder's relay made", direct, kept, handed)
 		}
 		if info := rig.durableInfo(t); info.Config.DeliverPolicy != natsgo.DeliverNewPolicy {
 			t.Errorf("the durable the new listener created has deliver policy %s, want \"new\"", deliverPolicyName(info.Config.DeliverPolicy))
