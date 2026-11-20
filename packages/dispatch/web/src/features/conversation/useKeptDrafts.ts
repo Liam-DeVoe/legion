@@ -269,10 +269,11 @@ export interface OfferedDraft extends AwayDraft {
    *  and taken here it goes as a new message (`movedSendNote`). */
   readonly note: string | undefined;
   /** Use my draft, once the field holds the draft: a draft kept by address is kept there no
-   *  longer, and a stopped send is carried into the compose at `at`, its words and its kind, as
-   *  the reader's own move carries one (`HeldSends.carryInto`), so it says it may have been
-   *  delivered until that compose sends it or the reader discards it (`SendMovedError`). */
-  readonly take: (at: Pick<SentRequest, "anchor" | "kind">) => void;
+   *  longer, and a stopped send is carried into the compose at `at`, its words and its kind, with
+   *  the time that compose took them (`anchoredAt`), as the reader's own move carries one
+   *  (`HeldSends.carryInto`), so it says it may have been delivered until that compose sends it or
+   *  the reader discards it (`SendMovedError`). */
+  readonly take: (at: Pick<SentRequest, "anchor" | "kind">, anchoredAt: number | undefined) => void;
 }
 
 /** What a margin compose offers of the send the reader stopped on its document, once that send
@@ -422,6 +423,7 @@ const KEEP_DRAFT_MS = 300;
  */
 export function useKeptDrafts({
   anchor,
+  anchoredAt,
   composerName,
   discard,
   edit,
@@ -445,6 +447,9 @@ export function useKeptDrafts({
   unsent,
 }: ShownAddress &
   KeptUnder & {
+    /** When the composer took `anchor` (`MentionComposer`), which a draft it keeps for that anchor
+     *  keeps with it (`AwayDraft.anchoredAt`); undefined for a composer with none. */
+    readonly anchoredAt: number | undefined;
     readonly field: {
       readonly askOptions: readonly AskOptionDraft[];
       readonly body: string;
@@ -622,6 +627,7 @@ export function useKeptDrafts({
     if (kept) {
       unsent.keepAway(awayName, {
         anchor,
+        anchoredAt,
         ask: { multiple, options: submittedAskOptions(askOptions), urgency },
         base: edit?.body,
         draft: { body, mentions, replacement },
@@ -688,6 +694,7 @@ export function useKeptDrafts({
       else if (awayName !== undefined) {
         unsent.keepAway(awayName, {
           anchor,
+          anchoredAt,
           base: writtenOver,
           draft: written,
           owner,
@@ -791,6 +798,7 @@ export function useKeptDrafts({
       if (wroteOver(before.fresh)) {
         unsent.keepAway(awayName, {
           anchor: before.address.anchor,
+          anchoredAt,
           ask,
           draft: leaving,
           kind,
@@ -858,7 +866,7 @@ export function useKeptDrafts({
       if (offered === undefined || anchor === undefined) return;
       replaceDraft(offered.draft);
       if (offered.ask !== undefined) replaceAsk(offered.ask);
-      offered.take({ anchor, kind });
+      offered.take({ anchor, kind }, anchoredAt);
     },
   };
 }

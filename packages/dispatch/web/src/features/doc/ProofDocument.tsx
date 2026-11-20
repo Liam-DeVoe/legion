@@ -1,5 +1,5 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -72,6 +72,7 @@ import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import type { Highlight } from "./highlight";
+import { liveTextQueryOptions } from "./live-text-query";
 import {
   blockOffsets,
   blockPlacements as collectBlockPlacements,
@@ -104,14 +105,6 @@ function wholeBlockId(root: HTMLElement, prefix: string): string | undefined {
 }
 
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
-
-/** The live document's text as the server reads it now. A read of it decides whether the editor
- * may connect: the server answers `409 DOC_SCHEMA` for a stored tree outside the Proof schema. */
-export const liveTextQueryOptions = (artifactId: string) =>
-  queryOptions({
-    queryKey: ["artifact", artifactId, "text"],
-    queryFn: () => api.getArtifactText(artifactId),
-  });
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page

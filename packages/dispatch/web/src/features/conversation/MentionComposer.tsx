@@ -373,12 +373,18 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
 
 /** The words of the document a margin compose is about, above its field: the quote, while the
  *  page's text of the document still holds it, and otherwise a line saying it no longer does
- *  (`useQuoteInDocument`), since words a delete took out are a deleted post's. The draft and its
- *  controls stay as they are. */
-function ComposerQuote({ anchor }: { anchor: ComposerAnchor }): ReactNode {
-  if (!useQuoteInDocument(anchor)) {
+ *  (`useQuoteInDocument`, which weighs only a read from after `anchoredAt`), since words a delete
+ *  took out are a deleted post's. The draft and its controls stay as they are. */
+function ComposerQuote({
+  anchor,
+  anchoredAt,
+}: {
+  anchor: ComposerAnchor;
+  anchoredAt: number | undefined;
+}): ReactNode {
+  if (!useQuoteInDocument(anchor, anchoredAt)) {
     return (
-      <p className={`text-sm ${textMutedOnSurfaceMuted}`} data-composer-quote-gone="">
+      <p className={`text-sm ${textMutedOnSurfaceMuted}`}>
         The words this draft was for are no longer in the document.
       </p>
     );
@@ -550,6 +556,13 @@ export function MentionComposer({
       unsent,
     })
   );
+  // When this composer took the words of the document it is about, for a margin compose: a read
+  // of the document's text from before then can lack words the reader had just typed, so only a
+  // later one says they left (`useQuoteInDocument`), and a draft it keeps for them keeps this time
+  // (`AwayDraft.anchoredAt`). The margin mounts a composer of its own for each compose, with its
+  // words (`MarginSheet`), and a kind switch moves it to another mark over the same words, so the
+  // mount is when it took them.
+  const [anchoredAt] = useState(() => (anchor === undefined ? undefined : Date.now()));
   const textarea = useRef<HTMLTextAreaElement>(null);
   const replacementTextarea = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -853,6 +866,7 @@ export function MentionComposer({
     takeOffered,
   } = useKeptDrafts({
     anchor,
+    anchoredAt,
     composerName,
     discard: discardNow,
     edit,
@@ -1175,10 +1189,11 @@ export function MentionComposer({
   const footId = useId();
   const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
-   *  after this call can change where it goes. Until the server answers, one fieldset holds every
-   *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
-   *  unsent copy under the send name goes. */
+   *  after this call can change where it goes, and with it the time this composer took its words
+   *  (`anchoredAt`), which a draft kept from the send keeps. Until the server answers, one
+   *  fieldset holds every control that could change or discard the draft; the held send covers
+   *  that hold in this task before React can disable the fieldset. From here on the held send
+   *  keeps the draft, so the unsent copy under the send name goes. */
   const send = () =>
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
@@ -1186,7 +1201,7 @@ export function MentionComposer({
       setReferencePickerOpen(false);
       forgetUnsent();
       return sentRequest(refused);
-    });
+    }, anchoredAt);
   /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
    *  fieldset's capture stops every key, click, input and change bound for a control in it - so
    *  Escape raises no Discard prompt and Ctrl+K opens no picker over a draft that is out. */
@@ -1311,7 +1326,9 @@ export function MentionComposer({
           )}
         </div>
       )}
-      {compact || anchor === undefined ? null : <ComposerQuote anchor={anchor} />}
+      {compact || anchor === undefined ? null : (
+        <ComposerQuote anchor={anchor} anchoredAt={anchoredAt} />
+      )}
       {onKindChange !== undefined && edit === undefined && owner.kind !== "session" && !closed ? (
         <>
           <fieldset className="flex gap-1">

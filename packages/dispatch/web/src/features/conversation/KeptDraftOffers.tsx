@@ -105,8 +105,9 @@ export function DraftOffer({
 
 /** The line an offered draft is led by: the kind it was written as, where the compose is of
  *  another, and the words it was written for, while the page's text of the document still holds
- *  them (`useQuoteInDocument`); otherwise it says they are no longer in the document and draws
- *  none of them, since words a delete took out are a deleted post's. */
+ *  them (`useQuoteInDocument`, as of a read from after the draft's compose took them); otherwise
+ *  it says they are no longer in the document and draws none of them, since words a delete took
+ *  out are a deleted post's. */
 function OfferedDraftLead({
   kind,
   offered,
@@ -114,7 +115,7 @@ function OfferedDraftLead({
   readonly kind: ComposerKind;
   readonly offered: OfferedDraft;
 }): ReactNode {
-  const held = useQuoteInDocument(offered.anchor);
+  const held = useQuoteInDocument(offered.anchor, offered.anchoredAt);
   const asKind =
     offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`;
   return held

@@ -50,6 +50,10 @@ export interface HeldDraft {
  *  request it went out as, and the draft its composer last held: the one sent, and, once refused,
  *  whatever the reader wrote over it before the composer unmounted. */
 export interface ComposerSend {
+  /** For a margin compose's send, when its composer took the words it is about
+   *  (`MentionComposer`), which a draft kept from the send keeps (`awayDraftOf`); undefined for
+   *  any other composer's, and for a send an older release kept. */
+  readonly anchoredAt?: number;
   readonly mutationKey: readonly string[];
   readonly request: SentRequest;
   readonly draft: HeldDraft;
@@ -74,6 +78,7 @@ type KeptSentRequest = Omit<SentRequest, "edit"> & { readonly edit: KeptEdit | n
 
 /** A composer's send as it is kept across a reload. */
 interface KeptComposerSend {
+  readonly anchoredAt?: number;
   readonly draft: HeldDraft;
   readonly mutationKey: readonly string[];
   readonly request: KeptSentRequest;
@@ -96,6 +101,8 @@ export type HeldSend = {
   /** When Send or Retry was pressed for it, which a reload keeps: a send kept for longer than
    *  `KEPT_SEND_RESUME_MS` is not made again on its own. */
   readonly pressedAt: number;
+  /** When its composer took the words it is about (`ComposerSend.anchoredAt`), if it kept one. */
+  readonly anchoredAt: number | undefined;
   /** Whether the person's sign-out in another tab holds it: nothing of it goes out until that tab
    *  says how the sign-out ended (`Write.signingOutElsewhere`). */
   readonly signingOutElsewhere: boolean;
@@ -278,6 +285,7 @@ const keptRequest = shape.record({
 }) satisfies Shape<KeptSentRequest>;
 
 const keptComposerSend = shape.record({
+  anchoredAt: shape.optional(shape.number),
   draft: shape.record({ ask: keptAsk, draft: keptDraft }),
   mutationKey: shape.array(shape.string),
   request: keptRequest,
@@ -337,7 +345,8 @@ function restoredRequest({ edit, ...request }: KeptSentRequest): SentRequest {
  * deadline.
  */
 export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
-  keep: ({ draft, mutationKey, request, stoppedSend }) => ({
+  keep: ({ anchoredAt, draft, mutationKey, request, stoppedSend }) => ({
+    anchoredAt,
     draft,
     mutationKey,
     request: keptRequestOf(request),
@@ -346,7 +355,8 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
   kept: keptComposerSend,
   landed: (client, write) => refreshAfter(client, write.detail.request),
   name: "composer",
-  restore: ({ draft, mutationKey, request, stoppedSend }) => ({
+  restore: ({ anchoredAt, draft, mutationKey, request, stoppedSend }) => ({
+    anchoredAt,
     draft,
     mutationKey,
     request: restoredRequest(request),
@@ -383,6 +393,7 @@ function heldSend(write: Write<ComposerSend>): HeldSend | undefined {
   let held = views.get(write);
   if (held !== undefined) return held;
   const base = {
+    anchoredAt: write.detail.anchoredAt,
     draft: write.detail.draft,
     id: write.id,
     mutationKey: write.detail.mutationKey,
@@ -499,8 +510,10 @@ export class HeldSends {
    *  margin compose's mark stays in the document for it. The refused draft lives at its send's
    *  address, or at the one the reader carried it to (`carry`), so only a request to that address
    *  is its Retry (`sameAddress`): one from a composer its host has moved to another - another
-   *  row's or thread's address, a Reply on a message - is refused too, and the refusal stands. */
-  send(mutationKey: MutationKey, request: SentRequest): boolean {
+   *  row's or thread's address, a Reply on a message - is refused too, and the refusal stands.
+   *  `anchoredAt` is when a margin compose's composer took the words the request is about, which
+   *  the send keeps (`ComposerSend.anchoredAt`). */
+  send(mutationKey: MutationKey, request: SentRequest, anchoredAt?: number): boolean {
     const held = this.get(mutationKey);
     if (held !== undefined && (held.status !== "refused" || !sameAddress(held.request, request))) {
       return false;
@@ -510,6 +523,7 @@ export class HeldSends {
     this.#writes
       .run({
         detail: {
+          anchoredAt,
           draft: { ask: request.ask, draft: request.draft },
           mutationKey: sendName(mutationKey),
           request,
@@ -584,17 +598,20 @@ export class HeldSends {
    *  takes a carried draft only while it holds no send of its own, out or refused
    *  (`DraftIntake`), so the send carried in is the only one under `into`. The margin carries a
    *  stopped compose set aside (`setAside`) into the newer compose that took its place this way,
-   *  at its words and in its kind (`at`), when the reader presses Use my draft there. */
+   *  at its words and in its kind (`at`), when the reader presses Use my draft there, and the send
+   *  takes the time that compose took those words (`anchoredAt`). */
   carryInto(
     mutationKey: MutationKey,
     into: MutationKey,
     to: CarriedAddress,
-    at?: Pick<SentRequest, "anchor" | "kind">
+    at?: Pick<SentRequest, "anchor" | "kind">,
+    anchoredAt?: number
   ): void {
     const held = this.get(mutationKey);
     if (held?.status !== "refused") return;
     this.#writes.amend(held.id, composerSend, (detail) => ({
       ...carriedTo(detail, held.refusal, to, at),
+      anchoredAt: at === undefined ? detail.anchoredAt : anchoredAt,
       mutationKey: sendName(into),
     }));
   }
@@ -636,7 +653,8 @@ export class HeldSends {
         ...addressed,
         ask: held.draft.ask,
         draft: held.draft.draft,
-      })
+      }),
+      held.anchoredAt
     );
   }
 }

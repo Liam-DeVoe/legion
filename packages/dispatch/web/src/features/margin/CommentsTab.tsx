@@ -123,8 +123,9 @@ export function MarginComposerSlot({
   );
   const { sending } = useSending(sendKey);
   // That stopped compose as this compose offers it, with the presses that move it: Use my draft
-  // carries it into this compose's own name at its words and in its kind, and Discard my draft
-  // drops it where it waits. Built once per held send, so its words are worked out once.
+  // carries it into this compose's own name at its words and in its kind, with the time this
+  // compose took them, and Discard my draft drops it where it waits. Built once per held send, so
+  // its words are worked out once.
   const store = useHeldSends();
   const keptAside = useHeldSend(keptKey);
   const owner = composer.owner;
@@ -134,7 +135,8 @@ export function MarginComposerSlot({
     return {
       ...offer,
       drop: () => store.discard(keptKey),
-      take: (at) => store.carryInto(keptKey, sendKey, { owner, replyTo: null }, at),
+      take: (at, anchoredAt) =>
+        store.carryInto(keptKey, sendKey, { owner, replyTo: null }, at, anchoredAt),
     };
   }, [keptAside, keptKey, owner, sendKey, store]);
   return (
@@ -167,11 +169,11 @@ export function MarginComposerSlot({
 }
 
 /** The line a draft the margin kept is led by: the kind it was written as, and the words it was
- *  written for, while the page's text of the document still holds them (`useQuoteInDocument`);
- *  otherwise it says they are no longer in the document and draws none of them, since words a
- *  delete took out are a deleted post's. */
+ *  written for, while the page's text of the document still holds them (`useQuoteInDocument`, as
+ *  of a read from after the draft's compose took them); otherwise it says they are no longer in
+ *  the document and draws none of them, since words a delete took out are a deleted post's. */
 function KeptDraftLead({ away }: { away: AwayDraft & { anchor: ComposerAnchor } }): ReactNode {
-  const held = useQuoteInDocument(away.anchor);
+  const held = useQuoteInDocument(away.anchor, away.anchoredAt);
   const asKind =
     away.kind === undefined || away.kind === "comment" ? "" : ` as ${KIND_WORDS[away.kind]},`;
   const words = held

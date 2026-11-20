@@ -1207,13 +1207,14 @@ test("a delete empties a cached event's anchor quote where its own event's is em
   });
 });
 
-// Defect 1 of review round 19 on dispatch://INFRA-1523: an Inbox thread row carries its root
-// comment's anchor (`readMyReplyRows` in `api/replies.go`), and the card prints that anchor's
-// quote above the thread (`ThreadQuote`). Where the root is a pending insert suggestion, the quote
-// is the text the insert put in the document, the comment's own words: its delete empties the
-// row's quote, as it does the comment's own copies and its events', so no word of the suggestion
-// stays in the row. The control: a delete that leaves the quote, a replace suggestion's or a plain
-// comment's, which is the document's own text, leaves the row's.
+// A delete empties the anchor quote of a cached Inbox thread row whose root is the post, where it
+// emptied the comment's. The row carries its root comment's anchor (`readMyReplyRows` in
+// `api/replies.go`), and the card prints that anchor's quote above the thread (`ThreadQuote`).
+// Where the root is a pending insert suggestion, the quote is the text the insert put in the
+// document, the comment's own words: its delete empties the row's quote, as it does the comment's
+// own copies and its events', so no word of the suggestion stays in the row. The control: a
+// delete that leaves the quote, a replace suggestion's or a plain comment's, which is the
+// document's own text, leaves the row's.
 test("a delete empties a cached Inbox thread row's anchor quote where its own event's is empty, and keeps a quote of the document's text", () => {
   const rows = ["me", "replies", "inbox"];
   const rowAfter = (cached: string, deleted: string) => {

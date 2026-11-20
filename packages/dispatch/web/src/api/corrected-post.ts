@@ -950,14 +950,21 @@ function markedThreadRow(row: MyReplyRow, post: CorrectedPost): MyReplyRow | und
   }
   const { deletion, quoteCleared } = post.mark;
   const marks = deletionMarks(deletion);
-  const { anchor, deleted_by: _rootBy, ...rowKept } = row;
-  const { deleted_by: _replyBy, ...replyKept } = row.reply;
-  const rootKept =
-    anchor === undefined ? rowKept : { ...rowKept, anchor: deletedAnchor(anchor, quoteCleared) };
-  return {
-    ...(root ? { ...rootKept, ...marks, subject: "" } : row),
-    reply: reply ? { ...replyKept, ...marks, first_line: "" } : row.reply,
-  };
+  let marked = row;
+  if (root) {
+    const { anchor, deleted_by: _by, ...rootKept } = row;
+    marked = {
+      ...rootKept,
+      ...(anchor === undefined ? {} : { anchor: deletedAnchor(anchor, quoteCleared) }),
+      ...marks,
+      subject: "",
+    };
+  }
+  if (reply) {
+    const { deleted_by: _by, ...replyKept } = row.reply;
+    marked = { ...marked, reply: { ...replyKept, ...marks, first_line: "" } };
+  }
+  return marked;
 }
 
 /** A search answer once `post` is corrected: each hit of the post; undefined where none is. */

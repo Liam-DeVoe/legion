@@ -11,9 +11,9 @@ import type { MessageRead, MessageWithTrees } from "./types";
 // own facts into every copy of the post a surface draws with no error of its own
 // (`markCorrectedPost`). The new issue page draws the issue's messages from `["issue-messages",
 // key]` (`useIssueTree.ts`), and shows no error when that read fails, so after a failed refetch its
-// row of a deleted message gives the message's old words, and of an edited one no edited mark
-// (test round at 869d340e). The margin's pinned copy (`["issue-messages", key, "margin-pinned",
-// …]`) is written, which is the control: the rows below fail on the issue's own list alone.
+// row of a deleted message gives the message's old words, and of an edited one no edited mark. The
+// margin's pinned copy (`["issue-messages", key, "margin-pinned", …]`) is written, which is the
+// control: the rows below fail on the issue's own list alone.
 
 const MESSAGE = "3d4e5f6a-7b8c-4d9e-8f1a-2b3c4d5e6f7a";
 const OLD_WORDS = "Ship on Friday.";
@@ -71,8 +71,8 @@ test("a message's edit writes its time into the issue's message list, as into th
 
 // The Agents page's reply composer quotes the message it answers from `["agents", session,
 // "messages"]` (`AgentsPage.tsx`, `replyParentOf(…, messages.data)`), and stays open with that
-// quote when the conversation's refetch fails (test round at 869d340e). An issue message targeted
-// at a session is listed there, so its delete must mark that copy too.
+// quote when the conversation's refetch fails. An issue message targeted at a session is listed
+// there, so its delete must mark that copy too.
 const AGENT = ["agents", "019a1c01-0d7b-7a2a-8e93-000000000a01", "messages"];
 
 test("a message's delete writes its mark into the Agents page's copy of the session's messages", () => {
