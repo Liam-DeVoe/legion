@@ -77,6 +77,36 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	}
 }
 
+// TestAListWhoseCallerWentAwayCountsNoRowCut: the caller of a pending list, an Inbox tab or an
+// approval page closed within the list's two seconds, goes away while other people's rows are
+// still read. Nobody reads that list, and its clock did not run out, so the rows left off are not
+// counted as ones the clock cut (logFallbackCut) and no line is written for them: a line saying
+// the clock ran out would be false.
+func TestAListWhoseCallerWentAwayCountsNoRowCut(t *testing.T) {
+	const rows = 5
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	for i := range rows {
+		operator := fmt.Sprintf("gone%02d@example.com", i)
+		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-gone-%02d", i), new(operator), nil)
+		if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
+			t.Fatalf("Create = %+v, %v; want it pending", req, err)
+		}
+	}
+	answerFrom(t, m, dispatchRows(publicTeam))
+	var asked atomic.Int32
+	m.Projects = slowAccess{inner: m.Projects, takes: 300 * time.Millisecond, asked: &asked}
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	time.AfterFunc(400*time.Millisecond, cancel)
+	_, _ = m.PendingForApprover(ctx, insider, PendingStates{})
+	if asked.Load() == 0 {
+		t.Fatal("the list asked Dispatch nothing, so the caller left before any row was read and the row proves nothing")
+	}
+	wantNoLine(t, capture, fallbackCutMessage, fallbackUnreadMessage)
+}
+
 // failForPerson answers every access question about one person with an error, as a Dispatch that
 // cannot answer for that person does, and passes every other question on.
 type failForPerson struct {

@@ -1586,7 +1586,8 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	// off once the clock has run out are counted in one line for the list (logFallbackCut), since
 	// each of them is on its responsible person's list wherever that person may see it, which is
 	// where it belongs, and a line for each would bury the row a failed read leaves on nobody's
-	// list.
+	// list. A list whose caller went away (an Inbox tab or a page closed) is read by nobody, so the
+	// rows it leaves off then are neither counted nor logged: its clock did not run out.
 	fallback, cancel := context.WithTimeout(ctx, listFallbackBound)
 	defer cancel()
 	visible := out[:0]
@@ -1597,6 +1598,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 			if notify != "" && notify != record.CanonicalLogin(approver) {
 				listed, err := m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason)
 				switch {
+				case err != nil && ctx.Err() != nil:
+					// The caller went away: the fallback's clock is cut with it, not run out.
+					continue
 				case err != nil && fallback.Err() != nil:
 					cut++
 					continue
