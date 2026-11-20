@@ -685,6 +685,49 @@ test.skipIf(skip)(
   600_000
 );
 
+// k1's round (spec v31's R1): the reviewer pushes a text commit of its own while the issue is in
+// `reviewing` and then approves the head that carries it, its footer naming that head. The engine
+// takes a review App review whose footer names the pull request's head, whoever pushed the head
+// (review.go's `refusesRound`, `reviewHead`), so that approval decides the round: it waits in
+// `reviewing` while GitHub reports the head `BLOCKED`, as rig.sh's review_world reports it with
+// the workflow's thread open, and ends it where the head is `CLEAN`. An approval whose footer
+// names the head the reviewer read before its push names a head the pull request no longer has
+// and decides nothing. Catches: a stand-in that holds a review's footer to the head the world
+// began at rather than to the head the run's remote is at, which would leave k1's approval
+// undecided, and one that takes an approval of the head below the reviewer's own commit.
+test.skipIf(skip)(
+  "the reviewer's approval of the head its own text commit made decides the round, and one of the head below it decides nothing",
+  async () => {
+    for (const state of ["CLEAN", "BLOCKED"]) {
+      const daemon = await standin("reviewer");
+      try {
+        const pull = pullRequest(daemon.dir, state);
+        await boots(daemon.post, AGENT);
+        const own = pull.push();
+        // The reviewer's own head reports what the world's base leaves it in, as the head below
+        // it does (rig.sh's review_world, where the workflow's thread holds it `BLOCKED`).
+        const file = path.join(daemon.dir, "fixtures.json");
+        const fixtures = JSON.parse(readFileSync(file, "utf8"));
+        fixtures.mergeStates[own] = state;
+        writeFileSync(file, JSON.stringify(fixtures));
+        pull.approve(pull.head, { role: "reviewer", body: footerOf(AGENT, pull.head) });
+        expect((await served(daemon.body)).issue).toMatchObject({
+          phase: "reviewing",
+          pullRequest: { head: own },
+        });
+        pull.approve(own, { role: "reviewer", body: footerOf(AGENT, own) });
+        expect((await served(daemon.body)).issue).toMatchObject({
+          phase: state === "CLEAN" ? "accepting" : "reviewing",
+          pullRequest: { head: own, reviewDecision: "approved" },
+        });
+      } finally {
+        daemon.stop();
+      }
+    }
+  },
+  600_000
+);
+
 // The reason daemon-standin.ts's declaration of the footer's `entry` stays "not modelled": no
 // scenario gives a reviewer a later round's task, the one task that names the commit the entry
 // moves (`Last reviewed commit: <sha>`). Read off rig.sh itself: each runner's boots, in the order
@@ -831,7 +874,7 @@ test.skipIf(skip)(
 // review thread is open and reports it `CLEAN` once the last is resolved, and main's engine ends
 // the round on an approval that stands only then. Catches: a daemon stand-in that moves on a merge
 // state frozen into the world while the gh stand-in answers the threads as the run left them — the
-// approval of threads-closed's text-fixes head waited in `reviewing` for ever, however many
+// approval of threads-closed's head waited in `reviewing` for ever, however many
 // threads the implementer resolved — and one that reads another state than the one the gh
 // stand-in answers `mergeStateStatus` with (gh-threads.ts's `mergeStateOf`, which both read). The
 // resolve is the recorded reviewer-text-findings-text-only-head-1/calls.jsonl:29, made through the
@@ -2419,7 +2462,7 @@ function unsampled(issue: unknown) {
 const ALL_SAMPLED = { extra: [], kinds: [], words: [] };
 
 // The record a threads-closed implementer reads before its first write (rig.sh's
-// run_threads_closed, text-fixes: booted in `reviewing` on a world whose reviewer approved the
+// run_threads_closed, correct: booted in `reviewing` on a world whose reviewer approved the
 // head and left threads open, the base requiring them resolved). Catches: the record of
 // INFRA-764's round 25, 8 keys and `workers: {}`, in which every counted threads-closed run saw
 // no implementer row where rig.sh said the record held the implementer's completed round; a

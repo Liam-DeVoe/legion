@@ -35,7 +35,7 @@ const SESSION = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
 const API = "https://api.github.com/repos/cybermonklabs/legion";
 const LINK = "https://github.com/cybermonklabs/legion/pull/2827";
 /** The run's own directory, whose bin/gh is its gh stand-in. */
-const RUN = "/work/runs/threads-closed-text-fixes-head-1";
+const RUN = "/work/runs/threads-closed-correct-head-1";
 
 /** Rule 13's reason for an agent of the run RUN that made `steps`, one tool call each, in that
  * order. */
@@ -974,7 +974,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
   ]
     .map((entry) => `${JSON.stringify(entry)}\n`)
     .join("");
-  /** The implementer's last words in the measured run, threads-closed-text-fixes-head-1 at
+  /** The implementer's last words in the measured run, threads-closed-correct-head-1 at
    * 7bf20811: its out.txt and its out-implementer.txt, byte for byte the same. */
   const IMPLEMENTER_OUT =
     "WAITING on the reviewer to read the fix, resolve PRRT_kwDOfix001 and PRRT_kwDOfix002, approve head `a0ce49ee301f9d20205337743fb0a88df6480e8c`, and notify the architect, whose acceptance is the gate on the fix head.\nexit=0\n";
@@ -1018,7 +1018,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     };
     expect(
       judge(
-        runOf("threads-closed-text-fixes-head-1", {
+        runOf("threads-closed-correct-head-1", {
           ...files,
           booted: "boot implementer\nboot reviewer\n",
         })
@@ -1027,7 +1027,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
       "unfinished: the reviewer left no transcript: <run>/sessions/reviewer holds no .jsonl of its own with an entry"
     );
     // As it was recorded, before a run kept a boot record.
-    expect(judge(runOf("threads-closed-text-fixes-head-1", files))).toBe(
+    expect(judge(runOf("threads-closed-correct-head-1", files))).toBe(
       "no boot record: the run has no <run>/booted, so which roles of threads-closed it booted, and whether each finished, is unknown"
     );
     // The same run where worker_boot moves the implementer's output aside rather than copying
@@ -1035,7 +1035,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     const { "out.txt": _, ...moved } = files;
     expect(
       judge(
-        runOf("threads-closed-text-fixes-head-1", {
+        runOf("threads-closed-correct-head-1", {
           ...moved,
           booted: "boot implementer\nboot reviewer\n",
         })
@@ -1046,12 +1046,12 @@ describe("health: rule 1, finished, on the run's boot record", () => {
   // Catches: a reader that holds a run to more than it booted, or to less.
   test("a run whose every booted role finished is finished, a relaunch's repeated line one boot", () => {
     expect(
-      judge(both("threads-closed-text-fixes-head-2", "boot implementer\nboot reviewer\n"))
+      judge(both("threads-closed-correct-head-2", "boot implementer\nboot reviewer\n"))
     ).toBe(undefined);
     expect(
       judge(
         both(
-          "threads-closed-text-fixes-base-2",
+          "threads-closed-correct-base-2",
           "boot implementer\nboot implementer\nboot reviewer\n"
         )
       )
@@ -1061,7 +1061,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     expect(
       judge(
         both(
-          "threads-closed-text-fixes-head-11",
+          "threads-closed-correct-head-11",
           "boot implementer\nsince implementer 2026-11-16T09:00:00.000Z\nboot implementer\nboot reviewer\nsince reviewer 2026-11-16T09:10:00.000Z\n"
         )
       )
@@ -1092,8 +1092,8 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     expect(skipped("threads-closed-code-defect-head-1", `boot implementer\n${SKIPPED}`)).toBe(
       undefined
     );
-    expect(skipped("threads-closed-text-fixes-head-3", `boot implementer\n${SKIPPED}`)).toBe(
-      'undeclared skip: <run>/booted skips the reviewer because "the implementer sent the reviewer nothing", and threads-closed text-fixes declares no skip of it (completion-answers.ts\'s SKIPS)'
+    expect(skipped("threads-closed-correct-head-3", `boot implementer\n${SKIPPED}`)).toBe(
+      'undeclared skip: <run>/booted skips the reviewer because "the implementer sent the reviewer nothing", and threads-closed correct declares no skip of it (completion-answers.ts\'s SKIPS)'
     );
     expect(
       skipped("threads-closed-code-defect-head-2", "boot implementer\nskip reviewer it was late\n")
@@ -1124,8 +1124,8 @@ describe("health: rule 1, finished, on the run's boot record", () => {
       return judge(dir);
     };
     expect(recorded("0123456789ab", "code-defect")).toBe(undefined);
-    expect(recorded("0123456789ac", "text-fixes")).toBe(
-      'undeclared skip: <run>/booted skips the reviewer because "the implementer sent the reviewer nothing", and threads-closed text-fixes declares no skip of it (completion-answers.ts\'s SKIPS)'
+    expect(recorded("0123456789ac", "correct")).toBe(
+      'undeclared skip: <run>/booted skips the reviewer because "the implementer sent the reviewer nothing", and threads-closed correct declares no skip of it (completion-answers.ts\'s SKIPS)'
     );
   });
 
@@ -1135,19 +1135,19 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     const definition =
       "threads-closed boots the implementer, then the reviewer (completion-answers.ts's ANSWERS)";
     expect(
-      judge(both("threads-closed-text-fixes-head-4", "boot reviewer\nboot implementer\n"))
+      judge(both("threads-closed-correct-head-4", "boot reviewer\nboot implementer\n"))
     ).toBe(
       `boot record: <run>/booted starts with \`boot reviewer\`, not \`boot implementer\`; ${definition}`
     );
-    expect(judge(both("threads-closed-text-fixes-head-5", `${SKIPPED}boot reviewer\n`))).toBe(
+    expect(judge(both("threads-closed-correct-head-5", `${SKIPPED}boot reviewer\n`))).toBe(
       `boot record: <run>/booted starts with \`skip reviewer\`, not \`boot implementer\`; ${definition}`
     );
-    expect(judge(both("threads-closed-text-fixes-head-6", ""))).toBe(
+    expect(judge(both("threads-closed-correct-head-6", ""))).toBe(
       `boot record: <run>/booted starts with no line, not \`boot implementer\`; ${definition}`
     );
     expect(
       judge(
-        both("threads-closed-text-fixes-head-7", "boot implementer\nboot reviewer\nboot tester\n")
+        both("threads-closed-correct-head-7", "boot implementer\nboot reviewer\nboot tester\n")
       )
     ).toBe(
       `boot record: <run>/booted decides the tester, a role threads-closed boots none of; ${definition}`
@@ -1155,23 +1155,23 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     expect(
       judge(
         both(
-          "threads-closed-text-fixes-head-8",
+          "threads-closed-correct-head-8",
           "boot implementer\nboot reviewer\nboot implementer\n"
         )
       )
     ).toBe(`boot record: <run>/booted decides the implementer twice; ${definition}`);
-    expect(judge(both("threads-closed-text-fixes-head-9", "boot implementer\n"))).toBe(
+    expect(judge(both("threads-closed-correct-head-9", "boot implementer\n"))).toBe(
       `boot record: <run>/booted neither boots nor skips the reviewer; ${definition}`
     );
     expect(() =>
-      judge(both("threads-closed-text-fixes-head-10", "launched implementer\n"))
+      judge(both("threads-closed-correct-head-10", "launched implementer\n"))
     ).toThrow(
       "booted:1 is none of `boot <role>`, `since <role> <time>` and `skip <role> <reason>`: launched implementer"
     );
     expect(() =>
       judge(
         both(
-          "threads-closed-text-fixes-head-12",
+          "threads-closed-correct-head-12",
           "boot implementer\nsince reviewer 2026-11-16T09:00:00.000Z\nboot reviewer\n"
         )
       )
@@ -1187,7 +1187,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     const booted = "boot implementer\nboot reviewer\n";
     expect(
       judge(
-        runOf("threads-closed-text-fixes-head-11", {
+        runOf("threads-closed-correct-head-11", {
           booted,
           "out-implementer.txt": IMPLEMENTER_OUT,
           "out.txt": "Approved the fix head.\nexit=0\n",
@@ -1200,7 +1200,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     );
     expect(
       judge(
-        runOf("threads-closed-text-fixes-head-12", {
+        runOf("threads-closed-correct-head-12", {
           booted,
           "out-implementer.txt": IMPLEMENTER_OUT,
           "out.txt": "Approved the fix head.\nexit=0\n",
@@ -1213,7 +1213,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     );
     expect(
       judge(
-        runOf("threads-closed-text-fixes-head-13", {
+        runOf("threads-closed-correct-head-13", {
           booted,
           "out-implementer.txt": IMPLEMENTER_OUT,
           "out.txt": "Approved the fix head.\nexit=0\n",
@@ -1226,7 +1226,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     );
     expect(
       judge(
-        runOf("threads-closed-text-fixes-head-14", {
+        runOf("threads-closed-correct-head-14", {
           booted,
           "out.txt": "Approved the fix head.\nexit=0\n",
           [FIRST]: TRANSCRIPT,
@@ -1236,7 +1236,7 @@ describe("health: rule 1, finished, on the run's boot record", () => {
     ).toBe("unfinished: the implementer's output, <run>/out-implementer.txt, is missing");
     expect(
       judge(
-        runOf("threads-closed-text-fixes-head-15", {
+        runOf("threads-closed-correct-head-15", {
           booted,
           "out-implementer.txt": IMPLEMENTER_OUT,
           "out.txt": "Reading the fix head.\n",
@@ -1258,18 +1258,18 @@ describe("health: rule 1, finished, on the run's boot record", () => {
       const definition =
         "threads-closed boots the implementer, then the tester, then the reviewer (completion-answers.ts's ANSWERS)";
       expect(
-        judge(both("threads-closed-text-fixes-head-16", "boot implementer\nboot reviewer\n"))
+        judge(both("threads-closed-correct-head-16", "boot implementer\nboot reviewer\n"))
       ).toBe(
         `boot record: <run>/booted decides the reviewer where the tester comes; ${definition}`
       );
-      expect(judge(both("threads-closed-text-fixes-head-17", "boot implementer\n"))).toBe(
+      expect(judge(both("threads-closed-correct-head-17", "boot implementer\n"))).toBe(
         `boot record: <run>/booted neither boots nor skips the tester; ${definition}`
       );
     } finally {
       entry.boots = defined;
     }
     expect(
-      judge(both("threads-closed-text-fixes-head-18", "boot implementer\nboot reviewer\n"))
+      judge(both("threads-closed-correct-head-18", "boot implementer\nboot reviewer\n"))
     ).toBe(undefined);
   });
 });
@@ -1310,7 +1310,7 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
     expect(
       judge(
         baseRun(
-          "threads-closed-text-fixes-base-1",
+          "threads-closed-correct-base-1",
           `dispatch label ${HEAD} sha256:${"1".repeat(64)}`
         )
       )
@@ -1323,7 +1323,7 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
     expect(
       judge(
         baseRun(
-          "threads-closed-text-fixes-base-2",
+          "threads-closed-correct-base-2",
           `dispatch shared ${HEAD} sha256:${"1".repeat(64)}`
         )
       )
@@ -1336,7 +1336,7 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
     expect(
       judge(
         baseRun(
-          "threads-closed-text-fixes-base-3",
+          "threads-closed-correct-base-3",
           `dispatch label ${BASE} sha256:${"1".repeat(64)}`
         )
       )
@@ -1375,7 +1375,7 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
 
   test("a path the world shows under /tmp is that path, and the rest of /tmp the run's own", () => {
     const work = "/tmp/skill-scenarios";
-    const own = `${work}/runs/threads-closed-text-fixes-head-1`;
+    const own = `${work}/runs/threads-closed-correct-head-1`;
     const head = `${work}/profiles/head`;
     const world = {
       ...bare,
@@ -1394,7 +1394,7 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
     // profile and a path whose name only starts as a shown one's does are names in the run's own
     // /tmp.
     for (const named of [
-      `${work}/runs/threads-closed-text-fixes-base-1/out.txt`,
+      `${work}/runs/threads-closed-correct-base-1/out.txt`,
       `${work}/profiles/base/built-from`,
       `${head}less/notes.md`,
     ])
@@ -1408,7 +1408,7 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
   });
 
   // The rest of private_world's mounts, each in its order (rig.sh:1265-1285), on the world
-  // round 25's threads-closed-text-fixes-head-1 (6f38c7583a6d) recorded: its covers, its
+  // round 25's threads-closed-correct-head-1 (6f38c7583a6d) recorded: its covers, its
   // credentials, its own directory with its logs hidden again, and a path shown under a cover.
   // Catches: `mounted` reading /tmp alone, so a name under /dev/shm, a covered path, a credentials
   // path or the hidden logs reads as the machine's own path, which another run's read of the same
@@ -1574,7 +1574,7 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
         runWith({
           [FILE]: [says("text", "Fixed both threads.")],
           "sessions/reviewer/s2.jsonl": [
-            result("bash", "/work/runs/threads-closed-text-fixes-head-1/cwd"),
+            result("bash", "/work/runs/threads-closed-correct-head-1/cwd"),
             says("thinking", "The scenario label points to the threads-closed case. So CHANGES."),
           ],
         })
@@ -1604,10 +1604,10 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
       JSON.stringify({
         run: id,
         scenario: "threads-closed",
-        case: "text-fixes",
+        case: "correct",
         label: "head",
         n: 1,
-        name: "threads-closed-text-fixes-head-1",
+        name: "threads-closed-correct-head-1",
         batch: "legion-00000000-1",
         ran,
       })

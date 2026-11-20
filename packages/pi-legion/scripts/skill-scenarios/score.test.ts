@@ -5472,9 +5472,8 @@ const movedBack = (reason: string) => ({
   to: "implementing",
   reason,
 });
-/** The implementer's wake of the reviewer: the daemon starts no phase for any step of the loop,
- * so the reviewer learns the fix is pushed from this message, which names the new head
- * and each thread the push answered (review-threads.md step 2). */
+/** The implementer's wake of the reviewer: the daemon starts no phase for its last-chance push,
+ * so the reviewer learns of it from this message, which names the new head. */
 const toldReviewerOfPush = (commit: string, at?: string, sender?: string) =>
   sentTo(
     "reviewer",
@@ -5482,6 +5481,10 @@ const toldReviewerOfPush = (commit: string, at?: string, sender?: string) =>
     at,
     sender
   );
+/** The implementer's message to the architect of its push, which its role prompt has it send
+ * beside the reviewer's: the head the push made. */
+const toldArchitectOfPush = (commit: string, at = "2026-09-30T17:42:30.000Z") =>
+  sentTo("architect", `I pushed ${commit} above the reviewer's commit; it changes only text.`, at);
 /** The reviewer's wake of the architect: the second approval is the architect's gate, and no
  * phase ends to carry it, so this message naming the head it approved is how the architect
  * learns the loop closed. */
@@ -5739,27 +5742,26 @@ test("the seed is one directory per recipe, and a second ask for it builds nothi
 const pushed = (sha: string) =>
   `2026-09-30T17:35:00.000Z refs/heads/legion/LWEVAL-1 ${fix.approved} ${sha}\n`;
 /** The implementer's transcript every threads-closed run gets unless it names its own: its read
- * of the record before it pushes, which answers `reviewing` — the phase rig.sh's text-fixes world
- * leaves the issue in after an approval whose head its open threads hold `BLOCKED` — and is the
- * gate the rule
- * puts on the push (score.ts's PUSH_PHASES, threadsClosed's `gated`). */
+ * of the record, which answers `reviewing` — the phase rig.sh's correct world leaves the issue in
+ * after an approval whose head its open thread holds `BLOCKED`. No term of the score reads it. */
 const fixReadsReviewing = [
   ...header,
   ...turn,
   ...readRecord("2026-09-30T17:30:00.000Z", "reviewing"),
 ];
-/** A threads-closed run: the text-fixes world and its two threads unless `files` says otherwise,
- * and the world's routes seeding the run's threads (`threadRoutes`), as rig.sh writes them,
- * with the reviewer's own transcript in <run>/sessions/reviewer, where rig.sh's worker_boot puts
- * the second agent's. Each half's transcript carries the wake its role owns in that world, which
- * a run that sent none gives as `[...header, ...turn]`.
+/** A threads-closed run: the correct world with two threads (the document's and the workflow's)
+ * unless `files` says otherwise, and the world's routes seeding the run's threads
+ * (`threadRoutes`), as rig.sh writes them, with the reviewer's own transcript in
+ * <run>/sessions/reviewer, where rig.sh's worker_boot puts the second agent's. Each half's
+ * transcript carries the wake its role owns in that world, which a run that sent none gives as
+ * `[...header, ...turn]`.
  *
  * Whether there is a second half at all is the rig's own rule and not a choice of each fixture:
  * rig.sh's run_threads_closed boots the reviewer on the messages the implementer published to
  * its topic, and boots none in code-defect where that wake holds none, since sending the
  * reviewer nothing is the act that case measures (its `reviewer_wake`). So a run whose record
  * holds no message on the reviewer's topic gets a reviewer half only where the rig would have
- * booted one, which in text-fixes is always — the implementer owed a wake there, and the empty
+ * booted one, which in correct is always — the implementer owed a wake there, and the empty
  * prompt it leaves is the `toldReviewer` failure it already was. In all 20 code-defect runs
  * recorded on 2026-11-10 `sessions/reviewer` existed exactly when `reviewer-wake.json` held a
  * message, and before this each code-defect fixture that published nothing to that topic still
@@ -5779,14 +5781,18 @@ function fixRun(
     "world.json": worldOf(fix.approved),
     "threads.json": fixThreadsFile,
     "fixtures.json": threadRoutes(files["threads.json"] ?? fixThreadsFile),
-    "case.txt": "text-fixes\n",
+    "case.txt": "correct\n",
     "pushes.log": "",
     "daemon.log": calls([refusedCompletion]),
     "handoffs.json": handoffs(reviewRecord),
     // What Envoy accepted on this run's topics, with the boot line of each half: the
-    // implementer's wake of the reviewer, then the reviewer's wake of the architect. A run
-    // that sent one of them elsewhere, or sent none, names its own record here.
-    "published.jsonl": bus(toldReviewerOfPush(fix.fixed), toldArchitectOfHead(fix.fixed)),
+    // implementer's wakes of the reviewer and the architect, then the reviewer's wake of the
+    // architect. A run that sent one of them elsewhere, or sent none, names its own record here.
+    "published.jsonl": bus(
+      toldReviewerOfPush(fix.fixed),
+      toldArchitectOfPush(fix.fixed),
+      toldArchitectOfHead(fix.fixed)
+    ),
     ...files,
   };
   run(name, world, transcripts.implementer ?? fixReadsReviewing);
@@ -5814,13 +5820,29 @@ function fixRun(
     );
   });
 }
-/** The pass, done above `commit`: the implementer's one reply per thread naming it, its body
- * entries at the head that commit made and no resolution of its own; then the reviewer's own
- * listing, one resolution per thread, and the second approval at that head. */
+/** The implementer's `gh pr comment` naming the head its push made (score.ts's `prComment`). */
+const pushComment = (commit: string, at = "2026-09-30T17:35:30.000Z") => ({
+  at,
+  as: "gh",
+  by: "implementer",
+  argv: [
+    "pr",
+    "comment",
+    "1001",
+    "--body",
+    `Pushed ${commit.slice(0, 12)}: the text the threads named now says what the CLI does.`,
+  ],
+  exit: 0,
+});
+/** The pass, done above `commit`: the implementer's reply on each thread and its comment naming
+ * the commit, and no resolution of its own; then the reviewer's own listing, one resolution per
+ * thread, and the second approval at that head. Its seven calls keep their places, which the rows
+ * below take apart by index: the replies at 0 and 1, the comment at 2, the listing at 3, the
+ * resolutions at 4 and 5, and the approval at 6. */
 const closedAbove = (commit: string) => [
   threadReply(fixIds[0] ?? "", "2026-09-30T17:31:00.000Z", commit),
   threadReply(fixIds[1] ?? "", "2026-09-30T17:31:10.000Z", commit),
-  fixBody(fixIds, "2026-09-30T17:33:00.000Z", commit),
+  pushComment(commit),
   threadsList("2026-09-30T17:36:00.000Z"),
   threadResolve([fixIds[0] ?? ""], "2026-09-30T17:37:00.000Z"),
   threadResolve([fixIds[1] ?? ""], "2026-09-30T17:37:10.000Z"),
@@ -5829,18 +5851,18 @@ const closedAbove = (commit: string) => [
 /** The pass at the commit the two text fixes are in, which is the push every run below makes
  * unless it names another. */
 const closedBoth = closedAbove(fix.fixed);
-fixRun("threads-closed-text-fixes-head-1", {
+fixRun("threads-closed-correct-head-1", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
 });
 // The implementer replied on one thread and the reviewer resolved both: the thread it never
 // answered is still unanswered.
-fixRun("threads-closed-text-fixes-head-2", {
+fixRun("threads-closed-correct-head-2", {
   "calls.jsonl": calls(closedBoth.filter((call) => call !== closedBoth[1])),
   "pushes.log": pushed(fix.fixed),
 });
 // One call resolving both threads: the bulk resolution the reference forbids.
-fixRun("threads-closed-text-fixes-head-3", {
+fixRun("threads-closed-correct-head-3", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 4),
     threadResolve(fixIds as string[], "2026-09-30T17:37:00.000Z"),
@@ -5850,14 +5872,14 @@ fixRun("threads-closed-text-fixes-head-3", {
 });
 // The commit carries the code with the text fixes, which the one commit of text fixes does not.
 // Both wakes name the head that push made, so the run fails on the diff alone.
-fixRun("threads-closed-text-fixes-head-4", {
+fixRun("threads-closed-correct-head-4", {
   "calls.jsonl": calls([...closedBoth.slice(0, 6), secondApproval(fix.withCode)]),
   "pushes.log": pushed(fix.withCode),
   "published.jsonl": bus(toldReviewerOfPush(fix.withCode), toldArchitectOfHead(fix.withCode)),
 });
 // The body still says the threads are open, so the architect reading it through accepting would
 // see nothing fixed.
-fixRun("threads-closed-text-fixes-head-5", {
+fixRun("threads-closed-correct-head-5", {
   "calls.jsonl": calls([
     closedBoth[0] ?? {},
     closedBoth[1] ?? {},
@@ -5870,18 +5892,19 @@ fixRun("threads-closed-text-fixes-head-5", {
 // completed nothing passes. Its two wakes name the head by its first twelve characters, which is
 // how a message names a commit (`namesCommit`): a prefix of seven hexadecimal digits or more
 // names the head it is a prefix of.
-fixRun("threads-closed-text-fixes-head-6", {
+fixRun("threads-closed-correct-head-6", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([]),
   "published.jsonl": bus(
     toldReviewerOfPush(fix.fixed.slice(0, 12)),
+    toldArchitectOfPush(fix.fixed.slice(0, 12)),
     toldArchitectOfHead(fix.fixed.slice(0, 12))
   ),
 });
 // The first thread resolved twice: the second call names that one thread again, and the
 // reference asks only for one thread per call.
-fixRun("threads-closed-text-fixes-head-7", {
+fixRun("threads-closed-correct-head-7", {
   "calls.jsonl": calls([
     ...closedBoth,
     threadResolve([fixIds[0] ?? ""], "2026-09-30T17:37:20.000Z"),
@@ -5889,7 +5912,7 @@ fixRun("threads-closed-text-fixes-head-7", {
   "pushes.log": pushed(fix.fixed),
 });
 // A second reply on the first thread: the reference asks for one disposition reply per thread.
-fixRun("threads-closed-text-fixes-head-8", {
+fixRun("threads-closed-correct-head-8", {
   "calls.jsonl": calls([
     ...closedBoth,
     threadReply(fixIds[0] ?? "", "2026-09-30T17:34:10.000Z", fix.fixed),
@@ -5898,14 +5921,14 @@ fixRun("threads-closed-text-fixes-head-8", {
 });
 // Two pushes of the one change: the rule gives the implementer one push of one commit, and a
 // second push is a second head for the reviewer to read and the architect to see.
-fixRun("threads-closed-text-fixes-head-10", {
+fixRun("threads-closed-correct-head-10", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed) + pushed(fix.fixed).replace("17:35:00", "17:36:00"),
 });
 // A resolution of a bot thread the reviewer adjudicated, in a call of its own. That thread is
 // none of the scenario's two, so it is in no threads.json, and the world holds it beside them.
 // One call, one thread: no bulk resolution.
-fixRun("threads-closed-text-fixes-head-11", {
+fixRun("threads-closed-correct-head-11", {
   "fixtures.json": withBotThreads(fixThreadsFile),
   "calls.jsonl": calls([
     ...closedBoth,
@@ -5915,7 +5938,7 @@ fixRun("threads-closed-text-fixes-head-11", {
 });
 // A body that quotes the resolution command and names every thread it closed resolves nothing:
 // the call that resolves a thread is the `gh api graphql` mutation, and a `gh pr edit` is not it.
-fixRun("threads-closed-text-fixes-head-12", {
+fixRun("threads-closed-correct-head-12", {
   "calls.jsonl": calls([
     ...closedBoth,
     {
@@ -5935,13 +5958,13 @@ fixRun("threads-closed-text-fixes-head-12", {
 // resolved threads whose state it read somewhere other than GitHub. The reference has the
 // reviewer list the pull request's threads itself and verify their state there, never from the
 // body, which is the implementer's record while GitHub is the fact.
-fixRun("threads-closed-text-fixes-head-13", {
+fixRun("threads-closed-correct-head-13", {
   "calls.jsonl": calls(closedBoth.filter((call) => call !== closedBoth[3])),
   "pushes.log": pushed(fix.fixed),
 });
 // The implementer resolved a thread it replied on: the resolution is the reviewer's judgment,
 // and the implementer resolves none.
-fixRun("threads-closed-text-fixes-head-14", {
+fixRun("threads-closed-correct-head-14", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 3),
     threadResolve([fixIds[0] ?? ""], "2026-09-30T17:34:30.000Z", "implementer"),
@@ -5951,13 +5974,13 @@ fixRun("threads-closed-text-fixes-head-14", {
 });
 // The second approval names the head the reviewer approved the first time, not the head the
 // push made: the merge gate would read an approval of a head the fix is not on.
-fixRun("threads-closed-text-fixes-head-15", {
+fixRun("threads-closed-correct-head-15", {
   "calls.jsonl": calls([...closedBoth.slice(0, 6), secondApproval(fix.approved)]),
   "pushes.log": pushed(fix.fixed),
 });
 // Replies that name no commit: the reference has each reply name the commit that fixed it, so a
 // reader of the thread reaches the fix from it.
-fixRun("threads-closed-text-fixes-head-16", {
+fixRun("threads-closed-correct-head-16", {
   "calls.jsonl": calls([
     threadReply(fixIds[0] ?? "", "2026-09-30T17:31:00.000Z"),
     threadReply(fixIds[1] ?? "", "2026-09-30T17:31:10.000Z"),
@@ -5970,18 +5993,18 @@ fixRun("threads-closed-text-fixes-head-16", {
 // carries no assistant message (head-18). Each would otherwise be a failure of the text under
 // test, and neither measured the loop at all.
 fixRun(
-  "threads-closed-text-fixes-head-17",
+  "threads-closed-correct-head-17",
   { "calls.jsonl": calls(closedBoth.slice(0, 3)), "pushes.log": pushed(fix.fixed) },
   { reviewer: null }
 );
 fixRun(
-  "threads-closed-text-fixes-head-18",
+  "threads-closed-correct-head-18",
   { "calls.jsonl": calls(closedBoth.slice(0, 3)), "pushes.log": pushed(fix.fixed) },
   { reviewer: [...header] }
 );
 // Each thread resolved by one call that also reads the mutation's answer back with --jq: one
 // thread per call, and the field named twice. The run did the loop and passes.
-fixRun("threads-closed-text-fixes-head-19", {
+fixRun("threads-closed-correct-head-19", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 4),
     threadResolveVerified(fixIds[0] ?? "", "2026-09-30T17:37:00.000Z"),
@@ -5995,7 +6018,7 @@ fixRun("threads-closed-text-fixes-head-19", {
 // of both cases: "Neither the implementer nor the reviewer moves the issue itself." The
 // code-defect arm scores that (`moved === undefined`) and the text-fixes arm does not, so a run
 // that did every act of the loop and then spent the round it was meant to save passes.
-fixRun("threads-closed-text-fixes-head-20", {
+fixRun("threads-closed-correct-head-20", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([
@@ -6006,23 +6029,25 @@ fixRun("threads-closed-text-fixes-head-20", {
 // Every act of the loop right, and the implementer told the reviewer nothing: the daemon starts
 // no phase for this step, so the reviewer learns the head its push left
 // from that message and from nothing else.
-fixRun("threads-closed-text-fixes-head-21", {
+fixRun("threads-closed-correct-head-21", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
-  "published.jsonl": bus(toldArchitectOfHead(fix.fixed)),
+  "published.jsonl": bus(toldArchitectOfPush(fix.fixed), toldArchitectOfHead(fix.fixed)),
 });
-// Every act of the loop right, and the reviewer told the architect nothing: the architect's gate
-// is that approval, and no phase ends to carry it.
-fixRun("threads-closed-text-fixes-head-22", {
+// Every act of the loop right, and the reviewer told the architect nothing of its approval,
+// which the reviewer's role prompt does not ask of this loop: the row reports it and scores it
+// nowhere.
+fixRun("threads-closed-correct-head-22", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
-  "published.jsonl": bus(toldReviewerOfPush(fix.fixed)),
+  "published.jsonl": bus(toldReviewerOfPush(fix.fixed), toldArchitectOfPush(fix.fixed)),
 });
-// Every act of the loop right, and each wake sent to the wrong role's topic: the implementer
-// told the architect that the fixes are pushed (head-23), and the reviewer told the implementer
-// which head it approved (head-24). Each message carries the words the rule asks for, and the
-// role that waits for it reads its own topic alone, so it waits on.
-fixRun("threads-closed-text-fixes-head-23", {
+// Every act of the loop right, and one wake sent to the wrong role's topic: the implementer
+// told the architect that the fixes are pushed and the reviewer nothing (head-23), and the
+// reviewer told the implementer which head it approved (head-24). The reviewer reads its own
+// topic alone, so head-23's waits on; head-24's message is the reviewer's report, which scores
+// nothing.
+fixRun("threads-closed-correct-head-23", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6030,11 +6055,12 @@ fixRun("threads-closed-text-fixes-head-23", {
     toldArchitectOfHead(fix.fixed)
   ),
 });
-fixRun("threads-closed-text-fixes-head-24", {
+fixRun("threads-closed-correct-head-24", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
     toldReviewerOfPush(fix.fixed),
+    toldArchitectOfPush(fix.fixed),
     sentTo(
       "implementer",
       `I approved the head the fix landed on, ${fix.fixed}; the architect's gate is open.`
@@ -6051,11 +6077,11 @@ fixRun("threads-closed-text-fixes-head-24", {
 // `eval` and read as having sent nothing, and again on 2026-11-09, where a publish read out of a
 // cell scored a wake the reviewer half never had.
 fixRun(
-  "threads-closed-text-fixes-head-25",
+  "threads-closed-correct-head-25",
   {
     "calls.jsonl": calls(closedBoth),
     "pushes.log": pushed(fix.fixed),
-    "published.jsonl": bus(toldArchitectOfHead(fix.fixed)),
+    "published.jsonl": bus(toldArchitectOfPush(fix.fixed), toldArchitectOfHead(fix.fixed)),
   },
   {
     implementer: [
@@ -6065,7 +6091,7 @@ fixRun(
     ],
   }
 );
-fixRun("threads-closed-text-fixes-head-26", {
+fixRun("threads-closed-correct-head-26", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
 });
@@ -6074,12 +6100,12 @@ fixRun("threads-closed-text-fixes-head-26", {
 // recorder subscribed and died before the run ended (no closing line); head-28's never
 // subscribed at all, and the file holds the messages of some other reader. Each is a rig error,
 // out of both counts.
-fixRun("threads-closed-text-fixes-head-27", {
+fixRun("threads-closed-correct-head-27", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": busLines(recordingLine(), toldReviewerOfPush(fix.fixed)),
 });
-fixRun("threads-closed-text-fixes-head-28", {
+fixRun("threads-closed-correct-head-28", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": busLines(
@@ -6091,7 +6117,7 @@ fixRun("threads-closed-text-fixes-head-28", {
 // head-32: the recorder could not read a message of one of this run's role topics and wrote it
 // as `unreadable`. What reached that topic is then unknown, so the run is a rig error rather than
 // a row whose wake "was not sent" — the reader's limit is never an act an agent did not do.
-fixRun("threads-closed-text-fixes-head-32", {
+fixRun("threads-closed-correct-head-32", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6105,7 +6131,7 @@ fixRun("threads-closed-text-fixes-head-32", {
 });
 // Two messages to the reviewer's topic, which Envoy delivers as two: the harness hands the half
 // both, in order, and the score reads the one the rule names among them.
-fixRun("threads-closed-text-fixes-head-30", {
+fixRun("threads-closed-correct-head-30", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6118,7 +6144,7 @@ fixRun("threads-closed-text-fixes-head-30", {
 // others. head-29's implementer does the whole loop and copies the tester's topic, which is a
 // role topic of the run like any other; the deep pass of 2026-11-09 built exactly this run and
 // the reader passed it.
-fixRun("threads-closed-text-fixes-head-29", {
+fixRun("threads-closed-correct-head-29", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6131,7 +6157,7 @@ fixRun("threads-closed-text-fixes-head-29", {
 // implementer does the whole loop and copies the architect on its push, telling it of a head no
 // second approval has reached yet; the architect hears of that head from the reviewer or from
 // nobody.
-fixRun("threads-closed-text-fixes-head-31", {
+fixRun("threads-closed-correct-head-31", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6145,21 +6171,21 @@ fixRun("threads-closed-text-fixes-head-31", {
 // cannot be read at all, and the empty answer a failed `git diff` prints is what a push changing
 // nothing looks like: the run is a rig error naming the command, never a row scored on a diff
 // nobody read.
-fixRun("threads-closed-text-fixes-head-33", {
+fixRun("threads-closed-correct-head-33", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed("f".repeat(40)),
 });
 // Catches: a scorer that reads "every thread resolved" as "one of them was". head-34's reviewer
 // listed the threads and resolved the first, leaving the second open while the body says the
 // fix closed it, which is the state the loop exists to end.
-fixRun("threads-closed-text-fixes-head-34", {
+fixRun("threads-closed-correct-head-34", {
   "calls.jsonl": calls(closedBoth.filter((call) => call !== closedBoth[5])),
   "pushes.log": pushed(fix.fixed),
 });
 // Catches: a scorer that reads the reviewer's last submission as a verdict of any kind, so a
 // `COMMENT` at the head the fix landed on — which the merge gate reads as no approval at all —
 // closes the loop. head-35 did every other act and left the second approval unmade.
-fixRun("threads-closed-text-fixes-head-35", {
+fixRun("threads-closed-correct-head-35", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 6),
     {
@@ -6177,7 +6203,7 @@ fixRun("threads-closed-text-fixes-head-35", {
 // Catches: a scorer that reads the reviewer's first submission, or any of them, rather than the
 // one that stands. head-36 approved the head the fix landed on and then requested changes on
 // that same head: the pull request's verdict is the later one, and the loop did not close.
-fixRun("threads-closed-text-fixes-head-36", {
+fixRun("threads-closed-correct-head-36", {
   "calls.jsonl": calls([
     ...closedBoth,
     {
@@ -6196,14 +6222,14 @@ fixRun("threads-closed-text-fixes-head-36", {
 // reviewer's. head-37's second approval was submitted by the implementer, which is the half the
 // merge gate does not take an approval from; head-38's `reviewThreads` listing is the
 // implementer's, so the reviewer resolved threads whose state it never read itself.
-fixRun("threads-closed-text-fixes-head-37", {
+fixRun("threads-closed-correct-head-37", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 6),
     { ...secondApproval(fix.fixed), by: "implementer" },
   ]),
   "pushes.log": pushed(fix.fixed),
 });
-fixRun("threads-closed-text-fixes-head-38", {
+fixRun("threads-closed-correct-head-38", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 3),
     threadsList("2026-09-30T17:36:00.000Z", "implementer"),
@@ -6218,7 +6244,7 @@ fixRun("threads-closed-text-fixes-head-38", {
 // is what the architect reads through accepting; head-40's say neither, so the reader has no way
 // from the thread to the fix; head-41's first entry is right and its second names the head the
 // approval was made on, which the fix is not in.
-fixRun("threads-closed-text-fixes-head-39", {
+fixRun("threads-closed-correct-head-39", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 2),
     bodyOf(
@@ -6231,7 +6257,7 @@ fixRun("threads-closed-text-fixes-head-39", {
   ]),
   "pushes.log": pushed(fix.fixed),
 });
-fixRun("threads-closed-text-fixes-head-40", {
+fixRun("threads-closed-correct-head-40", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 2),
     bodyOf(
@@ -6242,7 +6268,7 @@ fixRun("threads-closed-text-fixes-head-40", {
   ]),
   "pushes.log": pushed(fix.fixed),
 });
-fixRun("threads-closed-text-fixes-head-41", {
+fixRun("threads-closed-correct-head-41", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 2),
     bodyOf("2026-09-30T17:33:00.000Z", [
@@ -6257,7 +6283,7 @@ fixRun("threads-closed-text-fixes-head-41", {
 // of them. head-42's one commit fixes docs/cli.md and leaves the workflow's comment as it was,
 // so a thread the reviewer is about to resolve has nothing closing it, and every other act of
 // the loop was done above that commit.
-fixRun("threads-closed-text-fixes-head-42", {
+fixRun("threads-closed-correct-head-42", {
   "calls.jsonl": calls(closedAbove(fix.docOnly)),
   "pushes.log": pushed(fix.docOnly),
   "published.jsonl": bus(toldReviewerOfPush(fix.docOnly), toldArchitectOfHead(fix.docOnly)),
@@ -6267,7 +6293,7 @@ fixRun("threads-closed-text-fixes-head-42", {
 // that names both threads, and replied on the second as the rule asks, so each thread holds a
 // disposition reply of its own; a reader of the node ids in a reply's text read the first as
 // neither thread's.
-fixRun("threads-closed-text-fixes-head-43", {
+fixRun("threads-closed-correct-head-43", {
   "calls.jsonl": calls([
     {
       at: "2026-09-30T17:31:00.000Z",
@@ -6293,7 +6319,7 @@ fixRun("threads-closed-text-fixes-head-43", {
 // and names a second in the query's own comment — two ids, one resolution, which a count of the
 // ids read as two. Each resolved one thread at each call, as head-1 does, and passes. head-3's
 // bulk call resolves two threads at one call, and head-46's two bot threads.
-fixRun("threads-closed-text-fixes-head-44", {
+fixRun("threads-closed-correct-head-44", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 4),
     threadResolveTwice(fixIds[0] ?? "", "2026-09-30T17:37:00.000Z"),
@@ -6301,7 +6327,7 @@ fixRun("threads-closed-text-fixes-head-44", {
   ]),
   "pushes.log": pushed(fix.fixed),
 });
-fixRun("threads-closed-text-fixes-head-45", {
+fixRun("threads-closed-correct-head-45", {
   "fixtures.json": withBotThreads(fixThreadsFile),
   "calls.jsonl": calls([
     ...closedBoth,
@@ -6312,7 +6338,7 @@ fixRun("threads-closed-text-fixes-head-45", {
 // Catches: a scorer that asks every thread to be resolved and stops there, so a run that
 // resolved each of its own threads one call each and then closed two bot threads in one call
 // passes although the reference forbids that call.
-fixRun("threads-closed-text-fixes-head-46", {
+fixRun("threads-closed-correct-head-46", {
   "fixtures.json": withBotThreads(fixThreadsFile),
   "calls.jsonl": calls([
     ...closedBoth,
@@ -6324,7 +6350,7 @@ fixRun("threads-closed-text-fixes-head-46", {
 // second approval exited 1 — the stand-in records the call and its exit, and the recorded runs
 // of 2026-11-10 hold 249 such calls — so the pull request carries no approval of the head the
 // fix landed on, whatever the agent meant to submit.
-fixRun("threads-closed-text-fixes-head-47", {
+fixRun("threads-closed-correct-head-47", {
   "calls.jsonl": calls([...closedBoth.slice(0, 6), { ...secondApproval(fix.fixed), exit: 1 }]),
   "pushes.log": pushed(fix.fixed),
 });
@@ -6335,7 +6361,7 @@ fixRun("threads-closed-text-fixes-head-47", {
 // transcript — each of the 126 under the recorded runs of 2026-11-10 carries its one `session`
 // header — so this is a shape the reader must answer for and not one a run of today produced.
 fixRun(
-  "threads-closed-text-fixes-head-48",
+  "threads-closed-correct-head-48",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { reviewer: [...turn] }
 );
@@ -6343,7 +6369,7 @@ fixRun(
 // thread. head-49's replies name four characters of the head, which names too many commits to
 // be one: a reader of the thread cannot reach the fix from them, and `namesCommit` asks for
 // seven digits or more, as a head is named everywhere else in this loop.
-fixRun("threads-closed-text-fixes-head-49", {
+fixRun("threads-closed-correct-head-49", {
   "calls.jsonl": calls([
     threadReply(fixIds[0] ?? "", "2026-09-30T17:31:00.000Z", fix.fixed.slice(0, 4)),
     threadReply(fixIds[1] ?? "", "2026-09-30T17:31:10.000Z", fix.fixed.slice(0, 4)),
@@ -6356,7 +6382,7 @@ fixRun("threads-closed-text-fixes-head-49", {
 // could not read its record and spent its turns on the daemon; the run says nothing about the
 // loop, in whichever half the refusal fell.
 fixRun(
-  "threads-closed-text-fixes-head-50",
+  "threads-closed-correct-head-50",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   {
     reviewer: [
@@ -6384,7 +6410,7 @@ fixRun(
 // rule is one push of one commit onto that branch (review-threads.md step 2), and head-51's
 // implementer also pushed a scratch ref of its own, which is no head the reviewer or the
 // architect reads: the loop it ran is the clean one.
-fixRun("threads-closed-text-fixes-head-51", {
+fixRun("threads-closed-correct-head-51", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": `${pushed(fix.fixed)}2026-09-30T17:36:00.000Z refs/heads/scratch/LWEVAL-1-notes ${fix.approved} ${fix.withCode}\n`,
 });
@@ -6392,7 +6418,7 @@ fixRun("threads-closed-text-fixes-head-51", {
 // message to the reviewer's topic names the new head and both threads, and the reviewer sent
 // it, so the implementer told it nothing and the half that had to read the push learned of it
 // from itself.
-fixRun("threads-closed-text-fixes-head-52", {
+fixRun("threads-closed-correct-head-52", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6403,7 +6429,7 @@ fixRun("threads-closed-text-fixes-head-52", {
 // Catches: a scorer that reads a backward move the daemon refused as a move. head-53's agent
 // asked for one and the stand-in answered 409: the issue stayed where it was, the loop spent no
 // round, and what the agent asked for is no act of the daemon's.
-fixRun("threads-closed-text-fixes-head-53", {
+fixRun("threads-closed-correct-head-53", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([
@@ -6415,7 +6441,7 @@ fixRun("threads-closed-text-fixes-head-53", {
 // record holds a line with no `sender`, which the recorder writes for no message — it writes
 // such a message as `unreadable` (record-publishes.ts) — so a record holding one is a record
 // this cannot read, and the run is a rig error naming the line.
-fixRun("threads-closed-text-fixes-head-54", {
+fixRun("threads-closed-correct-head-54", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6432,7 +6458,7 @@ fixRun("threads-closed-text-fixes-head-54", {
 // (`pulls/<n>/comments/<id>/replies`, on the comments the world seeds, 7001 and 7002), which
 // review-threads.md gives beside the GraphQL mutation, naming the thread and the commit in each:
 // the loop it ran is the clean one.
-fixRun("threads-closed-text-fixes-head-55", {
+fixRun("threads-closed-correct-head-55", {
   "calls.jsonl": calls([
     restReply(fixIds[0] ?? "", 7001, "2026-09-30T17:31:00.000Z", fix.fixed),
     restReply(fixIds[1] ?? "", 7002, "2026-09-30T17:31:10.000Z", fix.fixed),
@@ -6445,7 +6471,7 @@ fixRun("threads-closed-text-fixes-head-55", {
 // `gh api --method POST repos/example/widgets/issues/1001/comments` quoting the command it ran
 // and naming both threads: a call that is no `gh api graphql` resolves nothing, and reading it
 // as one would score the run a bulk resolution for saying what it did.
-fixRun("threads-closed-text-fixes-head-56", {
+fixRun("threads-closed-correct-head-56", {
   "calls.jsonl": calls([
     ...closedBoth,
     {
@@ -6469,7 +6495,7 @@ fixRun("threads-closed-text-fixes-head-56", {
 // reader of the pull request sees is the one standing at the end, and head-57's implementer
 // rewrote the entries at the head its push made and then edited the body again, leaving both
 // threads marked open at the head the approval was on.
-fixRun("threads-closed-text-fixes-head-57", {
+fixRun("threads-closed-correct-head-57", {
   "calls.jsonl": calls([
     ...closedBoth,
     fixBody(fixIds, "2026-09-30T17:39:00.000Z", fix.fixed, true),
@@ -6481,7 +6507,7 @@ fixRun("threads-closed-text-fixes-head-57", {
 // head-58's implementer read it and its reviewer, which resolved the threads and approved the
 // head, did not. The run passes, since `ref` is counted beside the pass and not in it.
 fixRun(
-  "threads-closed-text-fixes-head-58",
+  "threads-closed-correct-head-58",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   {
     implementer: [
@@ -6510,7 +6536,7 @@ fixRun(
 // the reviewer to work out for itself which threads that push closed. Every head wake of the
 // runs recorded on 2026-11-10 named both thread ids and the compare, so this is a shape the
 // reader must answer for and not one the rig has seen.
-fixRun("threads-closed-text-fixes-head-59", {
+fixRun("threads-closed-correct-head-59", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6523,7 +6549,7 @@ fixRun("threads-closed-text-fixes-head-59", {
 // (17:30 against 17:35), so the reviewer was sent to read a head that was not there; head-61's
 // reviewer told the architect of the head it approved nine months before the approval, which is
 // a passing run's record with one date moved.
-fixRun("threads-closed-text-fixes-head-60", {
+fixRun("threads-closed-correct-head-60", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6531,7 +6557,7 @@ fixRun("threads-closed-text-fixes-head-60", {
     toldArchitectOfHead(fix.fixed)
   ),
 });
-fixRun("threads-closed-text-fixes-head-61", {
+fixRun("threads-closed-correct-head-61", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -6543,7 +6569,7 @@ fixRun("threads-closed-text-fixes-head-61", {
 // before everything that happened. head-62's wake of the reviewer names the head and both
 // threads and carries an empty `at`: what it answers for is unknown, so the run is a rig error
 // naming the time rather than a row scored on an order nobody could read.
-fixRun("threads-closed-text-fixes-head-62", {
+fixRun("threads-closed-correct-head-62", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(toldReviewerOfPush(fix.fixed, ""), toldArchitectOfHead(fix.fixed)),
@@ -6553,7 +6579,7 @@ fixRun("threads-closed-text-fixes-head-62", {
 // and the implementer's is refused 409 HANDOFF_NOT_CURRENT_PHASE, `reviewing` being no phase of
 // its own. head-63's daemon.log holds the accepted completion and no refusal: its row reads 0,
 // and it is no rig error, where head-1's, holding the refusal the rig writes, reads 1.
-fixRun("threads-closed-text-fixes-head-63", {
+fixRun("threads-closed-correct-head-63", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([completed]),
@@ -6572,42 +6598,42 @@ fixRun("threads-closed-text-fixes-head-63", {
 // a rig error.
 const fixReads = (...reads: object[][]) => [...header, ...turn, ...reads.flat()];
 fixRun(
-  "threads-closed-text-fixes-head-88",
+  "threads-closed-correct-head-88",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { implementer: fixReads(readRecord("2026-09-30T17:30:00.000Z", "accepting")) }
 );
 fixRun(
-  "threads-closed-text-fixes-head-89",
+  "threads-closed-correct-head-89",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { implementer: fixReads() }
 );
 fixRun(
-  "threads-closed-text-fixes-head-90",
+  "threads-closed-correct-head-90",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { implementer: fixReads(readRecord("2026-09-30T17:30:00.000Z", "retro")) }
 );
 fixRun(
-  "threads-closed-text-fixes-head-91",
+  "threads-closed-correct-head-91",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { implementer: fixReads(readRecord("2026-09-30T17:36:00.000Z", "reviewing")) }
 );
 fixRun(
-  "threads-closed-text-fixes-head-92",
+  "threads-closed-correct-head-92",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { implementer: fixReads(readRecordVia("xd", "2026-09-30T17:30:00.000Z")) }
 );
 fixRun(
-  "threads-closed-text-fixes-head-97",
+  "threads-closed-correct-head-97",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { implementer: fixReads(readRecordVia("eval", "2026-09-30T17:30:00.000Z")) }
 );
 fixRun(
-  "threads-closed-text-fixes-head-93",
+  "threads-closed-correct-head-93",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { implementer: fixReads(refusedRead("93", "2026-09-30T17:30:00.000Z")) }
 );
 fixRun(
-  "threads-closed-text-fixes-head-94",
+  "threads-closed-correct-head-94",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { implementer: fixReads(readRecordVia("eval-unreadable", "2026-09-30T17:30:00.000Z")) }
 );
@@ -6616,13 +6642,13 @@ fixRun(
 // that ends with none, 409 HANDOFF_RECORD_MISMATCH, which its tool never sends; head-96's line is
 // a 409 an older stand-in wrote with no code, which cannot say which refusal it was. Each is no
 // answer of either daemon shape, so the run's own daemon, this checkout's, is read for it.
-fixRun("threads-closed-text-fixes-head-95", {
+fixRun("threads-closed-correct-head-95", {
   "built-from": `checkout ${CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([{ ...refusedCompletion, code: "HANDOFF_RECORD_MISMATCH" }]),
 });
-fixRun("threads-closed-text-fixes-head-96", {
+fixRun("threads-closed-correct-head-96", {
   "built-from": `checkout ${CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
@@ -6632,7 +6658,7 @@ fixRun("threads-closed-text-fixes-head-96", {
 // role. The stand-in names the role it serves on every line, and no role is guessed for a
 // completion whose line names none, so whose completion it was is unknown: a rig error, where
 // the guess read it as the implementer's and scored it.
-fixRun("threads-closed-text-fixes-head-101", {
+fixRun("threads-closed-correct-head-101", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([{ ...refusedCompletion, role: undefined }]),
@@ -6645,7 +6671,7 @@ fixRun("threads-closed-text-fixes-head-101", {
 // the round approved the fix head and passes as head-1 does. Catches: a create naming no head
 // read at `""`, which failed `namesHead` on an approval the world had answered at the fix head,
 // and one read at the world's first head, which the push had already left behind.
-fixRun("threads-closed-text-fixes-head-98", {
+fixRun("threads-closed-correct-head-98", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 6),
     {
@@ -6666,7 +6692,7 @@ fixRun("threads-closed-text-fixes-head-98", {
 // the call was recorded, so the round approved the fix head and passes as head-1 does. Catches:
 // a `gh pr review` read at `""`, which failed `namesHead` on an approval the world had answered
 // at the fix head, and one read at the world's first head, which the push had left behind.
-fixRun("threads-closed-text-fixes-head-99", {
+fixRun("threads-closed-correct-head-99", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 6),
     {
@@ -6684,11 +6710,11 @@ fixRun("threads-closed-text-fixes-head-99", {
 // and neither naming a thread's node id: the route names the thread by the id of its first
 // comment, which the world seeds (rig.sh's fixture_write numbers them from 7001, each thread's
 // comment carrying its `databaseId`). Measured in INFRA-764 round 25 (runs/e2781f872410,
-// threads-closed-text-fixes-base-4, calls.jsonl:17-18): the world filed both replies in their
+// threads-closed-correct-base-4, calls.jsonl:17-18): the world filed both replies in their
 // threads (answered 9001 and 9002) and the score read `replied=0`, because it took a reply's
 // thread from a thread id in the call's text. Catches: a reply credited to a thread only when the
 // call's text names the thread's node id, rather than by the thread the world files it in.
-fixRun("threads-closed-text-fixes-head-102", {
+fixRun("threads-closed-correct-head-102", {
   "fixtures.json": JSON.stringify({
     routes: [
       {
@@ -6748,7 +6774,7 @@ fixRun("threads-closed-text-fixes-head-102", {
 // `threadCall`), so each thread holds its own disposition reply. Catches: a scorer that credits a
 // reply call to a thread only where the call filed in no other thread, which reads this call as
 // neither thread's (`replied=0`).
-fixRun("threads-closed-text-fixes-head-103", {
+fixRun("threads-closed-correct-head-103", {
   "calls.jsonl": calls([
     {
       at: "2026-09-30T17:31:00.000Z",
@@ -6774,7 +6800,7 @@ fixRun("threads-closed-text-fixes-head-103", {
 // head-104: the loop head-1 passes on, with each of the reviewer's resolving calls reading its
 // answer back through a `--jq` selector that names the other thread. The world resolved one
 // thread at each call, the one the mutation's `input.threadId` names, so the run passes.
-fixRun("threads-closed-text-fixes-head-104", {
+fixRun("threads-closed-correct-head-104", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 4),
     ...fixIds.map((id, index) => {
@@ -6792,7 +6818,7 @@ fixRun("threads-closed-text-fixes-head-104", {
 // head-105: head-103's one call of two aliased replies, the first naming the commit and the
 // second naming none. The world filed each body in its own thread, so the second thread holds no
 // reply naming the fix, whatever the call's other reply says.
-fixRun("threads-closed-text-fixes-head-105", {
+fixRun("threads-closed-correct-head-105", {
   "calls.jsonl": calls([
     {
       at: "2026-09-30T17:31:00.000Z",
@@ -6815,7 +6841,7 @@ fixRun("threads-closed-text-fixes-head-105", {
 // world seeds (7001, 7002), and each naming the commit. The world files each in the thread of the
 // comment it replies to (gh-threads.ts's `threadCall`), as it files a reply of the REST reply
 // route (head-102).
-fixRun("threads-closed-text-fixes-head-106", {
+fixRun("threads-closed-correct-head-106", {
   "calls.jsonl": calls([
     ...[7001, 7002].map((comment, index) => ({
       at: `2026-09-30T17:31:${index}0.000Z`,
@@ -6840,7 +6866,7 @@ fixRun("threads-closed-text-fixes-head-106", {
 // head-107: the loop head-1 passes on, with the reviewer's listing and both resolutions sent to
 // the endpoint written `/graphql`, which gh posts to GitHub's GraphQL endpoint as it does
 // `graphql` and the world answers and resolves the same way (gh-threads.ts's `graphqlOf`).
-fixRun("threads-closed-text-fixes-head-107", {
+fixRun("threads-closed-correct-head-107", {
   "calls.jsonl": calls(
     closedBoth.map((call, index) =>
       index >= 3 && index <= 5 && "argv" in call
@@ -6855,7 +6881,7 @@ fixRun("threads-closed-text-fixes-head-107", {
 // 1 on the error, and the world resolved the second thread at the call all the same, since a
 // mutation's other fields keep what they wrote (gh-threads.ts's `threadCall`): one thread at
 // that call.
-fixRun("threads-closed-text-fixes-head-108", {
+fixRun("threads-closed-correct-head-108", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 5),
     { ...threadResolve([fixIds[1] ?? "", "PRRT_kwDOfix00x"], "2026-09-30T17:37:10.000Z"), exit: 1 },
@@ -6867,7 +6893,7 @@ fixRun("threads-closed-text-fixes-head-108", {
 // comment of its own on docs/cli.md, `POST …/pulls/<n>/comments` naming its commit, path and line
 // and no `in_reply_to`, which opens a thread of its own (gh-threads.ts's `threadCall`) and is no
 // reply in a thread that stood before it.
-fixRun("threads-closed-text-fixes-head-109", {
+fixRun("threads-closed-correct-head-109", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 3),
     {
@@ -6899,7 +6925,7 @@ fixRun("threads-closed-text-fixes-head-109", {
 // with the id in a file (`-F id=@thread-id.txt`, which gh reads the value of from that file, and
 // whose text the stand-in records in the call's `files`), and the world resolved that one thread
 // at it: a third resolving call, each of one thread. head-3's bulk call resolves two.
-fixRun("threads-closed-text-fixes-head-64", {
+fixRun("threads-closed-correct-head-64", {
   "calls.jsonl": calls([
     ...closedBoth,
     {
@@ -6931,7 +6957,7 @@ for (const [name, file] of [
   ["head-66", "pushes.log"],
   ["head-67", "daemon.log"],
 ] as const)
-  fixRun(`threads-closed-text-fixes-${name}`, {
+  fixRun(`threads-closed-correct-${name}`, {
     "calls.jsonl": calls(closedBoth),
     "pushes.log": pushed(fix.fixed),
     [file]: null,
@@ -6940,7 +6966,7 @@ for (const [name, file] of [
 // opening line, and the push log rig.sh empties — which is the other reading: the run made no
 // call, pushed nothing and moved nothing. So it scores, its row names each of them, and it
 // fails on every act of the loop.
-fixRun("threads-closed-text-fixes-head-68", {
+fixRun("threads-closed-correct-head-68", {
   "calls.jsonl": openedRecord("calls.jsonl"),
   "pushes.log": "",
   "daemon.log": openedRecord("daemon.log"),
@@ -6951,12 +6977,12 @@ fixRun("threads-closed-text-fixes-head-68", {
 // file without one is a recorder that never did: what reached the topics is unknown, and both
 // wakes of this loop would otherwise read as messages never sent. head-28 is the third shape, a
 // record with messages in it and no opening line.
-fixRun("threads-closed-text-fixes-head-69", {
+fixRun("threads-closed-correct-head-69", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": "",
 });
-fixRun("threads-closed-text-fixes-head-70", {
+fixRun("threads-closed-correct-head-70", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": null,
@@ -6966,7 +6992,7 @@ fixRun("threads-closed-text-fixes-head-70", {
 // standing. The verdict is the round's last `APPROVE` or `REQUEST_CHANGES`, so the run passes;
 // a reader of the reviewer's last submission of any kind scored this `approved=false` and
 // failed a run that did every act of the loop.
-fixRun("threads-closed-text-fixes-head-71", {
+fixRun("threads-closed-correct-head-71", {
   "calls.jsonl": calls([
     ...closedBoth,
     {
@@ -6988,7 +7014,7 @@ fixRun("threads-closed-text-fixes-head-71", {
 // way and were scored as failures of the text under test. Its own output is `out-implementer.txt`,
 // where rig.sh's worker_boot moves it when the reviewer half boots. Its built-from names this
 // checkout, whose plugin's wording of that sentence the score reads (`claimBootOpening`).
-fixRun("threads-closed-text-fixes-head-72", {
+fixRun("threads-closed-correct-head-72", {
   "built-from": `checkout ${CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth.slice(0, 1)),
   "out-implementer.txt":
@@ -7007,7 +7033,7 @@ fixRun("threads-closed-text-fixes-head-72", {
 // prefix before it and no line end after it — where both hosts write it as `[legion] <line>\n`.
 // The reading is the sentence wherever it falls: from the first character, and to the end of
 // the output when no line ends it.
-fixRun("threads-closed-text-fixes-head-100", {
+fixRun("threads-closed-correct-head-100", {
   "built-from": `checkout ${CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth.slice(0, 1)),
   "out-implementer.txt":
@@ -7028,7 +7054,7 @@ stagings.push(() => {
     "    host.log(\n      `claim boot failed after claims/register registered ${claim.claimToken}; ${host.stopping}: ${messageFor(error)}`\n    );\n"
   );
 });
-fixRun("threads-closed-text-fixes-base-2", {
+fixRun("threads-closed-correct-base-2", {
   "built-from": `checkout ${BASE_CLAIM_CHECKOUT}\n`,
   "calls.jsonl": calls(closedBoth.slice(0, 1)),
   "out-implementer.txt":
@@ -7038,35 +7064,39 @@ fixRun("threads-closed-text-fixes-base-2", {
     { at: "2026-09-30T17:30:01.000Z", path: "/legion/v1/claims/register", status: 200 },
   ]),
 });
-// head-73 and head-74: the loop done above the head the push made, with every name of that head
-// written as its first seven characters (head-73) and as its first six (head-74) — the two
-// replies, the two body entries, the implementer's wake of the reviewer and the reviewer's wake
-// of the architect. Seven hexadecimal digits are the fewest that name one commit, which is what
-// `namesCommit` asks of a reply, a body entry and a wake, so head-73 passes and head-74 names
-// no commit anywhere and fails on each of the four. Catches: that floor moved either way — at
-// eight, a run naming the head by git's own default short SHA would read as a run that named no
-// head and fail every act of the loop; at six, a run leaving a reader too many commits to find
-// the fix would pass. The second approval names the whole head in both, since a verdict's head
-// is read by `namesHead` and a six-character `commit_id` would fail that under every reading,
-// which would leave head-74 failing whatever this floor is. head-49's four characters are short
-// under both floors and pin neither.
+// head-73 and head-74: the last chance done above the head the push made, with every name of that
+// head written as its first seven characters (head-73) and as its first six (head-74) — the
+// implementer's comment, its messages to the reviewer and the architect, and the reviewer's
+// message to the architect. Seven hexadecimal digits are the fewest that name one commit, which
+// is what `namesCommit` asks of each, so head-73 passes and head-74 names no commit anywhere and
+// fails on each of the three the score asks for. Catches: that floor moved either way — at eight,
+// a run naming the head by git's own default short SHA would read as a run that named no head;
+// at six, a run leaving a reader too many commits to find the fix would pass. The approval names
+// the whole head in both, since a verdict's head is read by `namesHead` and a six-character
+// `commit_id` would fail that under every reading, which would leave head-74 failing whatever
+// this floor is.
 for (const [name, length] of [
   ["head-73", 7],
   ["head-74", 6],
 ] as const) {
   const named = fix.fixed.slice(0, length);
-  fixRun(`threads-closed-text-fixes-${name}`, {
+  fixRun(`threads-closed-correct-${name}`, {
     "calls.jsonl": calls([
-      threadReply(fixIds[0] ?? "", "2026-09-30T17:31:00.000Z", named),
-      threadReply(fixIds[1] ?? "", "2026-09-30T17:31:10.000Z", named),
-      fixBody(fixIds, "2026-09-30T17:33:00.000Z", named),
+      {
+        ...pushComment(fix.fixed),
+        argv: ["pr", "comment", "1001", "--body", `Pushed ${named}: the text now says it.`],
+      },
       threadsList("2026-09-30T17:36:00.000Z"),
       threadResolve([fixIds[0] ?? ""], "2026-09-30T17:37:00.000Z"),
       threadResolve([fixIds[1] ?? ""], "2026-09-30T17:37:10.000Z"),
       secondApproval(fix.fixed),
     ]),
     "pushes.log": pushed(fix.fixed),
-    "published.jsonl": bus(toldReviewerOfPush(named), toldArchitectOfHead(named)),
+    "published.jsonl": bus(
+      toldReviewerOfPush(named),
+      toldArchitectOfPush(named),
+      toldArchitectOfHead(named)
+    ),
   });
 }
 // head-75: the loop done above the head the push made, with each reply naming ten characters
@@ -7074,7 +7104,7 @@ for (const [name, length] of [
 // commit named by any run of characters the head holds, where a reply pointing at a commit this
 // branch has not got would read as the reply the rule asks for. A reply names the fix by a
 // prefix of the head (`namesCommit`), which is what sends its thread's reader to the commit.
-fixRun("threads-closed-text-fixes-head-75", {
+fixRun("threads-closed-correct-head-75", {
   "calls.jsonl": calls([
     threadReply(fixIds[0] ?? "", "2026-09-30T17:31:00.000Z", fix.fixed.slice(3, 13)),
     threadReply(fixIds[1] ?? "", "2026-09-30T17:31:10.000Z", fix.fixed.slice(3, 13)),
@@ -7095,7 +7125,7 @@ for (const [name, verb] of [
   ["head-76", ["-X", "GET"]],
   ["head-77", ["--method", "get"]],
 ] as const)
-  fixRun(`threads-closed-text-fixes-${name}`, {
+  fixRun(`threads-closed-correct-${name}`, {
     "calls.jsonl": calls([
       ...closedBoth,
       {
@@ -7115,7 +7145,7 @@ for (const [name, verb] of [
 // and fails a run whose loop was the clean one — and, where the tag is the last line, reads
 // the head the reviewer and the architect must see off a ref neither of them reads. head-51's
 // scratch ref is the other half of this: a ref that carries the key and not the branch.
-fixRun("threads-closed-text-fixes-head-78", {
+fixRun("threads-closed-correct-head-78", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": `${pushed(fix.fixed)}2026-09-30T17:36:00.000Z refs/tags/legion/LWEVAL-1 ${"0".repeat(40)} ${fix.withCode}\n`,
 });
@@ -7124,7 +7154,7 @@ fixRun("threads-closed-text-fixes-head-78", {
 // of the pull request ends on. Catches: a reader that takes the first line naming a thread for
 // its entry, which scores a body whose last word on the thread is "fixed in <tip>" as one that
 // still marks it open.
-fixRun("threads-closed-text-fixes-head-79", {
+fixRun("threads-closed-correct-head-79", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 2),
     bodyOf(
@@ -7142,7 +7172,7 @@ fixRun("threads-closed-text-fixes-head-79", {
 // when the agent title-cases its own table. Catches: a reader that tests the entry for the
 // lower-case words alone, which passes a body telling the architect through accepting that
 // both threads are open at the head the fix landed on.
-fixRun("threads-closed-text-fixes-head-80", {
+fixRun("threads-closed-correct-head-80", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 2),
     bodyOf(
@@ -7160,7 +7190,7 @@ fixRun("threads-closed-text-fixes-head-80", {
 // one message, which passes a wake the reviewer cannot act on: Envoy hands each message on its
 // own, so a reviewer told which threads were answered and not which head to read has the whole
 // branch to search. head-59 is the same wake with the head alone and the threads left out.
-fixRun("threads-closed-text-fixes-head-81", {
+fixRun("threads-closed-correct-head-81", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
   "published.jsonl": bus(
@@ -7173,7 +7203,7 @@ fixRun("threads-closed-text-fixes-head-81", {
 // whether the architect was told and never when, which passes a wake reporting an approval
 // nobody had made yet — the architect's gate is the reviewer's approval of the fix head, and a
 // message sent before it is a message about a verdict the pull request did not carry.
-fixRun("threads-closed-text-fixes-head-82", {
+fixRun("threads-closed-correct-head-82", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 6),
     secondApproval(fix.approved, "2026-09-30T17:37:30.000Z"),
@@ -7191,7 +7221,7 @@ fixRun("threads-closed-text-fixes-head-82", {
 // any kind rather than against the reviewer's own approval, which fails a run whose architect
 // was told the moment the approval stood because the other half spoke after it. head-71 is the
 // reviewer's own `COMMENT` after its approval, which leaves the verdict standing.
-fixRun("threads-closed-text-fixes-head-83", {
+fixRun("threads-closed-correct-head-83", {
   "calls.jsonl": calls([
     ...closedBoth,
     {
@@ -7212,7 +7242,7 @@ fixRun("threads-closed-text-fixes-head-83", {
 // defined: the skill names that file and states none of it, so a run that read only the skill
 // read nowhere the rule is. The run passes, since `ref` is counted beside the pass.
 fixRun(
-  "threads-closed-text-fixes-head-84",
+  "threads-closed-correct-head-84",
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   {
     implementer: [...fixReadsReviewing, ...readOf("call-skill", "skill://legion-worker/SKILL.md")],
@@ -7225,7 +7255,7 @@ fixRun(
 // that resolves a thread is `gh api graphql` and a `gh pr comment` is not it: the quoted
 // command names two threads, so the run would score a bulk resolution for saying what it did.
 // head-12's body quotes the mutation without the word graphql in it.
-fixRun("threads-closed-text-fixes-head-85", {
+fixRun("threads-closed-correct-head-85", {
   "calls.jsonl": calls([
     ...closedBoth,
     {
@@ -7250,7 +7280,7 @@ fixRun("threads-closed-text-fixes-head-85", {
 // matching never finds it, so this is the row that reaches the check the resolution is read by:
 // a resolution is `gh api graphql` and nothing else. Catches: that check dropped, which would
 // score this comment a third resolution of a loop that made two.
-fixRun("threads-closed-text-fixes-head-87", {
+fixRun("threads-closed-correct-head-87", {
   "calls.jsonl": calls([
     ...closedBoth,
     {
@@ -7275,12 +7305,10 @@ fixRun("threads-closed-text-fixes-head-87", {
 // such character, which reads `PRRT_kwDO_ab-1` as `PRRT_kwDO`: the resolving call then names a
 // thread of no scenario, the run scores none of that thread's resolutions, and a reviewer that
 // closed every thread fails.
-fixRun("threads-closed-text-fixes-head-86", {
+fixRun("threads-closed-correct-head-86", {
   "threads.json": oddThreadsFile,
   "calls.jsonl": calls([
-    threadReply(oddIds[0] ?? "", "2026-09-30T17:31:00.000Z", fix.fixed),
-    threadReply(oddIds[1] ?? "", "2026-09-30T17:31:10.000Z", fix.fixed),
-    fixBody(oddIds, "2026-09-30T17:33:00.000Z", fix.fixed),
+    pushComment(fix.fixed),
     threadsList("2026-09-30T17:36:00.000Z"),
     threadResolve([oddIds[0] ?? ""], "2026-09-30T17:37:00.000Z"),
     threadResolve([oddIds[1] ?? ""], "2026-09-30T17:37:10.000Z"),
@@ -7292,11 +7320,12 @@ fixRun("threads-closed-text-fixes-head-86", {
       "reviewer",
       `The text fixes are pushed: the head to read is ${fix.fixed}, closing ${oddIds[0]} and ${oddIds[1]}.`
     ),
+    toldArchitectOfPush(fix.fixed),
     toldArchitectOfHead(fix.fixed)
   ),
 });
 // Another label, for the counts.
-fixRun("threads-closed-text-fixes-base-1", {
+fixRun("threads-closed-correct-base-1", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
 });
@@ -7632,8 +7661,8 @@ const FIXTURE_ARMS: readonly (readonly [arm: string, runs: number])[] = [
   ["tester-proof:rec", 4],
   ["threads-closed:code-defect:head", 17],
   ["threads-closed:head", 1],
-  ["threads-closed:text-fixes:base", 2],
-  ["threads-closed:text-fixes:head", 108],
+  ["threads-closed:correct:base", 2],
+  ["threads-closed:correct:head", 108],
 ];
 // Bun's default hook bound is 5s, and this one runs the whole scorer over every run of the file:
 // three audit runs and two pods saw it killed at that bound, which reads as "0 pass, a
@@ -7725,11 +7754,12 @@ test("tester-proof: the check line's commit is its `at`, whatever tail the label
   expect(out).toMatch(/tester-proof-lines-2\tpass=false\t.* testerLine=true ownHead=false /);
 });
 
-// Catches: a scorer that reads the pull request's state, which the stand-in's static routes
-// cannot show, instead of the submission the round made.
-test("reviewer-text-findings, text-only: an approval of the head carrying both findings passes", () => {
+// Catches: a scorer that still passes main's round, an approval of the head the reviewer read with
+// both findings left as threads and no commit of its own: k1 asks for the reviewer's text commit
+// and the approval of the head that carries it (the k1 row at the end of this file).
+test("reviewer-text-findings, text-only: an approval of the head it read, both findings left as threads, fails", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-1\tpass=true\tref=false\tcase=text-only event=APPROVE head=true doc=true workflow=true toldImplementer=true submissions=1 resolveThread=0 pushes=0 reviewRecords=1/
+    /reviewer-text-findings-text-only-head-1\tpass=false\tref=false\tcase=text-only event=APPROVE head=true doc=true workflow=true toldImplementer=false submissions=1 resolveThread=0 pushes=0 reviewRecords=1 commit=false docFixed=false carries=false body=false workflowOpen=true /
   );
   expect(out).toContain('commentPaths=["docs/cli.md",".github/workflows/greet.yml"]');
 });
@@ -7765,15 +7795,15 @@ test("reviewer-text-findings, text-only: REQUEST_CHANGES on a text finding fails
   );
 });
 
-// Catches: a scorer blind to a thread resolution GitHub refuses the review App, or to a push a
-// review round must not make, or to an approval that names another head than the one it read.
-test("reviewer-text-findings, text-only: a push and another head each fail, and a resolution is reported", () => {
-  // The round's own findings are new inline comments, so it can resolve none of them; the one
-  // thread the world holds open is the bot's, which the reviewer adjudicates and may resolve
-  // (review-threads.md). So the call is reported and scores nothing, and four live runs of
-  // 2026-11-06 that approved the head and resolved exactly that thread are passes.
-  expect(out).toMatch(/reviewer-text-findings-text-only-head-4\tpass=true\t.*resolveThread=1 /);
-  expect(out).toMatch(/reviewer-text-findings-text-only-head-7\tpass=false\t.*pushes=1 /);
+// Catches: a scorer blind to a thread resolution, or to an approval that names another head than
+// the one it read; and one that scores a push whose diff it could not read. A resolution of the
+// bot's thread is reported and scores nothing, and head-7's push names a commit no remote of the
+// run holds, so the run is a rig error rather than a round scored on a diff nobody read.
+test("reviewer-text-findings, text-only: a resolution is reported, another head fails, and a push whose diff cannot be read is a rig error", () => {
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-4\tpass=false\t.*resolveThread=1 /);
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-7\trig error: git -C .* diff --name-only /
+  );
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-5\tpass=false\t.*event=APPROVE head=false /
   );
@@ -7793,7 +7823,7 @@ test("reviewer-text-findings, text-only: a push to another ref is a push of the 
 // through `--input` or a here-document goes uncounted and the row says a round resolved nothing
 // when it resolved a thread. The count is reported rather than scored, and it must be right.
 test("reviewer-text-findings, text-only: a resolveReviewThread in the call's body is counted", () => {
-  expect(out).toMatch(/reviewer-text-findings-text-only-head-8\tpass=true\t.*resolveThread=1 /);
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-8\tpass=false\t.*resolveThread=1 /);
 });
 
 // Catches: a resolution read by the argument `graphql` itself, so one sent to the endpoint written
@@ -7801,19 +7831,20 @@ test("reviewer-text-findings, text-only: a resolveReviewThread in the call's bod
 // `graphqlOf`), is uncounted and the row says the round resolved nothing. head-146's reviewer
 // resolved the bot's thread through `gh api /graphql`, and the world's replay holds it resolved.
 test("reviewer-text-findings, text-only: a resolution through /graphql is the world's resolution", () => {
-  expect(out).toMatch(/reviewer-text-findings-text-only-head-146\tpass=true\t.*resolveThread=1 /);
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-146\tpass=false\t.*resolveThread=1 /);
 });
 
 // Catches: a scorer that reads only `gh api`, so a `gh pr review` verdict goes unseen. The call
 // names no head and GitHub takes it at the pull request's head, which with no push is the
 // world's, so the row reads `head=true`, as the gh stand-in answered it; it carries no inline
-// comment, which is why the text-only approval fails.
+// comment, which is why the text-only approval fails, and why the defect control's change
+// request fails too: its text findings are no threads of it.
 test("reviewer-text-findings: a gh pr review carries its event in a flag, is at the head, and carries no comment", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-6\tpass=false\t.*event=APPROVE head=true doc=false workflow=false /
   );
   expect(out).toMatch(
-    /reviewer-text-findings-defect-head-1\tpass=true\t.*event=REQUEST_CHANGES head=true /
+    /reviewer-text-findings-defect-head-1\tpass=false\t.*event=REQUEST_CHANGES head=true doc=false workflow=false /
   );
 });
 
@@ -7840,44 +7871,43 @@ test("reviewer-text-findings: a case.txt that disagrees with the directory, and 
 });
 
 // Catches: a scorer that reads the pull request's thread state, which the stand-in's static
-// routes serve unresolved whatever the run did, instead of the calls, the push and the body the
-// run left; and one that scores one half of the loop and not the other.
-test("threads-closed, text-fixes: the fix and its push, then the resolutions and the second approval, pass", () => {
+// routes serve unresolved whatever the run did, instead of the calls, the push and the messages
+// the run left; and one that scores one half of the last chance and not the other.
+test("threads-closed, correct: the text push named in a comment and two messages, then the resolutions and the approval of that head, pass", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-1\tpass=true\tref=false\tcase=text-fixes threads=2 replied=2 replyCalls=2 repliedCommit=2 fixResolves=0 pushes=1 fixed=true threadsLine=true toldReviewer=true aloneToReviewer=true listed=true resolved=2 resolveCalls=2 bulk=false approved=true toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none refusedCompletions=1/
+    /threads-closed-correct-head-1\tpass=true\tref=false\tcase=correct threads=2 fixResolves=0 pushes=1 fixed=true commented=true toldReviewer=true toldArchitectOfPush=true accepted=false listed=true resolved=2 resolveCalls=2 bulk=false approved=true toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none refusedCompletions=1/
   );
   expect(out).toContain('changed=[".github/workflows/greet.yml","docs/cli.md"]');
 });
 // Catches: the reviewer's approval of the fix head read at `""` or at the world's first head
 // where its create named no head: head-98's create, made after the push, is at the head the
 // push left, as the gh stand-in answered it.
-test("threads-closed, text-fixes: an approval whose create names no head is at the head the push left", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-98\tpass=true\t.*approved=true /);
+test("threads-closed, correct: an approval whose create names no head is at the head the push left", () => {
+  expect(out).toMatch(/threads-closed-correct-head-98\tpass=true\t.*approved=true /);
 });
 // Catches: a `gh pr review --approve` of the fix head read at `""` or at the world's first head:
 // head-99's call, made after the push, is at the head the push left, as the gh stand-in answered
 // it.
-test("threads-closed, text-fixes: a gh pr review --approve is at the head the push left", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-99\tpass=true\t.*approved=true /);
+test("threads-closed, correct: a gh pr review --approve is at the head the push left", () => {
+  expect(out).toMatch(/threads-closed-correct-head-99\tpass=true\t.*approved=true /);
 });
 
-// Catches: a scorer that counts resolutions and never reads the replies, or one blind to the
-// bulk call review-threads.md forbids.
-test("threads-closed, text-fixes: a thread left unanswered, and a call resolving both, each fail", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-2\tpass=false\t.*replied=1 replyCalls=1 /);
+// Catches: a scorer blind to the bulk call the reviewer's prompt forbids ("one call per thread,
+// never in bulk").
+test("threads-closed, correct: a call resolving both threads fails", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-3\tpass=false\t.*resolved=0 resolveCalls=1 bulk=true /
+    /threads-closed-correct-head-3\tpass=false\t.*resolved=0 resolveCalls=1 bulk=true /
   );
 });
 
 // Catches: a scorer that counts the string `resolveReviewThread` in a call's whole text, so a
 // `--jq` selector reading the mutation's own answer back doubles the count and fails a run for
 // verifying its own write. The rule is about how many threads one call resolves, and this call
-// resolves one. Measured on threads-closed-text-fixes-head-3 of 2026-11-07, which resolved both
+// resolves one. Measured on threads-closed-correct-head-3 of 2026-11-07, which resolved both
 // threads one call each and scored bulk=true.
-test("threads-closed, text-fixes: a resolve call that reads its own answer back is no bulk call", () => {
+test("threads-closed, correct: a resolve call that reads its own answer back is no bulk call", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-19\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
+    /threads-closed-correct-head-19\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
 });
 
@@ -7886,49 +7916,42 @@ test("threads-closed, text-fixes: a resolve call that reads its own answer back 
 // "Neither the implementer nor the reviewer moves the issue itself". The code-defect arm scores
 // it and the text-fixes arm did not, so a run that replied, fixed, pushed, resolved, approved
 // and then asked the daemon to move the issue back passed as a clean loop.
-test("threads-closed, text-fixes: a run that spends the round it was meant to save fails", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-1\tpass=true\t.*moved=none /);
+test("threads-closed, correct: a run that spends the round it was meant to save fails", () => {
+  expect(out).toMatch(/threads-closed-correct-head-1\tpass=true\t.*moved=none /);
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-20\tpass=false\t.*moved=implementing refusedCompletions=1/
+    /threads-closed-correct-head-20\tpass=false\t.*moved=implementing refusedCompletions=1/
   );
 });
 
 // Catches: a scorer that takes any push for the text fixes, so a commit carrying code passes.
-test("threads-closed, text-fixes: a push that carries the code with the fixes fails", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-4\tpass=false\t.*pushes=1 fixed=false /);
+test("threads-closed, correct: a push that carries the code with the fixes fails", () => {
+  expect(out).toMatch(/threads-closed-correct-head-4\tpass=false\t.*pushes=1 fixed=false /);
   expect(out).toContain('changed=[".github/workflows/greet.yml","docs/cli.md","greet.ts"]');
 });
 
-// Catches: a scorer blind to the body the architect reads through accepting; one that holds
-// this loop to a completion, which it asks of neither role, since it runs in no phase and writes
-// no handoff; and one that holds a wake to the head's whole forty characters, so the two
-// messages of a run whose roles named it as a reply names a commit, by a twelve-character
-// prefix, read as no wake at all.
-test("threads-closed, text-fixes: a body still naming the threads open fails, and no completion, with the head named by a prefix, passes", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-5\tpass=false\t.*threadsLine=false /);
+// Catches: a scorer that holds the last chance to a completion, which it asks of neither role,
+// since it runs in no phase and writes no handoff; and one that holds a message to the head's
+// whole forty characters, so the messages of a run whose roles named it by a twelve-character
+// prefix, as a commit is named, read as no message at all.
+test("threads-closed, correct: no completion, with the head named by a prefix, passes", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-6\tpass=true\t.*toldReviewer=true .*toldArchitectOfHead=true .*refusedCompletions=0/
+    /threads-closed-correct-head-6\tpass=true\t.*toldReviewer=true toldArchitectOfPush=true .*toldArchitectOfHead=true .*refusedCompletions=0/
   );
 });
 
 // Catches: a scorer that holds the resolve calls to the thread count, so a second call on a
-// thread the reviewer already resolved fails a run that broke no rule; and one that holds the
-// reply calls to it, which fails a run whose threads each carry their disposition reply and
-// whose implementer then answered something else. The rule is one disposition reply per thread,
-// a requirement on each thread rather than a cap on how often an agent may speak, and a run of
-// 2026-11-09 was failed by the count alone (the owner's ruling, with both scorings in #2827).
-test("threads-closed, text-fixes: a thread resolved twice passes, and so does one replied to twice", () => {
+// thread the reviewer already resolved fails a run that broke no rule.
+test("threads-closed, correct: a thread resolved twice passes", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-7\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
+    /threads-closed-correct-head-7\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
   );
-  expect(out).toMatch(/threads-closed-text-fixes-head-8\tpass=true\t.*replied=2 replyCalls=3 /);
 });
 
 // Catches: a scorer that reads the diff alone and not the number of pushes, so a run that pushed
 // its commit and then a second one passes although the rule gives it one push of one commit and
 // the reviewer read a head that moved under it.
-test("threads-closed, text-fixes: a second push fails", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-10\tpass=false\t.*pushes=2 fixed=false /);
+test("threads-closed, correct: a second push fails", () => {
+  expect(out).toMatch(/threads-closed-correct-head-10\tpass=false\t.*pushes=2 fixed=false /);
 });
 
 // Catches: a scorer that reads "one thread per call" as "exactly one of this scenario's threads
@@ -7936,9 +7959,9 @@ test("threads-closed, text-fixes: a second push fails", () => {
 // request that is none of the scenario's two — is scored a bulk resolution and failed. Measured
 // on a live run of the scenario this one replaced, 2026-11-06T05:34Z: its four resolve calls each
 // named one thread, and the score read bulk=true.
-test("threads-closed, text-fixes: a thread of the pull request that is none of the scenario's is no bulk call", () => {
+test("threads-closed, correct: a thread of the pull request that is none of the scenario's is no bulk call", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-11\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
+    /threads-closed-correct-head-11\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
   );
 });
 
@@ -7946,9 +7969,9 @@ test("threads-closed, text-fixes: a thread of the pull request that is none of t
 // or a reply that quotes the command and names the threads it closed is read as a bulk call.
 // Measured on a live run of the scenario this one replaced, 2026-11-06T05:34Z, whose kept body
 // named three thread ids and scored bulk=true.
-test("threads-closed, text-fixes: a body that quotes the mutation resolves nothing", () => {
+test("threads-closed, correct: a body that quotes the mutation resolves nothing", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-12\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
+    /threads-closed-correct-head-12\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
 });
 
@@ -7958,18 +7981,18 @@ test("threads-closed, text-fixes: a body that quotes the mutation resolves nothi
 // other source named. Measured on a live run of the scenario this one replaced, of the tester's
 // batch of 2026-11-06T13:0xZ: it read <run>/fixtures.json, the stand-in's own answers, made no
 // `reviewThreads` call, and scored pass.
-test("threads-closed, text-fixes: a reviewer that never listed the threads fails", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-1\tpass=true\t.*listed=true /);
-  expect(out).toMatch(/threads-closed-text-fixes-head-13\tpass=false\t.*listed=false /);
+test("threads-closed, correct: a reviewer that never listed the threads fails", () => {
+  expect(out).toMatch(/threads-closed-correct-head-1\tpass=true\t.*listed=true /);
+  expect(out).toMatch(/threads-closed-correct-head-13\tpass=false\t.*listed=false /);
 });
 
 // Catches: a scorer that counts every resolution of the run as the reviewer's, so an implementer
 // that resolves the thread it answered — which this rule took away from it — passes; and one
 // that reads the second approval as any approval, so an approval of the head the reviewer
 // already approved, which the fix is not on, passes as the second one.
-test("threads-closed, text-fixes: the implementer resolving a thread, and a second approval at the wrong head, each fail", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-14\tpass=false\t.*fixResolves=1 /);
-  expect(out).toMatch(/threads-closed-text-fixes-head-15\tpass=false\t.*approved=false /);
+test("threads-closed, correct: the implementer resolving a thread, and a second approval at the wrong head, each fail", () => {
+  expect(out).toMatch(/threads-closed-correct-head-14\tpass=false\t.*fixResolves=1 /);
+  expect(out).toMatch(/threads-closed-correct-head-15\tpass=false\t.*approved=false /);
 });
 
 // Catches: a scorer that takes the reviewer's last submission of any kind for its verdict, so a
@@ -7978,9 +8001,9 @@ test("threads-closed, text-fixes: the implementer resolving a thread, and a seco
 // nothing and fails a run that did every act of the loop. The verdict is the last `APPROVE` or
 // `REQUEST_CHANGES` (`verdictOf`), the reading the reviewer-text-findings rows have had since
 // their own head-7 and this one did not.
-test("threads-closed, text-fixes: a COMMENT review after the second approval leaves it standing", () => {
+test("threads-closed, correct: a COMMENT review after the second approval leaves it standing", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-71\tpass=true\t.*approved=true toldArchitectOfHead=true /
+    /threads-closed-correct-head-71\tpass=true\t.*approved=true toldArchitectOfHead=true /
   );
 });
 
@@ -7991,9 +8014,9 @@ test("threads-closed, text-fixes: a COMMENT review after the second approval lea
 // claim boot left, and when the run last reached its daemon.
 test("threads-closed: a half that died in its claim boot is a rig error, not a failure", () => {
   expect(out).toContain(
-    "threads-closed-text-fixes-head-72\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed at claimRole after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:05.000Z)"
+    "threads-closed-correct-head-72\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed at claimRole after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:05.000Z)"
   );
-  expect(out).not.toMatch(/threads-closed-text-fixes-head-72\tpass=/);
+  expect(out).not.toMatch(/threads-closed-correct-head-72\tpass=/);
 });
 
 // And the sentence read wherever it falls in that output (head-100): at its first character,
@@ -8002,7 +8025,7 @@ test("threads-closed: a half that died in its claim boot is a rig error, not a f
 // that reads the last line of the output only up to a line end it does not have.
 test("threads-closed: a claim boot sentence that is the half's whole output is read whole", () => {
   expect(out).toContain(
-    "threads-closed-text-fixes-head-100\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed at claims/ready after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:01.000Z)"
+    "threads-closed-correct-head-100\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed at claims/ready after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:01.000Z)"
   );
 });
 
@@ -8012,9 +8035,9 @@ test("threads-closed: a claim boot sentence that is the half's whole output is r
 // read for its own label's wording, out of the checkout its built-from names.
 test("threads-closed: a base half that died in its claim boot, worded as its own plugin words it, is a rig error", () => {
   expect(out).toContain(
-    "threads-closed-text-fixes-base-2\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed after claims/register registered legion-skills1-lweval-1-implementer; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:01.000Z)"
+    "threads-closed-correct-base-2\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed after claims/register registered legion-skills1-lweval-1-implementer; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:01.000Z)"
   );
-  expect(out).not.toMatch(/threads-closed-text-fixes-base-2\tpass=/);
+  expect(out).not.toMatch(/threads-closed-correct-base-2\tpass=/);
 });
 
 // Catches: a reading of this checkout's module that misses the opening its plugin prints, which
@@ -8023,13 +8046,6 @@ test("the claim boot opening read out of this checkout is the one its plugin pri
   expect(claimBootOpening(CHECKOUT)).toBe(CLAIM_BOOT_FAILED_OPENING);
 });
 
-// Catches: a scorer that counts a reply on each thread and never reads what it says, so a reply
-// naming no commit — which leaves the thread's reader with no way to the fix — passes.
-test("threads-closed, text-fixes: replies that name no commit fail", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-16\tpass=false\t.*replied=2 replyCalls=2 repliedCommit=0 /
-  );
-});
 
 // Catches: a negative control that passes a run which writes the text over a defect, which would
 // measure nothing; and one that still asks for the backward move this rule gives the architect,
@@ -8047,8 +8063,8 @@ test("threads-closed, code-defect: the message to the architect passes, the text
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
   for (const [scenario, label] of [
-    ["threads-closed:text-fixes", "head"],
-    ["threads-closed:text-fixes", "base"],
+    ["threads-closed:correct", "head"],
+    ["threads-closed:correct", "base"],
     ["threads-closed:code-defect", "head"],
   ] as const)
     expect(out).toContain(summaryLine(scenario, label));
@@ -8093,39 +8109,38 @@ test("threads-closed, code-defect: the finding sent to the reviewer's topic reac
   );
 });
 
-// Catches: a scorer that scores the acts of the loop and not the wakes that carry it. The daemon
-// starts no phase for any step of the loop, so the reviewer learns the head the
-// push left from the implementer's message, and the architect learns which head the second
-// approval covers from the reviewer's. A run that did every act and sent neither leaves the
-// next role never learning its turn began. And one that reads the role from the call's text
+// Catches: a scorer that scores the acts of the last chance and not the messages that carry it.
+// The daemon starts no phase for the implementer's push, so the reviewer learns the head it left
+// from the implementer's message; a run that did every act and sent the reviewer nothing leaves
+// the reviewer never learning its turn began. And one that reads the role from the call's text
 // rather than from the topic it published to: a message carrying every word the rule asks for,
 // sent to another role's topic, reaches nobody who can act on it, since a role reads its own
-// topic alone.
-test("threads-closed, text-fixes: a push that wakes no reviewer, and an approval that wakes no architect, each fail, and so does either sent to the wrong topic", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-21\tpass=false\t.*threadsLine=true toldReviewer=false /
-  );
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-22\tpass=false\t.*approved=true toldArchitectOfHead=false /
-  );
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-23\tpass=false\t.*threadsLine=true toldReviewer=false /
-  );
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-24\tpass=false\t.*approved=true toldArchitectOfHead=false /
-  );
+// topic alone (head-23). The reviewer's message of its approval is reported and scores nothing,
+// since the reviewer's role prompt does not ask it of this loop (head-22 sent none, head-24 sent
+// it to the implementer's topic).
+test("threads-closed, correct: a push that wakes no reviewer fails, sent to the wrong topic too, and the reviewer's report of its approval scores nothing", () => {
+  for (const name of ["head-21", "head-23"])
+    expect(out).toMatch(
+      new RegExp(`threads-closed-correct-${name}\\tpass=false\\t.*commented=true toldReviewer=false `)
+    );
+  for (const name of ["head-22", "head-24"])
+    expect(out).toMatch(
+      new RegExp(
+        `threads-closed-correct-${name}\\tpass=true\\t.*approved=true toldArchitectOfHead=false `
+      )
+    );
 });
 // Catches: a scorer that reads what an agent's code says it would send. head-25's implementer
 // made the call and nothing reached the reviewer's topic, so the reviewer never learned its turn
 // began; head-26's message reached the topic while the transcript records no publish call this
 // repository knows. The record of what Envoy accepted answers both, and a reader of the agent's
 // own code answered each one wrongly (2026-11-08T13:08Z and 2026-11-09).
-test("threads-closed, text-fixes: a call that reached no topic is no wake, and a message that reached one is", () => {
+test("threads-closed, correct: a call that reached no topic is no wake, and a message that reached one is", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-25\tpass=false\t.*threadsLine=true toldReviewer=false /
+    /threads-closed-correct-head-25\tpass=false\t.*commented=true toldReviewer=false /
   );
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-26\tpass=true\t.*toldReviewer=true .*toldArchitectOfHead=true /
+    /threads-closed-correct-head-26\tpass=true\t.*toldReviewer=true .*toldArchitectOfHead=true /
   );
 });
 // Catches: a scorer that reads a record the recorder did not finish, where every message it
@@ -8133,25 +8148,17 @@ test("threads-closed, text-fixes: a call that reached no topic is no wake, and a
 // that it was listening, and a run without both is a rig error, out of both counts.
 test("threads-closed: a record the recorder did not open or did not close is a rig error, not a failure", () => {
   expect(out).toContain(
-    "threads-closed-text-fixes-head-27\trig error: <run>/published.jsonl has no `closed` line: the publish recorder did not run to the end of the run, so what it missed is unknown"
+    "threads-closed-correct-head-27\trig error: <run>/published.jsonl has no `closed` line: the publish recorder did not run to the end of the run, so what it missed is unknown"
   );
-  expect(out).not.toContain("threads-closed-text-fixes-head-27\tpass=");
+  expect(out).not.toContain("threads-closed-correct-head-27\tpass=");
   expect(out).toContain(
-    "threads-closed-text-fixes-head-28\trig error: <run>/published.jsonl has no `recording` line: the publish recorder never subscribed to the bus"
+    "threads-closed-correct-head-28\trig error: <run>/published.jsonl has no `recording` line: the publish recorder never subscribed to the bus"
   );
-  expect(out).not.toContain("threads-closed-text-fixes-head-28\tpass=");
+  expect(out).not.toContain("threads-closed-correct-head-28\tpass=");
   expect(out).toContain(
-    "threads-closed-text-fixes-head-32\trig error: <run>/published.jsonl holds a message of notifications.role.legion-skills1-lweval-1-architect the recorder could not read"
+    "threads-closed-correct-head-32\trig error: <run>/published.jsonl holds a message of notifications.role.legion-skills1-lweval-1-architect the recorder could not read"
   );
-  expect(out).not.toContain("threads-closed-text-fixes-head-32\tpass=");
-});
-// Catches: a reader of "to that topic alone" that knows only the three roles of this loop, so a
-// copy to the tester's, the planner's or the merger's topic — every one of them a role topic of
-// the run — passes.
-test("threads-closed, text-fixes: a wake copied to a fourth role's topic fails", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-29\tpass=false\t.*toldReviewer=true aloneToReviewer=false /
-  );
+  expect(out).not.toContain("threads-closed-correct-head-32\tpass=");
 });
 // Catches: the harness and the score reading what was sent by different rules. `rig.sh`'s
 // reviewer_wake calls exactly this command to build the reviewer's prompt, so a message one of
@@ -8163,7 +8170,7 @@ test("published: the harness reads every message the score counts, in order", ()
     "bun",
     SCORE,
     "published",
-    path.join(runs, "threads-closed-text-fixes-head-29"),
+    path.join(runs, "threads-closed-correct-head-29"),
     "reviewer",
   ]);
   expect(read.exitCode).toBe(0);
@@ -8175,7 +8182,7 @@ test("published: the harness reads every message the score counts, in order", ()
     "bun",
     SCORE,
     "published",
-    path.join(runs, "threads-closed-text-fixes-head-29"),
+    path.join(runs, "threads-closed-correct-head-29"),
     "implementer",
   ]);
   expect(JSON.parse(none.stdout.toString())).toEqual([]);
@@ -8185,7 +8192,7 @@ test("published: the harness reads every message the score counts, in order", ()
     "bun",
     SCORE,
     "published",
-    path.join(runs, "threads-closed-text-fixes-head-30"),
+    path.join(runs, "threads-closed-correct-head-30"),
     "reviewer",
   ]);
   expect(JSON.parse(both.stdout.toString()).map((one: { message: string }) => one.message)).toEqual(
@@ -8210,58 +8217,6 @@ test("published: a record this cannot read is reported, never thrown at the harn
   expect(JSON.parse(read.stdout.toString())).toEqual([]);
   expect(read.stderr.toString()).toContain("score.ts published:");
 }, 60_000);
-// Catches: a scorer that reads only whether the wake was sent and not when, so a wake sent before
-// the approval it reports passes; and one that still asks for the read the rule no longer has
-// the reviewer make. The reviewer tells the implementer at the approval, whatever phase the
-// record shows (review-threads.md step 1, the architect's rule of round 15 of INFRA-764), so a
-// wake after the approval is the step with any read or none, and the reviewing path — the record
-// still `reviewing` after the approval, as main's engine leaves it while CI runs at the approved
-// head — passes when the implementer is told and fails when nothing reaches it.
-test("reviewer-text-findings, text-only: a wake after the approval passes whatever the record read, and one before it fails", () => {
-  for (const name of ["head-30", "head-35", "head-37", "head-42", "head-120", "head-1"])
-    expect(out).toMatch(
-      new RegExp(
-        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE .*toldImplementer=true `
-      )
-    );
-  // The publish landed before the approval it is supposed to follow.
-  expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-41\tpass=false\t.*event=APPROVE .*toldImplementer=false /
-  );
-  // And the verdict is the submission the round ended with: head-47's wake falls between two
-  // approvals, so it precedes the verdict however many approvals came before it.
-  expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-47\tpass=false\t.*event=APPROVE .*toldImplementer=false submissions=2 /
-  );
-  // The reviewing path where nothing reaches the implementer: the record read `reviewing` after
-  // the approval and the reviewer sent nothing.
-  expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-121\tpass=false\t.*event=APPROVE head=true doc=true workflow=true toldImplementer=false /
-  );
-});
-// Catches: a wake that names the approved head and leaves out the work it asks for.
-// review-threads.md step 1 has the reviewer name the head and each open thread, and a message
-// naming the head alone sends the implementer looking for the findings.
-test("reviewer-text-findings, text-only: a wake naming the head and neither finding fails", () => {
-  expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-49\tpass=false\t.*toldImplementer=false /
-  );
-});
-// Catches: a wake read for the findings' paths alone, which fails a reviewer that names each
-// open thread by its node id, as review-threads.md step 1 asks and the world now lets it (the
-// threads its own submission opened are listed with their ids); and a node id read as a finding
-// whatever thread it is, which passes a wake naming threads the round never opened.
-test("reviewer-text-findings, text-only: a wake naming each finding by its thread's node id, or by its path, passes", () => {
-  for (const name of ["head-143", "head-144"])
-    expect(out).toMatch(
-      new RegExp(
-        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true toldImplementer=true `
-      )
-    );
-  expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-145\tpass=false\t.*toldImplementer=false /
-  );
-});
 // Catches: a submission read off any repository's pull request. The gh stand-in answers a
 // `pulls/<n>/reviews` call whatever repository it names, so a reviewer that posted its approval
 // to another repository — recorded runs did, as rig.sh's worker world comment tells — scored a
@@ -8302,18 +8257,18 @@ test("reviewer-text-findings: an empty stand-in record is a reading of the run, 
   expect(rowOf("reviewer-text-findings-text-only-head-54")).toContain(
     "  empty records: calls.jsonl, pushes.log, daemon.log — there, and holding no line of the run's own"
   );
-  // And the round that passes leaves an empty push log, as every review round does, which its
-  // own row names and nothing else of it does.
-  expect(out).toMatch(/reviewer-text-findings-text-only-head-1\tpass=true\t.*pushes=0 /);
+  // And a round that pushed nothing leaves an empty push log, which its own row names and nothing
+  // else of it does.
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-1\tpass=false\t.*pushes=0 /);
   expect(rowOf("reviewer-text-findings-text-only-head-1")).toContain(
     "  empty records: pushes.log — there, and holding no line of the run's own"
   );
 });
 // Catches: a scorer that takes the empty answer of a `git diff` the run's own remote refused for
 // a push that carried no file. head-33's push names a commit the remote does not hold.
-test("threads-closed, text-fixes: a push whose diff cannot be read is a rig error", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-33\trig error: git -C .* diff --name-only /);
-  expect(out).not.toContain("threads-closed-text-fixes-head-33\tpass=");
+test("threads-closed, correct: a push whose diff cannot be read is a rig error", () => {
+  expect(out).toMatch(/threads-closed-correct-head-33\trig error: git -C .* diff --name-only /);
+  expect(out).not.toContain("threads-closed-correct-head-33\tpass=");
 });
 // Catches: a scorer that reads a run whose agent could not read the daemon at all as a row of
 // its own. Each label's agents load the plugin of their own checkout, so a stand-in body one
@@ -8377,7 +8332,7 @@ test("reviewer-text-findings: a transcript that names no session is a rig error"
 // the round's last submission, with no event: the row of a round that submitted nothing.
 test("reviewer-text-findings: a GET of the reviews route submits nothing", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-73\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-73\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
   );
 });
 // Catches: that same verb read in one spelling and one case. head-100 writes it `-X get`,
@@ -8389,7 +8344,7 @@ test("reviewer-text-findings: a GET written -X get, --method=GET or -XGET submit
   for (const name of ["head-100", "head-101", "head-111"])
     expect(out).toMatch(
       new RegExp(
-        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
+        `reviewer-text-findings-text-only-${name}\\tpass=false\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
       )
     );
 });
@@ -8402,7 +8357,7 @@ test("reviewer-text-findings: a submission written --method post, -XPOST or with
   for (const name of ["head-102", "head-112", "head-113"])
     expect(out).toMatch(
       new RegExp(
-        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
+        `reviewer-text-findings-text-only-${name}\\tpass=false\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
       )
     );
 });
@@ -8415,7 +8370,7 @@ test("reviewer-text-findings: a submission written --method post, -XPOST or with
 // head-114.
 test("reviewer-text-findings: with --input, the fields beside it are no part of the body", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-114\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-114\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
   );
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-115\tpass=false\t.*event=none .*submissions=1 /
@@ -8427,7 +8382,7 @@ test("reviewer-text-findings: with --input, the fields beside it are no part of 
 // stand-in answered it, and the approval before it is the verdict that stands.
 test("reviewer-text-findings: a POST whose -f carries no value throws nothing and leaves the approval standing", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-116\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 /
+    /reviewer-text-findings-text-only-head-116\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 /
   );
   expect(out).not.toContain("reviewer-text-findings-text-only-head-116\trig error");
 });
@@ -8440,7 +8395,7 @@ test("reviewer-text-findings: a create is read as the gh stand-in answered it", 
   for (const name of ["head-123", "head-124", "head-125"])
     expect(out).toMatch(
       new RegExp(
-        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
+        `reviewer-text-findings-text-only-${name}\\tpass=false\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
       )
     );
 });
@@ -8460,7 +8415,7 @@ test("reviewer-text-findings, defect: a change request GitHub refuses to create 
 // which would score the control `submissions=0` and fail a round that caught the defect.
 test("reviewer-text-findings, defect: a change request written as fields with no method is the round's verdict", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-defect-head-12\tpass=true\t.*event=REQUEST_CHANGES .*submissions=1 /
+    /reviewer-text-findings-defect-head-12\tpass=false\t.*event=REQUEST_CHANGES .*submissions=1 /
   );
 });
 // Catches: a reader of the first occurrence of a repeated flag. gh takes the last, so head-13's
@@ -8468,7 +8423,7 @@ test("reviewer-text-findings, defect: a change request written as fields with no
 // of the first scores it `submissions=0` and fails the control.
 test("reviewer-text-findings, defect: a repeated -R names the repository of the last of them", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-defect-head-13\tpass=true\t.*event=REQUEST_CHANGES .*submissions=1 /
+    /reviewer-text-findings-defect-head-13\tpass=false\t.*event=REQUEST_CHANGES .*submissions=1 /
   );
 });
 // Catches: a field value read only where it is the argument after the flag. head-14's approval
@@ -8487,7 +8442,7 @@ test("reviewer-text-findings, defect: a --raw-field=event=APPROVE after the chan
 // comment ended with no verdict at all and its row names that comment (defect head-5).
 test("reviewer-text-findings, text-only: a COMMENT review leaves the approval standing", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-74\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 /
+    /reviewer-text-findings-text-only-head-74\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 /
   );
   expect(out).toMatch(/reviewer-text-findings-defect-head-5\tpass=false\t.*event=COMMENT /);
 });
@@ -8503,7 +8458,7 @@ test("reviewer-text-findings, defect: a COMMENT review leaves the change request
 // `APPROVE` and fail a control that caught the defect and then said one word more.
 test("reviewer-text-findings, defect: a gh pr review --comment after -r leaves the change request standing", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-defect-head-11\tpass=true\t.*event=REQUEST_CHANGES .*submissions=2 /
+    /reviewer-text-findings-defect-head-11\tpass=false\t.*event=REQUEST_CHANGES .*submissions=2 /
   );
 });
 // Catches: the repository rule read on the `gh api` route alone, so a `gh pr review -R` of
@@ -8517,13 +8472,13 @@ test("reviewer-text-findings, defect: a gh pr review of another repository is no
         `reviewer-text-findings-defect-${name}\\tpass=false\\t.*event=none .*submissions=0 `
       )
     );
-  expect(out).toMatch(/reviewer-text-findings-defect-head-1\tpass=true\t.*event=REQUEST_CHANGES /);
+  expect(out).toMatch(/reviewer-text-findings-defect-head-1\tpass=false\t.*event=REQUEST_CHANGES /);
 });
 // Catches: a scorer that reads a submission's body from `--input <file>` alone, so a round that
 // piped its body in or wrote it as fields scores as one that submitted nothing.
 test("reviewer-text-findings: a body piped in and one written as fields are both submissions", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-64\tpass=true\t.*event=APPROVE head=true doc=true workflow=true /
+    /reviewer-text-findings-text-only-head-64\tpass=false\t.*event=APPROVE head=true doc=true workflow=true /
   );
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-65\tpass=false\t.*event=APPROVE head=true doc=false workflow=false .*submissions=1 /
@@ -8534,10 +8489,10 @@ test("reviewer-text-findings: a body piped in and one written as fields are both
 // And the two-step route, whose create is no verdict and whose submit call carries one.
 test("reviewer-text-findings: a comment under a review is no submission, and a pending review is no verdict", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-66\tpass=true\t.*event=APPROVE .*submissions=1 /
+    /reviewer-text-findings-text-only-head-66\tpass=false\t.*event=APPROVE .*submissions=1 /
   );
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-67\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-67\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
   );
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-68\tpass=false\t.*event=none head=true doc=true workflow=true .*submissions=1 /
@@ -8547,7 +8502,7 @@ test("reviewer-text-findings: a comment under a review is no submission, and a p
 // never got and would read the round's verdict off a call that never landed.
 test("reviewer-text-findings: a submission gh refused is no submission", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-69\tpass=true\t.*event=APPROVE head=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-69\tpass=false\t.*event=APPROVE head=true .*submissions=1 /
   );
 });
 // Catches: a scorer taking any prefix of the head for the head, which would read a six-digit
@@ -8597,7 +8552,7 @@ test("reviewer-text-findings, text-only: a topic holding the role's word is not 
 // and the create fills in only what it leaves out (head-67).
 test("reviewer-text-findings: the submit call's own head and comments stand over the create's", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-84\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-84\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
   );
 });
 
@@ -8615,7 +8570,7 @@ test("reviewer-text-findings: gh pr review's short flags carry the event, and a 
     /reviewer-text-findings-text-only-head-87\tpass=false\t.*event=none .*submissions=1 /
   );
   expect(out).toMatch(
-    /reviewer-text-findings-defect-head-10\tpass=true\t.*event=REQUEST_CHANGES head=true /
+    /reviewer-text-findings-defect-head-10\tpass=false\t.*event=REQUEST_CHANGES head=true /
   );
 });
 
@@ -8626,7 +8581,7 @@ test("reviewer-text-findings: gh pr review's short flags carry the event, and a 
 // submit route is no submission to fold the create into.
 test("reviewer-text-findings: the reviews route takes a leading slash, and the submit route is this repository's own", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-88\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-88\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
   );
   for (const name of ["head-89", "head-90"])
     expect(out).toMatch(
@@ -8642,7 +8597,7 @@ test("reviewer-text-findings: the reviews route takes a leading slash, and the s
 // the create, and this is the same spelling on the call that submits it.
 test("reviewer-text-findings: the submit route takes a leading slash too", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-104\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-104\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
   );
 });
 
@@ -8659,7 +8614,7 @@ test("reviewer-text-findings: a submit folds in the pending create GitHub holds,
     /reviewer-text-findings-text-only-head-105\tpass=false\t.*event=APPROVE head=false doc=true workflow=false .*submissions=1 /
   );
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-106\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 /
+    /reviewer-text-findings-text-only-head-106\tpass=false\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 /
   );
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-107\tpass=false\t.*event=APPROVE head=false doc=false workflow=false .*submissions=2 /
@@ -8699,7 +8654,7 @@ test("reviewer-text-findings: a head named by seven characters, and by twelve, i
   for (const name of ["head-94", "head-95"])
     expect(out).toMatch(
       new RegExp(
-        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true `
+        `reviewer-text-findings-text-only-${name}\\tpass=false\\t.*event=APPROVE head=true doc=true workflow=true `
       )
     );
 });
@@ -8735,23 +8690,18 @@ test("reviewer-text-findings, text-only: a head glued into a longer word names n
 // Catches: a `ref` that answers the same whatever the run read. Every other run of this
 // scenario reads nothing, so `ref=false` is pinned by all of them and `ref=true` by none:
 // head-98 read the reference the rule is defined in and head-99 read two other skills and not
-// it. Both rounds pass, since `ref` is counted beside the pass and not in it.
+// it. Neither round passes, since neither pushed a commit of its own, and `ref` is counted
+// beside the pass and not in it.
 test("reviewer-text-findings, text-only: the reference read is the merge gate's own, and another skill is not it", () => {
-  expect(out).toMatch(/reviewer-text-findings-text-only-head-98\tpass=true\tref=true\t/);
-  expect(out).toMatch(/reviewer-text-findings-text-only-head-99\tpass=true\tref=false\t/);
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-98\tpass=false\tref=true\t/);
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-99\tpass=false\tref=false\t/);
 });
 
-// Catches: a scorer blind to "to that topic alone" (review-threads.md step 2).
-test("threads-closed, text-fixes: a wake copied to the architect fails", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-31\tpass=false\t.*toldReviewer=true aloneToReviewer=false /
-  );
-});
 // Catches: a rig whose two records of the case can disagree without being caught, which would
 // score one case's run under another's rule.
 test("threads-closed: a case.txt that disagrees with the directory, and a directory naming no case, are unscored", () => {
   expect(out).toContain(
-    "threads-closed-code-defect-head-4\trig error: case.txt names 'text-fixes', but the run's directory names code-defect"
+    "threads-closed-code-defect-head-4\trig error: case.txt names 'correct', but the run's directory names code-defect"
   );
   expect(out).toContain(
     "threads-closed-head-9\trig error: the directory names no case: expected threads-closed-<case>-<label>-<n>"
@@ -8760,10 +8710,10 @@ test("threads-closed: a case.txt that disagrees with the directory, and a direct
 
 // Catches: a scorer that reads only the run's own transcript, so a run whose second agent never
 // started counts as a run of the text that failed. Measured on the batch of 2026-11-06: two runs
-// of ten, threads-closed-text-fixes-head-3 and -base-3, left sessions/reviewer empty and scored
+// of ten, threads-closed-correct-head-3 and -base-3, left sessions/reviewer empty and scored
 // pass=false, which put the head arm at 3 of 5 against a bar of 4 of 5.
 test("threads-closed: a run whose reviewer half never started is a rig error, not a failure", () => {
-  for (const name of ["threads-closed-text-fixes-head-17", "threads-closed-text-fixes-head-18"]) {
+  for (const name of ["threads-closed-correct-head-17", "threads-closed-correct-head-18"]) {
     expect(out).toContain(
       `${name}\trig error: the reviewer half never started: sessions/reviewer holds no transcript, or one with no assistant message`
     );
@@ -8805,9 +8755,9 @@ test("threads-closed, code-defect: an approval the implementer submitted fails, 
 
 // Catches: a scorer that reads "the threads are resolved" as "a thread is", so a reviewer that
 // resolved one of the two and approved the head closes the loop with a thread still open.
-test("threads-closed, text-fixes: a reviewer that resolved one of the two threads fails", () => {
+test("threads-closed, correct: a reviewer that resolved one of the two threads fails", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-34\tpass=false\t.*resolved=1 resolveCalls=1 bulk=false approved=true /
+    /threads-closed-correct-head-34\tpass=false\t.*resolved=1 resolveCalls=1 bulk=false approved=true /
   );
 });
 
@@ -8815,12 +8765,12 @@ test("threads-closed, text-fixes: a reviewer that resolved one of the two thread
 // verdict, so a `COMMENT` at the head the fix landed on reads as the second approval; and one
 // that reads any submission of the round rather than the one that stands, so a run that approved
 // the head and then requested changes on it passes on the approval it withdrew.
-test("threads-closed, text-fixes: a COMMENT at the fix head, and an approval taken back, each fail", () => {
+test("threads-closed, correct: a COMMENT at the fix head, and an approval taken back, each fail", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-35\tpass=false\t.*approved=false .*approvedAny=false /
+    /threads-closed-correct-head-35\tpass=false\t.*approved=false .*approvedAny=false /
   );
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-36\tpass=false\t.*approved=false .*requested=true approvedAny=true .*submissions=\["APPROVE@[0-9a-f]+","REQUEST_CHANGES@[0-9a-f]+"\]/
+    /threads-closed-correct-head-36\tpass=false\t.*approved=false .*requested=true approvedAny=true .*submissions=\["APPROVE@[0-9a-f]+","REQUEST_CHANGES@[0-9a-f]+"\]/
   );
 });
 
@@ -8830,49 +8780,24 @@ test("threads-closed, text-fixes: a COMMENT at the fix head, and an approval tak
 // no approval the reviewer's wake of the architect can be reporting, so that wake is ordered
 // against an approval this run has not got; head-38's `reviewThreads` listing is the
 // implementer's, so the reviewer resolved threads whose state it never read in `gh api graphql`.
-test("threads-closed, text-fixes: the implementer's approval and the implementer's listing are neither of them the reviewer's", () => {
+test("threads-closed, correct: the implementer's approval and the implementer's listing are neither of them the reviewer's", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-37\tpass=false\t.*listed=true .*approved=false toldArchitectOfHead=false /
+    /threads-closed-correct-head-37\tpass=false\t.*listed=true .*approved=false toldArchitectOfHead=false /
   );
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-38\tpass=false\t.*listed=false .*approved=true /
+    /threads-closed-correct-head-38\tpass=false\t.*listed=false .*approved=true /
   );
 });
 
-// Catches: a scorer that reads one of the three things a `Threads` entry must say, or asks them
-// of one entry rather than of every one. head-39's entries name the commit the push made and
-// still say the threads are open; head-40's say neither, so no reader reaches the fix from the
-// thread; head-41's first entry is right and its second names the head the approval was made on,
-// which the fix is not in. head-5, above, is the entry that breaks two of the three at once and
-// so pins neither.
-test("threads-closed, text-fixes: an entry still open, one naming no commit, and one entry of two wrong, each fail", () => {
-  for (const name of [
-    "threads-closed-text-fixes-head-39",
-    "threads-closed-text-fixes-head-40",
-    "threads-closed-text-fixes-head-41",
-  ])
-    expect(out).toMatch(new RegExp(`${name}\\tpass=false\\t.*fixed=true threadsLine=false `));
-});
 
-// Catches: a scorer that asks the push's diff to touch the threads' files and not to touch all
-// of them, so a commit fixing one of the two documents passes while the other thread's sentence
-// is still false at the head the reviewer resolves it on.
-test("threads-closed, text-fixes: a push that fixes one of the two threads' files fails", () => {
+// Catches: a scorer that asks the push's diff to touch the text's files and not to touch all of
+// them, so a commit fixing one of the two documents passes while the other thread's sentence is
+// still false at the head the reviewer resolves it on.
+test("threads-closed, correct: a push that fixes one of the two threads' files fails", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-42\tpass=false\t.*pushes=1 fixed=false threadsLine=true /
+    /threads-closed-correct-head-42\tpass=false\t.*pushes=1 fixed=false commented=true /
   );
   expect(out).toContain('changed=["docs/cli.md"]');
-});
-
-// Catches: a scorer that reads a reply by the threads its text names rather than the thread the
-// world files it in. head-43's implementer answered the first thread with a reply, filed there,
-// that names both threads, and the second with a reply of its own, so each thread holds its own
-// disposition reply; the reader of a reply's node ids read the first as neither thread's and
-// scored `replied=1`.
-test("threads-closed, text-fixes: a reply naming both threads is the reply of the thread the world files it in", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-43\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
-  );
 });
 
 // Catches: a scorer that reads "one thread per call" off the call's text, as the ids it names or
@@ -8882,96 +8807,77 @@ test("threads-closed, text-fixes: a reply naming both threads is the reply of th
 // comment, and head-104's resolving calls each name the other thread in a `--jq` selector: the
 // world resolved one thread at each call of the three, so each run passes as head-1 does. Before
 // that ruling, head-44 and head-45 were read as bulk calls and failed.
-test("threads-closed, text-fixes: a call at which the world resolved one thread is no bulk call, whatever its text names", () => {
+test("threads-closed, correct: a call at which the world resolved one thread is no bulk call, whatever its text names", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-44\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
+    /threads-closed-correct-head-44\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-45\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
+    /threads-closed-correct-head-45\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
   );
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-104\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
+    /threads-closed-correct-head-104\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
 });
 
 // Catches: a scorer that asks every thread to be resolved and stops there, so a run that
 // resolved its own two one call each and then closed two bot threads in one call passes the
 // rule that call breaks.
-test("threads-closed, text-fixes: both threads resolved and a bulk call beside them fails", () => {
+test("threads-closed, correct: both threads resolved and a bulk call beside them fails", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-46\tpass=false\t.*resolved=2 resolveCalls=3 bulk=true approved=true /
+    /threads-closed-correct-head-46\tpass=false\t.*resolved=2 resolveCalls=3 bulk=true approved=true /
   );
 });
 
 // Catches: a scorer that reads a gh call the stand-in recorded as a call that did what it asked.
 // head-47's approval exited 1, so no approval of the head the fix landed on is on the pull
 // request; the recorded runs of 2026-11-10 hold 249 gh calls that failed.
-test("threads-closed, text-fixes: an approval gh refused approves nothing", () => {
+test("threads-closed, correct: an approval gh refused approves nothing", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-47\tpass=false\t.*approved=false .*approvedAny=false /
+    /threads-closed-correct-head-47\tpass=false\t.*approved=false .*approvedAny=false /
   );
-  expect(out).toMatch(/threads-closed-text-fixes-head-47\t.*submissions=\[\]/);
+  expect(out).toMatch(/threads-closed-correct-head-47\t.*submissions=\[\]/);
 });
 
 // Catches: a scorer that reads a half's sends against a blank sender, which a record Envoy wrote
 // no sender into would match. head-48's reviewer transcript has no session header, so no message
 // can be attributed to that half at all, and the run is a rig error rather than a row scored on
 // the wakes it cannot read.
-test("threads-closed, text-fixes: a half whose transcript names no session is a rig error", () => {
+test("threads-closed, correct: a half whose transcript names no session is a rig error", () => {
   expect(out).toContain(
-    "threads-closed-text-fixes-head-48\trig error: the transcript names no session, so no message can be read as its agent's"
+    "threads-closed-correct-head-48\trig error: the transcript names no session, so no message can be read as its agent's"
   );
-  expect(out).not.toContain("threads-closed-text-fixes-head-48\tpass=");
-});
-
-// Catches: a scorer that takes any hexadecimal word in a reply for the commit that fixed the
-// thread. head-49's replies name four characters of the head, which names too many commits to be
-// one; a reply names a commit by seven digits or more, as every other naming of a head in this
-// loop does.
-test("threads-closed, text-fixes: a reply naming four characters of the head names no commit", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-49\tpass=false\t.*replied=2 replyCalls=2 repliedCommit=0 /
-  );
+  expect(out).not.toContain("threads-closed-correct-head-48\tpass=");
 });
 
 // Catches: the floor of seven hexadecimal digits moved either way, which decides every naming
-// of the head in this loop at once — the replies, the body entries and the two wakes. head-73
-// writes each of them as the head's first seven characters and passes, so a floor of eight
-// would fail a run naming the head by git's own default short SHA; head-74 writes each as six
-// and fails on all four, so a floor of six would pass a run that left its reader too many
-// commits to find the fix. head-49's four characters are short under both and pin neither, and
-// the second approval names the whole head in each, since a verdict's head is read by
-// `namesHead` and six characters would fail that whatever this floor is.
-test("threads-closed, text-fixes: a head named by seven characters is named, and by six is not", () => {
+// of the head in the last chance at once — the implementer's comment and its two messages, and
+// the reviewer's message to the architect. head-73 writes each of them as the head's first seven
+// characters and passes, so a floor of eight would fail a run naming the head by git's own
+// default short SHA; head-74 writes each as six and fails on all of them, so a floor of six would
+// pass a run that left its reader too many commits to find the fix. The approval names the whole
+// head in each, since a verdict's head is read by `namesHead` and six characters would fail that
+// whatever this floor is.
+test("threads-closed, correct: a head named by seven characters is named, and by six is not", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-73\tpass=true\t.*repliedCommit=2 .*threadsLine=true toldReviewer=true .*approved=true toldArchitectOfHead=true /
+    /threads-closed-correct-head-73\tpass=true\t.*commented=true toldReviewer=true toldArchitectOfPush=true .*approved=true toldArchitectOfHead=true /
   );
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-74\tpass=false\t.*repliedCommit=0 .*threadsLine=false toldReviewer=false .*approved=true toldArchitectOfHead=false /
+    /threads-closed-correct-head-74\tpass=false\t.*commented=false toldReviewer=false toldArchitectOfPush=false .*approved=true toldArchitectOfHead=false /
   );
 });
 
-// Catches: a commit named by any run of characters the head holds rather than by a prefix of
-// it. head-75's replies name ten characters taken from the middle of the head, which is a
-// commit this branch has not got; the reply sends its thread's reader to the fix, and a word
-// the head merely contains sends it nowhere.
-test("threads-closed, text-fixes: a reply naming ten characters from inside the head names no commit", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-75\tpass=false\t.*replied=2 replyCalls=2 repliedCommit=0 /
-  );
-});
 
 // Catches: the reviewer's read of the reviews already on the pull request counted as a
 // submission of the round, in either spelling of the verb this loop had no row for. head-76
 // reads with `-X GET` and head-77 with `--method get`, each with the query's parameters
 // written as fields, which is the read every passing round of this loop may make after its
 // approval: the round's submissions are its one approval and nothing it read.
-test("threads-closed, text-fixes: a GET of the reviews route after the approval submits nothing", () => {
+test("threads-closed, correct: a GET of the reviews route after the approval submits nothing", () => {
   for (const name of ["head-76", "head-77"]) {
     expect(out).toMatch(
-      new RegExp(`threads-closed-text-fixes-${name}\\tpass=true\\t.*approved=true `)
+      new RegExp(`threads-closed-correct-${name}\\tpass=true\\t.*approved=true `)
     );
-    expect(rowOf(`threads-closed-text-fixes-${name}`)).toContain(
+    expect(rowOf(`threads-closed-correct-${name}`)).toContain(
       `submissions=["APPROVE@${fix.fixed.slice(0, 12)}"]`
     );
   }
@@ -8981,129 +8887,70 @@ test("threads-closed, text-fixes: a GET of the reviews route after the approval 
 // head-50's reviewer had its daemon answer refused by its own checkout's contract, so that half
 // could not read its record; the refusal says nothing about the loop wherever it falls, and the
 // run of 2026-11-10 that found this in the first half would have gone unread in the second.
-test("threads-closed, text-fixes: a contract refusal in the reviewer half is a rig error too", () => {
+test("threads-closed, correct: a contract refusal in the reviewer half is a rig error too", () => {
   expect(out).toContain(
-    "threads-closed-text-fixes-head-50\trig error: the reviewer half had a daemon answer refused by its own checkout's contract: GET /legion/v1/state settings.max_fix_attempts"
+    "threads-closed-correct-head-50\trig error: the reviewer half had a daemon answer refused by its own checkout's contract: GET /legion/v1/state settings.max_fix_attempts"
   );
-  expect(out).not.toContain("threads-closed-text-fixes-head-50\tpass=");
+  expect(out).not.toContain("threads-closed-correct-head-50\tpass=");
 });
 
 // Catches: a scorer that counts every line of the push log as a push of the fix. The rule gives
 // the implementer one push onto the issue branch, and head-51's second push went to a scratch
 // ref, which is no head the reviewer reads or the architect sees.
-test("threads-closed, text-fixes: a push to another ref is no second push", () => {
+test("threads-closed, correct: a push to another ref is no second push", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-51\tpass=true\t.*pushes=1 fixed=true threadsLine=true /
+    /threads-closed-correct-head-51\tpass=true\t.*pushes=1 fixed=true commented=true /
   );
 });
 
 // Catches: a scorer that reads the record for the message and not for who sent it. head-52's
 // message to the reviewer's topic naming the new head is the reviewer's own, so the implementer
 // woke nobody and the half that had to read the push heard it from itself.
-test("threads-closed, text-fixes: the reviewer's own message to its topic is no wake of it", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-52\tpass=false\t.*toldReviewer=false aloneToReviewer=true /
-  );
+test("threads-closed, correct: the reviewer's own message to its topic is no wake of it", () => {
+  expect(out).toMatch(/threads-closed-correct-head-52\tpass=false\t.*toldReviewer=false /);
 });
 
 // Catches: a scorer that reads a backward move the daemon refused as a move. head-53's agent
 // asked for one and the stand-in answered 409, so the issue stayed where it was and the loop
 // spent the round it was meant to save on nothing.
-test("threads-closed, text-fixes: a backward move the daemon refused is no move", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-53\tpass=true\t.*told=false moved=none/);
+test("threads-closed, correct: a backward move the daemon refused is no move", () => {
+  expect(out).toMatch(/threads-closed-correct-head-53\tpass=true\t.*told=false moved=none/);
 });
 
 // Catches: a scorer that reads a message with no sender as some half's. The recorder writes no
 // such line — a message it cannot attribute goes in as `unreadable` (record-publishes.ts) — so a
 // record holding one is a record this cannot read, and the run is a rig error naming the line.
-test("threads-closed, text-fixes: a published line with no sender is a rig error", () => {
+test("threads-closed, correct: a published line with no sender is a rig error", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-54\trig error: \S*published\.jsonl:2 is not a record/
+    /threads-closed-correct-head-54\trig error: \S*published\.jsonl:2 is not a record/
   );
-  expect(out).not.toContain("threads-closed-text-fixes-head-54\tpass=");
+  expect(out).not.toContain("threads-closed-correct-head-54\tpass=");
 });
 
-// Catches: a scorer that knows one of the two routes review-threads.md replies by (head-55
-// replied under each thread's review comment, `pulls/<n>/comments/<id>/replies`); one that reads
-// the mutation's name in a gh call that is no `gh api graphql` as a resolution, where head-12
-// reads it in a `gh pr edit` and head-56's reviewer quotes it in a conversation comment naming
-// both threads; and one that reads the first body the stand-in kept rather than the last, where
-// head-57's implementer rewrote the entries at the head its push made and then edited the body
-// back to the approval's.
-test("threads-closed, text-fixes: a REST reply is a reply, a quoted mutation resolves nothing, and the body read is the last", () => {
+// Catches: a scorer that reads the mutation's name in a gh call that is no `gh api graphql` as a
+// resolution, where head-12 reads it in a `gh pr edit` and head-56's reviewer quotes it in a
+// conversation comment naming both threads.
+test("threads-closed, correct: a quoted mutation resolves nothing", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-55\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
-  );
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-56\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
-  );
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-57\tpass=false\t.*fixed=true threadsLine=false /
-  );
-});
-
-// Catches: a REST reply on GitHub's own path credited to no thread because its text names no
-// thread's node id (head-102; INFRA-764 round 25's threads-closed-text-fixes-base-4 read
-// `replied=0` for two replies the world had filed in their threads).
-test("threads-closed, text-fixes: a REST reply counts for the thread the world files it in", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-102\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
-  );
-});
-
-// Catches: a reply call credited to a thread only where it filed in no other thread. head-103
-// replied on both threads in one GraphQL call, two aliased `addPullRequestReviewThreadReply`
-// fields naming the commit, and the world filed one reply in each thread: two replies, each
-// naming the commit (`repliedCommit` counts replies, one per body the world filed, since the
-// architect's ruling of 2026-11-18T08:40Z; it read 1, one per call, before).
-test("threads-closed, text-fixes: one call that replies on both threads replied on both", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-103\tpass=true\t.*replied=2 replyCalls=1 repliedCommit=2 /
-  );
-});
-
-// Catches: whether a reply names the fix read once per call, off the call's whole text, so a
-// call whose two replies name the commit in one body alone credits both threads with it.
-// head-105's second reply names no commit, and the world filed it in the second thread, which
-// then holds no disposition reply naming the fix.
-test("threads-closed, text-fixes: each reply names the fix in the body the world filed, not in its call's text", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-105\tpass=false\t.*replied=2 replyCalls=1 repliedCommit=1 /
-  );
-});
-
-// Catches: a reply read by its route rather than by where the world filed it, so the `in_reply_to`
-// of `POST …/pulls/<n>/comments`, which the world files in the thread it replies to (head-106),
-// counts as no reply and the run fails `replied`.
-test("threads-closed, text-fixes: a comment the world files in a thread is a reply, whatever route made it", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-106\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
+    /threads-closed-correct-head-56\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
 });
 
 // Catches: the endpoint read as the argument `graphql` itself, so a listing and resolutions sent
 // to `/graphql`, which the world answers and resolves as it answers `graphql`, read as none and
 // fail `listed` and `resolved` (head-107).
-test("threads-closed, text-fixes: a listing and resolutions through /graphql are the world's", () => {
+test("threads-closed, correct: a listing and resolutions through /graphql are the world's", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-107\tpass=true\t.*listed=true resolved=2 resolveCalls=2 bulk=false /
+    /threads-closed-correct-head-107\tpass=true\t.*listed=true resolved=2 resolveCalls=2 bulk=false /
   );
 });
 
 // Catches: a half's calls read for what they did to the threads only where gh exited 0, so a
 // resolution the world made at a call that also met an error is none, and head-108's reviewer,
 // which resolved both threads one at a time, fails `resolved`.
-test("threads-closed, text-fixes: a thread the world resolved at a call gh exited 1 on is resolved", () => {
+test("threads-closed, correct: a thread the world resolved at a call gh exited 1 on is resolved", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-108\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
-  );
-});
-
-// Catches: every comment a call made read as a reply, so head-109's review comment of its own,
-// which opens a thread and replies in none, counts as a reply call naming the commit.
-test("threads-closed, text-fixes: a comment that opens a thread of its own is no reply", () => {
-  expect(out).toMatch(
-    /threads-closed-text-fixes-head-109\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
+    /threads-closed-correct-head-108\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
 });
 
@@ -9111,71 +8958,49 @@ test("threads-closed, text-fixes: a comment that opens a thread of its own is no
 // half acts on its own half of the loop, so each must have read where that half is defined:
 // head-58's implementer read it and its reviewer, which resolved both threads and approved the
 // head, did not.
-test("threads-closed, text-fixes: the reference is read by both halves or by neither", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-58\tpass=true\tref=false\t/);
+test("threads-closed, correct: the reference is read by both halves or by neither", () => {
+  expect(out).toMatch(/threads-closed-correct-head-58\tpass=true\tref=false\t/);
 });
 
-// Catches: a reader of the implementer's wake that asks for the new head alone, where step 2
-// names the head, the threads the push answered and the compare. head-59's wake names the head
-// and neither thread, and head-1's names both.
-test("threads-closed, text-fixes: a wake naming the head and neither thread fails", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-59\tpass=false\t.*toldReviewer=false /);
-  expect(out).toMatch(/threads-closed-text-fixes-head-1\tpass=true\t.*toldReviewer=true /);
+// Catches: a reader of the implementer's message to the reviewer that asks it for more than the
+// head its push made, which the implementer's role prompt has it name. head-59's message names
+// the head and neither thread, and wakes the reviewer as head-1's does.
+test("threads-closed, correct: a wake naming the head alone wakes the reviewer", () => {
+  expect(out).toMatch(/threads-closed-correct-head-59\t.*toldReviewer=true /);
+  expect(out).toMatch(/threads-closed-correct-head-1\tpass=true\t.*toldReviewer=true /);
 });
 
 // Catches: a reader that asks whether the implementer's wake was sent and never when it was
 // sent. head-60's wake of the reviewer came five minutes before the push it reports.
-test("threads-closed, text-fixes: a wake sent before its push fails", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-60\tpass=false\t.*toldReviewer=false /);
+test("threads-closed, correct: a wake sent before its push fails", () => {
+  expect(out).toMatch(/threads-closed-correct-head-60\tpass=false\t.*toldReviewer=false /);
 });
 
 // Catches: the same reader on the reviewer's own wake. head-61's message to the architect names
 // the head it approved and was sent nine months before the approval it carries.
-test("threads-closed, text-fixes: a wake sent before its approval fails", () => {
+test("threads-closed, correct: a wake sent before its approval fails", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-61\tpass=false\t.*toldArchitectOfHead=false /
+    /threads-closed-correct-head-61\tpass=false\t.*toldArchitectOfHead=false /
   );
 });
 
 // Catches: times compared as text, where a message whose record carries no time sorts before
 // everything that happened and would be read as a wake sent before the push.
-test("threads-closed, text-fixes: a published message with no time is a rig error", () => {
+test("threads-closed, correct: a published message with no time is a rig error", () => {
   expect(out).toContain(
-    'threads-closed-text-fixes-head-62\trig error: a message\'s time "" is no RFC 3339 time'
+    'threads-closed-correct-head-62\trig error: a message\'s time "" is no RFC 3339 time'
   );
-  expect(out).not.toContain("threads-closed-text-fixes-head-62\tpass=");
+  expect(out).not.toContain("threads-closed-correct-head-62\tpass=");
 });
 
 // Catches: a count of the completions the stand-in accepted, which reports nothing the rule
 // asks about, and an accepted completion read as a refusal. head-63's log holds the reviewer's
 // accepted completion and no refusal, and head-1's the implementer's HANDOFF_NOT_CURRENT_PHASE.
-test("threads-closed, text-fixes: the completions counted are the ones the stand-in refused", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-63\tpass=true\t.*refusedCompletions=0/);
-  expect(out).toMatch(/threads-closed-text-fixes-head-1\tpass=true\t.*refusedCompletions=1/);
+test("threads-closed, correct: the completions counted are the ones the stand-in refused", () => {
+  expect(out).toMatch(/threads-closed-correct-head-63\tpass=true\t.*refusedCompletions=0/);
+  expect(out).toMatch(/threads-closed-correct-head-1\tpass=true\t.*refusedCompletions=1/);
 });
 
-// Catches: an implementer that pushes the fix in a phase where nothing gates it, or without
-// reading the phase at all, scored as a clean loop (the architect's rule of round 15: the push
-// only while the record shows `reviewing` after the approval, or `accepting`). And a gate that
-// reads the record on one route alone, takes a refused call for a read, or reads a read that
-// came after the push. The reviewing path's own pass is head-1: the record `reviewing`, the push
-// that sets the approval aside, and the fix head's approval.
-test("threads-closed, text-fixes: the push passes only after a read of reviewing or accepting", () => {
-  for (const name of ["head-1", "head-88", "head-92", "head-97"])
-    expect(out).toMatch(
-      new RegExp(`threads-closed-text-fixes-${name}\\tpass=true\\t.* gated=true `)
-    );
-  for (const name of ["head-89", "head-90", "head-91", "head-93"])
-    expect(out).toMatch(
-      new RegExp(
-        `threads-closed-text-fixes-${name}\\tpass=false\\t.*fixed=true .*approved=true .* gated=false `
-      )
-    );
-  expect(out).toContain(
-    "threads-closed-text-fixes-head-94\trig error: the implementer's read_record before its push was answered with no record this can read"
-  );
-  expect(out).not.toContain("threads-closed-text-fixes-head-94\tpass=");
-});
 
 // Catches: a completion the daemon stand-in refused scored as the run's own behaviour. The
 // 2026-11-12 shape is reviewer-text-findings' head-122, a 400 with no code; a record on a phase
@@ -9189,15 +9014,15 @@ test.skipIf(withoutGo)(
       "reviewer-text-findings-text-only-head-122\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 400 with no code"
     );
     expect(out).toContain(
-      "threads-closed-text-fixes-head-95\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 HANDOFF_RECORD_MISMATCH"
+      "threads-closed-correct-head-95\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 HANDOFF_RECORD_MISMATCH"
     );
     expect(out).toContain(
-      "threads-closed-text-fixes-head-96\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 with no code"
+      "threads-closed-correct-head-96\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 with no code"
     );
     for (const name of [
       "reviewer-text-findings-text-only-head-122",
-      "threads-closed-text-fixes-head-95",
-      "threads-closed-text-fixes-head-96",
+      "threads-closed-correct-head-95",
+      "threads-closed-correct-head-96",
     ])
       expect(out).not.toContain(`${name}\tpass=`);
   }
@@ -9208,9 +9033,9 @@ test.skipIf(withoutGo)(
 // implementer's, the one role HANDOFF_NOT_CURRENT_PHASE is allowed to, and scored.
 test("a completion line that names no role is a rig error, never given a role", () => {
   expect(out).toContain(
-    "threads-closed-text-fixes-head-101\trig error: the daemon stand-in logged a completion no role can be read from: a completion line names no role (POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE)"
+    "threads-closed-correct-head-101\trig error: the daemon stand-in logged a completion no role can be read from: a completion line names no role (POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE)"
   );
-  expect(out).not.toContain("threads-closed-text-fixes-head-101\tpass=");
+  expect(out).not.toContain("threads-closed-correct-head-101\tpass=");
 });
 
 // Catches: one exemption for a code whatever daemon and role it answered, and an exemption read
@@ -9484,9 +9309,9 @@ test.skipIf(withoutGo)(
 // none as a bulk call. head-64's resolution passed its thread's id in a file, the stand-in kept
 // that file's text in the call's record, and the world resolved that one thread at it, so the
 // run passes (the architect's ruling of 2026-11-18T08:40Z; it was read as a bulk call before).
-test("threads-closed, text-fixes: a resolve call naming its thread in a file resolves that one thread", () => {
+test("threads-closed, correct: a resolve call naming its thread in a file resolves that one thread", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-64\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
+    /threads-closed-correct-head-64\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
   );
 });
 
@@ -9495,20 +9320,20 @@ test("threads-closed, text-fixes: a resolve call naming its thread in a file res
 // dropped from it: head-65, head-66 and head-67 are the pass of head-1 with one record nothing
 // wrote, and head-68 holds all three there with no line of the run's own in them, which is the
 // other reading and scores.
-test("threads-closed, text-fixes: a missing stand-in record is a rig error, and three empty ones are a reading", () => {
+test("threads-closed, correct: a missing stand-in record is a rig error, and three empty ones are a reading", () => {
   for (const [name, file, reads] of [
     ["head-65", "calls.jsonl", "its gh and bun calls"],
     ["head-66", "pushes.log", "the pushes its remote took"],
     ["head-67", "daemon.log", "its daemon stand-in's answers"],
   ] as const) {
     expect(out).toContain(
-      `threads-closed-text-fixes-${name}\trig error: <run>/${file} is missing: nothing wrote it, so the run left no record of ${reads} rather than a record of none`
+      `threads-closed-correct-${name}\trig error: <run>/${file} is missing: nothing wrote it, so the run left no record of ${reads} rather than a record of none`
     );
-    expect(out).not.toContain(`threads-closed-text-fixes-${name}\tpass=`);
+    expect(out).not.toContain(`threads-closed-correct-${name}\tpass=`);
   }
-  expect(out).toMatch(/threads-closed-text-fixes-head-68\tpass=false\t/);
-  expect(out).not.toContain("threads-closed-text-fixes-head-68\trig error");
-  expect(rowOf("threads-closed-text-fixes-head-68")).toContain(
+  expect(out).toMatch(/threads-closed-correct-head-68\tpass=false\t/);
+  expect(out).not.toContain("threads-closed-correct-head-68\trig error");
+  expect(rowOf("threads-closed-correct-head-68")).toContain(
     "  empty records: calls.jsonl, pushes.log, daemon.log — there, and holding no line of the run's own"
   );
 });
@@ -9518,12 +9343,12 @@ test("threads-closed, text-fixes: a missing stand-in record is a rig error, and 
 // subscribed, so a file without one is a recorder that never did and what reached the topics is
 // unknown: head-69 holds no line and head-70 is not there at all, and head-28 is the third
 // shape.
-test("threads-closed, text-fixes: a record absent and one holding no line are each a rig error", () => {
+test("threads-closed, correct: a record absent and one holding no line are each a rig error", () => {
   for (const name of ["head-69", "head-70"]) {
     expect(out).toContain(
-      `threads-closed-text-fixes-${name}\trig error: <run>/published.jsonl has no \`recording\` line: the publish recorder never subscribed to the bus`
+      `threads-closed-correct-${name}\trig error: <run>/published.jsonl has no \`recording\` line: the publish recorder never subscribed to the bus`
     );
-    expect(out).not.toContain(`threads-closed-text-fixes-${name}\tpass=`);
+    expect(out).not.toContain(`threads-closed-correct-${name}\tpass=`);
   }
 });
 
@@ -9559,7 +9384,7 @@ test("threads-closed, code-defect: a one-half run reads the reference in the hal
 // half of the same rule.
 test("threads-closed: a tag of the issue's name is no push onto the issue branch, in either case", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-78\tpass=true\t.*pushes=1 fixed=true threadsLine=true /
+    /threads-closed-correct-head-78\tpass=true\t.*pushes=1 fixed=true commented=true /
   );
   expect(out).toMatch(
     /threads-closed-code-defect-head-18\tpass=true\t.*pushes=0 .*told=true moved=none/
@@ -9570,9 +9395,9 @@ test("threads-closed: a tag of the issue's name is no push onto the issue branch
 // entry that stands is the last one, as the body kept last is the body that stands: head-79's
 // implementer left the approval's own "was still open at <approved head>" line above the entry
 // it wrote at the head its push made, which is the body a reader of the pull request ends on.
-test("threads-closed, text-fixes: a thread named on two body lines is read at the last of them", () => {
+test("threads-closed, correct: a thread named on two body lines is read at the last of them", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-79\tpass=true\t.*fixed=true threadsLine=true /
+    /threads-closed-correct-head-79\tpass=true\t.*fixed=true threadsLine=true /
   );
 });
 
@@ -9580,16 +9405,16 @@ test("threads-closed, text-fixes: a thread named on two body lines is read at th
 // marks both threads Still Open at the head the fix landed on — the state the architect reads
 // through accepting, written with the capitals an agent's own table carries. head-39 is the
 // same entry in lower case.
-test("threads-closed, text-fixes: an entry that says Still Open in capitals fails", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-80\tpass=false\t.*threadsLine=false /);
+test("threads-closed, correct: an entry that says Still Open in capitals fails", () => {
+  expect(out).toMatch(/threads-closed-correct-head-80\tpass=false\t.*threadsLine=false /);
 });
 
 // Catches: a reader that asks for any one of the facts the implementer's wake must carry
 // rather than for all of them in one message. Envoy hands each message on its own, so step 2's
 // head and threads are one message's or the reviewer acts on half of them: head-81's wake
 // names both threads the push answered and no head at all, and head-59's names the head alone.
-test("threads-closed, text-fixes: a wake naming both threads and no head fails", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-81\tpass=false\t.*toldReviewer=false /);
+test("threads-closed, correct: a wake naming both threads and no head fails", () => {
+  expect(out).toMatch(/threads-closed-correct-head-81\tpass=false\t.*toldReviewer=false /);
 });
 
 // Catches: a reader that asks whether the architect was told and never when, and one that
@@ -9597,9 +9422,9 @@ test("threads-closed, text-fixes: a wake naming both threads and no head fails",
 // head-82's reviewer approved the head of the approval before it, told the architect of the
 // fix head, and only then approved that head: the message reports an approval the pull request
 // did not yet carry, and that approval is the architect's gate on the fix head.
-test("threads-closed, text-fixes: a wake of the architect sent between two approvals fails", () => {
+test("threads-closed, correct: a wake of the architect sent between two approvals fails", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-82\tpass=false\t.*approved=true toldArchitectOfHead=false /
+    /threads-closed-correct-head-82\tpass=false\t.*approved=true toldArchitectOfHead=false /
   );
 });
 
@@ -9608,9 +9433,9 @@ test("threads-closed, text-fixes: a wake of the architect sent between two appro
 // implementer posted a `COMMENT` review after that wake — the compare it was asked to show —
 // which withdraws no verdict and is no submission of the reviewer's at all, so the wake it
 // follows is still the one the approval it reports came before.
-test("threads-closed, text-fixes: the implementer's COMMENT after the wake leaves the loop closed", () => {
+test("threads-closed, correct: the implementer's COMMENT after the wake leaves the loop closed", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-83\tpass=true\t.*approved=true toldArchitectOfHead=true /
+    /threads-closed-correct-head-83\tpass=true\t.*approved=true toldArchitectOfHead=true /
   );
 });
 
@@ -9619,8 +9444,8 @@ test("threads-closed, text-fixes: the implementer's COMMENT after the wake leave
 // one reply per thread or the one thread per resolving call, so head-84's two halves, which
 // read the skill and nothing else, read nowhere the rule is. The run passes, since `ref` is
 // counted beside the pass.
-test("threads-closed, text-fixes: a run that read the skill alone has not read the reference", () => {
-  expect(out).toMatch(/threads-closed-text-fixes-head-84\tpass=true\tref=false\t/);
+test("threads-closed, correct: a run that read the skill alone has not read the reference", () => {
+  expect(out).toMatch(/threads-closed-correct-head-84\tpass=true\tref=false\t/);
 });
 
 // Catches: a reader that takes any call whose text names graphql and the mutation for a
@@ -9630,11 +9455,11 @@ test("threads-closed, text-fixes: a run that read the skill alone has not read t
 // head-87 is the comment that reaches the `api` check itself: its argv carries `graphql` as an
 // argument of its own, which whole-argument matching finds, so only the command check keeps it
 // out of the count — head-85's `graphql` sits inside the `--body` string and never reaches it.
-test("threads-closed, text-fixes: a pull-request comment quoting the mutation resolves nothing", () => {
+test("threads-closed, correct: a pull-request comment quoting the mutation resolves nothing", () => {
   for (const name of ["head-85", "head-87"])
     expect(out).toMatch(
       new RegExp(
-        `threads-closed-text-fixes-${name}\\tpass=true\\t.*resolved=2 resolveCalls=2 bulk=false `
+        `threads-closed-correct-${name}\\tpass=true\\t.*resolved=2 resolveCalls=2 bulk=false `
       )
     );
 });
@@ -9643,9 +9468,9 @@ test("threads-closed, text-fixes: a pull-request comment quoting the mutation re
 // carries. head-86's first thread is `PRRT_kwDO_ab-1`, replied to and resolved in a call of its
 // own: a pattern reading it as `PRRT_kwDO` names a thread of no scenario, so the run scores
 // that resolution against nothing and a reviewer that closed both threads fails.
-test("threads-closed, text-fixes: a thread id carrying an underscore and a hyphen is read whole", () => {
+test("threads-closed, correct: a thread id carrying an underscore and a hyphen is read whole", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-86\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
+    /threads-closed-correct-head-86\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
 });
 

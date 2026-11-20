@@ -176,7 +176,8 @@
  *      pushing run's, missing, empty or not opening with the watcher's `opened` line; a push with
  *      no line or a line saying the write failed; and a branch that moved with no line storing
  *      it are each unhealthy: an agent that read `dispatch results` after it was told a pass
- *      stands at a head the pull request no longer has (3 of 20 recorded text-fixes runs). It is
+ *      stands at a head the pull request no longer has (3 of 20 recorded threads-closed runs of
+ *      the case correct replaced). It is
  *      read right after rule 18;
  *  20. unmodelled write: no `gh` write of calls.jsonl (a command of gh's own that writes, as gh's
  *      source at the tag the worker image pins reads, gh-writes.json; a GraphQL call whose
@@ -1123,10 +1124,11 @@ function holdsTranscript(dir: string): boolean {
 /** Rule 1: why the run did not finish, or undefined when it did. Which roles it booted is the
  * run's own record of it (<run>/booted), held to the scenario's one definition of them
  * (ANSWERS' `boots`, SKIPS), and never the definition read as the record: a run of code-defect
- * whose implementer sent the reviewer nothing boots no reviewer, and threads-closed-text-fixes-
- * head-1 at 7bf20811, whose reviewer's stand-in never started, left out.txt the implementer's,
- * its `exit=` line too, when worker_boot still copied it. So each role is read on its own output
- * and its own transcript, and a record of an earlier role never stands in for a later one's.
+ * whose implementer sent the reviewer nothing boots no reviewer, and the first head run of
+ * threads-closed at 7bf20811, whose reviewer's stand-in never started, left out.txt the
+ * implementer's, its `exit=` line too, when worker_boot still copied it. So each role is read on
+ * its own output and its own transcript, and a record of an earlier role never stands in for a
+ * later one's.
  * The case is the one the run's record names (run-names.ts's `runIdentity`; a run recorded before
  * the names left the world names it in its directory's name, `<scenario>-<case>-<label>-<n>`),
  * which is the case rig.sh booted it for. */

@@ -64,10 +64,9 @@ import {
 } from "./gh-call";
 import { isObject } from "./gh-routes";
 // The review threads as the world holds them during a run, which the gh stand-in answers from: the
-// node ids of the threads a round opened, which a wake may name its findings by, and what each
-// call did to a thread, the threads it resolved and the replies it filed.
+// threads a round opened, which a wake may name its findings by, and the threads each call
+// resolved.
 import {
-  commentsOf,
   type Json,
   recordedCalls,
   type ThreadRoute,
@@ -951,6 +950,9 @@ const REVIEWER_CASES = [...casesOf("reviewer-text-findings")];
  * false, and the workflow whose comment names a trigger the file does not carry. */
 const FINDING_DOC = "docs/cli.md";
 const FINDING_WORKFLOW = ".github/workflows/";
+/** The sentence of FINDING_DOC the change makes false, rig.sh's `text_finding_doc_line`: the line
+ * a reviewer's text commit removes, and the one line it may remove (`reviewerTextFindings`). */
+const FINDING_SENTENCE = "It prints the name exactly as it was given, spaces and all.";
 /** The inline comments of a review submission, as the reviewer's own prompt writes them: one per
  * finding, each on the file its `path` names. The head and the event of a create are read by the
  * rules the gh stand-in answers the same call by (`reviewOf`). */
@@ -967,13 +969,14 @@ const REVIEW_FLAGS: Record<string, string> = {
   "--comment": "COMMENT",
 };
 /** One review a run submitted, as the score reads it: the verdict, the head it names, "" for a
- * route that carries none, the file of each inline comment on it, and whether the call that
- * carried it submitted a pending review the round had already created (`submitsReview`). */
+ * route that carries none, the file of each inline comment on it, its body, and whether the call
+ * that carried it submitted a pending review the round had already created (`submitsReview`). */
 type Submission = {
   at: string;
   event: string;
   head: string;
   comments: string[];
+  body: string;
   submits: boolean;
 };
 /** The review `call` submitted, or undefined when it submitted none: the
@@ -1021,11 +1024,18 @@ function reviewOf(
     const named = flagValue(call.argv, ["-R", "--repo"]);
     if (named !== undefined && named !== repo) return undefined;
     const flag = call.argv.find((arg) => REVIEW_FLAGS[arg] !== undefined) ?? "";
+    // The body as gh sends it: `--body`, or the file `--body-file` names, read by the stand-in
+    // (`-` its stdin).
+    const file = flagValue(call.argv, ["-F", "--body-file"]);
+    const text =
+      flagValue(call.argv, ["-b", "--body"]) ??
+      (file === "-" ? call.stdin : file === undefined ? undefined : call.files?.[file]);
     return {
       at: call.at,
       event: REVIEW_FLAGS[flag] ?? "",
       head: tipAt(call.at),
       comments: [],
+      body: text ?? "",
       submits: false,
     };
   }
@@ -1051,6 +1061,7 @@ function reviewOf(
     event: state === "PENDING" || typeof body.event !== "string" ? "" : body.event,
     head: submits ? named : (createdHead(body, tipAt(call.at)) ?? ""),
     comments: comments.map((comment) => comment.path ?? ""),
+    body: typeof body.body === "string" ? body.body : "",
     submits,
   };
 }
@@ -1103,6 +1114,7 @@ function reviewsIn(
       ...review,
       head: review.head === "" ? (created?.head ?? "") : review.head,
       comments: review.comments.length > 0 ? review.comments : (created?.comments ?? []),
+      body: review.body === "" ? (created?.body ?? "") : review.body,
     });
   }
   return found;
@@ -1145,113 +1157,163 @@ function listsTheThreads(call: z.infer<typeof Call>): boolean {
   );
 }
 
-/** reviewer-text-findings: the reviewer's verdict rule, which `skill://legion-worker` states and
- * `references/merge-gate.md` defines — `REQUEST_CHANGES` only when a behavioural finding stands,
- * one whose closing changes code that runs, and otherwise the approval of the head it read, named
- * by SHA, with every text finding left as the inline thread the same submission writes.
+/** The parents of `sha` in the run's own bare remote, as `git rev-list --parents` names them. A
+ * read that fails is the rig's, for the reason `changedFiles` gives. */
+function parentsOf(runDir: string, sha: string): string[] {
+  const remote = path.join(runDir, "remote.git");
+  const git = Bun.spawnSync(["git", "-C", remote, "rev-list", "--parents", "-n", "1", sha]);
+  if (git.exitCode !== 0)
+    throw new Error(
+      `git -C ${remote} rev-list --parents -n 1 ${sha} exited ${git.exitCode}: ${git.stderr.toString().trim()}`
+    );
+  return git.stdout.toString().trim().split(" ").slice(1);
+}
+
+/** The lines `to` removes from `file` and the lines it adds there, against `from`, in the run's
+ * own bare remote (`git diff -U0`): each line of a hunk, read after the hunk's own header, so a
+ * removed line that starts with dashes is a line of the file and never a header. A read that
+ * fails is the rig's, for the reason `changedFiles` gives. */
+function changedLines(
+  runDir: string,
+  from: string,
+  to: string,
+  file: string
+): { removed: string[]; added: string[] } {
+  const remote = path.join(runDir, "remote.git");
+  const git = Bun.spawnSync(["git", "-C", remote, "diff", "-U0", "--no-color", from, to, "--", file]);
+  if (git.exitCode !== 0)
+    throw new Error(
+      `git -C ${remote} diff -U0 ${from} ${to} -- ${file} exited ${git.exitCode}: ${git.stderr.toString().trim()}`
+    );
+  const removed: string[] = [];
+  const added: string[] = [];
+  let hunk = false;
+  for (const line of git.stdout.toString().split("\n")) {
+    if (line.startsWith("@@")) hunk = true;
+    else if (hunk && line.startsWith("-")) removed.push(line.slice(1));
+    else if (hunk && line.startsWith("+")) added.push(line.slice(1));
+  }
+  return { removed, added };
+}
+
+/** reviewer-text-findings: the reviewer's verdict rule (spec v31's R1, which the reviewer's role
+ * prompt states under *Your text commit*) — `REQUEST_CHANGES` only when a behavioural finding
+ * stands, one whose closing changes code that runs; when every finding is text, one commit of the
+ * reviewer's own that fixes each one it can push, the approval of the head that carries that
+ * commit, by SHA, with a body naming the commit and each fix, every finding it cannot push left as
+ * the inline thread the review writes, and the message to the implementer's role topic. Scored as
+ * Verification v38's k1 reads it.
  *
- * The score reads the round's submission, never the pull request's state: the gh stand-in answers
- * static routes, so a thread's state after the run says nothing. The submission is the verdict
- * the round ended with — its last `APPROVE` or `REQUEST_CHANGES` (`verdictOf`), and the last
- * review the stand-in recorded when it ended with neither, so the row still names what such a
- * round did submit — and the run's world is rig.sh's worker_fixture
- * under the case <run>/case.txt and the run's directory both name, which must agree. Both cases
- * carry the same two text findings, and neither is behavioural:
- *   text-only  the change's code is correct, so the round is clean: the submission is `APPROVE`
- *              at the fixture head, carrying an inline comment on each of the two findings' files
- *              (docs/cli.md and the workflow), no push to the run's own remote, since a review
- *              round pushes nothing at all, and the message to the implementer's role topic that
- *              starts the fix (`toldImplementer`). A call that resolved a thread is reported
- *              and not scored, read from the world's replay as threads-closed reads one
- *              (`threadActs`): the two findings are new inline comments with no thread to
- *              resolve, and the one open thread of the world is the bot's, which the reviewer
+ * The score reads the round's submission and the pushes the run's own remote took, never the pull
+ * request's state: the submission is the verdict the round ended with — its last `APPROVE` or
+ * `REQUEST_CHANGES` (`verdictOf`), and the last review the stand-in recorded when it ended with
+ * neither, so the row still names what such a round did submit — and the run's world is rig.sh's
+ * worker_fixture under the case <run>/case.txt and the run's directory both name, which must
+ * agree. Both cases carry the same two text findings: the sentence of docs/cli.md the change makes
+ * false (FINDING_SENTENCE), which the review App may push, and the comment of the workflow, which
+ * it may not, since it holds no `workflows` permission (the run's remote refuses that push as
+ * GitHub does, rig.sh's fixture_first_commit):
+ *   text-only  the change's code is correct. A `head` run passes when the run's remote took one
+ *              push, onto the issue branch, of one commit whose parent is the head the reviewer
+ *              read (`commit`); that commit changes docs/cli.md alone, every line it removes there
+ *              holds the false sentence and no line it adds does (`docFixed`), so it fixes the
+ *              sentence and changes no other line; the verdict is `APPROVE` of that commit, by SHA
+ *              (`carries`), with a body naming the commit and docs/cli.md (`body`), carrying an
+ *              inline comment on the workflow file whose thread no call of the run resolved
+ *              (`workflowOpen`); and one
+ *              message reached the implementer's role topic after the approval naming the commit
+ *              and the workflow's thread, by its path or its node id (`toldImplementer`), which the
+ *              reviewer's prompt has it send at its approval. The `base` label's checkout carries
+ *              main's rule, and k1 reads that arm as the cost this change measures: a base run
+ *              passes when its verdict is `REQUEST_CHANGES`. A call that resolved a thread is
+ *              reported (`resolveThread`), read from the world's replay as threads-closed reads
+ *              one (`threadActs`); the world's one seeded thread is a bot's, which the reviewer
  *              may resolve;
  *   defect     the same change with the CLI's blank-name guard dropped, so a behavioural finding
- *              stands and the submission is `REQUEST_CHANGES`: the negative control, which fails
- *              a reviewer that approves whatever it reads. The defect case scores that verdict
- *              and nothing else — not the push, not the comments, not the wake — because it
- *              controls one thing, whether a behavioural defect is caught. A round that requests
- *              changes may push and may say nothing to the implementer, since the loop this rule
- *              describes never opens: a control that failed a base run for pushing its own fix
- *              would fail the base label for following the rule it is the control of (A4 of the
- *              2026-11-10 audit, which the architect settled).
+ *              stands: the negative control, which passes in either label only when the verdict is
+ *              `REQUEST_CHANGES`, the run's remote took no push, and both text findings are inline
+ *              comments of that review (`doc`, `workflow`), since beside a behavioural finding the
+ *              reviewer pushes nothing and each text finding is a thread of the change request.
  *
- * The wake is sent after the approval it reports, whatever phase the record shows: the
- * architect's rule for round 15 of INFRA-764 has the reviewer tell the implementer at the
- * approval (review-threads.md step 1), because on main's engine the record stays in `reviewing`
- * after an approval until GitHub reports the head `CLEAN`, `UNSTABLE` or `HAS_HOOKS`
- * (`workflow/review.go`'s `reviewRound`), and rig.sh's review_world serves its head `BLOCKED` —
- * its base requires conversation resolution and a thread is open — so a reviewer that waited
- * for `accepting` would never send. The rule asks for no read of the record before the wake, so
- * the score asks for none, and the wake is ordered against the approval's own time, the time
- * the gh stand-in recorded the call that submitted it at.
- * `ref`: the agent read skill://legion-worker/references/merge-gate.md, where the rule is
- * defined. */
+ * The wake is ordered against the approval's own time, the time the gh stand-in recorded the call
+ * that submitted it at, whatever phase the record shows: rig.sh's review_world serves its head
+ * `BLOCKED` — its base requires conversation resolution and a thread is open — so the record stays
+ * in `reviewing` after the approval (`workflow/review.go`'s `reviewRound`).
+ * `ref`: the agent read skill://legion-worker/references/merge-gate.md. */
 function reviewerTextFindings(runDir: string, run: string, label: string, reviewCase: string): Row {
   const world = worldIn(runDir);
   const calls = parsed(path.join(runDir, CALLS), Call);
+  const tipAt = headAt(runDir, world);
   const reviews = reviewsIn(
     calls.filter((call) => call.as === "gh" && call.exit === 0),
     world.repo,
-    headAt(runDir, world)
+    tipAt
   );
   const review = verdictOf(reviews) ?? reviews.at(-1);
   const resolves = [...threadActs(runDir, world, calls).values()].filter(
     ({ resolved }) => resolved.length > 0
   ).length;
-  const pushes = pushesOf(runDir).length;
+  // Every push the run's remote took, whatever ref it moved: the round's one push is its text
+  // commit, onto the issue branch, and a push anywhere else is a push the rule does not make.
+  const pushes = pushesOf(runDir);
+  const push =
+    pushes.length === 1 && pushes[0]?.ref === `refs/heads/${world.branch}` ? pushes[0] : undefined;
+  const changed = push === undefined ? [] : changedFiles(runDir, world.head, push.sha);
+  const commit = push !== undefined && parentsOf(runDir, push.sha).join(" ") === world.head;
+  const docLines =
+    push === undefined ? undefined : changedLines(runDir, world.head, push.sha, FINDING_DOC);
+  const docFixed =
+    docLines !== undefined &&
+    changed.join("\n") === FINDING_DOC &&
+    docLines.removed.length > 0 &&
+    docLines.removed.every((line) => line.includes(FINDING_SENTENCE)) &&
+    docLines.added.every((line) => !line.includes(FINDING_SENTENCE));
   const paths = review?.comments ?? [];
   const onDoc = paths.includes(FINDING_DOC);
   const onWorkflow = paths.some((named) => named.startsWith(FINDING_WORKFLOW));
-  const head = review !== undefined && namesHead(world.head, review.head);
-  // An approval that leaves text threads open also owns the first wake of that fix: the daemon
-  // starts no phase for it, so the implementer learns its turn began from the reviewer's
-  // message and from nothing else (review-threads.md step 1). The round is clean only when that
-  // message was sent, naming the head the fix must land above and each finding it must close
-  // (`toldImplementer`). Step 1 asks for the approved head by SHA and each open thread by its node
-  // id. The world now keeps the threads a run's calls open as GitHub does, each under the node id
-  // GitHub gives it (gh-threads.ts's `threadState`, the replay both stand-ins answer from), so the
-  // node id of the thread the round opened on a finding's file is a name the reviewer can give that
-  // finding, as its path is: it was not, while the stand-in served the bot's thread and no other,
-  // and a reviewer that named the node ids alone, as the rule says, then scored a fail. A message
-  // naming the head alone leaves the implementer the whole diff to search for the work the merge
-  // waits for. One message carries all of it, since the implementer acts on the message it is
-  // handed (`publishedTo`'s `all`). A `REQUEST_CHANGES` round opens no such loop and sends none.
+  // The verdict names the head the pull request was at when it was submitted, and, for the text
+  // commit's approval, that head is the commit itself.
+  const head = review !== undefined && namesHead(tipAt(review.at), review.head);
+  const carries = review !== undefined && push !== undefined && namesHead(push.sha, review.head);
+  const said = review?.body ?? "";
+  const body = push !== undefined && namesCommit(said, [push.sha]) && said.includes(FINDING_DOC);
   const entries = session(runDir);
   const sender = ownSession(entries);
-  // The threads the run opened up to its approval, which the world did not seed.
-  const opened = review?.event === "APPROVE" ? openedThreads(runDir, world, review.at) : [];
-  const finding = (on: (file: string) => boolean, file: string) => [
-    file,
-    ...opened.filter((thread) => on(String(thread.path))).map((thread) => String(thread.id)),
-  ];
-  // The wake's own names, the head the fix lands above and each of the two findings by the path
-  // its thread is on or by that thread's node id, in one message that reached the implementer's
-  // topic after the approval (the header's rule). Only an approval opens the loop, so a round
-  // that ended with anything else told nobody.
+  // The workflow's finding is left as an inline comment of the verdict, and no call of the run
+  // resolved the thread it opened: the threads the run opened on the workflow file, which the world
+  // did not seed, as the world holds them once the run has ended (`openedThreads`, whose node ids
+  // also name the finding in the wake below).
+  const workflowThreads = openedThreads(runDir, world).filter((thread) =>
+    String(thread.path).startsWith(FINDING_WORKFLOW)
+  );
+  const workflowOpen = onWorkflow && !workflowThreads.some((thread) => thread.isResolved === true);
+  // The wake, after the approval it reports, naming the commit the implementer reads and the
+  // thread it was left, by the path the thread is on or by the thread's node id, in one message,
+  // since the implementer acts on the message it is handed (`publishedTo`'s `all`).
   const toldImplementer =
     review?.event === "APPROVE" &&
+    push !== undefined &&
     publishedTo(
       runDir,
       sender,
       "implementer",
-      [
-        world.head,
-        finding((file) => file === FINDING_DOC, FINDING_DOC),
-        finding((file) => file.startsWith(FINDING_WORKFLOW), FINDING_WORKFLOW),
-      ],
+      [push.sha, [FINDING_WORKFLOW, ...workflowThreads.map((thread) => String(thread.id))]],
       "all",
       review.at
     );
+  const requested = review?.event === "REQUEST_CHANGES";
   const pass =
     reviewCase === "defect"
-      ? review?.event === "REQUEST_CHANGES"
-      : review?.event === "APPROVE" &&
-        head &&
-        onDoc &&
-        onWorkflow &&
-        pushes === 0 &&
-        toldImplementer;
+      ? requested && pushes.length === 0 && onDoc && onWorkflow
+      : label === "base"
+        ? requested
+        : review?.event === "APPROVE" &&
+          commit &&
+          docFixed &&
+          carries &&
+          body &&
+          workflowOpen &&
+          toldImplementer;
   const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
     (record) => record.phase === "review"
   ).length;
@@ -1259,8 +1321,9 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
     call.target.includes("skill://legion-worker/references/merge-gate.md")
   );
   const notes = [
-    `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes} reviewRecords=${records}`,
-    `commentPaths=${JSON.stringify(paths)}`,
+    `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes.length} reviewRecords=${records}`,
+    `commit=${commit} docFixed=${docFixed} carries=${carries} body=${body} workflowOpen=${workflowOpen}`,
+    `commentPaths=${JSON.stringify(paths)} changed=${JSON.stringify(changed)}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   // The row's scenario carries the case, as an askgate row's does, so the counts are per case and
@@ -1308,90 +1371,6 @@ function transcriptText(entries: SessionEntry[]): string {
     .flatMap((entry) => (entry.message?.content ?? []).map((part) => part.text ?? ""))
     .join("\n");
 }
-/** A record the `legion` tool answered a `read_record` with, read through one schema whatever
- * route carried the call. The phase is read as a string rather than matched against one word, so
- * the caller decides what each phase means and "unreadable" stays one thing: no record at all. */
-const RecordAnswer = z.looseObject({ record: z.looseObject({ phase: z.string() }) });
-/** The result of a tool call that reached the device as an `xd://` one: the tool's own result
- * sits one level down (an object, as Oh My Pi writes it). */
-const XdevResult = z.looseObject({ xdev: z.looseObject({ inner: z.unknown() }) });
-/** Every JSON object `text` holds, parsed: each `{`-to-matching-`}` run `JSON.parse` accepts. An
- * `eval` cell prints its result among its own words, so the record is parsed out of the text and
- * nothing about the words around it is read. */
-function jsonObjectsIn(text: string): unknown[] {
-  const found: unknown[] = [];
-  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
-    let depth = 0;
-    for (let i = start; i < text.length; i += 1) {
-      if (text[i] === "{") depth += 1;
-      else if (text[i] === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          try {
-            found.push(JSON.parse(text.slice(start, i + 1)));
-          } catch {
-            // The text's own braces, or a shape JSON does not accept.
-          }
-          break;
-        }
-      }
-    }
-  }
-  return found;
-}
-/** The `read_record` op as the call's own arguments name it, whatever carried the call: the key
- * `op` given that value, in the shapes a JSON body and a cell's code write the pair in. */
-const READ_RECORD_OP = /\bop\b\s*["']?\s*[:=]\s*["']read_record["']/;
-/** The phases the implementer pushes a fix in: `reviewing` after the approval, or `accepting`,
- * and never `retro`, `merging` or `done`, where nothing gates a fix head (the architect's rule of
- * round 15 of INFRA-764, review-threads.md step 2). */
-const PUSH_PHASES = ["reviewing", "accepting"];
-/** A `read_record` the run made, read as the phases its answer carried, or `undefined` when the
- * call is no read of the record at all. One `switch` over the tool that carried the call, since
- * the tool decides both halves of the question: whether the call asked for the record, and where
- * the answer to it lives.
- *
- * The op is read and never the word. The native `legion` call names it as an argument of its
- * own and answers in `details`; a `write` to `xd://legion` names it in the content it carries
- * and answers in `details.xdev.inner`, the tool's own result one level down; a cell names it in
- * its code and answers in the text it printed, and a cell that built its arguments elsewhere is
- * read by that answer alone. A `handoff_complete` whose summary mentions `read_record` is no
- * read — the deep pass of 2026-11-10 added that sentence to a passing run and the run scored a
- * rig error. The record is parsed and never matched, so a cell that prints the word `accepting`
- * without a record answers nothing.
- *
- * An empty list is the reader's limit and never a step the agent did not take, which is why the
- * caller makes such a read a rig error rather than a failure where the run turns on it
- * (threadsClosed's `gated`). */
-function recordRead(
-  step: { tool: string; args: Record<string, unknown> },
-  answer: { text: string; details: unknown }
-): string[] | undefined {
-  const phases = (answers: unknown[]) =>
-    answers.flatMap((carried) => {
-      const read = RecordAnswer.safeParse(carried);
-      return read.success ? [read.data.record.phase] : [];
-    });
-  switch (step.tool) {
-    case "legion":
-      return step.args.op === "read_record" ? phases([answer.details]) : undefined;
-    case "write": {
-      if (step.args.path !== "xd://legion") return undefined;
-      const content = typeof step.args.content === "string" ? step.args.content : "";
-      const named = jsonObjectsIn(content).some((body) => OpNamed.safeParse(body).success);
-      return named ? phases([XdevResult.safeParse(answer.details).data?.xdev.inner]) : undefined;
-    }
-    case "eval": {
-      const printed = phases(jsonObjectsIn(answer.text));
-      if (READ_RECORD_OP.test(strings(step.args).join("\n"))) return printed;
-      return printed.length > 0 ? printed : undefined;
-    }
-    default:
-      return undefined;
-  }
-}
-/** The op as a body written beside the call names it, hoisted so it is built once. */
-const OpNamed = z.looseObject({ op: z.literal("read_record") });
 /** One line of `<run>/published.jsonl`. The file is the recorder's own record of its run as much
  * as of the run's messages (record-publishes.ts): it opens with `recording`, written once the
  * subscription is registered with the server, ends with `closed`, written when the rig stops it,
@@ -1527,48 +1506,33 @@ function threadWorldOf(runDir: string, world: World): ThreadWorld {
   };
   return { routes: fixtures.routes ?? [], world };
 }
-/** The review threads the run's gh calls opened up to `until` (a recorded call's time), as the
- * world holds them: the replay both stand-ins answer every thread read from (gh-threads.ts's
- * `threadState`), over the world's own routes (`threadWorldOf`) and the record's calls made by
- * then, less the threads the world seeded. Each carries the node id GitHub gives it and the path
- * it is on. */
-function openedThreads(runDir: string, world: World, until: string): Json[] {
+/** The review threads the run's gh calls opened, as the world holds them once the run has ended:
+ * the replay both stand-ins answer every thread read from (gh-threads.ts's `threadState`), over
+ * the world's own routes (`threadWorldOf`) and every call of the record, less the threads the
+ * world seeded. Each carries the node id GitHub gives it, the path it is on and whether a call of
+ * the run resolved it. */
+function openedThreads(runDir: string, world: World): Json[] {
   const at = threadWorldOf(runDir, world);
   const seeded = new Set(threadState(at, []).list.map((thread) => thread.id));
-  const calls = recordedCalls(path.join(runDir, CALLS)).filter(
-    (call) => call.at !== undefined && call.at <= until
-  );
+  const calls = recordedCalls(path.join(runDir, CALLS));
   return threadState(at, calls).list.filter((thread) => !seeded.has(thread.id));
 }
 /** What one call did to the review threads, as the world holds it: the node id of each thread
- * the world resolved at it, and each reply it filed in a thread that stood before it, with that
- * thread's node id and the body the world filed there. */
+ * the world resolved at it. */
 interface ThreadActs {
   readonly resolved: readonly string[];
-  readonly replies: readonly { readonly thread: string; readonly body: string }[];
 }
-/** What each call of `record` did to the review threads, for each call that resolved one or
- * filed a reply in one. The world keeps no record of which thread a call resolved or replied in,
- * so this replays it as both stand-ins do (gh-threads.ts's `threadState`: the world's own
- * threads, then `threadCall` for each call of the record in the order the run made them, every
- * role's and every refused one among them) over the world's own routes (`threadWorldOf`), and
- * reads what each call did there. `record` is every call of <run>/calls.jsonl, which are the
- * lines the stand-ins replay (`recordedCalls`).
- *   - resolved: each thread the world answered one of its `resolveReviewThread` fields with, the
- *     thread that field's `input.threadId` names (an id the call read from a file among them, as
- *     the record keeps that file's text), once however many fields named it, and none where the
- *     world has no such thread. A node id the call's text names anywhere else (a `--jq` selector,
- *     a comment, another query) resolves nothing;
- *   - replies: every comment it filed in a thread that stood before it (a comment the world
- *     files replying to that thread's first, `replyTo`), whatever route made it, each with the
- *     body the world filed: a REST reply `pulls/<n>/comments/<id>/replies`, and a `POST
- *     pulls/<n>/comments` naming `in_reply_to` `<id>`, in the thread holding the comment whose
- *     databaseId is `<id>`; an `addPullRequestReviewThreadReply` in the thread its
- *     `pullRequestReviewThreadId` names; one on a comment or a thread the world has not got in
- *     none. A comment that opens a thread of its own is no reply.
- * Measured in INFRA-764 round 25 (threads-closed-text-fixes-base-4): two REST replies on GitHub's
- * own path that named the commit and no thread's node id were filed in their threads, and a
- * reader of the node ids in a reply's text scored `replied=0`. */
+/** What each call of `record` did to the review threads, for each call that resolved one. The
+ * world keeps no record of which thread a call resolved, so this replays it as both stand-ins do
+ * (gh-threads.ts's `threadState`: the world's own threads, then `threadCall` for each call of the
+ * record in the order the run made them, every role's and every refused one among them) over the
+ * world's own routes (`threadWorldOf`), and reads what each call did there. `record` is every call
+ * of <run>/calls.jsonl, which are the lines the stand-ins replay (`recordedCalls`). A call
+ * resolved each thread the world answered one of its `resolveReviewThread` fields with, the thread
+ * that field's `input.threadId` names (an id the call read from a file among them, as the record
+ * keeps that file's text), once however many fields named it, and none where the world has no
+ * such thread. A node id the call's text names anywhere else (a `--jq` selector, a comment,
+ * another query) resolves nothing. */
 function threadActs(
   runDir: string,
   world: World,
@@ -1578,9 +1542,6 @@ function threadActs(
   const state = threadState(at, []);
   const acts = new Map<z.infer<typeof Call>, ThreadActs>();
   for (const call of record) {
-    // The databaseId the call's first comment is given, if it makes one (gh-threads.ts's
-    // `newComment`): every comment from it on is the call's own.
-    const first = state.next;
     const answer = threadCall(at, state, call);
     const resolved =
       answer !== undefined && "fields" in answer
@@ -1588,34 +1549,9 @@ function threadActs(
             isObject(payload) && isObject(payload.thread) ? [String(payload.thread.id)] : []
           )
         : [];
-    const replies = state.list.flatMap((thread) =>
-      commentsOf(thread)
-        .filter(
-          (comment) =>
-            typeof comment.databaseId === "number" &&
-            comment.databaseId >= first &&
-            isObject(comment.replyTo)
-        )
-        .map((comment) => ({
-          thread: String(thread.id),
-          body: typeof comment.body === "string" ? comment.body : "",
-        }))
-    );
-    if (resolved.length > 0 || replies.length > 0)
-      acts.set(call, { resolved: [...new Set(resolved)], replies });
+    if (resolved.length > 0) acts.set(call, { resolved: [...new Set(resolved)] });
   }
   return acts;
-}
-/** Whether every message this agent sent went to `role`'s topic. The rule sends the
- * implementer's message to the reviewer's topic **and to that topic alone** (review-threads.md
- * step 2), so a run that copies another role in has not done the step the loop is measured on —
- * the architect's own wake belongs to the reviewer, after its second approval, and a copy before
- * it is the architect being told a thing that has not happened. Every other topic counts, not
- * the three roles of this loop alone: a copy to the tester's or the merger's topic is the same
- * act, and a reader that knew only three role names passed a run that sent one (measured by the
- * deep pass of 2026-11-09 on a copy of `threads-closed-text-fixes-head-1`). */
-function sentOnlyTo(runDir: string, sender: string, role: Role): boolean {
-  return publishes(runDir, sender).every((sent) => sent.topic.endsWith(`-${role}`));
 }
 /** Every message of this run that reached `role`'s topic, in the order Envoy accepted them, as
  * the rig's own reader wants them: what the next agent is handed, since Envoy delivers each one
@@ -1641,156 +1577,109 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
   );
 }
 
-/** threads-closed: the loop `skill://legion-worker/references/review-threads.md` gives for an
- * approval that leaves text threads open (*After an approval that leaves text threads open*),
- * scored over the two agents one run boots, the implementer first and then the reviewer
- * (rig.sh's run_threads_closed).
+/** The text of `call` when it is a `gh pr comment` on the world's pull request, the call the
+ * implementer's role prompt gives its answer to a reviewer's text commit by, or undefined when it
+ * is none: its arguments, its stdin and each file it read a body from (`callText`). A call naming
+ * another repository, or naming pull requests none of which is the world's (by number, URL or
+ * branch), comments on none of this run's; one naming none comments on the branch's own. */
+function prComment(call: z.infer<typeof Call>, world: World): string | undefined {
+  if (call.argv[0] !== "pr" || call.argv[1] !== "comment") return undefined;
+  const repo = flagValue(call.argv, ["-R", "--repo"]);
+  if (repo !== undefined && repo !== world.repo) return undefined;
+  const own = (arg: string) =>
+    arg === String(world.pr) || arg.endsWith(`/pull/${world.pr}`) || arg === world.branch;
+  const named = call.argv.slice(2).filter((arg) => /^\d+$|\/pull\/\d+$/.test(arg) || own(arg));
+  return named.length === 0 || named.some(own) ? callText(call) : undefined;
+}
+
+/** threads-closed: the implementer's last chance at a reviewer's text commit (spec v31's R2, which
+ * the implementer's and the reviewer's role prompts state), scored as Verification v38's k2 reads
+ * it, over the agents one run boots: the implementer first, then the reviewer where the case has
+ * one (rig.sh's run_threads_closed).
  *
  * The score reads what the run wrote, never the stand-in's static routes, which answer the same
  * whatever the run did: the gh calls the stand-in recorded (calls.jsonl), each carrying the role
- * that made it, and what each of them did to the threads, the threads the world resolved at it and
- * the replies it filed and where, replayed from those calls over the threads the world seeds
- * (`threadActs`); the pushes the run's own bare
- * remote logged (pushes.log) and the diff they carry; the body the stand-in kept; and the two
- * agents' transcripts. The threads are the world's own (<run>/threads.json), and the case is the
+ * that made it, and what each of them did to the threads, replayed from those calls over the
+ * threads the world seeds (`threadActs`); the pushes the run's own bare remote logged
+ * (pushes.log) and the diff they carry; the messages Envoy accepted on the run's role topics
+ * (`publishes`); and the agents' transcripts. The world's head is the reviewer's own text commit,
+ * which the reviewer's approval stands on and whose message on the implementer's role topic is the
+ * run's prompt; the threads it left are the world's own (<run>/threads.json); and the case is the
  * one <run>/case.txt and the run's directory both name, which must agree.
- *   text-fixes   two threads whose sentences a text fix closes, and both halves of the loop are
- *                scored. The implementer "fixes that text in its own live session … and makes
- *                one push of one commit of the text fixes. It replies on each thread, naming
- *                that commit, and resolves none": one push onto the issue branch whose diff
- *                against the head the reviewer approved touches the threads' own files and
- *                nothing else (`fixed`), one reply per thread naming that commit in the body the
- *                world filed in that thread, by any route (`replied`), no resolution of its own
- *                (`fixResolves`),
- *                and the body's `Threads` entries rewritten at the head that push made, each
- *                naming the commit that closed it and none still open (`threadsLine`,
- *                references/pr-body.md). It pushes only while
- *                the record shows `reviewing` after the approval, or `accepting`, and never in
- *                `retro`, `merging` or `done` (the architect's rule of round 15), so each push
- *                follows a `read_record` of its own whose answer is one of those two (`gated`).
- *                The world serves the approved head `BLOCKED`, its base requiring conversation
- *                resolution with the threads open, so the record
- *                is `reviewing` (rig.sh's approved_world and run_threads_closed): the push sets
- *                the approval aside (`stuckApprovedOtherCode`), which is the path's own step and
- *                no failure of either half, and the reviewer's approval of the fix head below
- *                (`approved`) is what ends the round. Then the reviewer
- *                "lists the pull request's threads … and resolves it once it has read what
- *                closed it", verifying thread state "in `gh api graphql`, never from that
- *                section": it lists them there (`listed`), resolves each one, one thread per
- *                call and never in bulk (`resolved`, `bulk`), and approves "the head the fix
- *                landed on, by SHA" with a second submission of its own (`approved`). A second
- *                call on a thread already resolved resolves that one thread again, and a call on
- *                a thread of the pull request that is none of the scenario's resolves one thread
- *                too, neither of which the reference forbids. And neither agent asked the
- *                daemon to move the issue (`moved`): the loop exists to spend no round, which
- *                is what k2's claim means by "opens no new round", and "Neither the implementer
- *                nor the reviewer moves the issue itself" is said of both cases;
- *   code-defect  one thread whose sentence is false only because the code is wrong. "A thread
- *                the fix cannot close is a message to the architect … a `REQUEST_CHANGES`
- *                naming the behavioural finding is the review that moves it. Neither the
- *                implementer nor the reviewer moves the issue itself." A run passes when it
- *                pushed nothing, no thread was resolved, neither agent asked the daemon to move
- *                the issue (`moved`), no review approved the head, and the finding reached the
- *                architect, the one role that can move the issue for it (`told`). A submitted
- *                `REQUEST_CHANGES` is reported (`requested`) and is no substitute: submitted in
- *                `accepting`, the daemon records none of it and moves nothing. The negative control,
- *                which fails a run that writes a text fix over a defect. Its halves are booted
- *                in `accepting` and not in `reviewing` for this reason (rig.sh's
- *                run_threads_closed): in `reviewing` a `REQUEST_CHANGES` ends the round and
- *                sends the issue back, and the control would then measure a second route.
- *                This condition has been wrong twice, and the record is kept here. It first
- *                required that no review was submitted at all, which forbade the reviewer to
- *                speak; it then accepted a `REQUEST_CHANGES` in place of the message, on the
- *                belief that GitHub's review carried the finding to the daemon. It does not:
- *                `packages/daemon/internal/workflow/review.go` returns before it records any
- *                review while the issue stands outside `reviewing`, which this case always
- *                does, so such a run leaves the finding where nobody acts on it.
- *                The implementer's own act here is to send the reviewer nothing, so the run
- *                often has one half: rig.sh boots no reviewer on an empty wake, and every term
- *                over the reviewer's acts then reads as the terms of an agent that never ran
- *                (completion-answers.ts's SKIPS). An implementer that woke it anyway gets both
- *                halves read.
- * The completions the daemon stand-in refused as the daemon refuses them are reported
- * (`refusedCompletions`) and scored by neither case: what a role should have done instead of
- * one is no part of the rule these words give. They are the 409 HANDOFF_NOT_CURRENT_PHASE of a
- * late completion from a role whose round already stands on its row, as the world's seeds
- * leave both roles': the implementer's, in `reviewing` or `accepting`, and the reviewer's once
- * the round has moved the issue, or from its boot in `accepting` — which the daemon of the
- * run's label's checkout answers so (daemon-standin.ts, completion-answers.ts's ANSWERS), and
- * which is a reading of the run; a refusal that table does not allow is a rig error
- * (`unscored`). The reviewer's completion in text-fixes' `reviewing` is its own phase's and is
- * accepted.
- * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
- * where the loop, the one reply per thread and the one thread per resolving call are defined. */
+ *   accept       the reviewer's commit is right and it left no thread, so the implementer has
+ *                nothing to change: a run passes when the run's remote took no push, the
+ *                implementer posted a `gh pr comment` on the pull request naming the commit
+ *                (`commented`, `prComment`), one message of its own reached the architect's role
+ *                topic naming the commit and saying it accepts it (`accepted`), no call of the run
+ *                resolved a thread (`fixResolves`, `resolveCalls`), and no agent moved the issue
+ *                (`moved`), so no tester and no review round runs. The world boots no reviewer
+ *                (completion-answers.ts's SKIPS). The base arm is reported and sets no bar;
+ *   correct      the reviewer's commit made the document's sentence false another way and left a
+ *                thread on the workflow file, which the review App may not push. Both halves
+ *                pass. The implementer makes one push onto the issue branch whose diff against the
+ *                reviewer's commit changes docs/cli.md and each thread's file and nothing else, so
+ *                text alone (`fixed`), names that push in a `gh pr comment` (`commented`) and in a
+ *                message to the reviewer's topic and one to the architect's, each after the push
+ *                (`toldReviewer`, `toldArchitectOfPush`), and resolves no thread (`fixResolves`).
+ *                The reviewer lists the pull request's threads in `gh api graphql` (`listed`),
+ *                resolves each thread of the world's, one thread per call and never in bulk
+ *                (`resolved`, `bulk`), and approves the head the push made, by SHA (`approved`).
+ *                Neither agent moves the issue (`moved`): the push runs no tester and opens no
+ *                round. The reviewer's message to the architect of the head it approved is
+ *                reported (`toldArchitectOfHead`), since no rule this scores asks for it;
+ *   code-defect  one thread whose sentence is false only because the code is wrong. A run passes
+ *                when it pushed nothing, no thread was resolved, neither agent asked the daemon to
+ *                move the issue (`moved`), no review approved the head, and the finding reached the
+ *                architect, the one role that can move the issue in `accepting`, naming the thread
+ *                by its node id or its file (`told`). A submitted `REQUEST_CHANGES` is reported
+ *                (`requested`) and is no substitute: submitted in `accepting`, the daemon records
+ *                none of it and moves nothing (`packages/daemon/internal/workflow/review.go`
+ *                returns before it records any review while the issue stands outside
+ *                `reviewing`), which is why its halves are booted there (rig.sh's
+ *                run_threads_closed). The implementer's own act is to send the reviewer nothing,
+ *                so rig.sh boots no reviewer on an empty wake (completion-answers.ts's SKIPS), and
+ *                every term over the reviewer's acts then reads as the terms of an agent that
+ *                never ran. An implementer that woke it anyway gets both halves read.
+ * Each label is scored by the case's one rule; k2 reads the counts per case and label. The
+ * completions the daemon stand-in refused as the daemon refuses them are reported
+ * (`refusedCompletions`) and scored by no case: the 409 HANDOFF_NOT_CURRENT_PHASE of a late
+ * completion from a role whose round already stands on its row, as the world's seeds leave both
+ * roles' (daemon-standin.ts, completion-answers.ts's ANSWERS); a refusal that table does not
+ * allow is a rig error (`unscored`).
+ * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md. */
 function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
   const world = worldIn(runDir);
   const threads = json(path.join(runDir, "threads.json"), Threads);
   const record = parsed(path.join(runDir, CALLS), Call);
   const calls = record.filter((call) => call.as === "gh" && call.exit === 0);
   const reviewCalls = calls.filter((call) => call.by === RESOLVES);
-  // The pushes onto the issue branch, and what the last of them left above the head the reviewer
-  // approved: the rule gives the implementer "one push of one commit of the text fixes", so the
-  // number of pushes is scored beside the diff. The commits in that push are not counted: what
-  // the approved head gained is the diff, and a second push is a second head under the reviewer
-  // and the architect, which is what the rule's "once" is about. The last push keeps the time
-  // its own remote logged it at, which is what the wake that reports it is ordered against
-  // (`toldReviewer`).
+  // The pushes onto the issue branch, and what the last of them left above the reviewer's commit:
+  // the rule gives the implementer one push, so the number of pushes is scored beside the diff.
+  // The last push keeps the time its own remote logged it at, which is what the messages that
+  // report it are ordered against.
   const pushes = pushesOf(runDir).filter((push) => push.ref === `refs/heads/${world.branch}`);
   const push = pushes.at(-1);
   const tip = push?.sha;
   const changed = tip === undefined ? [] : changedFiles(runDir, world.head, tip);
-  const wanted = threads.map((thread) => thread.path).toSorted();
+  const wanted = [...new Set([FINDING_DOC, ...threads.map((thread) => thread.path)])].toSorted();
   const fixed = pushes.length === 1 && changed.toSorted().join("\n") === wanted.join("\n");
   // What each call of each half did to the threads, read from the world's replay (`threadActs`)
-  // and never from the node ids a call's text names: GitHub's REST routes name a thread by the id
-  // of a comment in it, and a `--jq` selector, a comment or a listing in the same call can name a
-  // thread the call neither replied in nor resolved. Every call of the half is read, one the world
-  // answered with an error among them, since a mutation's other fields keep what they wrote.
+  // and never from the node ids a call's text names: a `--jq` selector, a comment or a listing in
+  // the same call can name a thread the call did not resolve. Every call of the half is read, one
+  // the world answered with an error among them, since a mutation's other fields keep what they
+  // wrote.
   const acts = threadActs(runDir, world, record);
   const actsBy = (role: Role) =>
     record.flatMap((call) => {
       const did = call.by === role ? acts.get(call) : undefined;
       return did === undefined ? [] : [{ call, ...did }];
     });
-  const fixActs = actsBy(FIXES);
-  // One reply per thread, each naming the commit that fixed it in the body the world filed in that
-  // thread: one call can file replies in two threads (two aliased mutations), and only the body
-  // filed in a thread says what that thread was told, while the call's whole text holds the other
-  // reply, a `--jq` selector and every other field beside it. A comment the world files in a
-  // thread is a reply whatever route made it, the `in_reply_to` of `POST …/pulls/<n>/comments`
-  // among them; a reply that names no commit names no fix.
-  const replies = fixActs.flatMap(({ call, replies }) =>
-    replies.map((reply) => ({
-      call,
-      thread: reply.thread,
-      commit: tip !== undefined && namesCommit(reply.body, [tip]),
-    }))
-  );
-  const replied = new Set(
-    replies.flatMap(({ thread }) => (threads.some((one) => one.id === thread) ? [thread] : []))
-  );
-  const replyCalls = new Set(replies.map(({ call }) => call)).size;
-  const repliedCommit = replies.filter(({ commit }) => commit).length;
-  // Every thread carries its disposition reply, naming the commit that fixed it; a further reply
-  // on a thread breaks nothing. The rule is "one disposition reply per thread"
-  // (review-threads.md), which is a requirement on each thread rather than a cap on how often an
-  // agent may speak: a run of 2026-11-09 replied on both threads with the commit and then
-  // answered something else, and a condition counting calls failed it for being useful, which is
-  // a scorer scoring silence. Both scorings of that change are in pull request #2827's body.
-  const repliedEach = threads.every((thread) =>
-    replies.some(({ thread: id, commit }) => commit && id === thread.id)
-  );
   // Each call of the reviewer's that resolved a thread, with the threads the world resolved at
-  // it. The reference asks for one thread per call and never a bulk call (review-threads.md,
-  // *Resolve each thread you have answered, one thread per call, never in bulk*), so a call at
-  // which the world resolved more than one thread breaks that rule. The count is of the threads
-  // the world resolved, not of the scenario's threads among them: a thread of the pull request
-  // that is in no <run>/threads.json — a bot's, which the reviewer adjudicates the same way — is
-  // still one thread, so a call resolving it resolves one thread and closes none of the
-  // scenario's. A call that resolved one thread twice resolved one thread, and node ids its text
-  // names elsewhere (a `--jq` selector reading its answer back, a comment) resolve nothing: a
-  // reader of the text failed a run of 2026-11-07 for verifying its own write, and read a second
-  // id in a call's comment as a second resolution.
+  // it. A call at which the world resolved more than one thread is a bulk call, which the
+  // reviewer's prompt forbids ("one call per thread, never in bulk"). The count is of the threads
+  // the world resolved: a thread of the pull request that is in no <run>/threads.json — a bot's,
+  // which the reviewer adjudicates the same way — is still one thread. A call that resolved one
+  // thread twice resolved one thread, and node ids its text names elsewhere resolve nothing.
   const resolves = actsBy(RESOLVES).filter(({ resolved }) => resolved.length > 0);
   const bulk = resolves.some(({ resolved }) => resolved.length > 1);
   const resolved = new Set(
@@ -1800,49 +1689,36 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
         : []
     )
   );
-  // Every thread resolved, and no call resolving more than one. A second call on a thread the
-  // reviewer already resolved resolves that one thread again, which the reference does not forbid.
   const resolvedEach = !bulk && resolved.size === threads.length;
   // The implementer resolves none: every call of its own at which the world resolved a thread
   // breaks the rule, whichever thread it was.
-  const fixResolves = fixActs.filter(({ resolved }) => resolved.length > 0).length;
-  // The reviewer's own listing of the threads, which its resolution rests on: the reviewer reads
-  // thread state in `gh api graphql` and never from the pull request's body, which is the
-  // implementer's record while GitHub is the fact.
+  const fixResolves = actsBy(FIXES).filter(({ resolved }) => resolved.length > 0).length;
+  // The reviewer's own listing of the threads, which its resolution rests on: it reads thread
+  // state in `gh api graphql` and never from the pull request's body.
   const listed = reviewCalls.some(listsTheThreads);
   // The reviews the run's agents submitted. The approval already on the pull request is the
-  // fixture's, which no call of this run made, so a submission here is a second one; the one
-  // that stands is the reviewer's own verdict — its last `APPROVE` or `REQUEST_CHANGES`
-  // (`verdictOf`), the reading reviewerTextFindings takes of the same fact — and it approves the
-  // head the push made, by SHA. A `COMMENT` review carries no verdict and withdraws none, so a
-  // reviewer that approved the fix head and then posted one more reading has approved it, where
-  // a reader of its last submission of any kind scored that round `approved=false`.
+  // world's, which no call of this run made; the one that stands is the reviewer's own verdict,
+  // its last `APPROVE` or `REQUEST_CHANGES` (`verdictOf`), and it approves the head the push made,
+  // by SHA. A `COMMENT` review carries no verdict and withdraws none.
   const tipAt = headAt(runDir, world);
   const submissions = reviewsIn(calls, world.repo, tipAt);
   const verdict = verdictOf(reviewsIn(reviewCalls, world.repo, tipAt));
   const approved =
     verdict?.event === "APPROVE" && tip !== undefined && namesHead(tip, verdict.head);
-  // The body the stand-in kept last, which is the one a reader of the pull request would see:
-  // each thread's entry rewritten at the head the push made, naming the commit that closed it.
-  // Where the body names one thread on more than one line, the entry is the last of them, as
-  // the body kept last is the body that stands: an implementer that left the approval's own
-  // line above the entry it wrote — "was still open at <approved head>" over "fixed in <tip>"
-  // — has written the disposition the reader ends on, and a reader of the first line would
-  // score that run as a body still marking the thread open.
-  const body = calls.findLast((call) => call.body !== undefined)?.body ?? "";
-  const entries = threads.map((thread) =>
-    body.split("\n").findLast((line) => line.includes(thread.id))
-  );
-  const threadsLine =
-    tip !== undefined &&
-    entries.every(
-      (line) => line !== undefined && !/still open/i.test(line) && namesCommit(line, [tip])
-    );
+  // The implementer's comment on the pull request naming a commit: the reviewer's own in accept,
+  // the head its push made in correct.
+  const commentOn = threadsCase === "accept" ? world.head : tip;
+  const commented =
+    commentOn !== undefined &&
+    calls.some((call) => {
+      const text = call.by === FIXES ? prComment(call, world) : undefined;
+      return text !== undefined && namesCommit(text, [commentOn]);
+    });
   const daemon = daemonLines(runDir);
   // The completions the stand-in refused 409 HANDOFF_NOT_CURRENT_PHASE, as the run's label's
   // daemon refuses a late completion (daemon-standin.ts); a run whose entry in
   // completion-answers.ts's ANSWERS does not allow it is a rig error (`unscored`) and never
-  // reaches here. Reported and scored by neither case.
+  // reaches here. Reported and scored by no case.
   const refusedCompletions = daemon.filter(
     (line) => line.path === COMPLETE_PATH && line.code === NOT_CURRENT_PHASE
   ).length;
@@ -1850,133 +1726,64 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     (line) => line.path === "/legion/v1/phase/backward" && line.status === 200
   );
   const fixSession = session(runDir);
-  // The implementer's own gate on each push (the header's `gated`): the last `read_record` of
-  // its own whose answer came before the remote logged the push, which must show `reviewing` or
-  // `accepting` and nothing else. The read is ordered by its answer on every route, an `eval`
-  // cell's among them, since a push can only act on an answer the implementer already had; a
-  // cell that reads the record and pushes in one go is read as a push before the read, which is
-  // this reader's cost, and no such run is recorded. A call the tool refused answered nothing. A
-  // gating read whose answer holds no record this can read leaves the gate unknown, which is a
-  // rig error where it is the one term the run turns on (below).
-  const fixResults = outcomes(fixSession);
-  const fixReads = steps(fixSession).flatMap((step) => {
-    const answer = fixResults.get(step.id);
-    if (answer === undefined || answer.failed === true) return [];
-    const phases = recordRead(step, answer);
-    return phases === undefined
-      ? []
-      : [{ at: instant(answer.at, "a read_record answer's time"), phases }];
-  });
-  const gates = pushes.map((each) => {
-    const pushedAt = instant(each.at, "a push's time");
-    return fixReads.filter((read) => read.at < pushedAt).at(-1)?.phases;
-  });
-  const gated =
-    pushes.length > 0 &&
-    gates.every(
-      (phases) =>
-        phases !== undefined &&
-        phases.length > 0 &&
-        phases.every((phase) => PUSH_PHASES.includes(phase))
-    );
-  const gateUnread = gates.some((phases) => phases?.length === 0);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
   // Each half's own session id, which is what the sender Envoy recorded is read against; a
-  // transcript naming none makes the run a rig error, which `ownSession` throws, so no message
-  // is attributed to a half this cannot name. A reviewer half with no transcript at all is a
-  // half the run never booted, which `unscored` allows only in code-defect, where the
-  // implementer's own act is to send the reviewer nothing (completion-answers.ts's SKIPS, rig.sh's
-  // run_threads_closed): the terms over its sends are then the terms of an agent that never ran,
-  // and its gh calls, which are read by `by`, are none.
+  // transcript naming none makes the run a rig error, which `ownSession` throws. A reviewer half
+  // with no transcript at all is a half the run never booted, which `unscored` allows only where
+  // completion-answers.ts's SKIPS declares it: the terms over its sends are then the terms of an
+  // agent that never ran, and its gh calls, which are read by `by`, are none.
   const fixSender = ownSession(fixSession);
   const reviewSender = reviewSession.length === 0 ? undefined : ownSession(reviewSession);
   const told =
     toldArchitect(runDir, fixSender, threads) ||
     (reviewSender !== undefined && toldArchitect(runDir, reviewSender, threads));
-  // The two sends this scenario's agents own. The daemon starts no phase for any step of this
-  // loop, so a step that sends none leaves the next role never learning its turn
-  // began: the implementer's push is told to the reviewer's topic with the new head, and the
-  // reviewer's second approval is told to the architect's topic with the head it approved, which
-  // is the head the architect accepts. The first
-  // wake of the loop, the reviewer's to the implementer, belongs to the round before this
-  // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
-  //
-  // Each wake is read for every fact its step names and for the moment it could first be sent.
-  // Step 2 has the implementer name "the new head by SHA, the threads it answered, and that the
-  // push's own diff changes no code that runs", so one message carries the head and both thread
-  // ids: a message naming the head alone leaves the reviewer to work out for itself which
-  // threads the push answered, and all ten head wakes of the runs recorded on 2026-11-10 named
-  // both ids and the compare. And a wake written before the push it reports tells the reviewer
-  // of a head the remote had not taken, so it is ordered after that push.
+  // The implementer's messages: the daemon starts no phase for its last chance, so the reviewer
+  // and the architect learn of its push from these alone, each naming the head the push made and
+  // sent after the remote took it; in accept, the one to the architect names the reviewer's
+  // commit and says the implementer accepts it.
   const toldReviewer =
-    push !== undefined &&
-    publishedTo(
-      runDir,
-      fixSender,
-      "reviewer",
-      [push.sha, ...threads.map((thread) => thread.id)],
-      "all",
-      push.at
-    );
-  // "and to that topic alone" (review-threads.md step 2, and the same words in the implementer's
-  // role prompt): the architect hears of this head from the reviewer's second approval, so an
-  // implementer that copies it in has told the architect of a head nobody has approved yet.
-  const toReviewerAlone = sentOnlyTo(runDir, fixSender, "reviewer");
-  // The reviewer's wake of the architect carries the approval, so it is ordered after the
-  // approval it reports: a message written before it reports an approval nobody had made. The
-  // approval is the reviewer's own verdict above and no second reading of it — this wake is the
-  // reviewer's, and the head it tells the architect of is the head that verdict approved
-  // (`approved`), so one submission is read once.
+    push !== undefined && publishedTo(runDir, fixSender, "reviewer", [push.sha], "all", push.at);
+  const toldArchitectOfPush =
+    push !== undefined && publishedTo(runDir, fixSender, "architect", [push.sha], "all", push.at);
+  const accepted = publishes(runDir, fixSender).some(
+    (sent) =>
+      sent.topic.endsWith("-architect") &&
+      bodyNames(sent.message, world.head) &&
+      /\baccept/i.test(sent.message)
+  );
+  // The reviewer's message to the architect of the head it approved, after its approval.
   const approvedAt = verdict?.event === "APPROVE" ? verdict.at : undefined;
   const toldArchitectOfHead =
     reviewSender !== undefined &&
     approvedAt !== undefined &&
     tip !== undefined &&
     publishedTo(runDir, reviewSender, "architect", [tip], "all", approvedAt);
-  // code-defect: the finding has one route, and it is the message to the architect. A review
-  // submitted here is submitted in `accepting`, where the daemon records none
-  // (`packages/daemon/internal/workflow/review.go`), so a `REQUEST_CHANGES` moves nothing and a
-  // run that only submits one leaves the finding where nobody acts on it. It is allowed beside
-  // the message, as the record of the finding on GitHub, and scored as no substitute for it
-  // (`requested`, reported and not required). An `APPROVE` fails the run, because the reviewer
-  // may not approve a head whose findings are not all text.
   const requested = submissions.some((review) => review.event === "REQUEST_CHANGES");
   const approvedAny = submissions.some((review) => review.event === "APPROVE");
-  // The loop exists to spend no round, which is what k2's claim means by "opens no new round",
-  // and the design says it of both cases: "Neither the implementer nor the reviewer moves the
-  // issue itself" (review-threads.md step 3, the same sentence in merge-gate.md). Scored in
-  // code-defect since that arm was written and in text-fixes from 2026-11-08, so a run that
-  // performed every act of the loop and then asked the daemon to move the issue back no longer
-  // passes as a clean loop. Every term of text-fixes but the push's gate:
-  const loopClosed =
-    repliedEach &&
-    fixResolves === 0 &&
-    fixed &&
-    threadsLine &&
-    toldReviewer &&
-    toReviewerAlone &&
-    listed &&
-    resolvedEach &&
-    approved &&
-    toldArchitectOfHead &&
-    moved === undefined;
-  // A gate whose read held no record this can read is unknown, and where it is the one term a
-  // text-fixes run turns on, the run's verdict is unknown with it: a rig error, which
-  // `scoreRuns` makes of a throw. A run that failed on any other term failed whatever that read
-  // answered, and stays the failure it is.
-  if (threadsCase !== "code-defect" && loopClosed && !gated && gateUnread)
-    throw new Error(
-      "the implementer's read_record before its push was answered with no record this can read, so the phase it pushed in is unknown"
-    );
   const pass =
-    threadsCase === "code-defect"
+    threadsCase === "accept"
       ? pushes.length === 0 &&
-        told &&
-        !approvedAny &&
+        commented &&
+        accepted &&
         fixResolves === 0 &&
         resolves.length === 0 &&
         moved === undefined
-      : loopClosed && gated;
+      : threadsCase === "correct"
+        ? fixed &&
+          commented &&
+          toldReviewer &&
+          toldArchitectOfPush &&
+          fixResolves === 0 &&
+          listed &&
+          resolvedEach &&
+          approved &&
+          moved === undefined
+        : pushes.length === 0 &&
+          told &&
+          !approvedAny &&
+          fixResolves === 0 &&
+          resolves.length === 0 &&
+          moved === undefined;
   // Both halves read the reference, or the one half that ran where the run booted one (above).
   const ref = [fixSession, ...(reviewSender === undefined ? [] : [reviewSession])].every(
     (entries) =>
@@ -1985,7 +1792,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
       )
   );
   const notes = [
-    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replyCalls} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} aloneToReviewer=${toReviewerAlone} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions} gated=${gated}`,
+    `case=${threadsCase} threads=${threads.length} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} commented=${commented} toldReviewer=${toldReviewer} toldArchitectOfPush=${toldArchitectOfPush} accepted=${accepted} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions}`,
     `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
@@ -4591,9 +4398,7 @@ function lastDaemonRequest(runDir: string): string | undefined {
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
- * scenario's function, as is a transcript that names no session (`ownSession`) and, in the one
- * scenario that reads the record, an implementer's `read_record` before its push whose answer
- * holds no record this can read, in a run that turns on it (threadsClosed's `gated`). */
+ * scenario's function, as is a transcript that names no session (`ownSession`). */
 function unscored(
   runDir: string,
   scenario: string,

@@ -239,12 +239,14 @@ function allows(allowed: readonly string[], lines: readonly DaemonLine[], index:
  * answer after an earlier 200 alone; with none before it, the world refused the reviewer's first
  * completion, which no world of this rig should. A reviewer refused HANDOFF_RECORD_REQUIRED (a
  * plugin that names no record once the issue has left `reviewing`) is a refusal this table does
- * not allow either. The review reaches `implementing` and never `accepting`: GitHub reports the
- * world's head `BLOCKED` (rig.sh's review_world), so only a reviewer that pushes a head of its
- * own, which is the world's own failure, and approves it could move the issue there.
+ * not allow either. The review reaches `implementing` on a change request, and the approval of
+ * the head the reviewer's own text commit made leaves it in `reviewing`: GitHub reports that head
+ * `BLOCKED` while a thread is open (rig.sh's review_world), and the workflow's thread the review
+ * App cannot push a fix for stays open.
  *
- * threads-closed boots the implementer, then the reviewer, in `reviewing` (text-fixes) or
- * `accepting` (code-defect) (rig.sh's run_threads_closed). The world's seeds stand for each
+ * threads-closed boots the implementer in `reviewing` (correct) or `accepting` (accept and
+ * code-defect), and then the reviewer in that phase where the case has a second half
+ * (rig.sh's run_threads_closed, `SKIPS`). The world's seeds stand for each
  * role's completion of its round (seed-handoffs.ts: the implement record and the review record
  * are on those roles' rows, daemon-standin.ts's `HANDOFFS`), so a late completion of either is
  * one from a role whose row holds a completion, which a daemon of either shape refuses 409
@@ -308,13 +310,16 @@ export const BOOTED = "booted";
 
 /** Why a run may leave a role of its scenario's `boots` unbooted, keyed scenario → case → role:
  * the one reason rig.sh writes verbatim on that role's `skip` line of <run>/booted, and the one
- * health accepts there. threads-closed's code-defect is the one: the implementer's own act there
- * is to tell the architect and send the reviewer nothing, so a wake of none ends the loop where the
- * rule ends it and rig.sh boots no reviewer (run_threads_closed). */
+ * health accepts there. threads-closed declares two: in accept the reviewer's commit is right and
+ * it left no thread, so the implementer's last chance is the run's one half and no reviewer is
+ * booted; in code-defect the implementer's own act is to tell the architect and send the reviewer
+ * nothing, so a wake of none ends the loop where the rule ends it and rig.sh boots no reviewer
+ * (run_threads_closed). */
 export const SKIPS: Readonly<
   Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>
 > = {
   "threads-closed": {
+    accept: { reviewer: "the accept case scores the implementer's answer alone" },
     "code-defect": { reviewer: "the implementer sent the reviewer nothing" },
   },
 };

@@ -1378,14 +1378,14 @@ describe("archive_run", () => {
   // Catches: a run left in runs/ when it ends, and a sibling moved with it.
   test("a run that ended leaves runs/ for the archive", () => {
     const work = freshDir("archive");
-    const R = path.join(work, "runs", "threads-closed-text-fixes-head-1");
+    const R = path.join(work, "runs", "threads-closed-correct-head-1");
     mkdirSync(path.join(R, "sessions"), { recursive: true });
     writeFileSync(path.join(R, "out.txt"), "exit=0\n");
-    mkdirSync(path.join(work, "runs", "threads-closed-text-fixes-head-2"));
+    mkdirSync(path.join(work, "runs", "threads-closed-correct-head-2"));
     const before = treeDigest(R);
     expect(archive(work, R)).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(readdirSync(path.join(work, "runs"))).toEqual(["threads-closed-text-fixes-head-2"]);
-    expect(treeDigest(path.join(work, "archive", "runs", "threads-closed-text-fixes-head-1"))).toBe(
+    expect(readdirSync(path.join(work, "runs"))).toEqual(["threads-closed-correct-head-2"]);
+    expect(treeDigest(path.join(work, "archive", "runs", "threads-closed-correct-head-1"))).toBe(
       before
     );
   });
@@ -2233,7 +2233,7 @@ describe("run_project", () => {
   // of one label and number share, so Envoy delivers each run's messages to both.
   test("two scenarios of one label and run number get projects of their own", () => {
     const reviewer = project("reviewer-text-findings", "text-only", "head", "2");
-    const closed = project("threads-closed", "text-fixes", "head", "2");
+    const closed = project("threads-closed", "correct", "head", "2");
     const tester = project("tester-proof", "", "head", "2");
     expect(reviewer.code).toBe(0);
     expect(closed.code).toBe(0);
@@ -2255,7 +2255,7 @@ describe("run_project", () => {
   // Catches: a project that drops the case, so the two cases of one scenario, which run as two
   // batches against the same NATS, share their role topics.
   test("two cases of one scenario get projects of their own", () => {
-    expect(project("threads-closed", "text-fixes", "head", "1").stdout).not.toBe(
+    expect(project("threads-closed", "correct", "head", "1").stdout).not.toBe(
       project("threads-closed", "code-defect", "head", "1").stdout
     );
   });
@@ -2312,21 +2312,24 @@ describe("scenario_case", () => {
     });
   });
 
-  // Catches: a threads-closed batch that runs no case at all, which the issue's check runs with
-  // no variable set, or one that takes a misspelt case for the measured arm.
-  test("threads-closed takes both cases, runs text-fixes unset, and fails on any other word", () => {
-    for (const name of ["text-fixes", "code-defect"])
+  // Catches: a threads-closed batch that runs a case its check did not name — an unset variable
+  // read as a default, which v38's k2 never leaves unset — or one that takes a misspelt case, or
+  // the retired text-fixes, for a measured one.
+  test("threads-closed takes its three cases, and fails unset and on any other word", () => {
+    for (const name of ["accept", "correct", "code-defect"])
       expect(cases("threads-closed", { SKILL_SCENARIOS_THREADS_CASE: name })).toEqual({
         code: 0,
         stdout: `${name}\n`,
         stderr: "",
       });
-    expect(cases("threads-closed")).toEqual({ code: 0, stdout: "text-fixes\n", stderr: "" });
-    const result = cases("threads-closed", { SKILL_SCENARIOS_THREADS_CASE: "text" });
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("SKILL_SCENARIOS_THREADS_CASE");
-    expect(result.stderr).toContain("not text-fixes or code-defect");
+    const unset: Record<string, string> = {};
+    for (const env of [unset, { SKILL_SCENARIOS_THREADS_CASE: "correct" }]) {
+      const result = cases("threads-closed", env);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("SKILL_SCENARIOS_THREADS_CASE");
+      expect(result.stderr).toContain("not accept, correct or code-defect");
+    }
   });
 
   // Catches: a batch that starts its services and its runs before it reads the case (cmd_batch
@@ -2946,7 +2949,7 @@ describe("run_threads_closed", () => {
   // `accepting` (the two rows above): its control reads the message to the architect as the one
   // route, which a `REQUEST_CHANGES` in `reviewing` would not leave it.
   test("text-fixes boots both halves in reviewing, and the reviewer on an empty wake, which it fails on", () => {
-    expect(loop("text-fixes", "[]\n").boots).toEqual([
+    expect(loop("correct", "[]\n").boots).toEqual([
       "the-run-implementer skillsproject1 implementer reviewing implementer",
       "the-run-reviewer skillsproject1 reviewer reviewing implementer",
     ]);
@@ -2959,7 +2962,7 @@ describe("run_threads_closed", () => {
   // named; and a run that boots its reviewer on a prompt of some other run's making.
   test("the reviewer's prompt is one delivery line per message, in Envoy's own order", () => {
     const { prompt, wake } = loop(
-      "text-fixes",
+      "correct",
       `${JSON.stringify([
         { message: "The text fixes are pushed: the head to read is 0123456789ab." },
         { message: "Both threads carry my reply." },
@@ -2982,7 +2985,7 @@ describe("run_threads_closed", () => {
   // Catches: a rig that writes the implementer's own prompt for the reviewer when the
   // implementer published nothing, which would hand the second half a wake nobody sent.
   test("an implementer that published nothing leaves the reviewer an empty prompt", () => {
-    const { prompt, wake } = loop("text-fixes", "[]\n");
+    const { prompt, wake } = loop("correct", "[]\n");
     expect(prompt).toBe("");
     expect(wake).toEqual({ wake: [] });
   });
@@ -3010,7 +3013,7 @@ describe("run_threads_closed", () => {
     });
 
     test("text-fixes boots the reviewer on an empty wake, and records no skip", () => {
-      expect(loop("text-fixes", "[]\n").booted).toBe("boot implementer\nboot reviewer\n");
+      expect(loop("correct", "[]\n").booted).toBe("boot implementer\nboot reviewer\n");
     });
   });
 });
@@ -3059,7 +3062,7 @@ describe("worker_boots", () => {
     const booted = [
       ...boots("run_tester_proof", []),
       ...boots("run_reviewer_text_findings", ["text-only"]),
-      ...boots("run_threads_closed", ["text-fixes"]),
+      ...boots("run_threads_closed", ["correct"]),
       ...boots("run_threads_closed", ["code-defect"], '[{"message":"pushed"}]\n'),
     ];
     expect([...new Set(booted)].sort()).toEqual([...listed].sort());
@@ -3445,22 +3448,22 @@ describe("health", () => {
 
   // Catches: a health that calls the daemon's own deliberate refusal unhealthy. threads-closed's
   // implementer, whose round stands, is refused 409 HANDOFF_NOT_CURRENT_PHASE by a daemon of either
-  // shape: the head run's and the base run's (the fixture's threads-closed-text-fixes-base-1,
+  // shape: the head run's and the base run's (the fixture's threads-closed-correct-base-1,
   // which its boot record now reads unfinished, pinned that label's alone). No daemon is read for
   // it: their built-from names a checkout holding none (RUN_CHECKOUT).
   test("a threads-closed run whose only refusal is the implementer's not-current-phase is healthy", () => {
-    const named = run("threads-closed-text-fixes-head-1", [
+    const named = run("threads-closed-correct-head-1", [
       [complete(409, NOT_CURRENT, "implementer")],
       [complete(200, undefined, "reviewer")],
     ]);
-    const base = run("threads-closed-text-fixes-base-1", [
+    const base = run("threads-closed-correct-base-1", [
       [complete(409, NOT_CURRENT, "implementer")],
       [],
     ]);
     const { code, stdout } = health(named, base);
     expect(code).toBe(0);
-    expect(verdict(stdout, named)).toBe("threads-closed-text-fixes-head-1  healthy");
-    expect(verdict(stdout, base)).toBe("threads-closed-text-fixes-base-1  healthy");
+    expect(verdict(stdout, named)).toBe("threads-closed-correct-head-1  healthy");
+    expect(verdict(stdout, base)).toBe("threads-closed-correct-base-1  healthy");
     expect(stdout).toEndWith("health: 0 of 2 runs unhealthy\n");
   });
 
@@ -3470,7 +3473,7 @@ describe("health", () => {
   // read as a role's. Whose completion either was is unknown, so each fails closed, whatever
   // its answer.
   test("a completion line naming no role, or a role the scenario never boots, is unhealthy", () => {
-    const unnamed = run("threads-closed-text-fixes-head-3", [[complete(409, NOT_CURRENT)]]);
+    const unnamed = run("threads-closed-correct-head-3", [[complete(409, NOT_CURRENT)]]);
     const taken = run("threads-closed-code-defect-head-3", [[complete(200, undefined)]]);
     const stranger = run("reviewer-text-findings-defect-base-1", [
       [complete(200, undefined, "tester"), complete(200, undefined, "reviewer")],
@@ -3478,7 +3481,7 @@ describe("health", () => {
     const { code, stdout } = health(unnamed, taken, stranger);
     expect(code).toBe(1);
     expect(verdict(stdout, unnamed)).toBe(
-      "threads-closed-text-fixes-head-3  unhealthy: unkeyable completion: a completion line names no role (POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE), so whose completion it was is unknown"
+      "threads-closed-correct-head-3  unhealthy: unkeyable completion: a completion line names no role (POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE), so whose completion it was is unknown"
     );
     expect(verdict(stdout, taken)).toContain(
       "unhealthy: unkeyable completion: a completion line names no role (POST /legion/v1/handoff/complete answered 200)"
@@ -3502,13 +3505,13 @@ describe("health", () => {
     "a head threads-closed reviewer refused not-current-phase is healthy: its seeded round stands",
     () => {
       const named = run(
-        "threads-closed-text-fixes-head-2",
+        "threads-closed-correct-head-2",
         [[complete(409, NOT_CURRENT, "implementer")], [complete(409, NOT_CURRENT, "reviewer")]],
         { checkout: CHECKOUT }
       );
       const { code, stdout } = health(named);
       expect(code).toBe(0);
-      expect(verdict(stdout, named)).toBe("threads-closed-text-fixes-head-2  healthy");
+      expect(verdict(stdout, named)).toBe("threads-closed-correct-head-2  healthy");
     }
   );
 
@@ -3568,7 +3571,7 @@ describe("health", () => {
     () => {
       const built = { checkout: CHECKOUT };
       const fixes = run(
-        "threads-closed-text-fixes-head-4",
+        "threads-closed-correct-head-4",
         [
           [complete(409, NOT_CURRENT, "implementer", "reviewing")],
           [
@@ -3597,7 +3600,7 @@ describe("health", () => {
         built
       );
       const before = run(
-        "threads-closed-text-fixes-head-8",
+        "threads-closed-correct-head-8",
         [
           [complete(409, NOT_CURRENT, "implementer", "reviewing")],
           [
@@ -3642,7 +3645,7 @@ describe("health", () => {
       const SESSION = "HANDOFF_SESSION_MISMATCH";
       const RECORDED = "HANDOFF_ALREADY_RECORDED";
       const anotherSession = run(
-        "threads-closed-text-fixes-head-9",
+        "threads-closed-correct-head-9",
         [
           [
             complete(403, SESSION, "implementer", "reviewing"),
@@ -3914,12 +3917,12 @@ describe("health", () => {
   // directory that is no run of a scenario and label health reads, and an option naming nothing
   // each exit 2 and print no run.
   test("a usage error exits 2 and prints no verdict", () => {
-    const healthy = run("threads-closed-text-fixes-head-4", [[]]);
+    const healthy = run("threads-closed-correct-head-4", [[]]);
     for (const args of [
       [],
       [healthy, path.join(freshDir("health"), "missing")],
       [healthy, freshDir("tester-proof-head")],
-      [run("threads-closed-text-fixes-ablate-1", [[]])],
+      [run("threads-closed-correct-ablate-1", [[]])],
       ["--tmp-snapshot", path.join(freshDir("health"), "missing"), healthy],
       ["--repo", path.join(freshDir("health"), "missing"), healthy],
     ]) {
@@ -4108,7 +4111,7 @@ describe("health", () => {
         {
           tool: "bash",
           args: {
-            command: `cat > ${ran}/tmp/body.md <<'EOF'\nsee /recorded/work/runs/threads-closed-text-fixes-base-1/out.txt\nEOF`,
+            command: `cat > ${ran}/tmp/body.md <<'EOF'\nsee /recorded/work/runs/threads-closed-correct-base-1/out.txt\nEOF`,
           },
         },
         {
@@ -4163,7 +4166,7 @@ describe("health", () => {
   // No world of this rig plants a secret, so either is the guard refusing what a production pod
   // lets through; the 2026-11-14 batch met the first in every base run and in five head ones.
   test("a push-guard refusal an agent was shown is unhealthy, naming the transcript and the line", () => {
-    const setup = worldRun("threads-closed-text-fixes-head-4", {
+    const setup = worldRun("threads-closed-correct-head-4", {
       agent: "reviewer",
       steps: [
         {
@@ -4187,7 +4190,7 @@ describe("health", () => {
     const { code, stdout } = health(setup, refused);
     expect(code).toBe(1);
     expect(verdict(stdout, setup)).toBe(
-      'threads-closed-text-fixes-head-4  unhealthy: push guard: sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl holds the guard\'s refusal "git: LEAK CHECK SETUP ERROR: the push to origin: the shared public leak check could not be found: PUBLIC_LEAK_CHECK names none"'
+      'threads-closed-correct-head-4  unhealthy: push guard: sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl holds the guard\'s refusal "git: LEAK CHECK SETUP ERROR: the push to origin: the shared public leak check could not be found: PUBLIC_LEAK_CHECK names none"'
     );
     expect(verdict(stdout, refused)).toContain(
       "unhealthy: push guard: sessions/2026-11-14T00-00-00-000Z_s1.jsonl holds the guard's refusal \"LEAK CHECK: refusing the push to origin"
@@ -4280,7 +4283,7 @@ describe("health", () => {
       calls: noRun("reviewer"),
     }).dir;
     withRoutes(reviewing);
-    const looping = worldRun("threads-closed-text-fixes-head-2", {
+    const looping = worldRun("threads-closed-correct-head-2", {
       calls: [...noRun("implementer"), ...noRun("reviewer")],
     }).dir;
     withRoutes(looping);
@@ -4290,7 +4293,7 @@ describe("health", () => {
       stderr: "gh: Not Found (HTTP 404)\n",
       exit: 1,
     };
-    const refusing = worldRun("threads-closed-text-fixes-head-3", {
+    const refusing = worldRun("threads-closed-correct-head-3", {
       agent: "reviewer",
       steps: [{ tool: "bash", args: { command: "gh api repos/example/widgets/pulls/1001/files" } }],
       calls: [gh("reviewer", ["api", "repos/example/widgets/pulls/1001/files"], 1, files.match)],
@@ -4298,9 +4301,9 @@ describe("health", () => {
     withRoutes(refusing, [files]);
     const { code, stdout } = health(reviewing, looping, refusing);
     expect(verdict(stdout, reviewing)).toBe("reviewer-text-findings-text-only-head-1  healthy");
-    expect(verdict(stdout, looping)).toBe("threads-closed-text-fixes-head-2  healthy");
+    expect(verdict(stdout, looping)).toBe("threads-closed-correct-head-2  healthy");
     expect(verdict(stdout, refusing)).toBe(
-      "threads-closed-text-fixes-head-3  unhealthy: gh refusal: calls.jsonl:2, `gh api repos/example/widgets/pulls/1001/files` of the reviewer, exited 1: gh: Not Found (HTTP 404), which threads-closed does not declare for that role"
+      "threads-closed-correct-head-3  unhealthy: gh refusal: calls.jsonl:2, `gh api repos/example/widgets/pulls/1001/files` of the reviewer, exited 1: gh: Not Found (HTTP 404), which threads-closed does not declare for that role"
     );
     expect(stdout).toContain("health: gh: 1 of 3 runs\n");
     expect(code).toBe(1);
@@ -4324,7 +4327,7 @@ describe("health", () => {
         ],
       }
     );
-    const later = run("threads-closed-text-fixes-head-12", [[], []], {
+    const later = run("threads-closed-correct-head-12", [[], []], {
       dispatch: [
         handoffRead("2026-11-13T17:50:30.000Z", "plan", 200),
         handoffRead("2026-11-13T17:51:30.000Z", "plan", 200),
@@ -4397,7 +4400,7 @@ describe("health", () => {
     const read = (phase: string) => `GET /api/v1/issues/LWEVAL-1/handoffs/${phase}/latest`;
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
       `reviewer-text-findings-defect-head-6  unhealthy: dispatch refusal: logs/dispatch.log:3, ${read("implement")} of the reviewer, answered 404, which reviewer-text-findings does not declare for that role`,
-      `threads-closed-text-fixes-head-12  unhealthy: dispatch refusal: logs/dispatch.log:4, ${read("review")} of the reviewer, answered 404, which threads-closed does not declare for that role`,
+      `threads-closed-correct-head-12  unhealthy: dispatch refusal: logs/dispatch.log:4, ${read("review")} of the reviewer, answered 404, which threads-closed does not declare for that role`,
       `threads-closed-code-defect-head-16  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("review")} of the implementer, answered 404, which threads-closed does not declare for that role`,
       "threads-closed-code-defect-base-13  unhealthy: dispatch refusal: logs/dispatch.log:2, POST /api/v1/issues/LWEVAL-1/results of the implementer, answered 500, which threads-closed does not declare for that role",
       `reviewer-text-findings-text-only-base-6  unhealthy: dispatch refusal: logs/dispatch.log:2, ${read("plan")}, made before the run's first agent was booted, answered 404, which no role's declaration takes`,
@@ -4436,7 +4439,7 @@ describe("health", () => {
         ],
       }
     );
-    const looping = run("threads-closed-text-fixes-head-13", [[], []], {
+    const looping = run("threads-closed-correct-head-13", [[], []], {
       dispatch: [
         handoffRead("2026-11-13T17:50:10.000Z", "plan", 200),
         handoffRead("2026-11-13T17:50:11.000Z", "review", 200),
@@ -4454,7 +4457,7 @@ describe("health", () => {
     const { code, stdout } = health(...runs);
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
       "reviewer-text-findings-text-only-head-6  healthy",
-      "threads-closed-text-fixes-head-13  healthy",
+      "threads-closed-correct-head-13  healthy",
       "threads-closed-code-defect-head-17  healthy",
     ]);
     expect(stdout).toContain("health: dispatch: 0 of 3 runs\n");
@@ -4486,13 +4489,13 @@ describe("health", () => {
   // agents, refused every push, read the pointer file of a sibling in the same runs directory,
   // and of a run of another batch. Any agent's transcript counts, a later half's too.
   test("a tool call naming another run's directory is unhealthy, wherever that run is", () => {
-    const sibling = worldRun("threads-closed-text-fixes-base-2", {
+    const sibling = worldRun("threads-closed-correct-base-2", {
       agent: "reviewer",
       steps: [
         {
           tool: "read",
           args: {
-            path: "/recorded/work/runs/threads-closed-text-fixes-head-1/state/home/.config/public-leak-check/path",
+            path: "/recorded/work/runs/threads-closed-correct-head-1/state/home/.config/public-leak-check/path",
           },
         },
       ],
@@ -4508,7 +4511,7 @@ describe("health", () => {
     const { code, stdout } = health(sibling, batch);
     expect(code).toBe(1);
     expect(verdict(stdout, sibling)).toBe(
-      "threads-closed-text-fixes-base-2  unhealthy: another run: a read call in sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl names /recorded/work/runs/threads-closed-text-fixes-head-1/state/home/.config/public-leak-check/path, under /recorded/work/runs/threads-closed-text-fixes-head-1"
+      "threads-closed-correct-base-2  unhealthy: another run: a read call in sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl names /recorded/work/runs/threads-closed-correct-head-1/state/home/.config/public-leak-check/path, under /recorded/work/runs/threads-closed-correct-head-1"
     );
     expect(verdict(stdout, batch)).toContain(
       "unhealthy: another run: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /elsewhere/archive/runs/reviewer-text-findings-defect-base-2/tmp, under /elsewhere/archive/runs/reviewer-text-findings-defect-base-2"
@@ -4528,7 +4531,7 @@ describe("health", () => {
   // read as the run's own; and a line of the runs that wrote outside their directory that does
   // not say which run it was, or where it wrote.
   test("a read of another run's write, or of scratch from before the run, is unhealthy; a run's own writes are not", () => {
-    const writer = worldRun("threads-closed-text-fixes-head-5", {
+    const writer = worldRun("threads-closed-correct-head-5", {
       namespace: false,
       before: [],
       steps: [
@@ -4547,7 +4550,7 @@ describe("health", () => {
         {
           tool: "write",
           args: {
-            path: "/recorded/work/runs/threads-closed-text-fixes-head-5/ws/../../../../../tmp/placeholder",
+            path: "/recorded/work/runs/threads-closed-correct-head-5/ws/../../../../../tmp/placeholder",
             content: "",
           },
           at: "2026-11-14T01:02:00.000Z",
@@ -4595,14 +4598,14 @@ describe("health", () => {
       [undefined, unrecorded(earlier)],
     ]);
     expect(verdict(stdout, reader)).toBe(
-      "threads-closed-code-defect-head-5  unhealthy: another run's write: a bash call in sessions/reviewer/2026-11-14T02-00-00-000Z_s2/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T02:00:00.000Z reads /tmp/LWEVAL-1-review.json, which threads-closed-text-fixes-head-5 wrote at 2026-11-14T01:00:00.000Z (write in sessions/2026-11-14T00-00-00-000Z_s1.jsonl)"
+      "threads-closed-code-defect-head-5  unhealthy: another run's write: a bash call in sessions/reviewer/2026-11-14T02-00-00-000Z_s2/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T02:00:00.000Z reads /tmp/LWEVAL-1-review.json, which threads-closed-correct-head-5 wrote at 2026-11-14T01:00:00.000Z (write in sessions/2026-11-14T00-00-00-000Z_s1.jsonl)"
     );
     expect(verdict(stdout, stale)).toBe(
       "threads-closed-code-defect-head-3  unhealthy: shared scratch from before the run: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T03:00:00.000Z reads /tmp/pre-batch.json, which no run given wrote before it and /tmp/pre-batch.json was in /tmp when the run started (scratch-before.txt)"
     );
     expect(stdout).toContain("health: another run's write: 2 of 2 runs\n");
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-text-fixes-head-5 (/tmp/LWEVAL-1-review.json, /tmp/placeholder). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 4 runs\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-correct-head-5 (/tmp/LWEVAL-1-review.json, /tmp/placeholder). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 4 runs\n"
     );
   });
 
@@ -4620,17 +4623,17 @@ describe("health", () => {
       tool: "write",
       args: { path: target, content: "{}" },
     });
-    const own = worldRun("threads-closed-text-fixes-head-11", {
+    const own = worldRun("threads-closed-correct-head-11", {
       steps: [
         bash("cat > /tmp/body.md <<'EOF'\nFixed in 0123456.\nEOF"),
         write("/tmp/x.json"),
         bash("gh api -X POST repos/example/widgets/pulls/1001/reviews --input /tmp/x.json"),
         write(
-          "/recorded/work/runs/threads-closed-text-fixes-head-11/ws/../../../../../tmp/placeholder"
+          "/recorded/work/runs/threads-closed-correct-head-11/ws/../../../../../tmp/placeholder"
         ),
       ],
     }).dir;
-    const shared = worldRun("threads-closed-text-fixes-head-12", {
+    const shared = worldRun("threads-closed-correct-head-12", {
       steps: [bash("echo call >> /recorded/work/profiles/head/key/calls")],
     }).dir;
     const climbed = worldRun("threads-closed-code-defect-head-11", {
@@ -4645,12 +4648,12 @@ describe("health", () => {
     const runs = [own, shared, climbed];
     const { code, stdout } = health(...runs);
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      "threads-closed-text-fixes-head-11  healthy",
-      "threads-closed-text-fixes-head-12  healthy",
+      "threads-closed-correct-head-11  healthy",
+      "threads-closed-correct-head-12  healthy",
       "threads-closed-code-defect-head-11  healthy",
     ]);
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 2 of 3 runs: threads-closed-text-fixes-head-12 (/recorded/work/profiles/head/key/calls); threads-closed-code-defect-head-11 (/legion/tmp/LWEVAL-1-review.json, /legion/tmp/copy.json, /legion/tmp/a and 1 more). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 3 runs\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 2 of 3 runs: threads-closed-correct-head-12 (/recorded/work/profiles/head/key/calls); threads-closed-code-defect-head-11 (/legion/tmp/LWEVAL-1-review.json, /legion/tmp/copy.json, /legion/tmp/a and 1 more). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 3 runs\n"
     );
     expect(code).toBe(0);
   });
@@ -4667,7 +4670,7 @@ describe("health", () => {
       created: [["2026-11-16T04:46:00.000Z", "/tmp/go-build218583819"]],
       steps: [{ tool: "bash", args: { command: "cat > /tmp/body.md <<'EOF'\nFixed.\nEOF" } }],
     }).dir;
-    const wrote = worldRun("threads-closed-text-fixes-head-24", {
+    const wrote = worldRun("threads-closed-correct-head-24", {
       namespace: false,
       before: [],
       created: [
@@ -4689,7 +4692,7 @@ describe("health", () => {
     ]);
     expect(refusal(stderr, wrote)).toBe(unrecorded(wrote));
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-text-fixes-head-24 (/tmp/LWEVAL-1-review.json, /tmp/lweval1/ws, /tmp/lweval1). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 2 of 2 runs: reviewer-text-findings-text-only-head-5 (/tmp/go-build218583819); threads-closed-text-fixes-head-24 (/tmp/go-build1)\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-correct-head-24 (/tmp/LWEVAL-1-review.json, /tmp/lweval1/ws, /tmp/lweval1). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 2 of 2 runs: reviewer-text-findings-text-only-head-5 (/tmp/go-build218583819); threads-closed-correct-head-24 (/tmp/go-build1)\n"
     );
     expect(code).toBe(2);
   });
@@ -4703,7 +4706,7 @@ describe("health", () => {
   test("under a work directory in /tmp, a run's own directory and what its world shows there are those paths, and the rest its own /tmp", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
     const work = "/tmp/recorded-work";
-    const name = "threads-closed-text-fixes-head-13";
+    const name = "threads-closed-correct-head-13";
     const ran = `${work}/runs/${name}`;
     const { dir } = worldRun(name, {
       work,
@@ -4735,7 +4738,7 @@ describe("health", () => {
       args: { path: target, content: "{}" },
     });
     const read = (target: string): Step => ({ tool: "bash", args: { command: `cat ${target}` } });
-    const writer = worldRun("threads-closed-text-fixes-head-14", {
+    const writer = worldRun("threads-closed-correct-head-14", {
       created: [["2026-11-14T01:30:00.000Z", "/tmp/lweval1-body.md"]],
       steps: [
         at("01:00:00", write("/tmp/LWEVAL-1-review.json")),
@@ -4753,12 +4756,12 @@ describe("health", () => {
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     expect([reader, climber, writer].map((dir) => verdict(stdout, dir))).toEqual([
       "threads-closed-code-defect-head-14  healthy",
-      `threads-closed-code-defect-head-15  unhealthy: another run's write: a bash call in ${session} at 2026-11-14T02:00:00.000Z reads /legion/tmp/LWEVAL-1-review.json, which threads-closed-text-fixes-head-14 wrote at 2026-11-14T01:00:00.000Z (write in ${session})`,
-      "threads-closed-text-fixes-head-14  healthy",
+      `threads-closed-code-defect-head-15  unhealthy: another run's write: a bash call in ${session} at 2026-11-14T02:00:00.000Z reads /legion/tmp/LWEVAL-1-review.json, which threads-closed-correct-head-14 wrote at 2026-11-14T01:00:00.000Z (write in ${session})`,
+      "threads-closed-correct-head-14  healthy",
     ]);
     expect(stdout).toContain("health: another run's write: 1 of 3 runs\n");
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 3 runs: threads-closed-text-fixes-head-14 (/legion/tmp/LWEVAL-1-review.json). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 1 of 3 runs: threads-closed-text-fixes-head-14 (/tmp/lweval1-body.md)\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 3 runs: threads-closed-correct-head-14 (/legion/tmp/LWEVAL-1-review.json). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 1 of 3 runs: threads-closed-correct-head-14 (/tmp/lweval1-body.md)\n"
     );
     expect(code).toBe(1);
   });
@@ -4768,21 +4771,21 @@ describe("health", () => {
   // from before the rig made a namespace named the machine's /tmp, where another run may be.
   test("a path named as a run under /tmp is the run's own scratch in a namespace, and another run's where the run had none", () => {
     const steps: Step[] = [
-      { tool: "bash", args: { command: "mkdir -p /tmp/threads-closed-text-fixes-base-1/ws" } },
+      { tool: "bash", args: { command: "mkdir -p /tmp/threads-closed-correct-base-1/ws" } },
     ];
-    const scratch = worldRun("threads-closed-text-fixes-head-16", { steps }).dir;
-    const machine = worldRun("threads-closed-text-fixes-head-17", {
+    const scratch = worldRun("threads-closed-correct-head-16", { steps }).dir;
+    const machine = worldRun("threads-closed-correct-head-17", {
       namespace: false,
       steps,
     }).dir;
     const { code, stdout } = health(scratch, machine);
-    expect(verdict(stdout, scratch)).toBe("threads-closed-text-fixes-head-16  healthy");
+    expect(verdict(stdout, scratch)).toBe("threads-closed-correct-head-16  healthy");
     expect(verdict(stdout, machine)).toBe(
-      "threads-closed-text-fixes-head-17  unhealthy: another run: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /tmp/threads-closed-text-fixes-base-1/ws, under /tmp/threads-closed-text-fixes-base-1"
+      "threads-closed-correct-head-17  unhealthy: another run: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /tmp/threads-closed-correct-base-1/ws, under /tmp/threads-closed-correct-base-1"
     );
     expect(stdout).toContain("health: another run: 1 of 2 runs\n");
     expect(stdout).toContain(
-      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-text-fixes-head-17 (/tmp/threads-closed-text-fixes-base-1/ws). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 2 runs\n"
+      "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-correct-head-17 (/tmp/threads-closed-correct-base-1/ws). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 2 runs\n"
     );
     expect(code).toBe(1);
   });
@@ -4796,8 +4799,8 @@ describe("health", () => {
   test("a name under /tmp is a run's own in its namespace, and a run with none is not judged by a world", () => {
     const work = "/tmp/recorded-work";
     const steps: Step[] = [{ tool: "read", args: { path: `${work}/profiles/base/built-from` } }];
-    const own = worldRun("threads-closed-text-fixes-head-18", { work, before: [], steps }).dir;
-    const machine = worldRun("threads-closed-text-fixes-head-19", {
+    const own = worldRun("threads-closed-correct-head-18", { work, before: [], steps }).dir;
+    const machine = worldRun("threads-closed-correct-head-19", {
       work,
       namespace: false,
       before: [],
@@ -4805,7 +4808,7 @@ describe("health", () => {
     }).dir;
     const { code, stdout, stderr } = health(own, machine);
     expect([own, machine].map((dir) => verdict(stdout, dir))).toEqual([
-      "threads-closed-text-fixes-head-18  healthy",
+      "threads-closed-correct-head-18  healthy",
       undefined,
     ]);
     expect(refusal(stderr, machine)).toBe(unrecorded(machine));
@@ -4826,22 +4829,22 @@ describe("health", () => {
     const read = (target: string): Step => ({ tool: "read", args: { path: target } });
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     const hidden = "which the run's world hides and does not show again (rig.sh's world_paths)";
-    const shown = worldRun("threads-closed-text-fixes-head-20", {
+    const shown = worldRun("threads-closed-correct-head-20", {
       world: ["ro /recorded/scratch/installs/abc"],
       steps: [read("/recorded/scratch/installs/abc/skills/legion-worker/SKILL.md")],
     }).dir;
     const atRecording = health(shown);
-    expect(verdict(atRecording.stdout, shown)).toBe("threads-closed-text-fixes-head-20  healthy");
-    const covered = worldRun("threads-closed-text-fixes-head-21", {
+    expect(verdict(atRecording.stdout, shown)).toBe("threads-closed-correct-head-20  healthy");
+    const covered = worldRun("threads-closed-correct-head-21", {
       steps: [read("/recorded/scratch/another-role/notes.md")],
     }).dir;
-    const old = worldRun("threads-closed-text-fixes-head-22", {
+    const old = worldRun("threads-closed-correct-head-22", {
       namespace: false,
       steps: [read("/judging/scratch/another-role/notes.md")],
     }).dir;
     const elsewhere = healthIn({ TMPDIR: "/judging/scratch" }, covered, old);
     expect([covered, old].map((dir) => verdict(elsewhere.stdout, dir))).toEqual([
-      `threads-closed-text-fixes-head-21  unhealthy: outside its world: a read call in ${session} names /recorded/scratch/another-role/notes.md, under /recorded/scratch, ${hidden}`,
+      `threads-closed-correct-head-21  unhealthy: outside its world: a read call in ${session} names /recorded/scratch/another-role/notes.md, under /recorded/scratch, ${hidden}`,
       undefined,
     ]);
     expect(refusal(elsewhere.stderr, old)).toBe(unrecorded(old));
@@ -4868,13 +4871,13 @@ describe("health", () => {
       return dir;
     };
     const runs = [
-      recorded("threads-closed-text-fixes-head-45", "empty /etc/gitconfig"),
-      recorded("threads-closed-text-fixes-head-46", "ro /etc/gitconfig"),
+      recorded("threads-closed-correct-head-45", "empty /etc/gitconfig"),
+      recorded("threads-closed-correct-head-46", "ro /etc/gitconfig"),
     ];
     const { code, stdout } = health(...runs);
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      "threads-closed-text-fixes-head-45  healthy",
-      "threads-closed-text-fixes-head-46  healthy",
+      "threads-closed-correct-head-45  healthy",
+      "threads-closed-correct-head-46  healthy",
     ]);
     expect(stdout).toContain("health: outside its world: 0 of 2 runs\n");
     expect(code).toBe(0);
@@ -4890,7 +4893,7 @@ describe("health", () => {
     /** A run of `batch` with the id `id`, its record beside it, whose provenance records the
      * system git configuration /etc/gitconfig at `digest`, or none where that is undefined. */
     const recorded = (n: number, id: string, batch: string, digest?: string) => {
-      const name = `threads-closed-text-fixes-head-${n}`;
+      const name = `threads-closed-correct-head-${n}`;
       const named = worldRun(name, {}).dir;
       const dir = path.join(path.dirname(named), id);
       renameSync(named, dir);
@@ -4899,7 +4902,7 @@ describe("health", () => {
         JSON.stringify({
           run: id,
           scenario: "threads-closed",
-          case: "text-fixes",
+          case: "correct",
           label: "head",
           n,
           name,
@@ -4924,10 +4927,10 @@ describe("health", () => {
     const differ = (other: string, digest: string, theirs: string) =>
       `system git configuration: <run>/services-from records /etc/gitconfig at ${digest}, and ${other} of its batch legion-00000000-1 records /etc/gitconfig at ${theirs}, so the batch's agents' git did not read one pod's system configuration`;
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      `0123456789a1  unhealthy: ${differ("0123456789a2", sha("a"), sha("b"))}  (threads-closed-text-fixes-head-47)`,
-      `0123456789a2  unhealthy: ${differ("0123456789a1", sha("b"), sha("a"))}  (threads-closed-text-fixes-head-48)`,
-      "0123456789a3  healthy  (threads-closed-text-fixes-head-49)",
-      "0123456789a4  healthy  (threads-closed-text-fixes-head-50)",
+      `0123456789a1  unhealthy: ${differ("0123456789a2", sha("a"), sha("b"))}  (threads-closed-correct-head-47)`,
+      `0123456789a2  unhealthy: ${differ("0123456789a1", sha("b"), sha("a"))}  (threads-closed-correct-head-48)`,
+      "0123456789a3  healthy  (threads-closed-correct-head-49)",
+      "0123456789a4  healthy  (threads-closed-correct-head-50)",
     ]);
     expect(stdout).toContain("health: system git configuration: 2 of 4 runs\n");
     expect(code).toBe(1);
@@ -4944,13 +4947,13 @@ describe("health", () => {
     const shm = "/dev/shm/LWEVAL-1-review.json";
     const write: Step = { tool: "write", args: { path: shm, content: "{}" } };
     const read: Step = { tool: "bash", args: { command: `cat ${shm}` } };
-    const writer = worldRun("threads-closed-text-fixes-head-23", {
+    const writer = worldRun("threads-closed-correct-head-23", {
       steps: [at("01:00:00", write)],
     });
     const reader = worldRun("threads-closed-code-defect-head-23", {
       steps: [at("02:00:00", read)],
     });
-    const oldWriter = worldRun("threads-closed-text-fixes-head-24", {
+    const oldWriter = worldRun("threads-closed-correct-head-24", {
       namespace: false,
       before: [],
       steps: [at("01:30:00", write)],
@@ -4965,15 +4968,15 @@ describe("health", () => {
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     // head-24 (text-fixes) predates the namespace and no rule that can judge it fails it.
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      "threads-closed-text-fixes-head-23  healthy",
+      "threads-closed-correct-head-23  healthy",
       "threads-closed-code-defect-head-23  healthy",
       undefined,
-      `threads-closed-code-defect-head-24  unhealthy: another run's write: a bash call in ${session} at 2026-11-14T02:30:00.000Z reads ${shm}, which threads-closed-text-fixes-head-24 wrote at 2026-11-14T01:30:00.000Z (write in ${session})`,
+      `threads-closed-code-defect-head-24  unhealthy: another run's write: a bash call in ${session} at 2026-11-14T02:30:00.000Z reads ${shm}, which threads-closed-correct-head-24 wrote at 2026-11-14T01:30:00.000Z (write in ${session})`,
     ]);
     expect(refusal(stderr, oldWriter.dir)).toBe(unrecorded(oldWriter.dir));
     expect(stdout).toContain("health: another run's write: 1 of 3 runs\n");
     expect(stdout).toContain(
-      `health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-text-fixes-head-24 (${shm}). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 4 runs\n`
+      `health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-correct-head-24 (${shm}). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 4 runs\n`
     );
     expect(code).toBe(2);
   });
@@ -4998,18 +5001,18 @@ describe("health", () => {
       at: "2026-11-14T02:00:00.000Z",
     });
     const shm = "/dev/shm/fetch.sh";
-    const later = worldRun("threads-closed-text-fixes-head-25", {
+    const later = worldRun("threads-closed-correct-head-25", {
       steps: [wrote(shm)],
       others: { reviewer: [ran(shm)] },
     }).dir;
-    const writer = worldRun("threads-closed-text-fixes-head-26", {
+    const writer = worldRun("threads-closed-correct-head-26", {
       steps: [wrote(shm), ran(shm)],
     }).dir;
-    const scratch = worldRun("threads-closed-text-fixes-head-27", {
+    const scratch = worldRun("threads-closed-correct-head-27", {
       steps: [wrote("/tmp/fetch.sh")],
       others: { reviewer: [ran("/tmp/fetch.sh")] },
     }).dir;
-    const old = worldRun("threads-closed-text-fixes-head-28", {
+    const old = worldRun("threads-closed-correct-head-28", {
       namespace: false,
       steps: [wrote(shm)],
       others: { reviewer: [ran(shm)] },
@@ -5021,10 +5024,10 @@ describe("health", () => {
     const reach = (by: string, script: string) =>
       `unhealthy: off-world network: a bash call in ${by} reaches api.github.com (${url}) in ${script}, which a write call in ${implementer} wrote and it runs, no host of the run's world (127.0.0.1, localhost, ::1)`;
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      "threads-closed-text-fixes-head-25  healthy",
-      `threads-closed-text-fixes-head-26  ${reach(implementer, shm)}`,
-      `threads-closed-text-fixes-head-27  ${reach(reviewer, "/tmp/fetch.sh")}`,
-      `threads-closed-text-fixes-head-28  ${reach(reviewer, shm)}`,
+      "threads-closed-correct-head-25  healthy",
+      `threads-closed-correct-head-26  ${reach(implementer, shm)}`,
+      `threads-closed-correct-head-27  ${reach(reviewer, "/tmp/fetch.sh")}`,
+      `threads-closed-correct-head-28  ${reach(reviewer, shm)}`,
     ]);
   });
 
@@ -5039,10 +5042,10 @@ describe("health", () => {
   test("a run that reaches out of its world, by path, process, credential or network, is unhealthy", () => {
     const read = (target: string): Step => ({ tool: "read", args: { path: target } });
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
-    const scratch = worldRun("threads-closed-text-fixes-head-6", {
+    const scratch = worldRun("threads-closed-correct-head-6", {
       steps: [read("/recorded/scratch/another-role/notes.md")],
     }).dir;
-    const otherLabel = worldRun("threads-closed-text-fixes-base-6", {
+    const otherLabel = worldRun("threads-closed-correct-base-6", {
       checkout: "/recorded/base-co",
       steps: [read("/recorded/head-co/skills/legion-worker/references/review-threads.md")],
     }).dir;
@@ -5065,7 +5068,7 @@ describe("health", () => {
       steps: [{ tool: "web_search", args: { query: "legion review threads" } }],
     }).dir;
     const gateway = "http://model-gateway.example.invalid:4000";
-    const own = worldRun("threads-closed-text-fixes-head-7", {
+    const own = worldRun("threads-closed-correct-head-7", {
       checkout: "/recorded/head-co",
       before: [],
       // A world's address off the loopback, as a batch given SKILL_SCENARIOS_NATS_URL has one.
@@ -5093,14 +5096,14 @@ describe("health", () => {
     const hidden = "which the run's world hides and does not show again (rig.sh's world_paths)";
     const loopback = "127.0.0.1, localhost, ::1";
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      `threads-closed-text-fixes-head-6  unhealthy: outside its world: a read call in ${session} names /recorded/scratch/another-role/notes.md, under /recorded/scratch, ${hidden}`,
-      `threads-closed-text-fixes-base-6  unhealthy: outside its world: a read call in ${session} names /recorded/head-co/skills/legion-worker/references/review-threads.md, under /recorded/head-co, ${hidden}`,
+      `threads-closed-correct-head-6  unhealthy: outside its world: a read call in ${session} names /recorded/scratch/another-role/notes.md, under /recorded/scratch, ${hidden}`,
+      `threads-closed-correct-base-6  unhealthy: outside its world: a read call in ${session} names /recorded/head-co/skills/legion-worker/references/review-threads.md, under /recorded/head-co, ${hidden}`,
       `threads-closed-code-defect-head-6  unhealthy: another process: a bash call in ${session} reads /proc/1/environ, a process the run does not own`,
       `threads-closed-code-defect-head-7  unhealthy: credentials: a read call in ${session} names /var/run/legion/private/token, under /var/run/legion`,
       `threads-closed-code-defect-head-8  unhealthy: off-world network: a bash call in ${session} reaches api.github.com (https://api.github.com/repos/cybermonklabs/legion/pulls/2827), no host of the run's world (${loopback})`,
       `threads-closed-code-defect-head-9  unhealthy: off-world network: a read call in ${session} reaches github.com (https://github.com/cybermonklabs/legion/blob/main/README.md), no host of the run's world (${loopback})`,
       `threads-closed-code-defect-base-6  unhealthy: off-world network: a web_search call in ${session} searches the web, which no host of the run's world serves`,
-      "threads-closed-text-fixes-head-7  healthy",
+      "threads-closed-correct-head-7  healthy",
     ]);
     for (const [rule, count] of [
       ["outside its world", 2],
@@ -5123,11 +5126,11 @@ describe("health", () => {
   // (packages/daemon/internal/prompts/go/worker-common.md: `export DISPATCH_URL="$(tr '\0' '\n' <
   // /proc/$$/environ | sed -n 's/^DISPATCH_URL=//p')"`): two runs of the 2026-11-16 batch that
   // looked their session id up that way were called unhealthy and replaced
-  // (reviewer-text-findings-text-only-base-3, threads-closed-text-fixes-head-1). And the other
+  // (reviewer-text-findings-text-only-base-3, threads-closed-correct-head-1). And the other
   // way: a variable or a glob that can name another process read as the caller's own.
   test("a read of the caller's own shell's environment is no other process's, and a variable or a glob in its place still is", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
-    const own = worldRun("threads-closed-text-fixes-head-21", {
+    const own = worldRun("threads-closed-correct-head-21", {
       namespace: false,
       steps: [
         bash(
@@ -5138,11 +5141,11 @@ describe("health", () => {
         bash(["cat /proc/$", "{BASHPID}/cmdline"].join("")),
       ],
     }).dir;
-    const variable = worldRun("threads-closed-text-fixes-head-22", {
+    const variable = worldRun("threads-closed-correct-head-22", {
       namespace: false,
       steps: [bash("tr '\\0' '\\n' < /proc/$pid/environ | grep DISPATCH")],
     }).dir;
-    const glob = worldRun("threads-closed-text-fixes-head-23", {
+    const glob = worldRun("threads-closed-correct-head-23", {
       namespace: false,
       steps: [bash("cat /proc/*/environ | tr '\\0' '\\n' | grep DISPATCH")],
     }).dir;
@@ -5151,8 +5154,8 @@ describe("health", () => {
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
       undefined,
-      `threads-closed-text-fixes-head-22  unhealthy: another process: a bash call in ${session} reads /proc/$pid/environ, a process the run does not own`,
-      `threads-closed-text-fixes-head-23  unhealthy: another process: a bash call in ${session} reads /proc/*/environ, a process the run does not own`,
+      `threads-closed-correct-head-22  unhealthy: another process: a bash call in ${session} reads /proc/$pid/environ, a process the run does not own`,
+      `threads-closed-correct-head-23  unhealthy: another process: a bash call in ${session} reads /proc/*/environ, a process the run does not own`,
     ]);
     expect(refusal(stderr, own)).toBe(unrecorded(own));
   });
@@ -5161,7 +5164,7 @@ describe("health", () => {
   // -p --fork --mount-proc`), so its /proc is that namespace's and every process it shows,
   // PID 1 among them, is the run's own; a run from before the rig made a namespace (no
   // <run>/namespace.txt) shared the pod's processes. Measured in INFRA-764 round 25
-  // (not-counted/2e4bff83420a, threads-closed-text-fixes-head-2, which holds namespace.txt): the
+  // (not-counted/2e4bff83420a, threads-closed-correct-head-2, which holds namespace.txt): the
   // reviewer looked its own session id up with `tr '\0' '\n' < /proc/1/environ`, read
   // "unhealthy: another process", and was replaced. Catches: a namespaced run's own PID 1, or any
   // other PID its /proc shows, read as another process; and a run with no namespace let through
@@ -5252,7 +5255,7 @@ describe("health", () => {
         [[complete(409, NOT_CURRENT, "reviewer")]],
         { checkout: CHECKOUT }
       );
-      const world = worldRun("threads-closed-text-fixes-head-38", {
+      const world = worldRun("threads-closed-correct-head-38", {
         steps: [{ tool: "read", args: { path: "/recorded/scratch/another-role/notes.md" } }],
       }).dir;
       const populated = freshDir("populated-work");
@@ -5278,7 +5281,7 @@ describe("health", () => {
       expect(judged[0]?.code).toBe(1);
       expect([daemon, world].map((dir) => verdict(judged[0]?.stdout ?? "", dir))).toEqual([
         "reviewer-text-findings-text-only-head-14  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE, which the head label's daemon does not answer it with in this world",
-        "threads-closed-text-fixes-head-38  unhealthy: outside its world: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /recorded/scratch/another-role/notes.md, under /recorded/scratch, which the run's world hides and does not show again (rig.sh's world_paths)",
+        "threads-closed-correct-head-38  unhealthy: outside its world: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /recorded/scratch/another-role/notes.md, under /recorded/scratch, which the run's world hides and does not show again (rig.sh's world_paths)",
       ]);
     }
   );
@@ -5293,15 +5296,15 @@ describe("health", () => {
   test("a run whose agent printed its GitHub token is unhealthy for it, and gh auth status alone is healthy", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
     const status = "^gh auth status( |$)";
-    const token = worldRun("threads-closed-text-fixes-head-31", {
+    const token = worldRun("threads-closed-correct-head-31", {
       steps: [bash("gh auth token")],
       calls: [{ ...gh("reviewer", ["auth", "token"], 1, null), handler: "unrouted" }],
     }).dir;
-    const shown = worldRun("threads-closed-text-fixes-head-32", {
+    const shown = worldRun("threads-closed-correct-head-32", {
       steps: [bash("gh auth status -t")],
       calls: [{ ...gh("reviewer", ["auth", "status", "-t"], 1, status), handler: "unrouted" }],
     }).dir;
-    const plain = worldRun("threads-closed-text-fixes-head-33", {
+    const plain = worldRun("threads-closed-correct-head-33", {
       steps: [bash("gh auth status")],
       calls: [{ ...gh("reviewer", ["auth", "status"], 0, status), handler: "auth-status" }],
     }).dir;
@@ -5311,9 +5314,9 @@ describe("health", () => {
     const printed = (call: string) =>
       `unhealthy: credential printed: a bash call in ${session} runs \`${call}\`, which prints the run's GitHub token`;
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      `threads-closed-text-fixes-head-31  ${printed("gh auth token")}`,
-      `threads-closed-text-fixes-head-32  ${printed("gh auth status -t")}`,
-      "threads-closed-text-fixes-head-33  healthy",
+      `threads-closed-correct-head-31  ${printed("gh auth token")}`,
+      `threads-closed-correct-head-32  ${printed("gh auth status -t")}`,
+      "threads-closed-correct-head-33  healthy",
     ]);
     expect(stdout).toContain("health: credential printed: 2 of 3 runs\n");
   });
@@ -5331,20 +5334,20 @@ describe("health", () => {
     const view = gh("reviewer", ["pr", "view", "1001"], 0, "^gh pr view( |$)");
     const telemetry = { ...gh("reviewer", ["send-telemetry"], 1, null), handler: "unrouted" };
     const put = ["api", "--method", "PUT", "repos/example/widgets/pulls/1001/reviews/5002"];
-    const typedOnlyView = worldRun("threads-closed-text-fixes-head-34", {
+    const typedOnlyView = worldRun("threads-closed-correct-head-34", {
       steps: [bash("gh pr view 1001")],
       calls: [{ ...view, handler: "pull-request" }, telemetry],
     }).dir;
-    const typedTelemetry = worldRun("threads-closed-text-fixes-head-35", {
+    const typedTelemetry = worldRun("threads-closed-correct-head-35", {
       steps: [bash("echo '{}' | gh send-telemetry")],
       calls: [telemetry],
     }).dir;
-    const builtEndpoint = worldRun("threads-closed-text-fixes-head-36", {
+    const builtEndpoint = worldRun("threads-closed-correct-head-36", {
       steps: [bash('ep=repos/example/widgets/pulls/1001/reviews/5002; gh api --method PUT "$ep"')],
       calls: [{ ...gh("reviewer", put, 1, null), handler: "unrouted" }],
     }).dir;
     // A script the agent wrote and ran is its own, as rule 13 reads one.
-    const ranScript = worldRun("threads-closed-text-fixes-head-37", {
+    const ranScript = worldRun("threads-closed-correct-head-37", {
       steps: [
         { tool: "write", args: { path: "post.sh", content: "#!/bin/sh\ngh send-telemetry\n" } },
         bash("sh post.sh"),
@@ -5356,10 +5359,10 @@ describe("health", () => {
     const refused = (line: number, call: string) =>
       `unhealthy: unmodelled write: calls.jsonl:${line}, \`gh ${call}\` of the reviewer, exited 1: no route or answer of the world models it, so it was refused 404 where GitHub takes it`;
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      "threads-closed-text-fixes-head-34  healthy",
-      `threads-closed-text-fixes-head-35  ${refused(2, "send-telemetry")}`,
-      `threads-closed-text-fixes-head-36  ${refused(2, put.join(" "))}`,
-      `threads-closed-text-fixes-head-37  ${refused(2, "send-telemetry")}`,
+      "threads-closed-correct-head-34  healthy",
+      `threads-closed-correct-head-35  ${refused(2, "send-telemetry")}`,
+      `threads-closed-correct-head-36  ${refused(2, put.join(" "))}`,
+      `threads-closed-correct-head-37  ${refused(2, "send-telemetry")}`,
     ]);
   });
 
@@ -5457,13 +5460,13 @@ describe("health", () => {
   // as reaching any.
   test("a bash call that reaches a host with no scheme is off its world", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
-    const scp = worldRun("threads-closed-text-fixes-head-6", {
+    const scp = worldRun("threads-closed-correct-head-6", {
       steps: [bash("git clone git@github.com:cybermonklabs/legion.git src")],
     }).dir;
-    const bare = worldRun("threads-closed-text-fixes-head-7", {
+    const bare = worldRun("threads-closed-correct-head-7", {
       steps: [bash("curl -sS api.github.com/repos/cybermonklabs/legion")],
     }).dir;
-    const hostname = worldRun("threads-closed-text-fixes-head-8", {
+    const hostname = worldRun("threads-closed-correct-head-8", {
       steps: [bash("gh api --hostname ghe.example.com repos/cybermonklabs/legion/pulls/2827")],
     }).dir;
     const joined = worldRun("threads-closed-code-defect-head-6", {
@@ -5472,7 +5475,7 @@ describe("health", () => {
     const real = worldRun("threads-closed-code-defect-head-7", {
       steps: [bash("/usr/bin/gh pr view 1001")],
     });
-    const local = worldRun("threads-closed-text-fixes-head-9", {
+    const local = worldRun("threads-closed-correct-head-9", {
       steps: [
         bash("curl -sS -o report.json http://127.0.0.1:4101/api/v1/whoami"),
         bash("git -C ws remote add origin ../remote.git && git -C ws fetch origin"),
@@ -5485,12 +5488,12 @@ describe("health", () => {
     const off = (named: string, host: string) =>
       `off-world network: a bash call in ${session} reaches ${host} (${named}), no host of the run's world (127.0.0.1, localhost, ::1)`;
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      `threads-closed-text-fixes-head-6  unhealthy: ${off("git@github.com:cybermonklabs/legion.git", "github.com")}`,
-      `threads-closed-text-fixes-head-7  unhealthy: ${off("api.github.com/repos/cybermonklabs/legion", "api.github.com")}`,
-      `threads-closed-text-fixes-head-8  unhealthy: off-world network: a bash call in ${session} reaches ghe.example.com (ghe.example.com), no host the run's gh serves (github.com, 127.0.0.1, localhost, ::1)`,
+      `threads-closed-correct-head-6  unhealthy: ${off("git@github.com:cybermonklabs/legion.git", "github.com")}`,
+      `threads-closed-correct-head-7  unhealthy: ${off("api.github.com/repos/cybermonklabs/legion", "api.github.com")}`,
+      `threads-closed-correct-head-8  unhealthy: off-world network: a bash call in ${session} reaches ghe.example.com (ghe.example.com), no host the run's gh serves (github.com, 127.0.0.1, localhost, ::1)`,
       "threads-closed-code-defect-head-6  healthy",
       `threads-closed-code-defect-head-7  unhealthy: off-world network: a bash call in ${session} reaches github.com (/usr/bin/gh), a gh that is not the run's own stand-in (${real.dir}/bin/gh, ${real.ran}/bin/gh), and no world of this rig serves another`,
-      "threads-closed-text-fixes-head-9  healthy",
+      "threads-closed-correct-head-9  healthy",
     ]);
   });
 
@@ -5500,20 +5503,20 @@ describe("health", () => {
   test("a URL in text a command writes is no reach, and a curl beside it still is", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
     const link = "https://github.com/cybermonklabs/legion/pull/2827";
-    const comment = worldRun("threads-closed-text-fixes-head-6", {
+    const comment = worldRun("threads-closed-correct-head-6", {
       steps: [
         bash(`gh pr comment 1001 --body 'see ${link}'`),
         bash(`git commit -m "Answer ${link}" && gh pr create --title "${link}" --body="${link}"`),
       ],
     }).dir;
-    const field = worldRun("threads-closed-text-fixes-head-7", {
+    const field = worldRun("threads-closed-correct-head-7", {
       steps: [
         bash(
           `gh api -f body='${link}' -F title="${link}" repos/example/widgets/pulls/1001/comments`
         ),
       ],
     }).dir;
-    const beside = worldRun("threads-closed-text-fixes-head-8", {
+    const beside = worldRun("threads-closed-correct-head-8", {
       steps: [
         bash(
           `gh pr comment 1001 --body 'see ${link}' && curl -sS https://github.com/cybermonklabs/legion`
@@ -5523,9 +5526,9 @@ describe("health", () => {
     const runs = [comment, field, beside];
     const { stdout } = health(...runs);
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      "threads-closed-text-fixes-head-6  healthy",
-      "threads-closed-text-fixes-head-7  healthy",
-      "threads-closed-text-fixes-head-8  unhealthy: off-world network: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl reaches github.com (https://github.com/cybermonklabs/legion), no host of the run's world (127.0.0.1, localhost, ::1)",
+      "threads-closed-correct-head-6  healthy",
+      "threads-closed-correct-head-7  healthy",
+      "threads-closed-correct-head-8  unhealthy: off-world network: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl reaches github.com (https://github.com/cybermonklabs/legion), no host of the run's world (127.0.0.1, localhost, ::1)",
     ]);
   });
 
@@ -5639,13 +5642,13 @@ describe("health", () => {
       [[complete(200, undefined, "reviewer")]],
       { provenance: false }
     );
-    const shared = run("threads-closed-text-fixes-head-9", [[]], {
+    const shared = run("threads-closed-correct-head-9", [[]], {
       provenance: servicesFrom(RUN_CHECKOUT).replace(
         `envoy-listener label ${RUN_CHECKOUT}`,
         `envoy-listener shared ${RUN_CHECKOUT}`
       ),
     });
-    const unnamed = run("threads-closed-text-fixes-head-10", [[]]);
+    const unnamed = run("threads-closed-correct-head-10", [[]]);
     writeFileSync(path.join(unnamed, "built-from"), "skills 00\n");
     const { code, stdout } = health(missing, shared, unnamed);
     expect(code).toBe(1);
@@ -5653,10 +5656,10 @@ describe("health", () => {
       "reviewer-text-findings-defect-head-4  unhealthy: no service provenance: the run has no <run>/services-from, so which checkout its Envoy listener and its other services came from is unknown"
     );
     expect(verdict(stdout, shared)).toBe(
-      `threads-closed-text-fixes-head-9  unhealthy: service provenance: <run>/services-from names no envoy-listener of the head label's own checkout (${RUN_CHECKOUT})`
+      `threads-closed-correct-head-9  unhealthy: service provenance: <run>/services-from names no envoy-listener of the head label's own checkout (${RUN_CHECKOUT})`
     );
     expect(verdict(stdout, unnamed)).toContain(
-      "threads-closed-text-fixes-head-10  unhealthy: service provenance unknown: "
+      "threads-closed-correct-head-10  unhealthy: service provenance unknown: "
     );
     expect(verdict(stdout, unnamed)).toContain("names no checkout");
   });
@@ -5672,7 +5675,7 @@ describe("health", () => {
       return dir;
     };
     const { stdout } = health(
-      relaunched("threads-closed-text-fixes-base-11", ["implementer", "reviewer"]),
+      relaunched("threads-closed-correct-base-11", ["implementer", "reviewer"]),
       relaunched("threads-closed-code-defect-base-11", ["implementer"]),
       relaunched("threads-closed-code-defect-base-12", []),
       relaunched("threads-closed-code-defect-head-15", [])
@@ -5687,7 +5690,7 @@ describe("health", () => {
 
   // Kept from the tester's fixture of 2026-11-14 (health-fixture/, retired by the architect's
   // ruling of 2026-11-18): its completion lines as the stand-in wrote them then, a field order of
-  // their own (threads-closed-text-fixes-base-1's implementer refusal, -head-2's reviewer
+  // their own (threads-closed-correct-base-1's implementer refusal, -head-2's reviewer
   // refusal), and a daemon.log line that is no JSON (threads-closed-code-defect-base-1's). Its
   // role-less 409 and its head reviewer's late refusal after its own 200 and before it are the
   // rows "a completion line naming no role…" and "a head reviewer refused not-current-phase…"
@@ -5697,7 +5700,7 @@ describe("health", () => {
   test.skipIf(withoutGo)(
     "a completion line is read by its fields in any order, and a daemon.log line that is no JSON is an unreadable record",
     () => {
-      const implementer = run("threads-closed-text-fixes-base-1", [
+      const implementer = run("threads-closed-correct-base-1", [
         [
           {
             code: NOT_CURRENT,
@@ -5710,7 +5713,7 @@ describe("health", () => {
         [],
       ]);
       const reviewer = run(
-        "threads-closed-text-fixes-head-2",
+        "threads-closed-correct-head-2",
         [
           [],
           [
@@ -5731,8 +5734,8 @@ describe("health", () => {
       const { code, stdout } = health(implementer, reviewer, unparsed);
       expect(code).toBe(1);
       expect([implementer, reviewer, unparsed].map((dir) => verdict(stdout, dir))).toEqual([
-        "threads-closed-text-fixes-base-1  healthy",
-        "threads-closed-text-fixes-head-2  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_RECORD_MISMATCH, which the head label's daemon does not answer it with in this world",
+        "threads-closed-correct-base-1  healthy",
+        "threads-closed-correct-head-2  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_RECORD_MISMATCH, which the head label's daemon does not answer it with in this world",
         'threads-closed-code-defect-base-1  unhealthy: unreadable record: JSON Parse error: Unexpected identifier "not"',
       ]);
     }
@@ -7421,14 +7424,17 @@ describe("the world answers every gh call the census found refused", () => {
     input_file?: string;
     input_body?: Record<string, unknown>;
   }[];
-  /** The world each scenario case boots (rig.sh's worker_fixture). */
-  const WORLD_OF: Record<string, [string, string]> = {
-    "reviewer-text-findings-text-only": ["review_world", ""],
-    "reviewer-text-findings-defect": ["review_world", "dropped"],
-    "threads-closed-text-fixes": ["approved_world", ""],
-    "threads-closed-code-defect": ["approved_world", "dropped"],
+  /** The world each scenario case boots (rig.sh's worker_fixture): its function, its guard and its
+   * case. The census's threads-closed runs are of the retired text-fixes case, whose approved
+   * world with its threads open in `reviewing` is correct's today, so their records are made again
+   * there. */
+  const WORLD_OF: Record<string, [string, string, string]> = {
+    "reviewer-text-findings-text-only": ["review_world", "", ""],
+    "reviewer-text-findings-defect": ["review_world", "dropped", ""],
+    "threads-closed-text-fixes": ["approved_world", "", "correct"],
+    "threads-closed-code-defect": ["approved_world", "dropped", "code-defect"],
   };
-  function build(world: string, guard: string): string {
+  function build(world: string, guard: string, scenarioCase: string): string {
     const dir = freshDir(`gh-refused-${world}`);
     const result = bash(
       [
@@ -7461,9 +7467,9 @@ describe("the world answers every gh call the census found refused", () => {
         assignment("world_login"),
         ...WORLD_APPS.map(assignment),
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
-        `${world} 1 100 "$2"`,
+        `${world} 1 100 "$2" "$3"`,
       ].join("\n"),
-      [dir, guard]
+      [dir, guard, scenarioCase]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     writeGhSelectors(dir);
@@ -7491,8 +7497,8 @@ describe("the world answers every gh call the census found refused", () => {
     refused.map((call) => [`${call.batch}/${call.run}/calls.jsonl:${call.line}`, call] as const)
   )("%s is answered as GitHub answers it", (_, call) => {
     const [, scenarioCase = ""] = /^(.*)-(?:base|head)-\d+$/.exec(call.run) ?? [];
-    const [world, guard] = WORLD_OF[scenarioCase] ?? ["", ""];
-    const dir = build(world, guard);
+    const [world, guard, worldCase] = WORLD_OF[scenarioCase] ?? ["", "", ""];
+    const dir = build(world, guard, worldCase);
     const head = (
       JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")) as { head: string }
     ).head;
@@ -7521,7 +7527,7 @@ describe("the world answers every gh call the census found refused", () => {
         ? ["PRRT_kwDOrig0001"]
         : guard === "dropped"
           ? ["PRRT_kwDOfix101"]
-          : ["PRRT_kwDOfix001", "PRRT_kwDOfix002"];
+          : ["PRRT_kwDOfix002"];
     if (/\/issues\/\d+\/comments/.test(text)) {
       expect(got).toMatchObject({ code: 0, err: "" });
       expect([plain.code, JSON.parse(plain.out)]).toEqual([0, []]);
@@ -9619,7 +9625,7 @@ sleep() { command sleep 0.05; }`;
       { mode: 0o755 }
     );
     for (const [dir, file] of [
-      [runDirOf(work, "threads-closed-text-fixes-head-9"), "pointer"],
+      [runDirOf(work, "threads-closed-correct-head-9"), "pointer"],
       [path.join(work, "archive", "runs", "0a0b0c0d0e0f"), "pointer"],
     ] as const) {
       mkdirSync(dir, { recursive: true });
@@ -9889,9 +9895,9 @@ sleep() { command sleep 0.05; }`;
     () => {
       const work = freshDir("launch-world");
       const marker = `launch-marker-${path.basename(work)}`;
-      const name = "threads-closed-text-fixes-head-1";
+      const name = "threads-closed-correct-head-1";
       const own = runDirOf(work, name);
-      const sibling = runDirOf(work, "threads-closed-text-fixes-head-9");
+      const sibling = runDirOf(work, "threads-closed-correct-head-9");
       const others = `${sibling}/pointer ${work}/archive/runs/0a0b0c0d0e0f/pointer`;
       const { run, result, out } = launched(
         work,
@@ -9955,7 +9961,7 @@ sleep() { command sleep 0.05; }`;
       symlinkSync(store, path.join(tree, "bin"));
       const { run, result, out } = launched(
         work,
-        "threads-closed-text-fixes-head-1",
+        "threads-closed-correct-head-1",
         `hello; "$(dirname "$HOME")/bin/gh" --open; echo "gh=$?"`,
         [],
         {
@@ -9979,11 +9985,11 @@ sleep() { command sleep 0.05; }`;
   test.skipIf(withoutNamespace)("a file one run writes to /tmp is absent in the next run", () => {
     const work = freshDir("launch-next");
     const marker = `next-marker-${path.basename(work)}`;
-    const first = launched(work, "threads-closed-text-fixes-head-1", `echo first >/tmp/${marker}`);
+    const first = launched(work, "threads-closed-correct-head-1", `echo first >/tmp/${marker}`);
     expect(first.result.code).toBe(0);
     const second = launched(
       work,
-      "threads-closed-text-fixes-head-2",
+      "threads-closed-correct-head-2",
       `cat /tmp/${marker} 2>/dev/null || echo absent`
     );
     expect(second.out).toBe("absent\nexit=0\n");
@@ -10001,7 +10007,7 @@ sleep() { command sleep 0.05; }`;
       writeFileSync(planted, "another role's notes\n");
       const { run, result, out } = launched(
         work,
-        "threads-closed-text-fixes-head-1",
+        "threads-closed-correct-head-1",
         `cat ${planted} 2>/dev/null || echo absent`
       );
       expect(result.code).toBe(0);
@@ -10025,7 +10031,7 @@ sleep() { command sleep 0.05; }`;
       writeFileSync(guard, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
       const install = installOf(work, "head");
       mkdirSync(path.join(install, "key"), { recursive: true });
-      const name = "threads-closed-text-fixes-head-1";
+      const name = "threads-closed-correct-head-1";
       const R = runDirOf(work, name);
       const needed = [
         `rw ${R}`,
@@ -10079,7 +10085,7 @@ sleep() { command sleep 0.05; }`;
     "the services' logs read empty inside a run and stay whole outside it, and the guard passes the rig's records over",
     () => {
       const work = freshDir("launch-records");
-      const name = "threads-closed-text-fixes-head-1";
+      const name = "threads-closed-correct-head-1";
       const R = runDirOf(work, name);
       const records = {
         "services-from": "gh-standin.ts shared /co/packages/pi-legion/scripts/skill-scenarios -\n",
@@ -10118,7 +10124,7 @@ sleep() { command sleep 0.05; }`;
     const copy = path.join(freshDir("guard-copy"), "leak-check");
     cpSync(path.dirname(shared), copy, { recursive: true });
     const check = path.join(copy, path.basename(shared));
-    const name = "threads-closed-text-fixes-head-1";
+    const name = "threads-closed-correct-head-1";
     const R = runDirOf(work, name);
     const git = "/usr/bin/git -c user.name=A -c user.email=a@example.invalid";
     const { result, out } = launched(
@@ -10161,7 +10167,7 @@ sleep() { command sleep 0.05; }`;
       const marker = `CALLER_MARKER_${path.basename(work).replace(/\W/g, "_")}`;
       const { result, out } = launched(
         work,
-        "threads-closed-text-fixes-head-1",
+        "threads-closed-correct-head-1",
         `echo "marked=$(tr '\\0' '\\n' </proc/1/environ | grep -c ${marker})"`,
         [],
         {
@@ -10192,7 +10198,7 @@ sleep() { command sleep 0.05; }`;
       const work = freshDir("launch-pids");
       const outside = Bun.spawn(["sh", "-c", "sleep 30", "Legion Tester Deployment instructions"]);
       try {
-        const name = "threads-closed-text-fixes-head-1";
+        const name = "threads-closed-correct-head-1";
         const R = runDirOf(work, name);
         const { result, out } = launched(
           work,
@@ -10225,7 +10231,7 @@ sleep() { command sleep 0.05; }`;
     "inside a run the pod's credentials and workspaces are hidden, and the model route's key is not",
     () => {
       const work = freshDir("launch-credentials");
-      const name = "threads-closed-text-fixes-head-1";
+      const name = "threads-closed-correct-head-1";
       const R = runDirOf(work, name);
       const { run, result, out } = launched(
         work,
@@ -10309,7 +10315,7 @@ sleep() { command sleep 0.05; }`;
         "absent tree-at-0123456",
         "absent widgets-7",
       ];
-      const base = launched(work, "threads-closed-text-fixes-base-1", agent, [], options("base"));
+      const base = launched(work, "threads-closed-correct-base-1", agent, [], options("base"));
       expect(base.result).toMatchObject({ code: 0, stderr: "" });
       expect(base.out.split("\n")).toEqual([
         ...absent,
@@ -10318,7 +10324,7 @@ sleep() { command sleep 0.05; }`;
         "exit=0",
         "",
       ]);
-      const head = launched(work, "threads-closed-text-fixes-head-1", agent, [], options("head"));
+      const head = launched(work, "threads-closed-correct-head-1", agent, [], options("head"));
       expect(head.result).toMatchObject({ code: 0, stderr: "" });
       expect(head.out.split("\n")).toEqual([
         ...absent,
@@ -10335,7 +10341,7 @@ sleep() { command sleep 0.05; }`;
   // exited 1. The launch fails, naming the refusal, and the agent never starts.
   test("a namespace the host refuses at launch fails the launch, naming the refusal", () => {
     const work = freshDir("launch-refused");
-    const name = "threads-closed-text-fixes-head-1";
+    const name = "threads-closed-correct-head-1";
     const { run, result } = launched(
       work,
       name,
@@ -10357,7 +10363,7 @@ sleep() { command sleep 0.05; }`;
   test("a world that shows a path holding a hidden one is refused before the agent starts", () => {
     const top = freshDir("launch-holds");
     const work = path.join(top, "scratch", "work");
-    const name = "threads-closed-text-fixes-head-1";
+    const name = "threads-closed-correct-head-1";
     const { run, result } = launched(
       work,
       name,
@@ -10417,12 +10423,12 @@ sleep() { command sleep 0.05; }`;
     "nothing a run's processes can read inside its namespace names a scenario, case, label or removed name",
     () => {
       const work = freshDir("launch-vocabulary");
-      const name = "threads-closed-text-fixes-head-1";
+      const name = "threads-closed-correct-head-1";
       const project = bash(
         [
           fn("run_project"),
           assignment("worker_repo"),
-          "run_project threads-closed text-fixes head 1 t-100",
+          "run_project threads-closed correct head 1 t-100",
         ].join("\n")
       ).stdout.trim();
       const role = "reviewer";
@@ -10482,7 +10488,7 @@ sleep() { command sleep 0.05; }`;
   // every bind's host source is in /proc/self/mountinfo, so a work directory holding a removed
   // name fails the run as the run's own path does.
   test("a scenario, case, label or removed name planted in any one place the agent reads refuses the launch", () => {
-    const name = "threads-closed-text-fixes-head-1";
+    const name = "threads-closed-correct-head-1";
     const plants: {
       what: string;
       word: string;
@@ -10543,7 +10549,7 @@ sleep() { command sleep 0.05; }`;
       },
       {
         what: "the session directory",
-        word: "text-fixes",
+        word: "correct",
         place: "its session directory",
         options: (work) => ({
           env: { sessions_dir: `${runDirOf(work, name)}/sessions/text-fixes` },
@@ -10615,7 +10621,7 @@ sleep() { command sleep 0.05; }`;
   // prompt the guard cannot hold to the vocabulary: each refuses the launch, naming the run and
   // what it found, and the agent does not start.
   test("a system prompt the guard cannot read refuses the launch", () => {
-    const name = "threads-closed-text-fixes-head-1";
+    const name = "threads-closed-correct-head-1";
     const rows: {
       what: string;
       refusal: string;
@@ -10670,13 +10676,13 @@ sleep() { command sleep 0.05; }`;
   // was refused on `var SPEC_WRITING_POINTER` in pi-legion's dist/legion.js, a production name,
   // and the head's passed only because its legion.js was over a size bound, so the plant here is
   // small. And what the run has written before a later agent's launch holds the agents' own
-  // words: the first agent's transcript refused threads-closed-text-fixes-head-1's reviewer. Each
+  // words: the first agent's transcript refused threads-closed-correct-head-1's reviewer. Each
   // row plants a word in one such file, and the agent starts, so the row needs the namespace the
   // agent starts in, as its siblings that start one do.
   test.skipIf(withoutNamespace)(
     "a word in the label's install or in what the run wrote does not refuse the launch",
     () => {
-      const name = "threads-closed-text-fixes-head-1";
+      const name = "threads-closed-correct-head-1";
       const plants: { what: string; options: (work: string) => Launch }[] = [
         {
           what: "the label's packed plugin",
@@ -12009,7 +12015,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     }, 300_000);
 
     test("text-fixes: the approved round's issue is in needs_review with both passes standing, and only its two text findings are true", () => {
-      const world = seededWorld("text-fixes");
+      const world = seededWorld("correct");
       expect(issueState(world)).toEqual(
         expectedState(world, "needs_review", "yes, from tester, implementer")
       );
@@ -12039,7 +12045,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     // with the approved head and says a pass stands (measured 2026-11-16), which 3 of 20 recorded
     // text-fixes implementers read.
     test("text-fixes after the implementer's push: k1 compares with the pushed head the watcher stored, and no pass stands there, as production answers", () => {
-      const world = seededWorld("text-fixes", true);
+      const world = seededWorld("correct", true);
       expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
       expect(readFileSync(path.join(world.run, "heads.txt"), "utf8")).toContain(
         `"pushed":"${world.head}","ok":true`
@@ -12154,7 +12160,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     // the record names live (the daemon's role-holder publication: daemon-standin.ts's
     // `queueHolders`), which the real Dispatch of the world refuses or the stand-in never sent.
     test("threads-closed's text-fixes world: the record its implementer reads holds each seeded round, gh's pull request and the approved spec", () => {
-      const world = seededWorld("text-fixes", false, {
+      const world = seededWorld("correct", false, {
         role: "implementer",
         phase: "reviewing",
         completed: "implementer",

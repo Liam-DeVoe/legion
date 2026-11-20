@@ -28,21 +28,19 @@ import { z } from "zod";
 
 /** Every scenario rig.sh runs, by the name `rig.sh batch` and `rig.sh run` take: the variable
  * that names its case (rig.sh's scenario_case reads it through `caseOf`), the cases it takes, in
- * the order a refusal lists them, the case an unset variable gives, where unset is a case, and
- * `world: "worker"` where rig.sh builds it a worker world (worker_run_world): a Legion issue whose
- * seeds record results at the world's pull request, which the run's Dispatch checks against its
- * GitHub at the seed (github-routes.ts, measured), and whose head watcher it starts (start_heads).
- * A scenario with no cases takes none. It is the rig's one scenario table: the cases a run may be
- * built for, the cases score.ts and health read back, the worlds health holds to the GitHub and
- * head records (rules 18 and 19), and the words the vocabulary holds (`vocabulary`) are all this
- * table. */
+ * the order a refusal lists them, and `world: "worker"` where rig.sh builds it a worker world
+ * (worker_run_world): a Legion issue whose seeds record results at the world's pull request,
+ * which the run's Dispatch checks against its GitHub at the seed (github-routes.ts, measured), and
+ * whose head watcher it starts (start_heads). A scenario with no cases takes none. It is the rig's
+ * one scenario table: the cases a run may be built for, the cases score.ts and health read back,
+ * the worlds health holds to the GitHub and head records (rules 18 and 19), and the words the
+ * vocabulary holds (`vocabulary`) are all this table. */
 export const SCENARIOS: Readonly<
   Record<
     string,
     {
       readonly variable?: string;
       readonly cases: readonly string[];
-      readonly unset?: string;
       readonly world?: "worker";
     }
   >
@@ -55,12 +53,11 @@ export const SCENARIOS: Readonly<
     cases: ["text-only", "defect"],
     world: "worker",
   },
-  // Unset is text-fixes, the scenario's measured arm, which the check that runs it names no
-  // variable for.
+  // No case is a default: Verification v38's k2 names the case of every batch it runs, as k1 does
+  // reviewer-text-findings', so an unset variable is refused rather than read as one of them.
   "threads-closed": {
     variable: "SKILL_SCENARIOS_THREADS_CASE",
-    cases: ["text-fixes", "code-defect"],
-    unset: "text-fixes",
+    cases: ["accept", "correct", "code-defect"],
     world: "worker",
   },
   brainstorm: { cases: [] },
@@ -101,11 +98,10 @@ export function caseOf(
   const entry = SCENARIOS[scenario];
   if (entry === undefined) throw new Error(`unknown scenario ${scenario}`);
   if (entry.variable === undefined) return "";
-  const given = env[entry.variable] ?? "";
-  const value = given === "" ? (entry.unset ?? "") : given;
+  const value = env[entry.variable] ?? "";
   if (!entry.cases.includes(value))
     throw new Error(
-      `${entry.variable} is '${given}', not ${entry.cases.slice(0, -1).join(", ")} or ${entry.cases.at(-1)}`
+      `${entry.variable} is '${value}', not ${entry.cases.slice(0, -1).join(", ")} or ${entry.cases.at(-1)}`
     );
   return value;
 }
@@ -384,8 +380,8 @@ export function proseNames(sentence: string, vocab: Vocabulary): string | undefi
 
 /** Whether `text`, an input an agent was given or a thing it wrote, holds `word`, a word
  * `proseNames` read in a sentence: where a word starts and ends (no letter or digit beside it, an
- * underscore read as a hyphen), so a path that names a run (`runs/threads-closed-text-fixes-
- * head-1/`) holds its scenario word, and a space in a pair (`defect head`) is a space or a
+ * underscore read as a hyphen), so a path that names a run (`runs/threads-closed-correct-head-1/`)
+ * holds its scenario word, and a space in a pair (`defect head`) is a space or a
  * hyphen; a removed name or a name of the world's remote where a word starts, whatever follows
  * it, as `removedIn` reads it (`rig-` in `rig-reviewer`). */
 export function holds(text: string, word: string): boolean {
