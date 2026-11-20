@@ -255,7 +255,7 @@ function createPending(dir: string, review: object): void {
 // pending one answers the review carrying the head it was left at. The rig's create route matched
 // that path too and answered `{id, html_url}` — a submission with no `commit_id` — and the score,
 // which reads the last submission as the one that stands, failed a run whose reviewer had
-// approved correctly at the head its push made (the text-fixes head arm of 2026-11-11, one run of
+// approved correctly at the head its push made (threads-closed's head arm of 2026-11-11, one run of
 // fifty-six). The artefact moves a measurement both ways: it failed that run, and in the defect
 // control it passes one, since a reviewer that approved wrongly and then sent `REQUEST_CHANGES`
 // to this endpoint had that change request answered as a submission and read as the verdict that
@@ -2855,7 +2855,7 @@ test("gh run view and gh run watch are gh's refusals of a run the world has not 
 // diff media type of a comparison, which is the diff's own. Catches: the world's line end after
 // every answer and between pages, and its 404 bodies indented with `\n` line ends.
 test("gh api prints GitHub's answer as it came, and --jq and gh's own JSON end with a line end", () => {
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const out = (...args: string[]) => String(asked(dir, "reviewer", args)[1]);
   const viewer = `{"data":{"viewer":{"login":"${rigValue("world_review_app")}[bot]"}}}`;
   expect(out("api", "graphql", "-f", "query=query{viewer{login}}")).toBe(viewer);
@@ -2867,6 +2867,15 @@ test("gh api prints GitHub's answer as it came, and --jq and gh's own JSON end w
   expect(out("pr", "list", "--repo", "example/widgets", "--json", "number")).toBe(
     '[{"number":1001}]\n'
   );
+  // Correct's world holds one thread, the workflow's; a review comment of the run's own opens a
+  // second, so the connection pages twice at `first:1`.
+  expect(
+    asked(dir, "reviewer", [
+      ...["api", "--method", "POST", "repos/example/widgets/pulls/1001/comments"],
+      ...["-f", "body=This sentence says what the CLI does.", "-f", `commit_id=${builtHead(dir)}`],
+      ...["-f", "path=docs/cli.md", "-F", "line=1"],
+    ])[0]
+  ).toBe(0);
   const paged = out(
     ...["api", "graphql", "--paginate", "-f"],
     'query=query($endCursor:String){repository(owner:"example",name:"widgets"){pullRequest(number:1001){reviewThreads(first:1,after:$endCursor){nodes{id}pageInfo{hasNextPage endCursor}}}}}'
@@ -2939,8 +2948,9 @@ test("--open opens the record with one line and records no call", () => {
 // The real GitHub API answers that form — measured on 2026-11-10, `gh api
 // repos/cybermonklabs/legion/compare/756789f8...main --jq '{status,ahead_by,behind_by}'` exited 0
 // — while this stand-in answered `gh: Not Found (HTTP 404)`, and the implementer's comparison
-// failed in all 10 text-fixes head runs of that batch. The two heads a comparison names are the
-// run's own, so it is read from the run's remote and no route serves it.
+// failed in all 10 head runs of that batch of the threads-closed case that `correct` replaced. The
+// two heads a comparison names are the run's own, so it is read from the run's remote and no
+// route serves it.
 test("a comparison of two commits is read from the run's own remote", () => {
   const { dir, first, second } = runDir({ fixture: true });
   const compared = answer(dir, [
@@ -3274,12 +3284,19 @@ const WORLD_VALUES = [
  * review comment on them stands on a line of the pull request's diff, as the world's seeded one
  * does; `fixture_workspace`, which makes the issue workspace with jj and which no gh answer
  * reads, stubbed unless `workspace` asks for it; and this checkout's gh selectors written in as
- * worker_boot writes a label's (`writeGhSelectors`). `env` is the operator's own environment the
- * build runs in, over this process's. */
+ * worker_boot writes a label's (`writeGhSelectors`). `threadsCase` is the threads-closed case
+ * approved_world builds (rig.sh's own refusal names the world that is given none): `correct`, the
+ * reviewer's commit at the head with one thread left on the workflow file, `accept`, its commit
+ * with none, or `code-defect`, with the guard `dropped`. `env` is the operator's own environment
+ * the build runs in, over this process's. */
 function worldDir(
   world: string,
   guard = "",
-  { workspace = false, env = {} }: { workspace?: boolean; env?: Record<string, string> } = {}
+  {
+    workspace = false,
+    env = {},
+    threadsCase = "",
+  }: { workspace?: boolean; env?: Record<string, string>; threadsCase?: string } = {}
 ): string {
   const dir = mkdtempSync(path.join(tmpdir(), `gh-standin-${world}-`));
   made.push(dir);
@@ -3299,6 +3316,7 @@ function worldDir(
     "base_ruleset_routes",
     "resolution_protection_routes",
     "round_world",
+    "fixture_reviewer_commit",
     "role_identity",
     "role_env",
     ...(workspace
@@ -3317,11 +3335,12 @@ function worldDir(
         ...(workspace ? [] : ["fixture_workspace() { :; }"]),
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         ...WORLD_VALUES.map(assignment),
-        `${world} 1 100 "$2"`,
+        `${world} 1 100 "$2" "$3"`,
       ].join("\n"),
       "-",
       dir,
       guard,
+      threadsCase,
     ],
     {
       env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...env },
@@ -3972,7 +3991,7 @@ type ViewedReview = {
 // body the run gave the world's review; and `latestReviews` that is `reviews`, holds an author's
 // earlier review, or names an id and a commit gh does not read.
 test("pr view's reviews are gh's: every review GitHub holds, and latestReviews its reading of them", () => {
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const head = builtHead(dir);
   for (const argv of [
     ["api", "-X", "PUT", `${REVIEWS}/5001`, "-f", "body=Approved, and updated."],
@@ -4043,7 +4062,7 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
     const app = identity.startsWith(rigValue("world_implement_app")) ? "implement" : "review";
     expect([role, roleApp(role)]).toEqual([role, app]);
   }
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const head = builtHead(dir);
   const input = path.join(dir, "pending.json");
   writeFileSync(
@@ -4077,11 +4096,13 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
       ".data.repository.pullRequest.reviewThreads.nodes | length",
     ])[1],
   ];
+  // Correct's world holds one thread, the workflow's, and the pending review's comment opens a
+  // second.
   const pending = [
     [0, '[[5001,"APPROVED"],[5002,"PENDING"]]\n'],
     '["APPROVED","PENDING"]\n',
     [0, "PENDING\n", ""],
-    "3\n",
+    "2\n",
   ];
   expect(seen("reviewer")).toEqual(pending);
   expect(seen("tester")).toEqual(pending);
@@ -4093,7 +4114,7 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
       notFoundOf("https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request"),
       "gh: Not Found (HTTP 404)\n",
     ],
-    "2\n",
+    "1\n",
   ]);
   expect(
     asked(dir, "reviewer", [
@@ -4109,7 +4130,7 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
     [0, '[[5001,"APPROVED"],[5002,"APPROVED"]]\n'],
     '["APPROVED","APPROVED"]\n',
     [0, "APPROVED\n", ""],
-    "3\n",
+    "2\n",
   ]);
 }, 60_000);
 
@@ -4253,7 +4274,7 @@ test("a thread comment's author is GraphQL's Bot by its slug, the viewer, resolv
 // line named or placed otherwise than gh's; and `--comments` printing the pull request's lines,
 // a comment with a review's status, or the review a reply is filed in.
 test("pr view without --json prints gh's text, and --comments the comments and the reviews gh shows", () => {
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const head = builtHead(dir);
   const raw = (...argv: string[]) => {
     const made = spawnChecked(["bun", STANDIN, "gh", ...argv], { env: callEnv(dir) });
@@ -4301,7 +4322,7 @@ test("pr view without --json prints gh's text, and --comments the comments and t
       entry(
         "legion-review",
         "approved",
-        "Approved at this head. The open threads are text findings and are the work the merge waits for."
+        `Approved at this head, which carries my text commit ${head}: it rewrites the sentence of docs/cli.md the change made false. Each thread left open is a text finding I could not push.`
       ),
       entry("widgets-reviewer", "none", "a note on the change"),
       entry("widgets-reviewer", "changes requested", "One more finding."),
@@ -4544,7 +4565,7 @@ const pinnedCache = temporaryDirectory("gh-standin-pinned");
 function pinnedWorldCopy(): string {
   const kept = path.join(pinnedCache, "world");
   if (!existsSync(kept)) {
-    const built = worldDir("approved_world");
+    const built = worldDir("approved_world", "", { threadsCase: "correct" });
     const head = builtHead(built);
     for (const argv of [
       ["pr", "comment", "1001", "--body", "a note on the change"],
@@ -4594,7 +4615,7 @@ for (const name of PINNED_GH)
 // `--comments` list of a pull request with no conversation comment, that prints a line in a
 // shape #4326's has not got or leaves out one it has.
 test("a pull request no agent has commented on is viewed in #4326's line shapes", () => {
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   expect(ghCall(dir, "api", "repos/example/widgets/issues/1001/comments").out).toBe("[]");
   for (const name of ["gh pr view (text, small)", "gh pr view --comments (text, small)"]) {
     const read = pinnedRead(name);
@@ -4752,7 +4773,7 @@ for (const name of PINNED_GRAPHQL)
 // got, JSON whose content or sha is not the blob's, a ref or a path the remote has not got
 // answered 200, and a route the world serves with no evidence in the table (gh-routes.ts).
 test("the contents read answers the file at the commit from the run's own remote, raw or as GitHub's JSON", () => {
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const head = builtHead(dir);
   const raw = (sha: string, file = "greet.ts") => [
     "api",
@@ -4832,7 +4853,7 @@ test("the contents read answers the file at the commit from the run's own remote
 // branch's bytes, not the head's. Catches: a no-ref read refused, or answered from the head or
 // from no branch at all; and a `content` that is not the base64 of the file.
 test("a contents read with no ref answers the default branch's file, and .content is its base64", () => {
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const head = builtHead(dir);
   const remote = path.join(dir, "remote.git");
   const content = (endpoint: string) =>
@@ -4933,7 +4954,7 @@ test("the merge state follows the threads: BLOCKED until the last one the base r
   expect(resolve(guarded, "PRRT_kwDOAAAAAc4AAD9001")).toBe(0);
   expect(states(guarded)).toEqual(clean);
   // A base that requires no resolution: its open thread holds nothing, nor does a new one.
-  const open = worldDir("approved_world", "dropped");
+  const open = worldDir("approved_world", "dropped", { threadsCase: "code-defect" });
   expect(states(open)).toEqual(clean);
   expect(comment(open)).toBe(0);
   expect(states(open)).toEqual(clean);
@@ -4982,12 +5003,12 @@ test("the base requires the head's checks, and the head's checks report on that 
     "--jq",
     '.[] | select(.type=="code_scanning") | .parameters.code_scanning_tools[].tool',
   ];
-  for (const [world, guard] of [
-    ["tester_proof_world", ""],
-    ["approved_world", "dropped"],
-    ["review_world", ""],
+  for (const [world, guard, threadsCase] of [
+    ["tester_proof_world", "", ""],
+    ["approved_world", "dropped", "code-defect"],
+    ["review_world", "", ""],
   ] as const) {
-    const dir = worldDir(world, guard);
+    const dir = worldDir(world, guard, { threadsCase });
     expect([world, ghCall(dir, ...rules), ghCall(dir, ...protection)]).toEqual([
       world,
       { code: 0, out: "test\nlint", err: "" },
@@ -4996,7 +5017,7 @@ test("the base requires the head's checks, and the head's checks report on that 
     expect(ghCall(dir, ...resolution).out).toBe(JSON.stringify([world === "review_world"]));
     expect(ghCall(dir, ...tools)).toEqual({ code: 0, out: "CodeQL", err: "" });
   }
-  const dir = worldDir("approved_world", "dropped");
+  const dir = worldDir("approved_world", "dropped", { threadsCase: "code-defect" });
   const head = builtHead(dir);
   const runsOf = (sha: string) =>
     ghCall(
@@ -5965,7 +5986,7 @@ test("every REST route the world serves answers every field GitHub's description
       .map(({ route }) => route)
       .filter((route) => restOperation(route) === undefined)
   ).toEqual([]);
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const head = builtHead(dir);
   const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
   const calls = restCalls(head, base);
@@ -6001,7 +6022,8 @@ test("every REST route the world serves answers every field GitHub's description
 }, 120_000);
 
 /** The REST reads production-shapes.json pins that the rows above do not hold, each read with
- * production's own command (`argvOf`) in each of `worlds` (approved_world unless it names others)
+ * production's own command (`argvOf`) in each of `worlds` (approved_world, as correct builds it,
+ * unless it names others)
  * after `before`, the calls that leave the world holding what production's answer held items of
  * (a conversation comment, a reply), and `kinds`, the kinds production's answer and the world's
  * differ in for a reason of state, which `state` names. The pull request's comments are read in
@@ -6099,7 +6121,9 @@ for (const pin of PINNED_REST)
   test(`a REST read answers in production's shape: ${pin.name}`, () => {
     const read = pinnedRead(pin.name);
     for (const world of pin.worlds ?? ["approved_world"]) {
-      const dir = worldDir(world);
+      const dir = worldDir(world, "", {
+        threadsCase: world === "approved_world" ? "correct" : "",
+      });
       const head = builtHead(dir);
       const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
       for (const argv of pin.before ?? [])
@@ -6167,7 +6191,7 @@ const PINNED_HTTP: readonly {
 // stand-in's answers were held to GitHub's required fields alone (github-standin.test.ts), from a
 // world that row writes by hand; this one serves rig.sh's own world.
 test("each read of the run's GitHub stand-in answers in production's shape", async () => {
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const head = builtHead(dir);
   const child = Bun.spawn(
     ["bun", path.join(import.meta.dir, "github-standin.ts"), dir, "example/widgets", "main"],
@@ -6256,7 +6280,7 @@ test("every read the pin holds is compared by a row", () => {
 // opened the branch, as the comparison links that commit to it; and a test merge GitHub could not
 // hold: no commit, or one that does not merge the head into the base.
 test("the REST pull request is GitHub's object, saying what pr view says", () => {
-  const dir = worldDir("approved_world");
+  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const remote = path.join(dir, "remote.git");
   const base = git(remote, "rev-parse", "refs/heads/main");
   const tip = pushFix(dir, "docs/cli.md", "the text fix\n");
@@ -6782,14 +6806,16 @@ const OPERATOR = Object.fromEntries(
 // it's using robin.hale as the default committer" (preflight-r24/reviewer-text-findings-defect-
 // base-1); and round 24's preflight seeded its commits as the pod's own App, the operator's
 // GIT_AUTHOR_* winning over the world's `-c user.name`. Catches: a seeded commit of one author,
-// the implementer's commit not the implement App's, and the operator's identity in the world's
-// history.
+// the implementer's commit not the implement App's, the reviewer's own text commit (correct's,
+// rig.sh's fixture_reviewer_commit) not the review App's, and the operator's identity in the
+// world's history.
 test("a seeded commit carries the identity of the role that made it, and none of the operator's", () => {
-  const dir = worldDir("approved_world", "", { env: OPERATOR });
+  const dir = worldDir("approved_world", "", { env: OPERATOR, threadsCase: "correct" });
   const author = `${rigValue("world_author_name")} <${rigValue("world_author_email")}>`;
   expect(
     git(path.join(dir, "remote.git"), "log", "--all", "--format=%s|%an <%ae>|%cn <%ce>").split("\n")
   ).toEqual([
+    `docs: say what the CLI does with the spaces around the name|${botOf("review")}|${botOf("review")}`,
     `feat: greet(), a greeting helper for the widgets CLI (LWEVAL-1)|${botOf("implement")}|${botOf("implement")}`,
     `init|${author}|${author}`,
   ]);
@@ -6839,7 +6865,11 @@ test("the brainstorm repository's commit carries its developer, and none of the 
 // authored by the role before it or by the fixture, the operator's identity, a git commit of the
 // pane under any other identity, and a described working copy rewritten to the next role.
 test("a pane's commit carries its role's App as author and committer, and two roles differ", () => {
-  const dir = worldDir("approved_world", "", { workspace: true, env: OPERATOR });
+  const dir = worldDir("approved_world", "", {
+    workspace: true,
+    env: OPERATOR,
+    threadsCase: "correct",
+  });
   writeFileSync(path.join(dir, "jj.toml"), '[ui]\npaginate = "never"\n');
   const shown =
     'author.name() ++ " <" ++ author.email() ++ ">|" ++ committer.name() ++ " <" ++ committer.email() ++ ">"';

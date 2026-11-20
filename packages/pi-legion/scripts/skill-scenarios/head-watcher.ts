@@ -7,8 +7,8 @@
 // asks GitHub only for the commits of results that stand at no head (results_comparison.go,
 // learn → readThroughHead), and every result stands at the head stored before the push. Measured
 // on 2026-11-16: with nothing in between, `dispatch results` after a push still compared with the
-// approved head and said a pass stands, and 3 of 20 recorded text-fixes runs (4 calls, all base)
-// had their implementer read exactly that.
+// approved head and said a pass stands, and 3 of 20 recorded runs of the threads-closed case that
+// `correct` replaced (4 calls, all base) had their implementer read exactly that.
 //
 // The push itself cannot write the head: the remote's post-receive hook runs inside the agent's
 // namespace, which shows neither this directory nor the run's database URL (rig.sh's world_paths),

@@ -337,8 +337,8 @@ describe("the writes and the reads of the world", () => {
   let approved: BuiltWorld;
   beforeAll(() => {
     worlds = new Worlds(tree);
-    const found = worlds.all().find((world) => world.name === "threads-closed-text-fixes");
-    if (found === undefined) throw new Error("no world of threads-closed's text-fixes was built");
+    const found = worlds.all().find((world) => world.name === "threads-closed-correct");
+    if (found === undefined) throw new Error("no world of threads-closed's correct was built");
     approved = found;
   }, 300_000);
   afterAll(() => worlds?.done());
@@ -402,10 +402,10 @@ describe("the writes and the reads of the world", () => {
       const own = await checkNamed(name).run(tree, unplanted);
       expect(own.map((hit) => [hit.at, hit.verdict])).toEqual([
         [
-          "threads-closed-text-fixes: the Implement App's push of .github/workflows/greet.yml",
+          "threads-closed-correct: the Implement App's push of .github/workflows/greet.yml",
           "true",
         ],
-        ["threads-closed-text-fixes: the Review App's push of .github/workflows/greet.yml", "true"],
+        ["threads-closed-correct: the Review App's push of .github/workflows/greet.yml", "true"],
       ]);
       expect(instances(await checkNamed(name).run(tree, on))).toEqual([
         "planted: the Review App's push of .github/workflows/greet.yml",

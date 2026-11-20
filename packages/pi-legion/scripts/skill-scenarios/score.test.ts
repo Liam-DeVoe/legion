@@ -5734,8 +5734,8 @@ fixRun("threads-closed-correct-head-19", {
 // The whole loop right, and the issue asked back to implementing anyway. The loop exists to
 // spend no round, which is what k2's claim means by "opens no new round", and the design says it
 // of both cases: "Neither the implementer nor the reviewer moves the issue itself." The
-// code-defect arm scores that (`moved === undefined`) and the text-fixes arm does not, so a run
-// that did every act of the loop and then spent the round it was meant to save passes.
+// code-defect arm scores that (`moved === undefined`) and the correct arm did not, so a run
+// that did every act of the loop and then spent the round it was meant to save passed.
 fixRun("threads-closed-correct-head-20", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
@@ -6644,7 +6644,7 @@ fixRun("threads-closed-correct-base-1", {
 });
 // code-defect: the thread no text fix closes. The pass is no commit, nothing resolved, no second
 // approval, and the message to the architect, which the implementer's transcript records. This
-// world pushes nothing, so neither wake of the text-fixes loop belongs in it: each run below
+// world pushes nothing, so neither wake of the correct loop belongs in it: each run below
 // states every message its two halves sent.
 fixRun("threads-closed-code-defect-head-1", {
   "case.txt": "code-defect\n",
@@ -6763,7 +6763,7 @@ fixRun("threads-closed-code-defect-head-8", {
 });
 // The half the run never booted. In code-defect the implementer's own act is to tell the
 // architect and send the reviewer nothing, and rig.sh boots no second agent on a wake of none
-// (run_threads_closed), so the run has one half and no sessions/reviewer at all. The text-fixes
+// (run_threads_closed), so the run has one half and no sessions/reviewer at all. The correct
 // runs above (head-17, head-18) are the same shape in the case where the wake was owed, and stay
 // rig errors.
 fixRun(
@@ -6867,7 +6867,7 @@ fixRun("threads-closed-code-defect-head-15", {
 // Catches: a reader that lets a code-defect run off the half rule altogether, rather than off
 // the half the rig never booted. head-16's implementer woke the reviewer, so the rig booted one,
 // and that half got no model turn: it measured nothing of the loop, as head-18 measures nothing
-// of the text-fixes one, and the run is the rig error that says so. The case excuses the absent
+// of the correct one, and the run is the rig error that says so. The case excuses the absent
 // directory and nothing else.
 fixRun(
   "threads-closed-code-defect-head-16",
@@ -7285,7 +7285,7 @@ test("threads-closed, correct: a resolve call that reads its own answer back is 
 // Catches: a scorer that scores every act of the loop and not the thing the loop is for. k2's
 // claim is that the implementer "opens no new round", and review-threads.md says of this loop
 // "Neither the implementer nor the reviewer moves the issue itself". The code-defect arm scores
-// it and the text-fixes arm did not, so a run that replied, fixed, pushed, resolved, approved
+// it and the correct arm did not, so a run that replied, fixed, pushed, resolved, approved
 // and then asked the daemon to move the issue back passed as a clean loop.
 test("threads-closed, correct: a run that spends the round it was meant to save fails", () => {
   expect(out).toMatch(/threads-closed-correct-head-1\tpass=true\t.*moved=none /);
@@ -7443,7 +7443,7 @@ test("threads-closed, code-defect: the message to the architect passes, the text
 // Catches: a scorer that reads a code-defect run with no reviewer half as a rig error. The
 // implementer's own act there is to send the reviewer nothing, and rig.sh boots no second agent
 // on a wake of none, so every such run — the case's own pass — would be left out of the counts
-// and the arm would measure nothing. A text-fixes run missing that half stays a rig error, since
+// and the arm would measure nothing. A correct run missing that half stays a rig error, since
 // there the wake was owed (head-17 and head-18, below).
 test("threads-closed, code-defect: a run that woke no reviewer is scored on the half it ran", () => {
   expect(out).toMatch(
@@ -8738,7 +8738,7 @@ test("threads-closed, correct: a record absent and one holding no line are each 
 // Catches: the optional half read as "code-defect asks nothing of the reviewer", where it
 // excuses the half the rig never booted and nothing else. head-16's implementer woke the
 // reviewer, so the rig booted one, and that half got no model turn: it measured nothing, as
-// head-18 measures nothing of the text-fixes loop. head-1, whose implementer woke nobody, has
+// head-18 measures nothing of the correct loop. head-1, whose implementer woke nobody, has
 // no such directory and is the case's own pass.
 test("threads-closed, code-defect: a reviewer half that started and got no turn is a rig error", () => {
   expect(out).toContain(
@@ -8761,7 +8761,7 @@ test("threads-closed, code-defect: a one-half run reads the reference in the hal
 // Catches: a push log read for the issue branch's name anywhere in a ref. A tag of the issue's
 // own name holds that name whole — `refs/tags/legion/LWEVAL-1` — and a tag is no head: the
 // reviewer reads the branch's tip and the architect sees the head the approval names, so a
-// reader that counted it would fail the clean text-fixes loop for a second push and would
+// reader that counted it would fail the clean correct loop for a second push and would
 // score the code-defect pass, whose whole act is to push no fix, as the text fix that case
 // exists to fail. head-51's scratch ref carries the key without the branch and is the other
 // half of the same rule.

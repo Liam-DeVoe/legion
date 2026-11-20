@@ -368,8 +368,8 @@ nowhere its agents can read: its directory is `runs/<id>`, `<id>` twelve hex dig
 and its record is `runs/<id>.json` beside it, outside the run's namespace:
 
 ```json
-{"run":"<id>","scenario":"threads-closed","case":"text-fixes","label":"head","n":1,
- "name":"threads-closed-text-fixes-head-1","batch":"<tag>-<start>","ran":"<work>/runs/<id>"}
+{"run":"<id>","scenario":"threads-closed","case":"correct","label":"head","n":1,
+ "name":"threads-closed-correct-head-1","batch":"<tag>-<start>","ran":"<work>/runs/<id>"}
 ```
 
 `case` is `""` for a scenario that takes none, `mode` is there for an askgate run given one, and
@@ -634,8 +634,9 @@ the App is the transport's own, written per role as the daemon renders a role's 
 pane's spawn. A push that names `<run>/remote.git` itself carries no App and is taken, as the
 world's build's own pushes are. A refused push is no push to the readers: `score.ts`'s
 `pushesOf` reads `pushes.log`, which `tester-proof` (its pushes and their tip),
-`reviewer-text-findings` (`pushes === 0` for the text-only case) and `threads-closed` (the pushes
-onto the issue branch and the diff of the last, `fixed`, and the code-defect case's no push) count
+`reviewer-text-findings` (the text-only case's one push of the reviewer's text commit, and the
+defect case's none) and `threads-closed` (the pushes onto the issue branch and the diff of the
+last, `fixed`, and the accept and code-defect cases' no push) count
 from; and `health.ts` reads `pushes.log` and the branch's tip for rule 19 (`headUnmoved`) and a
 tool result for the leak check's own refusals alone for rule 6 (`GUARD_REFUSAL`), which no
 ` ! [remote rejected]` line is.
@@ -665,8 +666,9 @@ stand-in starts and the relaunch writes it again, each launch `boot_agent` asks 
 is followed by `since <role> <time>`, the `since` it asked with, so a replay asks the reader with
 the call's own argument, and where the rig decides not to boot a role of its scenario it writes
 `skip <role> <reason>`, with the one reason `completion-answers.ts`'s `SKIPS` declares for the
-scenario and case (today, threads-closed code-defect's reviewer: "the implementer sent the
-reviewer nothing"), read from that table.
+scenario and case (today, threads-closed's reviewer in accept, "the accept case scores the
+implementer's answer alone", and in code-defect, "the implementer sent the reviewer nothing"),
+read from that table.
 
 `rig.sh health [--tmp-snapshot <file>] [--repo <git dir>]... <run dir>...` says whether each run's world could take what
 its agents did, and whether the run stayed inside its own world. It reads twenty-three things: the
@@ -813,7 +815,7 @@ Give a batch's runs in one call: given one run, `health` sees no other run's wri
 every transcript under each run's `sessions/`, every role's and every subagent's. It scores nothing
 and writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, keyed
 by the run's directory (its id), with the record's name last for a run with a record (`<id>
-healthy  (threads-closed-text-fixes-head-1)`), naming
+healthy  (threads-closed-correct-head-1)`), naming
 the evidence, then how many runs each rule flags, then how often the rig relaunched an agent at
 its boot, by label (`health: boot relaunches, <label>: <n> in <r> of <m> runs`: <n> relaunches,
 each a first attempt kept under `<run>/boot-1/<role>/`, in <r> of the label's <m> runs), then the
@@ -898,6 +900,77 @@ Neither removes or replaces what an earlier run wrote: `fetch-spec-sources.ts` e
 read when a source directory it would write, or `agent-texts.json`, is already under `--out`, and
 `label-comments.ts` exits 2 when `labels.jsonl` is; each names the path, to be moved aside.
 
+### The reviewer's text commit: `reviewer-text-findings` and `threads-closed`
+
+Two scenarios score INFRA-764's rule (spec v31's R1 and R2): Verification v38's k1 runs
+`reviewer-text-findings` and k2 runs `threads-closed`. Each takes its case from a variable a batch
+must set, `SKILL_SCENARIOS_REVIEWER_CASE` and `SKILL_SCENARIOS_THREADS_CASE`; an unset or unknown
+case is refused before anything starts (`run-names.ts`'s `SCENARIOS`). Both are worker worlds
+(`rig.sh`'s `worker_fixture`): a pull request on the run's own remote whose change touches
+`greet.ts`, its test, `docs/cli.md` and `.github/workflows/greet.yml`, with the implementer's and
+the tester's passing results on the issue's one `before_merge` check. The review App may push
+`docs/cli.md` and not the workflow file, and the run's remote refuses that push as GitHub does.
+`score.ts`'s `reviewerTextFindings` and `threadsClosed` score them, each per case and label.
+
+**k1, `reviewer-text-findings`** boots a reviewer on the review round (`review_world`). In both
+cases the change carries two text findings: the sentence of `docs/cli.md` that says the CLI
+prints the name exactly as it was given, spaces and all, which the change's trim makes false, and
+a comment of the workflow, which names a push trigger its `on:` does not carry. The pull request
+also holds one open bot thread, and its base requires conversation resolution, so its head stays
+`BLOCKED` after an approval and the issue stays in `reviewing`.
+
+- `text-only`: the change's code is correct, so no behavioural finding stands. A `head` run passes
+  when the run's remote took exactly one push, onto the issue branch, of one commit whose parent is
+  the head the reviewer read; that commit changes `docs/cli.md` alone, every line it removes there
+  holds the false sentence and no line it adds does; the verdict is `APPROVE` of that commit, by
+  SHA, with a body that names the commit and `docs/cli.md`, and with an inline comment on the
+  workflow file whose thread no call of the run resolved; and one message reached the
+  implementer's role topic after the approval, naming the commit and the workflow's thread by its
+  path or its node id. A `base` run passes when its verdict is `REQUEST_CHANGES`, the cost k1
+  measures. k1 asks each of at least 4 of the 5 runs of its label.
+- `defect`: the same change with the CLI's blank-name guard dropped, so a behavioural finding
+  stands. The negative control: a run of either label passes when its verdict is
+  `REQUEST_CHANGES`, the run's remote took no push, and both text findings are inline comments of
+  that review.
+
+**k2, `threads-closed`** boots the implementer after a reviewer's approval (`approved_world`),
+then, where the case has one, the reviewer, woken by the implementer's own message and by nothing
+else (`run_threads_closed`). The implementer is woken by the reviewer's message at its approval:
+its commit by SHA and the head that carries it where it pushed one, and each thread it left open.
+Where the reviewer pushed, its text commit (`fixture_reviewer_commit`, committed as the review App)
+is the pull request's head above the implementer's commit, the approval stands on it with a body
+that names it, and the passes stand at the implementer's commit below it. The threads the approval
+left are in the world's GraphQL graph, in the body's `Threads:` section and in
+`<run>/threads.json`, which the score reads.
+
+- `accept`: the reviewer's commit makes the sentence true (the CLI trims the spaces around the
+  name), and the workflow's comment is honest, so no thread is left. The base requires conversation
+  resolution, no thread is open, so the head is `CLEAN` and the round ended on the approval: the
+  implementer is booted in `accepting`, and no reviewer is booted (`completion-answers.ts`'s
+  `SKIPS`). A run passes when the run's remote took no push, the implementer posted a
+  `gh pr comment` on the pull request naming the reviewer's commit, one message of its own reached
+  the architect's role topic naming that commit and saying it accepts it, no call of the run
+  resolved a thread, and no agent moved the issue. The `base` runs are reported and set no bar.
+- `correct`: the reviewer's commit makes the sentence false another way (it says the CLI strips
+  every space from the name), and the workflow's comment still names the push trigger, which the
+  review App could not push, so the approval left one thread on the workflow file. With that thread
+  open the head is `BLOCKED`, so both halves are booted in `reviewing`. A run passes when both
+  halves do their part. The implementer makes one push onto the issue branch whose diff from the
+  reviewer's commit changes `docs/cli.md` and the thread's file and nothing else, names the head
+  that push made in a `gh pr comment` and in a message to the reviewer's role topic and one to the
+  architect's, each after the push, and resolves no thread. The reviewer lists the pull request's
+  threads in `gh api graphql`, resolves each of the world's threads with a call that resolves that
+  one thread, and approves the head the push made, by SHA. Neither agent moves the issue. k2 asks
+  this of at least 4 of the 5 `head` runs and of at most 1 of the 5 `base` runs.
+- `code-defect`: the change with the blank-name guard dropped, an honest workflow comment, no
+  commit of the reviewer's, and one thread on the sentence of `docs/cli.md` that says a blank name
+  exits 2, which is false only because the code is wrong. The negative control: its base requires
+  no conversation resolution, so the head is `CLEAN` and both halves run in `accepting`. A run
+  passes when the run's remote took no push, no thread was resolved, no agent of the run submitted
+  an approval, neither agent moved the issue, and the finding reached the architect's role topic
+  naming the thread by its node id or its file. The reviewer is booted only when the implementer
+  sent it a message.
+
 ### Where each service of a run comes from
 
 A label's agents load the plugins of the label's own checkout, so every service that speaks to
@@ -928,7 +1001,7 @@ and the rig's own instrument, stays shared, and the table says why.
 | Dispatch server (`dispatch-e2e`) | the rig's checkout, built once per batch and given to the rig's `run-server.sh` as `DISPATCH_E2E_SERVER_BIN` for every label | `go build ./cmd/dispatch` in the label's checkout's `packages/envoy`, kept at `$SKILL_SCENARIOS_WORK/builds/<checkout>/dispatch-e2e`; each run's own Dispatch is started from its label's build by the rig's `run-server.sh` | label: what an agent reads of it differs across versions (above); `run-server.sh`, the harness that starts a build, is the rig's, and hands a build of either tree the same environment |
 | gh and bun stand-ins (`gh-standin.ts`, bundled into `<run>/lib/gh.js`, and `$R/bin/bun`) | the rig's directory, and the bun the rig runs on | the same | shared: GitHub is one service for every version |
 | GitHub API stand-in (`github-standin.ts`, its routes in `github-routes.ts`), the GitHub each run's Dispatch server reads as `DISPATCH_GITHUB_API_BASE` | none: the server's GitHub was port 1, where nothing listens, so every read failed and a reviewer was told a pass stands "not known", Dispatch "cannot read the repository" | the rig's directory, one process per run, which `start_dispatch` starts before the run's Dispatch and `stop_run` stops; it answers the routes the world's flows were measured to read (`GITHUB_ROUTES`) from the run's own remote and refuses any other, logging each request to `<run>/logs/github.log` | shared program, per run: GitHub is one service for every version, as for the gh stand-in, and each run's GitHub is that run's world |
-| Head watcher (`head-watcher.ts`), the push event each run's Dispatch server hears | none: the server learned no head from a push, since it runs no NATS intake and its read-through asks GitHub only for the commits of results that stand at no head (`results_comparison.go`, `learn` → `readThroughHead`), so after the implementer's push `dispatch results` compared with the approved head and said a pass stands; 3 of 20 recorded text-fixes implementers (4 calls, all base) read exactly that | the rig's directory, one process per worker run, which `start_heads` starts outside the agent's namespace once the issue is seeded and `stop_run` stops; on each push to `legion/<key>` that `<run>/pushes.log` records it stores the pushed head as Dispatch's intake stores it (the write of `seed.ts pull-request`), and logs one line per push to `<run>/logs/heads.log`, `{at, ref, pushed, ok, error?}` after an opening `{at, opened}`, which health's `head` rule holds every push to; the push itself cannot, since the remote's hook runs inside the agent's namespace, which shows neither the rig nor the run's database URL | shared program, per run: the instrument's stand-in for production's `pull_request` intake, which the world's Dispatch does not run |
+| Head watcher (`head-watcher.ts`), the push event each run's Dispatch server hears | none: the server learned no head from a push, since it runs no NATS intake and its read-through asks GitHub only for the commits of results that stand at no head (`results_comparison.go`, `learn` → `readThroughHead`), so after the implementer's push `dispatch results` compared with the approved head and said a pass stands; 3 of 20 recorded implementers of the threads-closed case that `correct` replaced (4 calls, all base) read exactly that | the rig's directory, one process per worker run, which `start_heads` starts outside the agent's namespace once the issue is seeded and `stop_run` stops; on each push to `legion/<key>` that `<run>/pushes.log` records it stores the pushed head as Dispatch's intake stores it (the write of `seed.ts pull-request`), and logs one line per push to `<run>/logs/heads.log`, `{at, ref, pushed, ok, error?}` after an opening `{at, opened}`, which health's `head` rule holds every push to; the push itself cannot, since the remote's hook runs inside the agent's namespace, which shows neither the rig nor the run's database URL | shared program, per run: the instrument's stand-in for production's `pull_request` intake, which the world's Dispatch does not run |
 | Seed, capture and the boot and world readers (`seed.ts`, `record-publishes.ts`, `score.ts published`, `boot-refusal.ts`, which `boot_agent` runs in every boot, and `run-names.ts`, whose guard `launch` runs before every agent) | the rig's directory, and its checkout's `packages/dispatch` e2e client | the same | shared: the instrument, one reading for every label |
 | NATS | a container pinned by digest, or `SKILL_SCENARIOS_NATS_URL` | the same | shared: production runs one NATS for every version |
 | Postgres | a container pinned by digest, or `SKILL_SCENARIOS_POSTGRES_URL` | the same | shared: production's one database server |

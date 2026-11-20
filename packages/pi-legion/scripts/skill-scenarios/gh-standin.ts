@@ -560,7 +560,8 @@ const REF = /^[^-]/;
  * GitHub API answers it: measured on 2026-11-10, `gh api
  * repos/cybermonklabs/legion/compare/756789f8...main` printed `status`, `ahead_by`, `behind_by`
  * and 300 files and exited 0, while this stand-in answered `gh: Not Found (HTTP 404)` and the
- * implementer's comparison failed in all 10 text-fixes head runs of the batch before this. No
+ * implementer's comparison failed in all 10 head runs of the batch before this of the
+ * threads-closed case that `correct` replaced. No
  * route serves it and none should: an answer frozen into the fixture would read the same
  * whatever the run pushed, where the two heads a comparison names are the run's own. `ahead_by`
  * and `behind_by` are the commits each side holds that the other has not, `status` is GitHub's
@@ -779,7 +780,7 @@ const CREATE_BODY =
  * 422 is the answer. A run that created a review without an event left a pending one, and that
  * is the case the review object answers, once.
  *
- * Measured on 2026-11-11, in the text-fixes head arm: a reviewer approved correctly at the head
+ * Measured on 2026-11-11, in threads-closed's head arm: a reviewer approved correctly at the head
  * its push made, then made this call again; the create route matched it and answered a review
  * object **with no `commit_id`** — an approval at no head, which GitHub never writes. The score
  * reads the last submission as the one that stands, found no head on it, and failed a run whose

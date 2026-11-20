@@ -8,11 +8,11 @@
 // refused quietly in a batch, and a row whose code is gone fails it too.
 //
 // Measured on 2026-11-16 (INFRA-764) on rig.sh's own flows with the agents stubbed: the seeds of
-// tester-proof, reviewer-text-findings (text-only, defect) and threads-closed (text-fixes,
-// code-defect), `dispatch results` at the pull request's head and one push below it, and the
-// delivery reconcile forced (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=2s) over a head row aged
-// past its stale window; ask-on-message, measure-before-ask, brainstorm and askgate (facts)
-// asked GitHub nothing.
+// tester-proof, reviewer-text-findings (text-only, defect) and threads-closed (code-defect, and
+// the case `correct` replaced, whose seeds accept and correct make as it made them), `dispatch
+// results` at the pull request's head and one push below it, and the delivery reconcile forced
+// (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=2s) over a head row aged past its stale window;
+// ask-on-message, measure-before-ask, brainstorm and askgate (facts) asked GitHub nothing.
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 

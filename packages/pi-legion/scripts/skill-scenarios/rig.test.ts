@@ -2323,7 +2323,7 @@ describe("scenario_case", () => {
         stderr: "",
       });
     const unset: Record<string, string> = {};
-    for (const env of [unset, { SKILL_SCENARIOS_THREADS_CASE: "correct" }]) {
+    for (const env of [unset, { SKILL_SCENARIOS_THREADS_CASE: "text-fixes" }]) {
       const result = cases("threads-closed", env);
       expect(result.code).toBe(1);
       expect(result.stdout).toBe("");
@@ -5034,7 +5034,7 @@ describe("health", () => {
     const runs = [writer, reader, oldWriter, oldReader].map((one) => one.dir);
     const { code, stdout, stderr } = health(...runs);
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
-    // head-24 (text-fixes) predates the namespace and no rule that can judge it fails it.
+    // correct-head-24 predates the namespace and no rule that can judge it fails it.
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
       "threads-closed-correct-head-23  healthy",
       "threads-closed-code-defect-head-23  healthy",
@@ -6038,7 +6038,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     "--jq",
     ".data.resolveReviewThread.thread.isResolved",
   ];
-  const RESOLVE = resolve("PRRT_kwDOfix001");
+  /** The resolve of the one thread the approved world's approval left, on the workflow file: the
+   * world of correct, the case `built` builds it in (rig.sh's approved_world). */
+  const RESOLVE = resolve("PRRT_kwDOfix002");
   /** The pull request's review threads listed as review-threads.md lists them, reading `jq` out
    * of the answer: the call the world's `reviewThreads` route answers. */
   const threadQuery = (jq: string) => [
@@ -6054,15 +6056,12 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   test("the approved world resolves, lists, replies and creates a review, each by its own route", () => {
     const dir = built("approved_world");
     expect(answer(dir, ...RESOLVE)).toEqual({ code: 0, out: "true" });
-    expect(answer(dir, ...threadQuery(IDS))).toEqual({
-      code: 0,
-      out: "PRRT_kwDOfix001,PRRT_kwDOfix002",
-    });
+    expect(answer(dir, ...threadQuery(IDS))).toEqual({ code: 0, out: "PRRT_kwDOfix002" });
     const reply = [
       "api",
       "--method",
       "POST",
-      // The first comment of the approval's first thread (rig.sh's fixture_write numbers the
+      // The first comment of the approval's one thread (rig.sh's fixture_write numbers the
       // comments of the world's own threads from 7001); 5001 is the approval, no comment.
       "repos/example/widgets/pulls/1001/comments/7001/replies",
       "-f",
@@ -6518,15 +6517,18 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   test("the approved world answers a body edit, a create and one review each as GitHub does", () => {
     const dir = built("approved_world");
     const head = headOf(dir);
+    // The head is the reviewer's own text commit, and the passes stand at the implementer's commit
+    // below it (rig.sh's approved_world).
+    const implemented = bash('git -C "$1/remote.git" rev-parse "$2^"', [dir, head]).stdout.trim();
     const reviewBody = () =>
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001", "--jq", ".body").out;
     const approval = reviewBody();
-    expect(approval).toContain("Approved at this head.");
+    expect(approval).toContain(`Approved at this head, which carries my text commit ${head}:`);
     // The body's check line says what the check ran and what it read, as a recorded result
     // reads (fixture_checks), so a reviewer reading the body reads a check that names its run.
     expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toContain(
       "pass at " +
-        head.slice(0, 12) +
+        implemented.slice(0, 12) +
         ", recorded by implementer. Ran `bun greet.ts '  Ada  '` and read `Hello, Ada!`, so the name is trimmed"
     );
     expect(answer(dir, "pr", "edit", "1001", "--body", "the fixed body").code).toBe(0);
@@ -6591,8 +6593,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       id: string;
       path: string;
     }[];
+    // Correct's one thread, on the workflow file the review App may not push: the document's
+    // finding is closed by the reviewer's own commit, which left no thread on it.
     expect(threads.map((thread) => [thread.id, thread.path])).toEqual([
-      ["PRRT_kwDOfix001", "docs/cli.md"],
       ["PRRT_kwDOfix002", ".github/workflows/greet.yml"],
     ]);
     const served = answer(
@@ -6608,7 +6611,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   });
 
   // The negative control's world: one thread, on the sentence the dropped guard makes false, and
-  // no text finding of its own. Catches a control that gains the two text findings the measured
+  // no text finding of its own. Catches a control that gains the workflow thread the measured
   // arm carries, which would give it a thread a text fix closes.
   test("the dropped guard's world carries the one thread no text fix closes", () => {
     const dir = built("approved_world", "dropped");
@@ -6743,15 +6746,16 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
   /** The one world whose head GitHub reports `CLEAN`: its approval stands, every check its base
    * requires is green and its base requires no thread resolved. Every other world's head is
    * `BLOCKED`: the tester's and the review round's by the approval their base requires and no
-   * review has given (INFRA-764's ruling of 2026-11-18), the approved text-fixes head by its open
-   * threads (rig.sh's resolution_protection_routes). */
+   * review has given (INFRA-764's ruling of 2026-11-18), correct's approved head by its open
+   * thread (rig.sh's resolution_protection_routes). */
   const CLEAN_WORLD: WorldName = "approved_world dropped";
-  /** The review threads each world's graph holds. */
+  /** The review threads each world's graph holds: `approved_world` is correct's, whose approval
+   * left one thread on the workflow file (`build`). */
   const THREADS: Record<WorldName, string> = {
     tester_proof_world: "",
     review_world: "PRRT_kwDOrig0001",
     "review_world dropped": "PRRT_kwDOrig0001",
-    approved_world: "PRRT_kwDOfix001,PRRT_kwDOfix002",
+    approved_world: "PRRT_kwDOfix002",
     "approved_world dropped": "PRRT_kwDOfix101",
   };
   const approved = (world: WorldName) => world.startsWith("approved_world");
@@ -6814,13 +6818,13 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     },
     "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments": {
       argv: () => ["api", `${REPO}/pulls/1001/reviews/5001/comments`, "--jq", "[.[].id]"],
+      // Each approved world's approval carries the one inline comment that opened its one thread:
+      // correct's on the workflow file, code-defect's on docs/cli.md.
       answers: (got, world) =>
         expect(got).toMatchObject(
-          world === "approved_world"
-            ? { code: 0, out: "[7001,7002]" }
-            : world === "approved_world dropped"
-              ? { code: 0, out: "[7001]" }
-              : { code: 1, err: "gh: Not Found (HTTP 404)\n" }
+          approved(world)
+            ? { code: 0, out: "[7001]" }
+            : { code: 1, err: "gh: Not Found (HTTP 404)\n" }
         ),
     },
     "GET repos/{owner}/{repo}/pulls/{number}/comments": {
@@ -6828,12 +6832,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       answers: (got, world) =>
         expect(got).toMatchObject({
           code: 0,
-          out:
-            world === "tester_proof_world"
-              ? "[]"
-              : world === "approved_world"
-                ? "[7001,7002]"
-                : "[7001]",
+          out: world === "tester_proof_world" ? "[]" : "[7001]",
         }),
     },
     // A file's contents at a commit, and at the default branch when the read names no ref (the
@@ -7174,7 +7173,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         "-f",
         "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
         "-F",
-        "id=PRRT_kwDOfix001",
+        "id=PRRT_kwDOfix002",
       ],
     },
     "GRAPHQL mutation addPullRequestReviewThreadReply": {
@@ -7184,7 +7183,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         "-f",
         "query=mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}",
         "-F",
-        "t=PRRT_kwDOfix001",
+        "t=PRRT_kwDOfix002",
         "-f",
         "b=fixed",
       ],
@@ -7265,9 +7264,29 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
   // gh pages a GraphQL query that takes `$endCursor` until a page has no next one, asking again
   // with the page's `endCursor` (`--paginate`), and with `--slurp` prints the pages as one list.
   // Catches: a world whose every page is the first, which holds such a loop for ever, and one
-  // that pages nothing, which hands a `first:1` reader one thread of two.
+  // that pages nothing, which hands a `first:1` reader one thread of two. Correct's world holds
+  // one thread of its own, so a comment of the run's opens the second, as GitHub opens one for a
+  // review comment that replies to none, and the pages hold the world's thread and then the run's.
   test("the world pages the review threads as GitHub pages them", () => {
-    const dir = dirOf("approved_world");
+    const dir = build("approved_world");
+    const opened = gh(
+      dir,
+      "api",
+      "--method",
+      "POST",
+      `${REPO}/pulls/1001/comments`,
+      "-f",
+      "body=This sentence says what the CLI does with the spaces.",
+      "-f",
+      `commit_id=${headOf(dir)}`,
+      "-f",
+      "path=docs/cli.md",
+      "-F",
+      "line=1",
+      "--jq",
+      ".id"
+    );
+    expect(opened).toEqual({ code: 0, out: "9001", err: "" });
     const query = THREAD_QUERY.replace("first:100", "first:1");
     const paged = gh(
       dir,
@@ -7303,8 +7322,8 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         return [nodes.map(({ id }) => id), pageInfo.hasNextPage, typeof pageInfo.endCursor];
       })
     ).toEqual([
-      [["PRRT_kwDOfix001"], true, "string"],
-      [["PRRT_kwDOfix002"], false, "string"],
+      [["PRRT_kwDOfix002"], true, "string"],
+      [["PRRT_kwDOAAAAAc4AAD9001"], false, "string"],
     ]);
     // A pull request the world has not got is GitHub's NOT_FOUND, with the data it found and the
     // place in the query that named it (`locations`: measured on 2026-11-17 against production,
