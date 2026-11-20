@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The names of the four credentials of the inventory that a test selects by name.
@@ -988,6 +989,58 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestTheFixIsNotRefusedWithBothSettingsOn: R25's boot fix writes as Dispatch's own system
+// writer, and R26 never refuses that writer. So the fix runs with DISPATCH_LEGION_STATUS_SCOPE
+// and DISPATCH_PARENT_STATUS_RULE both on. A person makes two pairs that break R24 while the rule
+// is off: a labelled parent at done over an unlabelled child in todo, and a labelled parent on
+// the backlog over an unlabelled child in work. The fix unlinks the first child, which keeps its
+// status, and moves the second parent to in_progress. The event of each change and each comment
+// of the fix name the actor parent-status-rule. Before the fix, the shared token sends the same
+// unlink as a PATCH, and R26 refuses it. So the guard was on for the deps that the fix runs with.
+func TestTheFixIsNotRefusedWithBothSettingsOn(t *testing.T) {
+	// The rule is off for the setup, because a person cannot make a pair that breaks the rule
+	// while it is on.
+	rig := newLegionStatusRig(t, true)
+	if !rig.deps.LegionStatusScope || rig.deps.ParentStatusRule.On() {
+		t.Fatalf("the server runs with LegionStatusScope=%t and the parent-status rule on=%t, want R26 on and the rule off",
+			rig.deps.LegionStatusScope, rig.deps.ParentStatusRule.On())
+	}
+	done := rig.issue(t, []string{"legion"}, "", "")
+	open := rig.issue(t, nil, done, "todo")
+	if closed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+done, map[string]any{"status": "done"}); closed.Code != http.StatusOK {
+		t.Fatalf("move %s to done as a person: status=%d body=%s", done, closed.Code, closed.Body.String())
+	}
+	notStarted := rig.issue(t, []string{"legion"}, "", "backlog")
+	inWork := rig.issue(t, nil, notStarted, "in_progress")
+
+	// The shared token sends the unlink that the fix makes. R26 refuses it, and the child keeps
+	// its parent. So the guard is on for these deps.
+	before := readLegionIssue(t, rig.database, open)
+	refused := rig.credential(t, legionSharedToken).send(t, http.MethodPatch, "/api/v1/issues/"+open, map[string]any{"parent": nil})
+	requireLegionStatusRefusal(t, refused)
+	requireLegionIssueUnchanged(t, rig.database, open, before)
+	hasParent(done)(t, readLegionIssue(t, rig.database, open))
+
+	rule, err := RunParentStatusFixAtBoot(t.Context(), rig.deps, storetest.Leases(t, rig.database.Pool), true)
+	if err != nil || !rule.On() {
+		t.Fatalf("the fix with both settings on answered the rule on=%t and %v, want the rule on and no error", rule.On(), err)
+	}
+
+	unlinked := readLegionIssue(t, rig.database, open)
+	hasParent("")(t, unlinked)
+	hasStatus("todo")(t, unlinked)
+	hasStatus("in_progress")(t, readLegionIssue(t, rig.database, notStarted))
+	events := fixRig{ruleRig: ruleRig{database: rig.database}}
+	for field, want := range map[string][]string{"parent": {open}, "status": {notStarted}} {
+		if got := events.fixWrites(t, field); !slices.Equal(got, want) {
+			t.Errorf("the issue.updated events of parent-status-rule that changed %s are on %q, want %q", field, got, want)
+		}
+	}
+	requireComments(t, rig.database, []string{done, open, notStarted, inWork},
+		fixUnlinkComment(fixUnlink{key: open, parent: done}),
+		fixMoveComment(fixMove{key: notStarted, from: "backlog", inWork: inWork}))
 }
 
 // TestAnIssueUnderALabelledIssueIsALegionIssue: R26 reads the whole chain above an issue. A status
