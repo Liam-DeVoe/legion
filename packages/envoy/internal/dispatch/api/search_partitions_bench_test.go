@@ -268,9 +268,10 @@ func TestBuildMeaningSearchBenchCorpus(t *testing.T) {
 	// Rows that share a vector tie in every nearest-neighbour read, and a tie is broken by
 	// whichever row a scan meets first, which differs between two builds' plans of the same rows:
 	// a recall or a rank comparison over such a corpus compares the tie-breaks. So the corpus
-	// refuses itself where its rows do not each hold a vector of their own.
+	// refuses itself where its rows do not each hold a vector of their own. The vectors are
+	// counted by their digest, since a distinct over the vectors themselves sorts 6 KB a row.
 	var stored, distinct int64
-	if err := conn.QueryRow(ctx, `select count(*), count(distinct embedding) from embeddings`).Scan(&stored, &distinct); err != nil {
+	if err := conn.QueryRow(ctx, `select count(*), count(distinct md5(embedding::text)) from embeddings`).Scan(&stored, &distinct); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("bench corpus: %d rows hold %d distinct vectors", stored, distinct)
