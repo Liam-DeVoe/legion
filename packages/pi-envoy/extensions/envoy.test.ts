@@ -20919,7 +20919,12 @@ console.log(JSON.stringify(args));
       // Inside the pass, read as an order rather than a time: the follow's own bound
       // (`followBoundMs`, 8 s of the pass's 10 s) ends its trade before the queue's 10 s deadline
       // ends the pass, so the pass says what the trade came to, which is the notice awaited above.
-      // Both are this process's own timers, which a loaded machine delays alike. A follow that
+      // Both are this process's own timers, but they do not start together: the queue's starts
+      // with the pass, and the follow's only after the pass's own work before it (its restores
+      // and its dial, `handle.connect`), and the pass must still finish after the follow. So the
+      // order holds while that work fits the 2 s the follow's bound leaves the pass
+      // (`FOLLOW_REST_MS`), a production budget no per-test limit can guard: a host that
+      // stretches it past that fails a correct run here, at the row's limit. A follow that
       // ignores the pass's bound (the review of 2fa6fbf7cf, m3) outlives the pass, which the
       // queue abandons with its settlement unsaid, so that notice never comes and the row's limit
       // ends the row, naming it.
@@ -20928,9 +20933,11 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("session_shutdown")?.({}, after.context);
     });
     // A hang guard, the row's discriminator for its defect: what can hang is the notice `until`
-    // waits for above, which a follow that ignores the pass's bound never gives. 60_000. Worst
+    // waits for above, which a follow that ignores the pass's bound never gives, and neither does
+    // a pass whose work around the follow outgrows `FOLLOW_REST_MS` (above). 60_000. Worst
     // measured cost: 10 456.65 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU,
-    // 8 GiB pod of 2026-11-19 18:40Z, so 60_000 is 5.7 times that.
+    // 8 GiB pod of 2026-11-19 18:40Z, so 60_000 is 5.7 times that. The row's rung is 96, where
+    // it is 20 of 20.
   }, 60_000);
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
