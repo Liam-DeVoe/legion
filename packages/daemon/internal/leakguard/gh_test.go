@@ -302,7 +302,7 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 // input they name. The entries that answer nothing are the tables' boundary, and each is a call
 // that must not be refused over a file nobody named. A file option given `-` and a field given
 // `@-` name no file but standard input, which the tables answer apart (sent, GhSent.StdinSent),
-// for a guard with no shared check to buffer (GhRequest.StdinSent).
+// for the guard to read itself wherever the shared check did not buffer it (GhRequest.StdinSent).
 func TestTheFilesAGhCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

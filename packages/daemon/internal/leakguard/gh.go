@@ -18,7 +18,8 @@ type GhRequest struct {
 	// Args is the whole argv the caller would hand gh, gh's own name aside.
 	Args []string
 	// Stdin is what the caller would hand gh on its standard input, nil for nothing. It is read
-	// only where the shared check asks for it, and what is read comes back from GhCall for the
+	// where the shared check asks for it and, where a rule is named (Guard.rules), wherever the
+	// call sends it as content (StdinSent), and what is read comes back from GhCall for the
 	// caller to hand gh in its place.
 	Stdin io.Reader
 	// StdinUse is what the call makes of its standard input, as the caller read it from the
@@ -64,10 +65,12 @@ type GhRequest struct {
 	// StdinSent is a call that sends its standard input to GitHub as content: a file option
 	// given `-`, a field given `@-`, or `gh workflow run --json` (GhSent.StdinSent). A caller that
 	// parsed the command (Files not nil) says so; for a bare argv the guard reads it from the argv
-	// (readGhArgv). It is read only where no shared check runs (sharedCheck) and a rule is named
-	// (Guard.rules). The check's own handshake buffers standard input for every call that reads it
-	// (askAgain), and without the check the guard buffers it itself for such a call, so the
-	// private-name pass reads the body the call publishes.
+	// (readGhArgv). Where a rule is named (Guard.rules), the guard reads such a call's input
+	// itself unless the shared check's handshake has buffered it already (askAgain), so the
+	// private-name pass reads the body the call publishes whichever check ran, or none. The
+	// check's asking is not what decides it: a check need not ask for an input it clears, and the
+	// pinned one clears `gh workflow run --json=true` without asking, so a guard that read only
+	// what the check asked for would let a rule's name through to GitHub.
 	StdinSent bool
 }
 
@@ -167,9 +170,11 @@ const whatGhCall = "the gh call"
 // the check itself refuses a pipe for that reason. The bytes come back so the caller can hand
 // them to gh, because by then this package has read the caller's standard input and the caller
 // cannot read it again; a nil Stdin means standard input was never read and the caller's own is
-// still whole. Under a deployment that runs no shared check (sharedCheck) and names a rule, the
-// guard reads the standard input a call sends as content itself (GhRequest.StdinSent), so the
-// visibility read and the private-name pass are the whole of it.
+// still whole. Where a rule is named, the guard reads the standard input a call sends as content
+// itself wherever the check did not buffer it (GhRequest.StdinSent): under a deployment that runs
+// no shared check (sharedCheck), and under a check that cleared the call without asking for its
+// input, as a check may for an input it clears. So the private-name pass reads what the call
+// publishes whichever check ran, and gh is handed the bytes that pass read.
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	var answer GhAnswer
 	check, err := g.sharedCheck(whatGhCall)
@@ -209,9 +214,12 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	if req.Files == nil {
 		stdinSent = call.sent.StdinSent()
 	}
-	if check.path == "" && stdinSent {
-		// No shared check ran to buffer the input the call sends as content (askAgain), so the
-		// guard reads it itself, and the private-name pass reads the body the call publishes.
+	if answer.Stdin == nil && stdinSent {
+		// Nothing has read the input the call sends as content: no shared check ran, or the one
+		// that ran cleared the call without asking for it (askAgain answers a buffer, empty or
+		// not, whenever the check asked, so nil is an input nobody read and the caller's is still
+		// whole). The guard reads it itself, and the private-name pass reads the body the call
+		// publishes.
 		if answer.Stdin, err = readStdin(req); err != nil {
 			return answer, err
 		}
@@ -709,9 +717,9 @@ type GhSent struct {
 // the same report.
 //
 // Standard input is no file to open: the shared check's exit-4 handshake buffers that input and
-// GhCall records it already (askAgain), and under no shared check GhCall buffers it itself
-// (GhRequest.StdinSent, StdinSent). What is kept is the use the option makes of it (UsesStdin),
-// and the field's name.
+// GhCall records it already (askAgain), and where no check buffered it — none ran, or the one
+// that ran did not ask — GhCall reads it itself (GhRequest.StdinSent, StdinSent). What is kept is
+// the use the option makes of it (UsesStdin), and the field's name.
 func (sent *GhSent) Names(option, path, field string, use StdinUse) {
 	switch path {
 	case "":

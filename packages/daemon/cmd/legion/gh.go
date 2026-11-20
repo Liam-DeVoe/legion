@@ -300,8 +300,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// input is a JSON request body (`gh api --input -`, `gh workflow run --json`), the value of
 	// fields, or text GitHub stores as it stands; where two options name it with different uses,
 	// the parse hands none and the guard reads the input both ways. So does whether the call
-	// sends its standard input as content at all, which the guard reads itself where no shared
-	// check runs to ask for it (leakguard.GhRequest.StdinSent).
+	// sends its standard input as content at all, which the guard reads itself wherever the shared
+	// check has not buffered it already (leakguard.GhRequest.StdinSent): a check need not ask for
+	// an input it clears, and the private-name pass must read what the call publishes.
 	var buffered []byte
 	// read is how much of the guard the call had (leakguard.GhRead), whole for a mode that runs
 	// no guard.
@@ -807,7 +808,8 @@ var ghSentFileOptions = map[string]leakguard.StdinUse{
 // call's `query` field is a GraphQL query.
 //
 // A value of `-`, and an `@-`, is standard input, which is no file to open: the guard reads it
-// through the shared check's own handshake, and reads it itself where no shared check runs
+// through the shared check's own handshake where the check asks for it, and reads it itself
+// wherever the check did not, since a check need not ask for an input it clears
 // (leakguard.GhRequest.StdinSent). What is answered for it instead is the use the option that
 // named it makes of it (ghSentFileOptions), since that says what the input is: `gh api --input -`
 // makes it a JSON request body, a `--field <name>=@-` the value of a field, and each other option
