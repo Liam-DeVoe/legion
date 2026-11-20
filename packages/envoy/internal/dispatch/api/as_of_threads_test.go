@@ -4,12 +4,14 @@
 // shows, a message edited before and after the cut, a post's history at a cut, an older build's
 // long edit, a delivery attempt no event dates, the inbox's asks at a cut, an answers poll later
 // than the cut, the block a reply names, an anchored block's place, an ask's route reach, an old
-// approval request's documents and a direct thread's session rule.
+// approval request's documents and its turn after a version moved it, and a direct thread's session
+// rule.
 package api
 
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -917,6 +919,101 @@ func TestAnInboxAtACutNamesAnOldApprovalsDocumentsAbsent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAnOldApprovalRequestMovedBeforeTheCutWaitsOnItsAgentThen: an approval request written before
+// approval requests held their documents gives its version pair at the top level of its approval
+// alone (approval.version and approval.requested_version, which migration 20261102110100 copied
+// into its first document with no event). A version moved it past the version its agent handed
+// over before the cut, and its agent handed it back after the cut. At the cut it waited on its
+// agent, as the turn rule reads that pair, so each route that gives the request's turn gives agent
+// as of the cut, where it gives human now: the issue read, for its open ask and for its spec's
+// approval, the issue's asks, the ask's own read, open asks and the inbox.
+func TestAnOldApprovalRequestMovedBeforeTheCutWaitsOnItsAgentThen(t *testing.T) {
+	world, takeCut := newAsOfThreadWorld(t, "ASOM")
+	database := world.served.deps.Store
+	issue := asOfIssue(t, world.handler, map[string]any{
+		"project": "ASOM", "title": "An old approval moved before the cut", "spec": "# Spec\n\nApprove this.\n",
+	})
+	summary := map[string]any{"summary": "Approve the spec."}
+	request := "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/approval-requests"
+	requested := decodeBody[struct {
+		Ask model.Ask `json:"ask"`
+	}](t, asOfSessionWrite(t, world.handler, http.MethodPost, request, maps.Clone(summary))).Ask.ID
+	asOfWrite(t, world.handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+		"ops":     []map[string]string{{"op": "insert", "after": "end", "markdown": "A paragraph that moves the request.\n"}},
+		"summary": "The spec's second version",
+	}, "alice")
+	world.settle(t)
+	// As a build before approval requests held their documents wrote them.
+	if _, err := database.Pool.Exec(context.Background(), `
+		update events set payload = payload #- '{approval,documents}'
+		where payload->>'id' = $1 and type like 'ask.%'`, requested); err != nil {
+		t.Fatalf("write the request's events as an older build wrote them: %v", err)
+	}
+	var version, requestedVersion int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (payload->'approval'->>'version')::int, (payload->'approval'->>'requested_version')::int
+		from events where payload->>'id' = $1 and type like 'ask.%' order by id desc limit 1`, requested).Scan(&version, &requestedVersion); err != nil ||
+		version != 2 || requestedVersion != 1 {
+		t.Fatalf("the request's newest event names version %d, requested at %d (%v); want version 2 requested at 1, which the edit moved it to",
+			version, requestedVersion, err)
+	}
+	cut := takeCut()
+	asOfSessionWrite(t, world.handler, http.MethodPost, request, maps.Clone(summary))
+	world.settle(t)
+
+	for _, target := range []string{
+		"/api/v1/issues/" + issue.Key,
+		"/api/v1/issues/" + issue.Key + "/asks",
+		"/api/v1/asks/" + requested,
+		"/api/v1/asks/open?project=ASOM",
+		"/api/v1/inbox",
+	} {
+		t.Run(target, func(t *testing.T) {
+			if turns := requestTurns(world.readNow(t, target), requested); !turnsAre(turns, "human") {
+				t.Fatalf("now the request's turns are %v, want human at each place: its agent handed it back", turns)
+			}
+			doc, _ := world.readAt(t, target, cut)
+			if turns := requestTurns(doc, requested); !turnsAre(turns, "agent") {
+				t.Errorf("at the cut the request's turns are %v, want agent at each place: a version had moved it past the version its agent handed over", turns)
+			}
+		})
+	}
+}
+
+// requestTurns is the waiting_on of each object of doc that gives the turn of the ask id: the ask
+// itself, and the approval of a document that awaits it, by its pointer.
+func requestTurns(doc any, id string) map[string]string {
+	turns := map[string]string{}
+	var walk func(value any, path string)
+	walk = func(value any, path string) {
+		switch node := value.(type) {
+		case map[string]any:
+			if turn, ok := node["waiting_on"].(string); ok && (node["id"] == id || node["ask_id"] == id) {
+				turns[orRoot(path)] = turn
+			}
+			for key, member := range node {
+				walk(member, pointerJoin(path, key))
+			}
+		case []any:
+			for index, element := range node {
+				walk(element, pointerJoin(path, fmt.Sprint(index)))
+			}
+		}
+	}
+	walk(doc, "")
+	return turns
+}
+
+// turnsAre reports whether turns holds a turn, and each is want.
+func turnsAre(turns map[string]string, want string) bool {
+	for _, turn := range turns {
+		if turn != want {
+			return false
+		}
+	}
+	return len(turns) > 0
 }
 
 // TestADirectThreadAtACutIsReadByTheSessionRuleThen: a direct (issue-less) conversation is read by
