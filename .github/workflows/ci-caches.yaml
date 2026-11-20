@@ -22,7 +22,8 @@ name: CI caches
 # go-envoy (envoy-go-checks, envoy-go-race, envoy-go-race-api, envoy-go-race-docs,
 # envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local, envoy-session-stall,
 # airlock-lean, broker-multiprocess, dispatch-memory and dispatch-multiprocess, and the embedder
-# job of .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go, and the binaries,
+# job of .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go,
+# envoy-go-claim-model, which builds the API's test binary of that set, and the binaries,
 # multiprocess and visual jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's
 # dispatch-browser job calls: those three build the Dispatch server and the real broker's
 # commands, whose packages the go-envoy entry's build of the listener and natsd alone does not
@@ -42,10 +43,10 @@ name: CI caches
 # matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
 # go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
 # each has a reader on each (typecheck and the envoy lanes on the first; daemon-go, plugin-pack,
-# pi-legion, envoy-go-checks, envoy-smoke, the browser lane and the release builds on the second),
-# and each go-fetch family on the one runner its job runs on: ubuntu-24.04 for
-# dispatch-two-builds, ubuntu-24.04-arm for the other four. A module cache holds no objects, but
-# `go list -deps` follows the imports of one GOOS and GOARCH, so a fill on the reader's own
+# pi-legion, envoy-go-checks, envoy-go-claim-model, envoy-smoke, the browser lane and the release
+# builds on the second), and each go-fetch family on the one runner its job runs on: ubuntu-24.04
+# for dispatch-two-builds, ubuntu-24.04-arm for the other four. A module cache holds no objects,
+# but `go list -deps` follows the imports of one GOOS and GOARCH, so a fill on the reader's own
 # architecture fetches what that reader's fetch does.
 # A leg builds what that runner's readers build and no more: go-daemon's arm64 reader is
 # typecheck alone, so its arm64 leg runs typecheck's vet and leaves the test and race builds to
@@ -304,11 +305,14 @@ jobs:
             ~/.cache/legion
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', 'packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', '.github/scripts/go-release-notices.sh', 'scripts/go-third-party-notices.sh', '.github/go-release-targets.json', '.github/agent-secrets-client-targets.json', '.github/envoy-infra-targets.json', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
 
-  # go-envoy. It keys on packages/envoy/go.mod's Go, the module every job that restores it sets Go
-  # up from. One leg per runner: the envoy lanes that restore it run on ubuntu-24.04-arm, and
-  # envoy-go-checks and the browser lane's embedder job on ubuntu-24.04. A job of its own beside
-  # envoy-test's go-envoy-test: an entry saves the module cache every step before its save left,
-  # so one job that filled both families filled the second with the first one's fetch too.
+  # go-envoy and go-envoy-test key on packages/envoy/go.mod's Go, the module every job that
+  # restores them sets Go up from. The envoy lanes that restore go-envoy run on ubuntu-24.04-arm,
+  # and envoy-go-checks and the browser lane's embedder job on ubuntu-24.04. The go-envoy-test
+  # readers run on ubuntu-24.04-arm, and envoy-go-claim-model, whose deadlines were measured on
+  # ubuntu-24.04, and the browser lane's jobs restore it on ubuntu-24.04. Their lookups and
+  # builds are independent, and each build is gated on its own lookup: an entry saves the module
+  # cache every step before its save left, so one job that filled both families filled the second
+  # with the first one's fetch too.
   envoy:
     strategy:
       fail-fast: false
@@ -614,11 +618,15 @@ jobs:
           .github/scripts/go-fetch.sh file .github/go-fetch/envoy-infra-go.txt
           .github/scripts/go-fetch.sh file .github/go-fetch/envoy-smoke.txt
 
-      # What envoy-infra-go builds: the vet with both live-test tags, for linux and for darwin, the
-      # test binary of every package and the natslive binaries of the three packages its live step
-      # runs. Compiled, not run: the live tests need nats-server, Postgres and container images,
-      # and the unit tests nothing a build cache keeps. The darwin vet is in the fill because,
-      # built cold, it is the step that brought envoy-infra-go near its time limit.
+      # What envoy-infra-go and the release build build: the vet with both live-test tags, for
+      # linux and for darwin, the natslive binaries of the three packages envoy-infra-go's live step
+      # runs, and the test binaries of each leg's reader. On ubuntu-24.04-arm, envoy-infra-go's unit
+      # step's race build, through the script that step runs (scripts/race-unit.sh, here in its
+      # compile mode), so the entry holds what that step links; check-ci-filters.sh holds this leg
+      # to that call and to no race build of its own. On ubuntu-24.04, release-envoy-infra.yaml's
+      # plain `go test ./...`. Compiled, not run: the live tests need nats-server, Postgres and
+      # container images, and the unit tests nothing a build cache keeps. The darwin vet is in the
+      # fill because, built cold, it is the step that brought envoy-infra-go near its time limit.
       - name: Build what envoy-infra-go builds
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |
@@ -627,7 +635,11 @@ jobs:
           while IFS= read -r flag; do
             GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
           done <<< "$flags"
-          go test -c -o /dev/null ./...
+          if [ "$RUNNER_ARCH" = ARM64 ]; then
+            scripts/race-unit.sh compile
+          else
+            go test -c -o /dev/null ./...
+          fi
           go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
         working-directory: packages/envoy/infra
 
