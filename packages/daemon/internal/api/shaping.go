@@ -942,7 +942,7 @@ const repositoryAppsContract = 152
 const pauseContract = 178
 
 // questionsForControllerContract is the daemon contract that added `questionsForController` to
-// the state (version.go's 198): every question to a stopped agent that the daemon's answer loop
+// the state (version.go's 203): every question to a stopped agent that the daemon's answer loop
 // passed to the controller in the last QuestionsForControllerWindow. A plugin before it is served
 // the state without the key (withoutQuestionsForController, its row of stateNarrowings): one built
 // before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body
@@ -958,7 +958,7 @@ const pauseContract = 178
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
 // change's own number, which is why answers.go's SupportedContracts names it rather than its
 // number.
-const questionsForControllerContract = 198
+const questionsForControllerContract = 203
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

@@ -2525,14 +2525,14 @@ test("the state golden names the held lifecycle rows, and the list may be left o
   expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
-// The questions passed to the controller (contract 198): the golden carries the question LEGION-208's
+// The questions passed to the controller (contract 203): the golden carries the question LEGION-208's
 // stopped implementer passed model_calls on after it merged with gh, naming that merge and a
 // comment whose exit gh never answered, and the one LEGION-207's stopped tester could not answer;
 // a state with none carries an empty list rather than none. What is refused is a question of a
 // role this build does not know and a write with no command. No plugin code reads a question's
 // fields, so a question without its `passedAt` or its `writes` is read rather than refused
 // (LEGION_ANSWER_READS). The key is not required, for the reason `wakesWaiting` is not: a daemon
-// at this contract leaves it off the state it serves a caller below 198, since a reader before it
+// at this contract leaves it off the state it serves a caller below 203, since a reader before it
 // refuses the key however empty (`api.stateFor`, `withoutQuestionsForController`). So a body
 // without the key parses, and a reader of it learns nothing about which questions were passed
 // rather than losing the whole state.

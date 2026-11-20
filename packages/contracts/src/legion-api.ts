@@ -693,7 +693,7 @@ const legionHeldOutboxRow = z.object({
 });
 
 /** `record.AgentQuestionWrite` (`api.QuestionForController.Writes`) — one `gh` call that writes which the daemon's answer loop ran for a
- * question before it passed the question on (contract 198), a read never one: its seq among the
+ * question before it passed the question on (contract 203), a read never one: its seq among the
  * question's calls, its command words (`pr merge`; for `gh api` its method and endpoint, `api PUT
  * repos/acme/widgets/pulls/7/merge`), the repository its arguments name (`""` for none), and gh's
  * exit status, `null` where gh answered none, since it could not start or the daemon stopped
@@ -707,7 +707,7 @@ const legionQuestionWrite = z.object({
 });
 
 /** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
- * passed to the controller (its `agent-question` notice, contract 198): the question's id, the
+ * passed to the controller (its `agent-question` notice, contract 203): the question's id, the
  * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
  * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
@@ -1345,9 +1345,9 @@ const legionPaused = z.object({
  * from a state that carries neither.
  * `questionsForController` is every question the answer loop passed to the controller in the last
  * seven days, newest first, at most 100, never null: the `agent-question` notice is a live wake
- * only, so a controller that starts later reads here what it missed (contract 198). It is optional
- * for the same reason `wakesWaiting` is: a reader before 198 refuses the key, empty as surely as
- * naming a question, so the route strips it for a caller below 198, read the same way, and for that
+ * only, so a controller that starts later reads here what it missed (contract 203). It is optional
+ * for the same reason `wakesWaiting` is: a reader before 203 refuses the key, empty as surely as
+ * naming a question, so the route strips it for a caller below 203, read the same way, and for that
  * caller alone (`api.stateFor`, `withoutQuestionsForController`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
