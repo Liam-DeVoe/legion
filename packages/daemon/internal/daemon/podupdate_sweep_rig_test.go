@@ -687,13 +687,25 @@ func (r *sweepRig) asks(c supervise.Claim) bool {
 // has not answered the round (roundGroup's mask), so the tick asks it as such; its decision ends
 // before the outbox runs its rows, and the ask's row publishes under the claim's lock only where
 // the rule still owes the claim an ask as the decision left it.
+//
+// The tick a group is put to must agree with the claims: at the tick that opens the round no claim
+// records a round, and at a tick that finds it open each claim records one. The tick reads each
+// machine's claim live, so the two ticks decide such a group alike, and a test that put a group to
+// the other tick than its claims say would pass while it reached the other half of the sweep's
+// path; such a group is reported here.
 func (r *sweepRig) drive(group []supervise.Claim, round string) (asked int, wrong []string) {
+	for _, c := range group {
+		if (c.UpdateRound == "") != (round == "") {
+			wrong = append(wrong, fmt.Sprintf("%s records the round %q and was put to the tick of round %q; want a group put to the tick that opens the round to record none, and one put to a tick that finds it open to record one",
+				describeSwept(c), c.UpdateRound, round))
+		}
+	}
 	r.asked = r.asked[:0]
 	r.path.hold(group)
 	defer r.path.end()
 	listed := unaskedClaims(group, podUpdateRound)
 	r.path.sweep(group, podUpdatePod, round)
-	wrong = r.path.posts(group, podUpdateRound, round == "")
+	wrong = append(wrong, r.path.posts(group, podUpdateRound, round == "")...)
 	r.path.letGo()
 	r.heard.mu.Lock()
 	r.heard.delivered = r.heard.delivered[:0]
