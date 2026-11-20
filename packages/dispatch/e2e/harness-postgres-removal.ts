@@ -796,16 +796,17 @@ async function sweepRun(
 }
 
 /** Sweeps each run directory of `parent`, this start's TMPDIR, that the pool named, and each other
- *  run directory that a postmaster of this user serves from (`servedElsewhere`), by the same steps
- *  (`sweepRun`, with `reader`), and names each such postmaster that no mark of its run directory
- *  names and that still runs once that sweep is done: one another start removed meanwhile is no
- *  Postgres this start left. */
+ *  run directory in `servedUnder` that a postmaster of this user serves from (`servedElsewhere`),
+ *  by the same steps (`sweepRun`, with `reader`), and names each such postmaster that no mark of
+ *  its run directory names and that still runs once that sweep is done: one another start removed
+ *  meanwhile is no Postgres this start left. */
 async function removeRunDirectories(
   parent: string,
   self: Owner | null,
   containers: Containers | undefined,
   left: Left,
-  reader: StatReader
+  reader: StatReader,
+  servedUnder: string
 ): Promise<void> {
   const uid = process.getuid?.() ?? -1;
   let real = parent;
@@ -825,7 +826,7 @@ async function removeRunDirectories(
     await sweepRun(join(real, entry), uid, self, containers, left, reader);
   }
   // The kernel shows a working directory with no link in it, the one spelling marks hold.
-  const served = servedElsewhere(real, uid);
+  const served = servedElsewhere(real, uid, servedUnder);
   for (const run of new Set(served.map((postmaster) => postmaster.run))) {
     const read = await sweepRun(run, uid, self, containers, left, reader);
     if (read === undefined) continue;
@@ -845,17 +846,21 @@ async function removeRunDirectories(
  *  directory elsewhere that a postmaster of this user serves from. Leaves every other one, and
  *  names what it left on one line per kind. Never throws: a removal that fails is one line, and
  *  the start goes on. `bounds` are the start's own (`removalBounds`) but for a row, and so
- *  is `reader`, the program that reads where each path a process names leads (`statReader`). */
+ *  is `reader`, the program that reads where each path a process names leads (`statReader`), and
+ *  `servedUnder`, the directory it looks in for those run directories elsewhere: the whole
+ *  machine for a start, and a row's own directory for a row, so that the sweep of one row judges
+ *  no stack that another row, or another session of the machine, planted beside it. */
 export async function removeLeftoverPostgres(
   bounds = removalBounds,
-  reader = statReader
+  reader = statReader,
+  servedUnder = "/"
 ): Promise<void> {
   const self = stackOwner();
   const left: Left = { unread: [], untrusted: [], unjudged: [], held: [] };
   try {
     // The containers first, so a container goes before the socket directory it serves in.
     const containers = await removeContainers(self, left, bounds, reader);
-    await removeRunDirectories(tmpdir(), self, containers, left, reader);
+    await removeRunDirectories(tmpdir(), self, containers, left, reader, servedUnder);
   } catch (error) {
     console.error(
       `${named}: the Postgres of stacks that are gone is not looked for: ${firstLine(error)}`

@@ -65,9 +65,25 @@ export function owners() {
   };
 }
 
+/** The directory every row of the importing test file plants in, and the one its sweeps look in
+ *  for run directories elsewhere (`servedUnder` of `removeLeftoverPostgres`): one of this file's
+ *  own, made on its first use, and again after the file's `afterAll` removed it (`--rerun-each`
+ *  runs the file's hooks each round), read as the kernel spells it. A sweep reads every postmaster
+ *  of this user that serves from a run directory, so where it read the machine's, the rows of two
+ *  files the lane runs at once (`bun test --parallel`, a fresh module for each file) removed each
+ *  other's dead stacks, said so on lines their rows did not expect, and made holder reads their
+ *  limits did not count: 13 failures in CI's repeat lane on 2026-11-20. */
+let plants: string | undefined;
+export function plantsRoot(): string {
+  if (plants === undefined || !existsSync(plants)) {
+    plants = realpathSync(mkdtempSync(join(tmpdir(), "marks-rows-")));
+  }
+  return plants;
+}
+
 /** A row's scratch: its own `TMPDIR`, in `parent`, and a run directory in it named as the pool
  *  names one. */
-export function scratch(parent = tmpdir()) {
+export function scratch(parent = plantsRoot()) {
   const tmp = mkdtempSync(join(parent, "marks-trust-"));
   return { tmp, run: mkdtempSync(join(tmp, runDirectoryPrefix)) };
 }
@@ -216,16 +232,18 @@ const containerRemovalModule = fileURLToPath(
 
 /** The start's sweep, as a child of this file runs it: within the start's own bounds of a
  *  container's removal, or the row's (`RemovalBounds`), where `ANSWER_MS`, `BOUND_MS` and
- *  `WATCH_MS` give them, and with the start's own reader of where each path a process names
- *  leads, or the row's (`StatReader`), where `STAT_READER` gives it. */
+ *  `WATCH_MS` give them, with the start's own reader of where each path a process names leads, or
+ *  the row's (`StatReader`), where `STAT_READER` gives it, and looking elsewhere only in
+ *  `SERVED_UNDER`, the file's own directory (`plantsRoot`). */
 const sweepScript = `
 import { removeLeftoverPostgres } from ${JSON.stringify(removalModule)};
-const { ANSWER_MS, BOUND_MS, WATCH_MS, STAT_READER } = process.env;
+const { ANSWER_MS, BOUND_MS, WATCH_MS, STAT_READER, SERVED_UNDER } = process.env;
 await removeLeftoverPostgres(
   ANSWER_MS === undefined
     ? undefined
     : { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS), watchMs: Number(WATCH_MS) },
-  STAT_READER === undefined ? undefined : JSON.parse(STAT_READER)
+  STAT_READER === undefined ? undefined : JSON.parse(STAT_READER),
+  SERVED_UNDER
 );
 `;
 
@@ -763,7 +781,12 @@ export function startSweep(
   const counts = mkdtempSync(join(tmpdir(), "sweep-reads-"));
   const starts = join(counts, "starts");
   const child = Bun.spawn([process.execPath, "--eval", sweepScript], {
-    env: { TMPDIR: tmp, PATH: empty, STAT_READER: JSON.stringify(countedReader(starts, reader)) },
+    env: {
+      TMPDIR: tmp,
+      PATH: empty,
+      STAT_READER: JSON.stringify(countedReader(starts, reader)),
+      SERVED_UNDER: plantsRoot(),
+    },
     stdout: "ignore",
     stderr: "pipe",
   });
@@ -810,12 +833,12 @@ export async function until(row: Row, met: () => boolean, what: string, ms: numb
   }
 }
 
-/** A run directory of another `TMPDIR` than the sweep's, with what a stack left there: a stand-in
- *  postmaster of stack 0 serving from its data directory, which every start finds, or only that
- *  data directory where `serving` is false, and the mark of `owner` beside it, or no mark where
- *  `owner` is undefined. */
+/** A run directory of another `TMPDIR` than the sweep's, in the file's own directory
+ *  (`plantsRoot`), with what a stack left there: a stand-in postmaster of stack 0 serving from its
+ *  data directory, which every start finds, or only that data directory where `serving` is false,
+ *  and the mark of `owner` beside it, or no mark where `owner` is undefined. */
 export function leaveElsewhere(owner?: unknown, serving = true) {
-  const other = mkdtempSync(join(tmpdir(), "marks-elsewhere-"));
+  const other = mkdtempSync(join(plantsRoot(), "marks-elsewhere-"));
   const run = mkdtempSync(join(other, runDirectoryPrefix));
   const bin = join(other, "bin");
   const data = join(realpathSync(run), "worker-0", "pgdata");
@@ -1222,7 +1245,12 @@ export async function sweepInChild(row: Row, tmp: string, bin: string, bounds: R
     const { stderr, seconds } = await inChild(
       sweepScript,
       bin,
-      { TMPDIR: tmp, ...boundsEnv(bounds), STAT_READER: JSON.stringify(countedReader(starts)) },
+      {
+        TMPDIR: tmp,
+        ...boundsEnv(bounds),
+        STAT_READER: JSON.stringify(countedReader(starts)),
+        SERVED_UNDER: plantsRoot(),
+      },
       row
     );
     row.reads(readsMade(starts), what);

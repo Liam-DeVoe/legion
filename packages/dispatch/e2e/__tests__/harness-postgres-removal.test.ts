@@ -32,9 +32,11 @@
  *  a program that is not named `postgres` (`Seen`), which no other start's walk of the kernel's
  *  processes reads: only the row's own starts find them. The rows of a run directory of another
  *  TMPDIR, which a start finds by that walk alone, plant a `postgres` that every start finds, and
- *  so decide on what any start did with the plant (`removedByAStart`). */
+ *  so decide on what any start did with the plant (`removedByAStart`). The other way round, a
+ *  row's own sweep walks for run directories only in the file's own directory (`plantsRoot`), so
+ *  it judges no stack that a row of another file, or of another session, planted beside it. */
 
-import { expect, spyOn, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   cpSync,
@@ -48,7 +50,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
@@ -72,6 +73,7 @@ import {
   owners,
   type Part,
   partOf,
+  plantsRoot,
   type Row,
   removeInChild,
   rowMachine,
@@ -100,9 +102,16 @@ import {
   standIn,
   untilThisEnds,
 } from "./planted-marks";
-import { stepEndsVariable } from "./step-end";
+import { noHookLimit, removeScratch, stepEndsVariable } from "./step-end";
 
 const { runDirectoryPrefix } = marks;
+
+// The file's own directory of plants (`plantsRoot`), which each row empties, goes in a process of
+// its own at the end, within one child's limit (step-end.ts says why).
+afterAll(
+  () => removeScratch([plantsRoot()], rowMs({ children: 1, reads: 0, bounds: [] })),
+  noHookLimit
+);
 
 const onLinux = process.platform === "linux";
 
@@ -2057,7 +2066,7 @@ test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start names as left only a postmaster that still runs once it has read its run directory: one it listed that another start removed meanwhile it does not name",
   async () => {
     const row = rowOf(claimAndTwo);
-    const parent = mkdtempSync(join(tmpdir(), "marks-two-starts-"));
+    const parent = mkdtempSync(join(plantsRoot(), "marks-two-starts-"));
     // `servedElsewhere` lists by data directory, so the held stack, in `a-held`, comes first.
     const [heldTmp, otherTmp, startTmp] = ["a-held", "b-other", "c-start"].map((name) => {
       mkdirSync(join(parent, name));

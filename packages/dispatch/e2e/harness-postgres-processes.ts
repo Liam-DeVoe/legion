@@ -613,9 +613,12 @@ export interface Served extends Postmaster {
  *  here where it runs in this start's PID namespace. The run directories of `real` that the pool
  *  named are the listing's; one of another name there, a run directory renamed after its stack
  *  started, is found here. That shape only finds a candidate: the mark in that run directory, its
- *  owner and the postmaster's own `/proc` facts decide (`sweepRun`). A process that ends while it
- *  is read is not listed. */
-export function servedElsewhere(real: string, uid: number): Served[] {
+ *  owner and the postmaster's own `/proc` facts decide (`sweepRun`). Only a run directory in
+ *  `under` is listed: `/`, every one, for a start; a row's own directory for a row, so that the
+ *  sweep of one row judges no stack that another row, or another session of the machine, planted
+ *  beside it. A process that ends while it is read is not listed. */
+export function servedElsewhere(real: string, uid: number, under = "/"): Served[] {
+  const within = under.endsWith("/") ? under : `${under}/`;
   let pids: string[];
   try {
     pids = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry));
@@ -630,7 +633,7 @@ export function servedElsewhere(real: string, uid: number): Served[] {
       if (basename(readlinkSync(`/proc/${pid}/exe`)) !== "postgres") continue;
       const data = readlinkSync(`/proc/${pid}/cwd`);
       const run = servedFrom.exec(data)?.[1];
-      if (run === undefined) continue;
+      if (run === undefined || !run.startsWith(within)) continue;
       if (dirname(run) === real && basename(run).startsWith(runDirectoryPrefix)) continue;
       const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const own = /^NSpid:.*?(\d+)[ \t]*$/m.exec(status)?.[1] ?? pid;

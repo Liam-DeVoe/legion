@@ -11,7 +11,7 @@
  *  `harness-postgres-removal.test.ts` (`harness-postgres-removal-fixtures.ts`), under a TMPDIR of
  *  each row's own. */
 
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import {
   closeSync,
   existsSync,
@@ -39,6 +39,7 @@ import {
   lifeOf,
   neverAnswering,
   owners,
+  plantsRoot,
   readsAfterRename,
   removingInChild,
   rowMs,
@@ -54,8 +55,16 @@ import {
   writeMark,
 } from "./harness-postgres-removal-fixtures";
 import { type StandIn, standIn, untilParentEnds, untilThisEnds } from "./planted-marks";
+import { noHookLimit, removeScratch } from "./step-end";
 
 const { marksDirectory } = marks;
+
+// The file's own directory of plants (`plantsRoot`), which each row empties, goes in a process of
+// its own at the end, within one child's limit (step-end.ts says why).
+afterAll(
+  () => removeScratch([plantsRoot()], rowMs({ children: 1, reads: 0, bounds: [] })),
+  noHookLimit
+);
 
 const onLinux = process.platform === "linux";
 
