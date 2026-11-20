@@ -18,7 +18,8 @@ import (
 // refused as every route refuses it (401 NO_IDENTITY for none: optionalActor's error,
 // writeAuthenticationError), and every other caller, a person included, is 403
 // ACCESS_ACCOUNT_REQUIRED (the read class accessAccount, which withinReadScope holds the three
-// routes to). A deployment that names no such account answers every caller so.
+// routes to, and the repository answer's route beside them, access_repositories.go). A deployment
+// that names no such account answers every caller so.
 
 // accessAccountOf answers the service-account subject a request's verified projected token names,
 // and false for every other credential: a broker-issued token that names a fleet as its service
@@ -32,8 +33,9 @@ func accessAccountOf(actor model.Actor) (string, bool) {
 }
 
 // requireAccessAccount admits a request only from a service account DISPATCH_ACCESS_ACCOUNTS names:
-// withinReadScope's check of every row of the read class accessAccount.
-func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bool {
+// withinReadScope's check of every row of the read class accessAccount. answer names what the row
+// answers, for the refusal (accessAnswerName).
+func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request, answer string) bool {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
@@ -43,8 +45,17 @@ func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bo
 		return true
 	}
 	writeError(w, "ACCESS_ACCOUNT_REQUIRED", http.StatusForbidden,
-		"the membership answer is read only by a service account this deployment names in DISPATCH_ACCESS_ACCOUNTS")
+		answer+" is read only by a service account this deployment names in DISPATCH_ACCESS_ACCOUNTS")
 	return false
+}
+
+// accessAnswerName is what the accessAccount row of pattern answers, as its refusal names it: the
+// repository answer for that answer's route, the membership answer for the other three.
+func accessAnswerName(pattern string) string {
+	if pattern == "/api/v1/access/projects/{key}/repositories" {
+		return "the repository answer"
+	}
+	return "the membership answer"
 }
 
 // getAccessProject answers project {key}'s membership answer for ?person=, which may be left out
