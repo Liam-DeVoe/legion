@@ -4,13 +4,14 @@ package main
 // presented under RFC 9449's DPoP scheme (Authorization: DPoP <token> with a DPoP: proof header).
 // internal/brokertoken decides it; what is here is the settings a deployment configures it with,
 // the spent-proof store it needs, how a decided caller reaches the handlers, which requests are
-// held to the session that caller names, and which no session may make.
+// held to the session that caller names, and which such a token may not make.
 //
 // It is the one credential that says who is calling. The shared token and the OIDC pair say only
 // that the caller holds a credential this listener trusts, so a request under either names its
 // own session in its body and is believed; a broker token names the session the broker issued it
-// to, so a write that acts as a session is held to that one (sessionNotBound), and a write that is
-// the Legion daemon's alone is refused to it (registryWriteBySession).
+// to, so a write that acts as a session is held to that one (sessionNotBound), and the Legion agent
+// registry's writes, which the daemon makes under a bearer, are refused to it
+// (registryWriteBySession). A session that presents the daemon's bearer instead is not refused.
 
 import (
 	"context"
@@ -373,5 +374,5 @@ func registryWriteBySession(r *http.Request, logger *logging.Logger) string {
 	logger.Warn("listener: broker token of a session writes the Legion agent registry",
 		slog.String("token_session", caller.Session),
 		slog.String("path", r.URL.Path))
-	return fmt.Sprintf("this access token acts as session %s, and no session may write the Legion agent registry", caller.Session)
+	return fmt.Sprintf("this access token acts as session %s, and a secrets-broker access token may not write the Legion agent registry", caller.Session)
 }
