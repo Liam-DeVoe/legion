@@ -4,7 +4,7 @@
  *  Every row here is about the page: a chunk the browser could not download, the viewer read the
  *  row itself refuses, a sidebar taller than the viewport, the gutter a route with no margin
  *  takes. None of it is a claim about what the server computes, so each runs against a recording
- *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). Three of
+ *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). Three of
  *  them run with no recording at all, and take no `scene`: their page never reaches the API,
  *  because the row answers every read the page makes for its viewer, or the entry chunk never
  *  loads.

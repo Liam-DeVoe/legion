@@ -3,7 +3,7 @@
  *  window pick writes, and the reads the page makes. Every row here asserts the drawing and
  *  nothing the server decides, so each runs against a recording of the agent registry - which a
  *  cold page reads inside `GET /api/v1/landing` (`web/src/api/queries.ts`, `seedShell`) - rather
- *  than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *
  *  What is not here is what the clock decides: a pane's state and a drawing's age are read from
  *  `Date.now()` against the `last_seen` the registry reported, so a recording of either answers
