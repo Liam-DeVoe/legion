@@ -1245,7 +1245,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-two dispatch tools that write, of the thirty-eight tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The two it leaves out are dispatch_review and dispatch_project_update, on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -2800,6 +2800,24 @@ export interface paths {
     put?: never;
     post?: never;
     delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/proven-sessions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Turn on the project's proven-sessions setting. With it on, an architect's write of an issue's spec or Verification document passes only on a credential that proves the architect's session. A role-holder publication then passes only on a credential that proves legion-daemon:<project>. Any credential that may write the project's issues may turn it on, and the route declares no OAuth scope. A bearer names its session in actor. A token scoped to another project is 403 PROJECT_SCOPE. An unknown project is 404 PROJECT_NOT_FOUND. A PUT on a project that has the setting on changes nothing and appends no event. A change appends project.updated, which names its writer. The answer is the project as GET /api/v1/projects lists it. Turn it on only after the project's daemon writes with its own token. Before that, it stops every architect write and every role-holder publication on the shared token until a person turns it off. */
+    put: operations["putApiV1ProjectsByKeyProvenSessions"];
+    post?: never;
+    /** @description Turn off the project's proven-sessions setting. This weakens a check, so the route needs the person scope. A credential the deployment configured, the shared token or a pod's, holds none and is 403 OAUTH_SCOPE_REQUIRED. A token scoped to another project is 403 PROJECT_SCOPE. An unknown project is 404 PROJECT_NOT_FOUND. A DELETE on a project that has the setting off changes nothing and appends no event. A change appends project.updated, which names the person as its writer. The answer is the project as GET /api/v1/projects lists it. */
+    delete: operations["deleteApiV1ProjectsByKeyProvenSessions"];
     options?: never;
     head?: never;
     patch?: never;
@@ -4380,6 +4398,7 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+      proven_sessions: boolean;
     };
     CredentialCapabilities: {
       machine_code_page: boolean;
@@ -6111,6 +6130,7 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+      proven_sessions: boolean;
     };
     ProjectDefaultAssignee: {
       assignee: string;
@@ -14045,6 +14065,78 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ProjectPlans"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeyProvenSessions: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ProjectsByKeyProvenSessions: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Project"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
