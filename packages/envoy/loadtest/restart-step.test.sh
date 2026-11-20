@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # packages/envoy/loadtest/restart-step.test.sh
 #
-# Proves restart-step.sh's end_step, its stop of the step it started when the script itself fails:
-# the SIGTERM goes to that step's own `loadgen run`, found below the run-step.sh the script
-# started, and to no other process, whatever its command line; and the stop returns only once
-# that loadgen has ended, every thread of it. It needs no stack. The step is a shell that runs a
-# stand-in loadgen below an intermediate shell, as run-step.sh runs stack.sh's loadgen. The
-# stand-in is a Python process whose main thread leaves first on SIGTERM while a second thread holds
-# its port one second more, as the threads of a Go loadgen end one by one. A second stand-in with
-# command line runs in a session of its own, as another run's loadgen would, and the stop must
-# send it nothing. The functions under test are restart-step.sh's own text, read out of the
-# script and run with common.sh, which the script sources.
+# Proves restart-step.sh's two stops. kill_and_restart, the step's own kill of the stack's
+# listener, starts the listener again only once the killed one has ended, every thread of it: its
+# main thread a zombie is not enough while another thread still holds the listener's port. And
+# end_step, its stop of the step it started when the script itself fails: the SIGTERM goes to that
+# step's own `loadgen run`, found below the run-step.sh the script started, and to no other
+# process, whatever its command line; and the stop returns only once that loadgen has ended, every
+# thread of it. It needs no stack. The listener is a Python stand-in that answers the listener's
+# sessions read, ends its main thread alone on its signal and holds its port in a second thread
+# until this suite releases it. The step is a shell that runs a stand-in loadgen below an
+# intermediate shell, as run-step.sh runs stack.sh's loadgen; that stand-in's main thread leaves
+# first on SIGTERM while a second thread holds its port one second more, as the threads of a Go
+# loadgen end one by one. A second stand-in with its command line runs in a session of its own, as
+# another run's loadgen would, and the stop must send it nothing. The functions under test are
+# restart-step.sh's own text, read out of the script and run with common.sh, which the script
+# sources.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -34,11 +39,12 @@ command -v python3 >/dev/null || fail "restart-step.test.sh needs python3 on PAT
 
 # The functions under test, each from its `NAME() {` line to the `}` that closes it.
 : >"$tmp/functions.sh"
-for fn in listener_wait_ended step_loadgen end_step; do
+for fn in listener_wait_ended kill_and_restart step_loadgen end_step; do
   awk -v open="$fn() {" '$0 == open { on = 1 } on { print } on && $0 == "}" { exit }' "$here/restart-step.sh" >>"$tmp/functions.sh"
 done
-grep -qx 'listener_wait_ended() {' "$tmp/functions.sh" || fail "restart-step.sh holds no function listener_wait_ended"
-grep -qx 'end_step() {' "$tmp/functions.sh" || fail "restart-step.sh holds no function end_step"
+for fn in listener_wait_ended kill_and_restart end_step; do
+  grep -qx "$fn() {" "$tmp/functions.sh" || fail "restart-step.sh holds no function $fn"
+done
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/loadgen" <<'EOF'
@@ -82,29 +88,141 @@ while True:
 EOF
 chmod +x "$tmp/bin/loadgen"
 
-# ---- listener_wait_ended: a zombie main thread is not an ended listener ------------------------
-source "$here/common.sh"
-source "$tmp/functions.sh"
-PIDFILE=$tmp/listener "$tmp/bin/loadgen" run -name listener-wait -out "$tmp/listener-out" &
-listener=$!
-record_pid "$tmp/started" "$listener"
+# ---- kill_and_restart: the listener starts again only once the killed one has ended --------------
+# The stand-in listener answers the sessions read kill_and_restart polls, with the stack's token,
+# on the port stack.json names. SIGKILL ends each thread of a process when the kernel next runs it,
+# often the main one first, so for a moment the main thread is a zombie while another thread still
+# holds the port. The stand-in holds that moment until this row releases it: kill_and_restart's
+# SIGKILL to it is sent as a SIGTERM, on which its main thread leaves by the exit system call of
+# that thread alone, and its second thread holds the port until the release file exists. The row
+# orders that on events: once the main thread is a zombie, it waits until kill_and_restart has
+# napped twice since, which the row's sleep counts, or has gone on. A kill that waits for every
+# thread is still napping then, and goes on once the row releases the port; a kill that takes the
+# zombie main thread for an ended listener has gone on, and the row fails on a line of its own.
+cat >"$tmp/bin/listener" <<'EOF'
+#!/usr/bin/env python3
+# The stand-in listener: `listener PORT TOKEN MARK RELEASE`. A second thread answers GET
+# /v1/sessions with 200 for the bearer TOKEN on 127.0.0.1:PORT. On SIGTERM it writes MARK and ends
+# its main thread alone; the second thread stops answering and holds the port until RELEASE exists.
+import ctypes, os, platform, signal, socket, sys, threading, time
+
+port, token, mark, release = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(16)
+s.settimeout(0.05)
+stopping = threading.Event()
+
+
+def serve():
+    while not stopping.is_set():
+        try:
+            c, _ = s.accept()
+        except socket.timeout:
+            continue
+        c.settimeout(1)
+        try:
+            asked = c.recv(4096).decode(errors="replace")
+            ok = asked.startswith("GET /v1/sessions") and ("Bearer " + token) in asked
+            c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]" if ok
+                      else b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        except OSError:
+            pass
+        c.close()
+    while not os.path.exists(release):
+        time.sleep(0.01)
+    os._exit(0)
+
+
+def on_term(signum, frame):
+    with open(mark, "a") as f:
+        f.write("TERM\n")
+    stopping.set()
+    ctypes.CDLL(None).syscall({"x86_64": 60, "aarch64": 93}[platform.machine()], 0)
+
+
+# The handler first: the suite sends its TERM once the listener answers, and a TERM before the
+# handler would end the whole process at once.
+signal.signal(signal.SIGTERM, on_term)
+threading.Thread(target=serve).start()
+while True:
+    time.sleep(0.1)
+EOF
+chmod +x "$tmp/bin/listener"
+kr=$tmp/kr
+mkdir -p "$kr/run" "$kr/root" "$kr/logs" "$kr/out"
+kr_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+kr_token=restart-test-token
+printf '{"ports": {"listener": %s}, "listener_token": "%s"}\n' "$kr_port" "$kr_token" >"$kr/root/stack.json"
+"$tmp/bin/listener" "$kr_port" "$kr_token" "$kr/term" "$kr/release" </dev/null >/dev/null 2>&1 &
+old=$!
+record_pid "$tmp/started" "$old"
+echo "$old" >"$kr/run/listener.pid"
 t0=$EPOCHSECONDS
-until [ -s "$tmp/listener.port" ]; do
-  ((EPOCHSECONDS - t0 <= 10)) || fail "the listener stand-in wrote no port within 10 s"
+until printf 'Authorization: Bearer %s' "$kr_token" | curl -fsS --max-time 1 -H @- "http://127.0.0.1:$kr_port/v1/sessions" >/dev/null 2>&1; do
+  ((EPOCHSECONDS - t0 <= 10)) || fail "the stand-in listener did not answer on port $kr_port within 10 s"
   sleep 0.05
 done
-listener_start=$(process_start "$listener")
-[ -n "$listener_start" ] || fail "the listener stand-in had no start time"
-listener_port=$(<"$tmp/listener.port")
-kill -TERM "$listener"
-die() { return 1; }
-listener_wait_ended "$listener" "$listener_start" ||
-  fail "the listener wait did not wait for every thread of the listener to end"
-if : 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$listener_port"; then
-  fail "the listener wait returned while the listener's port still took a connection"
+: >"$kr/naps"
+# shellcheck disable=SC2016 # expanded by the bash that sources common.sh and the functions
+bash -c '
+  source "$1"
+  source "$2"
+  RUN=$3/run ROOT=$3/root LOGS=$3/logs out=$3/out down=0 naps=$3/naps
+  die() { printf "die: %s\n" "$*"; exit 1; }
+  note() { printf "note: %s\n" "$*"; }
+  sleep() {
+    printf "%s\n" "$*" >>"$naps"
+    command sleep "$@"
+  }
+  victim=$(<"$RUN/listener.pid")
+  kill() {
+    if [ "$1" = -KILL ] && [ "${2:-}" = "$victim" ] && [ "$#" = 2 ]; then
+      command kill -TERM "$victim" # no-wait: its caller, kill_and_restart, waits for the victim
+      return
+    fi
+    command kill "$@" # no-wait: a pass-through; its caller waits for what it signals
+  }
+  kill_and_restart
+  echo "kill_and_restart returned"
+' _ "$here/common.sh" "$tmp/functions.sh" "$kr" >"$kr/out.log" 2>&1 &
+kr_job=$!
+# kr_fail MESSAGE: the port released and kill_and_restart waited for, then the row fails.
+kr_fail() {
+  : >"$kr/release"
+  wait "$kr_job" 2>/dev/null || true
+  fail "$* (kill_and_restart said: $(cat "$kr/out.log"))"
+}
+t0=$EPOCHSECONDS
+until [ -e "$kr/term" ] && [ "$(process_state "$old")" = Z ]; do
+  ((EPOCHSECONDS - t0 <= 20)) || kr_fail "the killed listener's main thread (pid $old) was no zombie within 20 s of kill_and_restart's start"
+  sleep 0.05
+done
+mapfile -t kr_naps <"$kr/naps"
+kr_then=${#kr_naps[@]}
+while ((${#kr_naps[@]} <= kr_then + 1)) && ! grep -q '^note: killed the listener' "$kr/out.log" && kill -0 "$kr_job" 2>/dev/null; do
+  ((EPOCHSECONDS - t0 <= 60)) || kr_fail "kill_and_restart neither napped nor went on within 60 s of its start"
+  sleep 0.01
+  mapfile -t kr_naps <"$kr/naps"
+done
+if grep -q '^note: killed the listener' "$kr/out.log" || ! kill -0 "$kr_job" 2>/dev/null; then
+  kr_fail "kill_and_restart went on past its wait while the killed listener's other thread still held port $kr_port: it took the zombie main thread for an ended listener"
 fi
-wait "$listener" 2>/dev/null || true
-pass "the listener wait returns only once every thread of the listener has ended and its port is free"
+: >"$kr/release"
+kr_rc=0
+wait "$kr_job" || kr_rc=$?
+new=$(cat "$kr/run/listener.pid" 2>/dev/null || true)
+[ -z "$new" ] || [ "$new" = "$old" ] || record_pid "$tmp/started" "$new"
+((kr_rc == 0)) || fail "kill_and_restart ended with $kr_rc: $(cat "$kr/out.log")"
+grep -qx 'kill_and_restart returned' "$kr/out.log" || fail "kill_and_restart did not return: $(cat "$kr/out.log")"
+jq -e --argjson o "$old" --argjson n "${new:-0}" '.old_pid == $o and .new_pid == $n and .new_pid != $o' "$kr/out/restart.json" >/dev/null ||
+  fail "restart.json does not name the killed listener (pid $old) and the restarted one (pid ${new:-none}): $(cat "$kr/out/restart.json" 2>/dev/null)"
+printf 'Authorization: Bearer %s' "$kr_token" | curl -fsS --max-time 5 -H @- "http://127.0.0.1:$kr_port/v1/sessions" >/dev/null 2>&1 ||
+  fail "the restarted listener (pid $new) does not answer on port $kr_port"
+end_process "$new" || fail "the restarted listener (pid $new) still runs 10 s after its SIGKILL"
+wait "$old" 2>/dev/null || true
+pass "kill_and_restart starts the listener again only once the killed one has ended, every thread of it, not once its main thread is a zombie"
 
 # ---- end_step: the step's own loadgen, and no other process of that command line ---------------
 # The shell that runs end_step starts the step itself, as restart-step.sh does, so the step is its

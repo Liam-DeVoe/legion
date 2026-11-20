@@ -119,7 +119,9 @@ listener_wait_ended() {
 # binary, arguments and environment, and write restart.json. The killed listener is down once it
 # has ended (listener_wait_ended): its main thread a zombie is not enough, since its other threads
 # still hold its port until they too have gone. A listener not ended 60 s after its SIGKILL, or a
-# /proc entry that is there and cannot be read, fails this script, naming it.
+# /proc entry that is there and cannot be read, fails this script, naming it. Each start is read in
+# this shell (proc_start_into), so a read that a low descriptor limit stops fails the script rather
+# than pass for a listener that has ended; a listener whose start could not be read is not killed.
 kill_and_restart() {
   local pidf=$RUN/listener.pid pid port token envs cmd
   pid=$(cat -- "$pidf")
@@ -129,7 +131,8 @@ kill_and_restart() {
   port=$(jq -er .ports.listener "$ROOT/stack.json")
   token=$(jq -er .listener_token "$ROOT/stack.json")
   local kill_ns first_ns restart_ns ready_ns attempts=0 new up start new_start rc
-  start=$(proc_start "$pid") || die "the start of the stack's listener (pid $pid) could not be read, so nothing could show it ended once killed"
+  proc_start_into start "$pid" || die "the start of the stack's listener (pid $pid) could not be read, so nothing could show it ended once killed; it is not killed"
+  [ -n "$start" ] || die "the stack's listener (pid $pid) left the process table before this script killed it; nothing to restart"
   kill_ns=$(date +%s%N)
   # no-wait: listener_wait_ended below waits for it, every thread of it (common.sh).
   kill -KILL "$pid"
@@ -148,7 +151,7 @@ kill_and_restart() {
       "$pidf" "${cmd[@]}" >>"$LOGS/listener.out" 2>&1 </dev/null 9>&-
     until [ -s "$pidf" ]; do sleep 0.02; done
     new=$(cat -- "$pidf")
-    new_start=$(proc_start "$new") || die "the start of the restarted listener (pid $new) could not be read"
+    proc_start_into new_start "$new" || die "the start of the restarted listener (pid $new) could not be read"
     up=false
     while :; do
       rc=0
@@ -209,7 +212,11 @@ end_step() {
     note "ending the step: this script failed with $rc"
     lg=$(step_loadgen)
     lg_start=""
-    [ -z "$lg" ] || lg_start=$(proc_start "$lg") || lg_start=""
+    if [ -n "$lg" ] && ! proc_start_into lg_start "$lg"; then
+      note "the start of the step's loadgen run (pid $lg) could not be read, so nothing tells it from another process that took its pid: it is sent nothing, and the step goes on to its own end"
+    elif [ -z "$lg_start" ]; then
+      note "no loadgen run of step $name runs below its run-step.sh (pid $step), so it is sent nothing, and the step goes on to its own end"
+    fi
     if [ -n "$lg_start" ]; then
       # no-wait: proc_wait_ended below waits for it, every thread of it (common.sh), up to 120 s.
       kill -TERM "$lg" 2>/dev/null || true
@@ -220,8 +227,6 @@ end_step() {
       1) note "the step's loadgen run (pid $lg) has not ended 120 s after its SIGTERM; the wait goes on with the step itself" ;;
       *) note "the /proc entry of the step's loadgen run (pid $lg) is there and could not be read, so nothing shows it ended" ;;
       esac
-    else
-      note "no loadgen run of step $name runs below its run-step.sh (pid $step), so it is sent nothing, and the step goes on to its own end"
     fi
     wait "$step" || true
   fi
