@@ -4260,8 +4260,8 @@ Each item below names a path with its method and identity, then its purpose.
   and a repository the App is not installed on, or no App key, `503 GITHUB_TOKEN_UNAVAILABLE`.
   A GitHub rate limit is `503 GITHUB_RATE_LIMITED` with `Retry-After` the whole seconds GitHub asked for (at least one), never `502 GITHUB_UPSTREAM` or GitHub's own `403`:
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
-  A person reads a repository only when an issue the person sees resolves to it (its own repository, its nearest parent's, else its project's default, whether it is open or done), or when the person is an open viewer and no issue of a project the person does not see resolves to it (`refs.RepositoryClause`);
-  every other repository answers, step for step, what one the App is not installed on answers, and GitHub is not read for it: no App key still answers that, and a rate limit still answers the rate limit.
+  A person reads a repository unless a private project the person does not see owns it: an issue of that project resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done), or the project maps it, under any name a recorded rename gives it (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`). A person who is not an open viewer reads only a repository a project the person sees owns.
+  Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
 
 - `/healthz` (GET; none)
 

@@ -17,6 +17,8 @@ body: |-
     A follow (`PUT /api/v1/asks/{id}/followers/{session_id}`) and a session group create or edit naming a session its writer may not see answer 404 SESSION_NOT_FOUND, as a session nobody holds does, the rule a session's own rows already keep; while a project is private a session nobody holds is hidden too, so both answer alike. With no private project, a full member's follow and group writes answer as before.
 
     On the Access tab, a refused switch to private says what the owner can do and offers no Retry, and a switch to public asks the owner to confirm it first.
+
+    A repository is hidden from a reader when a private project the reader does not see owns it, through an issue of that project that resolves to it or a mapping, under any recorded rename, and a reader that is not an open viewer reads only a repository a project it sees owns. The GitHub proxy answers a hidden repository as one the App is not installed on before it asks GitHub anything; `GET /api/v1/github/app-installation/{owner}/{repo}` answers it `installed: false`; and the Delivery pages hold a pull request that names no issue, a deploy run that shipped none and a PR-checks run with no stored pull request to the same rule, a hidden run answering 404 as a run nobody holds does, with the statements a missing run costs.
 time: 2026-11-16T17:17:47.264285777Z
 custom:
     Issue: pr4177
