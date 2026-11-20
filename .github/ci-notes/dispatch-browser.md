@@ -205,18 +205,23 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The browser step's budget, its `timeout-minutes: 9`, is measured, on the two runs of the head that sharded this
-suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
-in shard order, in seconds:
+The browser step's budget, its `timeout-minutes: 12`, is measured over the seven days of this
+step from 2026-11-13T16:00Z to 2026-11-20T16:00Z: every completed leg of every attempt of a
+`dispatch-browser / shard` job in a CI run of a pull request or of main's merge queue, and of
+the nightly's scheduled runs, 19,219 steps in 4,742 runs (17,892 on pull requests, 1,271 in
+merge groups, 56 scheduled), read through the jobs API. The 2,870 steps of `workflow_dispatch`
+runs are left out, since such a run takes a lane or a limit of its own. 151 legs were cut at
+the 9 minutes this step had, 540 s, so 540 s is a lower bound of what each needed. The longest
+uncut legs ran on heads that gave this step more than 9 minutes: 585 s, shard (3) of run
+44557669985 (job 135679815991), which ended with 402 rows passed and 1 failed, and 558 s,
+shard (4) of run 44601631311 (job 135835839778), all passed, both on pull request heads of
+dispatch://INFRA-2160. In main's own merge groups the longest are 516 s (run 44754421273, job
+136353201329) and 510 s (run 44318696971, job 134858341806), shard (1) both times.
 
-  step                                     pull-request lane        full lane
-  Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
-  every other step summed                  76, 67, 72, 85      79, 76, 80, 77
-
-The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
-419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
-shard's browser step, and which the container does not move: it is the same rows in the
-same browsers.
+The rule is in this file's head. The pooled maximum is the 585 s, so 585 x 1.15 = 673 s ->
+12 min, the same rows in the same browsers. The 9 minutes it replaces came from the sharded
+head's own runs, whose longest leg was 419 s (42316487530, the full lane): the suite grew
+since, and main's merge groups reached 516 of those 540 s.
 
 The job budget, the shard job's `timeout-minutes`, is the rule's arithmetic, read on sha256:ba003193, the build of commit
 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
@@ -275,13 +280,12 @@ reached over those 24 legs, in seconds:
 The three uploads are three steps of this job and not one, so the sum below counts each
 of them: 3 + 2 + 4, not 4.
 
-The browser step's own 9 minutes above still holds at the merged head, where #2958's
-accessibility rows joined the shards: its maxima here are 381 s (run 42521581875, job
-128856388199), 355 s (job 128851420516) and 283 s (nightly run 42522550380), all under the
-419 s that budget was derived from, so the pooled maximum the rule reads is still that
-419 s and the budget the rule gives is still 9 minutes. The 474 s main measured for this
-step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
-runner with the Playwright install this change removes still in the job.
+The browser step's 9 minutes held at the head where #2958's accessibility rows joined the
+shards: its maxima there were 381 s (run 42521581875, job 128856388199), 355 s (job
+128851420516) and 283 s (nightly run 42522550380), all under the 419 s that budget was
+derived from. The 474 s main measured for this step, which raised it to 10 minutes there,
+was taken on the bare runner with the Playwright install this change removed still in the
+job. The seven days' reading above, at 585 s, is what the budget rests on now.
 
 The browser step was the one step of this job that carried a budget, so the job's budget was
 that budget plus the maxima above of every step without one, which summed to 219 s:
@@ -302,9 +306,9 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 540 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
-of the shard job's `timeout-minutes`. The browser step's own budget is unchanged, and it still fires before the job's.
+browser step's 720 s, the two download attempts' 120 s each, and the steps without a
+budget at 219 - 5 - 45 + 355 = 524 s: 1,484 s, 24 min 44 s, rounded up to the 25 minutes
+of the shard job's `timeout-minutes`. The browser step's own budget fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -351,7 +355,7 @@ run-broker.sh serves from.
 
 The step budget note above does not count this step, which is new here. It copies one
 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 22 minutes leaves hold it.
+that rounding up to 25 minutes leaves hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -460,11 +464,10 @@ reason the job's head gives.
 The blob report goes beside the list reporter's output, so a green run reports what it
 ran too.
 
-The step's budget, `timeout-minutes: 9`, is the 9 minutes the job's head derives from the sharded head's own
-runs, and neither the container nor #2958's added rows move it: at the merged head this
-step's maxima are 381 s, 355 s and 283 s, which the job's head lists with their runs,
-all under the sharded head's 419 s, so the pooled maximum the rule reads is still
-419 s.
+The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives from the
+seven days of this step to 2026-11-20T16:00Z: the pooled maximum is shard (3)'s 585 s of run
+44557669985, uncut, so 585 x 1.15 = 673 s -> 12 min. The longest legs of main's merge groups,
+516 s and 510 s, are under it, and the job's head lists them with their runs.
 
 ## Why the file store's address is set on the step and not in the environment
 
@@ -1137,9 +1140,11 @@ The browser step's body stays in the workflow, where the shard job's is
 
 ## The quarantine job's budget
 
-The job takes the shard job's 22 minutes: its steps are that job's less three, with the same
-two download attempts and the same image pull, and one more, the reading, a jq over one
-report, which is 1 s where the merge job's one-command steps are measured.
+The job's budget is the shard job's sum with its own browser step in place of that job's: its
+steps are the shard job's less three, with the same two download attempts and the same image
+pull, and one more, the reading, a jq over one report, which is 1 s where the merge job's
+one-command steps are measured. So 540 + 120 + 120 + 524 + 1 = 1,305 s, 21 min 45 s, rounded
+up to 22 minutes.
 
 ## Why the quarantine job's browser step fails nothing, and what its budget is
 
@@ -1148,10 +1153,12 @@ The shard job's browser step, with this job's differences
 Its status is Playwright's own, since nothing pipes it; `continue-on-error` is what keeps a red
 row here from failing the job, and the step is marked failed all the same, for a reader.
 
-The browser step takes the shard job's 9 minutes, which this leg's rows fit: at most ten rows
-over four workers is three to a worker, and three rows that each reach the 60 s row budget and
-then fail their retry as well are 360 s, leaving 180 s of the nine minutes for the four stacks'
-start, which every shard leg pays inside its own 283 to 419 s.
+The browser step keeps the 9 minutes the shard job's step had when this job was written, which
+this leg's rows fit: at most ten rows over four workers is three to a worker, and three rows
+that each reach the 60 s row budget and then fail their retry as well are 360 s, leaving 180 s
+of the nine minutes for the four stacks' start, which every shard leg pays inside its own 283
+to 419 s. The shard job's step has 12 minutes since, for the shard's own rows, which this leg
+does not run.
 
 ## How the quarantine job's reading names each row
 
