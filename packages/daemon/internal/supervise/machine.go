@@ -2057,7 +2057,7 @@ func (c Claim) ReleasedLaunch() bool {
 // a claim the operator's, the controller's or an architect's suspension holds records no start and
 // answers that holder's wait (RuleHoldError), so the start waits for a resume to lift it. A
 // project pause's hold whose pause is the open pause (Deps.Paused) is kept too, and the start is
-// recorded beside it (decision 5 of dispatch://INFRA-3759's plan): a start leased before the pause
+// recorded beside it: a start leased before the pause
 // began must not let the role it starts run past the pause's stop, which the outbox's pause rule
 // would otherwise have held back (record's outboxPauseFree). Its task waits as every task does
 // while the project is paused (sendPending). A pause's hold whose pause has ended is gone before

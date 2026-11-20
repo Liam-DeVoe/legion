@@ -70,8 +70,8 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     (suspendHeld), charged nothing.
 //   - A start run against the claim drops a daemon's hold (StartedBy); one a suspension that holds
 //     — the operator's, the controller's or an architect's — holds waits instead, and a project
-//     pause's hold whose pause is still the open one stays (decision 5 of
-//     dispatch://INFRA-3759's plan). Every other end of the process drops it with the process
+//     pause's hold whose pause is still the open one stays. Every other end of the process
+//     drops it with the process
 //     (letGo).
 //   - A project pause's hold (RequestSuspend.Pause) whose pause has ended is dropped at the start
 //     of the claim's next decision instead of run (dropEndedPauseHold), the resume's event

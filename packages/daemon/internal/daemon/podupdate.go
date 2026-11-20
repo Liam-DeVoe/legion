@@ -505,8 +505,8 @@ const (
 	// already in flight, read whatever the clock says.
 	waitsForPodInFlight
 	// waitsForPause is a project's pause holding the round's pod (roundClock.held), with a live
-	// claim recording a process in the round's own pod, read whatever the clock says (decision
-	// 12 of dispatch://INFRA-3759). It is the twin of a suspension that holds (waitsForResume):
+	// claim recording a process in the round's own pod, read whatever the clock says. It is the
+	// twin of a suspension that holds (waitsForResume):
 	// the pause kept the pod for its stopped roles, and its resume and a role's ready end the hold.
 	waitsForPause
 	// replacementReady is every reading passed: the round's pod may be replaced, through the
@@ -967,7 +967,7 @@ func holdsOf(held []supervise.Claim) []string {
 // clock carries what a project's pause did to the pod, which the round's bound moves by
 // (roundClock.roundBound), and a hold that stands (roundClock.held) is weighed the same way,
 // after a suspension that holds: a pod that is there keeps the round waiting, undecided, and the
-// round tells nobody of it (decision 12 of dispatch://INFRA-3759).
+// round tells nobody of it.
 //
 // The snapshot always records a process in that pod, and that process's claim is the one this
 // asks through: the sweep decides a round here only over the pod its claims record, and ends a
@@ -1215,7 +1215,7 @@ func lateRoundUntold(group []supervise.Claim, round string, clock roundClock) bo
 // The round's own pod, or no answer — a store that could not be read, or a runtime that runs no
 // pods and implements no such read — leaves the round where it stands, waiting for a claim to
 // record a pod again, and tells of it once the round's bound has come (tellPodlessRound). A pod
-// a project's pause holds tells nobody (roundClock.held, decision 12 of dispatch://INFRA-3759):
+// a project's pause holds tells nobody (roundClock.held):
 // the pause stopped every role of it on purpose, and the round waits for the hold to end.
 func (s *supervision) podlessRound(ctx context.Context, issue string, group []supervise.Claim, round string, clock roundClock) {
 	if pods, ok := s.runtime.(runtime.IssuePodReader); ok {

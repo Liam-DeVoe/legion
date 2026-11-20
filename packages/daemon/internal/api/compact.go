@@ -246,7 +246,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //
 // While the project is paused, a claim that is not the project's controller is refused
 // PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
-// (refusedWhilePaused, decision 20 of dispatch://INFRA-3759). An architect's compaction of a
+// (refusedWhilePaused). An architect's compaction of a
 // claim a suspension above it holds is refused at the claim door in that hold's code first
 // (claimDoor), paused or not; the controller's passes the door's hold check
 // (claimOp.controllerPassesHold) and meets the pause here.

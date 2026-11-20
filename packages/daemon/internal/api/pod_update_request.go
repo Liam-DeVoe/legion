@@ -74,8 +74,8 @@ const (
 	// opened nothing; its sentence names which of the two ended the wait, and the bound. 503
 	// POD_UPDATE_BUSY, with a Retry-After of the sweep's interval (PodUpdateRefused.RetryAfter).
 	PodUpdateBusy
-	// PodUpdatePauseHeld: a project's pause holds the issue's pod (the daemon's podPauseHolds,
-	// decision 12 of dispatch://INFRA-3759), and no update round opens over a pod a pause holds,
+	// PodUpdatePauseHeld: a project's pause holds the issue's pod (the daemon's podPauseHolds),
+	// and no update round opens over a pod a pause holds,
 	// whoever asks for it: the pause kept the pod and the work on its disk for the roles it
 	// stopped. The hold ends when the project is resumed with a role of the pod live, or when a
 	// role of the pod is ready again. 409 POD_HELD_BY_PAUSE. While the project is paused the route

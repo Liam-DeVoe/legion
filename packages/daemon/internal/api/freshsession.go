@@ -278,7 +278,7 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 //
 // While the project is paused, every other claim is refused PROJECT_PAUSED before anything is
 // asked of it, at both doors, and nothing of it changes: the start this operation ends in is a
-// launch the pause holds (refusedWhilePaused, decision 20 of dispatch://INFRA-3759). The claim
+// launch the pause holds (refusedWhilePaused). The claim
 // door reads the suspensions that outrank its caller first (claimDoor), so a claim such a
 // suspension holds is refused in that hold's code whether or not the project is paused.
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,

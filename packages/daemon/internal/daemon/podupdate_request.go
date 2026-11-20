@@ -53,7 +53,7 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //     claim would record the round: refused (api.PodUpdateNoPod).
 //   - a project's pause holds the issue's pod (store's project_pause_pod_holds, read as the
 //     sweep reads it, podPauseHolds): refused (api.PodUpdatePauseHeld), as the sweep opens no
-//     round over such a pod (reconcileIssuePodUpdate, decision 12 of dispatch://INFRA-3759). The
+//     round over such a pod (reconcileIssuePodUpdate). The
 //     pause kept the pod and the work on its disk for its stopped roles, and a round would ask
 //     them to push for a replacement while nothing of theirs runs. The hold ends at the resume
 //     where a role of the pod is live, or once a role of the pod is ready again. While the
