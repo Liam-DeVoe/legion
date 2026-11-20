@@ -86,3 +86,10 @@ func CutFrom(ctx context.Context) (Cut, bool) {
 	cut, ok := ctx.Value(cutKey{}).(Cut)
 	return cut, ok
 }
+
+// WithoutCut returns ctx carrying no cut, for a read under a request at a cut that decides
+// whether the cut can be answered, such as the reach of the keyword table's fill
+// (store.TextVersionsAt): the store sends its statements unbound.
+func WithoutCut(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cutKey{}, nil)
+}

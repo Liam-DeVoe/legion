@@ -258,11 +258,14 @@ func blockFields(prefix string) []AbsentField {
 }
 
 // searchFields are the fields of a search answer. A snippet tree is left out only where the
-// present read draws one: for a caller that sends Dispatch-Trees.
+// present read draws one: for a caller that sends Dispatch-Trees. An ask hit's href links the
+// ask's typed block only while the block is a node of the reference graph, which is the graph
+// now: it is left out where the block's document changed after the cut.
 func searchFields() []AbsentField {
 	return []AbsentField{
 		{"/query/broadened", reasonBroadened},
 		{"/results/*/snippet_tree", reasonSnippetTree},
+		{"/results/*/href", reasonGraph},
 	}
 }
 

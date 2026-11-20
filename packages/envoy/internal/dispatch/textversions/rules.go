@@ -6,29 +6,56 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // rulesVersion is the version of the event rules versionRules holds, which the fill records in
 // its cursor row (search_text_versions_fill.rules) beside the cursor the rules wrote up to, so a
-// later build that reads more event types knows which events to read again.
-const rulesVersion = 1
+// later build that reads more event types knows which events to read again (rulesAdded). It is
+// the version the relation's readers need (store.TextVersionsRules).
+const rulesVersion = store.TextVersionsRules
+
+// rulesAdded names, for each version of the rules after the first, the event types it added to
+// versionRules. A fill whose cursor row records an earlier version passed the events of those
+// types without reading them, and reads them again before it goes on (filler.reread).
+//
+// Version 2 reads dispatch://INFRA-1523's edit of an issue message and delete of a comment or a
+// message (migration 20261110224508), which no build wrote before that migration.
+var rulesAdded = map[int][]string{
+	2: {"comment.deleted", "message.deleted", "message.edited"},
+}
+
+// addedSince is each event type that the versions of the rules after version added, sorted.
+func addedSince(version int) []string {
+	var types []string
+	for added, addedTypes := range rulesAdded {
+		if added > version && added <= rulesVersion {
+			types = append(types, addedTypes...)
+		}
+	}
+	slices.Sort(types)
+	return types
+}
 
 // Where a version's body came from, the values of search_text_versions.body_from this build
-// writes: the event's payload, whole; the item's present row, which shows no later change; and
-// revision 1 of a comment's blocks; or the event's own text, cut short, where no source holds the
-// whole body. 'history', a post's body history, is a later build's.
+// writes: the event's payload, whole; the item's present row, which shows no later change;
+// revision 1 of a comment's blocks; the post's body history, the body that the post's next edit
+// or delete replaced; or the event's own text, cut short, where no source holds the whole body.
 const (
-	bodyFromEvent  = "event"
-	bodyFromRow    = "row"
-	bodyFromBlocks = "blocks"
-	bodyFromCut    = "cut"
+	bodyFromEvent   = "event"
+	bodyFromRow     = "row"
+	bodyFromBlocks  = "blocks"
+	bodyFromHistory = "history"
+	bodyFromCut     = "cut"
 )
 
-// versionRules holds the rule of each event type that can start a version (rules version 1).
+// versionRules holds the rule of each event type that can start a version (rules version 2).
 // Every other type is in unchangingTypes: TestEveryEventTypeIsSortedForTheKeywordFill holds each
 // member of contracts.DispatchEventTypes in exactly one of the two.
 //
@@ -43,10 +70,12 @@ const (
 //
 // A comment's version starts at comment.created and comment.answered (a reply is a new comment)
 // and at a comment.edited whose body differs; an issue message's at message.created and
-// message.answered (a reply is a new message), and a message of no issue starts none, since the
-// keyword table leaves direct messages out. An ask's starts at ask.opened (a reopen is one too),
-// ask.edited and ask.answered (a restored answer included) when its question, options or answer,
-// as ask_search_suffix reads them, differ from its latest version's.
+// message.answered (a reply is a new message) and at a message.edited whose body differs, and a
+// message of no issue starts none, since the keyword table leaves direct messages out. The
+// delete of a post (comment.deleted, message.deleted) starts a version with empty text
+// (postDeleted). An ask's starts at ask.opened (a reopen is one too), ask.edited and
+// ask.answered (a restored answer included) when its question, options or answer, as
+// ask_search_suffix reads them, differ from its latest version's.
 var versionRules = map[string]rule{
 	"issue.created":    issueCreated,
 	"issue.updated":    issueRetitled,
@@ -55,8 +84,11 @@ var versionRules = map[string]rule{
 	"comment.created":  postVersion("comment", false),
 	"comment.answered": postVersion("comment", false),
 	"comment.edited":   postVersion("comment", true),
+	"comment.deleted":  postDeleted("comment"),
 	"message.created":  postVersion("message", false),
 	"message.answered": postVersion("message", false),
+	"message.edited":   postVersion("message", true),
+	"message.deleted":  postDeleted("message"),
 	"ask.opened":       askVersion,
 	"ask.edited":       askVersion,
 	"ask.answered":     askVersion,
@@ -328,6 +360,38 @@ func postVersion(kind string, onlyWhenChanged bool) rule {
 	}
 }
 
+// postDeleted is the rule of the delete of a comment or a message of kind (comment.deleted,
+// message.deleted): the version holds empty text, whose vector is the vector of empty text, as the
+// post's own search column holds it once the delete cleared its body (search_vector, 0087), so a
+// deleted post has no text at any time at or after its delete. The versions before it keep their
+// text; a reader hides them by the post's present deleted_at (store.TextVersions). The event
+// carries no body. A message of no issue starts none, as its create started none.
+func postDeleted(kind string) rule {
+	return func(e event, _ latestVersion) (version, bool, error) {
+		var p postPayload
+		if err := decodePayload(e, &p); err != nil {
+			return version{}, false, err
+		}
+		if p.ID == nil || *p.ID == "" {
+			return version{}, false, missing("id")
+		}
+		issueKey := p.IssueKey
+		if issueKey == nil {
+			issueKey = e.IssueKey
+		}
+		if kind == "message" && issueKey == nil {
+			return version{}, false, nil
+		}
+		v, err := newVersion(e, kind, *p.ID, issueKey)
+		if err != nil {
+			return version{}, false, err
+		}
+		empty := ""
+		v.Text, v.Body = &empty, empty
+		return v, true, nil
+	}
+}
+
 // askVersion is the rule of ask.opened, ask.edited and ask.answered: the version holds the ask's
 // question, options and answer as the event carries them, and starts only when the text they
 // make, the question, a space and ask_search_suffix of the options and the answer, differs from
@@ -454,21 +518,25 @@ type decided struct {
 // decideVersions decides, in the caller's transaction tx, the versions events start: events in
 // ascending id order, as the fill reads the log. Each event goes through the rule of its type
 // (versionRules) with the item's latest version, which is the latest of the item decided earlier
-// in the same batch, else the item's latest row in the table (latestVersions), so two events of
-// one item in one batch each see the other's change: an issue's title and its primary document
-// version are carried forward from row to row, and an edit is compared with the text before it.
-// An event of a type no rule reads starts no version.
+// in the same batch, else the item's latest row in the table before the batch's first event of
+// the item, in its owner's seq order (latestVersions), so two events of one item in one batch
+// each see the other's change: an issue's title and its primary document version are carried
+// forward from row to row, and an edit is compared with the text before it. The fill's events
+// come after every row of their items, and the events it reads again (filler.reread) after every
+// row of their items that the earlier rules wrote. An event of a type no rule reads starts no
+// version.
 //
 // What an event does not hold is read from the item's rows, in the same transaction:
 //
 //   - A post whose event cut its body (body_truncated) takes it whole, in this order: from its
-//     present row when that shows no later change, a comment whose edited_at is null or at or
-//     before the event's created_at (an edit stores its transaction's now(), its event's
-//     created_at) and an issue message, which no build edits (bodyFromRow); for a
-//     comment.created, from revision 1 of its blocks when every block of that revision was
-//     inserted by the comment's own transaction (firstRevisionBody, bodyFromBlocks); else it
-//     keeps the event's text (bodyFromCut), with a warning naming the item and the event, and
-//     counts in Cut. An edit whose whole body equals its latest version's starts no version.
+//     present row when that shows no later change, one not deleted whose edited_at is null or at
+//     or before the event's created_at (an edit stores its transaction's now(), its event's
+//     created_at) (bodyFromRow); for a comment.created, from revision 1 of its blocks when every
+//     block of that revision was inserted by the comment's own transaction (firstRevisionBody,
+//     bodyFromBlocks); from the post's body history, the body that its next edit or delete
+//     replaced (historyBody, bodyFromHistory); else it keeps the event's text (bodyFromCut), with
+//     a warning naming the item and the event, and counts in Cut. An edit whose whole body
+//     equals its latest version's starts no version.
 //   - An issue.created whose primary document's version 1 was not written at its created_at, by
 //     the create's own transaction, still holds that version, with a warning naming the issue.
 //   - An issue event before any version of its issue, which only a log that lacks the issue's
@@ -483,13 +551,17 @@ type decided struct {
 // (errUnreadablePayload) or a statement that failed.
 func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event) (decided, error) {
 	// Each rule asks for the latest version of the item it decides: a first pass through the
-	// rules names those items, so the table's rows of all of them are read in one statement.
+	// rules names those items, each with the seq of the first event that asks for it, so the
+	// table's rows of all of them are read in one statement.
 	var items []item
+	var firstSeqs []int32
 	asked := map[item]bool{}
+	var asking int32
 	record := func(kind, id string) *version {
 		if key := (item{kind, id}); !asked[key] {
 			asked[key] = true
 			items = append(items, key)
+			firstSeqs = append(firstSeqs, asking)
 		}
 		return nil
 	}
@@ -498,12 +570,13 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 			return decided{}, fmt.Errorf("decide the keyword versions: event %d comes after event %d, out of id order", e.ID, events[index-1].ID)
 		}
 		if apply, ok := versionRules[e.Type]; ok {
+			asking = e.Seq
 			if _, _, err := apply(e, record); err != nil {
 				return decided{}, eventError(e, err)
 			}
 		}
 	}
-	stored, err := latestVersions(ctx, tx, items)
+	stored, err := latestVersions(ctx, tx, items, firstSeqs)
 	if err != nil {
 		return decided{}, err
 	}
@@ -662,44 +735,122 @@ func readIssueRows(ctx context.Context, tx pgx.Tx, key string, at time.Time) (is
 // wholeBody gives v, a version of a post whose event e cut its body, the whole body from the
 // first source that holds it (decideVersions), or keeps the event's text, warns and counts it.
 func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
-	switch v.Kind {
-	case "comment":
-		var body string
-		var editedAt *time.Time
-		err := d.tx.QueryRow(ctx, `select body, edited_at from public.comments where id = $1::uuid`, v.ID).Scan(&body, &editedAt)
-		switch {
-		case err == nil && (editedAt == nil || !editedAt.After(e.CreatedAt)):
-			v.Body, v.BodyFrom = body, bodyFromRow
+	body, ok, err := presentBody(ctx, d.tx, v.Kind, v.ID, e.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if ok {
+		v.Body, v.BodyFrom = body, bodyFromRow
+		return nil
+	}
+	if e.Type == "comment.created" {
+		body, ok, err := firstRevisionBody(ctx, d.tx, v.ID, e.CreatedAt)
+		if err != nil {
+			return err
+		}
+		if ok {
+			v.Body, v.BodyFrom = body, bodyFromBlocks
 			return nil
-		case err != nil && !errors.Is(err, pgx.ErrNoRows):
-			return fmt.Errorf("read comment %s: %w", v.ID, err)
 		}
-		if e.Type == "comment.created" {
-			body, ok, err := firstRevisionBody(ctx, d.tx, v.ID, e.CreatedAt)
-			if err != nil {
-				return err
-			}
-			if ok {
-				v.Body, v.BodyFrom = body, bodyFromBlocks
-				return nil
-			}
-		}
-	case "message":
-		var body string
-		err := d.tx.QueryRow(ctx, `select body from public.messages where id = $1::uuid`, v.ID).Scan(&body)
-		switch {
-		case err == nil:
-			v.Body, v.BodyFrom = body, bodyFromRow
-			return nil
-		case !errors.Is(err, pgx.ErrNoRows):
-			return fmt.Errorf("read message %s: %w", v.ID, err)
-		}
+	}
+	if body, ok, err = historyBody(ctx, d.tx, e, v.Kind, v.ID); err != nil {
+		return err
+	}
+	if ok {
+		v.Body, v.BodyFrom = body, bodyFromHistory
+		return nil
 	}
 	v.BodyFrom = bodyFromCut
 	d.out.Cut++
 	d.logger.Warn("search text versions fill: no source holds the whole body its event cut, so the version keeps the event's text",
 		"kind", v.Kind, "id", v.ID, "event_id", e.ID, "event_type", e.Type)
 	return nil
+}
+
+// presentBodyQueries read a post's present row, by its kind: its body, when it was last edited,
+// and whether it is deleted.
+var presentBodyQueries = map[string]string{
+	"comment": `select body, edited_at, deleted_at is not null from public.comments where id = $1::uuid`,
+	"message": `select body, edited_at, deleted_at is not null from public.messages where id = $1::uuid`,
+}
+
+// presentBody is the body of post id of kind as its present row holds it, when that row shows no
+// change after at: the post is not deleted, since a delete clears the body, and it was not edited
+// after at. An edit stores its transaction's now(), the created_at of its event. ok is false
+// when the row shows a later change, and when no row holds the post.
+func presentBody(ctx context.Context, tx pgx.Tx, kind, id string, at time.Time) (string, bool, error) {
+	var body string
+	var editedAt *time.Time
+	var deleted bool
+	err := tx.QueryRow(ctx, presentBodyQueries[kind], id).Scan(&body, &editedAt, &deleted)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("read %s %s: %w", kind, id, err)
+	}
+	return body, !deleted && (editedAt == nil || !editedAt.After(at)), nil
+}
+
+// postHistoryBegan is the time post_body_history began, as a SQL expression: the time
+// schema_migrations records for dispatch://INFRA-1523's migration 20261110224508. From then on the
+// transaction of each edit and each delete of a comment or a message writes one row of it, which
+// keeps the body the edit or the delete replaced; no build wrote an edit of a message or a delete
+// of a post before it.
+const postHistoryBegan = `(select m.applied_at from public.schema_migrations m where m.version = 20261110224508)`
+
+// historyBodyQuery reads the body the version that event $1 started of post $3 held, from the
+// post's body history (column names the post's column): the body that the post's next edit or
+// delete event replaced. That event is the post's first event of the types $2 (its edit and
+// delete) after $1 in their owner's seq order, and it must have begun at or after the history
+// began. The j-th history row of a post in (edited_at, id) order is written by its j-th edit or
+// delete event that began at or after the history began, which is how the asof package pairs
+// them too. No row is answered where no such event or row is.
+func historyBodyQuery(column string) string {
+	return `
+	select h.body
+	  from public.events o
+	  cross join lateral (
+	        select r.seq, r.created_at from public.events r
+	         where (r.issue_key = o.issue_key or r.artifact_id = o.artifact_id) and r.seq > o.seq
+	           and r.type = any($2::text[]) and r.payload->>'id' = $3
+	         order by r.seq limit 1) r
+	  cross join lateral (
+	        select count(*) as j from public.events c
+	         where (c.issue_key = o.issue_key or c.artifact_id = o.artifact_id) and c.seq <= r.seq
+	           and c.type = any($2::text[]) and c.payload->>'id' = $3
+	           and c.created_at >= ` + postHistoryBegan + `) n
+	  cross join lateral (
+	        select h.body from public.post_body_history h
+	         where h.` + column + ` = $3::uuid
+	         order by h.edited_at, h.id
+	        offset greatest(n.j - 1, 0) limit 1) h
+	 where o.id = $1 and r.created_at >= ` + postHistoryBegan
+}
+
+// historyBodyQueries are historyBodyQuery for each kind of post, with the types of its edit and
+// delete events.
+var historyBodyQueries = map[string]struct {
+	sql   string
+	types []string
+}{
+	"comment": {historyBodyQuery("comment_id"), []string{"comment.edited", "comment.deleted"}},
+	"message": {historyBodyQuery("message_id"), []string{"message.edited", "message.deleted"}},
+}
+
+// historyBody is the body the version that e started of post id of kind held, from the post's
+// body history (historyBodyQuery), and false where the history holds none.
+func historyBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (string, bool, error) {
+	query := historyBodyQueries[kind]
+	var body string
+	err := tx.QueryRow(ctx, query.sql, e.ID, query.types, id).Scan(&body)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
+	}
+	return body, true, nil
 }
 
 // firstRevisionQuery reads the blocks of revision 1 of comment $1, the comment's first indexing,
@@ -791,25 +942,26 @@ func (d *decider) warnFirstSpecVersions(ctx context.Context) error {
 }
 
 // latestVersionsQuery reads, for each item ($1 its kinds and $2 its ids), its latest row in the
-// keyword table: the one with the greatest event_seq, read backwards through the primary key
-// (kind, id, event_seq), one probe for each item.
+// keyword table before the seq $3 gives it: the one with the greatest event_seq below it, read
+// backwards through the primary key (kind, id, event_seq), one probe for each item.
 const latestVersionsQuery = `
 	select l.kind, l.id, l.issue_key, l.project_key, l.event_id, l.event_seq, l.started_at, l.body,
 	       l.body_from, l.spec_artifact_id::text, l.spec_version
-	  from unnest($1::text[], $2::text[]) as k (kind, id)
+	  from unnest($1::text[], $2::text[], $3::integer[]) as k (kind, id, before)
 	  cross join lateral (
 	        select v.kind, v.id, v.issue_key, v.project_key, v.event_id, v.event_seq, v.started_at,
 	               v.body, v.body_from, v.spec_artifact_id, v.spec_version
 	          from public.search_text_versions v
-	         where v.kind = k.kind and v.id = k.id
+	         where v.kind = k.kind and v.id = k.id and v.event_seq < k.before
 	         order by v.event_seq desc
 	         limit 1) l`
 
-// latestVersions reads the latest row in the keyword table of each of items, in tx: an item with
-// no row is not in the map. A version read from the table holds its body as its Body, and as its
-// Text where the body is the item's own text, which an ask's is not: an ask's body holds its
-// question, a space and ask_search_suffix of its options and answer.
-func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*version, error) {
+// latestVersions reads the latest row in the keyword table of each of items before the seq of
+// the same place in before, the seq of the batch's first event that asks for it, in tx: an item
+// with no such row is not in the map. A version read from the table holds its body as its Body,
+// and as its Text where the body is the item's own text, which an ask's is not: an ask's body
+// holds its question, a space and ask_search_suffix of its options and answer.
+func latestVersions(ctx context.Context, tx pgx.Tx, items []item, before []int32) (map[item]*version, error) {
 	latest := make(map[item]*version, len(items))
 	if len(items) == 0 {
 		return latest, nil
@@ -819,7 +971,7 @@ func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*ver
 	for index, key := range items {
 		kinds[index], ids[index] = key.kind, key.id
 	}
-	rows, err := tx.Query(ctx, latestVersionsQuery, kinds, ids)
+	rows, err := tx.Query(ctx, latestVersionsQuery, kinds, ids, before)
 	if err != nil {
 		return nil, fmt.Errorf("read the latest keyword versions of %d items: %w", len(items), err)
 	}

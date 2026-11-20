@@ -59,8 +59,11 @@ const (
 	// asOfSearchWord is a word the world's text holds at the cut. asOfBroadenedQuery is two words
 	// that no item holds together at the cut, the first held at the cut and the second only by
 	// text written after it: at the cut the search broadens to the first word.
-	asOfSearchWord     = "lighthouse"
-	asOfBroadenedQuery = "lighthouse marmalade"
+	// asOfEditedMessageWord is a word only the text the edited message had at the cut holds: its
+	// first body and its body after the cut hold others.
+	asOfSearchWord        = "lighthouse"
+	asOfBroadenedQuery    = "lighthouse marmalade"
+	asOfEditedMessageWord = "plover"
 )
 
 // asOfAgentSession is the session that asks the world's questions and requests its approval, the
@@ -120,12 +123,16 @@ func asOfIssue(t *testing.T, handler http.Handler, body map[string]any) model.Is
 }
 
 // asOfUpload writes a document of owner (an issue's or a project's path) with content, a first
-// version for a new name and the next version for a name it holds.
+// version for a new name and the next version for a name it holds, which names the token of the
+// version it replaces, as every upload that replaces a document must (uploadBaseNamed).
 func asOfUpload(t *testing.T, handler http.Handler, owner, name, content string) model.Artifact {
 	t.Helper()
 	body := map[string]any{"name": name}
 	if content != "" {
 		body["content"] = content
+	}
+	if base := uploadBaseNamed(t, handler, owner+"/artifacts", name); base != nil {
+		body["precondition"] = base
 	}
 	return decodeBody[uploadedArtifact](t, asOfWrite(t, handler, http.MethodPost, owner+"/artifacts", body, "alice")).Artifact
 }
@@ -214,8 +221,9 @@ func seedAsOfWorld(t *testing.T, handler http.Handler) *asOfWorld {
 		t.Fatalf("the session's reply: status=%d body=%s", reply.Code, reply.Body.String())
 	}
 	w.editedMessage = decodeBody[model.Message](t, asOfWrite(t, handler, http.MethodPost, "/api/v1/issues/"+w.parent+"/messages",
-		map[string]any{"body": "The draft as first written."}, "alice")).ID
-	asOfWrite(t, handler, http.MethodPatch, "/api/v1/messages/"+w.editedMessage, map[string]any{"body": "The draft as edited before the cut."}, "alice")
+		map[string]any{"body": "The draft as first written: a sandpiper."}, "alice")).ID
+	asOfWrite(t, handler, http.MethodPatch, "/api/v1/messages/"+w.editedMessage,
+		map[string]any{"body": "The draft as edited before the cut: a " + asOfEditedMessageWord + "."}, "alice")
 	w.deletedMessage = decodeBody[model.Message](t, asOfWrite(t, handler, http.MethodPost, "/api/v1/issues/"+w.parent+"/messages",
 		map[string]any{"body": "A message its author withdraws later: kingfisher."}, "alice")).ID
 	w.deleted[w.deletedMessage] = "kingfisher"
@@ -285,7 +293,7 @@ func (w *asOfWorld) writeAfterTheCut(t *testing.T, handler http.Handler) {
 	}, "alice")
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/issues/"+w.parent+"/messages",
 		map[string]any{"body": "Bob follows the checked reads up after the cut.", "in_reply_to": w.delivered}, "bob")
-	asOfWrite(t, handler, http.MethodPatch, "/api/v1/messages/"+w.editedMessage, map[string]any{"body": "The draft as edited after the cut."}, "alice")
+	asOfWrite(t, handler, http.MethodPatch, "/api/v1/messages/"+w.editedMessage, map[string]any{"body": "The draft as edited after the cut: a ptarmigan."}, "alice")
 	asOfWrite(t, handler, http.MethodDelete, "/api/v1/messages/"+w.deletedMessage, nil, "alice")
 
 	later := decodeBody[model.Ask](t, asOfSessionWrite(t, handler, http.MethodPost, "/api/v1/issues/"+w.parent+"/asks", map[string]any{
@@ -352,13 +360,16 @@ func asOfOne(target func(w *asOfWorld) string) func(w *asOfWorld) []asOfRead {
 	return func(w *asOfWorld) []asOfRead { return []asOfRead{{target: target(w)}} }
 }
 
-// asOfSearchReads is a search route's two reads: a query the world's text matched at the cut,
-// and two words that matched nothing together at the cut, which the read at the cut broadened.
+// asOfSearchReads is a search route's three reads: a query the world's text matched at the cut;
+// two words that matched nothing together at the cut, which the read at the cut broadened; and a
+// word only the edited message's text at the cut holds, which the fill reads from its edit
+// (message.edited).
 func asOfSearchReads(path string) func(w *asOfWorld) []asOfRead {
 	return func(*asOfWorld) []asOfRead {
 		return []asOfRead{
 			{target: path + "?" + url.Values{"q": {asOfSearchWord}, "keywords_only": {"true"}}.Encode()},
 			{target: path + "?" + url.Values{"q": {asOfBroadenedQuery}, "keywords_only": {"true"}}.Encode()},
+			{target: path + "?" + url.Values{"q": {asOfEditedMessageWord}, "keywords_only": {"true"}}.Encode()},
 		}
 	}
 }
@@ -573,8 +584,9 @@ func withAsOf(t *testing.T, target string, cut asof.Cut) string {
 // kind answers, read with as_of at the cut, answers exactly what it answered at the cut, and
 // nothing written after it, for each of three callers. Every read at the cut is made first, once
 // the world has settled and the event horizon has reached it; the cut is the database's clock
-// after the last of them; 5 ms later the world is written again; and once that has settled each
-// route is read with as_of at the cut. The as_of read is held to the read at the cut by
+// after the last of them; 5 ms later the world is written again; and once that has settled, and
+// the keyword table's fill has read every event past the cut (fillTextVersionsPast), each route
+// is read with as_of at the cut. The as_of read is held to the read at the cut by
 // asOfComparison, and every statement it sends is held to the writes a read may make: the DPoP
 // proof's replay row, a personal token's last_used_at and the caches Dispatch rebuilds.
 //
@@ -613,6 +625,7 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	world.writeAfterTheCut(t, rig.handler)
 	rig.settle(t)
+	fillTextVersionsPast(t, rig.database, cut)
 	t.Logf("the cut is %s; %d rows, %d callers", cut, len(asOfEqualityRows), len(callers))
 
 	for rowIndex, row := range asOfEqualityRows {
