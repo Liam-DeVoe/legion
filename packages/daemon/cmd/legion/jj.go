@@ -351,14 +351,22 @@ func (s *jjStep) readIDs() error {
 	return nil
 }
 
-// dryRunFilled is what the push sends, read from its dry run: the commit ids it adds or moves a
-// ref to (parseJJDryRun). A dry run that jj refuses because a commit it sends has no author
-// (jjNoAuthorCommit) gets that commit filled, by the metaedit of the role its trailer names, and
-// runs again. The loop has a bound it can prove: a dry run that names a commit an earlier pass
-// already named or made, or a pass beyond the number of commits in
-// `mutable() ~ ::remote_bookmarks()`, which holds every commit the step can fill, ends it as a dry
-// run the step cannot read. So does a commit whose trailer names no role of the table, and any
-// other failure of the dry run.
+// dryRunFilled is what the push sends, read from its dry run: the full ids of the commits it adds
+// or moves a ref to (parseJJDryRun, fullHeads). A dry run that jj refuses because a commit it
+// sends has no author (jjNoAuthorCommit) gets that commit filled, by the metaedit of the role its
+// trailer names, and runs again. jj prints each commit id short, as its first 12 hex digits, and
+// the step never hands jj such an id to resolve: jj would resolve it as a prefix over every commit
+// of the repository, hidden ones and other issues' included, and fail where a second commit starts
+// with it. Each pass reads instead, with jjCommitTemplate, the commits the step can fill
+// (fillable), and takes the refused commit for the one commit of that read whose id starts with
+// the refusal's. A refused commit that the step can fill, one the push sends that is mutable and
+// that no remote holds, is in that read, so a single match is that commit. One it cannot fill,
+// immutable or held by another remote, is not, and a commit of the read is taken for it only where
+// the two ids share their first 12 digits. The loop has a bound it can prove: a dry run that names
+// a commit an earlier pass already named or made, or a pass beyond the number of commits the first
+// pass read, ends it as a dry run the step cannot read. So does a refusal whose id starts the id
+// of no commit of the read, or of more than one, a commit whose trailer names no role of the
+// table, and any other failure of the dry run.
 func (s *jjStep) dryRunFilled() ([]string, error) {
 	var named, made []string
 	bound, passes := -1, 0
@@ -372,39 +380,34 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 			if err != nil {
 				return nil, s.unreadable(err.Error())
 			}
-			return heads, nil
+			return s.fullHeads(heads)
 		}
 		id, refusal, ok := jjNoAuthorCommit(stderr)
 		if !ok {
 			return nil, s.unreadable(jjErrorLine(stderr, code))
 		}
-		if slices.Contains(named, id) || slices.ContainsFunc(made, func(commit string) bool { return strings.HasPrefix(commit, id) }) {
-			return nil, s.unreadable(refusal)
-		}
-		if bound < 0 {
-			out, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-r", "mutable() ~ ::remote_bookmarks()", "-T", `"."`)
-			if err != nil {
-				return nil, err
-			}
-			bound = len(out)
-		}
-		if passes >= bound {
-			return nil, s.unreadable(refusal)
-		}
-		passes++
-		named = append(named, id)
-		commits, err := s.read("commit_id(" + id + ")")
+		fillable, err := s.read(s.fillable())
 		if err != nil {
 			return nil, err
 		}
-		if len(commits) != 1 {
+		if bound < 0 {
+			bound = len(fillable)
+		}
+		matches := jjStartingWith(fillable, func(c jjCommitRead) string { return c.commit }, id)
+		if len(matches) != 1 || passes >= bound {
 			return nil, s.unreadable(refusal)
 		}
-		if _, ok := s.table[commits[0].role]; !ok {
+		c := matches[0]
+		if slices.Contains(named, c.commit) || slices.Contains(made, c.commit) {
 			return nil, s.unreadable(refusal)
 		}
-		f := s.follow(commits[0], false)
-		if err := s.metaedit(commits[0].role, []*jjFollowed{f}); err != nil {
+		if _, ok := s.table[c.role]; !ok {
+			return nil, s.unreadable(refusal)
+		}
+		passes++
+		named = append(named, c.commit)
+		f := s.follow(c, false)
+		if err := s.metaedit(c.role, []*jjFollowed{f}); err != nil {
 			return nil, err
 		}
 		if f.commit != f.origin {
@@ -413,12 +416,73 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 	}
 }
 
+// fillable is the revset of the commits the step can fill: `mutable() ~ ::remote_bookmarks()`,
+// and, where the push has revision arguments, every mutable ancestor of the commits they name as
+// its dry run names them (revisionTerms), each of those commits among them, that no remote
+// bookmark holds, hidden ones included: jj's all() holds a hidden commit that a revset names, and
+// its ancestors, and a commit the push sends is visible or such an ancestor.
+func (s *jjStep) fillable() string {
+	terms := s.revisionTerms()
+	if len(terms) == 0 {
+		return "mutable() ~ ::remote_bookmarks()"
+	}
+	return "(mutable() | (::(" + strings.Join(terms, " | ") + ") & mutable())) ~ ::remote_bookmarks()"
+}
+
+// fullHeads is the full commit id of each of heads, the ids a dry run prints short. It reads, in
+// one command, the ids of the commits of `bookmarks() | tags()` and of each revision argument as
+// the dry run names it (revisionTerms): every ref a push adds or moves goes to a local bookmark's
+// or a tag's target or to a commit a revision argument names, so the commit a head stands for is
+// in that read, and is the one commit of it whose id starts with the head. A head that starts the
+// id of no commit of the read, or of more than one, makes the dry run one the step cannot read.
+func (s *jjStep) fullHeads(heads []string) ([]string, error) {
+	if len(heads) == 0 {
+		return nil, nil
+	}
+	out, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-r", strings.Join(append([]string{"bookmarks()", "tags()"}, s.revisionTerms()...), " | "), "-T", `commit_id ++ "\n"`)
+	if err != nil {
+		return nil, err
+	}
+	ids := strings.Fields(out)
+	full := make([]string, len(heads))
+	for i, head := range heads {
+		matches := jjStartingWith(ids, func(id string) string { return id }, head)
+		if len(matches) != 1 {
+			return nil, s.unreadable(fmt.Sprintf("the dry run's commit id %s starts the id of %d commits that a bookmark, a tag or a revision of the push names, not of one", head, len(matches)))
+		}
+		full[i] = matches[0]
+	}
+	return full, nil
+}
+
+// revisionTerms is each revision argument of the push as its dry run names it (jjPush.dryRun),
+// in parentheses, so that each is one term of a revset.
+func (s *jjStep) revisionTerms() []string {
+	words := s.push.withRevisions(s.ids, false)
+	terms := make([]string, len(s.push.revisions))
+	for i, r := range s.push.revisions {
+		terms[i] = "(" + words[r.index][r.offset:] + ")"
+	}
+	return terms
+}
+
+// jjStartingWith is each of items whose commit id, as id reads it, starts with short.
+func jjStartingWith[T any](items []T, id func(T) string, short string) []T {
+	var matches []T
+	for _, item := range items {
+		if strings.HasPrefix(id(item), short) {
+			matches = append(matches, item)
+		}
+	}
+	return matches
+}
+
 // setAuthors rewrites the author of each commit the push sends: the set
-// `(::(<each of heads>) ~ ::remote_bookmarks()) & mutable()`, heads being the new commits of the
-// dry run, every commit of which whose role is in the table and whose author's email is not that
-// role's. It runs one metaedit for each role with such commits, in claim.Roles' order, and reads
-// the set again before each metaedit after its first, from what the dry run's new commits stand
-// for after the one before. Nothing to rewrite runs no metaedit.
+// `(::(<each of heads>) ~ ::remote_bookmarks()) & mutable()`, heads being the full ids of the dry
+// run's new commits (fullHeads), every commit of which whose role is in the table and whose
+// author's email is not that role's. It runs one metaedit for each role with such commits, in
+// claim.Roles' order, and reads the set again before each metaedit after its first, from what the
+// dry run's new commits stand for after the one before. Nothing to rewrite runs no metaedit.
 func (s *jjStep) setAuthors(heads []string) error {
 	if len(heads) == 0 {
 		return nil
@@ -431,7 +495,7 @@ func (s *jjStep) setAuthors(heads []string) error {
 	// it: no metaedit of the step reaches it, and the set is read again without it.
 	var tips []*jjFollowed
 	for _, head := range heads {
-		if i := slices.IndexFunc(set, func(c jjSetCommit) bool { return strings.HasPrefix(c.commit.commit, head) }); i >= 0 {
+		if i := slices.IndexFunc(set, func(c jjSetCommit) bool { return c.commit.commit == head }); i >= 0 {
 			tips = append(tips, set[i].commit)
 		}
 	}
@@ -483,8 +547,8 @@ func (s *jjStep) misauthored(c jjSetCommit) bool {
 	return ok && c.email != identity.Email
 }
 
-// readSet reads the set of commits the push sends whose new commits are heads, commit ids or
-// their prefixes, each commit followed (follow).
+// readSet reads the set of commits the push sends whose new commits are heads, full commit ids,
+// each of which commit_id() names exactly, each commit followed (follow).
 func (s *jjStep) readSet(heads []string) ([]jjSetCommit, error) {
 	named := make([]string, len(heads))
 	for i, head := range heads {
@@ -659,9 +723,12 @@ func (s *jjStep) report() {
 	}
 }
 
-// unreadable prints the one line of a dry run the step cannot read, naming line, the first line
-// of it that it could not read, and answers errJJUnreadable: the push then runs with the role's
-// own words, but for a commit id whose commit a metaedit of the step hid (jjPush.withRevisions).
+// unreadable prints the one line of a dry run the step cannot read, naming line, what of it the
+// step could not read: its first line that the step could not read or act on, jj's refusal of a
+// commit with no author that the step cannot fill among them (dryRunFilled), or a commit id of a
+// block that the step could not place among the commits it read (fullHeads), and answers
+// errJJUnreadable: the push then runs with the role's own words, but for a commit id whose commit
+// a metaedit of the step hid (jjPush.withRevisions).
 func (s *jjStep) unreadable(line string) error {
 	fmt.Fprintf(s.stderr, "legion jj: could not read what the push sends: %s; the push runs as written\n", line)
 	return errJJUnreadable

@@ -129,6 +129,18 @@ const (
 fi`
 	// rolePushDryRunWithNoBlock makes every dry run exit as jj exits, having printed nothing.
 	rolePushDryRunWithNoBlock = `if [ -n "$is_push" ] && [ -n "$is_dry" ]; then "$real" "$@" 2>/dev/null; status=$?; ran=1; fi`
+	// rolePushShortensDryRun shortens each commit id of 12 hex digits on a dry run's standard
+	// error, in a block's line of either release's shape and in jj's refusal of a commit with no
+	// author alike, to its first digit: a stand-in for an id that jj prints short and that the
+	// id of another commit of the repository's starts with too.
+	rolePushShortensDryRun = `if [ -n "$is_push" ] && [ -n "$is_dry" ]; then
+  out=$(mktemp)
+  "$real" "$@" 2>"$out"
+  status=$?
+  sed -E 's/(^|[^0-9A-Za-z])([0-9a-f])[0-9a-f]{11}($|[^0-9A-Za-z])/\1\2\3/g' "$out" >&2
+  rm -f "$out"
+  ran=1
+fi`
 )
 
 // rolePushUnreadableLine is the line rolePushUnreadableDryRun adds.
@@ -1502,6 +1514,136 @@ func TestThePushChangesNoCommitOutsideIt(t *testing.T) {
 	rolePushRun(t, rolePushUntouchedRows())
 }
 
+// rolePushRedescribes is how many times, at most, a short-id row's setup describes a commit again
+// for the first hex digit of its commit id.
+const rolePushRedescribes = 256
+
+// redescribe describes c again as describer, with message's title followed by a count and the
+// rest of message kept, until done holds of its commit id and of the commit ids of c that the
+// describes hid, and answers c then. It fails the test past rolePushRedescribes describes.
+func (f *rolePushFixture) redescribe(c rolePushChange, describer rolePushIdentity, message string, done func(commit string, hid []string) bool) rolePushChange {
+	f.t.Helper()
+	title, rest, _ := strings.Cut(message, "\n")
+	var hid []string
+	for count := 1; !done(c.commit, hid); count++ {
+		if count > rolePushRedescribes {
+			f.t.Fatalf("%d describes of change %s left its commit %s, whose first hex digit is not the one the row wants", rolePushRedescribes, c.change, c.commit)
+		}
+		hid = append(hid, c.commit)
+		f.jj(describer, "describe", "-r", c.commit, "-m", title+" "+strconv.Itoa(count)+"\n"+rest)
+		c = f.read(c.change)
+	}
+	return c
+}
+
+// shortIDPushed makes P, the commit a short-id row pushes: a commit on main that maker's jj new
+// makes and describer's jj commit describes with message (commitOn), described again by describer
+// until the first hex digit of its commit id is that of a commit of P's change that a describe
+// hid, and of no other visible commit. It sets the repository's revsets.short-prefixes to none()
+// first: jj resolves a prefix among the commits of that set (by default revsets.log, which holds
+// P), and among every commit, hidden ones included, only where no single commit of that set has
+// an id that starts with it. So jj, as for a commit that set does not hold, finds P's digit
+// ambiguous as a prefix.
+func (f *rolePushFixture) shortIDPushed(maker, describer rolePushIdentity, message string) rolePushChange {
+	f.t.Helper()
+	f.jj(rolePushImplementer, "config", "set", "--repo", "revsets.short-prefixes", "none()")
+	return f.redescribe(f.commitOn(maker, describer, "main", message), describer, message, func(commit string, hid []string) bool {
+		first := commit[:1]
+		if !slices.ContainsFunc(hid, func(h string) bool { return strings.HasPrefix(h, first) }) {
+			return false
+		}
+		for _, visible := range strings.Fields(f.jj(rolePushImplementer, "--ignore-working-copy", "log", "-r", "all()", "--no-graph", "-T", `commit_id ++ "\n"`)) {
+			if visible != commit && strings.HasPrefix(visible, first) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// rolePushShortIDName is what the step's one line of a dry run it cannot read names where the id
+// that rolePushShortensDryRun printed for commit starts the ids of more than one commit it read.
+func rolePushShortIDName(commit string) string { return "commit id " + commit[:1] + " " }
+
+// rolePushShortIDRows are the pushes of P, a commit whose id as rolePushShortensDryRun prints it
+// starts the id of a hidden commit too (shortIDPushed), each pushed by the implementer. filled is
+// whether the step fills P's author before its last dry run.
+func rolePushShortIDRows() []struct {
+	rolePushRow
+	filled bool
+} {
+	impl, rev := rolePushImplementer, rolePushReviewer
+	message := rolePushMessage("work", "implementer")
+	return []struct {
+		rolePushRow
+		filled bool
+	}{
+		{rolePushRow{name: "--bookmark", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+			p := f.shortIDPushed(rev, impl, message)
+			f.bookmark("legion/K-1", p.commit)
+			return rolePushSends("legion/K-1", p, "implementer", impl)
+		}}, false},
+		{rolePushRow{name: "-c <commit id>", args: []string{"git", "push", "-c", "{commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
+			p := f.shortIDPushed(rev, impl, message)
+			return rolePushSends("push-"+p.change[:12], p, "implementer", impl)
+		}}, false},
+		{rolePushRow{name: "--bookmark, an empty author", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+			p := f.shortIDPushed(rolePushNobody, rolePushNobody, message)
+			f.bookmark("legion/K-1", p.commit)
+			return rolePushSends("legion/K-1", p, "implementer", impl)
+		}}, true},
+		{rolePushRow{name: "--bookmark, another bookmark's commit of the same digit", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+			p := f.shortIDPushed(rev, impl, message)
+			f.bookmark("legion/K-1", p.commit)
+			other := rolePushMessage("other work", "implementer")
+			o := f.redescribe(f.commitOn(rev, impl, "main", other), impl, other, func(commit string, _ []string) bool { return commit[0] == p.commit[0] })
+			f.bookmark("other", o.commit)
+			return rolePushWant{
+				refs:       []rolePushRef{{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: p.change, author: rev, commit: p.commit}}}},
+				same:       map[string]rolePushIdentity{p.commit: rev, o.commit: rev},
+				cannotRead: rolePushCannotReadIt, cannotReadNames: rolePushShortIDName(p.commit), noMetaedit: true,
+			}
+		}}, false},
+	}
+}
+
+// jj prints each commit id of a dry run, a block's and that of its refusal of a commit with no
+// author, as its first 12 hex digits, which the id of another commit of the repository's, a hidden
+// one or another issue's, may start with too. A recording jj stands in for such a pair: it
+// shortens each of those ids to its first digit (rolePushShortensDryRun), and the setup gives the
+// pushed commit a digit that a hidden commit's id starts with too and no other visible commit's,
+// in a repository where jj resolves that digit as a prefix among every commit (shortIDPushed). The
+// step reads each such id among the commits the push can send, never as a prefix jj resolves: the
+// commit, pushed by --bookmark or by -c with its commit id, and filled where it has no author,
+// reaches the remote with its trailer's author, and the step prints its rewrite. Where another
+// bookmark, which the push does not send, holds a commit of the same digit, the step prints one
+// line that names the short id and changes nothing, and the push runs as written and exits 0, as
+// jj alone does.
+func TestADryRunsShortCommitIDIsReadAmongTheCommitsThePushCanSend(t *testing.T) {
+	t.Parallel()
+	for _, row := range rolePushShortIDRows() {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, rolePushShortensDryRun)
+				want := row.setup(f)
+				divergent := f.divergence()
+				code, _, stderr := f.push(rolePushImplementer, f.resolve(row.args)...)
+				// The step's last dry run prints the id of the commit it filled short too, and
+				// main's commit, a bookmark's, may start with the same digit: the step then cannot
+				// tell the two apart, prints its one line, and the push runs as written, with the
+				// commit the step filled.
+				if row.filled {
+					if filled := f.read("legion/K-1").commit; filled[0] == f.seed[0] {
+						want.cannotRead, want.cannotReadNames = rolePushCannotReadIt, rolePushShortIDName(filled)
+					}
+				}
+				f.check(want, code, stderr, divergent, 0)
+			})
+		})
+	}
+}
+
 // A bookmark that jj itself finds conflicted is jj's own refusal of the push, as at the base: the
 // push exits with jj's status and prints jj's error, and nothing changes.
 func TestAConflictedBookmarkIsJJsOwnRefusal(t *testing.T) {
@@ -2040,6 +2182,9 @@ func rolePushEveryArgument() []string {
 		}
 	}
 	for _, row := range rolePushCannotReadRows() {
+		words = append(words, row.args...)
+	}
+	for _, row := range rolePushShortIDRows() {
 		words = append(words, row.args...)
 	}
 	for _, row := range rolePushTwoRemoteFirsts {
