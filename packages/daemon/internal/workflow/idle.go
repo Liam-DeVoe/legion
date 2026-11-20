@@ -403,7 +403,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     suspension an operator makes once the release is marked and before that last read keeps
 //     the pod too (store.ReleaseCauseOperatorSuspended). One made after that read cannot keep
 //     the pod, which is going, and is refused rather than lost, and a start of a claim of the
-//     issue then waits for the release to end (the database's refusal, store.Store.CheckLaunch);
+//     issue then changes nothing of it (the database's refusal, store.Store.CheckLaunch): the
+//     operator's resume is owed and runs once the release ends, in a new pod, and a row's start
+//     runs again on its row's retry;
 //
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a
