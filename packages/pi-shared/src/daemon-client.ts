@@ -1,6 +1,8 @@
 import {
   type LegionActivityRequest,
   LegionChildRequest,
+  LegionClaimApprovalRequest,
+  LegionClaimApprovalResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerGrantRequest,
@@ -122,6 +124,15 @@ export interface LegionDaemonClient {
   readonly releaseRecords: (
     input: z.input<typeof LegionReleaseRecordsRequest>
   ) => Promise<z.output<typeof LegionReleaseRecordsResponse>>;
+  /** Whether a person's approval of a spec stands for the claim (contract 199): the document, the
+   * version approved and the approval message the plugin places as it is, or `approval: null`. It
+   * is authenticated by the claim, as `activity` is. `signal` aborts the request, its answer's
+   * body included: pi-legion reads it before a model call under a deadline of its own, and a
+   * daemon that does not answer in time is left no open request. */
+  readonly approval: (
+    input: z.input<typeof LegionClaimApprovalRequest>,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<z.output<typeof LegionClaimApprovalResponse>>;
   readonly grant: (
     input: z.input<typeof LegionGrantRequest>
   ) => Promise<z.output<typeof LegionGrantResponse>>;
@@ -523,6 +534,14 @@ export function createLegionDaemonClient(
         LegionReleaseRecordsRequest,
         LegionReleaseRecordsResponse,
         input
+      ),
+    approval: (input, options) =>
+      read(
+        "POST",
+        "/legion/v1/claims/approval",
+        LegionClaimApprovalResponse,
+        LegionClaimApprovalRequest.parse(input),
+        options?.signal
       ),
     grant: (input) => post("/legion/v1/grants", LegionGrantRequest, LegionGrantResponse, input),
     controllerGrant: (input) =>

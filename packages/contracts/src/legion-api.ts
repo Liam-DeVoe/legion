@@ -1488,6 +1488,36 @@ export const LegionReleaseRecordsResponse = z.object({
 
 export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>;
 
+/** `api.ClaimApprovalRequest`, the body of `POST /legion/v1/claims/approval` (contract 199): the
+ * claim a root architect's session holds, that session, and the claim's secret, as
+ * `claims/activity` sends them. The route answers for the claim's own issue alone. */
+export const LegionClaimApprovalRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+});
+
+export type LegionClaimApprovalRequestBody = z.output<typeof LegionClaimApprovalRequest>;
+
+/** `api.ClaimApprovalResponse`, the body `POST /legion/v1/claims/approval` answers: the person's
+ * approval of a spec that stands for the claim, or `null` where none does. `document` is
+ * `dispatch://<KEY>/spec`, or the document's id where a carried copy's hand-over names no root;
+ * `version` is the version approved; `message` is the approval message with both filled in, in
+ * the daemon's words (`packages/daemon/internal/prompts/approval.md`), which pi-legion places as
+ * it is. A child's architect, a phase worker, and a deployment that gates no spec step read
+ * `null`, never a refusal. */
+export const LegionClaimApprovalResponse = z.object({
+  approval: z
+    .object({
+      document: nonEmptyString,
+      version: z.number().int().positive(),
+      message: nonEmptyString,
+    })
+    .nullable(),
+});
+
+export type LegionClaimApproval = z.output<typeof LegionClaimApprovalResponse>;
+
 /** `api.ControllerRegisterResponse`, for a session that registered as the project's controller
  * (the `bootToken` of `POST /legion/v1/claims/register` is the secret `legion controller start`
  * fetched, or a daemon-launched controller's own boot token): the project's controller role token,

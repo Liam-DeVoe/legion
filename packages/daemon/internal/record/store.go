@@ -1086,6 +1086,45 @@ func (s *Postgres) DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root s
 	return nil
 }
 
+// PutClearedSpecApproval writes the record a mark places, so a record with no mark, which would
+// name an approval Dispatch never placed, is refused here and by the table's check.
+func (s *Postgres) PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error {
+	if approval.Mark.IsZero() {
+		return fmt.Errorf("record the spec approval cleared from %s: the approval of version %d carries no mark", approval.Issue, approval.Version)
+	}
+	seq, at := markValues(approval.Mark)
+	if _, err := tx.Exec(ctx, `insert into cleared_spec_approvals (issue, artifact_id, approved_version, approved_seq, approved_at) values ($1, $2, $3, $4, $5)
+		on conflict (issue) do update set artifact_id = excluded.artifact_id, approved_version = excluded.approved_version,
+		approved_seq = excluded.approved_seq, approved_at = excluded.approved_at`,
+		approval.Issue, approval.ArtifactID, approval.Version, seq, at); err != nil {
+		return fmt.Errorf("record the spec approval cleared from %s at version %d: %w", approval.Issue, approval.Version, err)
+	}
+	return nil
+}
+
+func (s *Postgres) ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error) {
+	approval := ClearedSpecApproval{Issue: root}
+	var seq *int64
+	var at *time.Time
+	err := tx.QueryRow(ctx, `select artifact_id, approved_version, approved_seq, approved_at from cleared_spec_approvals where issue = $1`, root).Scan(
+		&approval.ArtifactID, &approval.Version, &seq, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the spec approval cleared from %s: %w", root, err)
+	}
+	approval.Mark = scannedMark(seq, at)
+	return &approval, nil
+}
+
+func (s *Postgres) DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error {
+	if _, err := tx.Exec(ctx, "delete from cleared_spec_approvals where issue = $1", root); err != nil {
+		return fmt.Errorf("delete the spec approval cleared from %s: %w", root, err)
+	}
+	return nil
+}
+
 // TellChildrenFirst records that the architect that owns issue has been told, for the run
 // generation of tree, that the issue waits for its own Dispatch children, and reports whether
 // this call is the telling: a second call for the same tree and generation changes nothing and

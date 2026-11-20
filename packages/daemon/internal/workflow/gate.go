@@ -167,6 +167,13 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
 		return intake.Result{}, err
 	}
+	// The spec row is the root's again, so it answers for the approval from here on, and the record
+	// the root's re-admission left of the row it cleared goes (record.ClearedSpecApproval).
+	if step == record.DesignStepSpec {
+		if err := e.store.DeleteClearedSpecApproval(ctx, tx, fact.Issue); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	// The registration is the path that binds a step to a document, so it is the one that most
 	// often moves the issue's pairs; a re-registration of the document the step already names
 	// queues nothing (record.PublishChangedGates). Its read of the issue's gates is made after
@@ -617,7 +624,9 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // that owns it, by whose key Dispatch sends its events, takes every event (applyArtifact), and each
 // copy a hand-over carried to a child of its tree, now a root of its own (admit's readmit), takes
 // only an approval that opens it or keeps it open (copyTakes). register_gate refuses a document of
-// another issue, so no other gate names it.
+// another issue, so no other gate names it. A changes request also ends the spec approval that
+// the owner's re-admission recorded of that document (forgetClearedSpecApproval), which no gate
+// row holds once the re-admission has cleared the rows.
 //
 // A person's approval of a parked labelled root's primary document is that person's handover of
 // the root (personHandoverQueues), and the daemon queues the root's todo itself, as admission does
@@ -642,6 +651,14 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	gates, err := e.store.GatesForArtifact(ctx, tx, fact.ArtifactID)
 	if err != nil {
 		return intake.Result{}, err
+	}
+	// A re-admission cleared the root's gate rows, so no row takes a changes request on the
+	// document it cleared: the record the re-admission left of that row goes instead, since the
+	// person's changes request ends the approval it records (record.ClearedSpecApproval).
+	if fact.Kind == intake.DispatchArtifactChangesRequested {
+		if err := e.forgetClearedSpecApproval(ctx, tx, fact.Key, fact.ArtifactID); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	for _, gate := range gates {
 		carried := gate.Issue != fact.Key
@@ -670,6 +687,18 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	}
 	e.logOnCommit(ctx, "admission: queued a person's handover", "issue", fact.Key, "source", "approval")
 	return intake.Result{}, nil
+}
+
+// forgetClearedSpecApproval deletes the record key's re-admission left of its spec row
+// (record.ClearedSpecApproval) where that record is of document.
+func (e *Engine) forgetClearedSpecApproval(ctx context.Context, tx pgx.Tx, key, document string) error {
+	cleared, err := e.store.ClearedSpecApproval(ctx, tx, key)
+	if err != nil || cleared == nil || cleared.ArtifactID != document {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a changes request ends the spec approval a re-admission recorded", "issue", key,
+		"artifact", document, "approved_version", cleared.Version)
+	return e.store.DeleteClearedSpecApproval(ctx, tx, key)
 }
 
 // recordHandover records on a parked root's own gate the person's approval that queues the root as

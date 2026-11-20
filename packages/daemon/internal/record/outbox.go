@@ -2547,6 +2547,13 @@ func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }
 
+// NoticeKinds is every notice kind an architect is told, in the order validNoticeKinds lists them,
+// as a copy a caller may change: the roster a test that must classify each kind reads, so a kind
+// added here reaches it.
+func NoticeKinds() []NoticeKind {
+	return slices.Clone(validNoticeKinds)
+}
+
 // validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
 // failure: the hold a phase worker's failed claim puts its issue in and the worker-died that
 // names the death (workflow's claimFailed). Both arms of the switch above call it, because the

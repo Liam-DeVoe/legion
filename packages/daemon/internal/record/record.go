@@ -534,6 +534,11 @@ func (m EventMark) Merged(other EventMark) EventMark {
 	return m
 }
 
+// IsZero says whether m places nothing: it carries neither a sequence nor a time.
+func (m EventMark) IsZero() bool {
+	return m.Seq == 0 && m.At.IsZero()
+}
+
 // ID is the mark as one number for a fact's event id: the sequence, else the time in Unix
 // nanoseconds, else 0.
 func (m EventMark) ID() int64 {
@@ -1674,11 +1679,36 @@ type ReleaseRetry struct {
 
 // HandedOverRoot is a root a hand-over created: the generation at which the child became a root of
 // its own, carrying its phase, phase rows and pull request, and whether its old root's gate came
-// with them.
+// with them. FromRoot is the root that holds the document of that gate: the tree the child left,
+// or the root that tree's own row names where that tree was itself a carried root at its
+// generation. It is "" where no gate came, and on a row a release before it wrote.
 type HandedOverRoot struct {
 	Issue       string
 	Generation  uint64
 	GateCarried bool
+	FromRoot    string
+}
+
+// GateCarriedAt says whether root is a hand-over's record of a carried gate at generation: the
+// issue's spec row at that generation is a copy of FromRoot's gate, not its own. A row of an
+// earlier generation belongs to a run that has ended (workflow.ArchitectCarried), and nil is no
+// hand-over at all.
+func (root *HandedOverRoot) GateCarriedAt(generation uint64) bool {
+	return root != nil && root.GateCarried && root.Generation == generation
+}
+
+// ClearedSpecApproval is the spec row a root's re-admission deleted (Store.ClearTreeGeneration)
+// while a person's approval stood on it: the document, the version the person approved and where
+// Dispatch recorded that approval (Mark, never zero). The approval route answers from it while
+// the root holds no spec row (StandingSpecApproval). The spec step's next registration, and a
+// changes request on that document, delete it (workflow's gateRegistered and dispatchArtifact).
+// It is apart from KeptApproval, which is kept only while the approved version is older than the
+// latest and is forgotten once the root's start task is told.
+type ClearedSpecApproval struct {
+	Issue      string
+	ArtifactID string
+	Version    int
+	Mark       EventMark
 }
 
 // DispatchIssueRow is one row of the daemon's copy of Dispatch's issues: what the readings of
@@ -1993,6 +2023,12 @@ type Store interface {
 	DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) error
 	// ReadmittedApproval is the pair root keeps, in any state, zeros when it keeps none.
 	ReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) (approved, latest int, err error)
+	// PutClearedSpecApproval records on a root the spec row its re-admission is about to delete,
+	// where a person's approval stands on it; a later record replaces it. ClearedSpecApproval is
+	// the record root holds, nil for none; DeleteClearedSpecApproval deletes it, if any.
+	PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error
+	ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error)
+	DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error
 	// TellChildrenFirst marks that the architect that owns issue has been told, for the run
 	// generation of tree, that the issue's own first phase waits for the Dispatch children under
 	// it, and reports whether this call is the telling. That architect is the root's own for a

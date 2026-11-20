@@ -2505,4 +2505,30 @@ package api
 // #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
 // #4030, and nothing at 189. Read the base's own number and every open pull request again at the
 // next merge rather than from this line.)
-const DaemonAPIVersion = 189
+//
+// 199: the approval route. `POST /legion/v1/claims/approval` (`{claimToken, sessionId, secret}`,
+// api.ClaimApprovalRequest) answers whether a person's approval of a spec stands for the claim's
+// own issue: `{approval: null}`, or `{approval: {document, version, message}}`
+// (api.ClaimApprovalResponse). `document` is `dispatch://<KEY>/spec`, or the document's id where a
+// carried copy's hand-over row names no root; `version` is the version the person approved; and
+// `message` is the approval message with both filled in, in the words of
+// `packages/daemon/internal/prompts/approval.md`, which pi-legion places as it is. The route
+// authenticates by the claim as `claims/activity` does, refuses as its siblings do (a blank field
+// by its name with 400, a wrong secret with claim.InvalidSecret, a stale plugin with the
+// stale-contract 409), and reads in one read-only transaction. A child's architect, every phase
+// worker, the controller, and a deployment that gates no spec step are answered `approval: null`,
+// never refused (record.StandingSpecApproval). Two facts the route reads have no wire shape:
+// `handed_over_roots.from_root`, the root a carried gate came from, and the table
+// `cleared_spec_approvals`, the spec row a root's re-admission cleared, both added by
+// `store/migrations/20261120210115_approval_route_records.up.sql`, whose header carries their way
+// back. No shape of `GET /legion/v1/state` moves. A plugin of an earlier contract never calls the
+// route, and the boot gate pairs a daemon and a plugin only at one number, so no plugin of this
+// entry meets a daemon without it.
+// (This entry takes 199, above the 189 this change's base carries and the 193 main carried at
+// 8a9540682d8a when it was read at 2026-11-20T21:25:56Z: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 292 open pull requests of cybermonklabs/legion, made on
+// 2026-11-20 between 20:50:28Z and 20:56:13Z, found 190 declared by #2230, #3712 and #4611, 191 by
+// #4049 and #4573, 192 by #4180 and #4182, 193 by #4539, 194 by #3831 and #4030, 195 by #4590, 196
+// by eleven, 197 by #4065, #4553 and #4578, 198 by #4175, and nothing above 198. Read the base's
+// own number and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 199

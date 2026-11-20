@@ -12,6 +12,8 @@ import {
   LegionActivityRequest,
   LegionCapabilityReport,
   LegionChildRequest,
+  LegionClaimApprovalRequest,
+  LegionClaimApprovalResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerCredentialResponse,
@@ -86,6 +88,11 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
+  // `api.ClaimApprovalResponse` (contract 199): the approval that stands for a root architect's
+  // claim, and the answer where none does, whose `approval` is null and never absent. Each is
+  // written from what the route builds (internal/api's TestApprovalRoute…Golden).
+  "claim-approval.json": LegionClaimApprovalResponse,
+  "claim-approval-none.json": LegionClaimApprovalResponse,
   "register-controller.json": LegionControllerRegisterResponse,
   "controller-secret.json": LegionControllerSecretResponse,
   "controller-github-credential.json": LegionControllerCredentialResponse,
@@ -1489,6 +1496,17 @@ test("every request the plugin sends parses and names its required fields", () =
         claimToken: "legion-legion-legion-208-implementer",
         secret: CLAIM_SECRET,
         since: "2026-11-01T12:00:00Z",
+      },
+    ],
+    // The read a root architect's session makes before a model call of its own conversation
+    // (contract 199), authenticated by the claim as the activity report is.
+    [
+      "claim approval",
+      LegionClaimApprovalRequest,
+      {
+        claimToken: "legion-acme-2694-architect",
+        sessionId: "ses_architect_2694",
+        secret: CLAIM_SECRET,
       },
     ],
   ];
