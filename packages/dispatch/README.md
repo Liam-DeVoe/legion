@@ -882,13 +882,16 @@ the project's issues resolve to. Each answer must be 404, 403, what a missing ob
 or one that holds no row of the project; any answer for the project's object (a 2xx, or a refusal
 other than 403 and 404) where a missing one is answered otherwise is a row of it too, since it
 says the object exists, and a proxy read must answer as a repository the App is not installed on
-does. A string an answer holds is a row when it is, whole, the project's key, an issue key of it
-or an object the lookup found. A string a person wrote (a `body`, `title`, `snippet` and the like)
-counts only so, since a member's own comment may cite the project's items, even as its whole
-body; any other string with no whitespace (a reference, a path, a URL) is one too when such a key
-or object stands in it as a whole part between `/ : # ? & =`. A session or a
-person the lookup read in the project that works in no project the member sees is a row of it as
-well. It also holds both sockets: the
+does. `GET /api/v1/github/app-installation/{owner}/{repo}`, which the server holds to the
+proxy's rule, must answer the member exactly what it answers them for a missing repository,
+status and text, filled with the project's repository; it can fail only where the App is
+installed on that repository and not on a missing one. A string an answer holds is a row
+when it is, whole, the project's key, an issue key of it or an object the lookup found. A string
+a person wrote (a `body`, `title`, `snippet` and the like) counts only so, since a member's own
+comment may cite the project's items, even as its whole body; any other string with no whitespace
+(a reference, a path, a URL) is one too when such a key or object stands in it as a whole part
+between `/ : # ? & =`. A session or a person the lookup read in the project that works in no
+project the member sees is a row of it as well. It also holds both sockets: the
 member is not admitted to the room of the project's document, while the same probe admits them to
 a document of their own, and the member's event feed, open for the whole of `SWEEP_LIVE_SECONDS`
 (60 by default), is sent no event of the project while the full member comments on
@@ -898,9 +901,10 @@ host), `SWEEP_PROJECT`, `SWEEP_FULL_TOKEN`, `SWEEP_RESTRICTED_COOKIE` (the `Cook
 `<name>=<value>`), `SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`, a
 file in the conversation of a session that worked in the project alone), and, optional,
 `SWEEP_FULL_COOKIE`, the full member's session cookie: the GitHub proxy reads as the browser's
-person and never as a token, so without it the proxy reads are `blind`. It needs bash 3.2 or
-later, curl 7.55 or later, jq 1.6 or later, and bun with this checkout's dependencies installed
-(`bun install`), which runs the socket probe `e2e/acceptance/socket-access.ts`. No token or cookie
+person and never as a token, so without it the proxy reads cannot fail, and the run is `UNKNOWN`,
+naming them. It needs bash 3.2 or later, curl 7.55 or later, jq 1.6 or later, and bun with this
+checkout's dependencies installed (`bun install`), which runs the socket probe
+`e2e/acceptance/socket-access.ts`. No token or cookie
 reaches a command line or the output.
 
 ```bash
@@ -913,10 +917,13 @@ Where no full member's credential may be, as on a public runner, the sweep split
 mode (`SWEEP_MODE=fills`), where the full member's token is, does the full member's half: the
 lookup, the question and each row's can-fail call, and writes them to `SWEEP_FILLS_FILE` (ASCII
 `name<TAB>value` lines, at most 40 KiB, no credential, the target issue's title among them, as the
-search rows' text). It takes the member's login in `SWEEP_MEMBER`, and reads the member's own
-projects as the ones whose access lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no
-`SWEEP_MODE`, does the member's half with the member's cookie alone, refuses a full member's
-credential, and refuses fills of another project or older than 55 minutes. It reads the member's
+search rows' text). A row that can fail is a `can_fail<TAB><row>` line, each proxy read and the
+app-installation row among them. Fills mode needs `SWEEP_FULL_COOKIE` too, since a proxy read it
+cannot make fail leaves no file. It takes the member's login in `SWEEP_MEMBER`,
+and reads the member's own projects as the ones whose access lists name it. A runner, any run
+with `SWEEP_FILLS_FILE` and no `SWEEP_MODE`, does the member's half with the member's cookie
+alone, refuses a full member's credential, and refuses fills of another project or older than 55
+minutes. It reads the member's
 live feed over a window it prints, `live window <W0> <W1>` (UTC), and makes no write. Writer mode
 (`SWEEP_MODE=writer`) runs beside it with the full member's token: it comments on
 `SWEEP_WRITE_ISSUE` every `SWEEP_WRITE_EVERY` seconds and prints `write <UTC> <id> delivered`, or
@@ -934,9 +941,11 @@ SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_
 ```
 
 Every row's line says whether it can fail (the full member is answered the project's object
-otherwise than a missing one, or a row of it) or is `blind`. `PASS` (exit 0) needs every GET row
-filled and called, every kind of object found, at least one row that can fail and both sockets'
-controls held; `FAIL` (exit 1) names each answer that gave the member a row of the project and,
+otherwise than a missing one, or a row of it) or is `blind`. A GitHub proxy read or the
+app-installation row that cannot fail leaves the run `UNKNOWN`. `PASS` (exit 0) needs every
+GET row filled and called, every kind of object found, at least one row that can fail and both
+sockets' controls held; `FAIL` (exit 1) names each answer that gave the member a row of the
+project and,
 in its verdict, the first; everything that proved nothing, a project the full member finds nothing
 of among them, is `UNKNOWN` (exit 2). `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each
 request, which keeps a run far under an edge's per-address request limit.
@@ -944,9 +953,11 @@ request, which keeps a run far under an edge's per-address request limit.
 alone, against a fake Dispatch that keeps every route from the member but the one a row plants a
 leak in, and holds the sweep to calling every GET row, read from what the fake was sent.
 `bun run test:harness e2e/__tests__/restricted-sweep.test.ts` holds its inputs, the kinds it fills
-wildcards with and the proxy reads it makes, and, given `DISPATCH_E2E_PG_BIN` or
-`DISPATCH_E2E_PG_IMAGE`, runs it against stacks of the local harness, in one run and split: this
-checkout's server, where it passes and a writer's delivered write falls inside the runner's
+wildcards with and the proxy reads it makes (against the server's route probes and `proxy.go`),
+and, given
+`DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, runs it against stacks of the local harness,
+in one run and split: this checkout's server, where it passes and a writer's delivered write
+falls inside the runner's
 window, and the build of the newest commit with no read check, where it fails naming the route, a
 session's direct message, a GitHub proxy read and both sockets. CI's `dispatch-project-access`
 job runs those rows. That commit is read from git, never written down:

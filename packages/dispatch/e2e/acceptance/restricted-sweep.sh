@@ -24,6 +24,10 @@
 #                    (/api/github/rest/repos/{owner}/{repo}/...), filled with a repository only
 #                    the project's issues resolve to, which must answer the member as a repository
 #                    the App is not installed on answers, or refuse them 403.
+# A GET row of a route that answers an object its caller may not see exactly as a missing one
+# (`as_missing_routes`: whether the App is installed on a repository, which the server holds to
+# the GitHub proxy's rule), filled with the project's objects, must answer the member exactly what
+# it answers them for a missing object, status and text: no refusal of the project's own.
 # Then the sockets:
 #   /ws/doc/{room}  the member is not admitted to the room of the project's document, while the
 #                   same probe admits the member to a document of their own project;
@@ -55,7 +59,10 @@
 #
 # Each row also says whether it can fail: a filled row can when the full member is answered the
 # project's object otherwise than a missing one, a list when the full member's answer holds a row
-# of the project. A row that cannot is called and judged all the same, and says so (`blind`).
+# of the project. A row that cannot is called and judged all the same, and says so (`blind`). A
+# GitHub proxy read or a row of a route held to a missing object's answer that cannot fail leaves
+# the run UNKNOWN instead: its rule compares the member's answer with a missing object's, which
+# the full member was answered alike too, so its answer then says nothing either way.
 #
 # It runs in one of four modes, chosen by SWEEP_MODE and SWEEP_FILLS_FILE:
 #   one run      SWEEP_MODE unset, no SWEEP_FILLS_FILE: both halves in one process, the full
@@ -82,9 +89,10 @@
 # projects, the found values that mark a row (ids, the project's own sessions and people, the
 # reference prefix, and the target issue's title, which the search rows take as their text), one
 # `can_fail<TAB><row>` a row whose full-member half can fail, and one `full_status<TAB><status>
-# <row>` a list. Fills mode refuses to write one above 40 KiB. A runner refuses fills that are
-# absent, empty, of another version or project, or older than 55 minutes, since the question's run
-# is kept an hour and read only by its asker.
+# <row>` a list. Fills mode refuses to write one above 40 KiB, or where a row it can tell cannot
+# fail must (a GitHub proxy read, a route held to a missing object's answer). A runner refuses
+# fills that are absent, empty, of another version or project, or older than 55 minutes, since
+# the question's run is kept an hour and read only by its asker.
 #
 # Inputs, each refused by name when missing or malformed (the mode each is read in, in brackets):
 #   SWEEP_ORIGIN             [all] the deployment's origin, https://<host>[:<port>]; http:// only
@@ -97,11 +105,11 @@
 #   SWEEP_MEMBER             [fills] the restricted member's login. The member's own projects are
 #                            the ones whose access lists name it, which a runner checks against
 #                            the projects the member is listed.
-#   SWEEP_FULL_COOKIE        [one run, fills] optional: the full member's session cookie, alike.
-#                            The GitHub proxy reads as the browser's person and never as a token,
-#                            so only with it are the proxy reads made as the full member too and
-#                            able to fail; without it they are `blind`, and a PASS names them as
-#                            proven by the stack test before merge only.
+#   SWEEP_FULL_COOKIE        [one run, fills] the full member's session cookie, alike. The GitHub
+#                            proxy reads as the browser's person and never as a token, so only
+#                            with it are the proxy reads made as the full member too and able to
+#                            fail; without it they cannot fail, and the run is UNKNOWN, naming
+#                            them, and fills mode writes no file.
 #   SWEEP_WRITE_ISSUE        [one run, writer] the issue of SWEEP_PROJECT the full member comments
 #                            on while the feeds are open. A comment and the question are the
 #                            sweep's writes, each in SWEEP_PROJECT and as the full member.
@@ -135,15 +143,18 @@
 # It prints a line per call and a verdict:
 #   PASS     exit 0: every GET row filled and called, every route and both sockets kept the
 #            project from the member, every kind of object the project owns was found, at least
-#            one row could fail, and the full member's own event feed was sent the comment (a
-#            runner: the member's feed was read over the whole live window).
+#            one row could fail, every GitHub proxy read and every row of a route held to a
+#            missing object's answer could fail, and the full member's own event feed was sent the
+#            comment (a runner: the member's feed was read over the whole live window).
 #   FAIL     exit 1: the member was answered a row of the project, admitted to its document's
-#            room, or sent an event of it. The verdict names the first route that did.
+#            room, or sent an event of it, or a route held to a missing object's answer answered
+#            them otherwise for the project's. The verdict names the first route that did.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, a
 #            tool missing, an identity that is not what it must be, a kind of object the lookup
 #            did not find, a row it could not fill, an answer no rule judges (401, 429, a 5xx, no
-#            answer), no row that could fail, fills a runner cannot read, or a socket control that
-#            did not hold.
+#            answer), no row that could fail, a GitHub proxy read or a row of a route held to a
+#            missing object's answer that could not fail, fills a runner cannot read, or a socket
+#            control that did not hold.
 #   FILLS    exit 0 (fills mode): the file is whole, and where it is.
 #   WRITER   exit 0 when every write was delivered, 1 when one was not (writer mode).
 #
@@ -275,6 +286,19 @@ if [ "${SWEEP_LIST_PROXY:-}" = 1 ]; then
   printf '%s\n' "$proxy_reads"
   exit 4
 fi
+
+# The GET rows whose wildcards the sweep fills that answer an object the caller may not see exactly
+# as a missing one, one a line: whether the App is installed on a repository, which the server
+# holds to the GitHub proxy's rule (packages/envoy/internal/dispatch/api/github_app_installation.go,
+# refs.RepositoryClause), so a repository only the project's issues resolve to answers the member
+# as one the App is not installed on, status and bytes.
+as_missing_routes='/api/v1/github/app-installation/{owner}/{repo}'
+
+# answers_as_missing PATTERN: whether the GET row PATTERN is one of as_missing_routes.
+answers_as_missing() {
+  case $'\n'"$as_missing_routes"$'\n' in *$'\n'"$1"$'\n'*) return 0 ;; esac
+  return 1
+}
 
 if [ "${SWEEP_LIST_KINDS:-}" = 1 ]; then
   [ -r "$routes" ] || unknown "the route index $routes cannot be read"
@@ -439,7 +463,6 @@ unset full_token cookie full_cookie
 : >"$work/values"
 : >"$work/can-fail"
 : >"$work/full-status"
-: >"$work/blind-proxy"
 # Fills mode leaves no file but a whole one: an older file at the path goes before the first request.
 if [ "$mode" = fills ]; then
   [ ! -d "$fills_file" ] || unknown "SWEEP_FILLS_FILE names a directory: $fills_file"
@@ -1220,6 +1243,77 @@ judge_list() {
   fi
 }
 
+# judge_as_missing LABEL TARGET MISSING TARGET_FILLS MISSING_FILLS: a row of a route that answers
+# an object its caller may not see exactly as a missing one (`as_missing_routes`), called as
+# TARGET (filled with the project's objects) and as MISSING (filled with objects that do not
+# exist). The member must be answered for TARGET exactly what they are for MISSING, status and
+# text with both sides' fills masked: any other answer, a refusal of TARGET alone among them, tells
+# them the project's object is there. The row can fail only where the full member is answered
+# TARGET otherwise than MISSING (the App installed on the project's repository, and on no missing
+# one): a server that answered every caller as for a missing object would otherwise pass too, so a
+# row that cannot fail leaves the run UNKNOWN, never a pass (fills mode: no file). The answer is
+# read for rows of the project first, as every row's is. A runner reads whether it can fail from
+# the fills.
+judge_as_missing() {
+  local label=$1 target=$2 missing=$3 t_fills=$4 m_fills=$5 line ft fm rt rm mt mm can=0 why marker
+  local -a t_list both_list
+  t_list=() both_list=()
+  while IFS= read -r line; do [ -z "$line" ] || t_list+=("$line"); done <<EOF
+$t_fills
+EOF
+  while IFS= read -r line; do [ -z "$line" ] || both_list+=("$line"); done <<EOF
+$t_fills
+$m_fills
+EOF
+  if [ "$mode" = runner ]; then
+    can=$(fills_can "$label")
+    why="SWEEP_FILLS_FILE holds no full member's read of it that could fail"
+  else
+    call full "$target" "$work/ft"
+    ft=$status
+    call full "$missing" "$work/fm"
+    fm=$status
+    if ! is_judgeable "$ft" || ! is_judgeable "$fm"; then
+      why="the full member is answered $ft for $project's object and $fm for a missing one, which no rule judges"
+    else
+      mt=$(masked "$work/ft" ${both_list[@]+"${both_list[@]}"}) || unknown 'could not mask the full member answer'
+      mm=$(masked "$work/fm" ${both_list[@]+"${both_list[@]}"}) || unknown 'could not mask the missing-object control'
+      if [ "$ft" != "$fm" ] || [ "$mt" != "$mm" ]; then
+        can=1
+      else
+        why="the full member is answered $project's object as a missing one is ($ft), so the row could not fail"
+      fi
+    fi
+  fi
+  counted "$can"
+  if [ "$mode" = fills ]; then
+    if [ "$can" = 1 ]; then filled "$label" "$can"; else unproven "$label: $why"; fi
+    return
+  fi
+  call restricted "$target" "$work/rt"
+  rt=$status
+  call restricted "$missing" "$work/rm"
+  rm=$status
+  if ! is_judgeable "$rt" || ! is_judgeable "$rm"; then
+    unproven "$label: the member is answered $rt, and $rm for a missing one, which no rule judges: $(head_of "$work/rt")"
+    return
+  fi
+  marker=$(masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"})
+  if [ -n "$marker" ]; then
+    fail "$label: the member is answered $rt holding $marker, a row of $project: $(head_of "$work/rt")"
+    return
+  fi
+  mt=$(masked "$work/rt" ${both_list[@]+"${both_list[@]}"}) || unknown 'could not mask the member answer'
+  mm=$(masked "$work/rm" ${both_list[@]+"${both_list[@]}"}) || unknown 'could not mask the missing-object answer'
+  if [ "$rt" != "$rm" ] || [ "$mt" != "$mm" ]; then
+    fail "$label: the member is answered $rt $(head_of "$work/rt") for $project's object, where a missing one is answered $rm $(head_of "$work/rm")"
+  elif [ "$can" = 0 ]; then
+    unproven "$label: the member is answered $rt, as a missing one is, but $why"
+  else
+    printf 'ok      %s: %s, as a missing one is answered (%s)\n' "$label" "$rt" "$can_text"
+  fi
+}
+
 # not_filled LABEL WHY: a row the sweep could not fill, which leaves the run UNKNOWN.
 not_filled() {
   unfilled=$((unfilled + 1))
@@ -1407,7 +1501,11 @@ sweep_filled() {
     fi
     [ "$fill_owned" = 0 ] || strict=1
   done
-  judge "GET $pattern" "$target" "$missing" "$strict" "$t_fills" "$m_fills"
+  if answers_as_missing "$pattern"; then
+    judge_as_missing "GET $pattern" "$target" "$missing" "$t_fills" "$m_fills"
+  else
+    judge "GET $pattern" "$target" "$missing" "$strict" "$t_fills" "$m_fills"
+  fi
 }
 
 started=$SECONDS
@@ -1438,11 +1536,15 @@ fi
 # beside the same read of one the App is not installed on (MISSING, the repository's name in
 # NAME's place). The member must be answered as that missing one is, its name masked, or refused
 # 403; any other answer told the member what the App reads of the project's repository. A read
-# that cannot fail is kept in `blind-proxy`, for a PASS to name.
+# the full member is answered as that missing one is cannot fail, and leaves the run UNKNOWN (fills
+# mode: no file): the proxy reads the browser's person alone, so without SWEEP_FULL_COOKIE the full
+# member's read is answered as no one's.
 judge_proxy() {
-  local label=$1 target=$2 missing=$3 name=$4 rt rm ft fm can=0 mt mm
+  local label=$1 target=$2 missing=$3 name=$4 rt rm ft fm can=0 mt mm why
+  local cookie_why="the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names"
   if [ "$mode" = runner ]; then
     can=$(fills_can "$label")
+    why="SWEEP_FILLS_FILE holds no full member's read of it that could fail: fills mode writes one only where the full member's read can fail, with SWEEP_FULL_COOKIE, whose person the proxy reads"
   else
     # As the full member's browser where SWEEP_FULL_COOKIE names it: the proxy reads no token.
     call "$full_browser" "$target" "$work/ft"
@@ -1453,12 +1555,14 @@ judge_proxy() {
       mt=$(masked "$work/ft" "$name" no-such-repo) || unknown 'could not mask a proxy answer'
       mm=$(masked "$work/fm" "$name" no-such-repo) || unknown 'could not mask a proxy answer'
       [ "$ft" = "$fm" ] && [ "$mt" = "$mm" ] || can=1
+      why="the full member is answered $ft for $project's repository as for one the App is not installed on ($fm), so the read could not fail: $cookie_why"
+    else
+      why="the full member is answered $ft for $project's repository, which no rule judges, so the read could not fail: $cookie_why"
     fi
   fi
   counted "$can"
-  [ "$can" = 1 ] || printf '%s\n' "$label" >>"$work/blind-proxy"
   if [ "$mode" = fills ]; then
-    filled "$label" "$can"
+    if [ "$can" = 1 ]; then filled "$label" "$can"; else unproven "$label: $why"; fi
     return
   fi
   call restricted "$target" "$work/rt"
@@ -1473,10 +1577,14 @@ judge_proxy() {
   esac
   mt=$(masked "$work/rt" "$name" no-such-repo) || unknown 'could not mask a proxy answer'
   mm=$(masked "$work/rm" "$name" no-such-repo) || unknown 'could not mask a proxy answer'
-  if [ "$rt" = "$rm" ] && [ "$mt" = "$mm" ]; then
-    printf 'ok      %s: %s, as a repository the App is not installed on (%s)\n' "$label" "$rt" "$can_text"
-  elif [ "$rt" = 403 ] && [ -z "$(masked_marker "$work/rt" "$name")" ]; then
-    printf 'ok      %s: 403 (%s)\n' "$label" "$can_text"
+  if { [ "$rt" = "$rm" ] && [ "$mt" = "$mm" ]; } || { [ "$rt" = 403 ] && [ -z "$(masked_marker "$work/rt" "$name")" ]; }; then
+    if [ "$can" = 0 ]; then
+      unproven "$label: the member is answered $rt, but $why"
+    elif [ "$rt" = "$rm" ] && [ "$mt" = "$mm" ]; then
+      printf 'ok      %s: %s, as a repository the App is not installed on (%s)\n' "$label" "$rt" "$can_text"
+    else
+      printf 'ok      %s: 403 (%s)\n' "$label" "$can_text"
+    fi
   else
     fail "$label: the member is answered $rt for $project's repository, where one the App is not installed on is answered $rm: $(head_of "$work/rt")"
   fi
@@ -1744,9 +1852,6 @@ fi
 verdict="PASS: no route and neither socket gave the member a row of $project"
 if [ "$mode" = runner ] && [ -n "$window_line" ]; then
   verdict="$verdict; the live check holds once a writer's delivered write falls inside the live window $window_line, which the tailnet leg joins"
-fi
-if [ -s "$work/blind-proxy" ]; then
-  verdict="$verdict; blind, proven by the stack test before merge only: $(paste -s -d ',' "$work/blind-proxy" | sed 's/,/, /g')"
 fi
 printf '%s\n' "$verdict"
 exit 0

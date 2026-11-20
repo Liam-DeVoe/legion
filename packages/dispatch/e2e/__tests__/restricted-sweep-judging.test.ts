@@ -76,6 +76,16 @@ const missingValues = [
   "999999999999",
   "zz no such words zz",
 ];
+/** The reads the GitHub proxy forwards, after `/api/github/rest/repos/{owner}/{repo}/`. */
+const proxyShapes = [
+  "pulls/{number}",
+  "issues/{number}",
+  "commits/{sha}/check-runs",
+  "actions/runs?head_sha={sha}",
+];
+/** The route that answers a repository its caller may not see as one the App is not installed
+ *  on, which the sweep fills with the project's repository. */
+const appInstallation = "/api/v1/github/app-installation/{owner}/{repo}";
 
 /** What a planted leak answers the restricted member, for the requests it matches. */
 interface Leak {
@@ -88,13 +98,15 @@ interface Leak {
  *  issues TGT lists (1 by default), and `handoffOn` the one whose handoff the lookup finds;
  *  `conversationGone` answers the conversation file as missing to the full member too;
  *  `proxyReadsCookies` makes the GitHub proxy read as the real one does, as the browser's person
- *  alone, so the full member's token is answered there as a missing repository is. */
+ *  alone, so the full member's token is answered there as a missing repository is;
+ *  `notInstalled` answers that the App is installed on no repository, TGT's included. */
 interface FakeShape {
   readonly omit?: ReadonlySet<string>;
   readonly issues?: number;
   readonly handoffOn?: string;
   readonly conversationGone?: boolean;
   readonly proxyReadsCookies?: boolean;
+  readonly notInstalled?: boolean;
   readonly feed?: FeedShape;
 }
 
@@ -239,6 +251,17 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
         return new Response("no socket here", { status: 404 });
       }
       if (!member && !full) return Response.json({ code: "NO_IDENTITY" }, { status: 401 });
+      // Whether the App is installed on a repository, which the server answers a caller that may
+      // not see the repository as for one the App is not installed on (the GitHub proxy's rule):
+      // to the full member, installed on TGT's repository alone, unless `notInstalled`; to the
+      // member, who sees no repository of TGT's, installed on none. A leak planted at it answers
+      // the member otherwise.
+      const installation = /^\/api\/v1\/github\/app-installation\/([^/]+\/[^/]+)$/.exec(target);
+      const installed =
+        installation !== null &&
+        installation[1] === tgt.repository &&
+        fake.notInstalled !== true &&
+        !member;
       if (member) {
         memberPaths.push(url.pathname);
         if (target === "/api/v1/whoami") {
@@ -257,11 +280,13 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
         }
         const leak = leaks.find((planted) => planted.matches(target));
         if (leak !== undefined) return Response.json(leak.body, { status: leak.status });
+        if (installation !== null) return Response.json({ installed });
         if (namesTgt(target) || missingValues.some((value) => target.includes(value))) {
           return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
         }
         return Response.json([]);
       }
+      if (installation !== null) return Response.json({ installed });
       if (request.method === "POST" && target === "/api/v1/going/requests") {
         return Response.json({ id: tgt.goingRun, project: "TGT" }, { status: 201 });
       }
@@ -772,12 +797,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     async () => {
       const { stdout } = await sweep([], { rows: ["/api/v1/whoami"] });
       expect(failures(stdout)).toEqual([]);
-      for (const shape of [
-        "pulls/{number}",
-        "issues/{number}",
-        "commits/{sha}/check-runs",
-        "actions/runs?head_sha={sha}",
-      ]) {
+      for (const shape of proxyShapes) {
         expect(stdout).toContain(
           `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 404, as a repository the App is not installed on (can fail)\n`
         );
@@ -787,31 +807,112 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   );
 
   // A proxy that reads only a browser's person, as the real one does: with the full member's
-  // cookie the reads can fail, and with their token alone they are blind, never a pass of a read
-  // that could fail.
+  // cookie the reads can fail, and the run passes; with their token alone the reads cannot fail,
+  // and a read that cannot fail leaves the run UNKNOWN, never PASS. Both runs have both sockets
+  // served, so each proxy read is all that decides between them.
   test(
-    "with the full member's cookie, a proxy that reads no token is read as the full member",
+    "with the full member's cookie, a proxy that reads no token is read as the full member, and the run passes",
     async () => {
-      const { stdout } = await sweep([], {
+      const { code, stdout } = await sweep([], {
         env: { SWEEP_FULL_COOKIE: fullCookie },
+        feed: { doc: true, live: true },
         proxyReadsCookies: true,
         rows: ["/api/v1/whoami"],
       });
-      expect(stdout).toContain(
-        "\nok      GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: 404, as a repository the App is not installed on (can fail)\n"
-      );
+      for (const shape of proxyShapes) {
+        expect(stdout).toContain(
+          `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 404, as a repository the App is not installed on (can fail)\n`
+        );
+      }
       expect(stdout).not.toContain("the-full-members-cookie");
+      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+        "PASS: no route and neither socket gave the member a row of TGT"
+      );
+      expect(code, stdout).toBe(0);
     },
     rowLimit("short")
   );
 
   test(
-    "without the full member's cookie, a proxy that reads no token makes its reads blind",
+    "without the full member's cookie, a proxy that reads no token leaves the run UNKNOWN, naming each read",
     async () => {
-      const { stdout } = await sweep([], { proxyReadsCookies: true, rows: ["/api/v1/whoami"] });
-      expect(stdout).toContain(
-        "\nok      GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: 404, as a repository the App is not installed on (blind)\n"
+      const { code, stdout } = await sweep([], {
+        feed: { doc: true, live: true },
+        proxyReadsCookies: true,
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([]);
+      for (const shape of proxyShapes) {
+        expect(stdout).toContain(
+          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 404, but the full member is answered 404 for TGT's repository as for one the App is not installed on (404), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
+        );
+      }
+      expect(stdout).not.toContain("PASS");
+      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+        "UNKNOWN: nothing reached the member, but this run did not prove it, for the 4 reasons above"
       );
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // GET /api/v1/github/app-installation/{owner}/{repo} answers a repository its caller may not see
+  // as one the App is not installed on. Filled with TGT's repository, which the App is installed
+  // on, the member must be answered exactly as for a missing repository; where the App is installed
+  // on none, the full member is answered so too, the row cannot fail, and it proves nothing. Each
+  // run has both sockets served, so the row decides it.
+  test(
+    "a route that answers a hidden repository as a missing one, answering the member that the App is installed on the project's, is a FAIL",
+    async () => {
+      const { code, stdout } = await sweep(
+        [at(`/api/v1/github/app-installation/${tgt.repository}`, 200, { installed: true })],
+        { feed: { doc: true, live: true }, rows: [appInstallation] }
+      );
+      expect(failures(stdout)).toEqual([
+        `GET ${appInstallation}: the member is answered 200 {"installed":true} for TGT's object, where a missing one is answered 200 {"installed":false}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the same route answering the member as for a missing repository.
+  test(
+    "a route that answers a hidden repository as a missing one, so answering the member, can fail, and the run passes",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        feed: { doc: true, live: true },
+        rows: [appInstallation],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        `\nok      GET ${appInstallation}: 200, as a missing one is answered (can fail)\n`
+      );
+      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+        "PASS: no route and neither socket gave the member a row of TGT"
+      );
+      expect(code, stdout).toBe(0);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "where the App is installed on none of the repositories, a route that answers a hidden repository as a missing one is UNKNOWN, never a pass",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        feed: { doc: true, live: true },
+        notInstalled: true,
+        rows: [appInstallation],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).not.toContain(`\nok      GET ${appInstallation}:`);
+      expect(stdout).toContain(
+        `\nUNKNOWN GET ${appInstallation}: the member is answered 200, as a missing one is, but the full member is answered TGT's object as a missing one is (200), so the row could not fail\n`
+      );
+      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+        "UNKNOWN: nothing reached the member, but this run did not prove it, for the 1 reasons above"
+      );
+      expect(code).toBe(2);
     },
     rowLimit("short")
   );
@@ -978,17 +1079,19 @@ describe.skipIf(withoutTools)("the routes it calls", () => {
 // alike, so fills one fake answered serve a runner of another.
 describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () => {
   const fillsDirectories = temporaryDirectories("restricted-sweep-fills");
-  const someRows = ["/api/v1/inbox", "/api/v1/issues/{key}/comments"];
+  const someRows = ["/api/v1/inbox", "/api/v1/issues/{key}/comments", appInstallation];
 
   /** A run of fills mode, and the file it was to write. Its proxy reads as the real one does, a
-   *  browser's person alone, so with no full member's cookie the proxy reads are blind. */
-  async function fills(leaks: readonly Leak[] = []) {
+   *  browser's person alone, so its reads can fail only with the full member's cookie, which the
+   *  run is given unless `withoutCookie`. */
+  async function fills(leaks: readonly Leak[] = [], withoutCookie = false) {
     const file = join(fillsDirectories(), "fills.tsv");
     const run = await sweep(leaks, {
       env: {
         SWEEP_MODE: "fills",
         SWEEP_MEMBER: "bob@outside.example",
         SWEEP_FILLS_FILE: file,
+        SWEEP_FULL_COOKIE: withoutCookie ? undefined : fullCookie,
         SWEEP_RESTRICTED_COOKIE: undefined,
         SWEEP_WRITE_ISSUE: undefined,
       },
@@ -1028,6 +1131,9 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(lines).toContain("own\tOWN");
       expect(lines).toContain(`going_run\t${tgt.goingRun}`);
       expect(lines).toContain("can_fail\tGET /api/v1/issues/{key}/comments");
+      for (const shape of proxyShapes)
+        expect(lines).toContain(`can_fail\tGET /api/github/rest/repos/{owner}/{repo}/${shape}`);
+      expect(lines).toContain(`can_fail\tGET ${appInstallation}`);
       for (const secret of [fullToken, fullCookie, memberCookie])
         expect(text).not.toContain(secret);
       expect(/^[\t\n\x20-\x7e]*$/.test(text)).toBe(true);
@@ -1045,8 +1151,11 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         /^live window \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/m
       );
       expect(stdout).toMatch(/^ok {6}GET \/api\/v1\/issues\/\{key\}\/comments: 404 \(can fail\)$/m);
+      expect(stdout).toContain(
+        `\nok      GET ${appInstallation}: 200, as a missing one is answered (can fail)\n`
+      );
       expect(stdout.trimEnd().split("\n").at(-1)).toMatch(
-        /^PASS: no route and neither socket gave the member a row of TGT; the live check holds once a writer's delivered write falls inside the live window \S+ \S+, which the tailnet leg joins; blind, proven by the stack test before merge only: GET \/api\/github\/rest\/repos\/\{owner\}\/\{repo\}\/pulls\/\{number\}, /
+        /^PASS: no route and neither socket gave the member a row of TGT; the live check holds once a writer's delivered write falls inside the live window \S+ \S+, which the tailnet leg joins$/
       );
       expect(code, stdout).toBe(0);
     },
@@ -1065,6 +1174,62 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         `GET /api/v1/issues/{key}/comments: the member is answered 200 holding ${tgt.comment}, a row of TGT: [{"id":"${tgt.comment}"}]`,
       ]);
       expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The same runner, where the route that answers a hidden repository as a missing one answers the
+  // member that the App is installed on the project's.
+  test(
+    "the same runner fails where a route that answers a hidden repository as a missing one answers the member otherwise",
+    async () => {
+      const { file } = await fills();
+      const { code, stdout } = await runner(file, [
+        at(`/api/v1/github/app-installation/${tgt.repository}`, 200, { installed: true }),
+      ]);
+      expect(failures(stdout)).toEqual([
+        `GET ${appInstallation}: the member is answered 200 {"installed":true} for TGT's object, where a missing one is answered 200 {"installed":false}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // A proxy read the full member's half could not make fail leaves no fills, and a runner whose
+  // fills say a proxy read cannot fail is UNKNOWN: neither is a pass of a read that could not fail.
+  test(
+    "fills mode whose proxy reads cannot fail, with no full member's cookie, writes no file, and names them",
+    async () => {
+      const { code, file, stdout } = await fills([], true);
+      expect(stdout.trimEnd().split("\n").at(-1)).toStartWith("UNKNOWN: no fills were written");
+      for (const shape of proxyShapes) {
+        expect(stdout).toContain(
+          `\n  GET /api/github/rest/repos/{owner}/{repo}/${shape}: the full member is answered 404 for TGT's repository as for one the App is not installed on (404), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
+        );
+      }
+      expect(code).toBe(2);
+      expect(await Bun.file(file).exists()).toBe(false);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a runner whose fills hold no proxy read that could fail is UNKNOWN, naming it",
+    async () => {
+      const { file } = await fills();
+      const pulls = "can_fail\tGET /api/github/rest/repos/{owner}/{repo}/pulls/{number}\n";
+      const text = readFileSync(file, "utf8");
+      expect(text).toContain(pulls);
+      writeFileSync(file, text.replace(pulls, ""));
+      const { code, stdout } = await runner(file);
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        "\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 404, but SWEEP_FILLS_FILE holds no full member's read of it that could fail: fills mode writes one only where the full member's read can fail, with SWEEP_FULL_COOKIE, whose person the proxy reads\n"
+      );
+      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+        "UNKNOWN: nothing reached the member, but this run did not prove it, for the 1 reasons above"
+      );
+      expect(code).toBe(2);
     },
     rowLimit("short")
   );

@@ -607,6 +607,12 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       );
       // Every read the GitHub proxy forwards, of the repository only TGT's issues resolve to.
       expect(stdout).toMatch(/^found {3}proxy-repository acme\/tgt-repo$/m);
+      // The route that answers a repository its caller may not see as one the App is not
+      // installed on, filled with TGT's repository, which the App is installed on and a missing
+      // repository is not: bob is answered as for the missing one, and the row can fail.
+      expect(stdout).toMatch(
+        /^ok {6}GET \/api\/v1\/github\/app-installation\/\{owner\}\/\{repo\}: 200, as a missing one is answered \(can fail\)$/m
+      );
       for (const shape of [
         "pulls/{number}",
         "issues/{number}",
@@ -689,6 +695,10 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       );
       expect(runner?.code, runnerOut).toBe(0);
       expect(linesOf(runnerOut, "not filled")).toEqual([]);
+      expect(linesOf(runnerOut, "UNKNOWN")).toEqual([]);
+      expect(runnerOut).toMatch(
+        /^ok {6}GET \/api\/v1\/github\/app-installation\/\{owner\}\/\{repo\}: 200, as a missing one is answered \(can fail\)$/m
+      );
       const window = /^live window (\S+) (\S+)$/m.exec(runnerOut);
       expect(window, runnerOut).not.toBeNull();
       const [w0 = "", w1 = ""] = [window?.[1], window?.[2]];
@@ -755,6 +765,11 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       // The GitHub proxy forwards the member's read of TGT's repository, a pull request it holds.
       expect(stdout).toMatch(
         /^FAIL {4}GET \/api\/github\/rest\/repos\/\{owner\}\/\{repo\}\/pulls\/\{number\}: the member is answered 200 for TGT's repository, where one the App is not installed on is answered /m
+      );
+      // With no read check, the build answers bob that the App is installed on TGT's repository,
+      // where it answers a missing repository as not installed.
+      expect(stdout).toContain(
+        '\nFAIL    GET /api/v1/github/app-installation/{owner}/{repo}: the member is answered 200 {"installed":true} for TGT\'s object, where a missing one is answered 200 {"installed":false}\n'
       );
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
