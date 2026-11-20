@@ -322,7 +322,7 @@ func (c *CommitPullAnswers) Keep(repoFull, sha string, pulls CommitPulls, now ti
 // Learned is every answer the memory keeps, in the order they were read, two read at one moment
 // in the order of their repository and commit: what a read-only read reads the stored rows with,
 // as they would stand had a writer's read stored each answer in turn (HeadsAttributedToWith,
-// HeadStoredAtWith, BaseBranchMergedForWith, Branches.ReadCommitOnBranch).
+// HeadStoredAtWith, BaseBranchMergedForWith, BaseBranchMergedInWith, Branches.ReadCommitOnBranch).
 func (c *CommitPullAnswers) Learned() []CommitPulls {
 	type learned struct {
 		key   commitPullKey
