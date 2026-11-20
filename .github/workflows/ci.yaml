@@ -2616,11 +2616,14 @@ jobs:
               # change to it is a change to a shape the recordings carry, and this job's test
               # step is where that test runs.
               - 'packages/contracts/schemas/dispatch-openapi.json'
-              # The route index, which e2e/__tests__/restricted-sweep.test.ts:40-48 (the new URL at
-              # :41) and restricted-sweep-judging.test.ts:32-40 (the new URL at :33) read, holding
+              # The route index, which e2e/__tests__/restricted-sweep.test.ts:42-50 (the new URL at
+              # :43) and restricted-sweep-judging.test.ts:33-41 (the new URL at :34) read, holding
               # e2e/acceptance/restricted-sweep.sh's kinds and calls to it; that script reads it row
               # by row.
               - 'packages/envoy/internal/dispatch/api/testdata/routes.txt'
+              # The GitHub proxy's `readable` expression, which restricted-sweep.test.ts:182-184
+              # (the new URL at :183) reads and holds the sweep's proxy reads to.
+              - 'packages/envoy/internal/dispatch/githubapi/proxy.go'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
               # reads and parses with the app's own remark pipeline: a filter change that moves
@@ -6072,7 +6075,8 @@ jobs:
       dispatch_two_builds_go: ${{ needs.changes.outputs.dispatch_two_builds_go }}
 
   # The private-projects blob driver (verification v17): the job's steps and why they are what
-  # they are are in ci-job-dispatch-project-access.yaml.
+  # they are are in ci-job-dispatch-project-access.yaml. It reads pull requests to find the branch
+  # the read check's pull request targets, the base of restricted-sweep.test.ts's control build.
   dispatch-project-access:
     needs: changes
     if: needs.changes.outputs.dispatch_project_access == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -6080,6 +6084,7 @@ jobs:
       contents: read
       actions: read
       checks: write
+      pull-requests: read
     uses: ./.github/workflows/ci-job-dispatch-project-access.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}

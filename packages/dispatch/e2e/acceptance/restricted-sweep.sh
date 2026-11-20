@@ -16,6 +16,14 @@
 # Two kinds of object no route lists are got another way: a question's run, which the full member
 # asks of the project (POST /api/v1/going/requests), and a file of an agent's conversation, which
 # SWEEP_CONVERSATION_FILE names. A GET row the sweep cannot fill leaves the run UNKNOWN.
+# Two reads more:
+#   direct messages  a direct message the full member reads, to a session that worked in the
+#                    project alone, by GET /api/v1/messages/{id} and its /blocks, beside that
+#                    session's list of messages, which the route index's row reads;
+#   the GitHub proxy every read packages/envoy/internal/dispatch/githubapi/proxy.go forwards
+#                    (/api/github/rest/repos/{owner}/{repo}/...), filled with a repository only
+#                    the project's issues resolve to, which must answer the member as a repository
+#                    the App is not installed on answers, or refuse them 403.
 # Then the sockets:
 #   /ws/doc/{room}  the member is not admitted to the room of the project's document, while the
 #                   same probe admits the member to a document of their own project;
@@ -25,15 +33,19 @@
 #                   is sent.
 #
 # "A row of the project" is a JSON member name or string value that is the project's key or holds
-# an issue key of the project, an id the lookup found, or the title of the issue the lookup filled
-# with; a body that is not JSON is read for the same markers. Each answer is read for them once
-# the values the path was filled with are masked, since an answer may echo what it was asked, and
-# before it is compared with anything, so an answer alike for a missing object excuses no row.
-# Filled paths are also called with objects that do not exist: a 2xx for the project's object
-# where a missing one is refused says the object exists, and is a row of it too, whatever the
-# body holds. Every RFC 3339 instant and the durations a read measures are masked before two
-# answers are compared. A session, a person, a repository, a priority, a broadcast and a delivery
-# run belong to no project, so a row filled only with them is held to the markers alone.
+# an issue key of the project, an id the lookup found, the title of the issue the lookup filled
+# with, or a session or a person of the project: one the lookup read as an author in the project
+# that the full member finds in none of the projects the member sees, nor is the member. A body
+# that is not JSON is read for the same markers, and a socket's refused upgrade is read by the
+# body the server wrote. Each answer is read for them once the values the path was filled with
+# are masked, since an answer may echo what it was asked, and before it is compared with
+# anything, so an answer alike for a missing object excuses no row. Filled paths are also called
+# with objects that do not exist: a 2xx for the project's object where a missing one is refused
+# says the object exists, and is a row of it too, whatever the body holds. Every RFC 3339 instant
+# and the durations a read measures are masked before two answers are compared. A session, a
+# person, a repository, a priority, a broadcast and a delivery run belong to no project, so a row
+# filled only with them is held to the markers alone. A line about the full member's feed names
+# its frames' types and ids, never what they hold.
 #
 # Each row also says whether it can fail: a filled row can when the full member is answered the
 # project's object otherwise than a missing one, a list when the full member's answer holds a row
@@ -46,12 +58,18 @@
 #   SWEEP_FULL_TOKEN         a bearer token of a full member who sees that project.
 #   SWEEP_RESTRICTED_COOKIE  the restricted member's session cookie, as the `Cookie` header
 #                            carries it (`<name>=<value>`).
+#   SWEEP_FULL_COOKIE        optional: the full member's session cookie, alike. The GitHub proxy
+#                            reads as the browser's person and never as a token, so only with it
+#                            are the proxy reads made as the full member too and able to fail;
+#                            without it they are `blind`.
 #   SWEEP_WRITE_ISSUE        the issue of SWEEP_PROJECT the full member comments on while both
 #                            event feeds are open. The comment and the question are the sweep's
 #                            two writes, each in SWEEP_PROJECT and as the full member.
 #   SWEEP_CONVERSATION_FILE  `<session id>/<slug>`: a file of the conversation of a session that
-#                            worked in SWEEP_PROJECT alone, which no route lists. Left unset, the
-#                            two rows that read such a file are not filled, and the run is UNKNOWN.
+#                            worked in SWEEP_PROJECT alone, which no route lists. The full member
+#                            must read it, and the member must see the session nowhere. Left
+#                            unset, or failing either, the two rows that read such a file are not
+#                            filled, and the run is UNKNOWN.
 #   SWEEP_LIVE_SECONDS       how long both feeds are read after the comment (default 60, maximum
 #                            2147413, within the socket probe's timer range).
 #   SWEEP_CALL_SECONDS       how long one request waits (default 20).
@@ -103,8 +121,9 @@ set +x
 set +a
 full_token=${SWEEP_FULL_TOKEN:-}
 cookie=${SWEEP_RESTRICTED_COOKIE:-}
-unset SWEEP_FULL_TOKEN SWEEP_RESTRICTED_COOKIE
-export -n full_token cookie
+full_cookie=${SWEEP_FULL_COOKIE:-}
+unset SWEEP_FULL_TOKEN SWEEP_RESTRICTED_COOKIE SWEEP_FULL_COOKIE
+export -n full_token cookie full_cookie
 set -u
 # Every pattern below matches bytes, whatever locale the machine runs in.
 LC_ALL=C
@@ -188,6 +207,19 @@ kind_of() {
   esac
 }
 
+# The GitHub proxy's reads, after /api/github/rest/repos/{owner}/{repo}/, one a line: every path
+# packages/envoy/internal/dispatch/githubapi/proxy.go's `readable` forwards, the only GET the
+# proxy answers, which routes.txt does not list. Its test holds this list to that expression.
+proxy_reads='pulls/{number}
+issues/{number}
+commits/{sha}/check-runs
+actions/runs?head_sha={sha}'
+
+if [ "${SWEEP_LIST_PROXY:-}" = 1 ]; then
+  printf '%s\n' "$proxy_reads"
+  exit 4
+fi
+
 if [ "${SWEEP_LIST_KINDS:-}" = 1 ]; then
   [ -r "$routes" ] || unknown "the route index $routes cannot be read"
   while read -r method pattern _ || [ -n "${method:-}" ]; do
@@ -232,6 +264,11 @@ case $full_token in *[!A-Za-z0-9._~+/=-]*) unknown 'SWEEP_FULL_TOKEN holds a byt
 holds_line_break "$cookie" && unknown 'SWEEP_RESTRICTED_COOKIE holds a line break'
 case $cookie in *=*) ;; *) unknown 'SWEEP_RESTRICTED_COOKIE must be <name>=<value>, as the Cookie header carries it' ;; esac
 case $cookie in *[!\ -~]*) unknown 'SWEEP_RESTRICTED_COOKIE holds a non-printable header byte' ;; esac
+if [ -n "$full_cookie" ]; then
+  holds_line_break "$full_cookie" && unknown 'SWEEP_FULL_COOKIE holds a line break'
+  case $full_cookie in *=*) ;; *) unknown 'SWEEP_FULL_COOKIE must be <name>=<value>, as the Cookie header carries it' ;; esac
+  case $full_cookie in *[!\ -~]*) unknown 'SWEEP_FULL_COOKIE holds a non-printable header byte' ;; esac
+fi
 write_issue=${SWEEP_WRITE_ISSUE:-}
 case $write_issue in
   '') unknown "SWEEP_WRITE_ISSUE is required: the issue of $project the full member comments on" ;;
@@ -280,19 +317,28 @@ umask 077
 work=$(mktemp -d "${TMPDIR:-/tmp}/restricted-sweep.XXXXXXXX") || unknown 'mktemp could not make the run directory'
 printf 'Authorization: Bearer %s\n' "$full_token" >"$work/full.h" || unknown 'could not write the full member header'
 printf 'Cookie: %s\n' "$cookie" >"$work/restricted.h" || unknown 'could not write the restricted member header'
-unset full_token cookie
+# The full member as the browser's person, for the GitHub proxy, which reads no token.
+full_browser=full
+if [ -n "$full_cookie" ]; then
+  printf 'Cookie: %s\n' "$full_cookie" >"$work/full-browser.h" || unknown 'could not write the full member cookie header'
+  full_browser=full-browser
+fi
+unset full_token cookie full_cookie
 : >"$work/failed"
 : >"$work/unknown"
 
 calls=0
-# call WHO PATH OUT [JSON FILE]: GET PATH as WHO (full or restricted), or with JSON FILE a POST of
-# that file, the body in OUT and the status in $status, or `curl failed: ...` when no answer came.
-# The member sends its cookie with the origin's Origin, as the dashboard does; curl reads no
-# ~/.curlrc (-q), no proxy, and no URL pattern (-g).
+# call WHO PATH OUT [JSON FILE]: GET PATH as WHO (full, restricted, or full-browser, the full
+# member's cookie), or with JSON FILE a POST of that file, the body in OUT and the status in
+# $status, or `curl failed: ...` when no answer came. A cookie goes with the origin's Origin, as the
+# dashboard sends it; curl reads no ~/.curlrc (-q), no proxy, and no URL pattern (-g).
 call() {
   local -a credential data
-  credential=(-H "@$work/full.h") data=()
-  [ "$1" = full ] || credential=(-H "@$work/restricted.h" -H "Origin: $origin")
+  data=()
+  case $1 in
+    full) credential=(-H "@$work/full.h") ;;
+    *) credential=(-H "@$work/$1.h" -H "Origin: $origin") ;;
+  esac
   [ -z "${4:-}" ] || data=(-X POST -H 'Content-Type: application/json' --data-binary "@$4")
   [ "$pace" = 0 ] || sleep "$pace" || unknown 'SWEEP_PACE_SECONDS is not a duration sleep accepts'
   : >"$3" || unknown 'could not create the response body file'
@@ -308,7 +354,8 @@ first_of() { jq -r "first($2) // empty" "$1" 2>/dev/null; }
 # Redact credentials before shortening diagnostics, including individually reflected cookie values.
 redacted() {
   local text=$1 header secret rest part
-  for header in full restricted; do
+  for header in full restricted full-browser; do
+    [ -r "$work/$header.h" ] || continue
     IFS= read -r secret <"$work/$header.h" || continue
     secret=${secret#*: }
     text=${text//"$secret"/<redacted>}
@@ -381,12 +428,24 @@ jq -c 'if type == "object" then .issues else . end' "$work/body" >"$work/issues"
 jq -r '.[]? | .key' "$work/issues" 2>/dev/null >"$work/keys"
 [ -s "$work/keys" ] || unknown "the full member finds no issue of $project, so no route can be filled with its objects"
 scanned=0
-# authors FILE FILTER: the first person and the first session that FILTER's authors name.
+: >"$work/actors"
+: >"$work/sessions"
+# actors_in FILE KINDS: every actor of one of KINDS (a jq array) FILE's objects name, one per line.
+actors_in() {
+  jq -r --argjson kinds "$2" \
+    '.. | objects | select((.kind as $k | any($kinds[]; . == $k)) and (.id | type == "string")) | .id' \
+    "$1" 2>/dev/null
+}
+# authors FILE FILTER: the first person and the first session that FILTER's authors name, and
+# every session and person FILE names, into `actors`, its sessions also into `sessions`.
 authors() {
   [ -n "$person" ] || person=$(first_of "$1" "$2 | select(.kind == \"user\") | .id")
   [ -n "$session" ] || session=$(first_of "$1" "$2 | select(.kind == \"session\") | .id")
+  actors_in "$1" '["user", "session"]' >>"$work/actors"
+  actors_in "$1" '["session"]' >>"$work/sessions"
 }
-while read -r key && [ "$scanned" -lt 25 ]; do
+# Every issue of the page, until an object of each kind is found: the page holds 50.
+while read -r key; do
   scanned=$((scanned + 1))
   if [ -z "$block" ]; then
     call full "/api/v1/issues/$key/summary" "$work/body"
@@ -494,13 +553,102 @@ need near-copy-check "$near_copy" "GET /api/v1/near-copy-checks?project=$project
 [ -n "$repo" ] || printf 'repository: no issue of GET /api/v1/issues?project=%s names a repository\n' "$project" >>"$work/missing"
 printf 'found   person %s, session %s, repository %s, priority %s, broadcast %s, delivery run %s\n' \
   "${person:-none}" "${session:-none}" "${repo:-none}" "${priority:-none}" "${broadcast:-none}" "${delivery_run:-none}"
+# The member's own projects, which the document socket's control reads too.
+call restricted /api/v1/projects "$work/body"
+[ "$status" = 200 ] || unknown "GET /api/v1/projects as the member answered $status: $(head_of "$work/body")"
+jq -r --arg p "$project" '.[]? | .key | select(. != $p)' "$work/body" >"$work/own" 2>/dev/null ||
+  unknown "GET /api/v1/projects as the member answered no list: $(head_of "$work/body")"
+# The sessions and people the member may see: their own login, and every session and person the
+# full member finds in a project the member sees, by kind or as a login anywhere in its answers.
+# A session or a person the lookup read in the project that is none of these is a row of the
+# project: a list of sessions or people that names one gave the member what the project holds.
+printf '%s\n' "$member" >"$work/seen-actors" || unknown 'could not record the member'
+# seen_in FILE: every session and person FILE names by kind, and every login it holds.
+seen_in() {
+  jq -r '(.. | objects | select((.kind == "user" or .kind == "session") and (.id | type == "string")) | .id),
+    (.. | strings | select(test("^[^@[:space:]]+@[^@[:space:]]+$")))' "$1" 2>/dev/null
+}
+: >"$work/own-repos"
+while read -r own; do
+  call full "/api/v1/projects/$own/access" "$work/body"
+  [ "$status" != 200 ] || seen_in "$work/body" >>"$work/seen-actors"
+  call full "/api/v1/issues?project=$own&limit=50" "$work/own-issues"
+  if [ "$status" != 200 ]; then
+    printf 'actor: the full member is answered %s for the issues of %s, a project the member sees, so the sweep cannot tell its sessions, people and repositories from %s'"'"'s\n' \
+      "$status" "$own" "$project" >>"$work/missing"
+    continue
+  fi
+  seen_in "$work/own-issues" >>"$work/seen-actors"
+  jq -r 'if type == "object" then .issues else . end | .[]? | (.repo, .resolved_repo) | select(type == "string")' \
+    "$work/own-issues" >>"$work/own-repos" 2>/dev/null
+  jq -r 'if type == "object" then .issues else . end | .[]? | .key' "$work/own-issues" >"$work/own-keys" 2>/dev/null
+  while read -r key; do
+    for part in '' /comments /asks /messages /handoffs; do
+      call full "/api/v1/issues/$key$part" "$work/body"
+      [ "$status" != 200 ] || seen_in "$work/body" >>"$work/seen-actors"
+    done
+  done <"$work/own-keys"
+done <"$work/own"
+sort -u "$work/actors" | grep -v -x -F -f "$work/seen-actors" >"$work/project-actors"
+if [ -s "$work/project-actors" ]; then
+  while read -r actor; do found actor "$actor"; done <"$work/project-actors"
+else
+  printf 'missing actor: every session and person the lookup read in %s also works in a project the member sees\n' "$project"
+  printf 'actor: every session and person the lookup read in %s also works in a project the member sees, so no list of sessions or people can fail\n' \
+    "$project" >>"$work/missing"
+fi
+# A direct message to a session that worked in the project alone, which the full member reads: the
+# member must read it by no route, its session's list of messages included.
+dm_session='' dm_message=''
+sort -u "$work/sessions" | grep -x -F -f "$work/project-actors" >"$work/project-sessions"
+while read -r candidate; do
+  call full "/api/v1/agents/$(uri "$candidate")/messages" "$work/body"
+  [ "$status" = 200 ] || continue
+  jq -r '.[]? | .message.id | select(type == "string")' "$work/body" >"$work/direct-messages" 2>/dev/null
+  [ -s "$work/direct-messages" ] || continue
+  dm_session=$candidate dm_message=$(head -n 1 "$work/direct-messages")
+  while read -r id; do found direct-message "$id"; done <"$work/direct-messages"
+  break
+done <"$work/project-sessions"
+if [ -z "$dm_message" ]; then
+  printf 'missing direct-message: no session the lookup read in %s alone has a direct message the full member reads\n' "$project"
+  printf 'direct-message: no session the lookup read in %s alone has a direct message the full member reads\n' \
+    "$project" >>"$work/missing"
+fi
+# A repository only the project's issues resolve to, which the GitHub proxy's reads are filled with.
+proxy_repo=$(jq -r '.[]? | (.repo, .resolved_repo) | select(type == "string" and test("^[^/]+/[^/]+$"))' "$work/issues" 2>/dev/null |
+  grep -v -x -F -f "$work/own-repos" -e '' | head -n 1)
+if [ -n "$proxy_repo" ]; then
+  found proxy-repository "$proxy_repo"
+else
+  printf 'missing proxy-repository: every repository %s'"'"'s issues resolve to is one a project the member sees resolves to as well\n' "$project"
+  printf 'proxy-repository: every repository %s'"'"'s issues resolve to is one a project the member sees resolves to as well\n' \
+    "$project" >>"$work/missing"
+fi
+# The conversation file must be one the full member reads, of a session the member does not see;
+# any other leaves its two rows unfilled, with the reason.
+if [ -n "$conversation_session" ]; then
+  if grep -q -x -F -e "$conversation_session" "$work/seen-actors"; then
+    conversation_why="SWEEP_CONVERSATION_FILE's session $conversation_session works in a project the member sees"
+    conversation_session='' conversation_slug=''
+  else
+    call full "/api/v1/agents/$(uri "$conversation_session")/artifacts/$(uri "$conversation_slug")" "$work/body"
+    if [ "$status" = 200 ]; then
+      found conversation-file "$conversation_file"
+    else
+      conversation_why="the full member is answered $status for SWEEP_CONVERSATION_FILE's $conversation_file"
+      conversation_session='' conversation_slug=''
+    fi
+  fi
+fi
 [ -z "$issue_title" ] || [ "${#issue_title}" -lt 8 ] || printf '%s\n' "$issue_title" >>"$work/values"
 jq -Rn --arg key "$project" '{key: $key, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
   "$work/values" >"$work/markers.json" || unknown 'jq could not write the markers'
 
 # marker_in FILE prints the first marker of the project, including references embedded in JSON
 # text. A JSON stream is read in full; false and null are JSON too. A body jq cannot read as JSON
-# is read with grep for the same markers. One jq a body: the sweep reads thousands.
+# is read with grep for the same markers, the project's key among them as a JSON string. One jq a
+# body: the sweep reads thousands.
 marker_in() {
   jq -r -s --slurpfile m "$work/markers.json" '$m[0] as $m
       | ("(^|[^A-Za-z0-9])(?<issue>" + $m.key + "-[1-9][0-9]*)([^A-Za-z0-9]|$)") as $issue
@@ -511,6 +659,7 @@ marker_in() {
             or (($marker | length) >= 8 and ($value | contains($marker)))) end) // empty' "$1" 2>/dev/null ||
     { grep -E -o "(^|[^A-Za-z0-9])$project-[1-9][0-9]*([^A-Za-z0-9]|$)" "$1"
       grep -F -x "$project" "$1"
+      ! grep -F -q "\"$project\"" "$1" || printf '%s\n' "$project"
       grep -F -o -f "$work/values" "$1"
     } 2>/dev/null | head -n 1
 }
@@ -518,7 +667,8 @@ marker_in() {
 # masked FILE VALUE... masks literal fills, their URL and JSON encodings, every RFC 3339 instant
 # and the durations a read measures, so two answers read at two moments for two fills compare
 # alike when they say the same: a read's own `as_of`, `computed_at` and window bounds differ at
-# every read, and a row's own times come with its ids, which the markers read.
+# every read, and a row's own times come with its ids, which the markers read. A masked JSON
+# answer stays JSON, the duration's mask a string, so the markers read it as JSON.
 masked() {
   local file=$1
   shift
@@ -534,7 +684,27 @@ masked() {
     | gsub("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})";
         "<time>")
     | gsub("\"(?<key>took_ms|age_seconds)\"[[:space:]]*:[[:space:]]*[0-9.]+";
-        "\"\(.key)\":<n>")' --args "$@"
+        "\"\(.key)\":\"<n>\"")' --args "$@"
+}
+
+# refusal_body FILE OUT: the answer a socket probe printed, without the `http <status> ` its
+# first line starts with when the upgrade was refused, so the markers read the server's body as
+# the server wrote it.
+refusal_body() {
+  sed '1s/^http [0-9][0-9][0-9] //' "$1" >"$2" || unknown 'could not read a socket answer'
+}
+
+# frames_of FILE: the type of each frame a socket probe printed, and its id where it has one, or
+# the first two words of a line that is no frame (`closed 1011`, `http 404`). A line about the
+# full member's feed quotes this and never the frames, which hold what the project holds.
+frames_of() {
+  jq -R -r -s 'split("\n") | map(select(length > 0)
+      | (fromjson? // null) as $frame
+      | if ($frame | type) == "object"
+        then ($frame.type // "untyped" | tostring)
+          + (if $frame.id == null then "" else " " + ($frame.id | tostring) end)
+        else split(" ") | .[0:2] | join(" ") end)
+    | if length == 0 then "nothing" else join(", ") end' "$1" 2>/dev/null || printf 'nothing it could read\n'
 }
 
 # masked_marker FILE VALUE...: the first row of the project FILE holds once each VALUE, a value
@@ -723,6 +893,11 @@ fill() {
         # A file of the conversation of a session that worked in the project alone, which the
         # member, no party to it, must be answered as missing.
         /api/v1/agents/\{session_id\}/artifacts/*) fill_target=$conversation_session fill_why=$conversation_why ;;
+        # The session of the project alone the direct message is to, whose ids mark its rows.
+        /api/v1/agents/\{session_id\}/messages)
+          fill_owned=0 fill_target=$dm_session
+          fill_why="no session the lookup read in $project alone has a direct message the full member reads"
+          ;;
         *) fill_owned=0 fill_target=$session fill_why="no object of $project the lookup read names a session" ;;
       esac
       ;;
@@ -866,20 +1041,79 @@ while read -r method pattern _ || [ -n "${method:-}" ]; do
 done <"$routes"
 [ "$rows" -gt 0 ] || unknown "the route index $routes holds no GET row"
 
+# The direct message, by the routes that read one message: a message of the project's session.
+if [ -n "$dm_message" ]; then
+  for suffix in '' /blocks; do
+    judge "GET /api/v1/messages/{id}$suffix (a direct message)" "/api/v1/messages/$(uri "$dm_message")$suffix" \
+      "/api/v1/messages/$none_uuid$suffix" 1 "$dm_message" "$none_uuid"
+  done
+fi
+
+# judge_proxy LABEL TARGET MISSING NAME: a GitHub proxy read of the project's repository (TARGET),
+# beside the same read of one the App is not installed on (MISSING, the repository's name in
+# NAME's place). The member must be answered as that missing one is, its name masked, or refused
+# 403; any other answer told the member what the App reads of the project's repository.
+judge_proxy() {
+  local label=$1 target=$2 missing=$3 name=$4 rt rm ft fm can=0 mt mm
+  # As the full member's browser where SWEEP_FULL_COOKIE names it: the proxy reads no token.
+  call "$full_browser" "$target" "$work/ft"
+  ft=$status
+  call "$full_browser" "$missing" "$work/fm"
+  fm=$status
+  if is_judgeable "$ft" || [ "${ft#5}" != "$ft" ]; then
+    mt=$(masked "$work/ft" "$name") || unknown 'could not mask a proxy answer'
+    mm=$(masked "$work/fm" no-such-repo) || unknown 'could not mask a proxy answer'
+    [ "$ft" = "$fm" ] && [ "$mt" = "$mm" ] || can=1
+  fi
+  counted "$can"
+  call restricted "$target" "$work/rt"
+  rt=$status
+  call restricted "$missing" "$work/rm"
+  rm=$status
+  case "$rt $rm" in
+    *curl* | 401* | 429* | *' 401' | *' 429')
+      unproven "$label: the member is answered $rt, and $rm for a repository the App is not installed on, which no rule judges: $(head_of "$work/rt")"
+      return
+      ;;
+  esac
+  mt=$(masked "$work/rt" "$name") || unknown 'could not mask a proxy answer'
+  mm=$(masked "$work/rm" no-such-repo) || unknown 'could not mask a proxy answer'
+  if [ "$rt" = "$rm" ] && [ "$mt" = "$mm" ]; then
+    printf 'ok      %s: %s, as a repository the App is not installed on (%s)\n' "$label" "$rt" "$can_text"
+  elif [ "$rt" = 403 ] && [ -z "$(masked_marker "$work/rt" "$name")" ]; then
+    printf 'ok      %s: 403 (%s)\n' "$label" "$can_text"
+  else
+    fail "$label: the member is answered $rt for $project's repository, where one the App is not installed on is answered $rm: $(head_of "$work/rt")"
+  fi
+}
+
+# The GitHub proxy, each read filled with the repository only the project's issues resolve to.
+proxy_sha=0123456789abcdef0123456789abcdef01234567
+if [ -n "$proxy_repo" ]; then
+  proxy_owner=${proxy_repo%%/*} proxy_name=${proxy_repo#*/}
+  while IFS= read -r shape; do
+    path=$shape
+    path=${path//\{number\}/1}
+    path=${path//\{sha\}/$proxy_sha}
+    judge_proxy "GET /api/github/rest/repos/{owner}/{repo}/$shape" \
+      "/api/github/rest/repos/$(uri "$proxy_owner")/$(uri "$proxy_name")/$path" \
+      "/api/github/rest/repos/$(uri "$proxy_owner")/no-such-repo/$path" "$proxy_name"
+  done <<EOF
+$proxy_reads
+EOF
+fi
+
 # The document socket. The member's cookie is the one credential it admits; the control is the
-# same probe admitting the member to a document of a project the member sees.
+# same probe admitting the member to a document of a project the member sees (`own`, read with
+# the lookup).
 call restricted /api/v1/schema/blocks "$work/body"
 schema_version=$(first_of "$work/body" '.version // .schema_version | tostring')
 own_doc=''
-call restricted /api/v1/projects "$work/body"
-if [ "$status" = 200 ]; then
-  jq -r --arg p "$project" '.[]? | .key | select(. != $p)' "$work/body" 2>/dev/null >"$work/own"
-  while read -r own; do
-    call restricted "/api/v1/projects/$own/artifacts" "$work/body"
-    [ "$status" != 200 ] || own_doc=$(first_of "$work/body" '.[]? | .id')
-    [ -z "$own_doc" ] || break
-  done <"$work/own"
-fi
+while read -r own; do
+  call restricted "/api/v1/projects/$own/artifacts" "$work/body"
+  [ "$status" != 200 ] || own_doc=$(first_of "$work/body" '.[]? | .id')
+  [ -z "$own_doc" ] || break
+done <"$work/own"
 if [ -z "$schema_version" ]; then
   unproven "/ws/doc/{room}: GET /api/v1/schema/blocks names no schema version"
 elif [ -z "$doc" ]; then
@@ -901,7 +1135,8 @@ else
       elif [ "${own_answer#authenticated }" = "$own_answer" ]; then
         unproven "/ws/doc/{room}: the control did not hold: the member is not admitted to their own document: $own_answer"
       else
-        masked "$work/doc-target" "$doc" >"$work/doc-refusal" || unknown 'could not mask the document refusal'
+        refusal_body "$work/doc-target" "$work/doc-body"
+        masked "$work/doc-body" "$doc" >"$work/doc-refusal" || unknown 'could not mask the document refusal'
         marker=$(marker_in "$work/doc-refusal")
         if [ -n "$marker" ]; then
           fail "/ws/doc/{room}: the refusal holds $marker, a row of $project: $answer"
@@ -934,7 +1169,7 @@ until { [ -e "$work/ready-restricted" ] || ! kill -0 "$watcher_restricted" 2>/de
   sleep 0.2
 done
 if [ ! -e "$work/ready-full" ] || ! kill -0 "$watcher_full" 2>/dev/null; then
-  live_result="the full member's feed did not stay subscribed: $(head_of "$work/live-full")"
+  live_result="the full member's feed did not stay subscribed: it was sent $(frames_of "$work/live-full")"
 elif [ ! -e "$work/ready-restricted" ] && kill -0 "$watcher_restricted" 2>/dev/null; then
   live_result="the member's feed did not start in 30 s"
 elif [ -e "$work/ready-restricted" ] && ! kill -0 "$watcher_restricted" 2>/dev/null; then
@@ -990,8 +1225,14 @@ watchers=''
 [ -z "$written" ] || printf '%s\n' "$written" >>"$work/values"
 jq -Rn --arg key "$project" '{key: $key, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
   "$work/values" >"$work/markers.json" || unknown 'could not update the live event markers'
-marker=$(marker_in "$work/live-restricted")
-if [ -n "$marker" ]; then
+# A refused upgrade is judged by the body the server wrote, without the probe's status prefix.
+refused_upgrade=''
+case $(head -n 1 "$work/live-restricted") in 'http '[0-9][0-9][0-9]' '*) refused_upgrade=1 ;; esac
+refusal_body "$work/live-restricted" "$work/live-body"
+marker=$(marker_in "$work/live-body")
+if [ -n "$marker" ] && [ -n "$refused_upgrade" ]; then
+  fail "/ws/live: the member's refused upgrade holds $marker, a row of $project: $(head_of "$work/live-restricted")"
+elif [ -n "$marker" ]; then
   fail "/ws/live: the member is sent an event holding $marker, of $project: $(head_of "$work/live-restricted")"
 elif [ -n "$live_result" ]; then
   unproven "/ws/live: $live_result"
@@ -999,7 +1240,7 @@ elif [ "$full_exit" != 0 ] || ! jq -s -e --arg c "$written" '
   length > 0 and .[0].type == "events_start"
   and all(.[]; type == "object" and (.type | type == "string"))
   and any(.[]; .type == "event" and any(.. | strings; . == $c))' "$work/live-full" >/dev/null 2>&1; then
-  unproven "/ws/live: the control did not hold: the full member's feed did not cover $live_seconds s and receive comment $written: $(head_of "$work/live-full")"
+  unproven "/ws/live: the control did not hold: the full member's feed did not cover $live_seconds s and receive comment $written: it was sent $(frames_of "$work/live-full")"
 elif [ "$restricted_exit" != 0 ]; then
   unproven "/ws/live: the member's feed gave no answer: $(head_of "$work/live-restricted")"
 else

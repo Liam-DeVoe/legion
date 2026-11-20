@@ -2878,9 +2878,12 @@ GATES = [
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
          "document every committed recording's body is held to, which this job's test step runs"),
         (f"{ENVOY}/internal/dispatch/api/testdata/routes.txt",
-         "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts:40-48 (the new URL at :41) and "
-         "restricted-sweep-judging.test.ts:32-40 (the new URL at :33), and e2e/acceptance/restricted-sweep.sh, "
+         "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts:42-50 (the new URL at :43) and "
+         "restricted-sweep-judging.test.ts:33-41 (the new URL at :34), and e2e/acceptance/restricted-sweep.sh, "
          "which both run: the route index the sweep walks row by row"),
+        (f"{ENVOY}/internal/dispatch/githubapi/proxy.go",
+         "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts:182-184, the new URL at :183: the GitHub "
+         "proxy's readable expression, which the sweep's proxy reads are held to"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),

@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { ServerWebSocket } from "bun";
+import { createEncoder, toUint8Array, writeVarString, writeVarUint } from "lib0/encoding";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
@@ -41,6 +42,7 @@ const getRows = readFileSync(routeIndex, "utf8")
 
 const fullToken = "the-full-members-token";
 const memberCookie = "dsession=the-restricted-members-cookie";
+const fullCookie = "dsession=the-full-members-cookie";
 
 /** TGT's objects, as the fake's lookup answers them, and the reference scheme it writes: the sweep
  *  reads the scheme from the server's own answer rather than spelling one. */
@@ -58,6 +60,8 @@ const tgt = {
   goingRun: "88888888-8888-4888-8888-888888888888",
   session: "ses-tgt-worker",
   conversationFile: "shot-png",
+  directMessage: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  repository: "acme/tgt-repo",
 };
 const scheme = "fake-ref://";
 const tgtValues = Object.values(tgt);
@@ -80,17 +84,43 @@ interface Leak {
   readonly body: unknown;
 }
 
-/** The lookup the full member is answered, by exact path and query. `omit` leaves a kind out. */
-function lookup(target: string, omit: ReadonlySet<string>): unknown {
+/** What a fake changes of its answers. `omit` leaves a kind out of the lookup; `issues` is how many
+ *  issues TGT lists (1 by default), and `handoffOn` the one whose handoff the lookup finds;
+ *  `conversationGone` answers the conversation file as missing to the full member too;
+ *  `proxyReadsCookies` makes the GitHub proxy read as the real one does, as the browser's person
+ *  alone, so the full member's token is answered there as a missing repository is. */
+interface FakeShape {
+  readonly omit?: ReadonlySet<string>;
+  readonly issues?: number;
+  readonly handoffOn?: string;
+  readonly conversationGone?: boolean;
+  readonly proxyReadsCookies?: boolean;
+  readonly feed?: FeedShape;
+}
+
+/** The lookup the full member is answered, by exact path and query: TGT's objects, and OWN's, the
+ *  member's own project, whose issue names carol and no session. */
+function lookup(target: string, fake: FakeShape): unknown {
   const author = { kind: "user", id: "carol@example.com" };
   const agent = { kind: "session", id: tgt.session };
+  const handoffOn = fake.handoffOn ?? tgt.issue;
+  const issues = Array.from({ length: fake.issues ?? 1 }, (_, index) => ({
+    key: `TGT-${index + 1}`,
+    title: index === 0 ? tgt.title : `Issue ${index + 1} of the target reef`,
+    repo: "acme/tgt-repo",
+  }));
   const answers: Record<string, unknown> = {
     "/api/v1/whoami": { kind: "agent", owner: "carol@example.com" },
     "/api/v1/projects": [{ key: "OWN" }, { key: "TGT" }],
     "/api/v1/projects/TGT/access": { project: "TGT", people: [] },
-    "/api/v1/issues?project=TGT&limit=50": {
-      issues: [{ key: tgt.issue, title: tgt.title, repo: "acme/tgt-repo" }],
+    "/api/v1/issues?project=TGT&limit=50": { issues },
+    "/api/v1/issues?project=OWN&limit=50": {
+      issues: [{ key: "OWN-1", created_by: author, assignee: "carol@example.com" }],
     },
+    "/api/v1/issues/OWN-1/comments": [],
+    "/api/v1/issues/OWN-1/asks": [],
+    "/api/v1/issues/OWN-1/messages": [],
+    "/api/v1/issues/OWN-1/handoffs": [],
     [`/api/v1/issues/${tgt.issue}/summary`]: {
       documents: [{ id: tgt.document, slug: "spec", primary: true }],
     },
@@ -101,7 +131,11 @@ function lookup(target: string, omit: ReadonlySet<string>): unknown {
     },
     [`/api/v1/issues/${tgt.issue}/asks`]: [{ id: tgt.ask, author: agent }],
     [`/api/v1/issues/${tgt.issue}/messages`]: [{ message: { id: tgt.message, author } }],
-    [`/api/v1/issues/${tgt.issue}/handoffs`]: omit.has("handoff")
+    [`/api/v1/agents/${tgt.session}/messages`]: [
+      { message: { id: tgt.directMessage, author, body: "A direct message to the worker." } },
+    ],
+    [`/api/v1/issues/${tgt.issue}/handoffs`]: [],
+    [`/api/v1/issues/${handoffOn}/handoffs`]: fake.omit?.has("handoff")
       ? []
       : [{ id: tgt.handoff, phase: "plan", author: agent }],
     "/api/v1/projects/TGT/artifacts": [
@@ -112,6 +146,9 @@ function lookup(target: string, omit: ReadonlySet<string>): unknown {
     "/api/v1/broadcasts": [{ id: "99999999-9999-4999-8999-999999999999" }],
     "/api/v1/delivery/timeline": { runs: [{ id: 900 }] },
   };
+  if (fake.conversationGone === true) {
+    answers[`/api/v1/agents/${tgt.session}/artifacts/${tgt.conversationFile}`] = null;
+  }
   return answers[target];
 }
 
@@ -120,37 +157,80 @@ function lookup(target: string, omit: ReadonlySet<string>): unknown {
 function namesTgt(target: string): boolean {
   return (
     tgtValues.some((value) => target.includes(value)) ||
-    /(^|[/=])TGT([/&?]|$)/.test(target) ||
+    /(^|[/=])TGT([-/&?]|$)/.test(target) ||
     target.includes(`${scheme}TGT`)
   );
 }
 
-/** How a fake serves its live feed: not at all (every upgrade refused 404), or, with `live`, a feed
- *  that starts for both callers and sends the full member each comment it is written. `closes`
- *  closes the member's feed when the comment is written, which the sweep writes only once both
- *  feeds have started, so it closes long before any window could end. */
+/** How a fake serves its sockets. The live feed: not at all (every upgrade refused 404), or, with
+ *  `live`, a feed that starts for both callers and sends the full member each comment it is
+ *  written. `closes` closes the member's feed when the comment is written, which the sweep writes
+ *  only once both feeds have started, so it closes long before any window could end.
+ *  `memberRefusal` refuses the member's live upgrade 404 with that body. `noise` sends the full
+ *  member, in place of the comment, an event of TGT whose first field holds that text. The
+ *  document socket: not at all, or, with `doc`, a room for the member's own document that admits
+ *  them, as Hocuspocus answers a token frame, and a 404 for TGT's, whose body is `docRefusal`
+ *  when a row sets it. */
 interface FeedShape {
   readonly live?: boolean;
   readonly closes?: boolean;
+  readonly memberRefusal?: unknown;
+  readonly noise?: string;
+  readonly doc?: boolean;
+  readonly docRefusal?: unknown;
+}
+
+/** The member's own document, in OWN, which the document socket's control opens. */
+const ownDocument = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+/** Hocuspocus's answer to a token frame that admits the caller: the room, the authentication
+ *  message (2), its authenticated subtype (2) and the scope (socket-access.ts reads it). */
+function admitted(room: string): Uint8Array {
+  const frame = createEncoder();
+  writeVarString(frame, room);
+  writeVarUint(frame, 2);
+  writeVarUint(frame, 2);
+  writeVarString(frame, "read-write");
+  return toUint8Array(frame);
+}
+
+/** What a socket of the fake is: the member's or the full member's, and, for the document
+ *  socket, the room. */
+interface SocketData {
+  readonly member: boolean;
+  readonly room?: string;
 }
 
 /** A fake Dispatch on a port of its own, with `leaks` planted for the restricted member. */
-function fakeDispatch(leaks: readonly Leak[], omit: ReadonlySet<string>, feed: FeedShape) {
+function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
+  const feed = fake.feed ?? {};
   const memberPaths: string[] = [];
-  const fullFeeds: ServerWebSocket<{ member: boolean }>[] = [];
-  const memberFeeds: ServerWebSocket<{ member: boolean }>[] = [];
+  const fullFeeds: ServerWebSocket<SocketData>[] = [];
+  const memberFeeds: ServerWebSocket<SocketData>[] = [];
   let events = 0;
-  const server = Bun.serve<{ member: boolean }>({
+  const server = Bun.serve<SocketData>({
     hostname: "127.0.0.1",
     port: 0,
     async fetch(request, served) {
       const url = new URL(request.url);
       const target = decodeURIComponent(url.pathname + url.search);
       const member = request.headers.get("cookie") === memberCookie;
-      const full = request.headers.get("authorization") === `Bearer ${fullToken}`;
+      const fullBrowser = request.headers.get("cookie") === fullCookie;
+      const full = fullBrowser || request.headers.get("authorization") === `Bearer ${fullToken}`;
       if (request.headers.get("upgrade") !== null) {
+        if (member && feed.memberRefusal !== undefined && url.pathname === "/ws/live") {
+          return Response.json(feed.memberRefusal, { status: 404 });
+        }
         if (feed.live === true && url.pathname === "/ws/live" && (member || full)) {
           if (served.upgrade(request, { data: { member } })) return undefined;
+        }
+        if (feed.doc === true && member && url.pathname === `/ws/doc/${ownDocument}`) {
+          if (served.upgrade(request, { data: { member, room: ownDocument } })) return undefined;
+        }
+        if (feed.doc === true && member && url.pathname === `/ws/doc/${tgt.document}`) {
+          return feed.docRefusal === undefined
+            ? new Response("document not found", { status: 404 })
+            : Response.json(feed.docRefusal, { status: 404 });
         }
         return new Response("no socket here", { status: 404 });
       }
@@ -165,6 +245,12 @@ function fakeDispatch(leaks: readonly Leak[], omit: ReadonlySet<string>, feed: F
           });
         }
         if (target === "/api/v1/projects") return Response.json([{ key: "OWN" }]);
+        if (feed.doc === true && target === "/api/v1/schema/blocks") {
+          return Response.json({ version: 1 });
+        }
+        if (feed.doc === true && target === "/api/v1/projects/OWN/artifacts") {
+          return Response.json([{ id: ownDocument, issue_key: null, slug: "guide-md" }]);
+        }
         const leak = leaks.find((planted) => planted.matches(target));
         if (leak !== undefined) return Response.json(leak.body, { status: leak.status });
         if (namesTgt(target) || missingValues.some((value) => target.includes(value))) {
@@ -178,7 +264,11 @@ function fakeDispatch(leaks: readonly Leak[], omit: ReadonlySet<string>, feed: F
       if (request.method === "POST" && target === `/api/v1/issues/${tgt.issue}/comments`) {
         events += 1;
         const id = crypto.randomUUID();
-        const event = { id: events, issue_key: tgt.issue, project: "TGT", payload: { id } };
+        // The noise leads its event, so a line that quotes the feed's first bytes quotes it.
+        const event =
+          feed.noise === undefined
+            ? { id: events, issue_key: tgt.issue, project: "TGT", payload: { id } }
+            : { body: feed.noise, id: events, issue_key: tgt.issue, project: "TGT" };
         for (const socket of fullFeeds) {
           socket.send(JSON.stringify({ type: "event", sub: "e", id: String(events), event }));
         }
@@ -187,7 +277,15 @@ function fakeDispatch(leaks: readonly Leak[], omit: ReadonlySet<string>, feed: F
         }
         return Response.json({ id }, { status: 201 });
       }
-      const answer = lookup(target, omit);
+      if (
+        fake.proxyReadsCookies === true &&
+        !fullBrowser &&
+        target.startsWith("/api/github/rest/")
+      ) {
+        return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
+      }
+      const answer = lookup(target, fake);
+      if (answer === null) return Response.json({ code: "NOT_FOUND" }, { status: 404 });
       if (answer !== undefined) return Response.json(answer);
       if (missingValues.some((value) => target.includes(value))) {
         return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
@@ -196,6 +294,11 @@ function fakeDispatch(leaks: readonly Leak[], omit: ReadonlySet<string>, feed: F
     },
     websocket: {
       message(socket, raw) {
+        if (socket.data.room !== undefined) {
+          // The one frame the probe sends is its token frame; a fake admits the member to it.
+          socket.send(admitted(socket.data.room));
+          return;
+        }
         const frame = JSON.parse(String(raw)) as { type?: string; sub?: string };
         if (frame.type !== "subscribe") return;
         socket.send(
@@ -215,14 +318,12 @@ afterAll(() => {
 
 const indexes = temporaryDirectories("restricted-sweep-index");
 
-/** What a row changes of a run: kinds the lookup leaves out, inputs (a variable set undefined is
- *  left out), the live feed, and `rows`, the GET patterns of the route index the run reads in
- *  place of the whole of it. A sweep of the whole index makes about 400 calls; a row that holds
- *  one rule reads only the rows that rule needs. */
-interface RunShape {
-  readonly omit?: ReadonlySet<string>;
+/** What a row changes of a run: the fake's answers (FakeShape), inputs (a variable set undefined
+ *  is left out), and `rows`, the GET patterns of the route index the run reads in place of the
+ *  whole of it. A sweep of the whole index makes about 400 calls; a row that holds one rule reads
+ *  only the rows that rule needs. */
+interface RunShape extends FakeShape {
   readonly env?: Readonly<Record<string, string | undefined>>;
-  readonly feed?: FeedShape;
   readonly rows?: readonly string[];
 }
 
@@ -235,7 +336,7 @@ interface SweptRun {
 
 /** One run of the sweep against a fake with `leaks` planted. */
 async function sweep(leaks: readonly Leak[], shape: RunShape = {}): Promise<SweptRun> {
-  const fake = fakeDispatch(leaks, shape.omit ?? new Set(), shape.feed ?? {});
+  const fake = fakeDispatch(leaks, shape);
   servers.push(fake.server);
   let routes: string | undefined;
   if (shape.rows !== undefined) {
@@ -374,6 +475,217 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     },
     rowLimit("short")
   );
+
+  test(
+    "a session that worked in the project alone, in the member's agents list, is a FAIL",
+    async () => {
+      const { code, stdout } = await sweep(
+        [at("/api/v1/agents", 200, [{ session_id: tgt.session, title: "Works on TGT" }])],
+        { rows: ["/api/v1/agents"] }
+      );
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/agents: the member is answered 200 holding ${tgt.session}, a row of TGT: [{"session_id":"${tgt.session}","title":"Works on TGT"}]`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the same list with no session of the project's is no FAIL.
+  test(
+    "the member's agents list with no session of the project is no FAIL",
+    async () => {
+      const { stdout } = await sweep([], { rows: ["/api/v1/agents"] });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toMatch(/^ok {6}GET \/api\/v1\/agents: 200, no row of TGT \(can fail\)$/m);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a row of the project in an answer that also measures its own time is a FAIL",
+    async () => {
+      const { code, stdout } = await sweep(
+        [
+          at(`/api/v1/search?q=${tgt.title}`, 200, {
+            took_ms: 3,
+            results: [{ kind: "document", project: "TGT" }],
+          }),
+        ],
+        { rows: ["/api/v1/search"] }
+      );
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/search?q=: the member is answered 200 holding TGT, a row of TGT: {"took_ms":3,"results":[{"kind":"document","project":"TGT"}]}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a row of the project in the body of the member's refused live upgrade is a FAIL",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        feed: { memberRefusal: { error: "refused", project: "TGT" } },
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([
+        `/ws/live: the member's refused upgrade holds TGT, a row of TGT: http 404 {"error":"refused","project":"TGT"}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the same refusal, its body naming nothing of TGT, is a refusal.
+  test(
+    "the member's refused live upgrade whose body names nothing of the project is a refusal",
+    async () => {
+      const { stdout } = await sweep([], {
+        feed: { live: true, memberRefusal: { error: "refused" } },
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        `\nok      /ws/live: the member's upgrade is refused: http 404 {"error":"refused"}\n`
+      );
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a row of the project in the body of the member's refused document upgrade is a FAIL",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        feed: { doc: true, docRefusal: { error: "refused", project: "TGT" } },
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([
+        `/ws/doc/{room}: the refusal holds TGT, a row of TGT: http 404 {"error":"refused","project":"TGT"}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the member is admitted to their own document, and refused
+  // TGT's with a body that names nothing of it.
+  test(
+    "the member's refused document upgrade whose body names nothing of the project is a refusal",
+    async () => {
+      const { stdout } = await sweep([], { feed: { doc: true }, rows: ["/api/v1/whoami"] });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        "\nok      /ws/doc/{room}: http 404 document not found (control: admitted to their own document)\n"
+      );
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a direct message to the project's session, in the member's list of that session's messages, is a FAIL",
+    async () => {
+      const listed = [
+        { message: { id: tgt.directMessage, body: "A direct message to the worker." } },
+      ];
+      const { code, stdout } = await sweep(
+        [at(`/api/v1/agents/${tgt.session}/messages`, 200, listed)],
+        { rows: ["/api/v1/agents/{session_id}/messages"] }
+      );
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/agents/{session_id}/messages: the member is answered 200 holding ${tgt.directMessage}, a row of TGT: ${JSON.stringify(listed)}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the same list refused, and the direct message by its own
+  // routes refused too, which a run reads whatever routes it is given.
+  test(
+    "the member refused the project's session's messages and its direct message is no FAIL",
+    async () => {
+      const { stdout } = await sweep([], { rows: ["/api/v1/agents/{session_id}/messages"] });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        "\nok      GET /api/v1/agents/{session_id}/messages: 404 (can fail)\n"
+      );
+      expect(stdout).toContain(
+        "\nok      GET /api/v1/messages/{id} (a direct message): 404 (can fail)\n"
+      );
+      expect(stdout).toContain(
+        "\nok      GET /api/v1/messages/{id}/blocks (a direct message): 404 (can fail)\n"
+      );
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a GitHub proxy read of the project's repository that the member is answered is a FAIL",
+    async () => {
+      const pull = { number: 1, title: "The change of the target reef" };
+      const { code, stdout } = await sweep(
+        [at(`/api/github/rest/repos/${tgt.repository}/pulls/1`, 200, pull)],
+        { rows: ["/api/v1/whoami"] }
+      );
+      expect(failures(stdout)).toEqual([
+        `GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 200 for TGT's repository, where one the App is not installed on is answered 404: ${JSON.stringify(pull)}`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: each proxy read of the project's repository answered as one
+  // the App is not installed on.
+  test(
+    "each GitHub proxy read answered as a repository the App is not installed on is no FAIL",
+    async () => {
+      const { stdout } = await sweep([], { rows: ["/api/v1/whoami"] });
+      expect(failures(stdout)).toEqual([]);
+      for (const shape of [
+        "pulls/{number}",
+        "issues/{number}",
+        "commits/{sha}/check-runs",
+        "actions/runs?head_sha={sha}",
+      ]) {
+        expect(stdout).toContain(
+          `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 404, as a repository the App is not installed on (can fail)\n`
+        );
+      }
+    },
+    rowLimit("short")
+  );
+
+  // A proxy that reads only a browser's person, as the real one does: with the full member's
+  // cookie the reads can fail, and with their token alone they are blind, never a pass of a read
+  // that could fail.
+  test(
+    "with the full member's cookie, a proxy that reads no token is read as the full member",
+    async () => {
+      const { stdout } = await sweep([], {
+        env: { SWEEP_FULL_COOKIE: fullCookie },
+        proxyReadsCookies: true,
+        rows: ["/api/v1/whoami"],
+      });
+      expect(stdout).toContain(
+        "\nok      GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: 404, as a repository the App is not installed on (can fail)\n"
+      );
+      expect(stdout).not.toContain("the-full-members-cookie");
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "without the full member's cookie, a proxy that reads no token makes its reads blind",
+    async () => {
+      const { stdout } = await sweep([], { proxyReadsCookies: true, rows: ["/api/v1/whoami"] });
+      expect(stdout).toContain(
+        "\nok      GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: 404, as a repository the App is not installed on (blind)\n"
+      );
+    },
+    rowLimit("short")
+  );
 });
 
 /** The one run of this file over the whole route index, with nothing planted, which two rows read:
@@ -395,7 +707,7 @@ describe.skipIf(withoutTools)("a run that proves nothing", () => {
       );
       expect(stdout).toMatch(/^UNKNOWN \/ws\/doc\/\{room\}: /m);
       expect(stdout).toContain(
-        "\nUNKNOWN /ws/live: the full member's feed did not stay subscribed: http 404 no socket here\n"
+        "\nUNKNOWN /ws/live: the full member's feed did not stay subscribed: it was sent http 404\n"
       );
       expect(stdout).not.toContain("PASS");
       expect(code).toBe(2);
@@ -463,6 +775,52 @@ describe.skipIf(withoutTools)("a run that proves nothing", () => {
       expect(stdout).toMatch(
         /^ok {6}\/ws\/live: the member is sent 0 events in 1 s, none of TGT; the full member is sent the comment \(control\)$/m
       );
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "where the full member's live feed misses the comment, is UNKNOWN and quotes no event's text",
+    async () => {
+      const words = "words only a member of TGT may read";
+      const { code, stdout } = await sweep([], {
+        feed: { live: true, noise: words },
+        rows: ["/api/v1/whoami"],
+      });
+      expect(stdout).toMatch(/^UNKNOWN \/ws\/live: the control did not hold: /m);
+      expect(stdout).not.toContain(words);
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "where the named conversation file is missing to the full member too, is UNKNOWN and says so",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        conversationGone: true,
+        rows: ["/api/v1/agents/{session_id}/artifacts/{slug}"],
+      });
+      expect(stdout).toContain(
+        `\n  GET /api/v1/agents/{session_id}/artifacts/{slug} is not filled: {session_id}: the full member is answered 404 for SWEEP_CONVERSATION_FILE's ${tgt.session}/${tgt.conversationFile}\n`
+      );
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+});
+
+describe.skipIf(withoutTools)("the lookup", () => {
+  test(
+    "finds an object on any of the 50 issues it lists, the 30th included",
+    async () => {
+      const { stdout } = await sweep([], {
+        issues: 30,
+        handoffOn: "TGT-30",
+        rows: ["/api/v1/whoami"],
+      });
+      expect(stdout).toMatch(new RegExp(`^found {3}handoff ${tgt.handoff}$`, "m"));
+      expect(stdout).not.toMatch(/^missing handoff/m);
     },
     rowLimit("short")
   );

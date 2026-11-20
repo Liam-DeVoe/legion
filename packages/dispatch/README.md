@@ -875,20 +875,27 @@ repository that worked in it. It also asks one question of the project as the fu
 file `SWEEP_CONVERSATION_FILE` names, since no route lists those either. Then every GET row of the
 route index (`packages/envoy/internal/dispatch/api/testdata/routes.txt`) is called as the member,
 its wildcards filled with those objects, and each list once more for each of its query parameters
-that names a project's object (read from the API document). Each answer must be 404, 403, what a
-missing object is answered, or one that holds no row of the project; a 2xx for the project's
-object where a missing one is refused is a row of it too, since it says the object exists. It also
-holds both sockets: the member is not admitted to the room of the project's document, while the
-same probe admits them to a document of their own, and the member's event feed, open for the
-whole of `SWEEP_LIVE_SECONDS` (60 by default), is sent no event of the project while the full
-member comments on `SWEEP_WRITE_ISSUE`, which the full member's own feed must be sent. The
-comment and the question are the two writes it makes. Its inputs are `SWEEP_ORIGIN` (`https://`,
-or `http://` to a loopback host), `SWEEP_PROJECT`, `SWEEP_FULL_TOKEN`, `SWEEP_RESTRICTED_COOKIE`
-(the `Cookie` header's `<name>=<value>`), `SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE`
-(`<session id>/<slug>`, a file in the conversation of a session that worked in the project alone).
-It needs bash 3.2 or later, curl 7.55 or later, jq 1.6 or later, and bun with this checkout's
-dependencies installed (`bun install`), which runs the socket probe
-`e2e/acceptance/socket-access.ts`. No token or cookie reaches a command line or the output.
+that names a project's object (read from the API document). A direct message to a session that
+worked in the project alone is read by its own routes too, and every read the GitHub proxy
+forwards (`/api/github/rest/`, `githubapi/proxy.go`'s `readable`) is called with a repository only
+the project's issues resolve to. Each answer must be 404, 403, what a missing object is answered,
+or one that holds no row of the project; a 2xx for the project's object where a missing one is
+refused is a row of it too, since it says the object exists, and a proxy read must answer as a
+repository the App is not installed on does. A session or a person the lookup read in the project
+that works in no project the member sees is a row of it as well. It also holds both sockets: the
+member is not admitted to the room of the project's document, while the same probe admits them to
+a document of their own, and the member's event feed, open for the whole of `SWEEP_LIVE_SECONDS`
+(60 by default), is sent no event of the project while the full member comments on
+`SWEEP_WRITE_ISSUE`, which the full member's own feed must be sent. The comment and the question
+are the two writes it makes. Its inputs are `SWEEP_ORIGIN` (`https://`, or `http://` to a loopback
+host), `SWEEP_PROJECT`, `SWEEP_FULL_TOKEN`, `SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's
+`<name>=<value>`), `SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`, a
+file in the conversation of a session that worked in the project alone), and, optional,
+`SWEEP_FULL_COOKIE`, the full member's session cookie: the GitHub proxy reads as the browser's
+person and never as a token, so without it the proxy reads are `blind`. It needs bash 3.2 or
+later, curl 7.55 or later, jq 1.6 or later, and bun with this checkout's dependencies installed
+(`bun install`), which runs the socket probe `e2e/acceptance/socket-access.ts`. No token or cookie
+reaches a command line or the output.
 
 ```bash
 SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 \
@@ -906,15 +913,16 @@ request, which keeps a run far under an edge's per-address request limit.
 `bun run test:harness e2e/__tests__/restricted-sweep-judging.test.ts` holds each judging rule
 alone, against a fake Dispatch that keeps every route from the member but the one a row plants a
 leak in, and holds the sweep to calling every GET row, read from what the fake was sent.
-`bun run test:harness e2e/__tests__/restricted-sweep.test.ts` holds its inputs and the kinds it
-fills wildcards with, and, given `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, runs it against
-two stacks of the local harness: this checkout's server, where it passes, and the build of the
-newest commit with no read check, where it fails naming the route and both sockets. That commit is
-read from git, never written down: the merge base of HEAD and `DISPATCH_E2E_SWEEP_BASE_BRANCH`
-(`origin/main` by default; while the read check's pull request is open, the branch it targets), or,
-once a squash merge has put the read check on that branch, the commit just before it.
-`DISPATCH_E2E_SWEEP_BASE` names the commit outright. A commit that holds the read check, or no
-restricted members, is refused by name.
+`bun run test:harness e2e/__tests__/restricted-sweep.test.ts` holds its inputs, the kinds it fills
+wildcards with and the proxy reads it makes, and, given `DISPATCH_E2E_PG_BIN` or
+`DISPATCH_E2E_PG_IMAGE`, runs it against two stacks of the local harness: this checkout's server,
+where it passes, and the build of the newest commit with no read check, where it fails naming the
+route, a session's direct message, a GitHub proxy read and both sockets. CI's
+`dispatch-project-access` job runs those rows. That commit is read from git, never written down:
+the merge base of HEAD and `DISPATCH_E2E_SWEEP_BASE_BRANCH` (`origin/main` by default; while the
+read check's pull request is open, the branch it targets), or, once a squash merge has put the
+read check on that branch, the commit just before it. `DISPATCH_E2E_SWEEP_BASE` names the commit
+outright. A commit that holds the read check, or no restricted members, is refused by name.
 
 ```bash
 DISPATCH_E2E_PG_BIN=<a directory holding initdb and pg_ctl, PostgreSQL with vector> \

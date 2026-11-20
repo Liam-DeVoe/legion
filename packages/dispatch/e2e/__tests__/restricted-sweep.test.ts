@@ -22,7 +22,9 @@
  *  Postgres, a Go server and the fakes, and build the control's server, which is minutes of work
  *  and needs `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` to make the databases at all
  *  (`e2e/harness-postgres.ts`), as `second-global-setup.test.ts`'s row does. Without one they
- *  would prove nothing, so they are skipped and say so. */
+ *  would prove nothing, so they are skipped and say so. CI's `dispatch-project-access` job names
+ *  one, and the branch the control's commit is read from
+ *  (`.github/workflows/ci-job-dispatch-project-access.yaml`), so it runs them. */
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -106,6 +108,11 @@ describe("the inputs", () => {
       "UNKNOWN: SWEEP_RESTRICTED_COOKIE must be <name>=<value>",
     ],
     [
+      "a full member's cookie with no name",
+      { SWEEP_FULL_COOKIE: "a-value" },
+      "UNKNOWN: SWEEP_FULL_COOKIE must be <name>=<value>",
+    ],
+    [
       "an issue of another project to write on",
       { SWEEP_WRITE_ISSUE: "OWN-1" },
       "UNKNOWN: SWEEP_WRITE_ISSUE is no issue of TGT: OWN-1",
@@ -172,6 +179,36 @@ test(
         .map((wildcard) => `${path} {${wildcard}}`)
     );
     expect(unknown).toEqual([]);
+  },
+  rowLimit("short")
+);
+
+/** The GitHub proxy's `readable` expression (githubapi/proxy.go), the only reads it forwards. */
+const proxySource = fileURLToPath(
+  new URL("../../../envoy/internal/dispatch/githubapi/proxy.go", import.meta.url)
+);
+
+test(
+  "reads every path the GitHub proxy forwards, each as its expression names it",
+  async () => {
+    const expression =
+      /var readable = regexp\.MustCompile\(`\^repos\/[^`]*?\/\(\?:([^`]*)\)\$`\)/.exec(
+        readFileSync(proxySource, "utf8")
+      );
+    expect(expression, `${proxySource} holds no readable expression this row reads`).not.toBeNull();
+    // Each alternative, its number and its commit written as the script fills them.
+    const forwarded = (expression?.[1] ?? "").split("|").map((alternative) =>
+      alternative
+        .replace(/^\((.*)\)$/, "$1")
+        .replace("[0-9]+", "{number}")
+        .replace(/\[0-9A-Fa-f\]\{\d+,\d+\}/, "{sha}")
+    );
+    const { code, stdout } = await script({ SWEEP_LIST_PROXY: "1" });
+    expect(code).toBe(4);
+    // The workflow-runs read carries the one commit its query must name.
+    expect(stdout.trim().split("\n")).toEqual(
+      forwarded.map((path) => (path === "actions/runs" ? "actions/runs?head_sha={sha}" : path))
+    );
   },
   rowLimit("short")
 );
@@ -434,6 +471,35 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
         /^found {3}person \S+, session \S+, repository \S+, priority \S+, broadcast \S+, delivery run \d+$/m
       );
       expect(stdout).not.toMatch(/^found .* none(,|$)/m);
+      // The worker session wrote only in TGT, so it marks a row of TGT; carol also works in OWN,
+      // which bob sees, so she does not.
+      expect(stdout).toMatch(/^found {3}actor ses-tgt-worker$/m);
+      expect(stdout).not.toMatch(/^found {3}actor carol@example\.com$/m);
+      expect(stdout).toMatch(/^found {3}conversation-file ses-tgt-worker\/\S+$/m);
+      expect(stdout).toMatch(/^ok {6}GET \/api\/v1\/agents: 200, no row of TGT \(can fail\)$/m);
+      // carol's direct message to the worker, by the session's list and by its own routes.
+      expect(stdout).toMatch(/^found {3}direct-message [0-9a-f-]{36}$/m);
+      expect(stdout).toMatch(
+        /^ok {6}GET \/api\/v1\/agents\/\{session_id\}\/messages: .*\(can fail\)$/m
+      );
+      expect(stdout).toMatch(
+        /^ok {6}GET \/api\/v1\/messages\/\{id\} \(a direct message\): .*\(can fail\)$/m
+      );
+      // Every read the GitHub proxy forwards, of the repository only TGT's issues resolve to.
+      expect(stdout).toMatch(/^found {3}proxy-repository acme\/tgt-repo$/m);
+      for (const shape of [
+        "pulls/{number}",
+        "issues/{number}",
+        "commits/{sha}/check-runs",
+        "actions/runs?head_sha={sha}",
+      ]) {
+        expect(stdout).toMatch(
+          new RegExp(
+            `^ok {6}GET /api/github/rest/repos/\\{owner\\}/\\{repo\\}/${shape.replace(/[{}?]/g, "\\$&")}: .*\\(can fail\\)$`,
+            "m"
+          )
+        );
+      }
       const swept =
         /^swept {3}(\d+) GET rows: (\d+) calls judged, (\d+) can fail, (\d+) blind, (\d+) not filled;/m.exec(
           stdout
@@ -490,6 +556,19 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
         /^FAIL {4}\/ws\/doc\/\{room\}: the member is admitted to the room of TGT's document/m
       );
       expect(stdout).toMatch(/^FAIL {4}\/ws\/live: the member is sent an event holding /m);
+      // The agents list names the worker session, which wrote only in TGT: R4's clause for
+      // sessions, which a run that marked no session could not fail.
+      expect(stdout).toMatch(
+        /^FAIL {4}GET \/api\/v1\/agents: the member is answered 200 holding ses-tgt-worker, a row of TGT: /m
+      );
+      // A direct message to a session of TGT alone, which the merge base lists to every caller.
+      expect(stdout).toMatch(
+        /^FAIL {4}GET \/api\/v1\/agents\/\{session_id\}\/messages: the member is answered 200 holding [0-9a-f-]{36}, a row of TGT: /m
+      );
+      // The GitHub proxy forwards the member's read of TGT's repository, a pull request it holds.
+      expect(stdout).toMatch(
+        /^FAIL {4}GET \/api\/github\/rest\/repos\/\{owner\}\/\{repo\}\/pulls\/\{number\}: the member is answered 200 for TGT's repository, where one the App is not installed on is answered /m
+      );
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild"] })
   );

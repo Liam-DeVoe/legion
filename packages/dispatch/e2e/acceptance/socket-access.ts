@@ -159,12 +159,21 @@ async function upgradeAnswer(): Promise<{ status: number; body: string }> {
       connection.end();
     }
   };
+  // The request is written once the connection is open, and over TLS that is once the handshake
+  // is done: a write before it sends nothing, and the server, which waits for the request, never
+  // answers. What a write could not take is written again when the socket drains.
+  let unsent = Buffer.from(request);
+  const send = (socket: { write(data: Buffer): number }) => {
+    if (unsent.length > 0) unsent = unsent.subarray(Math.max(socket.write(unsent), 0));
+  };
   const connection = await Bun.connect({
     // A bracketed IPv6 literal is the URL's spelling; the connect takes the address alone.
     hostname: url.hostname.replace(/^\[(.*)\]$/, "$1"),
     port: Number(url.port || (secure ? 443 : 80)),
     tls: secure,
     socket: {
+      open: send,
+      drain: send,
       data(socket, chunk) {
         raw = Buffer.concat([raw, chunk]);
         settle(socket);
@@ -184,7 +193,6 @@ async function upgradeAnswer(): Promise<{ status: number; body: string }> {
       },
     },
   });
-  connection.write(request);
   const timer = setTimeout(
     () =>
       received.reject(

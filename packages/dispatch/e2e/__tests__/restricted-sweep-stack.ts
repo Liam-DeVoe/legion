@@ -261,20 +261,18 @@ function stackVariable(env: Readonly<Record<string, string | undefined>>, name: 
 }
 
 /** Writes, through the stack's server at `origin`, the projects, people and objects every sweep
- *  of this file reads, and answers bob's cookie, carol's personal token and the worker's
- *  conversation file. TGT holds an object of every kind a route names: an issue whose spec has
- *  blocks, a child issue, a comment of carol's and one of an agent's, an ask, a message, a
- *  handoff, a document of the issue and one of the project, a repository, a priority the issue
- *  advances, a broadcast to its agent, a merged pull request and a deploy run, and a file of its
- *  agent's conversation. OWN holds bob's own issue and document. EMPTY holds nothing. */
+ *  of this file reads, and answers bob's cookie, carol's personal token and cookie, and the
+ *  worker's conversation file. TGT holds an object of every kind a route names: an issue whose
+ *  spec has blocks, a child issue, a comment of carol's and one of an agent's, an ask, a message,
+ *  a handoff, a document of the issue and one of the project, a repository the App is installed
+ *  on with a pull request the GitHub proxy reads, a priority the issue advances, a broadcast to its
+ *  agent, a direct message from carol to that agent, a merged pull request and a deploy run, and
+ *  a file of its agent's conversation. OWN holds bob's own issue and document. EMPTY holds
+ *  nothing. */
 async function seed(
   origin: string,
   env: Readonly<Record<string, string | undefined>>
-): Promise<{
-  readonly cookie: string;
-  readonly token: string;
-  readonly conversationFile: string;
-}> {
+): Promise<Credentials> {
   const database = stackVariable(env, "DATABASE_URL");
   const asCarol = { cookie: await signIn(origin, carol) };
   const agent = { bearer: sharedToken };
@@ -294,7 +292,17 @@ async function seed(
     200
   );
   await fixture(stackVariable(env, "FAKE_GITHUB_PORT"), "/__fixture/repos", {
-    "acme/tgt-repo": { contents: "read", installation_id: 71 },
+    "acme/tgt-repo": {
+      contents: "read",
+      installation_id: 71,
+      pulls: {
+        "1": {
+          head_sha: "1111111111111111111111111111111111111111",
+          state: "open",
+          title: "The change of TGT-1",
+        },
+      },
+    },
   });
   await fixture(stackVariable(env, "FAKE_ENVOY_PORT"), "/__fixture/sessions", [
     {
@@ -360,6 +368,10 @@ async function seed(
     delivery: "btw",
     session_ids: [worker],
   });
+  await send(origin, asCarol, "POST", `/api/v1/agents/${worker}/messages`, 201, {
+    body: "A direct message from carol to the worker.",
+    delivery: "btw",
+  });
   await send(origin, asCarol, "PUT", "/api/v1/settings/delivery", 200, {
     deploy_repo: "acme/tgt-repo",
     deploy_workflow_path: ".github/workflows/deploy.yml",
@@ -416,20 +428,20 @@ async function seed(
   const token =
     typeof minted === "object" && minted !== null && "token" in minted ? minted.token : undefined;
   if (typeof token !== "string") throw new Error("the token mint answered no token");
-  return { cookie, token, conversationFile: `${worker}/${slug}` };
+  return { cookie, fullCookie: asCarol.cookie, token, conversationFile: `${worker}/${slug}` };
+}
+
+/** What a sweep is run with: bob's cookie, carol's token and cookie, and the conversation file. */
+interface Credentials {
+  readonly cookie: string;
+  readonly fullCookie: string;
+  readonly token: string;
+  readonly conversationFile: string;
 }
 
 /** One run of the sweep against `origin` for `project`, unpaced and with a 5 s window, in an
  *  environment of these variables alone. */
-async function sweep(
-  origin: string,
-  project: string,
-  credentials: {
-    readonly cookie: string;
-    readonly token: string;
-    readonly conversationFile: string;
-  }
-): Promise<SweepRun> {
+async function sweep(origin: string, project: string, credentials: Credentials): Promise<SweepRun> {
   const child = Bun.spawn(["bash", sweepScript], {
     cwd: dispatchPackage,
     env: {
@@ -441,6 +453,7 @@ async function sweep(
       SWEEP_WRITE_ISSUE: `${project}-1`,
       SWEEP_FULL_TOKEN: credentials.token,
       SWEEP_RESTRICTED_COOKIE: credentials.cookie,
+      SWEEP_FULL_COOKIE: credentials.fullCookie,
       SWEEP_LIVE_SECONDS: "5",
       SWEEP_CONVERSATION_FILE: credentials.conversationFile,
       SWEEP_PACE_SECONDS: "0",
