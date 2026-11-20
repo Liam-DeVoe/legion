@@ -222,8 +222,9 @@ var (
 )
 
 // start runs the server and returns once it says it is ready, and once the harness has
-// connected to it as its own user. On a restart it frees the client port it held (heldClient)
-// just before the server binds it.
+// connected to it as its own user. On a restart the client port stays held (heldClient) while the
+// server binds it, and is freed once the server says it is ready, so the port is never free
+// between the two.
 func (n *rigNATS) start() {
 	t := n.t
 	t.Helper()
@@ -238,7 +239,8 @@ func (n *rigNATS) start() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n.releaseClientPort()
+	// The hold stays bound through the exec: the server binds and listens on the port beside it,
+	// and the hold is freed once the server is ready, below.
 	cmd := exec.Command(n.binary, "-c", config)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	if err := cmd.Start(); err != nil {
@@ -260,6 +262,8 @@ func (n *rigNATS) start() {
 				n.port = portIn(t, natsClientPort, text, n.log)
 			}
 			n.monitorPort = portIn(t, natsMonitorPort, text, n.log)
+			// Ready means listening on the client port, so the hold has done its work.
+			n.releaseClientPort()
 			break
 		}
 		select {
@@ -319,14 +323,21 @@ func (n *rigNATS) end() bool {
 	return true
 }
 
-// holdClientPort holds the stopped server's client port (heldClient) until start frees it, so
-// no other process on the host takes it during an outage: a socket bound to it without
-// SO_REUSEADDR, which a later bind of the port by anyone else fails against, and which never
-// listens, so a session's or the daemon's dial is refused as it is with no server.
+// holdClientPort holds the stopped server's client port (heldClient) until the next start has
+// the server listening on it again: a socket bound to it with SO_REUSEADDR, as Go's own listener
+// is, so the server's own connections on the port, each left in TIME_WAIT by the stop, do not
+// refuse the bind, and which never listens, so a session's or the daemon's dial is refused as it
+// is with no server and the kernel picks the port for no other socket (an ephemeral listen, or an
+// outgoing connection's source port). The server's own bind and listen succeed beside it.
 func (n *rigNATS) holdClientPort() {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
 	if err != nil {
 		n.t.Fatalf("open a socket to hold the nats-server's client port %d: %v", n.port, err)
+	}
+	syscall.CloseOnExec(fd)
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		_ = syscall.Close(fd)
+		n.t.Fatalf("set SO_REUSEADDR on the socket that holds the nats-server's client port %d: %v", n.port, err)
 	}
 	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Port: n.port, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
 		_ = syscall.Close(fd)
