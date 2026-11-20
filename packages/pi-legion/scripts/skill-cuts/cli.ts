@@ -1,0 +1,1505 @@
+/**
+ * The skill-cuts runner's command line (plan, R5 `cli.ts`). Every command that calls a model takes
+ * `--config <skill-cuts.json>` (config.ts: the gateway's address), `--key-file <file>` (the gateway
+ * key, read inside gateway.ts and never printed, logged or written), and `--out` (where it writes).
+ * The runner needs no GitHub token: it reads skill texts from two directories, cases from a file,
+ * and the key from a file.
+ *
+ *   bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> --config <file>
+ *       --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>
+ *       [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>]
+ *       [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>]
+ *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
+ *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
+ *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
+ *   bun scripts/skill-cuts/cli.ts control <map|attack|same-job|sentence> --config <file>
+ *       --key-file <file> --in <input.json> --out <result.json> [what to plant, below]
+ *       [--request-log <file>] [--budget-usd <n>]
+ *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
+ *       [--hour <0-23>]
+ *
+ * **`behaviour`** runs R2's behaviour test of one skill: `--old` and `--new` are the skill's own
+ * directories at the cut's base and in the cut, and `--cases` a case file of that skill (cases.ts,
+ * checked against `--old`). Each case's results are one file, `<out>/cases/<id>.json` (CaseResult),
+ * written whole (a fresh file renamed over it) after each round of runs, so a run started again
+ * goes on from what was saved and skips each case whose stage is complete. `--after-case
+ * <command>` runs `<command> <that file>` through `sh` when a case's stage ends.
+ *
+ * - `screen`: per case in the file's order, until the skill has MIN_INFORMATIVE_CASES informative
+ *   or MAX_SCREENED_CASES screened cases (score.ts): a case whose model the gateway's Anthropic
+ *   Messages route does not serve is dropped; the two judge controls (judge.ts) run, and a case
+ *   that fails either is dropped; then a capture per arm (old, new, none; capture.ts, read back
+ *   when saved already), SCREEN_RUNS replays of each, every reply of the round judged blind (all
+ *   arms shuffled under a recorded seed), and rounds of extra runs for the runs with no verdict, as
+ *   score.ts's `stageOutcome` says, at most MAX_EXTRA_RUNS per arm.
+ * - `confirm`: FRESH_RUNS fresh runs of old and new for each flagged case.
+ * - `control`: FRESH_RUNS runs of `minus` (old less the case's line, or less `--planted-line`) and
+ *   FRESH_RUNS fresh runs of old, on the skill's control case.
+ *   confirm and control need the screen finished, and make no run when the skill can get no verdict
+ *   (fewer than MIN_INFORMATIVE_CASES informative cases, or a control that is no loss).
+ * - `report` (no model call) prints each case's passes per arm and stage, the skill's verdict and
+ *   its reason (score.ts), the false-loss rate at the cases run, the spend, the peak memory, and
+ *   how many captures' system-prompt digests differ from their session's.
+ *
+ * Captures are saved under `<out>/captures/<arm>-<digest of the arm's skill directory>/`, so a new
+ * text, or another planted line, is captured again. Making one runs Oh My Pi (`--omp`, `omp` by
+ * default) with `--models` (a `models.yml` whose providers the capture points at its recorder),
+ * the context's repositories read with `gh` or from `--repos <dir>` (context.ts's `localSource`),
+ * and the caches under `--cache-dir`; without `--models` a missing capture fails the run. The peak
+ * resident memory (`VmHWM`, or the largest `VmRSS` read each second on a kernel that keeps no
+ * `VmHWM`, as gVisor) is recorded at the end of each case, and the run stops above 1 GiB.
+ * `--budget-usd` stops new model calls once the replies' dollars at list price reach it; the runs
+ * of the round so far are saved.
+ *
+ * **`read`** runs one reader of readers.ts (`runReader`) on the input `--in` holds, one JSON value of
+ * that reader's input schema, and writes `--out` whole: `{prompt, settings, answer, refusals,
+ * spent, usd}`, `answer` null when every reply was refused.
+ *
+ * **`control`** runs one positive control of readers.ts (`runControl`) on the reader's input `--in`
+ * holds, with what it plants: `map --delete-line <a line of the cut text the base text holds too>`,
+ * `attack [--plant-line <line>]` (readers.ts's ATTACK_PLANTED_LINE by default), `same-job --planted
+ * <file holding one skill entry {id, repo, name, description}> --copy-of <id>`, `sentence --into
+ * <id> --sentence <text>`. It writes `--out` whole: `{control, held, why, answer, refusals, spent,
+ * usd}`.
+ *
+ * **`count-sql`** is countsql.ts's own command: it prints count.sql filled for one store and day.
+ *
+ * Each model request goes through the request log (`loggedGateway`): one JSON line per request,
+ * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour`, and the `--out`
+ * file's path with `.requests.jsonl` added for `read` and `control`), holding what the call was for,
+ * the model, the thinking type and budget, max_tokens, the temperature, the effort, and the reply's
+ * usage and dollars at list price; never the key and never a message's text.
+ *
+ * Exit status: 0 done (a control held); 1 failed (a reader's every reply refused, a control that
+ * did not hold, a call or an `--after-case` command that failed); 2 refused before any model call;
+ * 3 stopped (the budget is spent, or the peak memory passed 1 GiB).
+ */
+import { createHash } from "node:crypto";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { parseArgs } from "node:util";
+import { messageFor } from "@legion/envoy-client/errors";
+import { z } from "zod";
+import { MessagesApiError } from "../skill-scenarios/messages-api";
+import { type Arm, type ArmDirs, type ArmName, buildArm } from "./arms";
+import { type Capture, captureBody, capturePaths, gatewayHints } from "./capture";
+import { type Case, loadCases } from "./cases";
+import { loadConfig, type SkillCutsConfig } from "./config";
+import { ghSource, localSource } from "./context";
+import { main as countSqlMain } from "./countsql";
+import {
+  BudgetSpent,
+  createGateway,
+  type Gateway,
+  type MessagesBody,
+  PRICE_SOURCE,
+  PRICES,
+  type Spent,
+} from "./gateway";
+import {
+  type ArmReply,
+  type Judged,
+  judgeBlind,
+  judgeControls,
+  NOTHING_REPLY,
+  newSeed,
+} from "./judge";
+import {
+  ATTACK_PLANTED_LINE,
+  type Control,
+  loadPrompt,
+  plantControl,
+  READER_NAMES,
+  READERS,
+  ReaderFailed,
+  type ReaderName,
+  runControl,
+  runReader,
+  SameJobInput,
+} from "./readers";
+import { type Replayed, replay } from "./replay";
+import {
+  FLAG_GAP,
+  FRESH_RUNS,
+  isControlLoss,
+  isFlagged,
+  isInformative,
+  isLoss,
+  LOSS_GAP,
+  MAX_EXTRA_RUNS,
+  MAX_SCREENED_CASES,
+  MIN_INFORMATIVE_CASES,
+  RunRecord,
+  SCREEN_RUNS,
+  type SkillScore,
+  STAGE_ARMS,
+  STAGE_RUNS,
+  Stage,
+  scoreSkill,
+  screeningDone,
+  stageOutcome,
+} from "./score";
+
+/** The longest one try of a model call may take: a reply with a long thinking budget is slow. */
+export const CALL_TIMEOUT_MS = 600_000;
+/** The model calls in flight at once, unless `--concurrency` says otherwise. */
+export const DEFAULT_CONCURRENCY = 8;
+/** The most the runner's peak resident memory may reach: a case that ends above it stops the run
+ *  (plan, "Where things run"). */
+export const MEMORY_LIMIT_BYTES = 1024 ** 3;
+
+/** Exit statuses. */
+export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3 } as const;
+
+/** What the commands write to, and the process facts they read. */
+export interface CliIo {
+  /** Writes `text` to standard output as it is. */
+  out(text: string): void;
+  /** Writes one line to standard error. */
+  err(line: string): void;
+  /** The process's peak resident memory so far, in bytes (`procPeakRssBytes`). */
+  peakRssBytes(): number;
+}
+
+/** The largest `VmRSS` read so far, for a kernel whose `/proc/self/status` gives no `VmHWM`. */
+let sampledPeakBytes = 0;
+/** How often the resident memory is read where the kernel keeps no peak of its own. */
+const RSS_SAMPLE_MS = 1_000;
+
+/** A field of `/proc/self/status` counted in kB, in bytes, or undefined when it holds none. */
+function statusBytes(status: string, name: "VmHWM" | "VmRSS"): number | undefined {
+  const kib = new RegExp(`^${name}:\\s+(\\d+) kB$`, "m").exec(status)?.[1];
+  return kib === undefined ? undefined : Number(kib) * 1024;
+}
+
+/** The peak resident memory of this process, in bytes: `VmHWM` of `/proc/self/status`, or, on a
+ *  kernel that keeps none (gVisor gives `VmRSS` only), the largest `VmRSS` read so far, which
+ *  `processIo` reads every RSS_SAMPLE_MS. Throws where the file holds neither. */
+export function procPeakRssBytes(): number {
+  const status = readFileSync("/proc/self/status", "utf8");
+  const peak = statusBytes(status, "VmHWM");
+  if (peak !== undefined) return peak;
+  const resident = statusBytes(status, "VmRSS");
+  if (resident === undefined) throw new Error("/proc/self/status holds neither VmHWM nor VmRSS");
+  sampledPeakBytes = Math.max(sampledPeakBytes, resident);
+  return sampledPeakBytes;
+}
+
+/** The io of a real run. Where the kernel keeps no `VmHWM`, the resident memory is read every
+ *  RSS_SAMPLE_MS from now on, so that the peak misses little between the ends of cases. */
+export function processIo(): CliIo {
+  const status = existsSync("/proc/self/status")
+    ? readFileSync("/proc/self/status", "utf8")
+    : undefined;
+  if (status !== undefined && statusBytes(status, "VmHWM") === undefined) {
+    setInterval(procPeakRssBytes, RSS_SAMPLE_MS).unref();
+  }
+  return {
+    out: (text) => process.stdout.write(text),
+    err: (line) => process.stderr.write(`${line}\n`),
+    peakRssBytes: procPeakRssBytes,
+  };
+}
+
+/** A command's refusal of its arguments, before any model call. */
+class Refused extends Error {}
+
+/** A run that stops on its own rule: the budget is spent, or the memory passed its limit. */
+class Stopped extends Error {}
+
+/** Writes `text` to `file` whole: into a fresh file beside it that is then renamed over it. */
+export function writeWhole(file: string, text: string): void {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const fresh = `${file}.${process.pid}.tmp`;
+  writeFileSync(fresh, text);
+  renameSync(fresh, file);
+}
+
+/** `value` as JSON, two spaces deep, with a final newline. */
+function json(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+/** The JSON value the file `file` holds. Throws a refusal naming the file. */
+function readJson(file: string, what: string): unknown {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    throw new Refused(`cannot read ${what} ${file}: ${messageFor(error)}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Refused(`${what} ${file} is not JSON: ${messageFor(error)}`);
+  }
+}
+
+/** Each issue of a zod error as `<path>: <message>`, joined. */
+function issueText(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => `${issue.path.join(".") || "the value"}: ${issue.message}`)
+    .join("; ");
+}
+
+/** Bytes as whole MiB. */
+function mib(bytes: number): number {
+  return Math.round(bytes / 2 ** 20);
+}
+
+// The request log.
+
+/** A field of an object, or undefined. */
+function field(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+}
+
+/** The settings of a request body that the request log records: its model, thinking type and
+ *  budget, max_tokens, temperature, effort, and whether it streams. Nothing else of the body. */
+export function requestSettings(body: MessagesBody): Record<string, unknown> {
+  return {
+    model: body.model,
+    thinking: field(body.thinking, "type") ?? null,
+    thinking_budget: field(body.thinking, "budget_tokens") ?? null,
+    max_tokens: body.max_tokens ?? null,
+    temperature: body.temperature ?? null,
+    effort: field(body.output_config, "effort") ?? null,
+    stream: body.stream === true,
+  };
+}
+
+/** `gateway`, with each request it sends appended to `logFile` as one JSON line: when it started,
+ *  `kind` (what the call is for), the body's settings (`requestSettings`), and the reply's model,
+ *  request id, duration, stop reason, usage and dollars; or, for a call that failed, the error's
+ *  name and HTTP status. Never the key, and never a message's text. */
+export function loggedGateway(gateway: Gateway, logFile: string, kind: string): Gateway {
+  mkdirSync(path.dirname(logFile), { recursive: true });
+  const log = (line: Record<string, unknown>) =>
+    appendFileSync(logFile, `${JSON.stringify(line)}\n`);
+  return {
+    async send(body, options) {
+      const at = new Date().toISOString();
+      const settings = requestSettings(body);
+      try {
+        const reply = await gateway.send(body, options);
+        log({
+          at,
+          kind,
+          ...settings,
+          answeredBy: reply.message.model,
+          requestId: reply.requestId ?? null,
+          durationMs: reply.durationMs,
+          stopReason: reply.message.stop_reason,
+          usage: reply.message.usage,
+          usd: reply.spent.usd,
+        });
+        return reply;
+      } catch (error) {
+        log({
+          at,
+          kind,
+          ...settings,
+          error: error instanceof Error ? error.name : "error",
+          status: error instanceof MessagesApiError ? (error.status ?? null) : null,
+        });
+        throw error;
+      }
+    },
+    spend: () => gateway.spend(),
+  };
+}
+
+// Options every model command reads.
+
+/** The options of a command that calls a model. */
+const GATEWAY_OPTIONS = {
+  config: { type: "string" },
+  "key-file": { type: "string" },
+  "budget-usd": { type: "string" },
+  concurrency: { type: "string" },
+  "request-log": { type: "string" },
+} as const;
+
+/** The gateway a command's options name: the configuration's address, the key file, the budget
+ *  and the concurrency; and the budget. Throws a refusal on an option out of range. */
+function openGateway(values: {
+  config: SkillCutsConfig;
+  keyFile: string;
+  budgetUsd?: string;
+  concurrency?: string;
+}): { gateway: Gateway; budgetUsd: number | undefined } {
+  const concurrency =
+    values.concurrency === undefined ? DEFAULT_CONCURRENCY : Number(values.concurrency);
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Refused(`--concurrency ${values.concurrency} is not a whole number of 1 or more`);
+  }
+  let budgetUsd: number | undefined;
+  if (values.budgetUsd !== undefined) {
+    budgetUsd = Number(values.budgetUsd);
+    if (values.budgetUsd.trim() === "" || !Number.isFinite(budgetUsd) || budgetUsd < 0) {
+      throw new Refused(`--budget-usd ${values.budgetUsd} is not a number of dollars of 0 or more`);
+    }
+  }
+  const gateway = createGateway({
+    baseUrl: values.config.gatewayBaseUrl,
+    keyFile: values.keyFile,
+    concurrency,
+    timeoutMs: CALL_TIMEOUT_MS,
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
+  });
+  return { gateway, budgetUsd };
+}
+
+/** Parses `argv` with `options`, strictly, with no positional argument. Throws a refusal. */
+function parse<O extends NonNullable<Parameters<typeof parseArgs>[0]>["options"]>(
+  argv: readonly string[],
+  options: O,
+  usage: string
+) {
+  try {
+    return parseArgs({ args: [...argv], options, strict: true, allowPositionals: false }).values;
+  } catch (error) {
+    throw new Refused(`${messageFor(error)}. ${usage}`);
+  }
+}
+
+/** The value of each option `names` names, or a refusal naming the ones missing. */
+function required<K extends string>(
+  values: Partial<Record<K, unknown>>,
+  names: readonly K[],
+  usage: string
+): Record<K, string> {
+  const missing = names.filter((name) => typeof values[name] !== "string");
+  if (missing.length > 0) {
+    throw new Refused(`${missing.map((name) => `--${name}`).join(", ")} required. ${usage}`);
+  }
+  return values as Record<K, string>;
+}
+
+/** The dollars of `spent`, summed. */
+function usdOf(spent: readonly Spent[]): number {
+  return spent.reduce((sum, each) => sum + each.usd, 0);
+}
+
+// `read`.
+
+const READ_USAGE =
+  "usage: cli.ts read --config <skill-cuts.json> --key-file <file> --prompt <name> --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]";
+
+/** `skill-cuts read`. */
+async function readCommand(argv: readonly string[], io: CliIo): Promise<number> {
+  const values = parse(
+    argv,
+    {
+      ...GATEWAY_OPTIONS,
+      prompt: { type: "string" },
+      in: { type: "string" },
+      out: { type: "string" },
+    },
+    READ_USAGE
+  );
+  const given = required(values, ["config", "key-file", "prompt", "in", "out"], READ_USAGE);
+  if (!(READER_NAMES as readonly string[]).includes(given.prompt)) {
+    throw new Refused(
+      `--prompt ${given.prompt} is no reader; the readers are ${READER_NAMES.join(", ")}`
+    );
+  }
+  const name = given.prompt as ReaderName;
+  const checked = READERS[name].input.safeParse(readJson(given.in, "the input"));
+  if (!checked.success) {
+    throw new Refused(
+      `the ${name} reader's input ${given.in} is refused: ${issueText(checked.error)}`
+    );
+  }
+  const config = loadConfig(given.config);
+  const settings = loadPrompt(name).settings;
+  const { gateway } = openGateway({
+    config,
+    keyFile: given["key-file"],
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
+  });
+  const logged = loggedGateway(
+    gateway,
+    values["request-log"] ?? `${given.out}.requests.jsonl`,
+    `reader:${name}`
+  );
+  try {
+    const result = await runReader(name, checked.data, logged);
+    const usd = usdOf(result.spent);
+    writeWhole(given.out, json({ prompt: name, settings, ...result, usd }));
+    io.out(
+      `read: the ${name} reader answered after ${result.refusals.length} refused replies, $${usd.toFixed(4)} at list price; written to ${given.out}\n`
+    );
+    return EXIT.ok;
+  } catch (error) {
+    if (!(error instanceof ReaderFailed)) throw error;
+    const usd = usdOf(error.spent);
+    writeWhole(
+      given.out,
+      json({
+        prompt: name,
+        settings,
+        answer: null,
+        refusals: error.refusals,
+        spent: error.spent,
+        usd,
+      })
+    );
+    io.err(`read: ${error.message}; written to ${given.out}`);
+    return EXIT.failed;
+  }
+}
+
+// `control`.
+
+const CONTROL_USAGE = [
+  "usage: cli.ts control <kind> --config <skill-cuts.json> --key-file <file> --in <input.json> --out <result.json> [--request-log <file>] [--budget-usd <n>], where <kind> and what it plants is one of:",
+  "  map --delete-line <a line of the cut text that the base text holds too>",
+  "  attack [--plant-line <line>]",
+  "  same-job --planted <file holding one skill entry {id, repo, name, description}> --copy-of <id>",
+  "  sentence --into <id> --sentence <text>",
+].join("\n");
+
+const CONTROL_KINDS = ["map", "attack", "same-job", "sentence"] as const;
+type ControlKind = (typeof CONTROL_KINDS)[number];
+
+/** The control `kind` on the reader input `input`, with what `values` plant. Throws a refusal. */
+function controlOf(
+  kind: ControlKind,
+  input: unknown,
+  values: Record<string, string | undefined>
+): Control {
+  const checked = READERS[kind].input.safeParse(input);
+  if (!checked.success) {
+    throw new Refused(`the ${kind} reader's input is refused: ${issueText(checked.error)}`);
+  }
+  switch (kind) {
+    case "map": {
+      const { "delete-line": deleteLine } = required(values, ["delete-line"], CONTROL_USAGE);
+      return { reader: "map", input: READERS.map.input.parse(input), deleteLine };
+    }
+    case "attack":
+      return {
+        reader: "attack",
+        input: READERS.attack.input.parse(input),
+        plantLine: values["plant-line"] ?? ATTACK_PLANTED_LINE,
+      };
+    case "same-job": {
+      const given = required(values, ["planted", "copy-of"], CONTROL_USAGE);
+      const planted = SameJobInput.shape.skills.element.safeParse(
+        readJson(given.planted, "the planted skill")
+      );
+      if (!planted.success) {
+        throw new Refused(
+          `the planted skill ${given.planted} is not one skill entry {id, repo, name, description}`
+        );
+      }
+      return {
+        reader: "same-job",
+        input: READERS["same-job"].input.parse(input),
+        planted: planted.data,
+        copyOf: given["copy-of"],
+      };
+    }
+    case "sentence": {
+      const given = required(values, ["into", "sentence"], CONTROL_USAGE);
+      return {
+        reader: "sentence",
+        input: READERS.sentence.input.parse(input),
+        into: given.into,
+        sentence: given.sentence,
+      };
+    }
+  }
+}
+
+/** `skill-cuts control <kind>`. */
+async function controlCommand(argv: readonly string[], io: CliIo): Promise<number> {
+  const [kind, ...rest] = argv;
+  if (!(CONTROL_KINDS as readonly (string | undefined)[]).includes(kind)) {
+    throw new Refused(`control ${kind ?? ""}: no such control. ${CONTROL_USAGE}`);
+  }
+  const values = parse(
+    rest,
+    {
+      ...GATEWAY_OPTIONS,
+      in: { type: "string" },
+      out: { type: "string" },
+      "delete-line": { type: "string" },
+      "plant-line": { type: "string" },
+      planted: { type: "string" },
+      "copy-of": { type: "string" },
+      into: { type: "string" },
+      sentence: { type: "string" },
+    },
+    CONTROL_USAGE
+  );
+  const given = required(values, ["config", "key-file", "in", "out"], CONTROL_USAGE);
+  const control = controlOf(kind as ControlKind, readJson(given.in, "the input"), values);
+  try {
+    plantControl(control);
+  } catch (error) {
+    throw new Refused(`the ${kind} control cannot be planted: ${messageFor(error)}`);
+  }
+  const config = loadConfig(given.config);
+  const { gateway } = openGateway({
+    config,
+    keyFile: given["key-file"],
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
+  });
+  const logged = loggedGateway(
+    gateway,
+    values["request-log"] ?? `${given.out}.requests.jsonl`,
+    `control:${kind}`
+  );
+  try {
+    const ran = await runControl(control, logged);
+    const usd = usdOf(ran.result.spent);
+    writeWhole(
+      given.out,
+      json({ control: kind, held: ran.held, why: ran.why, ...ran.result, usd })
+    );
+    const line = `control ${kind}: ${ran.held ? "held" : "did not hold"}: ${ran.why}; $${usd.toFixed(4)} at list price; written to ${given.out}`;
+    if (ran.held) io.out(`${line}\n`);
+    else io.err(line);
+    return ran.held ? EXIT.ok : EXIT.failed;
+  } catch (error) {
+    if (!(error instanceof ReaderFailed)) throw error;
+    const usd = usdOf(error.spent);
+    writeWhole(
+      given.out,
+      json({
+        control: kind,
+        held: false,
+        why: error.message,
+        answer: null,
+        refusals: error.refusals,
+        spent: error.spent,
+        usd,
+      })
+    );
+    io.err(`control ${kind}: did not hold: ${error.message}; written to ${given.out}`);
+    return EXIT.failed;
+  }
+}
+
+// `behaviour`: the results of a case.
+
+/** What one reply used, as gateway.ts's `Spent` gives it. */
+const SpentRecord = z.strictObject({
+  model: z.string(),
+  input: z.number(),
+  output: z.number(),
+  cacheRead: z.number(),
+  cacheWrite: z.number(),
+  usd: z.number(),
+});
+
+/** One run of one arm of a case in one stage: score.ts's RunRecord, and what the run did. */
+export const Run = z.strictObject({
+  ...RunRecord.shape,
+  /** The run's number in its arm and stage, from 1. */
+  run: z.int().positive(),
+  /** The round of the stage that started it, from 1; its blind order's seed is `seeds[round - 1]`. */
+  round: z.int().positive(),
+  /** Its reply's opaque id in that round's blind order, or null when the replay failed. */
+  id: z.string().nullable(),
+  /** The rounds of skill reads the replay answered before the step, or null when it failed. */
+  skillRounds: z.int().nonnegative().nullable(),
+  /** The step's content, or null when the replay failed. */
+  reply: z.array(z.looseObject({ type: z.string() })).nullable(),
+  replaySpent: z.array(SpentRecord),
+  judgeSpent: z.array(SpentRecord),
+});
+export type Run = z.infer<typeof Run>;
+
+/** The capture an arm's runs replay: its body file, below `--out`, and the two digests. */
+const CaptureNote = z.strictObject({
+  bodyFile: z.string(),
+  captureDigest: z.string().nullable(),
+  sessionDigest: z.string().nullable(),
+});
+
+/** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
+ *  `texts` are the digests of `--old` and `--new` it ran with, and `plantedLine` the line `minus`
+ *  left out in place of the case's (control only). `usd` is what its calls cost at list price. */
+export const StageResult = z.strictObject({
+  state: z.enum(["running", "counted", "unscreened"]),
+  texts: z.strictObject({ old: z.string(), new: z.string() }),
+  plantedLine: z.string().nullable(),
+  captures: z.record(z.string(), CaptureNote),
+  seeds: z.array(z.string()),
+  runs: z.array(Run),
+  usd: z.number(),
+});
+export type StageResult = z.infer<typeof StageResult>;
+
+const Judgement = z.strictObject({
+  verdict: z.enum(["pass", "fail"]).nullable(),
+  reason: z.string(),
+});
+
+/** Everything the runner keeps of one case: why it was dropped, if it was; its judge controls;
+ *  each stage it ran; and the peak resident memory at the end of its last stage. */
+export const CaseResult = z.strictObject({
+  caseId: z.string().min(1),
+  skill: z.string().min(1),
+  cut: z.string().min(1),
+  dropped: z.string().nullable(),
+  controls: z
+    .strictObject({
+      realStep: Judgement,
+      nothing: Judgement,
+      hold: z.boolean(),
+      usd: z.number(),
+    })
+    .nullable(),
+  stages: z.strictObject({
+    screen: StageResult.optional(),
+    confirm: StageResult.optional(),
+    control: StageResult.optional(),
+  }),
+  peakRssBytes: z.number().nullable(),
+});
+export type CaseResult = z.infer<typeof CaseResult>;
+
+/** The file of case `caseId`'s results under `out`. */
+export function caseResultFile(out: string, caseId: string): string {
+  return path.join(out, "cases", `${encodeURIComponent(caseId)}.json`);
+}
+
+/** A digest of the skill directory `dir`: each file's path inside it and its bytes, in path order. */
+export function textDigest(dir: string): string {
+  const hash = createHash("sha256");
+  const files = readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((file) => statSync(path.join(dir, file)).isFile())
+    .sort();
+  for (const file of files) {
+    hash
+      .update(file)
+      .update("\0")
+      .update(readFileSync(path.join(dir, file)))
+      .update("\0");
+  }
+  return hash.digest("hex").slice(0, 16);
+}
+
+/** Where the captures of `arm` are saved under `out`: one directory per arm and text. */
+export function armCaptureDir(out: string, arm: Arm): string {
+  const text = arm.skillDir === undefined ? "none" : textDigest(arm.skillDir);
+  return path.join(out, "captures", `${arm.name}-${text}`);
+}
+
+/** The chance that one count of `runs` runs that each pass with chance `p` is at least `gap` more
+ *  than another such count. */
+export function chanceAhead(runs: number, p: number, gap: number): number {
+  const chances: number[] = [];
+  let ways = 1;
+  for (let k = 0; k <= runs; k += 1) {
+    chances.push(ways * p ** k * (1 - p) ** (runs - k));
+    ways = (ways * (runs - k)) / (k + 1);
+  }
+  let sum = 0;
+  for (let x = gap; x <= runs; x += 1) {
+    for (let y = 0; y <= x - gap; y += 1) sum += (chances[x] ?? 0) * (chances[y] ?? 0);
+  }
+  return sum;
+}
+
+/** The chance that a case is called a loss when the cut's text is the old text itself, both passing
+ *  with chance `p`: flagged in the screen (FLAG_GAP more passes of SCREEN_RUNS), then a loss in the
+ *  confirm (LOSS_GAP more of FRESH_RUNS), as the spec's "Why these numbers" counts it. */
+export function falseLossChance(p: number): number {
+  return chanceAhead(SCREEN_RUNS, p, FLAG_GAP) * chanceAhead(FRESH_RUNS, p, LOSS_GAP);
+}
+
+// `behaviour`: running the stages.
+
+/** A behaviour command's cases and where it writes. */
+interface Behaviour {
+  readonly io: CliIo;
+  readonly command: string;
+  readonly out: string;
+  readonly casesFile: string;
+  readonly cases: readonly Case[];
+}
+
+/** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
+ *  send through it, each logged. */
+interface Runner extends Behaviour {
+  readonly dirs: ArmDirs;
+  readonly texts: { readonly old: string; readonly new: string };
+  readonly scratch: string;
+  readonly gateway: Gateway;
+  readonly replays: Gateway;
+  readonly judge: Gateway;
+  capture(c: Case, arm: Arm): Promise<Capture>;
+  readonly afterCase: string | undefined;
+  readonly afterCaseFailures: string[];
+}
+
+/** Writes one line of the command's progress. */
+function say(b: Behaviour, line: string): void {
+  b.io.out(`${b.command}: ${line}\n`);
+}
+
+/** Case `caseId`'s results under `b.out`, or undefined when it has none. */
+function readResult(b: Behaviour, caseId: string): CaseResult | undefined {
+  const file = caseResultFile(b.out, caseId);
+  if (!existsSync(file)) return undefined;
+  const parsed = CaseResult.safeParse(readJson(file, "the case result"));
+  if (!parsed.success) {
+    throw new Refused(`${file} is not a case result: ${issueText(parsed.error)}`);
+  }
+  return parsed.data;
+}
+
+/** The results of each case of `b` that has some, by case id. */
+function readResults(b: Behaviour): Map<string, CaseResult> {
+  const results = new Map<string, CaseResult>();
+  for (const c of b.cases) {
+    const result = readResult(b, c.id);
+    if (result !== undefined) results.set(c.id, result);
+  }
+  return results;
+}
+
+/** Writes `result` whole. Returns its file. */
+function writeResult(b: Behaviour, result: CaseResult): string {
+  const file = caseResultFile(b.out, result.caseId);
+  writeWhole(file, json(result));
+  return file;
+}
+
+/** The run records of `results`, every stage's, as score.ts reads them. */
+function runRecords(results: Iterable<CaseResult>): RunRecord[] {
+  const records: RunRecord[] = [];
+  for (const result of results) {
+    for (const stage of Stage.options) {
+      for (const { caseId, arm, verdict, reason } of result.stages[stage]?.runs ?? []) {
+        records.push({ caseId, arm, stage, verdict, reason });
+      }
+    }
+  }
+  return records;
+}
+
+/** Why the screen of `b`'s skill is not finished, or undefined when it is: each case is dropped
+ *  or has its screen counted or unscreened, or screening stopped before it at the case cap. */
+function screenUnfinished(
+  b: Behaviour,
+  results: ReadonlyMap<string, CaseResult>,
+  score: SkillScore
+): string | undefined {
+  for (const c of b.cases) {
+    const result = results.get(c.id);
+    if (result !== undefined && result.dropped !== null) continue;
+    const state = result?.stages.screen?.state;
+    if (state === "counted" || state === "unscreened") continue;
+    if (result === undefined && screeningDone(score)) continue;
+    return `case ${c.id} is not screened yet`;
+  }
+  return undefined;
+}
+
+/** The results of `b`'s cases and the skill's score, once its screen is finished. Throws a refusal
+ *  before that. */
+function screened(b: Behaviour): { results: Map<string, CaseResult>; score: SkillScore } {
+  const results = readResults(b);
+  const score = scoreSkill(runRecords(results.values()));
+  const unfinished = screenUnfinished(b, results, score);
+  if (unfinished !== undefined) {
+    throw new Refused(`the screen is not finished: ${unfinished}; run behaviour screen first`);
+  }
+  return { results, score };
+}
+
+/** Why a skill whose screen is finished can get no verdict, whatever its confirm runs show, or
+ *  undefined: too few informative cases, or a control whose runs are made and are no loss. */
+function noVerdict(score: SkillScore): string | undefined {
+  if (score.informative < MIN_INFORMATIVE_CASES) {
+    return `fewer than ${MIN_INFORMATIVE_CASES} informative cases: ${score.informative}`;
+  }
+  const control = score.control;
+  if (control?.state === "unscreened") return "control not a loss: its runs are unscreened";
+  if (control?.state === "counted" && !isControlLoss(control.passes)) return "control not a loss";
+  return undefined;
+}
+
+/** The provider and the model id of a case's model (`anthropic/<id>`, or `<id>` alone). */
+function modelOf(model: string): { provider: string; id: string } {
+  const slash = model.indexOf("/");
+  return slash < 0
+    ? { provider: "anthropic", id: model }
+    : { provider: model.slice(0, slash), id: model.slice(slash + 1) };
+}
+
+/** A fresh result of case `c`. */
+function newResult(c: Case): CaseResult {
+  return {
+    caseId: c.id,
+    skill: c.skill,
+    cut: c.cut,
+    dropped: null,
+    controls: null,
+    stages: {},
+    peakRssBytes: null,
+  };
+}
+
+/** Refuses a stage of case `caseId` that was run with other skill texts or another planted line
+ *  than this run's: its runs and this run's would be of different arms. */
+function checkSameTexts(r: Runner, caseId: string, stage: Stage, existing: StageResult): void {
+  const plantedLine = stage === "control" ? (r.dirs.plantedLine ?? null) : null;
+  if (
+    existing.texts.old === r.texts.old &&
+    existing.texts.new === r.texts.new &&
+    existing.plantedLine === plantedLine
+  ) {
+    return;
+  }
+  throw new Refused(
+    `case ${caseId}'s ${stage} runs in ${caseResultFile(r.out, caseId)} were made with other skill texts (old ${existing.texts.old}, new ${existing.texts.new}, planted line ${JSON.stringify(existing.plantedLine)}) than this run's (old ${r.texts.old}, new ${r.texts.new}, planted line ${JSON.stringify(plantedLine)}): use the same --old, --new and --planted-line, or another --out`
+  );
+}
+
+/** Whether case `result`'s `stage` is complete, refusing one made with other texts. */
+function stageDone(r: Runner, result: CaseResult | undefined, stage: Stage): boolean {
+  const existing = result?.stages[stage];
+  if (result === undefined || existing === undefined) return false;
+  checkSameTexts(r, result.caseId, stage, existing);
+  return existing.state !== "running";
+}
+
+/** The judge controls of case `c`, kept in `result`, which is dropped when they do not hold. */
+async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise<CaseResult> {
+  const before = r.gateway.spend().usd;
+  const controls = await judgeControls(c, r.judge);
+  const judged = (j: Judged) => ({ verdict: j.verdict, reason: j.reason });
+  const next: CaseResult = {
+    ...result,
+    controls: {
+      realStep: judged(controls.realStep),
+      nothing: judged(controls.nothing),
+      hold: controls.hold,
+      usd: r.gateway.spend().usd - before,
+    },
+  };
+  if (controls.hold) return next;
+  return {
+    ...next,
+    dropped: `the judge controls do not hold: the real step is judged ${controls.realStep.verdict ?? "not at all"} (pass wanted), and the reply "${NOTHING_REPLY}" ${controls.nothing.verdict ?? "not at all"} (fail wanted)`,
+  };
+}
+
+/** Round `round` of a stage: `toStart` replays of each arm, all at once (the gateway bounds the
+ *  calls in flight), then every reply judged blind under `seed`. A replay that fails is a run with
+ *  no verdict; one the budget refused, or whose judgement the budget refused, is no run. */
+async function runRound(
+  r: Runner,
+  c: Case,
+  stage: Stage,
+  arms: ReadonlyMap<ArmName, { arm: Arm; capture: Capture }>,
+  toStart: Partial<Record<ArmName, number>>,
+  made: readonly Run[],
+  round: number,
+  seed: string
+): Promise<{ runs: Run[]; budgetSpent: boolean }> {
+  const replayed = await Promise.all(
+    [...arms].map(async ([name, { arm, capture }]) => {
+      const n = toStart[name] ?? 0;
+      const results =
+        n === 0
+          ? []
+          : await replay(capture.body, arm, r.replays, n, {
+              headers: capture.record.requestHeaders,
+            });
+      return { name, results };
+    })
+  );
+  // Each reply is judged under its arm and its place among its arm's replays of this round.
+  const replies: ArmReply[] = replayed.flatMap(({ name, results }) =>
+    results.flatMap((result, place) =>
+      result.status === "fulfilled"
+        ? [{ arm: name, run: place, content: result.value.step.message.content }]
+        : []
+    )
+  );
+  const judged = replies.length === 0 ? [] : (await judgeBlind(c, replies, r.judge, seed)).judged;
+  const judgements = new Map(judged.map((j) => [`${j.arm}:${j.run}`, j]));
+  let budgetSpent = false;
+  const runs: Run[] = [];
+  for (const { name, results } of replayed) {
+    let run = made.filter((each) => each.arm === name).length;
+    for (const [place, result] of results.entries()) {
+      const base = { caseId: c.id, arm: name, stage, round };
+      if (result.status === "rejected") {
+        if (result.reason instanceof BudgetSpent) {
+          budgetSpent = true;
+          continue;
+        }
+        run += 1;
+        runs.push({
+          ...base,
+          run,
+          verdict: null,
+          reason: `the replay failed: ${messageFor(result.reason)}`,
+          id: null,
+          skillRounds: null,
+          reply: null,
+          replaySpent: [],
+          judgeSpent: [],
+        });
+        continue;
+      }
+      const judgement = judgements.get(`${name}:${place}`);
+      if (judgement === undefined || judgement.budgetRefused) {
+        budgetSpent = true;
+        continue;
+      }
+      const step: Replayed = result.value;
+      run += 1;
+      runs.push({
+        ...base,
+        run,
+        verdict: judgement.verdict,
+        reason: judgement.reason,
+        id: judgement.id,
+        skillRounds: step.rounds,
+        reply: step.step.message.content,
+        replaySpent: step.usage,
+        judgeSpent: [...judgement.spent],
+      });
+    }
+  }
+  return { runs, budgetSpent };
+}
+
+/**
+ * Runs `stage` of case `c` until score.ts's `stageOutcome` says its runs are counted or
+ * unscreened, round by round, from the runs `result` holds already. Each round's runs are saved
+ * when it ends. Throws Stopped, after saving, when the budget refused a call.
+ */
+async function runStage(r: Runner, c: Case, stage: Stage, result: CaseResult): Promise<CaseResult> {
+  const existing = result.stages[stage];
+  if (existing !== undefined) checkSameTexts(r, c.id, stage, existing);
+  let state: StageResult = existing ?? {
+    state: "running",
+    texts: r.texts,
+    plantedLine: stage === "control" ? (r.dirs.plantedLine ?? null) : null,
+    captures: {},
+    seeds: [],
+    runs: [],
+    usd: 0,
+  };
+  let spentAt = r.gateway.spend().usd;
+  let current = result;
+  const save = (next: StageResult): string => {
+    const now = r.gateway.spend().usd;
+    state = { ...next, usd: next.usd + now - spentAt };
+    spentAt = now;
+    current = { ...current, stages: { ...current.stages, [stage]: state } };
+    return writeResult(r, current);
+  };
+
+  const scratch = path.join(
+    r.scratch,
+    "arms",
+    createHash("sha256").update(c.id).digest("hex").slice(0, 16)
+  );
+  const arms = new Map<ArmName, { arm: Arm; capture: Capture }>();
+  const captures = { ...state.captures };
+  for (const name of STAGE_ARMS[stage]) {
+    const arm = buildArm(c, name, r.dirs, scratch);
+    const capture = await r.capture(c, arm);
+    arms.set(name, { arm, capture });
+    captures[name] = {
+      bodyFile: path.relative(r.out, capture.bodyFile),
+      captureDigest: capture.record.captureDigest ?? null,
+      sessionDigest: c.sessionDigest,
+    };
+  }
+  save({ ...state, captures });
+
+  for (;;) {
+    const outcome = stageOutcome(state.runs, c.id, stage);
+    if (outcome.state !== "running") {
+      save({ ...state, state: outcome.state });
+      return current;
+    }
+    const seed = newSeed();
+    const round = await runRound(
+      r,
+      c,
+      stage,
+      arms,
+      outcome.toStart,
+      state.runs,
+      state.seeds.length + 1,
+      seed
+    );
+    const file = save({
+      ...state,
+      seeds: [...state.seeds, seed],
+      runs: [...state.runs, ...round.runs],
+    });
+    if (round.budgetSpent) {
+      throw new Stopped(
+        `the budget is spent: the replies so far cost $${r.gateway.spend().usd.toFixed(4)} at list price, so no new model call starts; case ${c.id}'s ${stage} runs so far are saved in ${file}`
+      );
+    }
+  }
+}
+
+/** Ends case `result`'s stage: records the peak memory, writes the result, runs `--after-case`,
+ *  and stops the run when the peak is above MEMORY_LIMIT_BYTES. */
+async function finishCase(r: Runner, result: CaseResult, stage: Stage): Promise<void> {
+  const peak = Math.max(r.io.peakRssBytes(), result.peakRssBytes ?? 0);
+  const file = writeResult(r, { ...result, peakRssBytes: peak });
+  const what = result.dropped === null ? stageLine(result, stage) : `dropped: ${result.dropped}`;
+  say(r, `case ${result.caseId}: ${what}; peak memory ${mib(peak)} MiB; written to ${file}`);
+  if (r.afterCase !== undefined) {
+    const child = Bun.spawn(["sh", "-c", `${r.afterCase} "$1"`, "after-case", file], {
+      stdin: "ignore",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const code = await child.exited;
+    if (code !== 0) {
+      r.io.err(`${r.command}: the --after-case command exited ${code} for ${file}`);
+      r.afterCaseFailures.push(file);
+    }
+  }
+  if (peak > MEMORY_LIMIT_BYTES) {
+    throw new Stopped(
+      `the runner's peak resident memory, ${mib(peak)} MiB, is above 1 GiB, so the run stops after case ${result.caseId}, whose results are written to ${file}`
+    );
+  }
+}
+
+/** `behaviour screen`. */
+async function screenCommand(r: Runner): Promise<void> {
+  say(
+    r,
+    `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; old text ${r.texts.old}, new text ${r.texts.new}`
+  );
+  for (const c of r.cases) {
+    let result = readResult(r, c.id);
+    if (result !== undefined && result.dropped !== null) {
+      say(r, `case ${c.id}: dropped before, skipped: ${result.dropped}`);
+      continue;
+    }
+    if (stageDone(r, result, "screen")) {
+      say(r, `case ${c.id}: screened before, skipped`);
+      continue;
+    }
+    if (result === undefined) {
+      const score = scoreSkill(runRecords(readResults(r).values()));
+      if (screeningDone(score)) {
+        say(
+          r,
+          `screening stops before case ${c.id}: ${score.informative} informative and ${score.screened} screened cases (it stops at ${MIN_INFORMATIVE_CASES} informative or ${MAX_SCREENED_CASES} screened)`
+        );
+        return;
+      }
+      result = newResult(c);
+      if (modelOf(c.model).provider !== "anthropic") {
+        const dropped = `its model ${c.model} is not served on the gateway's Anthropic Messages route`;
+        await finishCase(r, { ...result, dropped }, "screen");
+        continue;
+      }
+    }
+    if (result.controls === null) {
+      result = await judgeTheControls(r, c, result);
+      if (result.dropped !== null) {
+        await finishCase(r, result, "screen");
+        continue;
+      }
+      writeResult(r, result);
+    }
+    await finishCase(r, await runStage(r, c, "screen", result), "screen");
+  }
+  say(r, "every case of the file is screened");
+}
+
+/** `behaviour confirm`. */
+async function confirmCommand(r: Runner): Promise<void> {
+  const { results, score } = screened(r);
+  const why = noVerdict(score);
+  if (why !== undefined) {
+    say(r, `no confirm runs: the skill gets no verdict: ${why}`);
+    return;
+  }
+  const flagged = score.cases.filter((each) => each.flagged).map((each) => each.caseId);
+  say(r, `${flagged.length} flagged cases${flagged.length === 0 ? "" : `: ${flagged.join(", ")}`}`);
+  for (const id of flagged) {
+    const c = r.cases.find((each) => each.id === id);
+    const result = results.get(id);
+    if (c === undefined || result === undefined) throw new Error(`no case ${id} in ${r.casesFile}`);
+    if (stageDone(r, result, "confirm")) {
+      say(r, `case ${id}: confirmed before, skipped`);
+      continue;
+    }
+    await finishCase(r, await runStage(r, c, "confirm", result), "confirm");
+  }
+}
+
+/** `behaviour control`. */
+async function controlStageCommand(r: Runner): Promise<void> {
+  const { results, score } = screened(r);
+  if (score.informative < MIN_INFORMATIVE_CASES) {
+    say(
+      r,
+      `no control runs: the skill gets no verdict: fewer than ${MIN_INFORMATIVE_CASES} informative cases: ${score.informative}`
+    );
+    return;
+  }
+  const id = score.controlCase;
+  const c = r.cases.find((each) => each.id === id);
+  const result = id === undefined ? undefined : results.get(id);
+  if (c === undefined || result === undefined) throw new Error(`no control case ${id}`);
+  const planted = r.dirs.plantedLine;
+  say(
+    r,
+    `the control case is ${c.id}; minus leaves out ${planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`}`
+  );
+  if (stageDone(r, result, "control")) {
+    say(r, `case ${c.id}: control runs made before, skipped`);
+    return;
+  }
+  await finishCase(r, await runStage(r, c, "control", result), "control");
+}
+
+// `behaviour report`.
+
+/** What a stage's counted passes say. */
+function stageVerdict(stage: Stage, passes: Record<ArmName, number>): string {
+  switch (stage) {
+    case "screen":
+      if (!isInformative(passes)) return "not informative";
+      return isFlagged(passes) ? "informative, flagged" : "informative, not flagged";
+    case "confirm":
+      return isLoss(passes) ? "a loss" : "no loss";
+    case "control":
+      return isControlLoss(passes) ? "a control loss" : "not a control loss";
+  }
+}
+
+/** Case `result`'s `stage` as one line: each arm's passes and what they say. */
+function stageLine(result: CaseResult, stage: Stage): string {
+  const state = result.stages[stage];
+  if (state === undefined) return `${stage}: not run`;
+  const outcome = stageOutcome(state.runs, result.caseId, stage);
+  const unjudged = state.runs.filter((run) => run.verdict === null).length;
+  const extra = unjudged === 0 ? "" : ` (${unjudged} runs with no verdict, run again)`;
+  switch (outcome.state) {
+    case "counted": {
+      const passes = Object.entries(outcome.passes)
+        .map(([arm, count]) => `${arm} ${count}/${STAGE_RUNS[stage]}`)
+        .join(", ");
+      return `${stage}: ${passes}: ${stageVerdict(stage, outcome.passes)}${extra}`;
+    }
+    case "unscreened":
+      return `${stage}: unscreened: an arm lacks its ${STAGE_RUNS[stage]} judged runs after ${MAX_EXTRA_RUNS} extra runs${extra}`;
+    case "running": {
+      const toStart = Object.entries(outcome.toStart)
+        .map(([arm, count]) => `${arm} ${count}`)
+        .join(", ");
+      return `${stage}: not finished, still to start: ${toStart}`;
+    }
+  }
+}
+
+/** The skill's verdict as one line: the verdict and its reason, or what it waits for. */
+function verdictLine(
+  b: Behaviour,
+  results: ReadonlyMap<string, CaseResult>,
+  score: SkillScore
+): string {
+  const unfinished = screenUnfinished(b, results, score);
+  if (unfinished !== undefined) return `not yet: ${unfinished} (behaviour screen)`;
+  const outcome = score.outcome;
+  if (outcome === undefined) {
+    return score.control?.state === "running"
+      ? "not yet: the control runs are not all made (behaviour control)"
+      : "not yet: the confirm runs of a flagged case are not all made (behaviour confirm)";
+  }
+  if (outcome.verdict === null) return `none: ${outcome.reason}`;
+  const flagged = score.cases.filter((each) => each.flagged).length;
+  const control = `the planted-loss control (case ${score.controlCase}) is a loss`;
+  if (outcome.verdict === "keeps") {
+    return `keeps: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}`;
+  }
+  const losses = score.cases.filter((each) => each.loss).map((each) => each.caseId);
+  return `loss: in ${losses.join(", ")} the cut's text passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than the old text, and ${control}`;
+}
+
+/** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures. */
+function reportCommand(b: Behaviour): void {
+  const results = readResults(b);
+  const score = scoreSkill(runRecords(results.values()));
+  const lines = [`skill ${b.cases[0]?.skill}: ${b.cases.length} cases in ${b.casesFile}`];
+  for (const c of b.cases) {
+    const result = results.get(c.id);
+    let line = "not run";
+    if (result !== undefined && result.dropped !== null) line = `dropped: ${result.dropped}`;
+    else if (result !== undefined) {
+      line = Stage.options
+        .filter((stage) => result.stages[stage] !== undefined)
+        .map((stage) => stageLine(result, stage))
+        .join("; ");
+    }
+    lines.push(`case ${c.id}: ${line}`);
+  }
+
+  const dropped = [...results.values()].filter((result) => result.dropped !== null);
+  const byControls = dropped.filter((result) => result.controls !== null).length;
+  const unscreened = score.cases.filter((each) => each.screen.state === "unscreened").length;
+  const flagged = score.cases.filter((each) => each.flagged).length;
+  const losses = score.cases.filter((each) => each.loss).length;
+  lines.push(
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${dropped.length - byControls} for their model), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
+  );
+  lines.push(
+    score.controlCase === undefined
+      ? "control case: none, since no case is informative"
+      : `control case: ${score.controlCase}`
+  );
+  lines.push(`verdict: ${verdictLine(b, results, score)}`);
+
+  const chances = score.cases.flatMap((each) =>
+    each.informative && each.screen.state === "counted"
+      ? [{ id: each.caseId, chance: falseLossChance(each.screen.passes.old / SCREEN_RUNS) }]
+      : []
+  );
+  const rate = 1 - chances.reduce((none, { chance }) => none * (1 - chance), 1);
+  const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
+  lines.push(
+    `false-loss rate at the cases run: ${percent(rate)}, the chance that the rules call a loss in one of the ${chances.length} informative cases when the cut's text is the old text, each case passing at its old screen rate${chances.length === 0 ? "" : ` (${chances.map(({ id, chance }) => `${id} ${percent(chance)}`).join(", ")})`}`
+  );
+
+  const notes = new Map<string, z.infer<typeof CaptureNote>>();
+  let controlsUsd = 0;
+  const stageUsd: Record<Stage, number> = { screen: 0, confirm: 0, control: 0 };
+  let peak = 0;
+  for (const result of results.values()) {
+    controlsUsd += result.controls?.usd ?? 0;
+    peak = Math.max(peak, result.peakRssBytes ?? 0);
+    for (const stage of Stage.options) {
+      const state = result.stages[stage];
+      stageUsd[stage] += state?.usd ?? 0;
+      for (const note of Object.values(state?.captures ?? {})) notes.set(note.bodyFile, note);
+    }
+  }
+  const differ = [...notes.values()].filter((note) => note.captureDigest !== note.sessionDigest);
+  lines.push(
+    `digests: ${differ.length} of ${notes.size} captures' system-prompt digests differ from their session's`
+  );
+  const total = controlsUsd + stageUsd.screen + stageUsd.confirm + stageUsd.control;
+  lines.push(
+    `spend at list price: $${total.toFixed(4)} (judge controls $${controlsUsd.toFixed(4)}, screen $${stageUsd.screen.toFixed(4)}, confirm $${stageUsd.confirm.toFixed(4)}, control $${stageUsd.control.toFixed(4)})`
+  );
+  lines.push(`peak resident memory: ${mib(peak)} MiB, the most at the end of a case`);
+  b.io.out(`${lines.join("\n")}\n`);
+}
+
+// `behaviour`: the command.
+
+const BEHAVIOUR_COMMANDS = ["screen", "confirm", "control", "report"] as const;
+
+const BEHAVIOUR_USAGE = [
+  "usage: cli.ts behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>",
+  "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
+  "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
+  "  report needs only --config, --out, --old and --cases",
+].join("\n");
+
+/** `skill-cuts behaviour <command>`. */
+async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<number> {
+  const [command, ...rest] = argv;
+  if (!(BEHAVIOUR_COMMANDS as readonly (string | undefined)[]).includes(command)) {
+    throw new Refused(`behaviour ${command ?? ""}: no such command. ${BEHAVIOUR_USAGE}`);
+  }
+  const values = parse(
+    rest,
+    {
+      ...GATEWAY_OPTIONS,
+      out: { type: "string" },
+      old: { type: "string" },
+      new: { type: "string" },
+      cases: { type: "string" },
+      "planted-line": { type: "string" },
+      "after-case": { type: "string" },
+      models: { type: "string" },
+      omp: { type: "string" },
+      repos: { type: "string" },
+      "hint-model": { type: "string" },
+      "omp-config": { type: "string", multiple: true },
+      "cache-dir": { type: "string" },
+      scratch: { type: "string" },
+    },
+    BEHAVIOUR_USAGE
+  );
+  const report = command === "report";
+  const given = required(
+    values,
+    report
+      ? ["config", "out", "old", "cases"]
+      : ["config", "key-file", "out", "old", "new", "cases"],
+    BEHAVIOUR_USAGE
+  );
+  const config = loadConfig(given.config);
+  let cases: Case[];
+  try {
+    cases = loadCases(given.cases, given.old);
+  } catch (error) {
+    throw new Refused(messageFor(error));
+  }
+  if (cases.length === 0) throw new Refused(`${given.cases} holds no case`);
+  const behaviour: Behaviour = {
+    io,
+    command: `behaviour ${command}`,
+    out: given.out,
+    casesFile: given.cases,
+    cases,
+  };
+  if (report) {
+    reportCommand(behaviour);
+    return EXIT.ok;
+  }
+
+  if (!statSync(given.new, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Refused(`--new ${given.new} is not a directory`);
+  }
+  const unpriced = [
+    ...new Set(
+      cases
+        .map((c) => modelOf(c.model))
+        .filter((model) => model.provider === "anthropic" && PRICES[model.id] === undefined)
+        .map((model) => model.id)
+    ),
+  ];
+  if (unpriced.length > 0) {
+    throw new Refused(
+      `gateway.ts has no list price for the cases' models ${unpriced.join(", ")}, so their dollars could not be counted: add each to PRICES from ${PRICE_SOURCE}`
+    );
+  }
+  const { gateway } = openGateway({
+    config,
+    keyFile: given["key-file"],
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
+  });
+  const log = values["request-log"] ?? path.join(given.out, "requests.jsonl");
+  const scratch = values.scratch ?? path.join(tmpdir(), "skill-cuts-scratch");
+  const plantedLine = values["planted-line"];
+  const source = values.repos === undefined ? ghSource() : localSource(values.repos);
+  const hints = gatewayHints(loggedGateway(gateway, log, "hint"));
+  const runner: Runner = {
+    ...behaviour,
+    dirs: {
+      old: given.old,
+      new: given.new,
+      ...(plantedLine === undefined ? {} : { plantedLine }),
+    },
+    texts: { old: textDigest(given.old), new: textDigest(given.new) },
+    scratch,
+    gateway,
+    replays: loggedGateway(gateway, log, "replay"),
+    judge: loggedGateway(gateway, log, "judge"),
+    capture: (c, arm) => {
+      const outDir = armCaptureDir(given.out, arm);
+      const files = capturePaths(outDir, c.id, arm.name);
+      if (values.models === undefined && !(existsSync(files.body) && existsSync(files.record))) {
+        throw new Error(
+          `case ${c.id} has no capture of its ${arm.name} arm in ${outDir}, and no --models is given to make one`
+        );
+      }
+      return captureBody(c, arm, {
+        omp: values.omp ?? "omp",
+        outDir,
+        scratchDir: path.join(scratch, "captures"),
+        cacheDir: values["cache-dir"] ?? path.join(tmpdir(), "skill-cuts-cache"),
+        source,
+        models: values.models ?? "",
+        hints,
+        ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
+        configFiles: values["omp-config"] ?? [],
+      });
+    },
+    afterCase: values["after-case"],
+    afterCaseFailures: [],
+  };
+  if (command === "screen") await screenCommand(runner);
+  else if (command === "confirm") await confirmCommand(runner);
+  else await controlStageCommand(runner);
+  say(
+    runner,
+    `done; the calls of this run cost $${gateway.spend().usd.toFixed(4)} at list price; request log ${log}`
+  );
+  if (runner.afterCaseFailures.length > 0) {
+    io.err(
+      `${runner.command}: the --after-case command failed for ${runner.afterCaseFailures.join(", ")}`
+    );
+    return EXIT.failed;
+  }
+  return EXIT.ok;
+}
+
+// The command line.
+
+const USAGE = [
+  "usage: cli.ts <command> ...",
+  "  behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file> ...",
+  "  read --prompt <name> --in <input.json> --out <answer.json> ...",
+  "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
+  "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>]",
+].join("\n");
+
+/** The command line. Returns the exit status (EXIT). */
+export async function main(argv: readonly string[], io: CliIo): Promise<number> {
+  const [command, ...rest] = argv;
+  try {
+    switch (command) {
+      case "behaviour":
+        return await behaviourCommand(rest, io);
+      case "read":
+        return await readCommand(rest, io);
+      case "control":
+        return await controlCommand(rest, io);
+      case "count-sql":
+        return countSqlMain(rest, io);
+      default:
+        throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
+    }
+  } catch (error) {
+    if (error instanceof Refused) {
+      io.err(`skill-cuts: ${error.message}`);
+      return EXIT.refused;
+    }
+    if (error instanceof Stopped || error instanceof BudgetSpent) {
+      io.err(`skill-cuts: stopped: ${error.message}`);
+      return EXIT.stopped;
+    }
+    io.err(`skill-cuts: ${command}: ${messageFor(error)}`);
+    return EXIT.failed;
+  }
+}
+
+if (import.meta.main) {
+  process.exit(await main(Bun.argv.slice(2), processIo()));
+}
