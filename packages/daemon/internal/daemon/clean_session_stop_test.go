@@ -476,7 +476,8 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T
 // read and the delete share one budget, and nothing else ends them, since the daemon's stop does
 // not cut a stop in flight short (sessionStopsInFlight). Here the listener holds the read past
 // that budget. A read that runs the budget out sends no delete, and it is the listener's failure
-// to answer, logged at WARN.
+// to answer, logged at WARN. The stop ran under exactly its budget, held from both sides with no
+// margin (wantStopRanItsBudget).
 func TestCleanSessionStopEndsAtItsOwnBudgetWhenTheListenerNeverAnswers(t *testing.T) {
 	const budget = 300 * time.Millisecond
 	listener := &listenerRecorder{heldRead: make(chan struct{}), arrived: make(chan struct{})}
@@ -486,16 +487,14 @@ func TestCleanSessionStopEndsAtItsOwnBudgetWhenTheListenerNeverAnswers(t *testin
 
 	began := time.Now()
 	stop.send("ses_hung", time.Now())
-	took := time.Since(began)
+	returned := time.Now()
 
 	select {
 	case <-listener.arrived:
 	default:
 		t.Fatal("the stop's read never reached the listener")
 	}
-	if took < budget || took > budget+3*time.Second {
-		t.Fatalf("the stop ended %s after it began, want it ended by its own budget of %s", took, budget)
-	}
+	wantStopRanItsBudget(t, logged.String(), began, returned, budget, "read the listener never answered")
 	if listener.read.requests != 1 || listener.delete.requests != 0 {
 		t.Fatalf("the listener was asked %d reads and %d deletes, want the one read and no delete after a read nobody answered",
 			listener.read.requests, listener.delete.requests)
@@ -738,19 +737,11 @@ func TestCleanSessionStopContextEndsBeforeDefaultTransportTLSHandshake(t *testin
 
 // awaitStopOnItsDeadline waits for the clean stop sent at began, whose return is ended, while the
 // step it names (what) is stalled, and requires that it ended on its own context's deadline after
-// exactly its budget, CleanSessionStopBudget. From below: it ran that whole budget, which a correct
-// stop always does, since its context starts after began, and it logged that context's deadline
-// rather than a limit of the transport. From above, with no margin: the stop's line names the
-// moment its budget began and its context's deadline (sessionStop.send), and the two must be
-// exactly the budget apart, the budget must have begun after began, and the stop must have
-// returned no earlier than that deadline. Its end, measured from the moment its budget began, is
-// then the budget plus the time its request took to return after the deadline, which the test
-// measures and no fixed margin stands in for; a stop given any longer context, or one with none,
-// fails here by name, whatever the load. The wait is bounded by the test binary's deadline
-// (testwait.Bounded), not by the budget: how long after its deadline a stop returns on a loaded
-// machine is no part of what this checks, and a stop that never returns still fails, by name, at
-// that bound. logged is read only once the stop has returned, so the stop's goroutine has written
-// all it will.
+// exactly its budget, CleanSessionStopBudget (wantStopRanItsBudget). The wait is bounded by a
+// minute, or by the test binary's deadline less a second where that is nearer (testwait.Bounded),
+// not by the budget: how long after its deadline a stop returns on a loaded machine is no part of
+// what this checks, and a stop that never returns still fails, by name, at that bound. logged is
+// read only once the stop has returned, so the stop's goroutine has written all it will.
 func awaitStopOnItsDeadline(t *testing.T, ended <-chan struct{}, began time.Time, logged *bytes.Buffer, what string) {
 	t.Helper()
 	bound := testwait.Bounded(t, time.Minute, time.Second)
@@ -759,27 +750,42 @@ func awaitStopOnItsDeadline(t *testing.T, ended <-chan struct{}, began time.Time
 	case <-time.After(bound):
 		t.Fatalf("the clean stop with its %s stalled had not returned %s after it was sent", what, bound)
 	}
-	returned := time.Now()
+	wantStopRanItsBudget(t, logged.String(), began, time.Now(), CleanSessionStopBudget, what+" stalled")
+}
+
+// wantStopRanItsBudget requires that the clean stop sent at began, which had returned at returned
+// and logged logged, ended on its own context's deadline after exactly budget. From below: it ran
+// that whole budget, which a correct stop always does, since its context starts after began, and it
+// logged that context's deadline rather than a limit of the transport. From above, with no margin:
+// the stop's line names the moment its budget began and its context's deadline
+// (sessionStop.send), and the two must be exactly the budget apart, the budget must have begun
+// after began, and the stop must have returned no earlier than that deadline. Its end, measured
+// from the moment its budget began, is then the budget plus the time its request took to return
+// after the deadline, which the test measures and no fixed margin stands in for; a stop given any
+// longer context, or one with none, fails here by name, whatever the load. what names the stop's
+// stalled step in the failure.
+func wantStopRanItsBudget(t *testing.T, logged string, began, returned time.Time, budget time.Duration, what string) {
+	t.Helper()
 	took := returned.Sub(began)
-	if took < CleanSessionStopBudget {
-		t.Fatalf("the clean stop with its %s stalled ended after %s and logged %q, before its budget, CleanSessionStopBudget (%s): something other than its context's deadline ended it",
-			what, took, logged.String(), CleanSessionStopBudget)
+	if took < budget {
+		t.Fatalf("the clean stop with its %s ended after %s and logged %q, before its budget (%s): something other than its context's deadline ended it",
+			what, took, logged, budget)
 	}
-	if !strings.Contains(logged.String(), context.DeadlineExceeded.Error()) {
-		t.Fatalf("the clean stop with its %s stalled ended after %s and logged %q, want it ended at its context's deadline, CleanSessionStopBudget (%s), before any limit of the transport",
-			what, took, logged.String(), CleanSessionStopBudget)
+	if !strings.Contains(logged, context.DeadlineExceeded.Error()) {
+		t.Fatalf("the clean stop with its %s ended after %s and logged %q, want it ended at its context's deadline, its budget (%s), before any limit of the transport",
+			what, took, logged, budget)
 	}
-	fields := stopBudgetLine.FindStringSubmatch(logged.String())
+	fields := stopBudgetLine.FindStringSubmatch(logged)
 	if fields == nil {
-		t.Fatalf("the clean stop with its %s stalled logged %q, want its line to name budgetBegan and deadline", what, logged.String())
+		t.Fatalf("the clean stop with its %s logged %q, want its line to name budgetBegan and deadline", what, logged)
 	}
 	budgetBegan, _ := strconv.ParseInt(fields[1], 10, 64)
 	deadline, _ := strconv.ParseInt(fields[2], 10, 64)
 	span := time.Duration(deadline-budgetBegan) * time.Millisecond
 	lag := time.Duration(returned.UnixMilli()-deadline) * time.Millisecond
-	if span != CleanSessionStopBudget || budgetBegan < began.UnixMilli() || lag < 0 {
-		t.Fatalf("the clean stop with its %s stalled ran under a context of %s from its budget's start, %s after it was sent, and returned %s after that context's deadline, %s after it was sent; want a context of exactly its budget, CleanSessionStopBudget (%s), begun after it was sent, and a return no earlier than its deadline; logged %q",
-			what, span, time.Duration(budgetBegan-began.UnixMilli())*time.Millisecond, lag, took, CleanSessionStopBudget, logged.String())
+	if span != budget || budgetBegan < began.UnixMilli() || lag < 0 {
+		t.Fatalf("the clean stop with its %s ran under a context of %s from its budget's start, %s after it was sent, and returned %s after that context's deadline, %s after it was sent; want a context of exactly its budget (%s), begun after it was sent, and a return no earlier than its deadline; logged %q",
+			what, span, time.Duration(budgetBegan-began.UnixMilli())*time.Millisecond, lag, took, budget, logged)
 	}
 }
 
