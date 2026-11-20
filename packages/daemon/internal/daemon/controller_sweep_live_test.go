@@ -9,7 +9,9 @@
 // reconciliation retried while the keeper launches the controller reads them, and the store holds
 // the controller's claim launching, as the supervisor stores it before the launch begins. What the
 // proof stands in for lies outside the sweep: the agent is a sleep stub (no model, Dispatch or
-// NATS), the App tokens are placeholders, and no repository is mapped.
+// NATS), the App tokens are placeholders, no repository is mapped, and GitHub is a stand-in in this
+// process (controllerSweepKindGitHub), so the runtime's reads of the leak check and its index stay
+// in this process.
 package daemon
 
 import (
@@ -153,7 +155,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 		for range listener.Events() {
 		}
 	}()
-	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, log); err != nil {
+	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, controllerSweepKindGitHub(t), log); err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
 

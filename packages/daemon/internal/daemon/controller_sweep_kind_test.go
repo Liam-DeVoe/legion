@@ -14,6 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -86,8 +88,10 @@ runtime:
 // (kubeClient), sandboxOptions over the loaded configuration, then boot's own factory
 // (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor. What
 // the proof stands in for: the agent is a sleep stub, the App tokens are placeholders
-// (outboxTokens), and no repository is mapped, so the controller's gh files name no owner.
-func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, log *slog.Logger) (runtime.Runtime, error) {
+// (outboxTokens), no repository is mapped, so the controller's gh files name no owner, and GitHub
+// is githubAPI, the caller's stand-in (controllerSweepKindGitHub), which the runtime reads the
+// shared public leak check and its index of sandbox lines under.
+func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, githubAPI string, log *slog.Logger) (runtime.Runtime, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -109,7 +113,17 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	// The proof applies no fact of a pod's volume and no memory guard kill, so the trimmer's
 	// reports and the guard's reach holders nothing filled, which drop them
 	// (volumeTrimReports.report, memoryGuardKills.killed).
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), githubAPI, &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+}
+
+// controllerSweepKindGitHub is the GitHub the proof's runtime reads under: the release stand-in of
+// the check's repository (leakguardtest.ServeReleases), which holds no index, so the runtime's read
+// of the index as it starts is answered GitHub's 404, as before the builder's first publish, and a
+// request of any other route fails the test. So no request of the proof leaves the machine. Its
+// bearer is the read lease the proof's placeholder App tokens mint (outboxTokens.ReadToken).
+func controllerSweepKindGitHub(t *testing.T) string {
+	t.Helper()
+	return leakguardtest.ServeReleases(t, leakguard.CheckSlug, leakguard.IndexRelease, "outbox-token-read").URL
 }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the
@@ -125,9 +139,12 @@ func controllerSweepKindSpec(project, bootToken, prompt string) runtime.SpawnSpe
 
 // The live proof's legion.yaml passes the daemon's loader as a `controller: daemon` deployment, the
 // runtime it configures builds through boot's factory and sandbox.New, against an API server
-// standing in for the kind cluster, and its controller launch passes the spawn-spec checks. Every
-// step is the one the driver takes before it reaches the cluster.
+// standing in for the kind cluster and a GitHub standing in for github.com
+// (controllerSweepKindGitHub), and its controller launch passes the spawn-spec checks. Every step
+// is the one the driver takes before it reaches the cluster. The GitHub stand-in is made first, so
+// it closes after the runtime's context ends.
 func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
+	github := controllerSweepKindGitHub(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })
@@ -151,7 +168,7 @@ func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controllerSweepKindRuntime(ctx, cfg, listener, st, quietLogger()); err != nil {
+	if _, err := controllerSweepKindRuntime(ctx, cfg, listener, st, github, quietLogger()); err != nil {
 		t.Fatalf("the proof's runtime: %v", err)
 	}
 	project, err := claim.ProjectToken(cfg.Project)

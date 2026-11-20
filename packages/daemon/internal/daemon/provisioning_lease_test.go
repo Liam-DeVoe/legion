@@ -72,7 +72,9 @@ func (g *provisioningGitHub) requestsTo(installation string) []provisioningToken
 }
 
 // provisioningStandIn serves installations and returns the stand-in, whose tokens is a real App
-// token manager pointed at it, the implement App id 1 and the review App id 2.
+// token manager pointed at it, the implement App id 1 and the review App id 2. The manager logs
+// nowhere (quietLogger): its warnings name grants these tests leave short on purpose, such as
+// leakCheckGrant's, and no test reads them.
 func provisioningStandIn(t *testing.T, installations ...provisioningInstallation) *provisioningGitHub {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -132,7 +134,7 @@ func provisioningStandIn(t *testing.T, installations ...provisioningInstallation
 	github.tokens = appauth.New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "1", PrivateKey: privatePEM},
 		Review:    config.GitHubApp{AppID: "2", PrivateKey: privatePEM},
-	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard, Log: quietLogger()})
 	return github
 }
 

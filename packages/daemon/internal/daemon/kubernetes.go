@@ -587,8 +587,8 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
-// root ("" is https://api.github.com), which the shared public leak check is read under
-// (leakCheckSource).
+// root ("" is https://api.github.com), which the shared public leak check and its index of sandbox
+// lines are read under (leakCheckSource, leakCheckIndexSource).
 //
 // kills is the memory guards' kill holder (memoryGuardKills).
 //
@@ -623,6 +623,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
 		// launcher names a tag with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI)
+		// The leak check's index of sandbox lines, read with the same lease as the check
+		// (leakCheckIndexSource), which the runtime reads as it starts and at each poll after it, and
+		// pushes to each pod's launcher that takes it; a daemon with no Apps has no reader.
+		opts.LeakCheckIndex = leakCheckIndexSource(apps, githubAPI)
 		// Each process an issue pod's memory guard ends reaches the daemon through the kill
 		// holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
@@ -877,11 +881,34 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 	if apps == nil {
 		return nil
 	}
-	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
-	if forgetter, ok := apps.(appauth.Forgetter); ok {
-		source.Forget = func() { forgetter.Forget(appauth.Implement, leakguard.CheckRepository.Owner()) }
+	return &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI, Forget: leakCheckForget(apps)}
+}
+
+// leakCheckIndexSource is the daemon's reader of the leak check's index of sandbox lines, which the
+// Sandbox runtime reads as it starts and at each poll after it (sandbox.Options.LeakCheckIndexPoll,
+// which the daemon leaves at its default), and pushes each new index to every pod launcher that
+// takes one (sandbox.Options.LeakCheckIndex). It reads the index's release under githubAPI, GitHub's
+// REST root ("" is https://api.github.com), with the lease the check itself is read with
+// (leakCheckToken), keeps nothing between reads (leakguard.IndexSource.Read), and drops that lease
+// where GitHub answers a read 401, as leakCheckSource does (leakCheckForget). A daemon with no
+// GitHub Apps has no reader: the answer is then the nil interface, never a nil
+// *leakguard.IndexSource inside one, which the runtime would take for a reader and poll.
+func leakCheckIndexSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckIndexReader {
+	if apps == nil {
+		return nil
 	}
-	return source
+	return &leakguard.IndexSource{Token: leakCheckToken(apps), API: githubAPI, Forget: leakCheckForget(apps)}
+}
+
+// leakCheckForget drops the lease leakCheckToken mints, the implement App's on the check's owner,
+// where apps drops an owner's leases (appauth.Forgetter), so the next mint is a new token; it is
+// nil, which forgets nothing, where apps does not.
+func leakCheckForget(apps appauth.Tokens) func() {
+	forgetter, ok := apps.(appauth.Forgetter)
+	if !ok {
+		return nil
+	}
+	return func() { forgetter.Forget(appauth.Implement, leakguard.CheckRepository.Owner()) }
 }
 
 // leakCheckToken mints the token the shared public leak check is read with: the implement App's
@@ -890,7 +917,13 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 // every repository that owner's installation holds and the reading permissions are the whole of
 // what keeps it from writing. It mints nothing else: an installation the account has not granted
 // those permissions is refused, with no wider token in its place, since the owner's own write
-// token would add only what a tarball read never uses.
+// token would add only what a read of the check or of its index never uses.
+//
+// The same lease reads the leak check's index of sandbox lines (leakCheckIndexSource): the index's
+// release by its tag, and that release's asset. GitHub's "Permissions required for GitHub Apps",
+// section 'Repository permissions for "Contents"', lists a GET of a tarball, of a release by tag
+// and of a release asset each at Contents read, with no other permission, so the reading lease
+// holds all that the check's reads and the index's reads need.
 //
 // The error's text is the cause sentence's own words after leakguard.RefusalPrefix
 // (leakguard.Source.Token): GitHub refusing the reading permissions (appauth.NarrowingRefused) is

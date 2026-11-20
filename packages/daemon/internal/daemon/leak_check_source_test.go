@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,11 +16,19 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/stream"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // leakCheckTag is the tag these tests read the check at, spelled as the worker image pins one.
@@ -362,5 +371,161 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 func TestADaemonWithNoAppsHasNoLeakCheckSource(t *testing.T) {
 	if source := leakCheckSource(nil, ""); source != nil {
 		t.Fatalf("the source with no Apps = %#v, want nil", source)
+	}
+}
+
+// publishedLeakCheckIndex is an index of sandbox lines the check's own writer wrote: the golden
+// file of leakguard's tests (leakguard's goldenIndex), which says how it was written.
+func publishedLeakCheckIndex(t *testing.T) []byte {
+	t.Helper()
+	body, err := os.ReadFile("../leakguard/testdata/sandbox-lines.idx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// The runtime the daemon's factory builds (sandboxRuntime) reads the leak check's index of sandbox
+// lines as it starts, with the token leakCheckToken mints: the stand-in GitHub sees the implement
+// App's read lease on the release read and on the asset read, and no request with another
+// credential. The lease is one mint, on the installation of the check's owner and no other, at the
+// reading permissions. The release and the asset are spelled here rather than read from leakguard's
+// constants, so a read of another release or asset fails this test. The runtime runs over a
+// Kubernetes API that holds nothing, so it launches no pod and reads no record: the factory is
+// handed no store.
+func TestTheDaemonReadsTheLeakCheckIndexWithItsOwnToken(t *testing.T) {
+	const checkInstallation, otherInstallation = "77", "78"
+	github := provisioningStandIn(t,
+		provisioningInstallation{id: checkInstallation, owner: leakguard.CheckRepository.Owner(), granted: leakCheckGrant,
+			answer: func(w http.ResponseWriter, permissions map[string]string) {
+				mintedToken(w, leakCheckLease, permissions)
+			}},
+		provisioningInstallation{id: otherInstallation, owner: "acme", granted: leakCheckGrant,
+			answer: func(w http.ResponseWriter, permissions map[string]string) {
+				mintedToken(w, "ghs_acme", permissions)
+			}},
+	)
+	releases := leakguardtest.ServeReleases(t, leakguard.CheckSlug, "leak-check-index", leakCheckLease)
+	asset := releases.Publish("sandbox-lines.idx", publishedLeakCheckIndex(t))
+	rc := sandboxRESTConfig(newIssueSandboxAPI().serve(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	refuse := func(string) (claim.Token, uint64, bool, bool, error) { return "", 0, false, false, nil }
+	listener, err := stream.Listen(ctx, "tcp://127.0.0.1:0", refuse, stream.Options{RPCTimeout: time.Second, Log: quietLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := sandbox.Options{
+		Namespace: sandboxNamespace, Project: "legion", Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
+		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), Resources: defaultReservations(t),
+		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
+		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
+		BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+		Log: quietLogger(), RepositoryCache: defaultRepositoryCache(t),
+	}
+	factory := sandboxRuntime(rc, opts, noRepositories, nil, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), releases.URL,
+		&memoryGuardKills{}, &volumeTrimReports{})
+	if _, err := factory(ctx, listener, listener.Addr(), github.tokens, nil, nil, noRepositories); err != nil {
+		t.Fatalf("the daemon's runtime: %v", err)
+	}
+
+	// The runtime reads the index at once and then at each poll, which these options leave at the
+	// runtime's default of minutes (sandbox.Options.LeakCheckIndexPoll), so its first read is the one
+	// this test sees: it ends at the asset, or at a release request GitHub refuses the credential of.
+	lease := "Bearer " + leakCheckLease
+	testwait.Eventually(t, "the runtime's read of the leak check index", func() bool {
+		asked := releases.Asked()
+		return len(asked) >= 2 || len(asked) == 1 && asked[0].Authorization != lease
+	})
+	asked := releases.Asked()
+	paths := make([]string, 0, len(asked))
+	for _, request := range asked {
+		paths = append(paths, request.Path)
+		if request.Authorization != lease {
+			t.Errorf("the request of %s carried Authorization %q, want the read lease %q", request.Path, request.Authorization, lease)
+		}
+	}
+	want := []string{"/repos/" + leakguard.CheckSlug + "/releases/tags/leak-check-index", fmt.Sprintf("/repos/%s/releases/assets/%d", leakguard.CheckSlug, asset)}
+	if !slices.Equal(paths, want) {
+		t.Fatalf("the runtime asked the stand-in GitHub for %q, want the release and then its asset, %q", paths, want)
+	}
+	if requests := github.requestsTo(checkInstallation); len(requests) != 1 || !maps.Equal(requests[0].permissions, leakCheckReadSet) {
+		t.Fatalf("token requests on the installation of the check's owner %+v, want the one read mint, at %v", requests, leakCheckReadSet)
+	}
+	if other := github.requestsTo(otherInstallation); len(other) != 0 {
+		t.Fatalf("%d token requests on another owner's installation, want none: %+v", len(other), other)
+	}
+}
+
+// A read of the leak check's index GitHub answers 401 drops the read lease the App's token manager
+// cached for the check's owner, so the next read mints a new token: two token requests, the second
+// read served. Here the 401 is GitHub no longer taking the first lease the stand-in mints. A read
+// answered 404, the release before the builder's first publish, drops nothing, and the next read is
+// made with the cached lease: one token request.
+func TestALeakCheckIndexReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
+	published := publishedLeakCheckIndex(t)
+	for _, tc := range []struct {
+		name string
+		// first is the token the stand-in mints first, and leakCheckLease every token after it;
+		// published is whether the release holds the index at the first read.
+		first     string
+		published bool
+		status    int
+		requests  int
+	}{
+		{"a read answered 401", "ghs_no_longer_taken", true, http.StatusUnauthorized, 2},
+		{"a read answered 404", leakCheckLease, false, http.StatusNotFound, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const checkInstallation = "79"
+			var mints atomic.Int32
+			github := provisioningStandIn(t,
+				provisioningInstallation{id: checkInstallation, owner: leakguard.CheckRepository.Owner(), granted: leakCheckGrant,
+					answer: func(w http.ResponseWriter, permissions map[string]string) {
+						token := leakCheckLease
+						if mints.Add(1) == 1 {
+							token = tc.first
+						}
+						mintedToken(w, token, permissions)
+					}},
+			)
+			releases := leakguardtest.ServeReleases(t, leakguard.CheckSlug, "leak-check-index", leakCheckLease)
+			publish := func() { releases.Publish("sandbox-lines.idx", published) }
+			if tc.published {
+				publish()
+			}
+			source := leakCheckIndexSource(github.tokens, releases.URL)
+
+			want := fmt.Sprintf("the daemon could not read sandbox-lines.idx of the release leak-check-index of %s: GitHub answered the read of the release with HTTP %d",
+				leakguard.CheckSlug, tc.status)
+			if _, err := source.Read(context.Background()); err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Fatalf("the first read = %v, want the sentence %q", err, want)
+			}
+			if !tc.published {
+				publish()
+			}
+			got, err := source.Read(context.Background())
+			if err != nil || !bytes.Equal(got.Body, published) {
+				t.Fatalf("the second read = %d bytes, %v; want the published index", len(got.Body), err)
+			}
+			requests := github.requestsTo(checkInstallation)
+			if len(requests) != tc.requests {
+				t.Fatalf("%d token requests on the installation of the check's owner, want %d: %+v", len(requests), tc.requests, requests)
+			}
+			for _, request := range requests {
+				if !maps.Equal(request.permissions, leakCheckReadSet) {
+					t.Fatalf("a token request asked for %v, want %v", request.permissions, leakCheckReadSet)
+				}
+			}
+		})
+	}
+}
+
+// A daemon with no GitHub Apps has no reader of the leak check's index: the nil interface, never a
+// nil *leakguard.IndexSource inside one, which the runtime would take for a reader and poll
+// (sandbox.Options.LeakCheckIndex).
+func TestADaemonWithNoAppsHasNoLeakCheckIndexSource(t *testing.T) {
+	if source := leakCheckIndexSource(nil, ""); source != nil {
+		t.Fatalf("the index source with no Apps = %#v, want nil", source)
 	}
 }
