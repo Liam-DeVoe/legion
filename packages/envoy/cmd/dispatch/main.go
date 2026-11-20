@@ -512,10 +512,22 @@ func main() {
 	})
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
+	// The background pool, which the work no request waits on reads and writes through: the
+	// boot's repair of issues' asks just below, and the background loops started further down.
+	// Taking it here opens no connection, since pgx dials none as the pool opens
+	// (store.Pool.newSeparate), so no step of the boot moves.
+	background, err := database.Pool.Background()
+	if err != nil {
+		fatal("dispatch: open the background pool for the background work", "error", err)
+	}
+	backgroundStore := &store.Store{Pool: background}
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
-	// restoreDecidedWordings, which takes the copy lock (see below).
-	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
+	// restoreDecidedWordings, which takes the copy lock (see below). It runs on the background
+	// pool, as the interval pass does: it is no request's work, so it waits for a document's lock
+	// until the holder lets go (docs.LockDocumentRoom), which on the request pool, whose every
+	// transaction carries the write lock bound, it would not (INFRA-592).
+	issueAskRepairDeps := api.Deps{Store: backgroundStore, Docs: documentService, Events: broker}
 	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
 	// The seed appends events, so it runs after restoreDecidedWordings, which takes the copy lock:
@@ -763,17 +775,12 @@ func main() {
 	}
 	// The background loops below - the embedding queue and its coverage pass, the suggestion
 	// sweep, the term-statistics refresh, the architecture importer's ticker, the Legion sampler,
-	// the delivery reconcile and intakes - read and write through the background pool, so under
-	// load a request
+	// the delivery reconcile and intakes - read and write through the background pool opened
+	// above (background, backgroundStore), so under load a request
 	// never queues behind a loop's statement for a connection, nor a loop behind the requests. The
 	// document service's own loops (the settlement resumption, the task progress and reference
 	// excerpt reconciliations) take it from the store themselves. Each leased loop still takes its
 	// lease on its reservation of the lease pool above.
-	background, err := database.Pool.Background()
-	if err != nil {
-		fatal("dispatch: open the background pool for the background loops", "error", err)
-	}
-	backgroundStore := &store.Store{Pool: background}
 
 	// The outbox runs only with NATS, so a process with NATS disabled never publishes
 	// (outboxPublisher stays nil, and /healthz reports outbox_publisher false). outboxStopped is

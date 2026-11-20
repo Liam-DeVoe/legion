@@ -206,25 +206,31 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // ConnectionsPerProcess with it.
 const SharedPoolSize = 48
 
-// RoomsPoolSize bounds the connections document loads use. Loading takes no lock and always
-// finishes, so one is enough for the pool to be deadlock-free; a few let cold rooms load
-// concurrently. Measured on the real server, eight cold rooms loading at once are no faster at
-// eight connections than at one, so this is small on purpose.
+// RoomsPoolSize bounds the connections document loads use, and the room-sync catch-up's
+// confirmation of a replaced history under the document's lock (Rooms). Loading takes no lock and
+// always finishes. The confirmation waits for a document's lock, but the catch-up lane runs one at
+// a time, so it holds at most one connection, and one more is enough for the pool to be
+// deadlock-free; a few let cold rooms load concurrently. Measured on the real server, eight cold
+// rooms loading at once are no faster at eight connections than at one, so this is small on
+// purpose.
 const RoomsPoolSize = 4
 
 // roomAppendsPoolSize bounds the connections the document rooms' browser updates are stored on
-// (RoomAppends). Only the browser batch path takes one: a room's queued browser updates are
-// stored together, in one transaction, so a room holds a connection for its batch's few round
-// trips and starts at most one batch per linger window, and a handful of connections serve many
-// rooms writing at once. Eight is twice the rooms pool and a sixth of the request pool: every
+// (RoomAppends). Two kinds of work take one. The browser batch path: a room's queued browser
+// updates are stored together, in one transaction, so a room holds a connection for its batch's
+// few round trips and starts at most one batch per linger window, and a handful of connections
+// serve many rooms writing at once. And a close for a closed issue, which writes its room's latest
+// edit source to the document's pending-settlement row once per close (persistLastActor in
+// internal/dispatch/docs). Eight is twice the rooms pool and a sixth of the request pool: every
 // connection here is one more in the process's budget against the database's limit, so it is
 // small on purpose, and a room that finds all eight held waits for another batch to commit.
 //
 // It cannot deadlock. A batch holds its connection and the document's advisory lock and takes no
 // other connection (HoldsConnection stays on its context, so a read of the request pool under it
-// is refused), and no holder of a document lock ever waits for a connection of this pool:
-// settlements, live writes and the other withRoomLock callers take theirs where they always have,
-// so every holder of a lock a batch can wait on finishes without one of these connections.
+// is refused), a close's write takes its connection before the lock and nothing after it, and no
+// holder of a document lock ever waits for a connection of this pool: settlements, live writes
+// and the other withRoomLock callers take theirs where they always have, so every holder of a
+// lock a batch or a close's write can wait on finishes without one of these connections.
 const roomAppendsPoolSize = 8
 
 // healthPoolSize bounds the connections the health probe uses. The probe answers one question -
@@ -262,6 +268,12 @@ var ErrPoolClosed = errors.New("connection pool is closed")
 // the loads have their own, opened on demand and closed with this pool: one per store, not one
 // per caller who wants to read a document. Its acquires are bounded at requestAcquireBound like
 // the request pool's, and a load that waits that bound out is refused with ErrPoolBusy (RawPool).
+//
+// The room-sync catch-up confirms here, under the document's lock, that a room's stored history
+// was replaced before it closes the room (historyReplacedUnderLock in internal/dispatch/docs).
+// That is no request's work, so it waits for the lock until the holder lets go, on a connection
+// that carries no lock bound, where the request pool's would refuse it at the write lock bound;
+// RoomsPoolSize says why the loads keep their connections.
 func (p *Pool) Rooms() (*RawPool, error) {
 	return p.separate(RoomsPool, RoomsPoolSize)
 }
@@ -273,7 +285,9 @@ func (p *Pool) Rooms() (*RawPool, error) {
 // waits for none of them. Its acquires are bounded at backgroundAcquireBound: no client's answer
 // waits on a batch, and what does wait on one - a settlement, a shutdown's drain, another
 // process's room query - waits for an update's durability, which is better waited for than lost
-// to a refusal that fails the room.
+// to a refusal that fails the room. A close for a closed issue writes its room's latest edit
+// source here too (persistLastActor in internal/dispatch/docs): it is the room's own record going
+// durable, and it waits for the document's lock until the holder lets go, as a batch does.
 func (p *Pool) RoomAppends() (*RawPool, error) {
 	return p.separate(RoomAppendsPool, roomAppendsPoolSize)
 }
@@ -730,7 +744,11 @@ func (p *Pool) Live() (*Pool, error) {
 const settlementsPoolSize = 4
 
 // Settlements is the pool for document settlements, so a burst of settlements - every room a
-// shutdown or a timer settles - neither waits for the requests' connections nor takes them.
+// shutdown or a timer settles - neither waits for the requests' connections nor takes them. The
+// block-id backfill a subcommand runs stores each document's stamp here too, as a settlement
+// stores a repair (backfillBlockIDs in internal/dispatch/docs), one document at a time: it waits
+// for the document's lock until the holder lets go, where the request pool's write lock bound
+// would refuse it.
 func (p *Pool) Settlements() (*Pool, error) {
 	return p.wrapped(SettlementsPool, settlementsPoolSize)
 }

@@ -118,7 +118,10 @@ func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 		// writes and document that issue's spec.
 		hold func(ctx context.Context, holder pgx.Tx, issue, document string) error
 		// method, path and body are the second writer's request, and written its answer once the
-		// lock is free. The path's {key} is the issue's key and its {doc} the spec's id.
+		// lock is free. The path's {key} is the issue's key and its {doc} the spec's id, and the
+		// body's {base} is the token the spec stands at before the lock is taken: an upload that
+		// replaces the spec names it (docs.ErrPreconditionRequired), so both of its sends are
+		// answered for the lock and the write, not for a missing token.
 		method, path, body string
 		written            int
 		// unchanged, when it is true, holds the refused write to having changed no row anywhere.
@@ -200,7 +203,8 @@ func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 			hold: func(ctx context.Context, holder pgx.Tx, _, document string) error {
 				return docs.LockDocumentRoom(ctx, holder, document)
 			},
-			method: http.MethodPost, path: "/api/v1/issues/{key}/artifacts", body: `{"name":"spec.md","content":"Uploaded behind the held lock.\n"}`,
+			method: http.MethodPost, path: "/api/v1/issues/{key}/artifacts",
+			body:    `{"name":"spec.md","content":"Uploaded behind the held lock.\n","precondition":{base}}`,
 			written: http.StatusCreated, unchanged: true,
 		},
 	} {
@@ -212,8 +216,12 @@ func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 				row.seed(t, handler)
 			}
 			path := strings.NewReplacer("{key}", issue.Key, "{doc}", issue.PrimaryArtifactID).Replace(row.path)
+			body := row.body
+			if strings.Contains(body, "{base}") {
+				body = strings.ReplaceAll(body, "{base}", encodeUploadBase(t, uploadBase(t, handler, issue.PrimaryArtifactID)))
+			}
 			send := func() *httptest.ResponseRecorder {
-				request := httptest.NewRequest(row.method, path, strings.NewReader(row.body)).
+				request := httptest.NewRequest(row.method, path, strings.NewReader(body)).
 					WithContext(store.WithLockWaitForTest(context.Background(), bound))
 				request.Header.Set("Content-Type", "application/json")
 				request.Header.Set("X-Dispatch-User", "alice")

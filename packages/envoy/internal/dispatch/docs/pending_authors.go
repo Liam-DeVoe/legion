@@ -792,11 +792,25 @@ func readSettlementRowFacts(ctx context.Context, q Queryer, room string) (settle
 // writer of this row for as long as this transaction lasts (append_writes.go), so nothing is
 // gained by keeping the record locked across the statement, and every user of the record's lock -
 // a keystroke's credit, a connect - would wait on a database round trip meanwhile.
+//
+// The transaction runs on the room-appends pool (store.Pool.RoomAppends), whose connections carry
+// no lock bound, so it waits for the document's lock until the holder lets go, as every taker
+// with no request's ticket does (lockDocumentRoom). It is no request's work: the issue-open lane
+// and the append gate's close call it with no ticket, and on the request pool, whose every
+// transaction carries the write lock bound, a holder past that bound refused it 55P03 and the
+// close lost the source it had to write (INFRA-592). The pool is the one that stores a room's
+// browser edits, whose appends write this row's latest edit source too, and it cannot deadlock
+// for this: the close holds no other connection and no lock while it waits for one of these
+// connections (roomAppendsPoolSize).
 func (s *Service) persistLastActor(ctx context.Context, room string, snapshot closeSnapshot) (bool, error) {
 	if !snapshot.row.present {
 		return false, nil
 	}
-	tx, err := s.store.Pool.Begin(ctx)
+	appends, err := s.store.Pool.RoomAppends()
+	if err != nil {
+		return false, fmt.Errorf("open the room-appends pool for the latest edit source: %w", err)
+	}
+	tx, err := appends.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin the latest-edit-source transaction: %w", err)
 	}

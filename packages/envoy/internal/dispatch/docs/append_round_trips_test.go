@@ -471,6 +471,13 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 // bound - a settlement a timer runs, a background pass - and a browser's keystroke, which the room
 // stores through its own append (appendRoomTx), both still wait at three times the bound, and both
 // land once the holder lets go.
+//
+// The request's taker runs on the request pool, as a request does, and the taker with no ticket on
+// the settlements pool, as a settlement does: no taker with no ticket runs on the request pool,
+// whose every transaction carries the write lock bound (store.Pool's begin) and would refuse its
+// wait there whatever lockDocumentRoom does. A close's write of a room's latest edit source, the
+// boot's ask repair, a catch-up's confirmation and the block-id backfill each take their
+// transaction off that pool for the same reason (INFRA-592).
 func TestOnlyARequestsWaitOnTheDocumentLockIsBounded(t *testing.T) {
 	const bound = 300 * time.Millisecond
 	service, artifactID, _ := tracedRoomService(t)
@@ -495,11 +502,15 @@ func TestOnlyARequestsWaitOnTheDocumentLockIsBounded(t *testing.T) {
 		t.Fatalf("admit the request: %v", err)
 	}
 	defer ticket.Release()
-	// take takes the document's lock in a transaction of its own under ctx and commits.
-	take := func(ctx context.Context) <-chan error {
+	settlements, err := service.store.Pool.Settlements()
+	if err != nil {
+		t.Fatalf("open the settlements pool: %v", err)
+	}
+	// take takes the document's lock in a transaction of its own on pool, under ctx, and commits.
+	take := func(ctx context.Context, pool *store.Pool) <-chan error {
 		taken := make(chan error, 1)
 		go func() {
-			tx, err := service.store.Pool.Begin(ctx)
+			tx, err := pool.Begin(ctx)
 			if err != nil {
 				taken <- err
 				return
@@ -515,8 +526,8 @@ func TestOnlyARequestsWaitOnTheDocumentLockIsBounded(t *testing.T) {
 	}
 	bounded := store.WithLockWaitForTest(ctx, bound)
 	started := time.Now()
-	request := take(admission.WithTicket(bounded, ticket))
-	background := take(bounded)
+	request := take(admission.WithTicket(bounded, ticket), service.store.Pool)
+	background := take(bounded, settlements)
 	if waiting := storetest.WaitForLockWaiters(t, holder, 3, roomWait(t)); waiting < 3 {
 		t.Fatalf("%d sessions wait on the room's lock, want the keystroke's append and both takers", waiting)
 	}

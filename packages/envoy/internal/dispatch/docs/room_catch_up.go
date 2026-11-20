@@ -231,12 +231,23 @@ func (s *Service) applyRemoteBatch(room string, live *crdt.Doc, batch []byte) (a
 // commits (Ledger.takeRoomCursors), and so does settlement's own repair - which reads as a head
 // below the cursor; under the lock no such write is in flight. The follower calls it holding no
 // catch-up mutex, so the lock order (advisory lock, then that mutex) holds.
+//
+// The read runs on the rooms pool (store.Pool.Rooms), whose connections carry no lock bound, so
+// it waits for the lock until the holder lets go, as every taker with no request's ticket does
+// (lockDocumentRoom): the catch-up lane is no request's work, and on the request pool, whose
+// every transaction carries the write lock bound, a holder past that bound refused it 55P03
+// (INFRA-592). The lane runs one catch-up at a time, so this holds at most one of that pool's
+// connections and leaves the rest to the loads (store.RoomsPoolSize).
 func (s *Service) historyReplacedUnderLock(ctx context.Context, room string, live *crdt.Doc) (bool, error) {
 	cursor := s.cursorOf(live)
 	if cursor == nil {
 		return false, nil
 	}
-	tx, err := s.store.Pool.Begin(ctx)
+	rooms, err := s.store.Pool.Rooms()
+	if err != nil {
+		return false, err
+	}
+	tx, err := rooms.Begin(ctx)
 	if err != nil {
 		return false, err
 	}

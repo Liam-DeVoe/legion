@@ -2530,9 +2530,21 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 	// the lock first never reads a stored update as one still to store and stores it a second
 	// time. The ledger is settlement's shape, a transaction no caller joined, because this one is
 	// the backfill's own.
+	//
+	// So is the pool: the transaction runs on the settlements pool (store.Pool.Settlements),
+	// whose connections carry no lock bound, so it waits for the document's lock until the
+	// holder lets go, as every taker with no request's ticket does (lockDocumentRoom). The
+	// backfill is a command's, no request's, and on the request pool, whose every transaction
+	// carries the write lock bound, a holder past that bound refused the stamp's store 55P03 and
+	// the backfill abandoned the stamp (INFRA-592). It stores one document at a time, so it holds
+	// at most one of that pool's connections.
 	ledger := &Ledger{service: s, ownTx: true}
 	storeCtx := withRoomCursor(withLedger(ctx, ledger), cursor)
-	tx, err := s.store.Pool.Begin(storeCtx)
+	settlements, err := s.store.Pool.Settlements()
+	if err != nil {
+		return abandon(fmt.Errorf("open the settlements pool: %w", err))
+	}
+	tx, err := settlements.Begin(storeCtx)
 	if err != nil {
 		return abandon(fmt.Errorf("begin document transaction: %w", err))
 	}

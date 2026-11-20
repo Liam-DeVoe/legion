@@ -298,9 +298,14 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 // answers 503 DATABASE_BUSY with Retry-After. Every other taker waits until the holder lets go, as
 // before: the room's own appends and compactions, which are the holders' path, a settlement a
 // timer or the resumption runs, a background pass. A browser's keystrokes reach the store only
-// through the room's appends, so its room behaves as it did; those appends, and everything
-// reaching this through withRoomLock, take the session-level form first (appendRoomTx, lockRoom),
-// which is never bounded.
+// through the room's appends, so its room behaves as it did; those appends and a compaction's
+// write take the session-level form first (appendRoomTx, lockRoom) on pools of their own whose
+// connections carry no lock_timeout, so that wait is never bounded. Every other taker with no
+// ticket takes its transaction from a pool that carries none either (the room-appends, rooms,
+// settlements and background pools), never from the request pool, whose every connection and
+// transaction carries the write lock bound. The one exception is withRoomLock's writers
+// (CaptureSnapshot, PruneAfter, Delete), which take the session-level form on the request pool:
+// only ygo's conformance tests call them, and there the bound would refuse a wait past it.
 // The rule between this lock and a document's owner has two halves, and both are load-bearing.
 //
 // Level. A writer serialises against the other writers of its document's owner on the owner's

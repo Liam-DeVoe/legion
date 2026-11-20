@@ -321,6 +321,12 @@ So a deployment behind a pooler that does not pass `lock_timeout` through as a s
 A deployment that reaches Postgres directly, or through a proxy that forwards the connection as it is, needs nothing more.
 Two request-pool transactions opt out, the boot's dashboard publish and prune: each waits for its locks until the publish's own 60-second deadline instead (`store.WaitForLocksUntilDeadline`).
 A publish of the same build by another process holds the build's row, and a publish of another build holds an asset path both builds store, across its whole upload, one statement per file, and a prune waits for every publish in flight.
+Only a request's wait for a document's lock is bounded (`docs.LockDocumentRoom`), so the work that takes that lock for no request runs on a pool whose connections carry no bound, and waits until the holder lets go.
+A close for a closed issue writes its room's latest edit source to the document's pending-settlement row on the room-appends pool (`docs.Service.persistLastActor`).
+The boot's repair of closed and reopened issues' asks runs on the background pool, as its 10-minute pass does (`api.RepairIssueAsks`).
+The room sync's catch-up confirms on the rooms pool, under the document's lock, that a room's stored history was replaced (`docs.Service.historyReplacedUnderLock`).
+The block-id backfill that `backfill-block-ids` and `backfill-anchor-blocks` run stores each document's stamp on the settlements pool of the store the subcommand opens (`docs.Service.BackfillBlockIDs`).
+None of the four opts out on the request pool: each runs off it.
 The migration runner, which also runs on the request pool, sets its own 5-second bound on every migration (`pgmigrate.LockTimeout`).
 Every other pool's connection asks for no bound, `lock_timeout` of `0`, as a startup parameter (`store.configurePool`), and Postgres ranks a client's startup parameter above a setting of the database role or of the database, so those pools wait for a lock as they did before the request pool had a bound, and a connection string's own `lock_timeout` is replaced on every pool.
 Behind a pooler that drops startup parameters the `0` is dropped too, and the role's setting then reaches every pool, because every pool connects as the one login `DATABASE_URL` names: a lock wait on any of them is refused `55P03` once it has waited as long as the setting says.
@@ -328,6 +334,7 @@ This is what each pool's work does with such a refusal, at the 10 seconds above 
 
 - settlements: a settlement that stops short on the refusal has written nothing into its room, and `store.Unserved` counts the refusal (`store.IsPoolBusy`), so the settlement ends as one the database did not serve, logged at WARN, and the settlement resumption settles the document from its pending-settlement row, failing no room.
   A shutdown's settlement waits for the document's lock 100 ms at most, under its own bound, and the sweep of a room's unrecorded marks after a settlement logs the error and leaves the marks to the next settlement's sweep.
+  A block-id backfill's stamp that the refusal ends is given up: the document's room fails and reloads from the store, and the subcommand names the document with the error and exits 1.
 
 - compaction: a check or a compaction the refusal ends is logged at WARN, and the compaction queue tries the room again later with backoff, as it does a room whose lock it found held (a compaction takes the document's lock without waiting).
   The hourly sweep hands such a room to the queue, and a sweep whose list of documents the refusal ends logs an ERROR and leaves them to the next hour's sweep.
@@ -348,7 +355,7 @@ This is what each pool's work does with such a refusal, at the 10 seconds above 
 
   - the block-index reconciliation skips an item it could not index, which stays owed to the next tick;
 
-  - the issue-ask repair keeps an issue it could not repair for its next interval;
+  - the issue-ask repair, at boot and on its interval, leaves an issue it could not repair to its next interval's pass;
 
   - the settlement resumption's query, the schema-admission re-check, the Legion sampler, the server registry's prune, the fleet build announcer, the webhook redelivery sweep, the CI reconcile pass, the architecture importer's ticker and the delivery reconcile each run again at their next pass;
 
@@ -366,8 +373,10 @@ This is what each pool's work does with such a refusal, at the 10 seconds above 
   The publisher hold's renewal waits no longer than its own renewal interval, one second, and a take of the hold that the refusal ends is logged and tried again a second later.
 
 - room appends: a room's batch takes the document's advisory lock with no bound of its own, so the refusal ends the batch, which stores nothing, and fails the room, as every statement the database refuses there does.
+  A close's write of its room's latest edit source that the refusal ends is logged at ERROR, and the source stays on the room's record rather than reaching the document's pending-settlement row.
 
 - rooms: a room load reads only, so it waits only behind a table lock that a migration or other DDL holds; the refusal fails the load, a document socket waiting on it is refused as a call the database did not serve, and a settlement's warm-up load ends the settlement as above.
+  A catch-up's confirmation of a replaced history that the refusal ends is logged at WARN and tried again after the catch-up's back-off, 2 seconds doubling to a minute.
 
 - live: the live-update readers read only, as room loads do; the event stream relay and the delivery hub log a failed read and read again, and an events subscription's replay returns the error to the subscription it serves.
 
@@ -1353,8 +1362,8 @@ Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a s
 | Live (`livePoolSize`) | 4 | The live-update readers: the event stream relay, the delivery hub's intake, recompute and seed, and an events subscription's replay; `application_name=dispatch-live`. |
 | Settlements (`settlementsPoolSize`) | 4 | The document settlements, the store of the display tree of each version they write among them, so a burst of them neither waits for the requests' connections nor takes them; `application_name=dispatch-settlements`. |
 | Leases (`store.LeasePoolSize`) | 24 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them: one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`, 22), and two spare. |
-| Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
-| Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
+| Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates, and a close's write of its room's latest edit source to the document's pending-settlement row; `application_name=dispatch-room-appends`. |
+| Rooms (`RoomsPoolSize`) | 4 | Document loads, and the room sync's catch-up confirming under a document's lock that a room's stored history was replaced, one at a time; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
 | Display tree fill (`textTreePoolSize`) | 2 | The background fill's own reads and writes (`Pool.TextTrees`, `texttreefill`): a pass reads its next batch of texts only once the batch before it is stored, and stores a batch with at most two readings in flight, so two is every connection it can use; `application_name=dispatch-text-trees`. |
 | Health (`healthPoolSize`) | 1 | The `/healthz` probe. |
