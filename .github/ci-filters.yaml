@@ -1780,6 +1780,16 @@ dispatch_memory:
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
+dispatch_memory_group:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-dispatch-memory-group.yaml'
+  - *go_workspace
+  - *dispatch_command_tests
+  - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/testnats/*'
+  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/internal/testwait/*'
 dispatch_multiprocess:
   - *ci_router
   - *ci_filters_data

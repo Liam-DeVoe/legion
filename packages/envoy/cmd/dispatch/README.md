@@ -3642,6 +3642,7 @@ The limits come from the container's memory limit L, read through automemlimit's
 The socket's directory is `dispatch-agent` under `XDG_RUNTIME_DIR`, a row of the settings table that the server hands its API server, so the API package reads no environment.
 The agent works 8 runs at once.
 `DISPATCH_TEST_AGENT_CEILING`, under the test hooks, sets the ceiling in bytes for a test of the kill; `DISPATCH_TEST_AGENT_GOMEMLIMIT` the agent's `GOMEMLIMIT`, `DISPATCH_TEST_AGENT_SLOTS` its slots, `DISPATCH_TEST_AGENT_HOOKS=1` the agent's own test hooks (`going/agent/hooks.go`), and `DISPATCH_TEST_AGENT_CALL_HOOK` rules, apart by `;`, on routes that panic in, or hold before their route answers or after it, every call the server runs for the agent.
+For the test of the memory group (Tests, below), `DISPATCH_TEST_AGENT_GROW_AFTER` makes the agent allocate as fast as it can, on as many goroutines as its `GOMAXPROCS`, from that long after each start until it is killed, and `DISPATCH_TEST_SERVER_HEAP` makes the server hold that many bytes on its heap from its boot (`cmd/dispatch/memory_hooks.go`).
 
 `/metrics` shows both processes: `envoy_dispatch_process_goroutines`, `envoy_dispatch_process_heap_live_bytes`, `envoy_dispatch_process_memory_total_bytes`, `envoy_dispatch_process_memory_limit_bytes` and `envoy_dispatch_process_start_time_seconds`, each with `process="server"` and `process="agent"` (the agent's runtime figures as its latest renew carried them, none before its first renew); `envoy_dispatch_cache_bytes` with `cache` `read`, `display_tree` and `list_answer`; `envoy_dispatch_going_runs` with `state` `working`, `queued` and `waiting`; and `envoy_dispatch_agent_slots`, `envoy_dispatch_agent_slots_in_use`, `envoy_dispatch_agent_stuck_goroutines` and `envoy_dispatch_agent_memory_kills`, the agent's kills for memory since the server started.
 The agent's loop (`going/agent`) works each run it claims on a goroutine of its own, under a `recover`, as many at once as its slots, and claims no run while its memory is above 70% of its `GOMEMLIMIT`.
@@ -5515,3 +5516,7 @@ DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD
 ```
 
 "Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build.
+
+`TestTheServerEndsTheAgentBeforeTheKernel` (`agent_memory_group_test.go`) skips, naming why, unless `DISPATCH_TEST_MEMORY_GROUP=1`, which its CI job sets on an amd64 runner with control groups v2 and Docker.
+It runs the server, built for linux/amd64, in a Docker container whose memory limit is 8 GiB with swap off, on `--network host` against `DISPATCH_TEST_DATABASE_URL`; `DISPATCH_TEST_MEMORY_GROUP_IMAGE` names another image than its default, the copy of `debian:bookworm-slim` in `.github/ci-images.yaml`.
+It measures the agent's fastest growth in 50 ms, holds the server's heap so that the container keeps twice that growth beside a server and an agent at its ceiling, and requires the server's kill of the agent before the kernel's: the container's `memory.events` counts no `oom_kill`, and the server keeps its process id.

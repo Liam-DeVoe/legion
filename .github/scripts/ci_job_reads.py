@@ -1088,6 +1088,11 @@ MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
 go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch"""
+# The memory-group test of INFRA-1588's c20 (ci-job-dispatch-memory-group.yaml): one untagged
+# test of ./cmd/dispatch, named by an anchored -run, which is outside the simple form, so the step
+# is pinned whole. envoy-go's unit step compiles the same package and the test skips there.
+MEMORY_GROUP_STEP = "The server ends its agent before the kernel"
+MEMORY_GROUP_SCRIPT = "go test -count=1 -timeout 15m -v -run '^TestTheServerEndsTheAgentBeforeTheKernel$' ./cmd/dispatch"
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"
 DISPATCH_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/dispatch)
@@ -3487,6 +3492,12 @@ GATES = [
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
     ) + ceiling_reads("dispatch-memory") + setup_go("dispatch-memory", f"{ENVOY}/go.mod")),
+
+    gate("dispatch_memory_group", "dispatch-memory-group", exact=[
+        pinned_step("dispatch-memory-group", MEMORY_GROUP_STEP, ENVOY, MEMORY_GROUP_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], "go test ./cmd/dispatch", {}),
+        ]),
+    ], reads=setup_go("dispatch-memory-group", f"{ENVOY}/go.mod")),
 
     gate("dispatch_multiprocess", "dispatch-multiprocess", runs=[ceiling_run("dispatch-multiprocess")], exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [

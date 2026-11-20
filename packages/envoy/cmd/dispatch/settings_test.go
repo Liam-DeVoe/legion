@@ -2213,7 +2213,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_HOOKS": "1"}); !boot.AgentHooks {
 				t.Error("DISPATCH_TEST_AGENT_HOOKS=1: the agent's hooks are off")
 			}
-			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", true); !slices.Contains(env, "DISPATCH_TEST_AGENT_HOOKS=1") {
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{Loop: true}); !slices.Contains(env, "DISPATCH_TEST_AGENT_HOOKS=1") {
 				t.Errorf("the agent's environment with its hooks on is %v, want DISPATCH_TEST_AGENT_HOOKS=1", env)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_HOOKS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
@@ -2248,10 +2248,51 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_SLOTS": "2"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_AGENT_GROW_AFTER": func(t *testing.T) {
+			// The server hands the wait on to its agent, and the agent refuses a value that is no
+			// positive Go duration before it calls anything.
+			if boot := resolveWith(t, map[string]string{}); boot.AgentGrowAfter != 0 {
+				t.Errorf("unset: AgentGrowAfter = %v, want 0 (the agent allocates for its runs alone)", boot.AgentGrowAfter)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_GROW_AFTER": " 5s "})
+			if boot.AgentGrowAfter != 5*time.Second {
+				t.Errorf("DISPATCH_TEST_AGENT_GROW_AFTER=5s: AgentGrowAfter = %v", boot.AgentGrowAfter)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{GrowAfter: boot.AgentGrowAfter}); !slices.Contains(env, "DISPATCH_TEST_AGENT_GROW_AFTER=5s") {
+				t.Errorf("the agent's environment is %v, want DISPATCH_TEST_AGENT_GROW_AFTER=5s", env)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{}); slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "DISPATCH_TEST_AGENT_GROW_AFTER=") }) {
+				t.Errorf("unset: the agent's environment is %v, want no DISPATCH_TEST_AGENT_GROW_AFTER", env)
+			}
+			for _, invalid := range []string{"soon", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_GROW_AFTER": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_GROW_AFTER=%q (expected a positive Go duration)", invalid))
+				var stderr bytes.Buffer
+				values := envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": "agent.sock", "DISPATCH_TEST_AGENT_GROW_AFTER": invalid})
+				if code := runAgent(context.Background(), values, bytes.NewReader(make([]byte, agentwire.SecretSize)), &stderr); code != 1 ||
+					!strings.Contains(stderr.String(), fmt.Sprintf("DISPATCH_TEST_AGENT_GROW_AFTER=%q", invalid)) {
+					t.Errorf("the agent with DISPATCH_TEST_AGENT_GROW_AFTER=%s: exit %d, stderr %q; want 1, naming it", invalid, code, stderr.String())
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_GROW_AFTER": "5s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_SERVER_HEAP": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.ServerHeap != 0 {
+				t.Errorf("unset: ServerHeap = %d, want 0 (the server holds no heap for a test)", boot.ServerHeap)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SERVER_HEAP": " 1048576 "}); boot.ServerHeap != 1<<20 {
+				t.Errorf("DISPATCH_TEST_SERVER_HEAP=1048576: ServerHeap = %d", boot.ServerHeap)
+			}
+			for _, invalid := range []string{"1MiB", "-1", "0"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SERVER_HEAP": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SERVER_HEAP=%q (expected a positive whole number of bytes)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SERVER_HEAP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_AGENT_SLOTS": func(t *testing.T) {
 			// The server names the agent's slots in its environment, and the agent refuses a count
 			// that is no whole number from 1 to 64 before it calls anything.
-			if env := agentEnvironment(answererConfig{}, "agent.sock", agentMemory{Slots: 5}, "", false); !slices.Contains(env, "DISPATCH_AGENT_SLOTS=5") {
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentMemory{Slots: 5}, "", agentTestHooks{}); !slices.Contains(env, "DISPATCH_AGENT_SLOTS=5") {
 				t.Errorf("the agent's environment is %v, want DISPATCH_AGENT_SLOTS=5", env)
 			}
 			for _, invalid := range []string{"0", "65"} {
@@ -2270,10 +2311,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"SSL_CERT_FILE": " " + bundle + " "}); boot.TrustFile != bundle {
 				t.Errorf("TrustFile = %q, want %q", boot.TrustFile, bundle)
 			}
-			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), bundle, false); !slices.Contains(env, "SSL_CERT_FILE="+bundle) {
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), bundle, agentTestHooks{}); !slices.Contains(env, "SSL_CERT_FILE="+bundle) {
 				t.Errorf("the agent's environment is %v, want SSL_CERT_FILE=%s", env, bundle)
 			}
-			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", false); slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "SSL_CERT_FILE=") }) {
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{}); slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "SSL_CERT_FILE=") }) {
 				t.Errorf("unset: the agent's environment is %v, want no SSL_CERT_FILE", env)
 			}
 		},

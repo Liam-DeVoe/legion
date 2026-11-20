@@ -187,6 +187,16 @@ type bootConfig struct {
 	// hooks on (going/agent's hooks.go); only DISPATCH_TEST_AGENT_HOOKS=1, under the test hooks,
 	// sets it.
 	AgentHooks bool
+	// AgentGrowAfter hands DISPATCH_TEST_AGENT_GROW_AFTER on to the agent process, which waits
+	// that long after each start and then allocates at full speed until it is killed
+	// (growAgentHeap); zero for none. Only DISPATCH_TEST_AGENT_GROW_AFTER, under the test hooks,
+	// sets it, for the test of the memory group.
+	AgentGrowAfter time.Duration
+	// ServerHeap is how many bytes this process holds on its heap from its boot until it exits,
+	// each page resident (holdServerHeap); zero for none. Only DISPATCH_TEST_SERVER_HEAP, under
+	// the test hooks, sets it, so the test of the memory group holds the server near its peak
+	// beside its agent.
+	ServerHeap int64
 	// AgentCallHook is the rules on routes every call of which this process runs for its agent
 	// panics in, or is held in before or after its route (api.Deps.AgentCallHook); only
 	// DISPATCH_TEST_AGENT_CALL_HOOK, under the test hooks, sets it.
@@ -345,6 +355,12 @@ func main() {
 	}
 	slog.Info("dispatch: memory limits", "container", containerLimit, "server", debug.SetMemoryLimit(-1),
 		"agent_ceiling", limits.Ceiling, "agent_gomemlimit", limits.AgentLimit, "agent_slots", limits.Slots)
+
+	// A test's server holds its heap near its peak before its agent starts beside it
+	// (DISPATCH_TEST_SERVER_HEAP).
+	if boot.ServerHeap > 0 {
+		holdServerHeap(boot.ServerHeap)
+	}
 
 	envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{})
 	if err != nil {
@@ -1238,7 +1254,8 @@ func main() {
 		slog.Error("dispatch: find this binary to start the agent process from; its runs wait for a server process that does", "error", err)
 		agent = listening
 	} else {
-		env := agentEnvironment(boot.Answerer, listening.Path(), limits, boot.TrustFile, boot.AgentHooks)
+		env := agentEnvironment(boot.Answerer, listening.Path(), limits, boot.TrustFile,
+			agentTestHooks{Loop: boot.AgentHooks, GrowAfter: boot.AgentGrowAfter})
 		supervisor = startAgentSupervisor(listening, []string{executable, "agent"}, env, limits)
 		agent = supervisor
 	}
@@ -1465,6 +1482,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_AGENT_GROW_AFTER", &boot.AgentGrowAfter},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1474,6 +1492,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	if err := testHookBytes(env, "DISPATCH_TEST_AGENT_GOMEMLIMIT", boot.TestHooksEnabled, &boot.AgentLimit); err != nil {
+		return bootConfig{}, err
+	}
+	if err := testHookBytes(env, "DISPATCH_TEST_SERVER_HEAP", boot.TestHooksEnabled, &boot.ServerHeap); err != nil {
 		return bootConfig{}, err
 	}
 	if boot.AgentCallHook, err = agentCallHook(env, boot.TestHooksEnabled); err != nil {

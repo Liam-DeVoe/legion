@@ -1858,6 +1858,22 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
 
+## The memory-group test: the server ends its agent before the kernel
+
+The test of c20 of INFRA-1588 (packages/envoy/cmd/dispatch, TestTheServerEndsTheAgentBeforeTheKernel)
+runs the Dispatch server in a Docker container whose memory limit is 8 GiB, makes the server's
+agent process allocate at full speed while the server's heap is held near its peak, and reads
+the container's memory.events: the server must kill its agent, which it watches every 50 ms,
+before the kernel's OOM killer acts. It needs a cgroup v2 host with a container runtime, which
+envoy-go's runners are not asked to be, so the test skips with its reason unless
+DISPATCH_TEST_MEMORY_GROUP is set, and this job alone sets it. The runner is ubuntu-24.04, amd64,
+because the margin the test measures (the agent's fastest growth in 50 ms) is a measurement of
+the architecture production runs on. The job runs on a pull request, as it is a standard runner
+of a public repository, which GitHub does not bill, and its one test takes minutes, not the
+tens of minutes the held-back suites take. The image the server runs in is named by digest from
+.github/ci-images.yaml and pulled in a step of its own, so a failed pull is told apart from a
+failed test.
+
 ## The Dispatch server's two-process tests
 
 The two-process tests (packages/envoy/cmd/dispatch/multiprocess_test.go, INFRA-66): each row

@@ -125,13 +125,22 @@ func newAgentSupervisor(end agentEnd, command, env []string, limits agentMemory)
 	return s
 }
 
+// agentTestHooks is what a server under its own test hooks turns on in its agent: the loop's test
+// hooks (DISPATCH_TEST_AGENT_HOOKS=1, going/agent's hooks.go), and the wait after each start
+// before the agent allocates at full speed (DISPATCH_TEST_AGENT_GROW_AFTER, growAgentHeap), zero
+// for none.
+type agentTestHooks struct {
+	Loop      bool
+	GrowAfter time.Duration
+}
+
 // agentEnvironment is the agent's whole environment: the socket it calls the server at, how many
 // runs it works at once, its CPUs and its memory limit, and the chat model's settings as the
 // server read them, with the file of certificate authorities the server trusts the chat model's
 // endpoint by (trustFile, SSL_CERT_FILE), where it names one - nothing of the server's own
 // environment, so the agent holds no secret of Dispatch. hooks turns the agent's test hooks on,
-// which only a server under its own test hooks asks for (DISPATCH_TEST_AGENT_HOOKS).
-func agentEnvironment(chat answererConfig, socket string, limits agentMemory, trustFile string, hooks bool) []string {
+// which only a server under its own test hooks asks for.
+func agentEnvironment(chat answererConfig, socket string, limits agentMemory, trustFile string, hooks agentTestHooks) []string {
 	env := []string{
 		"DISPATCH_AGENT_SOCKET=" + socket,
 		"DISPATCH_AGENT_SLOTS=" + strconv.Itoa(limits.Slots),
@@ -144,8 +153,11 @@ func agentEnvironment(chat answererConfig, socket string, limits agentMemory, tr
 		}
 	}
 	set("SSL_CERT_FILE", trustFile)
-	if hooks {
+	if hooks.Loop {
 		set("DISPATCH_TEST_AGENT_HOOKS", "1")
+	}
+	if hooks.GrowAfter > 0 {
+		set("DISPATCH_TEST_AGENT_GROW_AFTER", hooks.GrowAfter.String())
 	}
 	set("DISPATCH_ANSWERER", chat.Place)
 	switch chat.Place {

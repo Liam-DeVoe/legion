@@ -107,7 +107,8 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 // when it exits 0. It exits 2 when started with no socket to call, and 1 when its secret or its
 // settings cannot be read or its loop fails, which the server answers by starting it again.
 // DISPATCH_TEST_AGENT_HOOKS=1, which its server hands on only under the server's own test hooks,
-// turns the loop's test hooks on.
+// turns the loop's test hooks on, and DISPATCH_TEST_AGENT_GROW_AFTER, handed on the same way,
+// makes it allocate at full speed that long after its start (growAgentHeap).
 func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io.Writer) int {
 	socket := strings.TrimSpace(env.get("DISPATCH_AGENT_SOCKET"))
 	if socket == "" {
@@ -143,6 +144,14 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 			fmt.Fprintf(stderr, "agent: DISPATCH_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)\n", raw)
 			return 1
 		}
+	}
+	if raw := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_GROW_AFTER")); raw != "" {
+		after, err := time.ParseDuration(raw)
+		if err != nil || after <= 0 {
+			fmt.Fprintf(stderr, "agent: DISPATCH_TEST_AGENT_GROW_AFTER=%q (expected a positive Go duration)\n", raw)
+			return 1
+		}
+		growAgentHeap(after, stderr)
 	}
 	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots,
 		Hooks: strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_HOOKS")) == "1"}

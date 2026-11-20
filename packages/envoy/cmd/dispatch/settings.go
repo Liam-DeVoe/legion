@@ -248,6 +248,10 @@ var settings = []setting{
 		Description: "Rules on the calls a test process makes for its agent, apart by `;`, each on a route every such call of which panics in it (`panic GET /api/v1/search`), or is held for a Go duration or until the call's own 60 s end, before its route answers (`hold 20s GET /api/v1/search`) or once its route answered and before the call hears it (`after 20s PATCH /api/v1/issues/A-1`), for an end-to-end test of the recover around such a call, of the 16 calls at once, of a call's 60 s, of a second try of its key and of a killed agent or server; never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_AGENT_SLOTS", Default: "8", Required: "no",
 		Description: "How many runs a test process's agent works at once, from 1 to 64, in place of the slots its limits give, for an end-to-end test whose runs make more calls at once than 8 runs can; never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_GROW_AFTER", Required: "no",
+		Description: "How long after each start a test process's agent process (`envoy-dispatch agent`) waits before it allocates memory as fast as it can, on as many goroutines as its `GOMAXPROCS`, writing each page so it is resident, until its server kills it for memory; a positive Go duration, for the end-to-end test of the agent's memory in a container and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`; the agent reads it as its server hands it on."},
+	{Name: "DISPATCH_TEST_SERVER_HEAP", Required: "no",
+		Description: "Bytes a test process allocates on its own heap as it boots, before it starts its agent process, writing each page so it is resident, and holds until it exits, so the end-to-end test of the agent's memory in a container holds the server near its peak beside the agent; a positive whole number, never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is
