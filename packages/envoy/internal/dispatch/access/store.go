@@ -141,9 +141,10 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*str
 
 // lockProject takes project key's owner lock for the rest of tx; taking it again in tx returns at
 // once. The read it guards is a statement of its own after it (store.LockOwner). Its failure is
-// the store's, which names the project ("lock project <key>: …"), so it is not wrapped again.
+// the store's, which names the project ("lock project <key>: …"), so it is not wrapped again, but
+// for a wait past the transaction's lock_timeout, which is ErrLockTimeout naming LockOwnerRow.
 func lockProject(ctx context.Context, tx pgx.Tx, key string) error {
-	return store.LockOwner(ctx, tx, store.ProjectOwner(key))
+	return lockTimedOut(LockOwnerRow, store.LockOwner(ctx, tx, store.ProjectOwner(key)))
 }
 
 // ReadProject answers who may see project key and who changes that, as viewer reads it: viewer is
@@ -319,14 +320,60 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 	return appendProjectChange(ctx, tx, ev, key, model.AccessSlackChannelsChanged, "", by)
 }
 
+// RefuseSharedSlackChannels is a switch of project key to private's check of its own Slack channels,
+// as tx reads them after every other write of the switch: under the channel lock, taken after the
+// project's owner lock in the order every access write takes them, it answers ErrSlackChannelShared
+// while another private project lists one of them, naming that project only to viewer when viewer
+// sees it (refuseSharedSlackChannel), and nil otherwise.
+func RefuseSharedSlackChannels(ctx context.Context, tx pgx.Tx, key string, viewer *model.Viewer) error {
+	if err := lockProject(ctx, tx, key); err != nil {
+		return err
+	}
+	if err := lockSlackChannels(ctx, tx); err != nil {
+		return err
+	}
+	var channels []string
+	err := tx.QueryRow(ctx, `select slack_channels from projects where key = $1`, key).Scan(&channels)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	}
+	if err != nil {
+		return fmt.Errorf("read the Slack channels of project %s: %w", key, err)
+	}
+	if len(channels) == 0 {
+		return nil
+	}
+	return refuseSharedSlackChannel(ctx, tx, key, channels, viewer)
+}
+
+// StartSlackChannelsTime starts project key's Slack channels' time at a switch to private, when the
+// project names any: slack_channels_changed_at, the one moment its channels became a private
+// project's, which the secrets broker's settle time counts from as it does from a change of the
+// list. A project that names none keeps its time. The time is statement_timestamp(), the update's
+// own start, after the owner lock, as SetSlackChannels stamps it, and not the transaction's start.
+// It answers the project's access as the switch leaves it.
+func StartSlackChannelsTime(ctx context.Context, tx pgx.Tx, key string) (model.ProjectAccess, error) {
+	if err := lockProject(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		update projects set slack_channels_changed_at = statement_timestamp()
+		where key = $1 and cardinality(slack_channels) > 0
+	`, key); err != nil {
+		return model.ProjectAccess{}, fmt.Errorf("start the Slack channels' time of project %s: %w", key, lockTimedOut(LockOwnerRow, err))
+	}
+	return readProjectWritten(ctx, tx, key)
+}
+
 // lockSlackChannels takes, for the rest of tx, the one lock every write of a project's Slack
 // channels takes before it reads any project's list, so two writes naming one channel for two
 // private projects cannot both read the other's list as it was and both commit. It comes after the
 // project's owner lock (lockProject, which LockForAccessWrite also takes) in the order every access
-// write takes its locks, and a project's row is written only under that project's owner lock.
+// write takes its locks, and a project's row is written only under that project's owner lock. A
+// wait past the transaction's lock_timeout is ErrLockTimeout naming LockSlackChannel.
 func lockSlackChannels(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-slack-channel'), 0)`); err != nil {
-		return fmt.Errorf("lock the Slack channels: %w", err)
+		return fmt.Errorf("lock the Slack channels: %w", lockTimedOut(LockSlackChannel, err))
 	}
 	return nil
 }
@@ -412,7 +459,7 @@ func updateProject(ctx context.Context, tx pgx.Tx, key, statement string, value 
 	}
 	tag, err := tx.Exec(ctx, statement, key, value)
 	if err != nil {
-		return fmt.Errorf("write project %s: %w", key, err)
+		return fmt.Errorf("write project %s: %w", key, lockTimedOut(LockOwnerRow, err))
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%w: %s", ErrProjectNotFound, key)
