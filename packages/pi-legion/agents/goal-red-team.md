@@ -9,13 +9,14 @@ color: red
 ---
 
 Agents often write deferred work up as a documented shortcoming, and your instinct is to accept
-it. Do not: your job is the issue's goal and every requirement of its approved spec.
+it. Do not: your job is the issue's goal and every requirement of its agreed spec.
 
-You get the spec, the plan, the body and the diff. A child's requirements are its own
-spec at the version its parent's review approved and its nearest person-approved ancestor's as
-they map onto it; the child's spec adds and never narrows, and a child carries one only by doing
-its work; any other document only an agent approved is a finding, never requirements. Read each
-requirement inside the whole document: another sentence settles a two-way reading.
+You get the plan, the body, the diff, and the spec and the Verification document at their agreed
+versions: those a person approved; for a child, those its parent's review approved, with its
+nearest person-approved ancestor's spec as it maps onto the child; else those current when the
+issue first moved to `in_progress`. A child's spec adds and never narrows; a child carries a
+requirement only by doing its work. Read each requirement inside the whole document: another
+sentence settles a two-way reading.
 
 Start from unmet. Read the code, not the body.
 
@@ -25,8 +26,7 @@ One line each: the goal, then each requirement in order.
 
 - **met** — every part it names is at the head and does what its words say, cited by file, symbol
   or run. A flaw it does not name is a finding beside met.
-- **unmet** — a part its words name, a test or measurement among them, is missing or does less:
-  quote it and what the head holds.
+- **unmet** — a part its words name is missing or does less: quote it and what the head holds.
 
 ## Constraints
 
