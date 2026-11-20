@@ -346,11 +346,11 @@ export function roleClaimKey(project: string, role: string): string {
 
 /**
  * The project a claim of `role` works for, given the project the claim requested (`undefined` or
- * `""` for none), or an `Error` for a request the rule refuses, once a claim keys on its project.
- * Nothing calls it in this slice: while every claim keys on its bare role name, the listener's
- * `POST /v1/roles/set` refuses any new-form role whose project is not `roleProject(role)`, so for a
- * free-form role under a project (`PRIV.lead-reviewer`) the route answers 400 where this answers
- * `PRIV`. Plan C's t-c-8 wires it into the route, and t-c-6 reads Dispatch's claims through it.
+ * `""` for none), or an `Error` for a request the rule refuses. The listener's `POST /v1/roles/set`
+ * asks its Go twin of a role named in the new form and refuses a claim it refuses; a claim it
+ * allows is keyed by `roleClaimKey` of that project, so a free-form role under a project
+ * (`PRIV.lead-reviewer`) is that project's own claim beside the claim of the same name under none.
+ * Plan C's t-c-6 reads Dispatch's claims through it.
  *
  * A Legion role token (`legion-<token>-…`) works for the project its own name gives
  * (`roleProject`), whatever the claim asks for, and a request naming another project is refused

@@ -622,9 +622,10 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
-	// keyed by the bare role name either way (store.Registry.ClaimedRole).
-	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
+	// The lane names its role in either form; the claim it resolves is the one that name is keyed
+	// by (store.RoleClaimKeyOf): the bare name, or <project>.<role> for a free-form role under a
+	// project.
+	role := store.RoleClaimKeyOf(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {
 		message.finalize(false)
