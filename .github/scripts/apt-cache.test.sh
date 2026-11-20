@@ -4,7 +4,9 @@
 #
 # Each case runs the real script as a subprocess under stand-ins first on PATH: an `apt-get` that
 # answers `update`, a download (`install --download-only`) and an install from the one local source
-# the script names, a `dpkg-deb` and a `dpkg-query` that read what that apt-get wrote, a `sudo` that
+# the script names (and refuses a call that names that source with no empty
+# Dir::Etc::SourceParts, beside which real apt reads the runner's own sources.list.d, its
+# mirrors), a `dpkg-deb` and a `dpkg-query` that read what that apt-get wrote, a `sudo` that
 # records itself and runs its command, and an `id` that answers a uid other than root, so the
 # script takes the path a runner's user takes. The stand-in mirror is a list of the pins it serves;
 # APT_TEST_NET says whether it answers (`up`), fails as a cut network does (`down`: the resolver
@@ -28,7 +30,7 @@ mkdir -p "$work/bin"
 cat > "$work/bin/apt-get" <<'STANDIN'
 #!/usr/bin/env bash
 echo "apt-get $*" >> "$APT_TEST_CALLS"
-lists= archives= sourcelist= download= local_dir=
+lists= archives= sourcelist= parts= download= local_dir=
 args=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -38,6 +40,7 @@ while [ $# -gt 0 ]; do
         Dir::State::Lists=*) lists=${1#*=} ;;
         Dir::Cache::archives=*) archives=${1#*=} ;;
         Dir::Etc::SourceList=*) sourcelist=${1#*=} ;;
+        Dir::Etc::SourceParts=*) parts=${1#*=} ;;
       esac
       ;;
     --download-only) download=1 ;;
@@ -49,6 +52,9 @@ done
 if [ -n "$sourcelist" ]; then
   local_dir=$(sed -n 's/^deb \[trusted=yes\] file:\(.*\) \.\/$/\1/p' "$sourcelist")
   [ -n "$local_dir" ] || { echo "the stand-in reads only a list of one local source" >&2; exit 3; }
+  # Real apt reads sources.list.d (Dir::Etc::SourceParts) beside the list: the runner's mirrors.
+  [ -n "$parts" ] || { echo "the stand-in reads only the one local source: no Dir::Etc::SourceParts, so apt reads the runner's sources.list.d too" >&2; exit 3; }
+  [ -z "$(ls -A "$parts" 2>/dev/null)" ] || { echo "the stand-in reads only the one local source: $parts holds another" >&2; exit 3; }
 fi
 case ${args[0]} in
   update)
@@ -165,8 +171,8 @@ run() {
 }
 
 # A call of the stand-in apt-get that read the mirror: an update or a download with no local
-# source. A hit must make none.
-mirror_calls() { grep -E '^apt-get ' <<<"$calls" | grep -v 'Dir::Etc::SourceList=' || true; }
+# source, or with one and the runner's sources.list.d beside it. A hit must make none.
+mirror_calls() { grep -E '^apt-get ' <<<"$calls" | awk '!/Dir::Etc::SourceList=/ || !/Dir::Etc::SourceParts=/' || true; }
 
 echo "case: a list line that is no pin is refused before apt runs"
 printf 'zsh=5.9-6ubuntu2\ntmux\n' > "$work/list-bare"
@@ -212,7 +218,7 @@ check "tmux is installed at its pin" "$(is "$installed" "tmux 3.4-1ubuntu0.2")"
 check "says it installed from the cached set" "$(contains "$err" "installing tmux=3.4-1ubuntu0.2 from the cached set in $work/cache, with no network")"
 check "reads no mirror" "$(is "$(mirror_calls)" "")"
 check "the install is apt's, through sudo, with the entry as its one source" \
-  "$(contains "$calls" "^sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Dir::Etc::SourceList=")"
+  "$(contains "$calls" "^sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Dir::Etc::SourceList=[^ ]* -o Dir::Etc::SourceParts=")"
 check "moving a package the image carries at another version to its pin, and removing nothing" \
   "$(contains "$calls" "^sudo env .* -y --no-install-recommends --allow-downgrades --no-remove install tmux=3.4-1ubuntu0.2$")"
 check "prints the pins it installed" "$(is "$out" "apt-cache: tmux=3.4-1ubuntu0.2 installed")"
