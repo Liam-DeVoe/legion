@@ -356,7 +356,8 @@ Then:
   one still running then is stopped with its whole process group, and the roles start without the database while the next tick carries the start on, a stopped `initdb` included.
   A tick's `ensure` has no deadline of its own.
   Each wait inside `legion-testpg` — for the cluster's lock, for a connection, for the server to start or to stop — takes the time its caller's deadline leaves (`LEGION_TESTPG_DEADLINE`), and with no deadline it waits until what it waits for answers.
-  The daemon's image probe (`legion probe-image --test-postgres`) stops, by its data directory, a server its own stop left running, removes that cluster's data, and names both, so the probe pod leaves nothing running.
+  The daemon's image probe (`legion probe-image --test-postgres`) stops, by its data directory, a server its own stop left running, removes that cluster's data and the System V shared memory segment the server's postmaster made (PostgreSQL removes that segment only when it exits on its own, and a SIGKILL leaves it in the kernel), and names what it did, so the probe pod leaves nothing running.
+  It removes the segment only where that postmaster made it, the probe's own uid owns it and no process attaches to it, so a segment another server of the same uid left stays.
   It is not `runtime.kubernetes.setup`: that command runs inside a role's own PID namespace, so the server would be a child of that role's generation and would die with it, and the next role would find a stale data directory and no postmaster.
 
 - The **daemon** puts `LEGION_TEST_PG_DSN` in the start command of every role of such an issue pod, and refuses the name in `runtime.kubernetes.pod.env`, so no deployment line can point a role at another server.
@@ -434,7 +435,7 @@ Then:
   Each of those steps waits as long as the probe command's own deadline (`--probe-budget`) allows, and so does each wait inside `legion-testpg`, which is told that deadline, so a step that is slow but still working is waited for rather than refused at a fixed bound.
   A step still running at that deadline is stopped with its whole process group, and the refusal names the step.
   The server is then stopped, waited for as long as the deadline allows, or asked to stop without a wait once the deadline has passed.
-  The probe then reads whether a process of the server still runs, by its data directory, and names it on the same line as the step's failure and the stop's.
+  The probe then reads whether a process of the server still runs, by its data directory, and names it on the same line as the step's failure and the stop's, with what the probe removed.
   The image build runs the same sequence in its own toolchain self-check, under the builder's runtime.
 
 - `legion-testpg ensure` refuses a DSN that carries a password or names a host that is not loopback, so a wrong deployment line logs a refusal instead of starting a server.

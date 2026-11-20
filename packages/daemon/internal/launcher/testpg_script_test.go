@@ -3,6 +3,7 @@ package launcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 // testPGScript is the worker image's script, which every other test of this file's package runs a
@@ -592,5 +594,61 @@ func TestLegionTestPGWaitsTakeTheCallersDeadlineAndAPartInitdbIsMadeAgain(t *tes
 		return os.IsNotExist(err) && (errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) || zombie(pid))
 	}) {
 		t.Fatalf("the server (postmaster %d) still ran at the test's deadline after legion-testpg stop with its caller's deadline passed: the stop did not ask for its shutdown; the server's log ends:\n%s", pid, r.serverLog())
+	}
+}
+
+// The probe's stop of a server its own stop left running (stopTestPGServer) removes the System V
+// shared memory segment that server's postmaster made, which PostgreSQL removes only when it exits
+// on its own, so a SIGKILL leaves it in the kernel; and it leaves a segment of this uid that
+// another process made, as another server that was killed leaves one. Run against this machine's
+// real PostgreSQL, so the segment and postmaster.pid's record of it are a real postmaster's.
+func TestTheProbeRemovesTheSharedMemorySegmentOfTheServerItKilled(t *testing.T) {
+	r := newScriptRig(t)
+	ctx, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	answered, _ := ctx.Deadline()
+	if out, err := r.ensure(answered); err != nil {
+		t.Fatalf("legion-testpg ensure = %v: %s; the server's log ends:\n%s", err, out, r.serverLog())
+	}
+	other := plantSegment(t)
+	data := filepath.Join(r.dir, "data")
+	seg, ok := testPGServerSegment(data)
+	if !ok {
+		text, _ := os.ReadFile(filepath.Join(data, "postmaster.pid"))
+		t.Fatalf("the server's postmaster.pid names no shared memory segment, so this test reads nothing:\n%s", text)
+	}
+	// A run that fails leaves nothing either: where the server's segment is still there when the
+	// test ends, made by its postmaster, the test removes it. A segment still attached is then
+	// removed when the rig's stop of the server, which runs after this, ends its last process.
+	t.Cleanup(func() {
+		if desc, there := shmSegment(t, seg.id); there && int(desc.Cpid) == seg.postmaster {
+			_, _ = unix.SysvShmCtl(seg.id, unix.IPC_RMID, nil)
+		}
+	})
+	if desc, there := shmSegment(t, seg.id); !there || int(desc.Cpid) != seg.postmaster || desc.Nattch == 0 {
+		t.Fatalf("shared memory segment %d, which postmaster.pid names, is no segment the running postmaster %d made and attaches to (there: %v, made by pid %d, %d attached)",
+			seg.id, seg.postmaster, there, desc.Cpid, desc.Nattch)
+	}
+	running, err := testPGServerProcesses("/proc", data)
+	if err != nil || len(running) == 0 {
+		t.Fatalf("the serving server's processes = %v, %v; want the postmaster and its backends", running, err)
+	}
+	err = stopTestPGServer("/proc", r.dir, running)
+	if want := fmt.Sprintf("and removed %s and its shared memory segment %d", data, seg.id); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("the probe's stop of the server = %v, want %q in it", err, want)
+	}
+	for _, p := range running {
+		if _, started, ok := testPGProcessStat("/proc", p.pid); ok && started == p.started {
+			t.Errorf("%s still runs after the probe's stop", p)
+		}
+	}
+	if desc, there := shmSegment(t, seg.id); there && int(desc.Cpid) == seg.postmaster {
+		t.Errorf("the probe's stop left shared memory segment %d, which the postmaster %d it killed made (%d attached)", seg.id, seg.postmaster, desc.Nattch)
+	}
+	if desc, there := shmSegment(t, other); !there || int(desc.Cpid) != os.Getpid() {
+		t.Errorf("the probe's stop removed shared memory segment %d, which this test made and the server did not", other)
+	}
+	if _, err := os.Stat(data); !os.IsNotExist(err) {
+		t.Errorf("the server's data directory is still there after the probe's stop (%v)", err)
 	}
 }
