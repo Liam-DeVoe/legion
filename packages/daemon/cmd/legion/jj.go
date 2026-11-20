@@ -326,10 +326,10 @@ type jjStepFailure struct {
 
 func (f jjStepFailure) Error() string { return fmt.Sprintf("a command of the step exited %d", f.code) }
 
-// errJJAsWritten is a step that has printed its one line of what it could not do and changes
-// nothing more: read what the push sends (unreadable), or set an author where jj refuses to make
-// a commit that exists already (metaedit). The push then runs as the role wrote it, but for a
-// commit id whose commit a metaedit of the step moved (jjPush.withRevisions).
+// errJJAsWritten is a step that has printed its one line of what it could not do (asWritten) and
+// changes nothing more: read what the push sends (unreadable), or set an author where jj refuses
+// to make a commit that exists already (metaedit). The push then runs as the role wrote it, but
+// for a commit id whose commit a metaedit of the step moved (jjPush.withRevisions).
 var errJJAsWritten = errors.New("the step changes nothing more; the push runs as written")
 
 // rewrite runs the step: the hidden-id read (readIDs), the dry run and the loop over a commit with
@@ -406,7 +406,7 @@ func (s *jjStep) readIDs() error {
 // of no commit of the read, or of more than one, a commit whose trailer names no role of the
 // table, and any other failure of the dry run.
 func (s *jjStep) dryRunFilled() ([]string, error) {
-	var named, made []string
+	var seen []string
 	bound, passes := -1, 0
 	for {
 		_, stderr, code, err := s.command(s.env, s.push.dryRun(s.ids))
@@ -436,20 +436,20 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 			return nil, s.unreadable(refusal)
 		}
 		c := matches[0]
-		if slices.Contains(named, c.commit) || slices.Contains(made, c.commit) {
+		if slices.Contains(seen, c.commit) {
 			return nil, s.unreadable(refusal)
 		}
 		if _, ok := s.table[c.role]; !ok {
 			return nil, s.unreadable(refusal)
 		}
 		passes++
-		named = append(named, c.commit)
+		seen = append(seen, c.commit)
 		f := s.follow(c, false)
 		if err := s.metaedit(c.role, []*jjFollowed{f}); err != nil {
 			return nil, err
 		}
 		if f.commit != f.origin {
-			made = append(made, f.commit)
+			seen = append(seen, f.commit)
 		}
 	}
 }
@@ -657,8 +657,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 			return err
 		}
 		if taken == nil {
-			fmt.Fprintf(s.stderr, "legion jj: could not set the author: %s; the push runs as written\n", line)
-			return errJJAsWritten
+			return s.asWritten("set the author", line)
 		}
 		s.rewrites = append(s.rewrites, jjRewrite{role: role, commit: taken})
 		commits = slices.DeleteFunc(commits, func(c *jjFollowed) bool { return c == taken })
@@ -855,10 +854,18 @@ func (s *jjStep) report() {
 // step could not read: its first line that the step could not read or act on, jj's refusal of a
 // commit with no author that the step cannot fill among them (dryRunFilled), or a commit id of a
 // block that the step could not place among the commits it read (fullHeads), and answers
-// errJJAsWritten: the push then runs with the role's own words, but for a commit id whose commit
-// a metaedit of the step moved (jjPush.withRevisions).
+// errJJAsWritten (asWritten): the push then runs with the role's own words, but for a commit id
+// whose commit a metaedit of the step moved (jjPush.withRevisions).
 func (s *jjStep) unreadable(line string) error {
-	fmt.Fprintf(s.stderr, "legion jj: could not read what the push sends: %s; the push runs as written\n", line)
+	return s.asWritten("read what the push sends", line)
+}
+
+// asWritten prints the one line of a step that could not do what, naming line: what of the dry run
+// it could not read (unreadable), or jj's refusal to make a commit that exists already (metaedit).
+// It answers errJJAsWritten: the step changes nothing more, and the push runs as the role wrote
+// it, but for a commit id whose commit a metaedit of the step moved (jjPush.withRevisions).
+func (s *jjStep) asWritten(what, line string) error {
+	fmt.Fprintf(s.stderr, "legion jj: could not %s: %s; the push runs as written\n", what, line)
 	return errJJAsWritten
 }
 
