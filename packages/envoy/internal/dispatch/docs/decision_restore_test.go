@@ -152,13 +152,15 @@ func (issue *restoreIssue) replaceAsPerson(document, markdown string) {
 }
 
 // write writes markdown over document as actor, in a context mark gives, with its version, whose
-// facts it appends with no event, as a version of the fixtures is recorded, and settles it.
+// facts it appends with no event, as a version of the fixtures is recorded, and settles it. The
+// upload names the token the document stands at, read before the write as a caller reads it.
 func (issue *restoreIssue) write(document, markdown string, actor model.Actor, mark func(context.Context) context.Context) {
 	t := issue.t
 	t.Helper()
+	base := liveDocumentToken(t, issue.service, document)
 	if err := joinedWrite(issue.service, func(ctx context.Context) error {
 		ctx = mark(ctx)
-		if _, err := issue.service.ReplaceText(ctx, document, markdown, actor); err != nil {
+		if _, err := issue.service.ReplaceText(ctx, document, markdown, actor, base); err != nil {
 			return err
 		}
 		written, err := issue.service.SnapshotVersion(ctx, document, actor)
