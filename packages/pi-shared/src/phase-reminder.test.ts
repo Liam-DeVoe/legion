@@ -733,3 +733,29 @@ test("a reminder skipped for a pending take is armed again, and reminds once the
   await fireLast(resumed.timers);
   expect(resumed.sent).toEqual([REMINDER]);
 });
+
+// The running task's own number written again at a newer revision during its turn (see the
+// task-take test "pending() is false for a newer revision of the task whose turn is running"): no
+// take follows it, so the settle gives the run's continuation as at the base, rather than holding
+// it for a take that never comes and reminding only after the reminder's whole delay.
+test("a newer revision of the running task's own number withholds no continuation", async () => {
+  const claim = claimTake();
+  const { reminder, timers, sent } = rig({ taskPending: () => claim.take.pending() });
+  await claim.relay(4, 12);
+  await claim.answer({ outcome: "accepted", text: TASK_TEXT });
+  claim.take.runStarted();
+  reminder.turnStarted();
+  await claim.relay(4, 13);
+  expect(claim.take.noteFor()).toBeUndefined();
+
+  const continuation = await reminder.settle(said("Pushed."));
+  claim.take.runEnded(false);
+  await flush();
+  expect(claim.asked()).toBe(1);
+  expect(claim.ran).toEqual([TASK_TEXT]);
+  expect({ continuation, timers: timers.map((t) => t.delayMs), sent }).toEqual({
+    continuation: REMINDER,
+    timers: [],
+    sent: [],
+  });
+});
