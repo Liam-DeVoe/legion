@@ -189,6 +189,13 @@ func TestAHeadNamesTheNewestResultsThatDecideIt(t *testing.T) {
 		fail := rig.record(t, "implementer", "fail")
 		rig.head(t, "two passes and two fails", "unknown", "pass_and_fail", []string{pass, fail})
 	})
+	t.Run("the newest pass of each role", func(t *testing.T) {
+		rig := newPassAndFailRig(t)
+		rig.record(t, "tester", "pass")
+		tester := rig.record(t, "tester", "pass")
+		implementer := rig.record(t, "implementer", "pass")
+		rig.head(t, "two tester passes and an implementer pass", "yes", "", []string{tester, implementer})
+	})
 	t.Run("the newest of two fails", func(t *testing.T) {
 		rig := newPassAndFailRig(t)
 		rig.record(t, "tester", "fail")

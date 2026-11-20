@@ -30,6 +30,7 @@ import { z } from "zod";
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+import { HEADS_SCENARIOS } from "./heads-scenarios";
 import {
   CheckableFile,
   CheckableOutput,
@@ -820,12 +821,6 @@ export const CASED_RUNS: Readonly<Record<string, RegExp>> = {
   "ci-pass-and-fail": CI_PASS_AND_FAIL_RUN,
 };
 /** The scenarios whose world rig.sh's heads_world builds, each with its results-before.txt. */
-const HEADS_SCENARIOS = [
-  "reviewer-own-head",
-  "reviewer-pass-and-fail",
-  "architect-pass-and-fail",
-  "ci-pass-and-fail",
-];
 /** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */
 const LINE_OF_702 = /^ {2}- #702 at /m;
 

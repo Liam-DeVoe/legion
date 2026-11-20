@@ -13,6 +13,7 @@ import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { quietCheck, scanTranscripts, stateLines } from "./hidden-proof";
 import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
+import { parseSession } from "./transcript";
 
 // The rows that run hidden-proof.ts as a process of its own take longer than bun's 5 s default on a
 // loaded machine, so each test and hook gets the limit test-limit.ts computes from the bounds of
@@ -199,6 +200,14 @@ function run(sessions: Record<string, string[]>, calls: string[] = []): string {
   }
   return dir;
 }
+
+test("the transcript decoder reads a file the hidden proof scans", () => {
+  const dir = run({ "decoder.jsonl": [TEXT_AFTER] });
+  const entries = parseSession(path.join(dir, "sessions", "decoder.jsonl"));
+  expect(entries).toHaveLength(2);
+  expect(entries[0]?.type).toBe("session");
+  expect(entries[1]?.message?.role).toBe("toolResult");
+});
 
 test("a run that read its results and saw no state line is hidden; its curl of the route is counted", () => {
   const scan = scanTranscripts(

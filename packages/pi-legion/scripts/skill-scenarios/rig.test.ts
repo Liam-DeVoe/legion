@@ -1900,12 +1900,13 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("heads_scenario"),
       fn("hidden_needs_heads"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",
       `run_architect_pass_and_fail() { printf '%s\\n' "$hide_state_file" >"$R/switch"; echo exit=0 >"$R/out.txt"; }`,
-      "work=$1 maps=$1/maps services_env=$1/services/env hide_state_file=''",
+      `work=$1 maps=$1/maps services_env=$1/services/env root=${root} hide_state_file=''`,
       'cmd_run architect-pass-and-fail "$2" 1 1 1700000000',
     ].join("\n");
     expect(bash(script, [rigWork, "head-hidden"])).toMatchObject({ code: 0, stderr: "" });
@@ -1928,20 +1929,21 @@ describe("cmd_batch", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
         "load_label() { :; }",
         `lock_services() { echo started >>"$here/started"; }`,
         "on_exit() { :; }",
         "services_up() { :; }",
-        "here=$1 work=$2 root=/checkout",
+        `here=$1 work=$2 root=${root}`,
         "cmd_batch measure-before-ask 1 head ablate-x-hidden",
       ].join("\n"),
       [here, rigWork]
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain(
-      "the label ablate-x-hidden hides Dispatch's computed state, which only reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail and ci-pass-and-fail hide; measure-before-ask is none of them"
+      "the label ablate-x-hidden hides Dispatch's computed state, but the heads-scenario catalog does not list measure-before-ask"
     );
     expect(existsSync(path.join(here, "started"))).toBe(false);
   });
@@ -1955,6 +1957,7 @@ describe("cmd_batch", () => {
     const batch = bash(
       [
         fn("fail"),
+        fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
         "load_label() { :; }",
@@ -1963,7 +1966,7 @@ describe("cmd_batch", () => {
         "services_up() { :; }",
         "date() { echo 1700000000; }",
         "go() { :; }",
-        "here=$1 work=$2 root=/checkout",
+        `here=$1 work=$2 root=${root}`,
         "cmd_batch ci-pass-and-fail 1 head head-hidden",
       ].join("\n"),
       [here, rigWork]
@@ -1983,12 +1986,13 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(work, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("heads_scenario"),
       fn("hidden_needs_heads"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",
       `run_ci_pass_and_fail() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
-      "work=$1 maps=$1/maps services_env=$1/services/env hide_state_file=''",
+      `work=$1 maps=$1/maps services_env=$1/services/env root=${root} hide_state_file=''`,
       'cmd_run ci-pass-and-fail head 1 2 1700000000 "$2"',
     ].join("\n");
     expect(bash(script, [work, "tester"])).toMatchObject({ code: 0, stderr: "" });

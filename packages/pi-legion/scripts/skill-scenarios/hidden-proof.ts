@@ -22,15 +22,8 @@
 // exit 2 for a usage error.
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { SessionEntry, toolResults } from "./transcript";
-
-/** The scenarios whose agent reads Dispatch's computed state (rig.sh's hidden_needs_heads). */
-const HEADS_SCENARIOS = [
-  "reviewer-own-head",
-  "reviewer-pass-and-fail",
-  "architect-pass-and-fail",
-  "ci-pass-and-fail",
-];
+import { HEADS_SCENARIOS } from "./heads-scenarios";
+import { parseSession, toolResults } from "./transcript";
 
 /** A line that states what Dispatch computes from the results: the check's answer, the count of
  * heads that read yes, the line of a head, the pull request line under it, or the fields that hold
@@ -184,15 +177,7 @@ export function scanTranscripts(runDir: string): Scan {
   let apiCalls = 0;
   let first = "";
   for (const file of files) {
-    const entries = readFileSync(file, "utf8")
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line, index) => {
-        const parsed = SessionEntry.safeParse(JSON.parse(line));
-        if (!parsed.success)
-          throw new Error(`${file}:${index + 1} is not a record: ${parsed.error.message}`);
-        return parsed.data;
-      });
+    const entries = parseSession(file);
     const texts = [
       ...toolResults(entries),
       ...entries.flatMap((entry) =>

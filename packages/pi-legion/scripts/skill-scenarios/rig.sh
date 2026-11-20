@@ -2113,15 +2113,22 @@ hide_state_off() {
   [ ! -e "$hide_state_file.results-before.txt" ] || mv -- "$hide_state_file.results-before.txt" "$R/results-before.txt"
 }
 
+# heads_scenario SCENARIO reads the one catalog that the proof and scorer read too.
+heads_scenario() {
+  local scenario=$1 known
+  while IFS= read -r known; do
+    [ "$known" = "$scenario" ] && return 0
+  done <"$root/packages/pi-legion/scripts/skill-scenarios/heads-scenarios.txt"
+  return 1
+}
+
 # hidden_needs_heads LABEL SCENARIO fails when LABEL ends in -hidden and SCENARIO is not a heads
 # scenario: only a heads scenario turns the switch on (hide_state_on), so a run of another would
 # show its agent all that Dispatch computes and still carry the hidden label's name.
 hidden_needs_heads() {
   case $1 in *-hidden) ;; *) return 0 ;; esac
-  case $2 in
-  reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;;
-  *) fail "the label $1 hides Dispatch's computed state, which only reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail and ci-pass-and-fail hide; $2 is none of them" ;;
-  esac
+  heads_scenario "$2" ||
+    fail "the label $1 hides Dispatch's computed state, but the heads-scenario catalog does not list $2"
 }
 
 # reviewer-own-head: a reviewer reviews #702 of an issue whose #703 is open too, with the case's

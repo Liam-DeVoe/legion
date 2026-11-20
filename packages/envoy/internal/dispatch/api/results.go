@@ -417,18 +417,16 @@ type issueCheckResults struct {
 // check's words moved since. An issue with no Verification document has no checks and no
 // error.
 //
-// A check CI proves carries `ci` too, read from GitHub at the issue's newest pull request
-// head, and a role's result of it counts for nothing (not_counted). Its results are the one
-// derived from the run its
-// `ci_check` names (deriveCIResults), which is judged as a recorded result is, beside each
-// result a run of its CI job recorded (role ci, branch set), newest first. A reader of one
-// result of such a check finds the derived one by its id (ci-run:<check run id>), not as the
-// first.
+// A check CI proves carries `ci` too, read from GitHub at each open pull request head, and a
+// role's result of it counts for nothing (not_counted). Its results are the one derived from the
+// run its `ci_check` names (deriveCIResults), which is judged as a recorded result is, beside each
+// result a run of its CI job recorded (role ci, branch set), newest first. A reader of one result
+// of such a check finds the derived one by its id (ci-run:<check run id>), not as the first.
 //
 // ?at=<commit> replaces what every check is compared with by the one commit the reader names.
-// The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's
-// newest pull request head as on every read: the derived result is that head's, and stands at
-// the named commit only where that commit is the head.
+// The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull
+// request head as on every read: the derived result of each is that head's, and stands at the named
+// commit only where that commit is the head.
 //
 // An end-to-end test process whose hide-state file exists answers without the state the server
 // computes from the results (stateHidden, withoutComputedState).

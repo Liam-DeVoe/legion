@@ -228,6 +228,22 @@ func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 			}
 		}
 	})
+	t.Run("the head with no pass is last", func(t *testing.T) {
+		rig := newCIJobRig(t)
+		writeHead(t, rig.database, ciJobRepository, 70, eachHeadH3, "open", rig.issue)
+		writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
+		writeHead(t, rig.database, ciJobRepository, 72, eachHeadH1, "open", rig.issue)
+		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH3)
+		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH2)
+		check := eachHeadRead(t, rig.handler, rig.issue, "k1", "")
+		if check.PassStands.Answer != "no" {
+			t.Fatalf("passes at the first two heads, with the no head last, answer %+v, want no", check.PassStands)
+		}
+		subjects := check.PassStands.Subjects
+		if len(subjects) != 3 || subjects[2].Basis.Commit != eachHeadH1 {
+			t.Fatalf("the no head is not last: %+v", subjects)
+		}
+	})
 
 	t.Run("a pass at the merged head alone", func(t *testing.T) {
 		rig := newRig(t)

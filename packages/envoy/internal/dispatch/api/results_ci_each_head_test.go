@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
 // The heads of this test: H1 and H2 of #70 and #71 in the issue's repository, and H3 of #9 of
@@ -25,6 +27,21 @@ const (
 	ciEachHeadH2 = "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
 	ciEachHeadH3 = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
 )
+
+func TestCIReadBoundHasDeadline(t *testing.T) {
+	before := time.Now()
+	bound, cancel := ciReadBound(context.Background())
+	defer cancel()
+	deadline, ok := bound.Deadline()
+	if !ok {
+		t.Fatal("ciReadBound gives a context with no deadline")
+	}
+	// The bound starts inside ciReadBound. The allowance is scheduler delay before it starts, not
+	// time the test waits; it still rejects a caller that gives this read GitHub's 20-second bound.
+	if deadline.After(before.Add(ciReadDeadline + time.Second)) {
+		t.Fatalf("ciReadBound deadline %s is later than its %s bound", deadline, ciReadDeadline)
+	}
+}
 
 // ciEachHeadVerification is c1, a check whose ci_check names the job go-checks.
 const ciEachHeadVerification = ":::check{#c1 negative_control=\"A build whose server does not build.\" ci_check=\"go-checks\"}\n" +
@@ -195,6 +212,9 @@ func TestACheckCIProvesDerivesAResultAtEachOpenHead(t *testing.T) {
 	// end. The time each step took is logged, and asserted nowhere.
 	t.Run("a read that does not end", func(t *testing.T) {
 		bounds := holdCIReadBounds(t)
+		savedTimeout := githubapp.RequestTimeout
+		githubapp.RequestTimeout = 2 * ciReadDeadline
+		t.Cleanup(func() { githubapp.RequestTimeout = savedTimeout })
 		held := github.hold(t, "acme/widgets", ciEachHeadH2)
 		started := time.Now()
 		answered := make(chan *httptest.ResponseRecorder, 1)

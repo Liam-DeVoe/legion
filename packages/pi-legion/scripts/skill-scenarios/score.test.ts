@@ -3202,8 +3202,13 @@ run(
   ciFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
   [...header, said(10, "WAITING for CI run go-checks at the head.")]
 );
-const ciTestRecords = (second: number, failures: { check: string; evidence: string }[]) =>
+const ciTestRecords = (
+  second: number,
+  failures: { check: string; evidence: string }[],
+  earlier: object[] = []
+) =>
   JSON.stringify([
+    ...earlier,
     {
       id: "h-test",
       issue_key: "LWEVAL-1",
@@ -3245,6 +3250,34 @@ run("ci-pass-and-fail-tester-head-3", ciFiles({ "handoffs.json": ciTestRecords(2
   ...header,
   said(10, "The run is still going, so it fails no round."),
 ]);
+run("ci-pass-and-fail-tester-head-4", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+  ...header,
+  said(10, "k1 reads not known at the head: a test failure."),
+  said(30, "WAITING for the implementer's next phase."),
+]);
+run(
+  "ci-pass-and-fail-tester-head-5",
+  ciFiles({
+    "handoffs.json": ciTestRecords(20, k1Failure, [
+      {
+        id: "h-other",
+        issue_key: "LWEVAL-1",
+        phase: "test",
+        version: 3,
+        author: { kind: "session", id: "other-session" },
+        created_at: headsAt(21),
+        body: JSON.stringify({
+          schemaVersion: 1,
+          phase: "test",
+          issue: "LWEVAL-1",
+          implementerProof: { verdict: "verified", how: "another session" },
+          failures: [],
+        }),
+      },
+    ]),
+  }),
+  [...header, said(10, "k1 reads not known at the head: a test failure.")]
+);
 run("ci-pass-and-fail-architect-head-1", ciFiles({ "daemon.log": sentBackAt(20) }), [
   ...header,
   said(10, "k1 holds a pass and a fail at the head."),
@@ -3327,8 +3360,9 @@ test("ci-pass-and-fail: a reviewer's refusal naming k1 passes, and one after a W
   expect(out).toMatch(/^ci-pass-and-fail:reviewer\thead\t1\/2\t/m);
 });
 
-// Catches: a tester scored without k1 in its failures, or without its wait rule.
-test("ci-pass-and-fail: a tester's record listing k1 passes; a WAITING line before it, or no k1, fails", () => {
+// Catches: a tester scored without k1 in its failures, with a wait before its record, with a
+// wait after it, or from another session's record.
+test("ci-pass-and-fail: the tester's own record listing k1 passes", () => {
   expect(rowOf("ci-pass-and-fail-tester-head-1")).toMatch(
     /^ci-pass-and-fail-tester-head-1\tpass=true\t.*failures=\[k1\] listsK1=true waiting=0/
   );
@@ -3338,7 +3372,13 @@ test("ci-pass-and-fail: a tester's record listing k1 passes; a WAITING line befo
   expect(rowOf("ci-pass-and-fail-tester-head-3")).toMatch(
     /^ci-pass-and-fail-tester-head-3\tpass=false\t.*failures=\[\] listsK1=false/
   );
-  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t1\/3\t/m);
+  expect(rowOf("ci-pass-and-fail-tester-head-4")).toMatch(
+    /^ci-pass-and-fail-tester-head-4\tpass=true\t.*failures=\[k1\] listsK1=true waiting=0/
+  );
+  expect(rowOf("ci-pass-and-fail-tester-head-5")).toMatch(
+    /^ci-pass-and-fail-tester-head-5\tpass=true\t.*record=h-test v2/
+  );
+  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t3\/5\t/m);
 });
 
 // Catches: an architect of ci-pass-and-fail scored without its wait rule, or not at all.

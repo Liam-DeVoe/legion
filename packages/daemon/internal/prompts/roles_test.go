@@ -610,6 +610,28 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	}
 }
 
+// The CI-result decisions belong in the prompts that bind each role. Guide text may describe how
+// to operate a tool, but a role must receive the decision in the prompt it loads for its head.
+func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
+	for _, pin := range []struct{ file, rule string }{
+		{"tester.md", "A `before_merge` check reads yes at the approved head only when passes from the implementer and the tester both stand there; a pass from one role alone is no pass."},
+		{"tester.md", "A pass and a fail at any open head make the check not known; count it as a test failure and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"reviewer.md", "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"architect.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"architect-root.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"architect.md", "To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule."},
+		{"architect-root.md", "To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule."},
+		{"architect.md", "At acceptance, read each CI-proved check's derived result and each result its CI job recorded."},
+		{"architect-root.md", "At acceptance, read each CI-proved check's derived result and each result its CI job recorded."},
+		{"implementer.md", "For a check CI proves, copy the `Pull request line` under this pull request's head from `dispatch results` into the body's `Checks` line; record no result for it."},
+	} {
+		text := strings.Join(strings.Fields(rolePart(t, pin.file)), " ")
+		if !strings.Contains(text, pin.rule) {
+			t.Errorf("%s does not contain %q", pin.file, pin.rule)
+		}
+	}
+}
+
 // Every file-backed role's handoff body names the head its work was done against
 // (dispatch://INFRA-3146). The daemon takes a completion of an earlier entry of the same phase
 // only at the head that entry's record holds, so a role whose handoff paragraph lost the field
