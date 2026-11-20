@@ -358,16 +358,11 @@ export const DAEMON_RESTART_FIRST_DELAY_MS = 500;
 export const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
 
 /** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent);
- * `dropped` may have reached it (a connection reset or closed before a response, or a 502 or 503
- * from a proxy in front of it, whose body is not the daemon's refusal shape). Undefined for an
- * answer the daemon gave, which is never retried: a 4xx above all, and the daemon's own 502/503,
- * which carry a code. */
+ * `dropped` may have reached it (a connection reset or closed before a response, or a proxy's
+ * answer in the daemon's place, `proxyAnswered`). Undefined for an answer the daemon gave, which
+ * is never retried: a 4xx above all, and the daemon's own 502/503, which carry a code. */
 export function daemonUnreachable(error: unknown): "refused" | "dropped" | undefined {
-  if (error instanceof LegionDaemonApiError) {
-    return (error.status === 502 || error.status === 503) && error.code === undefined
-      ? "dropped"
-      : undefined;
-  }
+  if (error instanceof LegionDaemonApiError) return proxyAnswered(error) ? "dropped" : undefined;
   if (!(error instanceof Error)) return undefined;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
   if (code === "ConnectionRefused" || code === "ECONNREFUSED") return "refused";
@@ -455,25 +450,36 @@ class DaemonAnswerTimeout extends Error {
 }
 
 /**
+ * Whether `error` is an answer a proxy in front of the daemon gave in the daemon's place, the one
+ * rule both senders read it by (`daemonUnreachable`, `daemonGaveNoAnswer`): a 502, a 503 or a 504
+ * that names no Legion error code. Those three are what a gateway answers for a server behind it
+ * that is down or restarting (502 Bad Gateway, 503 Service Unavailable) or that did not answer in
+ * time (504 Gateway Timeout). The daemon names a code on every refusal it gives, its own 502 and
+ * 503 included, and answers no 504, so none of the three uncoded is the daemon's word; any other
+ * status, coded or not, is. The request may have reached the daemon all the same.
+ */
+function proxyAnswered(error: LegionDaemonApiError): boolean {
+  return (
+    (error.status === 502 || error.status === 503 || error.status === 504) &&
+    error.code === undefined
+  );
+}
+
+/**
  * Whether `error` is an attempt the daemon gave no answer to (dispatch://INFRA-2811, the plan's
  * departure 7): every failure that carries no HTTP status — a refused, reset or closed
  * connection, an unreachable host or network, a connect or read timeout, a DNS failure, a fetch's
  * `NetworkError`, no answer within `DAEMON_ANSWER_TIMEOUT_MS`, and any other failure of the
- * transport, whatever code or name it carries — and a 502, 503 or 504 that names no Legion error
- * code, which a proxy in front of the daemon answers. No list of codes decides it: an attempt that
- * never reached the daemon applied nothing, and one that did is applied once however often it
- * arrives, which is what every request sent through `sendUntilAnswered` is. Every refusal the
- * daemon itself gives names a code or is a 4xx, and is an answer; so is a success whose body the
- * contract does not describe (`LegionDaemonContractError`). A request the contract does not
- * describe never leaves the pane (the schema's `ZodError`), so no attempt of it can pass.
+ * transport, whatever code or name it carries — and a proxy's answer in the daemon's place
+ * (`proxyAnswered`). No list of codes decides it: an attempt that never reached the daemon applied
+ * nothing, and one that did is applied once however often it arrives, which is what every request
+ * sent through `sendUntilAnswered` is. Every refusal the daemon itself gives names a code or is a
+ * 4xx, and is an answer; so is a success whose body the contract does not describe
+ * (`LegionDaemonContractError`). A request the contract does not describe never leaves the pane
+ * (the schema's `ZodError`), so no attempt of it can pass.
  */
 function daemonGaveNoAnswer(error: unknown): boolean {
-  if (error instanceof LegionDaemonApiError) {
-    return (
-      (error.status === 502 || error.status === 503 || error.status === 504) &&
-      error.code === undefined
-    );
-  }
+  if (error instanceof LegionDaemonApiError) return proxyAnswered(error);
   return !(error instanceof LegionDaemonContractError || error instanceof z.ZodError);
 }
 

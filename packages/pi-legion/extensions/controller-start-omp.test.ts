@@ -9,7 +9,8 @@ import {
   ROLE_TOPIC_PREFIX,
   slackMentionTopic,
 } from "@legion/contracts";
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
+import { RelayHeader } from "@legion/envoy-client/relay-frame";
 import {
   type Block,
   type Cleanup,

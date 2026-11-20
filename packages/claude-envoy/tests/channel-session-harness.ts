@@ -8,7 +8,8 @@
  */
 import { randomBytes } from "node:crypto"
 import type { DeliveryCapability } from "@legion/contracts"
-import { deliverSubject, RelayHeader, TaskHeader } from "@legion/envoy-client/consumer-delivery"
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
+import { RelayHeader, TaskHeader } from "@legion/envoy-client/relay-frame"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { EnvoyClient, SubscribeResult } from "@legion/envoy-client/transport"

@@ -6,19 +6,21 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   DELIVER_SUBJECT_PREFIX,
-  decodeRelayFrame,
-  decodeTaskFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
   inboundUnavailable,
   RELAY_PROGRESS_INTERVAL_MS,
-  RelayHeader,
-  type RelayMessage,
   type RelayReply,
-  type RelayTaskValue,
   registerWithRelay,
 } from "../consumer-delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
+import {
+  decodeRelayFrame,
+  decodeTaskFrame,
+  RelayHeader,
+  type RelayMessage,
+  type RelayTaskValue,
+} from "../relay-frame";
 import type { DeliveryAnswer } from "../transport";
 
 const SESSION = "ses_a";

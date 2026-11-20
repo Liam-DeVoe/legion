@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { legacyAgentSubject } from "@legion/contracts"
-import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery"
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,

@@ -42,7 +42,7 @@ import {
   STORE_BEAT_MS,
 } from "@legion/envoy-client/askgate-marker";
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
-import { deliverSubject, RelayHeader, TaskHeader } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import type {
   DeliveryLedgerHost,
   DeliveryLedgerOptions,
@@ -54,6 +54,7 @@ import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
+import { RelayHeader, TaskHeader } from "@legion/envoy-client/relay-frame";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,

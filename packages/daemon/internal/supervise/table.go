@@ -2182,15 +2182,19 @@ func finishReady(m *Machine, ctx context.Context) error {
 // reready persists the in-memory ready state before answering an agent retry: a prior ready's
 // claim write may have failed after the machine made the transition. A retained launch-time
 // suspension still wins: the retry completes that suspension instead of publishing ready and
-// releasing notices to a claim the operator or workflow is stopping. A held suspension that waits
-// past the end of its take's turn for the report that settles the task does not: run here, its
-// stop would come before that report, and settle would take back as a cut turn a task whose turn
-// ran whole (Machine.heldForReport). The report's finish runs it (afterTurn), or its deadline
-// (suspendAtTimeout), and the ready is answered as any other is meanwhile, the take the hold
-// refuses refused still (claimHold). pi-legion sends its ready again from its capability schedule
-// while its session is idle, which is exactly that window.
+// releasing notices to a claim the operator or workflow is stopping, as it completes one whose
+// stop the runtime refused at a turn's end, the claim idle meanwhile. Two holds do not run here,
+// both for what they wait on. One held over a claim that is working waits for the end of its turn
+// or its compaction (holdSuspension, turnEnded, compactEnded): run here, its stop would cut off
+// that turn, which is what the hold exists to keep whole. And one that waits past the end of its
+// take's turn for the report that settles the task: run here, its stop would come before that
+// report, and settle would take back as a cut turn a task whose turn ran whole
+// (Machine.heldForReport); the report's finish runs it (afterTurn), or its deadline
+// (suspendAtTimeout). The ready is answered as any other is meanwhile, the take a hold refuses
+// refused still (claimHold). pi-legion sends its ready again from its capability schedule while it
+// reads its session idle, and a turn can start before that ready reaches the daemon.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil && !m.heldForReport {
+	if m.held != nil && !m.heldForReport && m.claim.State != StateWorking {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)

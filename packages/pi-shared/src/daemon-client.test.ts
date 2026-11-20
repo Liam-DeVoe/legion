@@ -908,3 +908,39 @@ test("a request sent until it is answered is sent again after a failure with no 
   expect(malformed).toBeDefined();
   expect(await send(malformed as Error)).toEqual({ answer: malformed, attempts: 1, waits: [] });
 });
+
+// A proxy in front of the daemon answers in its place with a 502, a 503 or a 504 that names no
+// Legion error code, and both senders read the same three as the daemon's having given no answer
+// (`proxyAnswered`): the restart retry as an attempt that may have reached the daemon, and
+// `sendUntilAnswered` as one to send again. A coded answer of any of them is the daemon's own,
+// and so is any other uncoded 5xx. The negative control is the two rules written apart again, the
+// restart retry's naming 502 and 503 alone, under which a gateway's 504 ends a call that was to
+// wait out the restart.
+test("both senders read a proxy's uncoded 502, 503 and 504 as no answer, and nothing else", async () => {
+  const send = async (failure: Error) => {
+    let attempts = 0;
+    await sendUntilAnswered(
+      "the take",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw failure;
+        return "answered";
+      },
+      { stop: new AbortController().signal, warn: () => {}, wait: async () => true }
+    ).catch(() => undefined);
+    return attempts;
+  };
+  const proxyAnswer = (status: number, code: string | undefined) =>
+    new LegionDaemonApiError("POST", "/legion/v1/claims/take", status, code, "an answer");
+  for (const status of [502, 503, 504]) {
+    const proxied = proxyAnswer(status, undefined);
+    expect(daemonUnreachable(proxied)).toBe("dropped");
+    expect(await send(proxied)).toBe(2);
+    const coded = proxyAnswer(status, "DAEMON_DRAINING");
+    expect(daemonUnreachable(coded)).toBeUndefined();
+    expect(await send(coded)).toBe(1);
+  }
+  const other = proxyAnswer(500, undefined);
+  expect(daemonUnreachable(other)).toBeUndefined();
+  expect(await send(other)).toBe(1);
+});

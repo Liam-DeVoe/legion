@@ -5475,7 +5475,7 @@ Everything is built from the checkout:
 
 Each session reads an `envoy.json` naming listener `shared` and, as its only NATS server, a `socat` proxy of its own, which the script can cut, with Dispatch off.
 Dispatch reaches NATS through a proxy of its own too.
-Each session gets one setup prompt, which makes it follow `notifications.dispatch.issue.<KEY>.>` and the run's own team topic `notifications.team.live-delivery-<run>`, and hold a role of its own;
+Each session gets one setup message — Oh My Pi's a prompt frame, Claude Code's an Envoy send to its own session once its channel server has registered it, since `legion claude-bridge` takes no prompt frame — which makes it follow `notifications.dispatch.issue.<KEY>.>` and the run's own team topic `notifications.team.live-delivery-<run>`, and hold a role of its own;
 the listener's registry is then read to show them, and `GET /v1/sessions` to show each session's `delivery` reading `consumer` — read again with the table, and a failure either time
 — so every count below is a count of what a session's own consumer carried.
 Then eight windows run, each with one disruption, and every event of the window is published while the disruption holds:

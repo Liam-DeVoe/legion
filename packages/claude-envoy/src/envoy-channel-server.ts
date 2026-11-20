@@ -17,7 +17,6 @@ import {
   gapNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  type RelayTaskValue,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery"
 import {
@@ -56,6 +55,7 @@ import {
   keepNatsCredential,
   type NatsCredential,
 } from "@legion/envoy-client/nats-credential"
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame"
 import {
   type SessionConfigFile,
   sessionConfigFile,

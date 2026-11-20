@@ -190,8 +190,8 @@ func (b *bridge) valueHanded(v taskValue, finished uint64) {
 		default:
 			b.log.Printf("task %d's value reached the inbox at revision %d; that task is finished, so it is reported seen and not taken", v.number, v.revision)
 		}
-		if b.heldTask != 0 && v.number == b.heldTask {
-			b.heldText, b.heldTask = "", 0
+		if b.held != nil && v.number == b.held.number {
+			b.held = nil
 			b.log.Printf("task %d's held text is let go: its take is made again at revision %d once Claude Code is idle", v.number, v.revision)
 		}
 		if v.number != 0 {
@@ -334,7 +334,7 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 		case !b.owes(number):
 			b.log.Printf("the daemon accepted the take of task %d again; its text runs no second time", number)
 		case b.inRun || b.seeding:
-			b.heldText, b.heldTask = a.answer.Text, number
+			b.held = &heldTake{number: number, text: a.answer.Text}
 			b.log.Printf("the daemon accepted the take of task %d during a turn; that turn is reported as no task's, and the task starts a turn of its own once it ends", number)
 			return
 		default:
@@ -355,7 +355,7 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 // takePending is whether the claim's take holds the queued deliveries back: an owed value not yet
 // asked about — before the ready line, or while Claude Code is in a turn or seeding —, a take being
 // sent, or one accepted whose task has not started its turn yet.
-func (b *bridge) takePending() bool { return b.unasked() || b.asking != nil || b.heldTask != 0 }
+func (b *bridge) takePending() bool { return b.unasked() || b.asking != nil || b.held != nil }
 
 // startTask starts the turn of the task number, whose accepted take answered text: a turn of the
 // bridge's own whose first user message is text, sent ahead of every queued delivery, and whose
@@ -399,10 +399,9 @@ func (b *bridge) idle() {
 	if b.inRun || b.seeding {
 		return
 	}
-	if b.heldTask != 0 {
-		text, number := b.heldText, b.heldTask
-		b.heldText, b.heldTask = "", 0
-		b.startTask(number, text)
+	if held := b.held; held != nil {
+		b.held = nil
+		b.startTask(held.number, held.text)
 		return
 	}
 	if b.ask() || b.takePending() || b.awaitingReady() {

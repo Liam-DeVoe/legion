@@ -2455,6 +2455,9 @@ func TestAValueNamingAFinishedNumberIsReportedSeenAndNotTaken(t *testing.T) {
 	r.handTask(testTask+1, 3)
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
+	// The seen report and the take of a value are sent apart, each until the daemon answers, so the
+	// take can land, and its turn run, before the seen report of the same value does.
+	r.waitFor("the third value to be reported seen", func() bool { return len(d.seenReports()) == 3 })
 	if seen := pairsOf(t, d.seenReports()); !slices.Equal(seen, []string{"7 at 1", "7 at 2", "8 at 3"}) {
 		t.Errorf("the bridge reported seen %q, want every value", seen)
 	}

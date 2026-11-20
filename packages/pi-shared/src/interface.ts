@@ -1,4 +1,4 @@
-import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { SessionUserTurns } from "./injected-user-turns";
 import type { LegionRoleClaimBridge } from "./role-claim-bridge";

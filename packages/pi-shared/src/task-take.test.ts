@@ -6,7 +6,7 @@ import {
   LegionTakeResponse,
   LegionTaskResponse,
 } from "@legion/contracts/legion-api";
-import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame";
 import {
   type ClaimCaller,
   DAEMON_ANSWER_TIMEOUT_MS,

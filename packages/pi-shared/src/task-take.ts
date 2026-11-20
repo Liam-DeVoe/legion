@@ -1,6 +1,6 @@
 import type { LegionTake, LegionTask } from "@legion/contracts/legion-api";
-import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
 import { messageFor } from "@legion/envoy-client/errors";
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame";
 import { type ClaimCaller, type LegionDaemonClient, sendUntilAnswered } from "./daemon-client";
 import { takeTaskSignals, taskTurnMark } from "./task-values";
 

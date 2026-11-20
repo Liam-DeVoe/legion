@@ -143,13 +143,11 @@ type bridge struct {
 	armed               bool
 	seen, asked         map[pair]bool
 	seeing, asking      *call
-	// heldTask is the number of a take the daemon accepted while a turn ran, and heldText its
-	// text: that task starts a turn of its own once the turn ends (idle), and heldTask, never 0
-	// for an accepted take, is what says one is waiting. run is the task of the turn running
-	// (taskRun), its zero value for a turn of no task.
-	heldText string
-	heldTask uint64
-	run      taskRun
+	// held is the take the daemon accepted while a turn ran, nil for none: that task starts a
+	// turn of its own once the turn ends (idle). run is the task of the turn running (taskRun),
+	// its zero value for a turn of no task.
+	held *heldTake
+	run  taskRun
 	// command is the command_uuid of the slash command Claude Code is running for a mod of the
 	// plugin's ($.command.run), and "" when it runs none. A command writes a block of its own on
 	// the same stream — a `system` `init` of its own and a `result` of its own, between the
@@ -895,7 +893,7 @@ func (b *bridge) result(res resultLine) {
 	}
 	// A task whose take was accepted during this turn ends it here rather than wait behind the
 	// queue: its turn goes ahead of every queued delivery.
-	if stepped && len(b.queue) > 0 && b.heldTask == 0 {
+	if stepped && len(b.queue) > 0 && b.held == nil {
 		b.sendQueued()
 		return
 	}
@@ -920,6 +918,13 @@ type taskRun struct {
 	task  uint64
 	text  string
 	taken bool
+}
+
+// heldTake is a take the daemon accepted while a turn ran (bridge.held): the task's number and
+// the text its take was answered with, which starts a turn of its own once the turn ends.
+type heldTake struct {
+	number uint64
+	text   string
 }
 
 // writeUser sends text to Claude Code as one user message: blocks as its content where a delivery
