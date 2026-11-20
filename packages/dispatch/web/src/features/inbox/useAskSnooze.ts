@@ -42,7 +42,9 @@ interface AskSnoozePress {
  * rolls back if the server refuses, and the list refetches once the save settles - the same
  * shape as the issue field writes, without their cross-surface caches: a snooze is on the ask and
  * shows nowhere else. The Inbox keeps the row in the band the reader saw it in while the save is
- * live (`liveAskId`), so the row moves into `Later` (or back out) once the save lands.
+ * live (`liveAskId`), so the row moves into `Later` (or back out) once the save lands - save
+ * under the Blocked on you narrowing, which lists no snoozed ask and keeps the row only while
+ * the reader's hand is on it.
  *
  * Each press carries the ask it is of: `retry()` runs the newest render's `write` with the
  * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. A host
@@ -124,16 +126,17 @@ export interface AskSnoozeManyWrite {
 /**
  * The bulk form of `useAskSnooze`, over the same route once per ask: the marked rows take the
  * moment on the pick through the same optimistic write on every inbox cache, and the list
- * refetches once the whole set has settled. The Inbox keeps the rows where the reader saw them
- * until `submit`'s promise settles (`useInboxSelection`'s `snoozing`), so they move into `Later`
- * once the whole set has landed. Each ask is a write of its own, under a key of its own
- * and tried until Dispatch decides it, so a transport failure is tried again rather than counted a
- * refusal, and each settles on its own: a refusal rolls back that row alone - to the moment it had
- * before, not to null, which would un-snooze a row that was already deferred - and the ones the
- * server took stay where they landed. A read of the Inbox asked while the set is out waits until
- * the last of them is decided, or until as many snooze events as asks have come, as the single
- * snooze's does; an ask Dispatch refused with no earlier attempt of its snooze that may have
- * landed unseen publishes no event, and the hold waits for none of it.
+ * refetches once the whole set has settled. Outside the Blocked on you narrowing, which lists no
+ * snoozed ask and keeps a row only while the reader's hand is on it, the Inbox keeps the rows
+ * where the reader saw them until `submit`'s promise settles (`useInboxSelection`'s `snoozing`),
+ * so they move into `Later` once the whole set has landed. Each ask is a write of its own, under
+ * a key of its own and tried until Dispatch decides it, so a transport failure is tried again
+ * rather than counted a refusal, and each settles on its own: a refusal rolls back that row
+ * alone - to the moment it had before, not to null, which would un-snooze a row that was already
+ * deferred - and the ones the server took stay where they landed. A read of the Inbox asked while
+ * the set is out waits until the last of them is decided, or until as many snooze events as asks
+ * have come, as the single snooze's does; an ask Dispatch refused with no earlier attempt of its
+ * snooze that may have landed unseen publishes no event, and the hold waits for none of it.
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();

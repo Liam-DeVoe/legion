@@ -20,12 +20,14 @@ import { useAskSnooze } from "./useAskSnooze";
  * of which would unmount this control and take its `Snoozing…` and its refusal with it - so,
  * exactly as `AssignToMe` does for the optimistic assignment that can drop a row out of the
  * assignee filter, it tells the Inbox while its write is live, and the Inbox keeps the row in the
- * band the reader saw it in until the write settles (`heldRow`). The move is the feedback for a
- * snooze that lands, made in the commit in which the Inbox lets go of the row; a snooze the server
- * refuses, or one the reader stops, rolls the row back where it was with the reason still
- * attached to it. The Snooze select and Un-snooze are held from the press until the commit after
- * their write's answer (`useHeldThroughAnswer`), the one in which the Inbox lets go of the row:
- * the select by `aria-disabled`, with a pick then writing nothing, and Un-snooze by `heldPress`.
+ * band the reader saw it in until the write settles (`heldRow`). Under the Blocked on you
+ * narrowing, which lists no snoozed ask, the row leaves the list at the pick instead, kept only
+ * while the reader's hand is on it. The move is the feedback for a snooze that lands, made in the
+ * commit in which the Inbox lets go of the row; a snooze the server refuses, or one the reader
+ * stops, rolls the row back where it was with the reason still attached to it. The Snooze select
+ * and Un-snooze are held from the press until the commit after their write's answer
+ * (`useHeldThroughAnswer`), the one in which the Inbox lets go of the row: the select by
+ * `aria-disabled`, with a pick then writing nothing, and Un-snooze by `heldPress`.
  * The optimistic moment puts the row inside its window at once, where Un-snooze would be drawn in
  * the select's place; the select stays drawn instead, held, with the return time being saved
  * before it, while its pick's write is out and through the commit after its answer. An
@@ -77,21 +79,22 @@ export function SnoozeControl({
       />
     </div>
   ) : null;
-  // The row stays in the band the reader saw it in while the write is out, and a snooze in flight
-  // already shows the return time it is saving. What the row cannot say is which way the reader
-  // is going, so the in-flight label comes from the write's own variable (a moment is a snooze,
-  // null is an un-snooze) and never from `snoozedUntil`, which by then describes the destination.
-  // It is read only while a write is live: `variables` outlives the write, so a settled row would
-  // otherwise keep reporting the last thing it did.
+  // Outside the Blocked on you narrowing the row stays in the band the reader saw it in while
+  // the write is out, and a snooze in flight already shows the return time it is saving. What
+  // the row cannot say is which way the reader is going, so the in-flight label comes from the
+  // write's own variable (a moment is a snooze, null is an un-snooze) and never from
+  // `snoozedUntil`, which by then describes the destination. It is read only while a write is
+  // live: `variables` outlives the write, so a settled row would otherwise keep reporting the
+  // last thing it did.
   const going = !write.pending
     ? undefined
     : write.pendingUntil === null
       ? "Un-snoozing"
       : "Snoozing";
   const pendingLabel = going === undefined ? undefined : `${going}…`;
-  // Drawn first in both branches below and empty while no write is out, so it is the one status
-  // in the page across a press: a screen reader reads a status already there when its words
-  // change.
+  // Drawn first in both branches below and empty while no write is out, so the row keeps its own
+  // one status, the same node, across a press: a screen reader reads a status already there when
+  // its words change.
   const status = (
     <span className="sr-only" role="status">
       {going === undefined ? null : `${going} ${label}…`}

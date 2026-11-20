@@ -62,7 +62,8 @@ export interface InboxSelection {
    *  the ones a fold or a page is holding back included. The bar says so instead of counting. */
   readonly allRows: boolean;
   /** The bar's own element, which the keymap reaches through this: Escape from the bulk picker
-   *  focuses the bar itself when a press has left no row to return to. */
+   *  focuses the bar itself when no drawn row is left that the bar's own Snooze write, while it
+   *  is pending (`snoozing`), is not taking away. */
   readonly barRef: RefObject<HTMLElement | null>;
   /** Whether the bar shows: a mark is on the page, a pick is in the air, or a refusal is
    *  standing. Escape with no row focused is the keyboard's Clear and is offered on exactly this,
@@ -96,8 +97,10 @@ export interface InboxSelection {
   /** What the reader is told about the last bulk snooze the server refused in part. */
   readonly snoozeRefusal: string | undefined;
   /** The asks the snooze now in flight covers, none while none is: the list keeps each in the
-   *  band the reader saw it in until the write lands, and the bar counts them while it is out,
-   *  since the optimistic moment takes them out of the selection it would otherwise count. */
+   *  band the reader saw it in until the write lands - save under the Blocked on you narrowing,
+   *  which lists no snoozed ask and keeps a row only while the reader's hand is on it - and the
+   *  bar counts them while it is out, since the optimistic moment takes them out of the
+   *  selection it would otherwise count. */
   readonly snoozing: ReadonlySet<string>;
 }
 
@@ -202,10 +205,11 @@ export function useInboxSelection({
   }
   // One pick, over the ids the bar is counting: the same optimistic moment and rollback the
   // per-row control makes, once per ask, with the rows kept where the reader saw them while the
-  // write is out (`snoozing`). The ids the server took leave the selection, and their rows the
-  // band they were kept in, in one commit; the ones it refused are marked again under its own
-  // reason, even if Clear ran while the write was in flight, so a second pick retries exactly
-  // those.
+  // write is out (`snoozing`), save under the Blocked on you narrowing, which lists no snoozed
+  // ask and keeps a row only while the reader's hand is on it. The ids the server took leave the
+  // selection, and their rows the band they were kept in, in one commit; the ones it refused are
+  // marked again under its own reason, even if Clear ran while the write was in flight, so a
+  // second pick retries exactly those.
   const snoozePick = (until: string) => {
     const ids = [...selectedAsks];
     setSnoozeRefusal(undefined);

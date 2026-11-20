@@ -839,8 +839,8 @@ test("a snoozed row leaves Later, the Blocked on you control and the Inbox count
     await expect(page.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeVisible();
     // The row's link was not followed by any of it.
     expect(new URL(page.url()).pathname).toBe("/");
-    // What the page shows so far is the optimistic write; the reload reads the server, and a
-    // reload while the DELETE is unanswered aborts it, so the un-snooze must be recorded first.
+    // The row stays in its band while the un-snooze saves and moves once the DELETE is answered;
+    // the reload reads the server, so the un-snooze must be recorded there first.
     await expect
       .poll(async () => (await getInbox({ login: "alice" })).at(0)?.snoozed_until)
       .toBeNull();

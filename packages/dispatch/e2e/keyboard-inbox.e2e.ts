@@ -214,9 +214,9 @@ test.describe("inbox selection", () => {
   });
 
   // Escape with no row focused is the keyboard's Clear, and it is offered whenever the bar's Clear
-  // is - including while a pick is in flight, when the optimistic move has folded the marked rows
-  // into Later and the bar counts nothing on the page. It clears every mark, one made under a
-  // wider filter included; the late refusal then re-marks only the id it refused.
+  // is - including while a pick is in flight, when the marked rows stay in their band only until
+  // the pick lands and are no row to return to. It clears every mark, one made under a wider
+  // filter included; the late refusal then re-marks only the id it refused.
   test("Escape during a pending bulk snooze clears every mark, and a late refusal re-marks only its own", async ({
     browser,
   }) => {
@@ -270,7 +270,7 @@ test.describe("inbox selection", () => {
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
 
-      // Both marked rows have folded into Later, so Escape leaves the picker for the bar, and
+      // Both marked rows are leaving for the snooze, so Escape leaves the picker for the bar, and
       // Escape from the bar clears the selection while the pick is still in the air.
       await page.keyboard.press("Escape");
       await expect(bar).toBeFocused();

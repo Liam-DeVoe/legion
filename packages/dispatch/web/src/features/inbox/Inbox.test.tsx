@@ -3420,6 +3420,135 @@ test("the bar's Snooze keeps its rows in their band until its write lands", asyn
   }
 });
 
+// Escape from the bulk picker is one level out, and a row the bar's own write is still taking
+// away is no place to land: it folds into Later once the write lands, no press of the reader's
+// live by then, and the focus would fall to the body with it. With only marked rows on the page
+// there is no other row, so Escape leaves the picker for the bar, and Escape from the bar clears
+// the selection while the write is still out.
+test("Escape from the bulk picker while its snooze is out passes over the rows it is taking away to the bar, and a second Escape clears the selection", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox("/?group=waiting-on");
+  const mark = (askId: string) => within(rowOf(askId)).getByRole("checkbox", { name: /^Select / });
+  try {
+    await screen.findByText("Which format?");
+    await user.click(mark("ask-a"));
+    await user.click(mark("ask-b"));
+    await screen.findByText("2 selected");
+    await user.keyboard("h");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    expect(picker).toHaveFocus();
+    await user.selectOptions(picker, "tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    // Out, both marked rows are still drawn where the reader saw them, and both are leaving.
+    expect(screen.getByText("Snoozing 2…")).toBeTruthy();
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("toolbar", { name: "Selected rows" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(mark("ask-a")).not.toBeChecked();
+    expect(mark("ask-b")).not.toBeChecked();
+    expect(screen.getByText("Snoozing 2…")).toBeTruthy();
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual([]));
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// Escape from a control inside a row goes back to that row, even while the row's own snooze is
+// saving. Here it is pressed on the row's mark, which the snooze does not hold: the key ends the
+// pick's press, and itself stops counting a frame and a task after it. The write's landing then
+// folds the row into Later, and that is no press's doing, so the page's rescue leaves the focus on
+// the body, as it does for every loss the reader did not cause. `j` from the body starts at the
+// first row, as it does from anywhere off the list. Escape on the held Snooze itself would not end
+// the pick's press (`notePress` passes over a key on a control the press holds), so the row's going
+// would be the pick's doing and the rescue would hand the focus to the row that moves up.
+test("Escape onto a row whose own snooze is saving leaves the focus on the body once the write folds the row away, and j from there moves to the first row", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/?group=waiting-on"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByText("Which owner?");
+    const select = within(rowOf("ask-b")).getByLabelText("Snooze CORE-2: Which format?");
+    act(() => select.focus());
+    await user.selectOptions(select, "tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+    expect(drawnSnooze("ask-b", "CORE-2: Which format?")).toBe("select held");
+    expect(select).toHaveFocus();
+    const mark = within(rowOf("ask-b")).getByRole("checkbox", { name: /^Select / });
+    act(() => mark.focus());
+
+    await user.keyboard("{Escape}");
+    expect(rowOf("ask-b")).toHaveFocus();
+    // The write is out past the Escape's own frame and task, as a server slower than a frame
+    // keeps it.
+    await afterRescue();
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-c"]));
+    await afterRescue();
+    expect(document.body).toHaveFocus();
+
+    await user.keyboard("j");
+    expect(rowOf("ask-a")).toHaveFocus();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 // A snooze Dispatch never answers is bounded by the write deadline: each attempt goes silent until
 // its own bound, the write is late at `SEND_DEADLINE_MS`, and the reader stops it there. The row
 // is where they saw it the whole time - held while the write is out, its select given back once

@@ -541,7 +541,8 @@ function InboxCardRow({
   onAssignLive: (askId: string, live: boolean) => void;
   /** The same registration for this row's snooze write; the Inbox keeps a live row in the band
    *  the reader saw it in, drawn even when that band is folded, so `Snoozing…` and a refusal
-   *  stay where they pressed. */
+   *  stay where they pressed - save under the Blocked on you narrowing, which lists no snoozed
+   *  ask and keeps a row it drops only while the reader's hand is on it (`heldRow`). */
   onSnoozeLive: (askId: string, live: boolean) => void;
   /** Timestamp of the Inbox snapshot that supplied this row's initial thread. */
   threadUpdatedAt: number;
@@ -906,7 +907,8 @@ export function Inbox({
   // reader saw it in, though the optimistic moment puts it into Later or out of it, and is drawn
   // even when that band is folded, so `Snoozing…` and a refusal stay where the reader pressed
   // (`heldRow`). Its move is made in the commit this lets go of it, once the write lands (see
-  // `SnoozeControl`).
+  // `SnoozeControl`). Under the Blocked on you narrowing (`?section=needs-you`), which lists no
+  // snoozed ask, the optimistic moment drops the row at once, and only the reader's hand keeps it.
   const [snoozing, setSnoozing] = useState<ReadonlySet<string>>(() => new Set());
   const onSnoozeLive = useCallback((askId: string, live: boolean) => {
     setSnoozing((current) => {
@@ -1544,9 +1546,18 @@ export function Inbox({
       keys: "Escape",
       label: "Back to the list from the bulk snooze picker",
       run: () => {
-        // With every marked row gone there is no row to return to, so the bar itself is the
-        // level out: it holds the count and the way to clear it.
-        (originRow(pickerOrigin.current) ?? rows()[0] ?? bulkBarRef.current)?.focus();
+        // The row `h` was pressed on, else the first row, passing over every row the bar's own
+        // Snooze write is over while that write is pending (`bulkSnoozing`, which the bar empties
+        // once the write settles, a refusal or a stop included). The list keeps such a row in its
+        // band only until the write lands, and its move into a folded Later then is no press's
+        // doing (`causedByReader`), so a focus put on it would fall to the body. With no drawn
+        // row left that the bar's write is not taking away, the bar itself is the level out: it
+        // holds the count and the way to clear it.
+        (
+          [originRow(pickerOrigin.current), ...rows()].find(
+            (row) => row !== null && !bulkSnoozing.has(row.dataset.inboxRow ?? "")
+          ) ?? bulkBarRef.current
+        )?.focus();
       },
       when: () => document.activeElement?.matches(BULK_PICKER_SELECTOR) === true,
     },
@@ -1630,11 +1641,13 @@ export function Inbox({
             (heldUnderWords || matchesInboxSearch(placed.row, words))
         );
   // A row a snooze of the reader's is live on - its own control's write, or the bar's over the
-  // rows they marked - is held as the row under their hand is, in the band they saw it in, until
-  // the Inbox lets go of it once the write lands (`heldRow`). That band is a band of the layout
-  // the row was drawn under, so a snooze holds its row only while the list is still drawn under
-  // it - the same grouping, and the same view - and the band is drawn again though no other row
-  // is left in it (`snoozeBands`): a snooze takes its row out of the band whoever else is there.
+  // rows they marked - is held in the band they saw it in until the Inbox lets go of it once the
+  // write lands (`heldRow`), while the list still lists it. Under the Blocked on you narrowing,
+  // which lists no snoozed ask, the row is dropped at once, and only the reader's hand holds it.
+  // That band is a band of the layout the row was drawn under, so a snooze holds its row only
+  // while the list is still drawn under it - the same grouping, and the same view - and the band
+  // is drawn again though no other row is left in it (`snoozeBands`): a snooze takes its row out
+  // of the band whoever else is there.
   const layout = showDismissed ? "dismissed" : groupBy;
   const sameLayout = presentedBands.current.layout === layout;
   const held: PlacedRow[] = [];
@@ -2000,9 +2013,10 @@ export function Inbox({
   // own to see and the focus it held is handed on (`SelectionBar`).
   const dismissLabel = showDismissed ? "Move to Inbox" : "Dismiss";
   const selectedCount = selectedAsks.length + selectedThreads.length;
-  // In flight the count is the press's, since the optimistic moment has taken its rows out of
-  // the rows the selection counts as drawn (`drawnIds`), though the list keeps each where the
-  // reader saw it until the write lands; settled, it is what a second press would act on - the
+  // In flight the count is the press's. While Later is folded the optimistic moment has taken
+  // its rows out of the rows the selection counts as drawn (`drawnIds`), though the list keeps
+  // each where the reader saw it until the write lands. Under the Blocked on you narrowing it
+  // has taken them out of the list. Settled, the count is what a second press would act on: the
   // rows still marked. Said here rather than left to the bar's own count so the bar still stands
   // over an emptied selection, which is where a refusal of that press lands.
   let barState: string | undefined;
@@ -2031,9 +2045,10 @@ export function Inbox({
       }
       state={barState}
     >
-      {/* The picker stays while its own write is out: the optimistic moment takes every marked
-          ask out of the asks the selection counts (`selectedAsks`), and a picker unmounted under
-          the reader's hand drops their focus. */}
+      {/* The picker stays while its own write is out. While Later is folded, the optimistic
+          moment takes every marked ask out of the asks the selection counts (`selectedAsks`),
+          and under the Blocked on you narrowing out of the list. A picker unmounted under the
+          reader's hand drops their focus. */}
       {selectedAsks.length === 0 && bulkSnoozing.size === 0 ? null : (
         <span className={badgeSelectWrapper}>
           <span
