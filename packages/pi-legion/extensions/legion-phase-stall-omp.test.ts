@@ -75,7 +75,8 @@ function calls(pane: LegionPaneProgress, route: string): number {
 }
 
 const COMPLETE_ROUTE = "/legion/v1/handoff/complete";
-const STATE_ROUTE = "/legion/v1/state";
+/** What the reminder's record check reads: this issue's record alone (dispatch://INFRA-2694). */
+const RECORD_ROUTE = "/legion/v1/issues/STALL-2/record";
 const ASKS_ROUTE = "/api/v1/asks/open";
 
 /**
@@ -369,7 +370,11 @@ async function stallPane(
       answer: (url, body) => {
         const own = options.answer?.(url, body);
         if (own !== undefined) return own;
-        if (url.pathname === "/legion/v1/state") return Response.json(STALL_STATE);
+        // The reminder's check and `handoff_complete` read one issue's record
+        // (dispatch://INFRA-2694); nothing of this pane asks for the whole project body.
+        if (url.pathname === "/legion/v1/issues/STALL-2/record") {
+          return Response.json(STALL_STATE.issues["STALL-2"]);
+        }
         if (url.pathname === "/legion/v1/handoff/complete") return Response.json({});
         if (url.pathname === "/api/v1/issues/STALL-2/handoffs/implement/latest") {
           const newest = records.at(-1);
@@ -457,9 +462,9 @@ test.skipIf(skip)(
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
-      "/legion/v1/state",
+      "/legion/v1/issues/STALL-2/record",
       "/legion/v1/claims/turn-outcome",
-      "/legion/v1/state",
+      "/legion/v1/issues/STALL-2/record",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
       "/legion/v1/claims/turn-outcome",
@@ -626,10 +631,11 @@ test.skipIf(skip)(
     const armed = LegionActivityRequest.parse(between[armedAt]?.body).activity;
     const armedFor = Date.parse(armed.phase.nextReminderAt ?? "") - Date.parse(armed.at);
     expect(armedFor).toBeLessThanOrEqual(waitMs);
-    // No turn started while it ran: the reminder's own record check (a read of the daemon's state)
-    // is the first thing the pane did once its timer fired, and the reminder's turn came after it.
+    // No turn started while it ran: the reminder's own record check (a read of this issue's
+    // record) is the first thing the pane did once its timer fired, and the reminder's turn came
+    // after it.
     const fired = between.findIndex(
-      (request, index) => index > armedAt && request.path === "/legion/v1/state"
+      (request, index) => index > armedAt && request.path === RECORD_ROUTE
     );
     expect(fired).toBeGreaterThan(armedAt);
     // Nothing arrived from outside in between: in that gap the pane spoke only to the daemon,
@@ -647,7 +653,7 @@ test.skipIf(skip)(
         .map((request) => request.path)
         .filter(
           (path) =>
-            path !== "/legion/v1/state" &&
+            path !== "/legion/v1/issues/STALL-2/record" &&
             path !== "/legion/v1/claims/turn-outcome" &&
             path !== ACTIVITY_ROUTE &&
             path !== "/v1/interests/subscribe" &&
@@ -834,10 +840,12 @@ test.skipIf(skip)(
         // turn is its own word that the check started no continuation.
         settledWhen: {
           what: "the record check that read the phase moved on, after the prompt's turn",
-          done: (progress) => calls(progress, STATE_ROUTE) >= 1 && progress.turns().length >= 1,
+          done: (progress) => calls(progress, RECORD_ROUTE) >= 1 && progress.turns().length >= 1,
         },
         answer: (url) =>
-          url.pathname === "/legion/v1/state" ? Response.json(MOVED_ON) : undefined,
+          url.pathname === "/legion/v1/issues/STALL-2/record"
+            ? Response.json(MOVED_ON.issues["STALL-2"])
+            : undefined,
       }
     );
 
@@ -866,7 +874,7 @@ test.skipIf(skip)(
       {
         env: { LEGION_STALL_REMINDER_MS: "500" },
         // The timer fires once the second run has settled, and its record check is the stand-in's
-        // second state read. A reminder it sent anyway would start a run of its own after that
+        // second record read. A reminder it sent anyway would start a run of its own after that
         // read, which no record of the pane rules out, so a span follows the read.
         settledWhen: {
           what: "the timer's record check, after the continuation reminder's turn",
@@ -879,11 +887,12 @@ test.skipIf(skip)(
           },
         },
         answer: (url) => {
-          if (url.pathname !== "/legion/v1/state") return undefined;
+          if (url.pathname !== "/legion/v1/issues/STALL-2/record") return undefined;
           reads += 1;
           // The first read is the continuation reminder's own check; by the timer's read the
           // daemon has moved the issue on.
-          return Response.json(reads === 1 ? STALL_STATE : MOVED_ON);
+          const seen = reads === 1 ? STALL_STATE : MOVED_ON;
+          return Response.json(seen.issues["STALL-2"]);
         },
       }
     );

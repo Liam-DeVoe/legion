@@ -1465,7 +1465,7 @@ func (e compactionEntry) preserveKeys() []string {
 // answers the newest, holding that it is a text summary rather than snapcompact's images. The
 // transcript is the session file the claim records, one JSON entry per line, which is how the
 // plugins' own pane harness reads a session back too
-// (packages/pi-shared/test/omp-harness.ts:1227-1238).
+// (packages/pi-shared/test/omp-harness.ts:1232-1243).
 func (r *claimCompactionLive) awaitCompactionEntry(path string, count int) compactionEntry {
 	t := r.t
 	t.Helper()

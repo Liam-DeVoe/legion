@@ -21571,6 +21571,11 @@ console.log(JSON.stringify(args));
     // trades again after the first 503, by which time a start that did not wait for ready has been
     // told the 503 (`BrokerTokenClient` tells a fail-fast caller before it says so). Until the
     // bound ends the start names nothing; at the bound it names the 503, and no pass is abandoned.
+    // Two notices name the trade then, each once, both from the start's one pass: the outage
+    // notice its refused registration tells (`inbound messages are unavailable`), which names why
+    // the relay subject could not be opened (#4353), and then the start's own (`this session is
+    // not registered`), the one this row is about. Each is read by its own words, and no third
+    // notice names the trade.
     const passMs = 30_000;
     await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
       brokerPod(() => "503");
@@ -21599,8 +21604,23 @@ console.log(JSON.stringify(args));
         expect(named(), "a notice named the trade before the start's bound").toEqual([]);
         bound.end();
         await start;
-        expect(named(), `no notice named the trade: ${notifications.join(" | ")}`).toHaveLength(1);
-        expect(named()[0]).toContain("HTTP 503");
+        const told = notifications.join(" | ");
+        const startNotices = notifications.filter((message) =>
+          message.startsWith("envoy: this session is not registered (")
+        );
+        expect(startNotices, `the start's notice was not given once: ${told}`).toHaveLength(1);
+        expect(startNotices[0], "the start's notice does not name the trade").toContain(
+          "the trade for the session's token"
+        );
+        expect(startNotices[0]).toContain("HTTP 503");
+        const outageNotices = notifications.filter((message) =>
+          message.startsWith("envoy: inbound messages are unavailable (")
+        );
+        expect(outageNotices, `the outage notice was not given once: ${told}`).toHaveLength(1);
+        expect(outageNotices[0]).toContain("HTTP 503");
+        expect(named(), "a notice other than the outage's and the start's named the trade").toEqual(
+          [...outageNotices, ...startNotices]
+        );
         expect(notifications.some((message) => message.includes("did not settle within"))).toBe(
           false
         );
