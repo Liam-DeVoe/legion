@@ -150,20 +150,6 @@ func (s *CalloutServer) refuse(user, token string) bool {
 	return s.attempts[token] <= s.refusals
 }
 
-// ServiceToken is an unsigned token shaped as a projected Kubernetes ServiceAccount token naming
-// account and lapsing at expiry, which the stand-in reads unverified, as the client does.
-func ServiceToken(account string, expiry time.Time) string {
-	encode := func(value any) string {
-		raw, _ := json.Marshal(value)
-		return base64.RawURLEncoding.EncodeToString(raw)
-	}
-	return strings.Join([]string{
-		encode(map[string]string{"alg": "none"}),
-		encode(map[string]any{"sub": account, "iat": time.Now().Unix(), "exp": expiry.Unix()}),
-		"unsigned",
-	}, ".")
-}
-
 // expiryOf is token's 'exp', read unverified, and false when the token names none.
 func expiryOf(token string) (time.Time, bool) {
 	parts := strings.Split(token, ".")

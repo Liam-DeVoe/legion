@@ -1,5 +1,5 @@
 // Command natsprobe tries one subject on a NATS hub whose connections the auth service admits
-// (internal/broker/natscallout), as a session, as a service or with no credential at all, and
+// (internal/cipher/natscallout), as a session, as a service or with no credential at all, and
 // says what the hub answered:
 //
 //	natsprobe --servers <url> (--subscribe <subject> | --publish <subject>)
@@ -9,15 +9,18 @@
 // With no credential flag it connects as a session: it trades this machine's identity for one of
 // the broker's access tokens, as every Go client of the broker does (AGENT_SECRETS_URL,
 // AGENT_SECRETS_MACHINE_IDENTITY and its variables, AGENT_SECRETS_SESSION, AGENT_SECRETS_PROJECTS;
-// internal/brokerclient), under a key it makes for this run, and presents it with
+// internal/cipherclient), under a key it makes for this run, and presents it with
 // natscred.Session. With a service flag it presents that platform token with natscred.Service, and
 // with --no-credential nothing, as a client holding no credential does.
 //
 // It prints `connected as <name>`, the name the hub reports the connection by for a session
 // (session/<id>) and the account its token names for a service, then one of: `served <subject>`,
 // exit 0; `refused: <the server's text>`, exit 3, when the hub refused the subscribe or publish;
-// `not admitted: <the server's text>`, exit 4, when the hub refused the connection. A usage error
-// exits 2 and any other failure 1. It prints no token.
+// `not admitted: <the server's text>`, exit 4, when the hub refused the connection, its
+// Authorization Violation (nats.ErrAuthorization). A usage error exits 2 and any other failure 1,
+// a connection that fails any other way, such as a hub that is not listening, included; a
+// session's credential tried on a hub with no auth service, which sends no nonce to sign, is such
+// a failure, and names the flags of the credentials that hub takes. It prints no token.
 package main
 
 import (
@@ -32,8 +35,9 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/broker/proof"
-	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/natscred"
 )
 
@@ -97,8 +101,22 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			}
 		}))
 	if err != nil {
-		fmt.Fprintf(stdout, "not admitted: %s\n", serverText(err))
-		return exitNotAdmitted
+		// Only the hub's own refusal of the CONNECT is an answer of the hub's (nats.go,
+		// sendConnect: an Authorization Violation is ErrAuthorization); any other failure, a hub
+		// that is not listening included, says nothing of what the hub admits.
+		if errors.Is(err, nats.ErrAuthorization) {
+			fmt.Fprintf(stdout, "not admitted: %s\n", serverText(err))
+			return exitNotAdmitted
+		}
+		// nats.go wraps the signature callback's error ("error signing nonce: %w", nats.go:3087-3090)
+		// and Connect returns it: the probe never sent a CONNECT, so the hub refused nothing, and
+		// which credential such a hub takes is the probe's to say, by its flags.
+		if errors.Is(err, cipherclient.ErrNoNonce) {
+			fmt.Fprintf(stderr, "natsprobe: %v; name the credential it does take: --no-credential, --service-token-file or --service-google-audience\n", err)
+			return exitFailed
+		}
+		fmt.Fprintf(stderr, "natsprobe: connect: %v\n", err)
+		return exitFailed
 	}
 	defer nc.Close()
 	fmt.Fprintf(stdout, "connected as %s\n", name)
@@ -150,18 +168,18 @@ func credential(getenv func(string) string, tokenFile, googleAudience string, no
 		option, _ := natscred.Service(reader)
 		return option, "service " + account, nil
 	}
-	subject, err := brokerclient.MachineIdentity(getenv)
+	subject, err := cipherclient.MachineIdentity(getenv)
 	if err != nil {
 		return nil, "", err
 	}
 	if subject == nil {
-		return nil, "", fmt.Errorf("%s names no identity, so this machine has no broker token to connect as a session with; name a service token or --no-credential instead", brokerclient.IdentityVar)
+		return nil, "", fmt.Errorf("%s names no identity, so this machine has no broker token to connect as a session with; name a service token or --no-credential instead", cipherclient.IdentityVar)
 	}
-	session := brokerclient.TradeSession(getenv, "")
+	session := cipherclient.TradeSession(getenv, "")
 	if session == "" {
-		return nil, "", fmt.Errorf("%s names no session to connect as", brokerclient.SessionVar)
+		return nil, "", fmt.Errorf("%s names no session to connect as", cipherclient.SessionVar)
 	}
-	projects, err := brokerclient.TradeProjects(getenv)
+	projects, err := cipherclient.TradeProjects(getenv)
 	if err != nil {
 		return nil, "", err
 	}
@@ -169,9 +187,9 @@ func credential(getenv func(string) string, tokenFile, googleAudience string, no
 	if err != nil {
 		return nil, "", err
 	}
-	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: getenv(brokerclient.BrokerURLVar), Key: key, Subject: subject, Session: session,
-		Projects: projects, NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(),
+	client, err := cipherclient.New(cipherclient.Config{
+		BrokerURL: cipheraddr.New(getenv(cipherclient.BrokerURLVar)), Key: key, Subject: subject, Session: session,
+		Projects: projects, NoLauncherCredential: true, HTTP: cipherclient.HTTPClient(),
 	})
 	if err != nil {
 		return nil, "", err

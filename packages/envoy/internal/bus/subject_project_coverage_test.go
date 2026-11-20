@@ -22,7 +22,8 @@ import (
 // fails naming that subject.
 var subjectProjectCensus = map[string][]string{
 	// Each session's own messages: Dispatch's routes, mentions, follower and author copies, and
-	// every send (contracts.AgentSubject, cmd/listener sendHandler).
+	// every send, in either form (contracts.AgentSubject, contracts.LegacyAgentSubject, which
+	// cmd/listener sendHandler calls).
 	"notifications.agent.>": {"notifications.agent.>"},
 	// Dispatch's outbox (internal/dispatch/outbox envelope): an issue's, a document's and a
 	// project's events; and Dispatch's start (internal/dispatch/startup Subject).
@@ -43,9 +44,11 @@ var subjectProjectCensus = map[string][]string{
 	// A failed delivery's report on an agent subject and on a team topic.
 	"notifications.envoy.exceptions.notifications.agent.>": {"notifications.envoy.exceptions.notifications.agent.>"},
 	"notifications.envoy.exceptions.notifications.team.>":  {"notifications.envoy.exceptions.notifications.team.>"},
-	// The listener's own lanes: kept role messages and their cursors, and resume floors.
+	// The listener's own lanes: kept role messages and their cursors, resume floors, and the roles
+	// a session took from another.
 	KeptTopicPrefix + ">":            {KeptRoleSubjectPrefix + ">", KeptTopicPrefix + "cursor.>"},
 	SessionResumeSubjectPrefix + ">": {SessionResumeSubjectPrefix + ">"},
+	TakeoverSubjectPrefix + ">":      {TakeoverSubjectPrefix + ">"},
 	// The role lanes and their exception twin, which travel over core NATS (roleLaneSubjects).
 	contracts.RoleTopicPrefix + ">":                        {contracts.RoleTopicPrefix + ">"},
 	ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">": {ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">"},
