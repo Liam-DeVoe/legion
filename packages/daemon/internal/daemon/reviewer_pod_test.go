@@ -280,6 +280,28 @@ func TestAReviewerStartInAPodOnAnotherImageReplacesThePodFirst(t *testing.T) {
 		rig.startInPod(claim.RoleReviewer, podUpdateReplacementPod)
 	})
 
+	t.Run("a podless round waits for a suspended claim with a session until its bound", func(t *testing.T) {
+		rig := newPodUpdateRig(t,
+			podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
+				suspendedBy: supervise.SuspendedByDaemon},
+			podUpdateRole{role: claim.RoleReviewer, state: supervise.StateQueued})
+		images := rig.readsPodImages(reviewerPodOldImage)
+
+		heldReviewerStart(t, rig, rig.startReviewer())
+		rig.sweepSettled()
+		rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+		rig.sweepSettled()
+		if ended := images.endedPods(); len(ended) != 0 {
+			t.Fatalf("the Sandbox ended pods %v before the round's bound, while the suspended implementer, whose agent ran and may hold unpushed work, had not answered", ended)
+		}
+
+		rig.clockAt(podUpdateStart.Add(podUpdateGrace))
+		rig.sweepSettled()
+		if ended := images.endedPods(); !slices.Equal(ended, []string{podUpdatePod}) {
+			t.Fatalf("the Sandbox ended pods %v at the round's bound, want the held pod %s once", ended, podUpdatePod)
+		}
+	})
+
 	t.Run("the stale-plugin lane relaunches no reviewer in place and still relaunches another role", func(t *testing.T) {
 		stale := func(role claim.Role) podUpdateRole {
 			return podUpdateRole{role: role, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion - 1}
