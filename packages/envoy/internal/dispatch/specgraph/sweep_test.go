@@ -73,20 +73,24 @@ func notRepoPaths(path string) []string {
 // job that has not ended. So each member that a rule reads is in a record of some scenario, and
 // each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases).
 // Each sweep fails an input whose files are its base's (sweepAgainst), so that a writer that writes
-// nothing fails by name, and this one reads back each value that it writes, each kind through its
-// own path: a string or an added member (treeWithRead), null or a member or element left out
-// (treeChangedRead), and a key renamed (treeRenamedRead), so that a writer that writes another
-// value fails by name too. One right, which sweepInputs gives the input where it writes it: a
-// repository path of a tree written " " is a real path, since git holds a file of that name (git
-// ls-tree of a tree that holds one lists the path " "), so the tree changed at a path that a tie
-// covers, and a result there, a failure among them, carries no more across it (R8: "A result at one
-// commit also counts at another commit when no code that the check runs changed between the two");
-// a base whose failure at one commit carries to another shows it. A path of a fault written " " is
-// no path, as one of only white space is none, so its record does not say what its fault changed,
-// and as the newest failing example it reads unknown, no_fault_paths where it was the one path and
-// blank_fault_path beside a real one: it has no right, and a base whose failing example of two paths
-// that missed its fault is newer than a caught one shows that it needs none. A content label is no
-// path, and one of " " names no content, so the reader refuses it and it has no right.
+// nothing fails by name, and each sweep reads back each write that it makes, by its key and its
+// value, against the write that it means: each file that it writes by its name and its bytes, with
+// each other file of the base unchanged and no file added (filesRead), and the value in the file,
+// each kind through its own path: a string or an added member (treeWithRead), null or a member or
+// element left out (treeChangedRead), a key renamed (treeRenamedRead), and a refusal of CI as the
+// reader reads it (refusalRead), so that a writer that writes another value, or writes it at
+// another place or under another file name, fails by name too. One right, which sweepInputs gives
+// the input where it writes it: a repository path of a tree written " " is a real path, since git
+// holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so the tree
+// changed at a path that a tie covers, and a result there, a failure among them, carries no more
+// across it (R8: "A result at one commit also counts at another commit when no code that the check
+// runs changed between the two"); a base whose failure at one commit carries to another shows it. A
+// path of a fault written " " is no path, as one of only white space is none, so its record does
+// not say what its fault changed, and as the newest failing example it reads unknown,
+// no_fault_paths where it was the one path and blank_fault_path beside a real one: it has no right,
+// and a base whose failing example of two paths that missed its fault is newer than a caught one
+// shows that it needs none. A content label is no path, and one of " " names no content, so the
+// reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -211,7 +215,8 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 // the subject's takes out nothing, whatever commit a result's test_commit names, and it has no
 // right. The sweep adds one refusal at a time to uncited.json of each base (sweepBases), at each
 // commit that a record of the base names, for each check of its approved spec that the base does
-// not refuse there.
+// not refuse there, and reads each one back as the reader reads it, beside the refusals of the base
+// (refusalRead).
 func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -241,6 +246,7 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 						uncited[commit] = checks
 						return uncited
 					})
+					refusalRead(t, s, fsys, commit, c.ID)
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
 					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit }) {
 						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, s, c, commit)
@@ -275,6 +281,11 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, c Check, comm
 		}
 		return kept
 	})
+	// The results as the reader reads them: those of the base, but each of c whose commit is commit.
+	want := slices.DeleteFunc(slices.Clone(s.Results), func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit })
+	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Results, want) {
+		t.Fatalf("the sweep took the results of %s at %s out of results.json, and the reader reads %d results (%v), where it should read %d", c.ID, commit, len(read.Results), err, len(want))
+	}
 	states, err := sweepStates(fsys)
 	if err != nil {
 		t.Fatalf("the base with the results of %s at %s taken out: %v", c.ID, commit, err)
@@ -390,8 +401,10 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 							continue
 						}
 						for _, v := range values[m[1]] {
+							data := encodeTree(t, treeWithRead(t, tree, append(slices.Clone(place), m[0]), v))
 							fsys := maps.Clone(base)
-							fsys[file] = &fstest.MapFile{Data: encodeTree(t, treeWithRead(t, tree, append(slices.Clone(place), m[0]), v))}
+							fsys[file] = &fstest.MapFile{Data: data}
+							filesRead(t, base, fsys, map[string][]byte{file: data})
 							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
 							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
 								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
@@ -498,6 +511,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 			fsys[name] = &fstest.MapFile{Data: data}
 		}
 		inputs = append(inputs, sweepInput{what: what, fsys: fsys})
+		filesRead(t, base, fsys, map[string][]byte{name: data})
 		return &inputs[len(inputs)-1]
 	}
 	for _, name := range slices.Sorted(maps.Keys(base)) {
@@ -746,14 +760,70 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	}
 }
 
-// editTree changes the JSON file name of fsys by change, which takes its tree and gives the new one.
+// editTree changes the JSON file name of fsys by change, which takes its tree and gives the new one,
+// and reads the file back (filesRead).
 func editTree(t *testing.T, fsys fstest.MapFS, name string, change func(any) any) {
 	t.Helper()
 	var tree any
 	if err := json.Unmarshal(fsys[name].Data, &tree); err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
-	fsys[name] = &fstest.MapFile{Data: encodeTree(t, change(tree))}
+	before := maps.Clone(fsys)
+	data := encodeTree(t, change(tree))
+	fsys[name] = &fstest.MapFile{Data: data}
+	filesRead(t, before, fsys, map[string][]byte{name: data})
+}
+
+// filesRead fails the test unless fsys, which a writer of a sweep made from a copy of base, holds
+// each file of written with its bytes, or no such file where they are nil, which takes the file
+// out, and each other file of base with the base's bytes, and no other file: the read back of a
+// write by the file's name and its bytes, so that a writer that writes under another name, writes
+// other bytes, or changes another file too, fails by name.
+func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte) {
+	t.Helper()
+	for _, name := range slices.Sorted(maps.Keys(written)) {
+		file, held := fsys[name]
+		switch data := written[name]; {
+		case data == nil && held:
+			t.Fatalf("the sweep took %s out, and the scenario holds it", name)
+		case data != nil && !held:
+			t.Fatalf("the sweep wrote %s, and the scenario holds no file of that name", name)
+		case data != nil && !bytes.Equal(file.Data, data):
+			t.Fatalf("the sweep wrote %d bytes to %s, and the scenario holds %d other bytes there", len(data), name, len(file.Data))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(fsys)) {
+		if _, wrote := written[name]; wrote {
+			continue
+		}
+		if was, held := base[name]; !held || !bytes.Equal(fsys[name].Data, was.Data) {
+			t.Fatalf("the sweep wrote %q, and the scenario holds %s, which the base does not hold as it is (held %t)", slices.Sorted(maps.Keys(written)), name, held)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(base)) {
+		if _, wrote := written[name]; !wrote {
+			if _, held := fsys[name]; !held {
+				t.Fatalf("the sweep wrote %q, and the scenario no longer holds %s", slices.Sorted(maps.Keys(written)), name)
+			}
+		}
+	}
+}
+
+// refusalRead fails the test unless the scenario fsys, to which the refusal sweep added CI's
+// refusal of the check id at commit, reads, through the reader, as the refusals of the base s and
+// that one with the rule test-did-not-run, and no other refusal: the read back of the refusal by
+// its commit, its check and its rule, so that a writer that writes the refusal of another check, at
+// another commit, or an entry of the commit that holds no refusal, fails by name.
+func refusalRead(t *testing.T, s Scenario, fsys fstest.MapFS, commit, id string) {
+	t.Helper()
+	want := map[string]map[string]string{commit: {}}
+	for at, checks := range s.Uncited {
+		want[at] = maps.Clone(checks)
+	}
+	want[commit][id] = "test-did-not-run"
+	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Uncited, want) {
+		t.Fatalf("the sweep wrote CI's refusal of %s at %s, and the reader reads the refusals %v (%v), where it should read %v", id, commit, read.Uncited, err, want)
+	}
 }
 
 // placeMatches is whether the place at is the place pattern, whose "*" stands for any one name.

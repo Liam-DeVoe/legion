@@ -373,6 +373,9 @@ func parentOf(pointer string) string { return pointer[:max(strings.LastIndexByte
 // A member marked nonzero, present or one of is refused, where the same element with the member
 // reads otherwise; one marked zero reads as the same element with the member at its zero value, the
 // reading that its reason states. A member of a one of mark is refused too beside the other member.
+// Each file that the test writes is read back by its name and its bytes (filesRead), and the element
+// in it by its pointer and its members, so that a writer that writes another element, at another
+// place or in another file, fails by name.
 func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	base := memberScenario(t)
@@ -393,6 +396,7 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 		}
 		fsys := maps.Clone(base)
 		fsys[name] = &fstest.MapFile{Data: data}
+		filesRead(t, base, fsys, map[string][]byte{name: data})
 		return fsys
 	}
 	checked := 0
@@ -439,15 +443,28 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 					continue
 				}
 				e := objects[element]
-				// placement is the file with e in its place, as edit leaves it: beside, or alone in its list.
+				// placement is the file with e in its place, as edit leaves it: beside, or alone in its list,
+				// read back at its pointer.
 				placement := func(t *testing.T, alone bool, edit func(members map[string]any)) fstest.MapFS {
 					v := read(t, name)
 					members := maps.Clone(jsonAt(v, e.pointer).(map[string]any))
 					edit(members)
+					at, x := e.pointer, any(members)
 					if alone && e.pointer != "" {
-						return with(t, name, withJSONAt(v, parentOf(e.pointer), []any{members}))
+						at, x = parentOf(e.pointer), []any{members}
 					}
-					return with(t, name, withJSONAt(v, e.pointer, members))
+					fsys := with(t, name, withJSONAt(v, at, x))
+					var got, want any
+					if err := json.Unmarshal(fsys[name].Data, &got); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(encodeTree(t, x), &want); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(jsonAt(got, at), want) {
+						t.Fatalf("%s: the test wrote %s at %q, and the file holds %s there", name, encodeTree(t, want), at, encodeTree(t, jsonAt(got, at)))
+					}
+					return fsys
 				}
 				for _, alone := range []bool{false, true} {
 					where := fmt.Sprintf("%s %s of %s %s, %s", name, m.name, typ.Name(), e.pointer, map[bool]string{false: "beside " + objectsPointer(objects, beside), true: "alone"}[alone])
