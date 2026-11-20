@@ -969,3 +969,60 @@ func TestLegionMergeHelpSaysEachNextStepAndTheReading(t *testing.T) {
 		}
 	}
 }
+
+// killRunner is jjmerge.Exec until the first command step picks out; that command and every one
+// after it fail without running, the undo's included, as for a run something killed (SIGKILL,
+// the memory guard, a pane's SIGHUP) at that step.
+type killRunner struct {
+	step   func(args []string) bool
+	killed bool
+}
+
+func (k *killRunner) Run(ctx context.Context, c jjmerge.Command) ([]byte, error) {
+	if k.killed || k.step(c.Args) {
+		k.killed = true
+		return nil, &jjmerge.ExitError{Args: c.Args, Code: -1, Stderr: "killed"}
+	}
+	return jjmerge.Exec{}.Run(ctx, c)
+}
+
+// A run killed after its jj new made the merge commit leaves that merge holding jj's own merge
+// of the parents, c where git's merge holds b, and, once its describe ran, the Legion-Merge
+// trailer that says the command made it. The next run in the workspace removes what the killed
+// run left, as it removes the carriers: the visible commits are then those before the killed
+// run, the new merge and the working copy on it.
+func TestLegionMergeRerunRemovesTheMergeAKilledRunLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		step func(args []string) bool
+	}{
+		{"killed at the describe", func(args []string) bool { return slices.Contains(args, "describe") }},
+		{"killed at the restore", func(args []string) bool { return slices.Contains(args, "restore") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newMergeRepo(t)
+			r.minimalCase(2)
+			r.setEnv()
+			before := r.snapshot()
+			killer := &killRunner{step: tc.step}
+			var stdout, stderr strings.Builder
+			runMerge(context.Background(), killer, r.ws, mergeMessage, []string{mergeFirst, mergeSecond}, &stdout, &stderr)
+			if !killer.killed {
+				t.Fatalf("the run never reached the step it is killed at\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+			}
+			code, out, errOut := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+			if code != 0 {
+				t.Fatalf("legion merge after the killed run = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+			}
+			r.wantMergeHolds(mergeFirst, "main", "f", "b\n")
+			want := slices.Sorted(slices.Values(append(slices.Clone(before.visible), r.id("@-"), r.id("@"))))
+			if got := r.visible(); !slices.Equal(got, want) {
+				var merges []string
+				for _, id := range strings.Fields(r.read("log", "--no-graph", "-r", fmt.Sprintf("children(%s) & children(%s)", r.id(mergeFirst), r.id("main")), "-T", `commit_id ++ "\n"`)) {
+					merges = append(merges, fmt.Sprintf("%s holds %q at f, description %q", id, r.show(id, "f"), r.template(id, "description")))
+				}
+				t.Errorf("the visible commits are\n%q\nwant those before the killed run, the merge and the working copy\n%q\nthe merges of the two parents:\n%s", got, want, strings.Join(merges, "\n"))
+			}
+		})
+	}
+}
