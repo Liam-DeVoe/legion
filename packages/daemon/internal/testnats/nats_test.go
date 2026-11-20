@@ -20,6 +20,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/sjawhar/envoy/fataltest"
+
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -254,37 +256,19 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 				}
 			})
 			row.leave(t, stream)
-			again := &fatalRecorder{TB: t}
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				CreateStream(again, js, config)
-			}()
-			<-done
+			message := fataltest.Failure(t, func(t testing.TB) { CreateStream(t, js, config) })
 			for _, want := range row.want {
-				if !strings.Contains(again.message, want) {
-					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say %q", again.message, want)
+				if !strings.Contains(message, want) {
+					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say %q", message, want)
 				}
 			}
 			for _, unwant := range row.unwant {
-				if strings.Contains(again.message, unwant) {
-					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say no %q", again.message, unwant)
+				if strings.Contains(message, unwant) {
+					t.Errorf("CreateStream of a stream that is not empty failed with %q, want it to say no %q", message, unwant)
 				}
 			}
 		})
 	}
-}
-
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
-type fatalRecorder struct {
-	testing.TB
-	message string
-}
-
-func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); runtime.Goexit() }
-func (f *fatalRecorder) Fatalf(format string, args ...any) {
-	f.message = fmt.Sprintf(format, args...)
-	runtime.Goexit()
 }
 
 // leakRecorder is t with Errorf and Fatalf recorded rather than failing the running test, and a
@@ -337,19 +321,14 @@ func (cleanupDropped) Cleanup(func()) {}
 // itself, instead of waiting on itself for the whole test binary's timeout.
 func TestASecondTakeByTheSameTestFailsAtOnce(t *testing.T) {
 	URL(t)
-	again := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		JetStream(again)
-	}()
+	again, done := fataltest.Start(t, func(t testing.TB) { JetStream(t) })
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("a second take by the same test waited on itself")
 	}
-	if !strings.Contains(again.message, "already holds the shared NATS server") {
-		t.Errorf("a second take by the same test failed with %q, not the re-entry refusal", again.message)
+	if !strings.Contains(again.Message(), "already holds the shared NATS server") {
+		t.Errorf("a second take by the same test failed with %q, not the re-entry refusal", again.Message())
 	}
 }
 
@@ -358,19 +337,14 @@ func TestASecondTakeByTheSameTestFailsAtOnce(t *testing.T) {
 // wrong reason. The shared server, which asks for no credential, stands in for one.
 func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 	url := URL(t)
-	wait := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		answering(wait, url)
-	}()
+	wait, done := fataltest.Start(t, func(t testing.TB) { answering(t, url) })
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the readiness wait is still waiting on a server that admits anyone")
 	}
-	if want := "admitted a client with no credential"; !strings.Contains(wait.message, want) {
-		t.Errorf("the readiness wait ended with %q, want it to say %q", wait.message, want)
+	if want := "admitted a client with no credential"; !strings.Contains(wait.Message(), want) {
+		t.Errorf("the readiness wait ended with %q, want it to say %q", wait.Message(), want)
 	}
 }
 
@@ -412,19 +386,14 @@ func TestTheCheckClosesTheFixtureClientsItReported(t *testing.T) {
 			t.Errorf("the leak check reported connection %s and left it open: the server still lists %v", left, open)
 		}
 	}
-	next := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		drained(next)
-	}()
+	next, done := fataltest.Start(t, func(t testing.TB) { drained(t) })
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the next test's drain is still waiting for connections the leak check reported it had closed")
 	}
-	if next.message != "" {
-		t.Errorf("the next test's drain failed with %q after the leak check closed the fixture's clients", next.message)
+	if next.Message() != "" {
+		t.Errorf("the next test's drain failed with %q after the leak check closed the fixture's clients", next.Message())
 	}
 }
 
@@ -450,13 +419,8 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 		t.Errorf("the leak check reported %q, which does not name connection %s by its id and its name", report, listed[ownName])
 	}
 
-	next := &fatalRecorder{TB: t}
-	done := make(chan struct{})
 	started := time.Now()
-	go func() {
-		defer close(done)
-		drained(next)
-	}()
+	next, done := fataltest.Start(t, func(t testing.TB) { drained(t) })
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
@@ -465,8 +429,8 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	if took := time.Since(started); took > time.Second {
 		t.Errorf("the next test's drain took %s to fail on a recorded connection, want it refused at once rather than after %s", took, readinessTimeout)
 	}
-	if !strings.Contains(next.message, t.Name()) {
-		t.Errorf("the next test's drain failed with %q, which does not name %s, the test that left the connection", next.message, t.Name())
+	if !strings.Contains(next.Message(), t.Name()) {
+		t.Errorf("the next test's drain failed with %q, which does not name %s, the test that left the connection", next.Message(), t.Name())
 	}
 
 	// The row leaves the server as it found it: the connection closed, and no record for the

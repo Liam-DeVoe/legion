@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/fataltest"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
@@ -1333,8 +1334,12 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 		report, err := census(ctx, url, set, pgmigrate.CensusOptions{})
 		done <- result{report, err}
 	}()
-	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
-	deadline := time.Now().Add(pgmigrate.LockTimeout - time.Second)
+	// Wait until the census is queued on blocker, which it reaches only after reading others'
+	// holders. That work has no bound of its own: pgmigrate.LockTimeout bounds the census's wait
+	// for blocker once it asks, not what it does before, which under -race on a loaded host has
+	// taken longer than LockTimeout. So the wait ends when the census waits on blocker, when the
+	// census answers without having waited, or at the test binary's deadline.
+	deadline := fataltest.BeforeTheBinaryDeadline(t)
 	for {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted and database = (select oid from pg_database where datname = current_database()))").Scan(&waiting); err != nil {
@@ -1343,10 +1348,16 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 		if waiting {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the census never queued on blocker")
+		select {
+		case got := <-done:
+			if got.err != nil {
+				t.Fatalf("the census answered before it queued on blocker, with: %v", got.err)
+			}
+			t.Fatalf("the census answered before it queued on blocker, with the report:\n%s", reportText(got.report))
+		case <-deadline:
+			t.Fatal("the census never queued on blocker before the test binary's deadline")
+		case <-time.After(20 * time.Millisecond):
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	held, err := holder.Begin(ctx)
 	if err != nil {

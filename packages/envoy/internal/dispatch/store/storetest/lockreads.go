@@ -92,11 +92,12 @@ func RelationLock(table string) Lock {
 }
 
 // AdvisoryLock is the advisory lock of one bigint key, as pg_advisory_xact_lock(bigint) takes it:
-// pg_locks shows the key's high half as classid and its low half as objid.
+// pg_locks shows the key's high half as classid, its low half as objid and objsubid 1. The two-
+// integer form of the same halves (AdvisoryLockPair) shows objsubid 2, and is another lock.
 func AdvisoryLock(key int64) Lock {
 	return Lock{
 		name:  fmt.Sprintf("advisory lock %d", key),
-		match: `l.locktype = 'advisory' and ((l.classid::bigint << 32) | l.objid::bigint) = $1`,
+		match: `l.locktype = 'advisory' and l.objsubid = 1 and ((l.classid::bigint << 32) | l.objid::bigint) = $1`,
 		args:  []any{key},
 		take: func(ctx context.Context, tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1::bigint)`, key)

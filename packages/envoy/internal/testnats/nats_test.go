@@ -22,7 +22,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/fataltest"
+	"github.com/sjawhar/envoy/fataltest"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
