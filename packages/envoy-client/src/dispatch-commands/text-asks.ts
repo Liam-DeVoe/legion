@@ -3,16 +3,18 @@ import type { TextAsk } from "@legion/contracts";
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
  * release answers each ask block's state and answer in `asks`, and its markdown holds none of
- * them; one of the release before sends no `asks` and writes them on each ask block's opening
- * line instead, as the block's server-owned attributes.
+ * them; for a document that holds no ask block it sends no `asks`. One of the release before
+ * sends no `asks` for any document and writes them on each ask block's opening line instead, as
+ * the block's server-owned attributes.
  */
 export type LiveText = { readonly markdown: string; readonly asks?: readonly TextAsk[] | null };
 
 /**
- * The asks of `text`, one per ask block in document order: its `asks` member, or, from a Dispatch
- * of the release before, which sends none, each line opening an ask block read for the attributes
- * that carried them. A line quoting an opener (in code, say) is read too, as the release before's
- * readers read it, so it can add a block but never hide one.
+ * The asks of `text`, one per ask block in document order: its `asks` member, or, where it sends
+ * none, each line opening an ask block read for the attributes that carried them, which reads no
+ * ask for a document of this release with no ask block, since its markdown opens none. A line
+ * quoting an opener (in code, say) is read too, as the release before's readers read it, so it
+ * can add a block but never hide one.
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;

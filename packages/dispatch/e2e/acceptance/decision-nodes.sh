@@ -37,13 +37,21 @@
 #
 # It runs the restore and the conversion through their entry points
 # (`envoy-dispatch restore-answered-asks` and `convert-decisions`, --project SEED) and the store
-# census (`envoy-dispatch census --store`): for each of shaped, from_ask, decided_by, followed_by,
-# reading_parent, ask_parent, ask_anchor and ask_answer it prints the store's count, the
-# projection's count and the differences in each direction, and requires rows on both sides and
-# zero differences; it prints the store-only lines of copied_from and moved_to and requires every far
-# end to resolve; it requires the census's count of unconverted sections, and of decisions
-# documents, to read zero; and it reports the two halves of every projection, the base release's
-# (project SEED) and this head's (project NODES), each above zero.
+# census (`envoy-dispatch census --store`). It first reads the section of issue E, which cites the
+# answered ask its person removed from the spec through the base release: R9 deletes it, its
+# heading takes one moved_to to that ask's node, and the census's moved_to store-only line counts
+# every moved_to the store states now, that one among them, with unresolved=0, which a moved_to
+# reads only where its far end is a block that stands or a live ask node. For each of shaped,
+# from_ask, decided_by, followed_by, reading_parent, ask_parent, ask_anchor and ask_answer it then
+# prints the store's count, the projection's count and the differences in each direction, and
+# requires rows on both sides and zero differences; it does the same for graph_edges against the
+# store for each of those kinds graph_edges answers (shaped, from_ask, decided_by, followed_by,
+# ask_parent's owned_by and ask_anchor; no arm of it answers a reading's or an ask's part_of),
+# each a `census pair <kind>: … (graph_edges)` line; it prints the store-only lines of copied_from
+# and moved_to and requires every far end to resolve; it requires the census's count of
+# unconverted sections, and of decisions documents, to read zero; and it reports the two halves of
+# every projection, the base release's (project SEED) and this head's (project NODES), each above
+# zero.
 #
 # It reads each rule of R9 on the section that carries it, and fails where the capture holds no
 # section with an `Unsure:` paragraph, none under `## Replaced` or none with a standing Keep, each of
@@ -117,6 +125,10 @@ readonly base_sha
 readonly project=SEED nodes_project=NODES
 # The kinds of this child the census holds to their projections.
 readonly -a kinds=(shaped from_ask decided_by followed_by reading_parent ask_parent ask_anchor ask_answer)
+# Those of them graph_edges answers, which the census also holds graph_edges to, each as the kind
+# <kind>_edge: every one but reading_parent, whose part_of no arm answers, and ask_answer, which is
+# values; ask_parent's is its owned_by, since no arm answers an ask's part_of either.
+readonly -a edge_kinds=(shaped from_ask decided_by followed_by ask_parent ask_anchor)
 # How long the step at boot gets to leave no decisions document.
 readonly step_bound_seconds=180
 
@@ -492,6 +504,31 @@ pass convert "envoy-dispatch restore-answered-asks and convert-decisions ran ove
 # The census.
 # ---------------------------------------------------------------------------------------------
 census census census
+# The section of issue E, which cites the answered ask its person removed from the spec through the
+# base release: R9 deletes it, and its heading takes one moved_to to the ask's node. The census's
+# moved_to store-only line counts every moved_to the store states now - the newest tuple of each
+# near and far end out of a block or an ask's node, while it asserts, as the census reads them -
+# that one among them, and reads it resolved only while the ask's node is live.
+readonly issue_e="${seed_ids[issue_e]}" removed_ask="${seed_ids[ask_e_removed]}"
+readonly removed_heading="$issue_e/decisions-md#${seed_ids[section_removed]}"
+rows "select to_kind || ':' || to_id from graph_tuples
+      where kind = 'moved_to' and from_kind = 'block' and from_id = '$removed_heading' and asserted"
+[[ "$(<"$work/rows")" == "ask:$removed_ask" ]] ||
+  fail removed "the heading $removed_heading of the section citing ask $removed_ask, which its person removed, takes one moved_to to that ask's node" \
+    "it takes $(tr '\n' ' ' <"$work/rows")"
+query removed "count the moved_to tuples the store states now" "
+  select count(*) from (
+    select distinct on (t.from_kind, t.from_id, t.to_kind, t.to_id) t.asserted from graph_tuples t
+    where t.kind = 'moved_to' and t.from_kind in ('block', 'ask') and t.to_kind <> 'value'
+    order by t.from_kind, t.from_id, t.to_kind, t.to_id, t.seq desc) current
+  where current.asserted"
+readonly stated_moves="$answer"
+line="$(grep -E '^census: store-only kind=moved_to ' "$work/census.out" || true)"
+printf '%s\n' "${line:-no store-only line for moved_to}"
+[[ "$line" =~ tuples=([0-9,]+)\ unresolved=0\ left_out=0$ && "${BASH_REMATCH[1]//,/}" == "$stated_moves" ]] ||
+  fail removed "the census's moved_to line counts the $stated_moves moved_to tuples the store states, the one to ask $removed_ask among them, each resolving" \
+    "${line:-no line}"
+pass removed "the section citing ask $removed_ask, which its person removed, is deleted: its heading moves to the ask's node, and the census reads that moved_to among the $stated_moves it counts, unresolved=0"
 for kind in "${kinds[@]}"; do
   kind_line census "$kind"
   printf '%s\n' "$line"
@@ -507,6 +544,19 @@ for kind in "${kinds[@]}"; do
     fail census "the census compares rows of $kind on both sides" "$line"
   [[ "${missing//,/}" == 0 && "${extra//,/}" == 0 ]] ||
     fail census "the store and the projection of $kind agree triple by triple" "$line"
+done
+# graph_edges against the store, for each kind it answers.
+for kind in "${edge_kinds[@]}"; do
+  kind_line census "${kind}_edge"
+  printf '%s\n' "$line"
+  store="${fields[tuples]}" missing="${fields[rows_without_a_tuple]}" extra="${fields[tuples_without_a_row]}"
+  printf 'census pair %s: store=%s projection=%s (%s) differences=%s\n' "$kind" "$store" "${fields[rows]}" \
+    "${fields[table]}" "$((${missing//,/} + ${extra//,/}))"
+  grep -E "^census: store kind=${kind}_edge difference at " "$work/census.out" || true
+  [[ "${store//,/}" -gt 0 && "${fields[rows]//,/}" -gt 0 ]] ||
+    fail census "the census compares graph_edges' edges of $kind with the store on both sides" "$line"
+  [[ "${missing//,/}" == 0 && "${extra//,/}" == 0 ]] ||
+    fail census "the store and graph_edges agree on $kind triple by triple" "$line"
 done
 grep -E '^census: store rows_checked=' "$work/census.out" || true
 grep -qE '^census: store rows_checked=[0-9,]+ differences=0$' "$work/census.out" ||

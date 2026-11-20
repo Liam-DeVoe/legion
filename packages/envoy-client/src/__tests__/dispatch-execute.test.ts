@@ -7980,6 +7980,19 @@ describe("executeDispatchTool", () => {
       );
     });
 
+    // A Dispatch of this release sends no asks member for a document that holds no ask block, as
+    // the release before sent none for any document, and its markdown opens no ask block.
+    test("and a text with no asks member for a document with no ask block names none", async () => {
+      const result = await readDocument({
+        markdown: "A spec with no ask block.\n",
+        token: "sha256:spec",
+        version: 4,
+      });
+      expect(result.text).toBe(
+        ["A spec with no ask block.\n", "Document token: sha256:spec"].join("\n\n")
+      );
+    });
+
     test("and a version read names none", async () => {
       const result = await readDocument(
         { markdown: served, token: "sha256:spec", version: 4 },

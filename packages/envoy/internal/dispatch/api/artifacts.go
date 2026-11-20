@@ -1079,9 +1079,9 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 // ?blocks=true.
 type artifactText struct {
 	// Asks comes first so the fields stand in the sorted order of their keys, as the map the
-	// handler wrote before the body was named did (TestResponseShapes). This server always sends
-	// it, [] for a document with no ask block; the document marks it optional to a reader
-	// (omitzero), since a server of the release before sends none.
+	// handler wrote before the body was named did (TestResponseShapes). It is absent for a
+	// document with no ask block (docs.AskedText leaves it nil, which omitzero drops), as the
+	// release before answered every document, and the document marks it optional to a reader.
 	Asks     []model.TextAsk `json:"asks,omitzero"`
 	Markdown string          `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
