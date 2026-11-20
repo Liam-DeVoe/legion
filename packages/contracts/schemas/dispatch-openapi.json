@@ -22204,6 +22204,18 @@
           "code": {
             "type": "string"
           },
+          "delivery": {
+            "enum": [
+              "sent",
+              "queued",
+              "refused",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "message": {
             "type": "string"
           },
@@ -22214,7 +22226,8 @@
         "required": [
           "status",
           "code",
-          "message"
+          "message",
+          "delivery"
         ],
         "type": "object"
       },

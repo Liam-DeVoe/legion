@@ -107,14 +107,16 @@ const (
 
 // goingRowRecord is what became of a row's write (going_plan_rows.result): the step and call
 // whose key ran it, which a second try of that key is held to, how its upload is sent where it is
-// one (goingRowUpload), and the status its route answered, or the code and words of its refusal.
+// one (goingRowUpload), the status its route answered, or the code and words of its refusal, and,
+// for a row that sends a message, what became of it (goingRowDelivery).
 type goingRowRecord struct {
-	Step    int             `json:"step"`
-	Call    int             `json:"call"`
-	Upload  *goingRowUpload `json:"upload,omitempty"`
-	Status  int             `json:"status,omitempty"`
-	Code    string          `json:"code,omitempty"`
-	Message string          `json:"message,omitempty"`
+	Step     int             `json:"step"`
+	Call     int             `json:"call"`
+	Upload   *goingRowUpload `json:"upload,omitempty"`
+	Status   int             `json:"status,omitempty"`
+	Code     string          `json:"code,omitempty"`
+	Message  string          `json:"message,omitempty"`
+	Delivery string          `json:"delivery,omitempty"`
 }
 
 // goingRowUpload is how a row's upload is sent, decided once under its call's key before any of
@@ -181,11 +183,14 @@ type goingPlanRow struct {
 }
 
 // goingRowResult is what a row's write answered, as its person reads it: the status its route
-// answered, or the code and words of the refusal that stopped it.
+// answered, or the code and words of the refusal that stopped it, and for a row that sends a
+// message or a broadcast whether it was sent, queued (a delivery not yet confirmed included) or
+// refused, null for any other row.
 type goingRowResult struct {
-	Status  int    `json:"status"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Status   int     `json:"status"`
+	Code     string  `json:"code"`
+	Message  string  `json:"message"`
+	Delivery *string `json:"delivery" enum:"sent,queued,refused"`
 }
 
 // answer is the plan of run, in mode, as its person reads it.
@@ -203,6 +208,9 @@ func (p goingPlanStored) answer(run, mode string) goingPlanAnswer {
 		}
 		if row.result != nil && (row.result.Status != 0 || row.result.Code != "") {
 			read.Result = &goingRowResult{Status: row.result.Status, Code: row.result.Code, Message: row.result.Message}
+			if row.result.Delivery != "" {
+				read.Result.Delivery = &row.result.Delivery
+			}
 		}
 		answer.Rows = append(answer.Rows, read)
 	}
@@ -296,10 +304,11 @@ func goingJSONEqual(a, b json.RawMessage) bool {
 // goingReadRow reads what a row of tool with arguments changes, as the person doer acts for
 // (login): the call prepared as its write will be, and what the plan shows of its item - the
 // item, the issue it is or belongs to, the fields the change writes and their value now, the
-// holder of that issue's claim, and why the row waits in every mode. A call the tool's schema or
-// translation refuses, and a read the person may not make, answers its error.
-func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool string, arguments map[string]any) (goingRowShown, error) {
-	caller := GoingCaller{Catalogue: s.going, Doer: doer, knownSession: s.goingKnownSession}
+// holder of that issue's claim, and why the row waits in every mode. sendIssue is the issue a
+// send to an agent session is posted on (going_messages.go), "" for none. A call the tool's schema
+// or translation refuses, and a read the person may not make, answers its error.
+func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool string, arguments map[string]any, sendIssue string) (goingRowShown, error) {
+	caller := GoingCaller{Catalogue: s.going, Doer: doer, knownSession: s.goingKnownSession, sendIssue: sendIssue}
 	prepared, err := caller.prepare(ctx, tool, arguments)
 	if err != nil {
 		return goingRowShown{}, err
@@ -354,9 +363,11 @@ func goingRowArguments(raw json.RawMessage) (map[string]any, error) {
 // server keeps with its rows waiting. Each change must name a write tool, need only changes before
 // it, and hold arguments its tool's schema and translation take, over an item the person may read;
 // the first that does not refuses the plan CALL_REFUSED, naming the change and why, which the
-// model is told. A run whose latest plan still waits for its person, or has rows to run, is refused
-// another. A second try of the call's step answers the plan its first try made. The plan is kept
-// in one transaction that holds the run's lease, with a plan frame on the run's events.
+// model is told. A send to an agent session is kept naming the session by its id and showing the
+// issue it is posted on (goingPlaceSend). A run whose latest plan still waits for its person, or
+// has rows to run, is refused another. A second try of the call's step answers the plan its first
+// try made. The plan is kept in one transaction that holds the run's lease, with a plan frame on
+// the run's events.
 func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequest, run goingCallRun, doer GoingDoer) (agentwire.CallAnswer, *agentwire.Error) {
 	proposal := request.Proposal
 	if proposal == nil || len(proposal.Changes) == 0 {
@@ -397,7 +408,14 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		if err != nil {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %v", index, change.Tool, err)
 		}
-		shown, err := a.s.goingReadRow(ctx, doer, run.login, change.Tool, arguments)
+		var sendIssue string
+		if change.Tool == goingSendToAgent {
+			sendIssue, err = a.s.goingPlaceSend(ctx, doer, run.id, arguments)
+		}
+		var shown goingRowShown
+		if err == nil {
+			shown, err = a.s.goingReadRow(ctx, doer, run.login, change.Tool, arguments, sendIssue)
+		}
 		if err != nil {
 			refusal := goingCallRefusal(change.Tool, err)
 			refusal.Message = fmt.Sprintf("change %d: %s", index, refusal.Message)
@@ -626,7 +644,7 @@ func (s *server) getGoingPlan(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			now, err := s.goingReadRow(r.Context(), doer, login, row.tool, arguments)
+			now, err := s.goingReadRow(r.Context(), doer, login, row.tool, arguments, row.sendIssue())
 			if err != nil {
 				// A read the person may no longer make shows the row as last read; its write
 				// answers the refusal.
@@ -694,12 +712,14 @@ type goingPlanRejectInput struct {
 // and so is each row that needs it. Each ticked row is read again as the caller with its values: a
 // row whose item changed after the plan showed - another value now, or another holder of its
 // issue's claim - shows the new value and waits for approval again; every other ticked row is
-// approved, over that read. The approval moves the run's grant to the caller's credential, which
-// must be a person's own sign-in or personal token holding the approve scope; it is saved as a step
-// of the run (agentwire.PersonStep), and the run, with a row to run, is ready again for the agent,
-// which runs them. A plan that is not the run's latest is 409 GOING_PLAN_NOT_CURRENT, and a run or
-// a plan that does not wait 409 GOING_PLAN_NOT_WAITING; a row the body names that is no waiting
-// row of the plan, or a value its tool's schema refuses, 400 GOING_PLAN_VALUES.
+// approved, over that read. A send to an agent session takes the issue it is posted on as the
+// value `issue`, which its arguments do not hold (goingEditSend). The approval moves the run's
+// grant to the caller's credential, which must be a person's own sign-in or personal token holding
+// the approve scope; it is saved as a step of the run (agentwire.PersonStep), and the run, with a
+// row to run, is ready again for the agent, which runs them. A plan that is not the run's latest is
+// 409 GOING_PLAN_NOT_CURRENT, and a run or a plan that does not wait 409 GOING_PLAN_NOT_WAITING; a
+// row the body names that is no waiting row of the plan, or a value its tool's schema refuses, 400
+// GOING_PLAN_VALUES.
 func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
@@ -765,8 +785,16 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		edited := ticks[row.row].Values
-		maps.Copy(arguments, edited)
-		now, err := s.goingReadRow(r.Context(), doer, login, row.tool, arguments)
+		sendIssue := row.sendIssue()
+		if row.tool == goingSendToAgent {
+			sendIssue, err = s.goingEditSend(r.Context(), doer, run.id, arguments, edited, sendIssue)
+		} else {
+			maps.Copy(arguments, edited)
+		}
+		var now goingRowShown
+		if err == nil {
+			now, err = s.goingReadRow(r.Context(), doer, login, row.tool, arguments, sendIssue)
+		}
 		var refused GoingArgumentError
 		switch {
 		case errors.As(err, &refused):

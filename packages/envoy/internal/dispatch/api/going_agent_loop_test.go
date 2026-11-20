@@ -88,11 +88,12 @@ func toolCall(tool string, arguments map[string]any) agenttest.Reply {
 func answered(text string) agenttest.Reply { return agenttest.Reply{Text: text} }
 
 // goingLoopRun is a run a row starts, as the route that starts a run records one: login's words,
-// at level, in mode (ask where it is empty), following continues where it is set, with what it
-// already spent, granted to the header identity or, where token is set, to that agent token.
+// at level, in mode (ask where it is empty), following continues where it is set, asked on the
+// page of the issue page names where it is set, with what it already spent, granted to the header
+// identity or, where token is set, to that agent token.
 type goingLoopRun struct {
-	login, words, level, mode, continues, token string
-	workingMS                                   int64
+	login, words, level, mode, continues, token, page string
+	workingMS                                         int64
 }
 
 // begin records run queued and announces it, and answers its id.
@@ -109,11 +110,20 @@ func (rig goingAgentRig) begin(t *testing.T, run goingLoopRun) string {
 	if run.mode == "" {
 		run.mode = goingModeAsk
 	}
+	var chip *string
+	if run.page != "" {
+		encoded, err := json.Marshal(goingContext{Path: "/issues/" + run.page, Issue: run.page})
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(encoded)
+		chip = &text
+	}
 	rig.exec(t, `
-		insert into going_runs (id, author_login, words, conversation_id, continues, level, mode, state, shape, created_at, budget_used)
+		insert into going_runs (id, author_login, words, conversation_id, continues, level, mode, state, shape, created_at, budget_used, context)
 		values ($1::uuid, $2, $3, coalesce((select coalesce(conversation_id, id) from going_runs where id = $4::uuid), $1::uuid), $4::uuid,
-		  $5, $8, 'queued', $6, clock_timestamp(), jsonb_build_object('calls', 0, 'working_ms', $7::bigint, 'tokens', 0))
-	`, id, run.login, run.words, continues, run.level, goingRunShape, run.workingMS, run.mode)
+		  $5, $8, 'queued', $6, clock_timestamp(), jsonb_build_object('calls', 0, 'working_ms', $7::bigint, 'tokens', 0), $9::jsonb)
+	`, id, run.login, run.words, continues, run.level, goingRunShape, run.workingMS, run.mode, chip)
 	if run.token != "" {
 		rig.exec(t, `insert into going_run_grants (run_id, kind, login, token_id) values ($1::uuid, 'token', $2, $3::uuid)`, id, run.login, run.token)
 	} else {

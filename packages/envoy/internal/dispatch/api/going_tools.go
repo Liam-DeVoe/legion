@@ -422,18 +422,30 @@ var goingWriteTools = map[string]goingWriteTool{
 		},
 		Undo: goingUndoNotUndone, Class: goingClassMessage, Event: "message.created", Proposed: true,
 	},
-	// The issue-less send to one session, which reaches it when it is sent, so it stays. Its path
-	// names the session the tool was asked to reach, not the calling session, so the placeholder
-	// binds to the tool's own argument. The body is indexed without its references counted
-	// (createStoredMessage: a message with no issue takes refs.IndexItem alone), so this write
-	// makes no mention edge; a send naming in_reply_to makes the replies_to edge every message
-	// reply makes.
+	// A send to one session, which reaches it when it is sent, so it stays. A send to a session
+	// that works on an issue is posted on that issue (going_messages.go) as a message that targets
+	// the session, so it is kept and threaded in the issue's conversation: the first row, whose
+	// {key} is that issue (goingSendIssue), with the mention and reply edges every issue message
+	// makes. A send to a session that works on no issue goes to the session's own conversation,
+	// which belongs to no issue: the second row, whose path names the session the tool was asked
+	// to reach, not the calling session, so the placeholder binds to the tool's own argument. That
+	// body is indexed without its references counted (createStoredMessage: a message with no issue
+	// takes refs.IndexItem alone), so it makes no mention edge; a send naming in_reply_to makes
+	// the replies_to edge every message reply makes.
 	"dispatch_send_to_agent": {
-		Routes: []goingToolRoute{{
-			Method: http.MethodPost, Pattern: "/api/v1/agents/{session_id}/messages",
-			Path: map[string]string{"session_id": "session"}, Relations: []string{"replies_to"},
-			Translate: goingTranslateSendToAgent,
-		}},
+		Routes: []goingToolRoute{
+			{
+				Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/messages",
+				Path:      map[string]string{"key": goingSendIssue},
+				Relations: []string{"replies_to", "mentions"},
+				Translate: goingTranslateSendOnIssue,
+			},
+			{
+				Method: http.MethodPost, Pattern: "/api/v1/agents/{session_id}/messages",
+				Path: map[string]string{"session_id": "session"}, Relations: []string{"replies_to"},
+				Translate: goingTranslateSendToAgent,
+			},
+		},
 		Observe: goingObserver.sentToAgent, Undo: goingUndoNotUndone,
 		Class: goingClassMessage, Event: "message.created", Proposed: true,
 	},

@@ -402,9 +402,9 @@ func (s *server) goingCallLandings(ctx context.Context, key goingCallKey) ([]*go
 
 // routeCall makes a call of kind route: the tool's rows, by its name and arguments, through the
 // route table in-process as the run's person (login). A write runs only as the row of the run's
-// plan it names, held to it by rowGate under the call key's lock, and what it came to is kept on
-// that row (recordRow). A second try of the call key sends only what its earlier tries did not
-// land.
+// plan it names, held to it by rowGate under the call key's lock, posted on the issue the row names
+// where it is a send to an agent session (going_messages.go), and what it came to is kept on that
+// row (recordRow). A second try of the call key sends only what its earlier tries did not land.
 func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, login string, doer goingInProcess) (answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	key := goingCallKey{run: request.Run, step: request.Step, call: request.Call}
 	release, held := a.keys.lock(ctx, key, a.callKeyWait)
@@ -426,13 +426,16 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 	if err != nil {
 		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
 	}
+	var sendIssue string
 	if _, writes := a.s.going.Lookup(request.Tool); writes {
-		if refusal := a.rowGate(ctx, request, login, doer); refusal != nil {
-			return agentwire.CallAnswer{}, refusal
+		row, gated := a.rowGate(ctx, request, login, doer)
+		if gated != nil {
+			return agentwire.CallAnswer{}, gated
 		}
+		sendIssue = row.sendIssue()
 		defer func() { a.recordRow(ctx, request, answer, refusal) }()
 	}
-	specs, write, refusal := a.routeSends(ctx, request, arguments, doer, landed)
+	specs, write, refusal := a.routeSends(ctx, request, arguments, doer, landed, sendIssue)
 	if refusal != nil {
 		if last := goingLastLanded(landed); last != nil && refusal.Code == agentwire.CodeCallRefused {
 			// What the call's earlier try left is what the tool now refuses on: the call landed,
@@ -512,16 +515,17 @@ func goingCallAnswerOf(recorded *recordedAnswer) agentwire.CallAnswer {
 
 // routeSends is the requests a route call sends, and whether the tool writes. A write tool is one
 // of the catalogue (GoingCaller), whose row of the run's plan rowGate held the call to; it is
-// prepared as the plan prepared it, its translation's reads made through doer, and told what of
-// its requests landed before (landed). An upload whose row is sent over the document of its name
-// (rowUpload) sheds the create alone its translation carries and names the token of the version it
-// replaces, so it lands as that document's next version. A read tool sends one request
-// (goingReadSends). Any other name is refused UNKNOWN_TOOL.
+// prepared as the plan prepared it, a send to an agent session on the issue its row names
+// (sendIssue), its translation's reads made through doer, and told what of its requests landed
+// before (landed). An upload whose row is sent over the document of its name (rowUpload) sheds the
+// create alone its translation carries and names the token of the version it replaces, so it lands
+// as that document's next version. A read tool sends one request (goingReadSends). Any other name
+// is refused UNKNOWN_TOOL.
 func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRequest, arguments map[string]any, doer goingInProcess,
-	landed []*goingLandedRequest,
+	landed []*goingLandedRequest, sendIssue string,
 ) ([]goingSend, bool, *agentwire.Error) {
 	if _, writes := a.s.going.Lookup(request.Tool); writes {
-		caller := GoingCaller{Catalogue: a.s.going, Doer: doer, knownSession: a.s.goingKnownSession,
+		caller := GoingCaller{Catalogue: a.s.going, Doer: doer, knownSession: a.s.goingKnownSession, sendIssue: sendIssue,
 			resumeAfter: func(specs []goingSend) []goingWriteRequest { return goingLandedBefore(landed, specs) }}
 		prepared, err := caller.prepare(ctx, request.Tool, arguments)
 		if err != nil {

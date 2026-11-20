@@ -77,7 +77,12 @@ type goingAgentRig struct {
 // adjust changes the listener before it serves.
 func newGoingAgentRig(t *testing.T, adjust func(*AgentListener)) goingAgentRig {
 	t.Helper()
-	rig := newGoingWritesRig(t)
+	return newGoingAgentRigOver(t, newGoingWritesRig(t), adjust)
+}
+
+// newGoingAgentRigOver is the rig over rig, a writes rig whose Envoy listener the test chose.
+func newGoingAgentRigOver(t *testing.T, rig goingWritesRig, adjust func(*AgentListener)) goingAgentRig {
+	t.Helper()
 	createInteractionIssue(t, rig.mux, "DEMO", "The project's first issue", "Context\n")
 	hooks := &goingAgentHooks{hooks: map[string]goingAgentHook{}}
 	rig.served.inProcess = hooks.wrap(rig.served.inProcess)

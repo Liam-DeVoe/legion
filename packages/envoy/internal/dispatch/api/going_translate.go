@@ -825,6 +825,28 @@ func goingTranslateSendToAgent(ctx context.Context, read goingReader, call going
 	}, nil
 }
 
+// goingTranslateSendOnIssue posts a send to a session on the issue the session works on
+// (going_messages.go): a message on that issue's conversation, threaded as an issue message is
+// (goingTranslateIssueMessage), that targets the session the call names by id or by title
+// (recipient) in the delivery the call names.
+func goingTranslateSendOnIssue(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	posted, err := goingTranslateIssueMessage(ctx, read, call)
+	if err != nil {
+		return goingCall{}, err
+	}
+	if name := goingText(call.arguments, "session"); name != "" {
+		session, err := read.recipient(ctx, name)
+		if err != nil {
+			return goingCall{}, err
+		}
+		posted.body["target"] = "session:" + session
+	}
+	if delivery, named := call.arguments["delivery"]; named {
+		posted.body["delivery"] = delivery
+	}
+	return posted, nil
+}
+
 // goingTranslateDocEdit sends the edit's operations, its precondition and its summary; the issue
 // and project rows take the document's slug in their path as the call names it.
 func goingTranslateDocEdit(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {

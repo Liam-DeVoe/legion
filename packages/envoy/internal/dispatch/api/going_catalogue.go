@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -57,6 +58,12 @@ const goingCataloguePath = "/api/v1/going/catalogue"
 // caller acts as rather than for an argument of the tool: a follow records the calling session
 // as the ask's follower, and a tool argument names no session at all.
 const goingCallerSession = "@session"
+
+// goingSendIssue stands, where a row's path binding names it, for the issue a send to an agent
+// session is posted on (GoingCaller.sendIssue, going_messages.go) rather than for an argument of
+// the tool: a send to a session that works on an issue goes on that issue's conversation. A
+// caller that names no such issue fills none, and the call takes the tool's next row.
+const goingSendIssue = "@issue"
 
 // GoingUndo is how a write of one row is undone, as the catalogue serves it: the kind, and every
 // row of the table the undo writes through, none for a write that is not undone.
@@ -298,7 +305,7 @@ func goingBindingProblems(tool string, row goingToolRoute, takes map[string]bool
 		if !strings.Contains(row.Pattern, "{"+placeholder+"}") {
 			problems = append(problems, fmt.Sprintf("%s: %s has no placeholder {%s}", tool, name, placeholder))
 		}
-		if argument != goingCallerSession && !takes[argument] {
+		if argument != goingCallerSession && argument != goingSendIssue && !takes[argument] {
 			problems = append(problems, fmt.Sprintf("%s: {%s} is bound to %q, which is no argument of the tool", tool, placeholder, argument))
 		}
 	}
@@ -384,6 +391,10 @@ type GoingCaller struct {
 	// (goingReader.recipient); nil for a call to another server's table, which reads the roster
 	// alone.
 	knownSession func(ctx context.Context, id string) (bool, error)
+	// sendIssue is the issue a send to an agent session is posted on, which fills the rows that
+	// bind goingSendIssue: the issue a row of a run's plan names (going_messages.go). Empty for a
+	// call that names none, which takes the tool's row that sends to the session itself.
+	sendIssue string
 }
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
@@ -445,7 +456,13 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 	if reason := checkGoingArguments(entry.Request, arguments); reason != "" {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: reason}
 	}
-	route, values, chosen := chooseGoingRoute(entry, arguments, c.Session)
+	choosing := arguments
+	if c.sendIssue != "" {
+		// The issue fills its binding alone: the tool's schema took no argument of the name.
+		choosing = maps.Clone(arguments)
+		choosing[goingSendIssue] = c.sendIssue
+	}
+	route, values, chosen := chooseGoingRoute(entry, choosing, c.Session)
 	if !chosen {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
 	}
@@ -570,8 +587,11 @@ func goingNoRouteReason(entry GoingAction) string {
 	for _, route := range entry.Routes {
 		named := make([]string, 0, len(route.path))
 		for _, argument := range route.path {
-			if argument == goingCallerSession {
+			switch argument {
+			case goingCallerSession:
 				argument = "the calling session"
+			case goingSendIssue:
+				argument = "an issue the session works on"
 			}
 			named = append(named, argument)
 		}

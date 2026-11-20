@@ -5399,6 +5399,8 @@ export interface components {
     };
     GoingRowResult: {
       code: string;
+      /** @enum {null|string} */
+      delivery: "sent" | "queued" | "refused" | null;
       message: string;
       status: number;
     };

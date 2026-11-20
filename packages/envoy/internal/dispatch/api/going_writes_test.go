@@ -287,12 +287,14 @@ func goingCallerOf(t *testing.T, rig goingWritesRig, bearer bool) resolvedCaller
 }
 
 // goingRowCase is the call one row of the catalogue is executed with: the arguments the fake
-// answer writes, the title of the session the caller names where the row addresses one, and
-// whether the row's route takes a session's bearer alone.
+// answer writes, the title of the session the caller names where the row addresses one, whether
+// the row's route takes a session's bearer alone, and the issue a send to an agent session is
+// posted on where its row is the one that posts it on an issue (GoingCaller.sendIssue).
 type goingRowCase struct {
 	arguments map[string]any
 	session   string
 	bearer    bool
+	sendIssue string
 }
 
 // goingRowFixtures are the items the rows' calls name, made before any row runs.
@@ -392,6 +394,9 @@ func goingRowCases(f goingRowFixtures) map[string]goingRowCase {
 		"dispatch_message POST /api/v1/messages/{id}/reply": {
 			arguments: map[string]any{"in_reply_to": f.direct, "body": "Working on it."}, bearer: true,
 		},
+		"dispatch_send_to_agent POST /api/v1/issues/{key}/messages": {arguments: map[string]any{
+			"session": goingPlannerTitle, "body": "Have a look at the notes on the issue.", "delivery": "btw",
+		}, sendIssue: f.issue},
 		"dispatch_send_to_agent POST /api/v1/agents/{session_id}/messages": {arguments: map[string]any{
 			"session": goingPlannerTitle, "body": "Have a look at the notes.", "delivery": "btw",
 		}},
@@ -485,7 +490,7 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 				} else if invocation.Missing != nil {
 					t.Fatalf("the invocation still misses %+v", invocation.Missing)
 				}
-				caller := GoingCaller{Catalogue: catalogue, Session: session, Doer: doer}
+				caller := GoingCaller{Catalogue: catalogue, Session: session, Doer: doer, sendIssue: row.sendIssue}
 				response, err := caller.Do(context.Background(), action.Action, invocation.Arguments)
 				if err != nil {
 					t.Fatalf("perform %s: %v", name, err)

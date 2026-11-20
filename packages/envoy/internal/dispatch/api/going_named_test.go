@@ -552,7 +552,7 @@ func TestGoingAutomaticClassesEveryArgumentOfTheCatalogue(t *testing.T) {
 		}
 		for _, route := range action.Routes {
 			for placeholder, argument := range route.path {
-				if argument != goingCallerSession && goingItemArguments[argument] == "" && !goingPathArgumentsNamingNoItem[argument] {
+				if argument != goingCallerSession && argument != goingSendIssue && goingItemArguments[argument] == "" && !goingPathArgumentsNamingNoItem[argument] {
 					t.Errorf("%s %s binds %s to %s, which is not classed as an item", route.Method, route.Pattern, placeholder, argument)
 				}
 			}
