@@ -10,6 +10,7 @@ import {
   countSql,
   fillTemplate,
   main,
+  modelsSql,
   mtimeRange,
   pullSql,
   sessionsSql,
@@ -19,15 +20,33 @@ import {
 import { cutOffsets, lastTimestampMs, loadFixtures, storedPath, storeRefusal } from "./fixturedb";
 import { psqlRows, pullText } from "./psql-rows";
 
-// R1's fixture proof of count.sql (plan, "The SQL is committed and proven on fixtures"), and the
-// pieces it stands on: countsql.ts's filling and fixturedb.ts's loading. The proof needs the pod's
-// test server (LEGION_TEST_PG_DSN) and psql, and runs each query with the store command's own
-// flags; without the server it is skipped with a printed line (the pi-legion CI job has none). It
-// makes three databases of its own on that server and drops them at the end: F1's session, its
-// subagent and F4 in the first; F1b in the second; F1's session in the third, cut into three parts
-// inside its `alpha` read call line. Each query's rows must equal those of its F7 capture
-// (psql-rows.test.ts gives the capture commands), so a change to the SQL that changes a result
-// fails here until F7 is captured again.
+// R1's fixture proof of count.sql (plan, "The SQL is committed and proven on fixtures") and of
+// models.sql, and the pieces they stand on: countsql.ts's filling and fixturedb.ts's loading. The
+// proof needs the pod's test server (LEGION_TEST_PG_DSN) and psql, and runs each query with the
+// store command's own flags; without the server it is skipped with a printed line (the pi-legion
+// CI job has none). It makes four databases of its own on that server and drops them at the end:
+// F1's session, its subagent and F4 in the first; F1b in the second; F1's session in the third,
+// cut into three parts inside its `alpha` read call line; and, for models.sql, in the fourth: F1c
+// (F1's subagent with its model_change line taken out, so its model is its session_init's) cut
+// after its session_init line, F4 cut after its first assistant message, and F1b cut inside its
+// first line, so that its model_change line is in its second part, which models.sql does not read.
+// Each query's rows must equal those of its F7 capture (psql-rows.test.ts gives the capture
+// commands of count.sql's), so a change to the SQL that changes a result fails here until F7 is
+// captured again.
+//
+// F1c and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, with FIRST the first
+// database as psql-rows.test.ts loads it and MODELS a fourth made the same way:
+//
+//   grep -v '"type":"model_change"' $F1/ProductiveChicken.jsonl > testdata/F1c.jsonl
+//   bun fixturedb.ts --dsn "$MODELS" --line '"type":"thinking_level_change"' testdata/F1c.jsonl
+//   bun fixturedb.ts --dsn "$MODELS" --line 'Base directory for this skill' $F4
+//   bun fixturedb.ts --dsn "$MODELS" --line '"type":"title"' testdata/F1b.jsonl
+//   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-20 \
+//     --query models | $PSQL "$FIRST" > testdata/F7-models-first.txt
+//   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-20 \
+//     --query models | $PSQL "$MODELS" > testdata/F7-models-second.txt
+//   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-21 \
+//     --query models | $PSQL "$MODELS" > testdata/F7-models-none.txt
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const F1 = path.join(TESTDATA, "F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80");
@@ -38,6 +57,7 @@ const F4_SESSION = path.join(
   "F4/projects/-legion-scratch-tmp-infra4676-t1-runs-f3-work/6441e7f4-71f3-49f1-a76f-0e0ffc82ea11.jsonl"
 );
 const F1B = path.join(TESTDATA, "F1b.jsonl");
+const F1C = path.join(TESTDATA, "F1c.jsonl");
 const CONFIG = loadConfig(path.join(TESTDATA, "F7-skill-cuts.json"));
 /** The text fixturedb cuts inside for the three-part file: F1's `alpha` read call line. */
 const ALPHA_CALL = '"path":"skill://alpha"';
@@ -79,6 +99,20 @@ describe("countsql.ts fills the SQL", () => {
     expect(countSql(CONFIG, "store_a", "2026-11-20", 5)).toContain(
       `f.mtime_ms >= ${Date.parse("2026-11-20T05:00:00Z")} AND f.mtime_ms < ${Date.parse("2026-11-20T06:00:00Z")}`
     );
+  });
+
+  test("models.sql for a day or an hour: the same files as count.sql's, the timeout first, the store a value", () => {
+    const sql = modelsSql(CONFIG, "store_a", "2026-11-20");
+    expect(sql.split("\n")[0]).toBe("SET LOCAL statement_timeout = '15min';");
+    expect(sql).not.toContain("{{");
+    expect(sql).toContain(
+      `f.mtime_ms >= ${Date.parse("2026-11-20T00:00:00Z")} AND f.mtime_ms < ${Date.parse("2026-11-21T00:00:00Z")}`
+    );
+    expect(sql).toContain("'store', 'store_a'");
+    expect(modelsSql(CONFIG, "store_a", "2026-11-20", 5)).toContain(
+      `f.mtime_ms >= ${Date.parse("2026-11-20T05:00:00Z")} AND f.mtime_ms < ${Date.parse("2026-11-20T06:00:00Z")}`
+    );
+    expect(() => modelsSql(CONFIG, "store_b", "2026-11-20")).toThrow('names no store "store_b"');
   });
 
   test.each([
@@ -135,6 +169,22 @@ describe("countsql.ts fills the SQL", () => {
     ).toBe(2);
     expect(err).toHaveLength(3);
     expect(err[0]).toContain('names no store "store_c"');
+  });
+
+  test("--query models prints models.sql, the count stays the default, and another query is refused", () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const io = { out: (text: string) => out.push(text), err: (text: string) => err.push(text) };
+    const config = path.join(TESTDATA, "F7-skill-cuts.json");
+    const day = ["--config", config, "--store", "store_a", "--day", "2026-11-20"];
+    expect(main([...day, "--query", "models", "--hour", "4"], io)).toBe(0);
+    expect(main([...day, "--query", "count"], io)).toBe(0);
+    expect(out).toEqual([
+      modelsSql(CONFIG, "store_a", "2026-11-20", 4),
+      countSql(CONFIG, "store_a", "2026-11-20"),
+    ]);
+    expect(main([...day, "--query", "pull"], io)).toBe(2);
+    expect(err).toEqual(['countsql: --query "pull" is neither count nor models']);
   });
 });
 
@@ -201,140 +251,196 @@ if (serverDsn === undefined) {
   );
 }
 
-describe.skipIf(serverDsn === undefined)("count.sql on the fixtures, in test databases", () => {
-  const stamp = `${process.pid}_${Date.now()}`;
-  const names = {
-    first: `skill_cuts_count_${stamp}_first`,
-    second: `skill_cuts_count_${stamp}_second`,
-    third: `skill_cuts_count_${stamp}_third`,
-  };
-  /** The DSN of one of this run's databases on the server LEGION_TEST_PG_DSN names. */
-  const dsnOf = (name: string) => {
-    const url = new URL(serverDsn ?? "");
-    url.pathname = `/${name}`;
-    return url.toString();
-  };
-  let threeParts: readonly number[] = [];
+describe.skipIf(serverDsn === undefined)(
+  "count.sql and models.sql on the fixtures, in test databases",
+  () => {
+    const stamp = `${process.pid}_${Date.now()}`;
+    const names = {
+      first: `skill_cuts_count_${stamp}_first`,
+      second: `skill_cuts_count_${stamp}_second`,
+      third: `skill_cuts_count_${stamp}_third`,
+      models: `skill_cuts_count_${stamp}_models`,
+    };
+    /** The DSN of one of this run's databases on the server LEGION_TEST_PG_DSN names. */
+    const dsnOf = (name: string) => {
+      const url = new URL(serverDsn ?? "");
+      url.pathname = `/${name}`;
+      return url.toString();
+    };
+    let threeParts: readonly number[] = [];
 
-  /** The rows of `sql` run in the database `name` with the store command's psql flags. */
-  function run(name: string, sql: string): unknown[] {
-    const psql = Bun.spawnSync(
-      [
-        "psql",
-        "-X",
-        "-q",
-        "-w",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "--single-transaction",
-        "-c",
-        "SET TRANSACTION READ ONLY",
-        "-f",
-        "-",
-        dsnOf(name),
-      ],
-      { stdin: new TextEncoder().encode(sql), stdout: "pipe", stderr: "pipe" }
-    );
-    if (psql.exitCode !== 0)
-      throw new Error(`psql exited ${psql.exitCode}: ${psql.stderr.toString()}`);
-    return psqlRows(psql.stdout.toString());
-  }
-
-  /** The rows of an F7 capture. */
-  const captured = (name: string) => psqlRows(readFileSync(path.join(TESTDATA, name), "utf8"));
-
-  beforeAll(async () => {
-    const server = new SQL(serverDsn ?? "");
-    try {
-      for (const name of Object.values(names)) await server.unsafe(`CREATE DATABASE ${name}`);
-    } finally {
-      await server.close();
+    /** The rows of `sql` run in the database `name` with the store command's psql flags. */
+    function run(name: string, sql: string): unknown[] {
+      const psql = Bun.spawnSync(
+        [
+          "psql",
+          "-X",
+          "-q",
+          "-w",
+          "-v",
+          "ON_ERROR_STOP=1",
+          "--single-transaction",
+          "-c",
+          "SET TRANSACTION READ ONLY",
+          "-f",
+          "-",
+          dsnOf(name),
+        ],
+        { stdin: new TextEncoder().encode(sql), stdout: "pipe", stderr: "pipe" }
+      );
+      if (psql.exitCode !== 0)
+        throw new Error(`psql exited ${psql.exitCode}: ${psql.stderr.toString()}`);
+      return psqlRows(psql.stdout.toString());
     }
-    await loadFixtures(dsnOf(names.first), [F1_SESSION, F1_SUBAGENT, F4_SESSION], { parts: 2 });
-    await loadFixtures(dsnOf(names.second), [F1B], { parts: 2 });
-    const [loaded] = await loadFixtures(dsnOf(names.third), [F1_SESSION], {
-      parts: 3,
-      line: ALPHA_CALL,
+
+    /** The rows of an F7 capture. */
+    const captured = (name: string) => psqlRows(readFileSync(path.join(TESTDATA, name), "utf8"));
+
+    beforeAll(async () => {
+      const server = new SQL(serverDsn ?? "");
+      try {
+        for (const name of Object.values(names)) await server.unsafe(`CREATE DATABASE ${name}`);
+      } finally {
+        await server.close();
+      }
+      await loadFixtures(dsnOf(names.first), [F1_SESSION, F1_SUBAGENT, F4_SESSION], { parts: 2 });
+      await loadFixtures(dsnOf(names.second), [F1B], { parts: 2 });
+      const [loaded] = await loadFixtures(dsnOf(names.third), [F1_SESSION], {
+        parts: 3,
+        line: ALPHA_CALL,
+      });
+      threeParts = loaded?.offsets ?? [];
+      await loadFixtures(dsnOf(names.models), [F1C], {
+        parts: 2,
+        line: '"type":"thinking_level_change"',
+      });
+      await loadFixtures(dsnOf(names.models), [F4_SESSION], {
+        parts: 2,
+        line: "Base directory for this skill",
+      });
+      await loadFixtures(dsnOf(names.models), [F1B], { parts: 2, line: '"type":"title"' });
+    }, 60_000);
+
+    afterAll(async () => {
+      const server = new SQL(serverDsn ?? "");
+      try {
+        for (const name of Object.values(names))
+          await server.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      } finally {
+        await server.close();
+      }
     });
-    threeParts = loaded?.offsets ?? [];
-  }, 60_000);
 
-  afterAll(async () => {
-    const server = new SQL(serverDsn ?? "");
-    try {
-      for (const name of Object.values(names))
-        await server.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
-    } finally {
-      await server.close();
-    }
-  });
-
-  test("the first database: alpha one read and one reference session, the missing skill none, beta one read in the subagent's file, F4's Skill call one read", () => {
-    const rows = run(names.first, countSql(CONFIG, "store_a", "2026-11-20"));
-    expect(rows).toEqual(captured("F7-count-first.txt"));
-    const counts = rows.flatMap((row) => {
-      const parsed = CountRow.safeParse(row);
-      return parsed.success ? [parsed.data] : [];
-    });
-    const count = (skill: string, kind: string) =>
-      counts.filter((row) => row.skill === skill && row.kind === kind);
-    const alphaReads = count("alpha", "read");
-    expect(
-      alphaReads.map((row) => [
-        row.copy.endsWith("/profiles/fixture/agent/skills/alpha/SKILL.md"),
-        row.files,
-      ])
-    ).toEqual([
-      [true, 1],
-      [false, 1],
-    ]);
-    expect(count("alpha", "reference").map((row) => row.files)).toEqual([1]);
-    expect(count("gamma", "read")).toEqual([]);
-    expect(
-      count("beta", "read").find((row) => row.copy.includes("/profiles/fixture/"))?.hashes
-    ).toEqual([fileHash(storedPath(F1_SUBAGENT))]);
-    expect(alphaReads[1]?.copy).toEndWith("/plugins/acme-tools/skills/alpha/SKILL.md");
-    expect(alphaReads[1]?.hashes).toEqual([fileHash(storedPath(F4_SESSION))]);
-  });
-
-  test("the second database: F1b's alpha, read on two days, is one read session", () => {
-    const rows = run(names.second, countSql(CONFIG, "store_a", "2026-11-21"));
-    expect(rows).toEqual(captured("F7-count-second.txt"));
-    expect(rows[0]).toMatchObject({
-      row: "count",
-      skill: "alpha",
-      kind: "read",
-      day: "2026-11-20",
-      files: 1,
-    });
-  });
-
-  test("a matched line that spans three parts is still counted", () => {
-    const bytes = new Uint8Array(readFileSync(F1_SESSION));
-    expect(threeParts).toHaveLength(3);
-    const middle = Buffer.from(bytes.subarray(threeParts[1], threeParts[2]));
-    expect(middle.includes(0x0a)).toBe(false);
-    const rows = run(names.third, countSql(CONFIG, "store_a", "2026-11-20"));
-    expect(rows.slice(0, 2)).toEqual(captured("F7-count-first.txt").slice(0, 2));
-    expect(rows.at(-1)).toMatchObject({ row: "summary", files: 1, parts: 3, bad_lines: 0 });
-  });
-
-  test("the pull, task, sessions and empty queries give their F7 rows", () => {
-    const pull = run(names.first, pullSql(storedPath(F1_SESSION), -2));
-    expect(pull).toEqual(captured("F7-pull.txt"));
-    expect(pullText(pull)).toBe(readFileSync(F1_SESSION, "utf8"));
-    expect(run(names.first, pullSql("no/such/path.jsonl", -2))).toEqual([]);
-    expect(
-      run(
-        names.first,
-        tasksSql(mtimeRange("2026-11-20"), "2026-11-20T00:00:00Z", "2026-11-22T00:00:00Z", [
-          "Fixture",
+    test("the first database: alpha one read and one reference session, the missing skill none, beta one read in the subagent's file, F4's Skill call one read", () => {
+      const rows = run(names.first, countSql(CONFIG, "store_a", "2026-11-20"));
+      expect(rows).toEqual(captured("F7-count-first.txt"));
+      const counts = rows.flatMap((row) => {
+        const parsed = CountRow.safeParse(row);
+        return parsed.success ? [parsed.data] : [];
+      });
+      const count = (skill: string, kind: string) =>
+        counts.filter((row) => row.skill === skill && row.kind === kind);
+      const alphaReads = count("alpha", "read");
+      expect(
+        alphaReads.map((row) => [
+          row.copy.endsWith("/profiles/fixture/agent/skills/alpha/SKILL.md"),
+          row.files,
         ])
-      )
-    ).toEqual(captured("F7-tasks.txt"));
-    const hashes = [F1_SESSION, F1_SUBAGENT, F4_SESSION].map((file) => fileHash(storedPath(file)));
-    expect(run(names.first, sessionsSql([...hashes, "0000000000000000"]))).toEqual(
-      captured("F7-sessions.txt")
-    );
-  });
-});
+      ).toEqual([
+        [true, 1],
+        [false, 1],
+      ]);
+      expect(count("alpha", "reference").map((row) => row.files)).toEqual([1]);
+      expect(count("gamma", "read")).toEqual([]);
+      expect(
+        count("beta", "read").find((row) => row.copy.includes("/profiles/fixture/"))?.hashes
+      ).toEqual([fileHash(storedPath(F1_SUBAGENT))]);
+      expect(alphaReads[1]?.copy).toEndWith("/plugins/acme-tools/skills/alpha/SKILL.md");
+      expect(alphaReads[1]?.hashes).toEqual([fileHash(storedPath(F4_SESSION))]);
+    });
+
+    test("the second database: F1b's alpha, read on two days, is one read session", () => {
+      const rows = run(names.second, countSql(CONFIG, "store_a", "2026-11-21"));
+      expect(rows).toEqual(captured("F7-count-second.txt"));
+      expect(rows[0]).toMatchObject({
+        row: "count",
+        skill: "alpha",
+        kind: "read",
+        day: "2026-11-20",
+        files: 1,
+      });
+    });
+
+    test("a matched line that spans three parts is still counted", () => {
+      const bytes = new Uint8Array(readFileSync(F1_SESSION));
+      expect(threeParts).toHaveLength(3);
+      const middle = Buffer.from(bytes.subarray(threeParts[1], threeParts[2]));
+      expect(middle.includes(0x0a)).toBe(false);
+      const rows = run(names.third, countSql(CONFIG, "store_a", "2026-11-20"));
+      expect(rows.slice(0, 2)).toEqual(captured("F7-count-first.txt").slice(0, 2));
+      expect(rows.at(-1)).toMatchObject({ row: "summary", files: 1, parts: 3, bad_lines: 0 });
+    });
+
+    test("the pull, task, sessions and empty queries give their F7 rows", () => {
+      const pull = run(names.first, pullSql(storedPath(F1_SESSION), -2));
+      expect(pull).toEqual(captured("F7-pull.txt"));
+      expect(pullText(pull)).toBe(readFileSync(F1_SESSION, "utf8"));
+      expect(run(names.first, pullSql("no/such/path.jsonl", -2))).toEqual([]);
+      expect(
+        run(
+          names.first,
+          tasksSql(mtimeRange("2026-11-20"), "2026-11-20T00:00:00Z", "2026-11-22T00:00:00Z", [
+            "Fixture",
+          ])
+        )
+      ).toEqual(captured("F7-tasks.txt"));
+      const hashes = [F1_SESSION, F1_SUBAGENT, F4_SESSION].map((file) =>
+        fileHash(storedPath(file))
+      );
+      expect(run(names.first, sessionsSql([...hashes, "0000000000000000"]))).toEqual(
+        captured("F7-sessions.txt")
+      );
+    });
+
+    /** The model rows of a models.sql result, each `[hash, model, source]`, and its summary. */
+    const models = (rows: unknown[]) => ({
+      files: rows.slice(0, -1).map((row) => {
+        const { hash, model, source } = row as { hash: string; model: unknown; source: unknown };
+        return [hash, model, source];
+      }),
+      summary: rows.at(-1),
+    });
+
+    test("models.sql on the first database: Oh My Pi's model_change, in a subagent's file too, and Claude Code's model attachment", () => {
+      const rows = run(names.first, modelsSql(CONFIG, "store_a", "2026-11-20"));
+      expect(rows).toEqual(captured("F7-models-first.txt"));
+      const sonnet = "anthropic/claude-sonnet-5-5";
+      expect(models(rows)).toEqual({
+        files: [
+          [fileHash(storedPath(F1_SUBAGENT)), sonnet, "model_change"],
+          [fileHash(storedPath(F4_SESSION)), "claude-sonnet-5-5", "model attachment"],
+          [fileHash(storedPath(F1_SESSION)), sonnet, "model_change"],
+        ],
+        // The subagent's session_init line, its longest, is cut where its first part ends.
+        summary: expect.objectContaining({ row: "summary", files: 3, with_model: 3, bad_lines: 1 }),
+      });
+    });
+
+    test("models.sql reads only each file's first part: a subagent's session_init, Claude Code's first assistant message, and none", () => {
+      const rows = run(names.models, modelsSql(CONFIG, "store_a", "2026-11-20"));
+      expect(rows).toEqual(captured("F7-models-second.txt"));
+      expect(models(rows).files).toEqual([
+        [fileHash(storedPath(F4_SESSION)), "claude-sonnet-5-5", "assistant"],
+        [fileHash(storedPath(F1C)), "anthropic/claude-sonnet-5-5", "session_init"],
+      ]);
+      // F1b's model_change line is in its second part.
+      const none = run(names.models, modelsSql(CONFIG, "store_a", "2026-11-21"));
+      expect(none).toEqual(captured("F7-models-none.txt"));
+      expect(readFileSync(F1B, "utf8").split("\n")[2]).toContain('"type":"model_change"');
+      expect(models(none)).toEqual({
+        files: [[fileHash(storedPath(F1B)), null, null]],
+        summary: expect.objectContaining({ files: 1, with_model: 0, bytes: 127 }),
+      });
+    });
+  }
+);

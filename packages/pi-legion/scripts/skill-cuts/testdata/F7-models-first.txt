@@ -1,0 +1,8 @@
+                                                                                          total                                                                                          
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {"row" : "model", "store" : "store_a", "hash" : "0da7427e81182998", "model" : "anthropic/claude-sonnet-5-5", "source" : "model_change"}
+ {"row" : "model", "store" : "store_a", "hash" : "5ebda8a6e0707d07", "model" : "claude-sonnet-5-5", "source" : "model attachment"}
+ {"row" : "model", "store" : "store_a", "hash" : "83af4b8e0c75a050", "model" : "anthropic/claude-sonnet-5-5", "source" : "model_change"}
+ {"row" : "summary", "store" : "store_a", "mtime_from" : 1795132800000, "mtime_to" : 1795219200000, "files" : 3, "with_model" : 3, "bytes" : 90517, "lines_parsed" : 4, "bad_lines" : 1}
+(4 rows)
+

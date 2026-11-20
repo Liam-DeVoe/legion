@@ -1,17 +1,18 @@
 /**
  * Fills the runner's SQL with the values of one query: count.sql (R1's count, for one store and
- * one UTC day or hour of file mtime), pull.sql (a transcript, by path), tasks.sql (first user
- * messages that hold some terms) and sessions.sql (the paths of the files a count row names by
- * hash). Each placeholder is the name of a value inside double braces, and each is filled with one
- * whole SQL value: a number, or a string literal with its quotes (`sqlString`), so no value can end
- * the literal it is in. The filled text goes into the store's read command unchanged.
+ * one UTC day or hour of file mtime), models.sql (the model of each session of the same files),
+ * pull.sql (a transcript, by path), tasks.sql (first user messages that hold some terms) and
+ * sessions.sql (the paths of the files a count row names by hash). Each placeholder is the name of
+ * a value inside double braces, and each is filled with one whole SQL value: a number, or a string
+ * literal with its quotes (`sqlString`), so no value can end the literal it is in. The filled text
+ * goes into the store's read command unchanged.
  *
- *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>]
+ *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]
  *
- * prints count.sql filled for that store and day (or for the one hour of that day, which is how a
- * day whose query times out is split), with the window of the configuration. A store the
- * configuration does not name is refused. Exit 0 prints the query; exit 2 is a refusal before
- * anything is printed.
+ * prints count.sql (or, with `--query models`, models.sql) filled for that store and day (or for
+ * the one hour of that day, which is how a day whose query times out is split), count.sql with the
+ * window of the configuration. A store the configuration does not name is refused. Exit 0 prints
+ * the query; exit 2 is a refusal before anything is printed.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -19,7 +20,7 @@ import { parseArgs } from "node:util";
 import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
 
 /** The SQL files of the runner, beside this file. */
-export type Template = "count.sql" | "pull.sql" | "tasks.sql" | "sessions.sql";
+export type Template = "count.sql" | "models.sql" | "pull.sql" | "tasks.sql" | "sessions.sql";
 
 /** The text of one of the runner's SQL files. */
 export function readTemplate(name: Template): string {
@@ -114,6 +115,23 @@ export function countSql(
   return countSqlFor(config, store, mtimeRange(day, hour));
 }
 
+/** models.sql filled for the store `store`, which the configuration must name, and the UTC day
+ *  `day`, or its hour `hour`: the files of count.sql's query of that store and day. */
+export function modelsSql(
+  config: SkillCutsConfig,
+  store: string,
+  day: string,
+  hour?: number
+): string {
+  const named = storeNamed(config, store);
+  const range = mtimeRange(day, hour);
+  return fillTemplate(readTemplate("models.sql"), {
+    store: sqlString(named.name),
+    day_start: String(range.from),
+    day_end: String(range.to),
+  });
+}
+
 /** The rows a transcript pull asks for in one call. */
 export const PULL_PAGE = 64;
 
@@ -157,7 +175,7 @@ export function sessionsSql(hashes: readonly string[]): string {
 }
 
 const USAGE =
-  "usage: countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>]";
+  "usage: countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]";
 
 /** What `main` writes to. */
 export interface Output {
@@ -171,7 +189,7 @@ export function main(argv: readonly string[], io: Output): number {
     io.err(`countsql: ${why}`);
     return 2;
   };
-  let values: { config?: string; store?: string; day?: string; hour?: string };
+  let values: { config?: string; store?: string; day?: string; hour?: string; query?: string };
   try {
     ({ values } = parseArgs({
       args: [...argv],
@@ -180,6 +198,7 @@ export function main(argv: readonly string[], io: Output): number {
         store: { type: "string" },
         day: { type: "string" },
         hour: { type: "string" },
+        query: { type: "string" },
       },
       strict: true,
       allowPositionals: false,
@@ -193,10 +212,14 @@ export function main(argv: readonly string[], io: Output): number {
   if (values.hour !== undefined && !/^\d{1,2}$/.test(values.hour)) {
     return refuse(`--hour ${JSON.stringify(values.hour)} is not an hour from 0 to 23`);
   }
+  const query = values.query ?? "count";
+  if (query !== "count" && query !== "models") {
+    return refuse(`--query ${JSON.stringify(query)} is neither count nor models`);
+  }
   try {
     const config = loadConfig(values.config);
     const hour = values.hour === undefined ? undefined : Number(values.hour);
-    io.out(countSql(config, values.store, values.day, hour));
+    io.out((query === "models" ? modelsSql : countSql)(config, values.store, values.day, hour));
     return 0;
   } catch (error) {
     return refuse((error as Error).message);

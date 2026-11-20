@@ -4,11 +4,11 @@
  * one row per skill copy with its sessions, the report beside it, and each cut's ranking.
  *
  *   bun scripts/skill-cuts/attribute.ts --config <skill-cuts.json> --count <dir> --copies <dir>
- *     --spans <file> --out <dir> [--changed <cut id>=<file>]...
+ *     --spans <file> --out <dir> [--models <dir>] [--changed <cut id>=<file>]...
  *
  * `main(argv, io)` is exported so that cli.ts runs it as `skill-cuts attribute`; attribute.test.ts
  * calls the pure parts. It only reads its inputs, and it writes only under `--out`, which must not
- * be inside `--count` or `--copies`.
+ * be inside `--count`, `--copies` or `--models`.
  *
  * Inputs.
  *   --count    The count's raw output. `<store>/<YYYY-MM-DD>.txt` for each store of the
@@ -23,6 +23,9 @@
  *              loaders.tsv and repositories.tsv, each with the columns copies.ts exports for it.
  *   --spans    One JSON line per store: `{store, earliest_mtime_ms, files}`, the store's earliest
  *              file mtime (epoch milliseconds) and its number of files.
+ *   --models   The models query's raw output (models.sql), in `--count`'s layout and with its own
+ *              run.log: `<store>/<YYYY-MM-DD>[T<HH>].txt`, each one models.sql result, a row per
+ *              file `{hash, model, source}` and a summary.
  *   --changed  `<cut id>=<file>`, once for each cut of the configuration to rank. The file holds
  *              the cut's changed skills: one skill directory of the cut's repository per line, as
  *              skill-copies.tsv's `path` writes it.
@@ -38,14 +41,22 @@
  *   1. The prefix table. When every prefix-table.tsv row whose pattern matches the row's copy path
  *      maps to the same copy, the row goes to that copy. The match is `prefixRegExp`, the one
  *      matcher that `prefixMatches` uses, compiled once for each row.
- *   2. The store's context. The units (packages, plugins, a host's user skills, each named with its
+ *   2. A checkout (`checkoutRule`). When the row's copy-path prefix ends with a copy's
+ *      repository-relative skill directory, at a path boundary, the row goes to that copy: a read
+ *      in a checkout of its repository (a dotfiles checkout, a Legion workspace, a relative path
+ *      from the session's working directory). The longest such directory wins; copies of several
+ *      repositories at it are told apart by the repository's owner and name, else its name, in
+ *      the path; a tie left is unattributed. A one-segment skill directory counts only when the
+ *      path names its repository.
+ *   3. The store's context. The units (packages, plugins, a host's user skills, each named with its
  *      manifest in prefix-table.tsv's `via`) that the store's own step-1 reads come from are the
  *      units its context installs. Their copies are the installers.tsv rows of those units and the
  *      prefix rows' own copies. When they hold exactly one copy of the row's skill name, the row
  *      goes to that copy. A store with no step-1 read installs no unit.
- *   3. Otherwise the row is unattributed for its skill name.
+ *   4. Otherwise the row is unattributed for its skill name.
  *   Each distinct copy-path prefix (`copyPrefix`: the path up to the skill's directory) that step 1
- *   does not map is listed with its sessions and where they went. No prefix is dropped.
+ *   does not map is listed with its sessions, where they went and the rule that placed them; each
+ *   one step 1 maps is listed with its copy. No prefix is dropped.
  *   Two copies of one name are a tie when their sessions differ by at most the number of that
  *   name's unattributed sessions.
  *   A copy is loaded when code, an agent definition or an installer loads it into a session: its
@@ -53,12 +64,17 @@
  *   agent definition's autoloadSkills, a Python loader's list), a loaders.tsv row of its name
  *   matches `code-load`, or INJECTED_SKILLS holds its name.
  *   Oh My Pi installs a copy when an Oh My Pi session read it (every store holds Oh My Pi
- *   sessions), when a store's context installs it (step 2), or when an installers.tsv row of host
+ *   sessions), when a store's context installs it (step 3), or when an installers.tsv row of host
  *   `omp` installs it (an installer script that installs into Oh My Pi, an Oh My Pi plugins
  *   package.json, a package.json with `omp.skills`, the prepack script). Claude Code installs a
  *   copy when an installers.tsv row of host `claude-code` installs it. Status: `read` when the copy
  *   has a session; else `not countable yet` when only Claude Code installs it; else `no Oh My Pi
  *   read; Claude Code not counted yet` when both hosts install it; else `no read`.
+ *   With --models, each read session's model is its file's row of the models queries (a file in
+ *   two queries takes the model one names; two models keep the first day's and are counted), the
+ *   thinking suffix dropped and a Claude Code model id written `anthropic/<id>` (`sessionModel`).
+ *   A session whose file's head names no model, and one in no models query's rows, are counted
+ *   apart. A model's provider is the text before its first `/`.
  *
  * Outputs under --out.
  *   skill-read-count.tsv   READ_COUNT_COLUMNS, one row per copy of skill-copies.tsv, in its order:
@@ -68,13 +84,28 @@
  *   skill-read-count.md    The end time and the window; the stores with their spans, earliest
  *                          record and earliest read; each failed, split or missing query; the
  *                          attribution rule with the units each store's context installs; the
- *                          unmapped prefixes with their sessions; the ties; the loaded list; per
+ *                          unmapped prefixes with their sessions and the rule that placed them;
+ *                          the mapped prefixes with their copies; the ties; the loaded list; per
  *                          repository, the skills with no read; the two Claude Code lists; per
  *                          repository, the bytes of its skill names and descriptions at the commit
- *                          R4 read; the rankings.
+ *                          R4 read; the rankings; and, with --models, the models of the reading
+ *                          sessions, the models queries' issues and each cut's shares.
  *   <cut id>/ranking.json  For each `--changed` cut, the cut repository's changed skills, each
  *                          `{skill, sessions}` (the sessions of that repository's copy), in the
  *                          order of score.ts's `rankSkills` (most sessions first, a tie by name).
+ *   <cut id>/sessions/<skill>.jsonl
+ *                          For each `--changed` cut, one file per ranked changed skill
+ *                          (`sessionFiles`): each read session of the cut repository's copy, after
+ *                          every attribution rule, one line `{"store", "hash"}` (the 16-hex file
+ *                          hash), sorted by store then hash: what `build-cases --sessions` reads.
+ *   models-by-skill.tsv    With --models: MODELS_BY_SKILL_COLUMNS, one row per copy, in
+ *                          skill-copies.tsv's order: repository, path, name, sessions, by_model
+ *                          (each `<model>=<sessions>`, most first, joined by `; `),
+ *                          no_model_sessions, not_queried_sessions, not_anthropic_sessions and
+ *                          not_anthropic_share (of the sessions with a model, to 3 places; empty
+ *                          when none has one).
+ *   models-by-cut.tsv      With --models: MODELS_BY_CUT_COLUMNS, each cut's ranked changed skills
+ *                          in rank order: cut, rank, skill, path, then the same model columns.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -99,6 +130,8 @@ import { rankSkills } from "./score";
 
 const Hash = z.string().regex(/^[0-9a-f]{16}$/, { error: "a file hash of 16 hex characters" });
 const Count = z.number().int().nonnegative();
+/** A session as the count names it across stores: its store and its file hash. */
+export const sessionKey = (store: string, hash: string) => `${store}\t${hash}`;
 
 /** One count row of count.sql. */
 export const CountRow = z.strictObject({
@@ -218,21 +251,26 @@ export function parseRunLog(text: string): RunLog {
   return { entries, failed, unread, ended };
 }
 
-/** What the count directory holds for the configured stores. */
-export interface CountRead {
-  readonly outputs: readonly QueryOutput[];
-  /** Each `.txt` that is not one whole count.sql result, and why. */
+/** What a directory of query outputs (`--count`, `--models`) holds for the configured stores. */
+export interface QueryDir<O> {
+  readonly outputs: readonly O[];
+  /** Each `.txt` that is not one whole result of its query, and why. */
   readonly unreadable: readonly { store: string; name: string; why: string }[];
   /** The run log, or undefined when the directory holds none. */
   readonly log: RunLog | undefined;
-  /** Each directory of the count that the configuration names no store for. */
+  /** Each directory that the configuration names no store for. */
   readonly otherStores: readonly string[];
 }
+export type CountRead = QueryDir<QueryOutput>;
 
-/** Reads the count directory `dir` for the stores `stores`. */
-export function readCount(dir: string, stores: readonly string[]): CountRead {
-  if (!existsSync(dir)) throw new Error(`the count directory ${dir} does not exist`);
-  const outputs: QueryOutput[] = [];
+/** Reads the query directory `dir` for the stores `stores`, each `.txt` parsed by `parse`. */
+export function readQueryDir<O>(
+  dir: string,
+  stores: readonly string[],
+  parse: (store: string, name: string, text: string) => O
+): QueryDir<O> {
+  if (!existsSync(dir)) throw new Error(`the query directory ${dir} does not exist`);
+  const outputs: O[] = [];
   const unreadable: { store: string; name: string; why: string }[] = [];
   for (const store of stores) {
     const storeDir = path.join(dir, store);
@@ -241,9 +279,7 @@ export function readCount(dir: string, stores: readonly string[]): CountRead {
       if (!QUERY_FILE.test(file)) continue;
       const name = file.slice(0, -".txt".length);
       try {
-        outputs.push(
-          parseQueryOutput(store, name, readFileSync(path.join(storeDir, file), "utf8"))
-        );
+        outputs.push(parse(store, name, readFileSync(path.join(storeDir, file), "utf8")));
       } catch (error) {
         unreadable.push({ store, name, why: (error as Error).message });
       }
@@ -256,6 +292,11 @@ export function readCount(dir: string, stores: readonly string[]): CountRead {
     .map((entry) => entry.name)
     .sort();
   return { outputs, unreadable, log, otherStores };
+}
+
+/** Reads the count directory `dir` for the stores `stores`. */
+export function readCount(dir: string, stores: readonly string[]): CountRead {
+  return readQueryDir(dir, stores, parseQueryOutput);
 }
 
 /** A query of the count that has no whole output, or that was split, and what happened to it. */
@@ -288,7 +329,10 @@ function daysFrom(first: number, last: number): string[] {
  * `.txt` that is not a whole result; and each day of the window (and, once the log has its `END`
  * line, each day from the window's end to the run's end) with no output of the day or of an hour.
  */
-export function queryIssues(config: SkillCutsConfig, count: CountRead): QueryIssue[] {
+export function queryIssues(
+  config: SkillCutsConfig,
+  count: QueryDir<{ readonly store: string; readonly name: string }>
+): QueryIssue[] {
   const issues: QueryIssue[] = [];
   const log = count.log;
   if (log === undefined) {
@@ -296,7 +340,7 @@ export function queryIssues(config: SkillCutsConfig, count: CountRead): QueryIss
       store: "",
       name: "",
       what: "run log",
-      detail: "the count directory holds no run.log, so no query's status is known",
+      detail: "the directory holds no run.log, so no query's status is known",
     });
   }
   for (const line of log?.unread ?? []) {
@@ -358,6 +402,133 @@ export function queryIssues(config: SkillCutsConfig, count: CountRead): QueryIss
     }
   }
   return issues;
+}
+
+// ---------------------------------------------------------------------------------------------
+// the models query's output
+
+/** Where models.sql found a file's model. */
+export const MODEL_SOURCES = [
+  "model_change",
+  "session_init",
+  "assistant",
+  "model attachment",
+] as const;
+
+/** One file's row of models.sql. */
+export const ModelRow = z.strictObject({
+  row: z.literal("model"),
+  store: z.string(),
+  hash: Hash,
+  model: z.string().min(1).nullable(),
+  source: z.enum(MODEL_SOURCES).nullable(),
+});
+export type ModelRow = z.infer<typeof ModelRow>;
+
+/** The summary row that ends a models.sql result. */
+export const ModelSummaryRow = z.strictObject({
+  row: z.literal("summary"),
+  store: z.string(),
+  mtime_from: z.number().int(),
+  mtime_to: z.number().int(),
+  files: Count,
+  with_model: Count,
+  bytes: Count,
+  lines_parsed: Count,
+  bad_lines: Count,
+});
+export type ModelSummaryRow = z.infer<typeof ModelSummaryRow>;
+
+const ModelQueryRow = z.discriminatedUnion("row", [ModelRow, ModelSummaryRow]);
+
+/** One models.sql query's output. */
+export interface ModelOutput {
+  readonly store: string;
+  readonly name: string;
+  readonly rows: readonly ModelRow[];
+  readonly summary: ModelSummaryRow;
+}
+
+/** The output of the models query `name` of the store `store`; throws when the text is not one
+ *  whole models.sql result of that store: no psql table, a row of another shape or store, a row
+ *  after the summary, a model with no source or a source with no model, a summary whose counts
+ *  are not its rows', or no summary. */
+export function parseModelOutput(store: string, name: string, text: string): ModelOutput {
+  const rows: ModelRow[] = [];
+  let summary: ModelSummaryRow | undefined;
+  for (const [index, value] of psqlRows(text).entries()) {
+    const at = `row ${index + 1}`;
+    const parsed = ModelQueryRow.safeParse(value);
+    if (!parsed.success)
+      throw new Error(`${at} is not a models.sql row: ${faultsOf(parsed.error)}`);
+    const row = parsed.data;
+    if (row.store !== store) throw new Error(`${at} is of the store ${JSON.stringify(row.store)}`);
+    if (summary !== undefined) throw new Error(`${at} comes after the summary row`);
+    if (row.row === "summary") {
+      summary = row;
+      continue;
+    }
+    if ((row.model === null) !== (row.source === null)) {
+      throw new Error(`${at}: a model needs its source, and a source its model`);
+    }
+    rows.push(row);
+  }
+  if (summary === undefined) throw new Error("no summary row: the query did not end");
+  const withModel = rows.filter((row) => row.model !== null).length;
+  if (summary.files !== rows.length || summary.with_model !== withModel) {
+    throw new Error(
+      `the summary counts ${summary.files} files, ${summary.with_model} with a model; the rows are ${rows.length}, ${withModel} with a model`
+    );
+  }
+  return { store, name, rows, summary };
+}
+
+/** The thinking selectors Oh My Pi may write after a model (`anthropic/claude-x:low`). */
+const THINKING_SUFFIX = /:(inherit|off|minimal|low|medium|high|xhigh|max|auto)$/;
+
+/** A session's model as the count groups it, `provider/model` without a thinking suffix, and its
+ *  provider (the text before the first `/`). Claude Code's model id names no provider, and Claude
+ *  Code calls Anthropic's Messages API, so a Claude Code model is written `anthropic/<id>`. */
+export interface SessionModel {
+  readonly model: string;
+  readonly provider: string;
+}
+
+/** The model of a models.sql row as the count groups it, or null for a row with none. */
+export function sessionModel(row: Pick<ModelRow, "model" | "source">): SessionModel | null {
+  if (row.model === null) return null;
+  const stripped = row.model.replace(THINKING_SUFFIX, "");
+  const claudeCode = row.source === "assistant" || row.source === "model attachment";
+  const model = claudeCode && !stripped.includes("/") ? `anthropic/${stripped}` : stripped;
+  const slash = model.indexOf("/");
+  return { model, provider: slash > 0 ? model.slice(0, slash) : model };
+}
+
+/** Each session's model across the models queries: `sessionKey` → its model, or null when the
+ *  head of its file names none. A file that two queries hold (a resumed session whose mtime day
+ *  moved) takes the model one of them names; when they name two models, the first query's (in
+ *  day order) is kept and the session is counted in `conflicts`. */
+export interface SessionModels {
+  readonly models: ReadonlyMap<string, SessionModel | null>;
+  readonly conflicts: number;
+}
+
+export function sessionModels(outputs: readonly ModelOutput[]): SessionModels {
+  const models = new Map<string, SessionModel | null>();
+  const conflicting = new Set<string>();
+  const ordered = outputs.toSorted(
+    (a, b) => a.store.localeCompare(b.store) || a.name.localeCompare(b.name)
+  );
+  for (const output of ordered) {
+    for (const row of output.rows) {
+      const key = sessionKey(row.store, row.hash);
+      const model = sessionModel(row);
+      const known = models.get(key);
+      if (known === undefined || known === null) models.set(key, model);
+      else if (model !== null && model.model !== known.model) conflicting.add(key);
+    }
+  }
+  return { models, conflicts: conflicting.size };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -543,6 +714,8 @@ export interface CopyCount {
   readonly path: string;
   readonly name: string;
   readonly sessions: number;
+  /** The read sessions (`sessionKey`) that `sessions` counts. */
+  readonly readSessions: ReadonlySet<string>;
   readonly referenceSessions: number;
   /** The read sessions of the copy's name that no copy got. */
   readonly unattributed: number;
@@ -650,6 +823,83 @@ function prefixTable(rows: readonly PrefixMatcher[]) {
   };
 }
 
+/** What the checkout rule says of a copy-path prefix: the copy it places the read at, or
+ *  undefined with the copies it cannot tell apart, and why, in the report's words. */
+export interface CheckoutDecision {
+  readonly copy: string | undefined;
+  readonly why: string;
+}
+
+/**
+ * The checkout rule, for the copies `copies`: a read whose copy-path prefix (`copyPrefix`) ends
+ * with a copy's repository-relative skill directory, at a path boundary, is a read of that copy in
+ * a checkout of its repository (`/home/x/.dotfiles/plugins/p/skills/<name>/`, a workspace's
+ * `.../<issue>/.claude/skills/<name>/`, a relative `skills/<name>/`). The longest such directory
+ * wins. The path before that directory names a repository when two of its segments in a row are
+ * the repository's owner and a segment that holds its name, or, less, when a segment holds its
+ * name (`.dotfiles` holds `dotfiles`). Copies of several repositories at that directory are told
+ * apart by it: the one the path names most; any other tie is unattributed. A skill directory of
+ * one segment (a skill at its repository's root) ends every path of a skill of that name, so it
+ * matches only a path that names its repository. Undefined when no copy's directory ends the
+ * prefix, and for a `skill://` prefix, which names no directory.
+ */
+export function checkoutRule(
+  copies: readonly Pick<SkillCopiesRow, "repository" | "path">[]
+): (prefix: string) => CheckoutDecision | undefined {
+  const byDir = new Map<string, string[]>();
+  for (const row of copies) {
+    if (row.path !== "." && row.path !== "")
+      entry(byDir, row.path, (): string[] => []).push(row.repository);
+  }
+  const decisions = new Map<string, CheckoutDecision | undefined>();
+  return (prefix) => {
+    if (decisions.has(prefix)) return decisions.get(prefix);
+    let decision: CheckoutDecision | undefined;
+    const segments = prefix.replace(/\/+$/, "").split("/");
+    for (let start = 0; start < segments.length && !prefix.startsWith("skill://"); start++) {
+      const dir = segments.slice(start).join("/");
+      const before = segments.slice(0, start);
+      /** 2 when the path names the repository's owner and name, 1 its name, else 0. */
+      const named = (repository: string) => {
+        const [owner = "", name = ""] = repository.split("/");
+        if (before.some((segment, at) => segment === owner && before[at + 1]?.includes(name)))
+          return 2;
+        return before.some((segment) => segment.includes(name)) ? 1 : 0;
+      };
+      const oneSegment = start === segments.length - 1;
+      const repositories = (byDir.get(dir) ?? []).filter(
+        (repository) => !oneSegment || named(repository) > 0
+      );
+      if (repositories.length === 0) continue;
+      const best = Math.max(...repositories.map(named));
+      const chosen = repositories.filter((repository) => named(repository) === best);
+      const [only] = chosen;
+      const ends = `the path ends with ${dir}/`;
+      const naming = (repository: string) =>
+        `the path names ${best === 2 ? repository : `${repository.split("/")[1]} in a directory`}`;
+      if (repositories.length === 1 && only !== undefined) {
+        decision = {
+          copy: copyKey(only, dir),
+          why: `to ${only} ${dir}: ${ends}, its skill directory${oneSegment ? `, and ${naming(only)}` : ""}`,
+        };
+      } else if (chosen.length === 1 && only !== undefined && best > 0) {
+        decision = {
+          copy: copyKey(only, dir),
+          why: `to ${only} ${dir}: ${ends}, the skill directory of ${repositories.length} repositories, and ${naming(only)}`,
+        };
+      } else {
+        decision = {
+          copy: undefined,
+          why: `${ends}, the skill directory of ${repositories.length} repositories (${repositories.join(", ")}), and no directory of the path names just one of them`,
+        };
+      }
+      break;
+    }
+    decisions.set(prefix, decision);
+    return decision;
+  };
+}
+
 /** The attribution of the count's rows `outputs` to R4's copies, by the rules of this file's
  *  header. Throws when R4's tables name a copy that skill-copies.tsv does not hold. */
 export function attribute(
@@ -693,6 +943,7 @@ export function attribute(
       };
     })
   );
+  const checkout = checkoutRule(r4.copies);
 
   // Step 2's units: those each store's own mapped reads come from, with their sessions.
   const storeUnits = new Map<string, Map<string, Set<string>>>();
@@ -768,7 +1019,7 @@ export function attribute(
     for (const row of output.rows) {
       for (const hash of row.unpaired_hashes) store.unpaired.add(hash);
       if (row.hashes.length === 0) continue;
-      const sessions = row.hashes.map((hash) => `${row.store}\t${hash}`);
+      const sessions = row.hashes.map((hash) => sessionKey(row.store, hash));
       if (row.kind === "read") {
         for (const hash of row.hashes) store.read.add(hash);
         for (const session of sessions) allReads.add(session);
@@ -781,18 +1032,24 @@ export function attribute(
         copy = decision.copy;
         entry(mappedPrefixes, prefix, () => new Set()).add(shown(copy));
       } else {
+        const byCheckout = checkout(prefix);
         const context = [...(contextCopies.get(row.store)?.get(row.skill) ?? [])];
         const table =
           decision.copies.length > 1
             ? `prefix rows match ${decision.copies.length} copies (${decision.copies.map(shown).join(", ")}), and `
             : "";
         let outcome: string;
-        if (context.length === 1 && context[0] !== undefined) {
+        if (byCheckout?.copy !== undefined) {
+          copy = byCheckout.copy;
+          outcome = `${row.store}: checkout: ${byCheckout.why}`;
+        } else if (byCheckout !== undefined) {
+          outcome = `${row.store}: unattributed: ${table}${byCheckout.why}`;
+        } else if (context.length === 1 && context[0] !== undefined) {
           copy = context[0];
-          outcome = `${row.store}: to ${shown(copy)}, the one copy of ${row.skill} its context installs`;
+          outcome = `${row.store}: context: to ${shown(copy)}, the one copy of ${row.skill} its context installs`;
         } else {
           outcome =
-            `${row.store}: unattributed: ${table}its context installs ` +
+            `${row.store}: unattributed: ${table}no copy's skill directory ends the path, and its context installs ` +
             (context.length === 0
               ? `no copy of ${row.skill}`
               : `${context.length} copies of ${row.skill} (${context.map(shown).join(", ")})`);
@@ -848,7 +1105,8 @@ export function attribute(
   for (const row of r4.copies) entry(byName, row.name, () => []).push(row);
   const counts = r4.copies.map((row): CopyCount => {
     const key = copyKey(row.repository, row.path);
-    const sessions = reads.get(key)?.size ?? 0;
+    const readSessions = reads.get(key) ?? new Set<string>();
+    const sessions = readSessions.size;
     const referenceSessions = references.get(key)?.size ?? 0;
     const free = unattributed.get(row.name)?.size ?? 0;
     const ties = (byName.get(row.name) ?? [])
@@ -879,6 +1137,7 @@ export function attribute(
       path: row.path,
       name: row.name,
       sessions,
+      readSessions,
       referenceSessions,
       unattributed: free,
       ties,
@@ -949,11 +1208,16 @@ export function attribute(
 // rankings
 
 /** One cut's ranking: its changed skills with the sessions of its repository's copy, in
- *  `rankSkills` order, and each changed skill directory R4 read no copy at. */
+ *  `rankSkills` order (each row with its skill directory), and each changed skill directory R4
+ *  read no copy at. */
 export interface Ranking {
   readonly cut: string;
   readonly repository: string;
-  readonly rows: readonly { readonly skill: string; readonly sessions: number }[];
+  readonly rows: readonly {
+    readonly skill: string;
+    readonly path: string;
+    readonly sessions: number;
+  }[];
   readonly missing: readonly string[];
 }
 
@@ -975,9 +1239,13 @@ export function rankChanged(
   ].map((dir) => {
     const count = counts.get(copyKey(repository, dir));
     if (count === undefined) missing.push(dir);
-    return { skill: count?.name ?? path.posix.basename(dir), sessions: count?.sessions ?? 0 };
+    return {
+      skill: count?.name ?? path.posix.basename(dir),
+      path: dir,
+      sessions: count?.sessions ?? 0,
+    };
   });
-  const byName = new Map<string, { skill: string; sessions: number }[]>();
+  const byName = new Map<string, (typeof rows)[number][]>();
   for (const row of rows.toSorted((a, b) => b.sessions - a.sessions))
     entry(byName, row.skill, () => []).push(row);
   const ranked = rankSkills(rows).flatMap((skill) => {
@@ -985,6 +1253,188 @@ export function rankChanged(
     return next === undefined ? [] : [next];
   });
   return { cut, repository, rows: ranked, missing };
+}
+
+// ---------------------------------------------------------------------------------------------
+// models
+
+/** Some read sessions by model. */
+export interface ModelCount {
+  readonly sessions: number;
+  /** Each model with its sessions, most first, a tie by model. */
+  readonly byModel: readonly {
+    readonly model: string;
+    readonly provider: string;
+    readonly sessions: number;
+  }[];
+  /** The sessions whose file's head names no model. */
+  readonly noModel: number;
+  /** The sessions that no models query's rows hold. */
+  readonly notQueried: number;
+  /** The sessions with a model whose provider is not `anthropic`. */
+  readonly notAnthropic: number;
+  /** The sessions with a model. */
+  readonly withModel: number;
+}
+
+/** The read sessions `sessions` (each a `sessionKey`) by the model `models` gives each. */
+export function modelCount(sessions: ReadonlySet<string>, models: SessionModels): ModelCount {
+  const byModel = new Map<string, { model: string; provider: string; sessions: number }>();
+  let noModel = 0;
+  let notQueried = 0;
+  let notAnthropic = 0;
+  for (const session of sessions) {
+    const model = models.models.get(session);
+    if (model === undefined) notQueried++;
+    else if (model === null) noModel++;
+    else {
+      entry(byModel, model.model, () => ({ ...model, sessions: 0 })).sessions++;
+      if (model.provider !== "anthropic") notAnthropic++;
+    }
+  }
+  return {
+    sessions: sessions.size,
+    byModel: [...byModel.values()].sort(
+      (a, b) => b.sessions - a.sessions || a.model.localeCompare(b.model)
+    ),
+    noModel,
+    notQueried,
+    notAnthropic,
+    withModel: sessions.size - noModel - notQueried,
+  };
+}
+
+/** The share of `count`'s sessions with a model whose provider is not `anthropic`, to 3 places,
+ *  or `""` when none of them has a model. */
+export function notAnthropicShare(count: ModelCount): string {
+  return count.withModel === 0 ? "" : (count.notAnthropic / count.withModel).toFixed(3);
+}
+
+export const MODEL_COUNT_COLUMNS = [
+  "sessions",
+  "by_model",
+  "no_model_sessions",
+  "not_queried_sessions",
+  "not_anthropic_sessions",
+  "not_anthropic_share",
+] as const;
+export const MODELS_BY_SKILL_COLUMNS = [
+  "repository",
+  "path",
+  "name",
+  ...MODEL_COUNT_COLUMNS,
+] as const;
+export const MODELS_BY_CUT_COLUMNS = [
+  "cut",
+  "rank",
+  "skill",
+  "path",
+  ...MODEL_COUNT_COLUMNS,
+] as const;
+
+/** The cells of MODEL_COUNT_COLUMNS for `count`: `by_model` is each `<model>=<sessions>`, joined
+ *  by `; `. */
+function modelCells(count: ModelCount): (string | number)[] {
+  return [
+    count.sessions,
+    count.byModel.map((item) => `${item.model}=${item.sessions}`).join("; "),
+    count.noModel,
+    count.notQueried,
+    count.notAnthropic,
+    notAnthropicShare(count),
+  ];
+}
+
+/** models-by-skill.tsv's text: one row per copy, in skill-copies.tsv's order. */
+export function modelsBySkillTsv(attribution: Attribution, models: SessionModels): string {
+  return tsv(
+    MODELS_BY_SKILL_COLUMNS,
+    attribution.copies.map((copy) => [
+      copy.repository,
+      copy.path,
+      copy.name,
+      ...modelCells(modelCount(copy.readSessions, models)),
+    ])
+  );
+}
+
+/** Each ranked changed skill of `ranking`, in rank order, with the read sessions (`sessionKey`) of
+ *  the cut repository's copy after every attribution rule: none for a directory R4 read no copy
+ *  at. */
+export function rankedSessions(
+  attribution: Attribution,
+  ranking: Ranking
+): { rank: number; skill: string; path: string; sessions: ReadonlySet<string> }[] {
+  const copies = new Map(
+    attribution.copies.map((copy) => [copyKey(copy.repository, copy.path), copy])
+  );
+  return ranking.rows.map((row, index) => ({
+    rank: index + 1,
+    skill: row.skill,
+    path: row.path,
+    sessions: copies.get(copyKey(ranking.repository, row.path))?.readSessions ?? new Set(),
+  }));
+}
+
+/** Each ranked changed skill of `ranking` with its read sessions by model, in rank order. */
+export function rankingModels(
+  attribution: Attribution,
+  ranking: Ranking,
+  models: SessionModels
+): { rank: number; skill: string; path: string; count: ModelCount }[] {
+  return rankedSessions(attribution, ranking).map(({ sessions, ...row }) => ({
+    ...row,
+    count: modelCount(sessions, models),
+  }));
+}
+
+/**
+ * The sessions files of `ranking`, `sessions/<skill>.jsonl` under its cut's directory, for
+ * `build-cases --sessions`: one per ranked changed skill, one line per read session of the cut
+ * repository's copy, `{"store", "hash"}`, sorted by store then hash (an empty file for a skill
+ * with none). A skill whose name is no file name, or that two ranked directories share, gets no
+ * file and is named in `skipped`.
+ */
+export function sessionFiles(
+  attribution: Attribution,
+  ranking: Ranking
+): { files: { name: string; text: string }[]; skipped: string[] } {
+  const ranked = rankedSessions(attribution, ranking);
+  const files: { name: string; text: string }[] = [];
+  const skipped: string[] = [];
+  for (const row of ranked) {
+    const shared = ranked.filter((other) => other.skill === row.skill).length > 1;
+    if (!/^[A-Za-z0-9._-]+$/.test(row.skill) || row.skill.startsWith(".") || shared) {
+      skipped.push(`${row.skill} (${row.path})`);
+      continue;
+    }
+    const lines = [...row.sessions].sort().map((key) => {
+      const [store = "", hash = ""] = key.split("\t");
+      return `${JSON.stringify({ store, hash })}\n`;
+    });
+    files.push({ name: path.join("sessions", `${row.skill}.jsonl`), text: lines.join("") });
+  }
+  return { files, skipped };
+}
+
+/** models-by-cut.tsv's text: each cut's ranked changed skills, in rank order. */
+export function modelsByCutTsv(
+  attribution: Attribution,
+  rankings: readonly Ranking[],
+  models: SessionModels
+): string {
+  return tsv(
+    MODELS_BY_CUT_COLUMNS,
+    rankings.flatMap((ranking) =>
+      rankingModels(attribution, ranking, models).map((item) => [
+        ranking.cut,
+        item.rank,
+        item.skill,
+        item.path,
+        ...modelCells(item.count),
+      ])
+    )
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1021,6 +1471,13 @@ const iso = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
 const counted = (count: number, word: string, plural = `${word}s`) =>
   `${count} ${count === 1 ? word : plural}`;
 
+/** What the models directory gives: its outputs, its queries' issues and each session's model. */
+export interface ModelsRead {
+  readonly dir: QueryDir<ModelOutput>;
+  readonly issues: readonly QueryIssue[];
+  readonly sessions: SessionModels;
+}
+
 /** Everything the report says. */
 export interface Report {
   readonly config: SkillCutsConfig;
@@ -1030,6 +1487,79 @@ export interface Report {
   readonly spans: readonly Span[];
   readonly r4: R4Tables;
   readonly rankings: readonly Ranking[];
+  /** Undefined when no `--models` directory was given. */
+  readonly models: ModelsRead | undefined;
+}
+
+/** A count's models as a report names them: at most `most`, each `<model> (<sessions>)`. */
+function modelsSaid(count: ModelCount, most: number): string {
+  const said = count.byModel
+    .slice(0, most)
+    .map((item) => `${item.model} (${item.sessions})`)
+    .join(", ");
+  const more = count.byModel.length - most;
+  return more > 0 ? `${said} and ${more} more` : said || "none";
+}
+
+/** The report's section on the models of the reading sessions. */
+function modelsMarkdown(report: Report): string[] {
+  const { attribution, rankings, models } = report;
+  const lines = ["", "## Models of the reading sessions", ""];
+  if (models === undefined) return [...lines, "Not counted: no --models directory was given."];
+  const all = modelCount(
+    new Set(attribution.copies.flatMap((copy) => [...copy.readSessions])),
+    models.sessions
+  );
+  const files = models.dir.outputs.reduce((sum, output) => sum + output.summary.files, 0);
+  const named = models.dir.outputs.reduce((sum, output) => sum + output.summary.with_model, 0);
+  lines.push(
+    "Each session's model is read from the head of its file, the file row's content and its first part (models.sql): Oh My Pi's first `model_change` line, else a subagent's `session_init` `resolvedModel`, else Claude Code's first assistant message's model, else its `model` attachment. A thinking suffix (`:low`) is dropped, and Claude Code's model id is written `anthropic/<id>`. A model's provider is the text before its first `/`.",
+    "",
+    `The models queries read ${counted(files, "file")}; the head of ${named} of them names a model. The ${counted(all.sessions, "read session")} of the copies: with a model ${all.withModel}; whose file's head names none ${all.noModel}; in no models query's rows ${all.notQueried}. Sessions two queries give two models for (the first day's is kept): ${models.sessions.conflicts}.`,
+    "",
+    "### Models queries that failed, were split, or have no output",
+    ""
+  );
+  if (models.issues.length === 0) lines.push("None.");
+  for (const issue of models.issues) {
+    lines.push(
+      `- ${issue.store === "" ? "" : `${issue.store} `}${issue.name === "" ? "" : `${issue.name} `}(${issue.what}): ${issue.detail}`
+    );
+  }
+  lines.push(
+    "",
+    "### The models of the copies' read sessions",
+    "",
+    "| Model | Provider | Sessions |",
+    "| --- | --- | ---: |"
+  );
+  for (const item of all.byModel) {
+    lines.push(`| ${cell(item.model)} | ${cell(item.provider)} | ${item.sessions} |`);
+  }
+  lines.push(
+    "",
+    "### Each cut's ranked changed skills: the share of reading sessions on a model not from anthropic",
+    "",
+    "The share is of the sessions with a model. models-by-cut.tsv holds each skill's every model.",
+    ""
+  );
+  if (rankings.length === 0) lines.push("None: no --changed file was given.");
+  for (const ranking of rankings) {
+    lines.push(
+      `#### ${ranking.cut} (${ranking.repository})`,
+      "",
+      "| Rank | Skill | Sessions | With a model | Not anthropic | Share not anthropic | No model | Not queried | Models |",
+      "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
+    );
+    for (const item of rankingModels(attribution, ranking, models.sessions)) {
+      const count = item.count;
+      lines.push(
+        `| ${item.rank} | ${cell(item.skill)} | ${count.sessions} | ${count.withModel} | ${count.notAnthropic} | ${notAnthropicShare(count) || "none"} | ${count.noModel} | ${count.notQueried} | ${cell(modelsSaid(count, 5))} |`
+      );
+    }
+    lines.push("");
+  }
+  return lines;
 }
 
 /** skill-read-count.md's text. */
@@ -1118,8 +1648,9 @@ export function readCountMarkdown(report: Report): string {
     "## How a read is attributed",
     "",
     "1. The prefix table (prefix-table.tsv): a read goes to the copy that every row whose prefix matches its copy path maps to, when they map to one copy.",
-    "2. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. When their installer rows hold exactly one copy of the read's skill name, the read goes to that copy.",
-    "3. Otherwise the read is unattributed for its skill name.",
+    "2. A checkout: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it: the one whose owner and name are two directories of it in a row, else the one whose name a directory holds (`.dotfiles` holds `dotfiles`); a tie left is unattributed. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository.",
+    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. When their installer rows hold exactly one copy of the read's skill name, the read goes to that copy.",
+    "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",
     "",
@@ -1129,7 +1660,7 @@ export function readCountMarkdown(report: Report): string {
   for (const store of attribution.stores) {
     if (store.units.length === 0) {
       say(
-        `- ${store.store} (${store.context}): none, since no read of this store maps by the prefix table; each of its reads is unattributed.`
+        `- ${store.store} (${store.context}): none, since no read of this store maps by the prefix table; the context rule places none of its reads.`
       );
       continue;
     }
@@ -1146,7 +1677,7 @@ export function readCountMarkdown(report: Report): string {
     "",
     "### Copy paths the prefix table does not map",
     "",
-    `${counted(attribution.unmapped.length, "prefix", "prefixes")}. A session is counted under each prefix it read from (${counted(unmappedSessions, "read session")} over all prefixes).`,
+    `${counted(attribution.unmapped.length, "prefix", "prefixes")}. A session is counted under each prefix it read from (${counted(unmappedSessions, "read session")} over all prefixes). Each outcome names the rule that placed its reads (checkout or context), or why they are unattributed.`,
     ""
   );
   if (attribution.unmapped.length > 0) {
@@ -1162,6 +1693,20 @@ export function readCountMarkdown(report: Report): string {
         `| ${cell(code(item.prefix))} | ${cell(item.skills.join(", "))} | ${item.sessions} | ${item.referenceSessions} | ${cell(went)} |`
       );
     }
+  }
+
+  say(
+    "",
+    "### Copy paths the prefix table maps",
+    "",
+    `${counted(attribution.mappedPrefixes.size, "prefix", "prefixes")}, each placed by the prefix table (step 1).`,
+    ""
+  );
+  if (attribution.mappedPrefixes.size > 0) say("| Prefix | Copy |", "| --- | --- |");
+  for (const [prefix, mapped] of [...attribution.mappedPrefixes].sort(([a], [b]) =>
+    a.localeCompare(b)
+  )) {
+    say(`| ${cell(code(prefix))} | ${cell([...mapped].sort().join(", "))} |`);
   }
 
   say("", "### Ties", "");
@@ -1255,10 +1800,14 @@ export function readCountMarkdown(report: Report): string {
       .slice(0, 5)
       .map((row) => `${row.skill} (${row.sessions})`)
       .join(", ");
+    const { skipped } = sessionFiles(attribution, ranking);
     say(
-      `- ${ranking.cut} (${ranking.repository}): ${ranking.rows.length} changed skills, in ${code(`${ranking.cut}/ranking.json`)}; first: ${top || "none"}.` +
+      `- ${ranking.cut} (${ranking.repository}): ${ranking.rows.length} changed skills, in ${code(`${ranking.cut}/ranking.json`)}, with each one's reading sessions in ${code(`${ranking.cut}/sessions/<skill>.jsonl`)}; first: ${top || "none"}.` +
         (ranking.missing.length > 0
           ? ` R4 read no copy at ${ranking.missing.map(code).join(", ")}: ranked with 0 sessions.`
+          : "") +
+        (skipped.length > 0
+          ? ` No sessions file for ${skipped.join(", ")}: its name is no file name, or two ranked directories share it.`
           : "")
     );
   }
@@ -1266,6 +1815,7 @@ export function readCountMarkdown(report: Report): string {
   if (unranked.length > 0) {
     say(`- Not ranked (no --changed file): ${unranked.map((cut) => cut.id).join(", ")}.`);
   }
+  lines.push(...modelsMarkdown(report));
   return `${lines.join("\n")}\n`;
 }
 
@@ -1273,7 +1823,7 @@ export function readCountMarkdown(report: Report): string {
 // the command
 
 const USAGE =
-  "usage: attribute.ts --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut id>=<file>]...";
+  "usage: attribute.ts --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--models <dir>] [--changed <cut id>=<file>]...";
 
 /** What `main` writes to. */
 export interface Output {
@@ -1300,6 +1850,7 @@ export function main(argv: readonly string[], io: Output): number {
     copies?: string;
     spans?: string;
     out?: string;
+    models?: string;
     changed?: string[];
   };
   try {
@@ -1311,6 +1862,7 @@ export function main(argv: readonly string[], io: Output): number {
         copies: { type: "string" },
         spans: { type: "string" },
         out: { type: "string" },
+        models: { type: "string" },
         changed: { type: "string", multiple: true },
       },
       strict: true,
@@ -1319,7 +1871,14 @@ export function main(argv: readonly string[], io: Output): number {
   } catch (error) {
     return refuse(`${(error as Error).message}. ${USAGE}`);
   }
-  const { config: configFile, count: countDir, copies: copiesDir, spans: spansFile, out } = values;
+  const {
+    config: configFile,
+    count: countDir,
+    copies: copiesDir,
+    spans: spansFile,
+    out,
+    models: modelsDir,
+  } = values;
   if (
     configFile === undefined ||
     countDir === undefined ||
@@ -1332,7 +1891,9 @@ export function main(argv: readonly string[], io: Output): number {
   for (const [flag, dir] of [
     ["--count", countDir],
     ["--copies", copiesDir],
+    ["--models", modelsDir],
   ] as const) {
+    if (dir === undefined) continue;
     if (inside(out, dir))
       return refuse(`--out ${out} is inside ${flag} ${dir}, which is only read`);
   }
@@ -1363,14 +1924,17 @@ export function main(argv: readonly string[], io: Output): number {
     changed.push({ cut: id, repository: cut.repo, file });
   }
   try {
-    const count = readCount(
-      countDir,
-      config.stores.map((store) => store.name)
-    );
+    const stores = config.stores.map((store) => store.name);
+    const count = readCount(countDir, stores);
     const r4 = readR4(copiesDir);
     const spans = parseSpans(readFileSync(spansFile, "utf8"), spansFile);
     const attribution = attribute(config, count.outputs, r4);
     const issues = queryIssues(config, count);
+    let models: ModelsRead | undefined;
+    if (modelsDir !== undefined) {
+      const dir = readQueryDir(modelsDir, stores, parseModelOutput);
+      models = { dir, issues: queryIssues(config, dir), sessions: sessionModels(dir.outputs) };
+    }
     const rankings = changed.map((item) =>
       rankChanged(
         attribution,
@@ -1390,16 +1954,30 @@ export function main(argv: readonly string[], io: Output): number {
     write("skill-read-count.tsv", readCountTsv(attribution));
     write(
       "skill-read-count.md",
-      readCountMarkdown({ config, attribution, count, issues, spans, r4, rankings })
+      readCountMarkdown({ config, attribution, count, issues, spans, r4, rankings, models })
     );
     for (const ranking of rankings) {
-      write(path.join(ranking.cut, "ranking.json"), `${JSON.stringify(ranking.rows, null, 2)}\n`);
+      const rows = ranking.rows.map(({ skill, sessions }) => ({ skill, sessions }));
+      write(path.join(ranking.cut, "ranking.json"), `${JSON.stringify(rows, null, 2)}\n`);
+      const sessionsDir = path.join(out, ranking.cut, "sessions");
+      mkdirSync(sessionsDir, { recursive: true });
+      const { files } = sessionFiles(attribution, ranking);
+      for (const file of files) writeFileSync(path.join(out, ranking.cut, file.name), file.text);
+      written.push(`${sessionsDir}/ (${files.length} files)`);
+    }
+    if (models !== undefined) {
+      write("models-by-skill.tsv", modelsBySkillTsv(attribution, models.sessions));
+      write("models-by-cut.tsv", modelsByCutTsv(attribution, rankings, models.sessions));
     }
     const read = attribution.copies.filter((copy) => copy.status === "read").length;
     io.out(
       `${count.outputs.length} query outputs, ${attribution.copies.length} copies (${read} read), ` +
         `${attribution.readSessions} read sessions (${attribution.unattributedSessions} unattributed), ` +
-        `${attribution.unmapped.length} unmapped prefixes, ${issues.length} queries failed, split or without output\n` +
+        `${attribution.unmapped.length} unmapped prefixes, ${issues.length} queries failed, split or without output` +
+        (models === undefined
+          ? ""
+          : `; ${models.dir.outputs.length} models query outputs, ${models.issues.length} failed, split or without output`) +
+        "\n" +
         written.map((file) => `${file}\n`).join("")
     );
     return 0;
