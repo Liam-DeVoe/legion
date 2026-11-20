@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `legion start`, `legion controller start` and `legion probe-boot` stop the work they run in
+  process groups of their own, and `probe-boot` deletes its probe Sandbox, on a SIGHUP (a closing
+  terminal) or a SIGQUIT, as they do on a SIGINT or a SIGTERM, and end with 128 plus the signal.
+  Before, either signal killed the command where it stood and left that work running. `legion gh`
+  and `legion leak-check` stop theirs on a SIGQUIT too, and end with 131, and the git credential
+  helper's fork read stops on one. These commands no longer print a goroutine dump on a SIGQUIT.
+time: 2026-11-20T06:34:07Z
+custom:
+    Issue: pr4588

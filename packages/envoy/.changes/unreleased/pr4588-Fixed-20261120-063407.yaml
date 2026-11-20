@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `agent-secrets` watches for a hang-up, an interrupt, a quit or a termination from before it starts
+  `gcloud` until it has killed what is left of `gcloud`'s process group. So such a signal that comes
+  just after `gcloud` starts, or just after a `gcloud` that left a child has exited, kills that group
+  as it does at any other moment. Before, it ended `agent-secrets` by the signal's default action
+  and left the group running. `envoy-mcp` watches SIGTERM and SIGINT from before its bridge starts
+  the MCP servers, and a signal during the start stops the servers it started at once, each within
+  5 s (`mcpbridge.StopGrace`). Before, `envoy-mcp` died at once and left them running.
+time: 2026-11-20T06:34:07Z
+custom:
+    Issue: pr4588
