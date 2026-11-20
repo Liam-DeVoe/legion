@@ -51,7 +51,8 @@ jobs:
     # run of the pair, takes at most half of it: that package's time divided by 30, rounded up.
     # A hung test then prints the dump that names it well before the runner cancels the job, and
     # a test that merely runs long does not. A job's timeout-minutes is its larger time in the
-    # pair, plus the largest -timeout or step limit of its steps, plus 6, rounded up.
+    # pair, plus the largest -timeout of its go test calls, plus 6, rounded up; a step's own
+    # timeout-minutes is not a -timeout.
     # envoy-go-docs-finalizers keeps a rule of its own, which its comment states. Each limit is
     # written in one shape - the reading, its run and job, the arithmetic, the limit - in the
     # table below for this job's calls, in the comment on each call, and in the comment on each
@@ -93,19 +94,21 @@ jobs:
     # raise -timeout".
     #
     # The job's own bound is its larger time in the pair, 1,328 s (run 44657322918, job
-    # 136026779841), 22.13 minutes, plus the longest limit of its steps, the skip count's step
-    # limit of 19 minutes, above the package list's 18m, plus 6: 22.13 + 19 + 6 = 47.13, so 48.
+    # 136026779841), 22.13 minutes, plus the largest -timeout of its go test calls, the package
+    # list's 18m, plus 6: 22.13 + 18 + 6 = 46.13, so 47. The skip count's step limit of 19
+    # minutes is not a -timeout, and it fires before the job's: that step took 339 s of the same
+    # job, so the job less that step plus 19 minutes is 989 + 1,140 = 2,129 s, 35.48 minutes.
     # The other steps after the unit step have limits of their own under that: the store-form
     # count runs under backend-count.sh's -timeout of 5 minutes, the skip counter's test under its
     # step limit of 15 minutes and the callout check under its own 6. Both attempts of the pair
     # missed the Go build cache, on arm64: in each the restore found no go-envoy-test entry for
     # ARM64. The bound takes their times all the same. An attempt on x64 that missed it took
     # 1,502 s (run 44097184245, job 134098415747) against warm x64 ones of 737 s and 765 s (runs
-    # 44078406008 and 44175873364), and the bound covers it at 52 %. The nine calls of the unit
+    # 44078406008 and 44175873364), and the bound covers it at 53 %. The nine calls of the unit
     # step run at the same time, so the step's own worst case is the longest of them rather than
     # their sum.
     # The API's claim model is not among them, running in envoy-go-claim-model.
-    timeout-minutes: 48
+    timeout-minutes: 47
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)

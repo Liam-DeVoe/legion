@@ -47,21 +47,22 @@ jobs:
   dispatch-two-builds:
     runs-on: ubuntu-24.04
     # Both numbers take the largest reading there is of them (dispatch://INFRA-1075, check
-    # 6224bb0e). The readings are main's: this job's green
-    # runs in the merge groups of #2461, which added it, and of #3180, the change that landed
-    # next, both of the job as #2461 wrote it. The step's -timeout is the smallest whole minute at
-    # which its one package takes at most half of it: cmd/dispatch under the twobuild tag,
-    # 526.292 s (merge-group run 43679411000, job 132706600704, at d7dce730; run 43677717022, job
-    # 132701468085, at 76bff46e, read 489.363 s), 526.292 / 30 = 17.54, so 18m, which it fills to
-    # 48.7 per cent (17m it would fill to 51.6). The floor
+    # 6224bb0e). The -timeout's reading is main's: this job's green runs in the merge groups of
+    # #2461, which added it, and of #3180, the change that landed next, both of the job as #2461
+    # wrote it. The step's -timeout is the smallest whole minute at which its one package takes
+    # at most half of it: cmd/dispatch under the twobuild tag, 526.292 s (merge-group run
+    # 43679411000, job 132706600704, at d7dce730; run 43677717022, job 132701468085, at 76bff46e,
+    # read 489.363 s), 526.292 / 30 = 17.54, so 18m, which it fills to 48.7 per cent (17m it would
+    # fill to 51.6). No green run of the job on this branch read more: its largest is 472.589 s
+    # (run 43797411630, job 133069317386, at da325bf0). The floor
     # above that rule is horizontest.Drain, 30 s (internal/dispatch/horizontest/horizontest.go, Drain),
     # which cmd/dispatch's event-feed waits (waitEventsStart, live_events_wait_test.go) leave of
-    # the test binary's deadline, and 18m leaves 553.7 s above that reading. The job's own bound
-    # follows its largest measured time of a green run, 878 s in that same job, 14.63 minutes,
-    # plus that -timeout plus 6: 14.63 + 18 + 6 = 38.63, so 39; the other run took 781 s. The
-    # limit must fire before the runner cancels the job, so a hung test prints the dump that
-    # names it.
-    timeout-minutes: 39
+    # the test binary's deadline, and 18m leaves 553.7 s above that reading. This tree changed
+    # the job's service, so the job's own bound follows its slowest green run on this branch,
+    # 965 s (run 43788835709, job 133042485821, at b5b69524), 16.08 minutes, plus that -timeout
+    # plus 6: 16.08 + 18 + 6 = 40.08, so 41; main's two runs took 878 s and 781 s. The limit must
+    # fire before the runner cancels the job, so a hung test prints the dump that names it.
+    timeout-minutes: 41
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)

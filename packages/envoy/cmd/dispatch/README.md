@@ -679,7 +679,7 @@ Run again, it starts or reuses the same `dispatch-pg` container, which runs its 
 pgvector on PostgreSQL 18, whose `vector` extension the migrations need.
 It refuses a `dispatch-pg` on any other image or major and prints the commands that dump that container's databases and restore them into a new container on the pinned image.
 The `dispatch` database keeps its migrated schema, and a Go test never writes in it: each test makes a database of its own on the same server and drops it when the test ends, and the templates stay on the server (`docs/testing.md`, "A database a Go test creates").
-Most tests clone a migrated template; a test of the migration runner itself, and a test outside Dispatch's own store that opens a database through `internal/testpg` and migrates it (`migratedDispatchDatabase`, `cmd/listener/dispatch_resolution_test.go:201-217`), start from an empty one instead.
+Most tests clone a migrated template; a test of the migration runner itself, and a test outside Dispatch's own store that opens a database through `internal/testpg` and migrates it (`cmd/listener/dispatch_resolution_test.go`'s `migratedDispatchDatabase`), start from an empty one instead.
 The test commands under Tests run against a throwaway server instead (`./scripts/dev-postgres.sh --throwaway`), which runs them faster and serves more connections at once; Tests says why.
 
 ## A large test database
@@ -5404,7 +5404,7 @@ go test -run '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$
 go vet ./...
 ```
 
-`internal/dispatch/api` is the module's largest Postgres-backed package by its number of tests and ran past `go test`'s default ten-minute package deadline on its own, 665 s in the last CI run that ran it whole without `-race`, so every command that includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
+`internal/dispatch/api` is the module's largest Postgres-backed package by its number of tests and ran past `go test`'s default ten-minute package deadline on its own, 665 s in a CI run that ran it whole without `-race` (run 41703055842; the last two such runs of INFRA-1075's branch before it left `envoy-go`'s package list read 521.3 s and 555.0 s), so every command that includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
 Its claim model, `TestTheMentionSenderClaimModel`, took 19 min 18 s on its own and runs by name in the `envoy-go-claim-model` job, so the first command leaves it out.
 It no longer runs first or by itself: its independent tests run in parallel, as the other packages' do (`docs/testing.md`, "A test that calls `t.Parallel()`").
 
