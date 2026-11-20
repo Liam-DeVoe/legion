@@ -11,6 +11,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,11 +30,13 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -142,9 +146,28 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease    time.Duration
-	maxConns int
-	minters  map[string]requests.Minter
+	lease         time.Duration
+	maxConns      int
+	minters       map[string]requests.Minter
+	projectAccess projectaccess.Access
+	personSignIns *personSignInConfig
+}
+
+// ProviderOption changes the OAuth provider NewOAuthProvider constructs. It stays variadic so
+// existing rigs retain the default issuer and exchange entries unchanged.
+type ProviderOption func(*providerConfig)
+
+type providerConfig struct {
+	projectAccess       projectaccess.Access
+	google              *oidctest.Issuer
+	machineAccount      string
+	machineCredentials  oauth.MachineCredentials
+	personSignInRecords oauth.PersonSignIns
+}
+
+type personSignInConfig struct {
+	google         *oidctest.Issuer
+	machineAccount string
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -164,6 +187,24 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// WithProjectAccess gives the rig's exchange the same Dispatch client cmd/broker uses when
+// BROKER_PROJECT_ACCESS_URL is configured. A missing future gate must make the acceptance rows
+// below answer as before, not make this fixture unable to reach Dispatch.
+func WithProjectAccess(baseURL string, account brokertoken.Account) Option {
+	return func(c *rigConfig) {
+		c.projectAccess = projectaccess.New(baseURL, account, nil)
+	}
+}
+
+// WithPersonSignIns lets the rig accept Google person trades from machineAccount. NewRig binds
+// the option to its real enrollment and store functions once those exist, so a successful trade
+// creates the same launcher credential and person-sign-in rows as the broker command.
+func WithPersonSignIns(google *oidctest.Issuer, machineAccount string) Option {
+	return func(c *rigConfig) {
+		c.personSignIns = &personSignInConfig{google: google, machineAccount: machineAccount}
+	}
 }
 
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
@@ -226,7 +267,16 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := NewOAuthProvider(t, st, issuer)
+	providerOptions := []ProviderOption{func(c *providerConfig) { c.projectAccess = config.projectAccess }}
+	if signIns := config.personSignIns; signIns != nil {
+		providerOptions = append(providerOptions, func(c *providerConfig) {
+			c.google = signIns.google
+			c.machineAccount = signIns.machineAccount
+			c.machineCredentials = tokenMachineCredentials(enr)
+			c.personSignInRecords = brokerPersonSignIns()
+		})
+	}
+	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -284,6 +334,16 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
+const (
+	// GoogleMachineAudience is the audience a machine's metadata identity token carries when the
+	// rig accepts a Google machine or a person signing in on that machine.
+	GoogleMachineAudience = "legion-broker-google-machine"
+	// PersonSignInAudience is the audience of the person's Google device-flow identity token.
+	PersonSignInAudience = "legion-broker-person-sign-in"
+)
+
+const personSignInDomain = "example.com"
+
 // NewOAuthProvider builds the machine login's OAuth provider on st's database as
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
@@ -291,13 +351,23 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // exchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
 // one, and an unlisted one to be refused as.
-func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
+func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, opts ...ProviderOption) *oauth.Provider {
 	t.Helper()
+	var config providerConfig
+	for _, opt := range opts {
+		opt(&config)
+	}
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
 	secret, err := oauthStore.Secret(context.Background())
 	if err != nil {
 		t.Fatalf("OAuth secret: %v", err)
+	}
+	var machines []exchange.GoogleEntry
+	signInDomain := ""
+	if config.google != nil {
+		machines = []exchange.GoogleEntry{{Account: config.machineAccount, Service: "leaver-machine"}}
+		signInDomain = personSignInDomain
 	}
 	policy, err := exchange.NewSet(
 		[]exchange.AccountEntry{
@@ -306,10 +376,8 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-		nil,
-		// The rig lists no machine, so there is no box a person could have signed in on and no
-		// domain to hold one to.
-		"",
+		machines,
+		signInDomain,
 	)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
@@ -318,19 +386,77 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 	if err != nil {
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
+	exchangeConfig := oauth.ExchangeConfig{
+		Policy:     policy,
+		Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: exchangeAudience, Keys: keys},
+		GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
+		Projects:   config.projectAccess,
+	}
+	if config.google != nil {
+		googleKeys, err := oidc.NewKeys(context.Background(), config.google.URL())
+		if err != nil {
+			t.Fatalf("Google keys: %v", err)
+		}
+		exchangeConfig.Google = oauth.IssuerConfig{Issuer: config.google.URL(), Audience: GoogleMachineAudience, Keys: googleKeys}
+		exchangeConfig.MachineCredentials = config.machineCredentials
+		exchangeConfig.PersonAudience = PersonSignInAudience
+		exchangeConfig.PersonSignIns = config.personSignInRecords
+	}
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
-		Exchange: oauth.ExchangeConfig{
-			Policy:     policy,
-			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: exchangeAudience, Keys: keys},
-			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
-		},
+		Exchange: exchangeConfig,
 	}, oauthStore)
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)
 	}
 	return provider
+}
+
+// tokenMachineCredentials is the real broker-store writer cmd/broker gives Google token trades.
+func tokenMachineCredentials(enr *enroll.Service) oauth.MachineCredentials {
+	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
+		tx, ok := oauthstore.TxFrom(ctx)
+		if !ok {
+			return "", errors.New("broker test rig: a machine credential is minted in the exchange transaction")
+		}
+		id, err := enr.IssueTokenLoginTx(ctx, tx, enroll.TokenLogin{
+			Subject: cred.Subject, Service: cred.Service, Host: cred.Host, Operator: cred.Operator,
+			TokenExpires: cred.Expires, Thumbprint: cred.Thumbprint, JWK: cred.JWK, Expires: cred.Expires,
+		})
+		if store.IsUniqueViolation(err) {
+			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
+		}
+		if err != nil {
+			return "", err
+		}
+		return id.String(), nil
+	}
+}
+
+// brokerPersonSignIns is the real broker-store writer cmd/broker gives person trades.
+func brokerPersonSignIns() oauth.PersonSignIns {
+	return func(ctx context.Context, in oauth.PersonSignIn) error {
+		tx, ok := oauthstore.TxFrom(ctx)
+		if !ok {
+			return errors.New("broker test rig: a person sign-in is recorded in the exchange transaction")
+		}
+		err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
+			Person: in.Person, Thumbprint: in.Thumbprint, MachineAccount: in.Machine,
+			Account: store.IssuerSubject{Issuer: in.Issuer, Subject: in.Subject},
+		})
+		switch {
+		case errors.Is(err, store.ErrSignInSubjectReplaced):
+			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectReplaced, err)
+		case errors.Is(err, store.ErrSignInRevoked):
+			return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)
+		case errors.Is(err, store.ErrSignInMachineChanged):
+			return fmt.Errorf("%w: %v", oauth.ErrSignInMachineChanged, err)
+		case errors.Is(err, store.ErrSignInSubjectChanged):
+			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectChanged, err)
+		}
+		return err
+	}
 }
 
 // request issues method against baseURL+path through client, with an optional body (marshaled to
