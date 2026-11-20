@@ -175,6 +175,35 @@ func TestAnEditBesideABlockThatAlreadyReadsBackOtherwiseIsStoredAndLogsTheBlock(
 	}
 }
 
+// An edit settles the spread of only the lists and list items it changed (pmdoc.SettleSpreads): an
+// item beside the text it writes keeps the spread a browser edit gave it, which its markdown does
+// not carry, since that spread is not the edit's, and the edit is stored all the same.
+func TestAnEditLeavesTheSpreadOfAnItemBesideTheTextItWrites(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "- Body.\n- two\n")
+	sibling := func(tree *pmdoc.Node) *pmdoc.Node {
+		var found *pmdoc.Node
+		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+			if node.Type == "list_item" {
+				found = node
+			}
+			return true
+		})
+		return found
+	}
+	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+		sibling(tree).Attrs["spread"] = true
+		return tree
+	})
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "replace", Find: "Body.", With: "Changed."}}, storedTextEditor, nil); err != nil {
+		t.Fatalf("the edit of the first item was refused: %v, want it stored", err)
+	}
+	if spread := sibling(liveTree(t, service, artifactID)).Attrs["spread"]; spread != true {
+		t.Fatalf("the item beside the edited text holds spread %v after the edit, want the true it held", spread)
+	}
+}
+
 // recordList names every logged record by its message and attributes, for a failure to read.
 func recordList(records []slog.Record) string {
 	lines := make([]string, 0, len(records))

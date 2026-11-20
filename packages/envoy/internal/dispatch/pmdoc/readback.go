@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"slices"
 	"sort"
@@ -245,16 +246,22 @@ type StoredVerdict struct {
 // document. The text is judged exactly as it is stored, whatever wrote it, so the verdict does not
 // rest on the renderer writing every tree in a spelling that reads back.
 //
-// One difference is excused: a block that reads back otherwise under the same block id and with
-// the same difference (sameMisread) in previous, the text the document was stored as before the
-// write, read against before, the tree previous was stored from. So a write beside a block that a
-// browser edit or an earlier writer left reading back otherwise is stored, while a new misread in
-// that block is still refused. previous is parsed only where markdown reads back otherwise, so a
-// write whose text reads back pays for one parse, as an upload does. A nil before - the document
-// stood outside the schema, and no text of it was read - excuses nothing, and neither does a
-// previous the parser refuses. A refusal of markdown by the parser itself names no block, and is
-// never excused. Only a refusal (ErrSchema) is a verdict; any other error, a panic (ErrPanic)
-// among them, is the error.
+// Two differences are excused. One is a block that reads back otherwise under the same block id
+// and with the same difference (sameMisread) in previous, the text the document was stored as
+// before the write, read against before, the tree previous was stored from. So a write beside a
+// block that a browser edit or an earlier writer left reading back otherwise is stored, while a new
+// misread in that block is still refused. The other is the spread an edit keeps (SettleSpreads): a
+// list or list item that reads back otherwise in its spread alone, which before holds unchanged
+// under its id, and whose spread previous already read back otherwise, paired as SettleSpreads
+// pairs a spread (spreadDifferences), which leaves the spread aside. previous can name that misread
+// a level higher, as a block that pairs with nothing: a typed block's parse fills an empty
+// paragraph in ahead of a list it opens with, so its children do not pair one to one, and a write
+// that deletes that list makes them pair and names the spread of an item it left as it was.
+// previous is parsed only where markdown reads back otherwise, so a write whose text reads back
+// pays for one parse, as an upload does. A nil before - the document stood outside the schema,
+// and no text of it was read - excuses nothing, and neither does a previous the parser refuses. A
+// refusal of markdown by the parser itself names no block, and is never excused. Only a refusal
+// (ErrSchema) is a verdict; any other error, a panic (ErrPanic) among them, is the error.
 func RefuseMisreadStored(before *Node, previous string, after *Node, markdown string) (StoredVerdict, error) {
 	reading, refused, err := storedMisread(after, markdown)
 	switch {
@@ -271,7 +278,7 @@ func RefuseMisreadStored(before *Node, previous string, after *Node, markdown st
 	}
 	var verdict StoredVerdict
 	for _, found := range reading.found {
-		if found.id != "" && known[sameMisread{found.id, found.differs}] {
+		if found.id != "" && (known.same[sameMisread{found.id, found.differs}] || known.keptSpread(found, before, after)) {
 			verdict.Excused = append(verdict.Excused, StoredMisread{Block: found.id, Kind: found.kind})
 			continue
 		}
@@ -285,22 +292,64 @@ func RefuseMisreadStored(before *Node, previous string, after *Node, markdown st
 	return verdict, nil
 }
 
-// storedMisreadsOf is each block previous, the text before was stored as, reads back otherwise in
-// (sameMisread), judged as RefuseMisreadStored judges a write's text: none where before is nil or
-// the parser refuses previous, since then nothing was read back to excuse.
-func storedMisreadsOf(before *Node, previous string) (map[sameMisread]bool, error) {
+// storedMisreads is what previous, the text before was stored as, already read back otherwise
+// (storedMisreadsOf): each block's misread (sameMisread), and the block ids of the lists and list
+// items whose spread it read back otherwise (spreadDifferences). before and after hold the lists
+// and list items of the two trees by block id, read only where a spread is to be excused.
+type storedMisreads struct {
+	same          map[sameMisread]bool
+	spreads       map[string]bool
+	before, after map[string]*Node
+}
+
+// storedMisreadsOf is what previous, the text before was stored as, reads back otherwise in,
+// judged as RefuseMisreadStored judges a write's text: nothing where before is nil or the parser
+// refuses previous, since then nothing was read back to excuse.
+func storedMisreadsOf(before *Node, previous string) (*storedMisreads, error) {
+	known := &storedMisreads{}
 	if before == nil {
-		return nil, nil
+		return known, nil
 	}
 	reading, refused, err := storedMisread(before, previous)
 	if err != nil || refused != nil {
-		return nil, err
+		return known, err
 	}
-	known := make(map[sameMisread]bool, len(reading.found))
+	known.same = make(map[sameMisread]bool, len(reading.found))
 	for _, stale := range reading.found {
-		known[sameMisread{stale.id, stale.differs}] = true
+		known.same[sameMisread{stale.id, stale.differs}] = true
 	}
+	known.spreads = map[string]bool{}
+	spreadDifferences(before, reading.read.Tree, 0, len(before.Children)-1, func(node, _ *Node) {
+		known.spreads[blockIDOf(node)] = true
+	})
 	return known, nil
+}
+
+// keptSpread reports whether found, a block after's text reads back otherwise in, is a spread an
+// edit kept from before (SettleSpreads): a list or list item that reads back otherwise in its
+// spread alone, whose spread previous already read back otherwise, and that before holds unchanged
+// under its id, so the spread is the one previous was stored with and not the write's.
+func (m *storedMisreads) keptSpread(found misread, before, after *Node) bool {
+	if !found.spreadAlone || !m.spreads[found.id] {
+		return false
+	}
+	if m.before == nil {
+		m.before, m.after = listsByID(before), listsByID(after)
+	}
+	previous, held := m.before[found.id]
+	return held && previous.Equal(m.after[found.id])
+}
+
+// listsByID is tree's lists and list items by block id.
+func listsByID(tree *Node) map[string]*Node {
+	lists := map[string]*Node{}
+	Walk(tree, func(node *Node) bool {
+		if id := blockIDOf(node); id != "" && (isList(node) || node.Type == "list_item") {
+			lists[id] = node
+		}
+		return true
+	})
+	return lists
 }
 
 // RefuseMisreadWrite refuses a write into a document; see RefuseMisreadDocument. It reads both
@@ -357,6 +406,9 @@ func refuseMisread(found misread, refused, err error) error {
 // misread of the whole document names no block, and its kind is "doc".
 type misread struct {
 	id, differs, kind, reason string
+	// spreadAlone says the block differs from its read-back in its spread and in no other attribute
+	// of its own: the one misread an edit can keep from the text before it (keptSpread).
+	spreadAlone bool
 }
 
 // misreads lists the blocks under want, a block as written, that read back otherwise in got, in
@@ -379,6 +431,7 @@ func collectMisreads(want, got *Node, ignore skip, found *[]misread) {
 		return
 	case own.attribute != "":
 		add(blockIDOf(want), want.Type+" "+own.attribute, want.Type+" "+own.attributeKey, own.attribute)
+		(*found)[len(*found)-1].spreadAlone = own.attributeKey == "spread" && !differsBeside(want, got, ignore, "spread")
 	}
 	if isTextblock(want.Type) {
 		if own.text != "" {
@@ -522,6 +575,164 @@ func staleSpreads(before *Node) (map[string]bool, bool) {
 		stale[blockIDOf(node)] = true
 	})
 	return stale, true
+}
+
+// SettleSpreads is doc, which an edit batch made from before, with each list and list item in the
+// document-level blocks the batch changed taking the spread its markdown reads back with, by
+// AgreeWithReadBack's rule. The renderer writes a list loose or tight from what its items hold, not
+// from the spread they carry: an item whose first paragraph an edit emptied writes its next block
+// on the marker's line, and reads back tight whatever it carried. Left as the batch made it, such a
+// spread would be stored in a text that reads back with another, which RefuseMisreadStored refuses,
+// and the room's tree and its stored text would disagree. A changed block is one before does not
+// hold unchanged under its block id. Each one holding a list is read back on its own, as the checks
+// of the blocks a write changed read them (ReadBackBlock): a batch pays for no render or parse of
+// the whole document, and one that changes no list pays for none. The exception is a list or list
+// item before holds unchanged under its id whose spread already read back otherwise in before's
+// block holding it, or where that block does not read back: that spread is not the batch's, so it
+// is kept, and RefuseMisreadStored excuses it. A changed block whose markdown is refused, or reads
+// back as other blocks, is left as it is for RefuseMisreadStored to judge. Neither tree is changed:
+// a block that takes a spread is a copy, and so is doc's root where one does.
+func SettleSpreads(before, doc *Node) *Node {
+	tops := make(map[string]*Node, len(before.Children))
+	for _, block := range before.Children {
+		if id := blockIDOf(block); id != "" {
+			tops[id] = block
+		}
+	}
+	var held *heldSpreads
+	out := doc
+	for index, block := range doc.Children {
+		if !holdsList(block) {
+			continue
+		}
+		if previous := tops[blockIDOf(block)]; previous == block || previous.Equal(block) {
+			continue
+		}
+		back := readBackAlone(block)
+		if back == nil {
+			continue
+		}
+		var settled map[*Node]any
+		blockSpreadDifferences(block, back, func(node, read *Node) {
+			if held == nil {
+				held = newHeldSpreads(before)
+			}
+			if held.kept(node) {
+				return
+			}
+			if settled == nil {
+				settled = map[*Node]any{}
+			}
+			settled[node] = read.Attrs["spread"]
+		})
+		if len(settled) == 0 {
+			continue
+		}
+		if out == doc {
+			out = &Node{Type: doc.Type, Attrs: doc.Attrs, Children: slices.Clone(doc.Children)}
+		}
+		out.Children[index] = withSpreads(block, settled)
+	}
+	return out
+}
+
+// holdsList reports whether block holds a list, itself included.
+func holdsList(block *Node) bool {
+	found := false
+	Walk(block, func(node *Node) bool {
+		found = isList(node)
+		return !found
+	})
+	return found
+}
+
+// readBackAlone is what block, a document-level block, reads back as on its own (readAlone), as
+// ReadBackBlock reads it, or nil where the renderer or the parser refuses its markdown or it reads
+// back as other blocks.
+func readBackAlone(block *Node) *Node {
+	alone := readAlone(block)
+	markdown, err := renderSpanless(alone)
+	if err != nil {
+		return nil
+	}
+	back, err := ParseRendering(markdown)
+	if err != nil || len(back.Children) != len(alone.Children) {
+		return nil
+	}
+	if read := back.Children[len(back.Children)-1]; read.Type == block.Type {
+		return read
+	}
+	return nil
+}
+
+// withSpreads is a copy of node in which each node spreads names takes the spread it maps to.
+func withSpreads(node *Node, spreads map[*Node]any) *Node {
+	out := &Node{Type: node.Type, Attrs: cloneAttrs(node.Attrs), Text: node.Text, Marks: cloneMarks(node.Marks)}
+	if spread, settled := spreads[node]; settled {
+		if out.Attrs == nil {
+			out.Attrs = Attrs{}
+		}
+		out.Attrs["spread"] = spread
+	}
+	if len(node.Children) > 0 {
+		out.Children = make([]*Node, len(node.Children))
+		for index, child := range node.Children {
+			out.Children[index] = withSpreads(child, spreads)
+		}
+	}
+	return out
+}
+
+// heldSpreads is what SettleSpreads reads of before, the tree a batch started from: each list and
+// list item by block id with the document-level block holding it, and, for each such block it has
+// had to read, the ids whose spread that block's markdown already read back otherwise, nil where
+// the block does not read back.
+type heldSpreads struct {
+	lists, blocks map[string]*Node
+	stale         map[*Node]map[string]bool
+}
+
+func newHeldSpreads(before *Node) *heldSpreads {
+	held := &heldSpreads{lists: map[string]*Node{}, blocks: map[string]*Node{}, stale: map[*Node]map[string]bool{}}
+	for _, block := range before.Children {
+		for id, list := range listsByID(block) {
+			held.lists[id], held.blocks[id] = list, block
+		}
+	}
+	return held
+}
+
+// kept reports whether node, a list or list item of a block the batch changed, keeps its spread:
+// before holds it unchanged under its id, and its spread already read back otherwise in before's
+// block holding it, or that block does not read back.
+func (held *heldSpreads) kept(node *Node) bool {
+	id := blockIDOf(node)
+	previous, ok := held.lists[id]
+	if !ok || !previous.Equal(node) {
+		return false
+	}
+	block := held.blocks[id]
+	stale, read := held.stale[block]
+	if !read {
+		stale = staleBlockSpreads(block)
+		held.stale[block] = stale
+	}
+	return stale == nil || stale[id]
+}
+
+// staleBlockSpreads is the block ids of the lists and list items in block, a document-level block,
+// whose spread its markdown read back on its own (readBackAlone) already reads back otherwise, and
+// nil where it does not read back.
+func staleBlockSpreads(block *Node) map[string]bool {
+	back := readBackAlone(block)
+	if back == nil {
+		return nil
+	}
+	stale := map[string]bool{}
+	blockSpreadDifferences(block, back, func(node, _ *Node) {
+		stale[blockIDOf(node)] = true
+	})
+	return stale
 }
 
 // spreadDifferences pairs doc's document-level blocks first to last with back, doc's read-back, as
@@ -803,6 +1014,15 @@ func attributeDifference(want, got *Node, ignore skip) (string, any, any, bool) 
 		}
 	}
 	return "", nil, nil, false
+}
+
+// differsBeside reports whether want and got hold different values of an attribute other than
+// name, those ignore names aside as well.
+func differsBeside(want, got *Node, ignore skip, name string) bool {
+	names := map[string]bool{name: true}
+	maps.Copy(names, ignore.names)
+	_, _, _, differs := attributeDifference(want, got, skip{all: ignore.all, names: names})
+	return differs
 }
 
 // writtenAttrs is the attributes node's markdown writes: tokenAttrs, with a table column that has
