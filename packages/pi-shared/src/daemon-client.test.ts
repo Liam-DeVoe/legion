@@ -13,6 +13,7 @@ import {
   retryWhileDaemonRestarts,
 } from "./daemon-client";
 import { type ClaimCapability, executePhaseOp } from "./legion-phase-ops";
+import { toolFailure } from "./tool-result";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): Record<string, unknown> {
@@ -773,6 +774,135 @@ test("a 409 refusal keeps its stable code through a key no schema names", async 
     code: "GATE_UNAPPROVED",
     detail: "Dispatch refused the write",
   });
+});
+
+// An architect's request the daemon read for a generation of the issue, or a run of its step,
+// that no longer stands is refused 409 with one of these codes, and its sentence says to read the
+// record again (`packages/daemon/internal/intake/facts.go`). A plugin a release behind its daemon
+// has no line for any of them, so this guards what both releases do with a code they do not know:
+// the agent is shown it with its sentence after one request, and nothing sends it again. sign_off
+// and register_gate run through the restart retry, as the legion tool runs them; the backward
+// move, retry_or_escalate and close_root go to the daemon once, with no retry around them.
+test("a refusal of a stale request is shown with its code and sentence after one request, and is never retried", async () => {
+  type Refusable = Record<
+    "signOff" | "gateRegister" | "phaseBackward" | "phaseRetry" | "rootClose",
+    (body: object) => Promise<unknown>
+  >;
+  const rows: ReadonlyArray<{
+    readonly code: string;
+    readonly operation: keyof Refusable;
+    /** The label the tool's restart retry runs the request under; none for a direct request. */
+    readonly retriedAs?: string;
+    readonly route: string;
+    readonly body: object;
+    readonly sentence: string;
+  }> = [
+    {
+      code: "SIGNOFF_STALE_GENERATION",
+      operation: "signOff",
+      retriedAs: "sign_off",
+      route: "/legion/v1/signoff",
+      body: { grantId: "grant-208", issue: "LEGION-208" },
+      sentence:
+        "the sign-off was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you sign it off. This sign-off changed nothing.",
+    },
+    {
+      code: "SIGNOFF_STALE_ENTRY",
+      operation: "signOff",
+      retriedAs: "sign_off",
+      route: "/legion/v1/signoff",
+      body: { grantId: "grant-208", issue: "LEGION-208" },
+      sentence:
+        "the sign-off was asked of run 1 of the step at place 2 of task a of LEGION-208, and LEGION-208 stands at run 2 of the step at place 2 of task a now. Read the evidence of the run that stands before you sign it off. This sign-off changed nothing.",
+    },
+    {
+      code: "BACKWARD_STALE_GENERATION",
+      operation: "phaseBackward",
+      route: "/legion/v1/phase/backward",
+      body: {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        to: "implementing",
+        reason: "the review found no test of the refusal",
+      },
+      sentence:
+        "the backward move was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you move it back. This move changed nothing.",
+    },
+    {
+      code: "BACKWARD_STALE_ENTRY",
+      operation: "phaseBackward",
+      route: "/legion/v1/phase/backward",
+      body: {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        to: "implementing",
+        reason: "the review found no test of the refusal",
+      },
+      sentence:
+        "the backward move was asked of run 1 of the step at place 2 of task a of LEGION-208, and LEGION-208 stands at no run of a step now. Read the run that stands before you move it back. This move changed nothing.",
+    },
+    {
+      code: "RETRY_STALE_GENERATION",
+      operation: "phaseRetry",
+      route: "/legion/v1/phase/retry",
+      body: { grantId: "grant-208", issue: "LEGION-208", decision: "retry" },
+      sentence:
+        "the retry_or_escalate was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you decide its hold. This decision changed nothing.",
+    },
+    {
+      code: "CLOSE_STALE_GENERATION",
+      operation: "rootClose",
+      route: "/legion/v1/roots/close",
+      body: { grantId: "grant-208", issue: "LEGION-208", reason: "the work is done elsewhere" },
+      sentence:
+        "the close was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the root again before you close it. This close changed nothing.",
+    },
+    {
+      code: "GATE_STALE_GENERATION",
+      operation: "gateRegister",
+      retriedAs: "register_gate",
+      route: "/legion/v1/gates/register",
+      body: {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+        version: 7,
+      },
+      sentence:
+        "the registration was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Register the document again for the run that stands. This registration changed nothing.",
+    },
+  ];
+
+  for (const { code, operation, retriedAs, route, body, sentence } of rows) {
+    const { fetch, requests } = daemon(() =>
+      Response.json({ code, error: sentence }, { status: 409 })
+    );
+    const client = createLegionDaemonClient("http://daemon.test", fetch) as unknown as Refusable;
+    let clock = 0;
+    const waits: number[] = [];
+    const send = () => client[operation](body);
+    const refused = await (retriedAs === undefined
+      ? send()
+      : retryWhileDaemonRestarts(retriedAs, send, {
+          now: () => clock,
+          sleep: async (ms: number) => {
+            waits.push(ms);
+            clock += ms;
+          },
+        })
+    ).catch((error: unknown) => error);
+
+    expect(refused, code).toBeInstanceOf(LegionDaemonApiError);
+    expect(refused, code).toMatchObject({ status: 409, code, detail: sentence });
+    expect(daemonUnreachable(refused), code).toBeUndefined();
+    expect(requests, code).toEqual([{ method: "POST", url: `http://daemon.test${route}`, body }]);
+    expect(waits, code).toEqual([]);
+    expect(toolFailure(refused), code).toEqual({
+      content: [{ type: "text", text: `POST ${route} failed with 409 ${code}: ${sentence}` }],
+      details: {},
+      isError: true,
+    });
+  }
 });
 
 test("a 502 refusal keeps its stable code through a key no schema names, and is the daemon's own answer, which is handed back rather than retried for ten minutes", async () => {
