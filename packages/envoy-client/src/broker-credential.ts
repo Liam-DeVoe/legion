@@ -31,6 +31,7 @@ import { chooseSignIn, type SignInRecord } from "@legion/broker-client/signins";
 import type { BrokerToken, BrokerTokenClient } from "@legion/broker-client/token-client";
 import { isFinalRefusal } from "@legion/broker-client/token-errors";
 import type { RequestCredential } from "./bearer";
+import { LoggableError } from "./errors";
 
 /**
  * The session a trade writes under, which the broker records the minted token against and the
@@ -262,6 +263,12 @@ export interface TradedToken {
   readonly token: BrokerToken;
   readonly key: DpopKey;
   readonly session: string;
+  /** The identity the token presents as: the client's entry ({@link keyOf}: the session and the
+   *  variables the factory read) and the sign-in it trades, or "" for the machine's own. Dispatch
+   *  keys a write by person or service, never by session, so two identities can be one login
+   *  there; the identity is stricter on purpose, since this client cannot tell whether another
+   *  entry trades as the same person. */
+  readonly identity: string;
 }
 
 /**
@@ -306,15 +313,17 @@ async function tradedToken(
   const { entry, made } = await untilAborted(clientFor(env, own), signal);
   const { client } = made;
   if (client === undefined) {
-    throw new Error(
+    throw new LoggableError(
       "AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY no longer name a broker and an identity to trade"
     );
   }
+  const { session, variables } = keyOf(env, own);
   try {
     return {
       token: await client.token(signal, { waitForReady }),
       key: client.key,
       session: own,
+      identity: JSON.stringify([session, variables, made.signIn]),
     };
   } catch (error) {
     if (made.signIn !== "" && isFinalRefusal(error)) entry.refused.set(made.signIn, error);
@@ -335,6 +344,22 @@ export function brokerTokenFor(
   session: BrokerSessionName | undefined
 ): (signal?: AbortSignal, waitForReady?: boolean) => Promise<TradedToken> {
   return (signal, waitForReady) => tradedToken(env, sessionName(session), signal, waitForReady);
+}
+
+/** Has the client at `key` drop `token`, or the token it holds where `token` is undefined. Looked
+ *  up, never made: a session this process never traded for is given no entry. */
+function dropHeld(key: ClientKey, token: string | undefined): void {
+  CLIENTS.get(key.session)?.get(key.variables)?.made?.client?.drop(token);
+}
+
+/**
+ * Has the client that traded `traded` for a NATS connection of `env`'s drop that token alone, as
+ * `brokerCredential`'s `stale` drops a token Dispatch said is not live: the NATS server refused it
+ * though it has not lapsed (`keepNatsCredential`). The client's next answer is a fresh trade, so
+ * the session's HTTP calls stop presenting it too; a fresher token the client holds is kept.
+ */
+export function dropTradedToken(env: BrokerEnvironment, traded: TradedToken): void {
+  dropHeld(keyOf(env, traded.session), traded.token.accessToken);
 }
 
 /**
@@ -366,9 +391,10 @@ export function brokerTokenFor(
  * (`@legion/broker-client/token-client`).
  *
  * A server that says the token presented for a session is not live (`stale`, as Dispatch's
- * `401 BROKER_TOKEN_NOT_ACTIVE` says of a token a revoke ended before it lapsed) has that
- * session's client drop it, so the next `headers` trades afresh: the broker answers a new token,
- * or refuses in its own words, which after a revoke name `agent-secrets login`. A person's
+ * `401 BROKER_TOKEN_NOT_ACTIVE` says of a token a revoke ended before it lapsed) has the client
+ * that presented it drop that token alone, so the next `headers` presents the token the client
+ * holds now, trading where it holds none: the broker answers a new token, or refuses in its own
+ * words, which after a revoke name `agent-secrets login`. A person's
  * sign-in refused for good is remembered against that sign-in (`Held.refused`), so later calls
  * fail with the same words and ask nothing of the issuer or the broker until a new sign-in is on
  * the machine.
@@ -378,6 +404,12 @@ export function brokerCredential(
   session?: BrokerSessionName | undefined
 ): RequestCredential {
   let presented = "";
+  // What each presentation was made as, by the headers object it answered: the login
+  // (`identity`), and the client's key and the token, which `stale` drops that one from.
+  const presentedAs = new WeakMap<
+    object,
+    { readonly identity: string; readonly key: ClientKey; readonly token: string }
+  >();
   /** The session whose credential answers a call acting for `acting`, which `headers` and
    *  `stale` read alike. */
   const own = (acting: string | undefined): string => (acting ?? "").trim() || sessionName(session);
@@ -389,17 +421,27 @@ export function brokerCredential(
       acting?: string,
       signal?: AbortSignal
     ): Promise<Readonly<Record<string, string>>> {
-      const { token, key } = await tradedToken(env, own(acting), signal);
+      const traded = await tradedToken(env, own(acting), signal);
+      const { token, key, identity } = traded;
       presented = token.accessToken;
-      return {
+      const headers = {
         Authorization: `DPoP ${token.accessToken}`,
         DPoP: await key.proof({ method, url, accessToken: token.accessToken }),
       };
+      presentedAs.set(headers, {
+        identity,
+        key: keyOf(env, traded.session),
+        token: token.accessToken,
+      });
+      return headers;
     },
-    stale(acting?: string): void {
-      // Looked up, never made: a session this process never traded for is given no entry.
-      const key = keyOf(env, own(acting));
-      CLIENTS.get(key.session)?.get(key.variables)?.made?.client?.drop();
+    identity: (headers) => presentedAs.get(headers)?.identity,
+    stale(acting?: string, headers?: Readonly<Record<string, string>>): void {
+      // The presentation's own client, and its token alone, where the caller names it: the host
+      // may have moved to another session since, and the client may hold a fresher token.
+      // Otherwise the session `acting` resolves to now.
+      const told = headers === undefined ? undefined : presentedAs.get(headers);
+      dropHeld(told?.key ?? keyOf(env, own(acting)), told?.token);
     },
     secret: () => presented,
   };

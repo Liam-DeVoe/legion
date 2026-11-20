@@ -132,6 +132,19 @@
 # service.
 set -euo pipefail
 
+# refuse_old_bash MAJOR MINOR VERSION: exits 2, in one line naming the bash this script needs and
+# VERSION, where MAJOR.MINOR is older than 5.1. The wait at the end (`wait -n -p`, which names the
+# process that stopped) is bash 5.1's: an older bash refuses -p there, and the loop around it never
+# sees a process stop and spins at once forever. So the first command hands it this bash's own
+# version, before anything is created or started; scripts/dev-stack.test.sh runs it with others.
+refuse_old_bash() {
+  if (($1 < 5 || ($1 == 5 && $2 < 1))); then
+    echo "dev-stack: needs bash 5.1 or newer (for wait -n -p), and this is bash $3" >&2
+    exit 2
+  fi
+}
+refuse_old_bash "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "$BASH_VERSION"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$ENVOY_DIR/../.." && pwd)"
@@ -692,11 +705,15 @@ callout_after_first_broker
 # session name to the listed account and never to a pod, so what keeps two pods of one account
 # apart is this row, which a deployment's daemon writes as it starts a pod; here the registrar
 # account stands in for that daemon, and the body carries the pod's own broker-audience token.
-# Without it the exchange is refused invalid_grant, naming the session. ---
+# Without it the exchange is refused invalid_grant, naming the session. Both tokens stay out of
+# every command line: the body reaches curl on standard input from a here-string, which the shell
+# writes before curl starts, so no pipeline's status can hide curl's, and the header from a file
+# curl reads. ---
+registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
 if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
-  -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
   -H 'Content-Type: application/json' \
-  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then
+  --data @- <<<"$registration" >/dev/null; then
   echo "dev-stack: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi

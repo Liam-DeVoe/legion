@@ -91,8 +91,8 @@ interface Answer {
   readonly code: string;
 }
 
-/** How long one request may take, its broker trade included: the token client waits out a pod
- *  session's missing registration for as long as its caller does (`BrokerTokenClient.token`). */
+/** How long one request may take, its broker trade included: the credential waits on all of it
+ *  but the request's 1 s reserve (`credentialDeadline`), and the request goes in that reserve. */
 const REQUEST_DEADLINE_MS = 30_000;
 
 /** Sends `method path` to Dispatch under `credential`, with a DPoP proof for that very URL. */

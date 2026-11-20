@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { holdSecret } from "@legion/contracts/held-secrets";
 import { createEnvoyClient } from "@legion/envoy-client/transport";
-import { scrubbedConsole } from "./scrubbed-host";
+import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { scrubbedConsole, scrubbedHost } from "./scrubbed-host";
 
 // The extension's own console prints (`[envoy] failed to deliver envelope …`, with the error that
 // failed it) go through the scrub of the secrets this process holds: Bun's console writes past any
@@ -62,4 +63,94 @@ test("an EnvoyApiError whose body echoes a held value prints none of it", async 
   scrubbedConsole.warn("[envoy] failed to deliver envelope", failure);
   expect(printed.join("\n")).toContain("responseBody");
   expect(printed.join("\n")).not.toContain(held.slice(4, 18));
+});
+
+// The host API's wrapper (TNQuality4140's P2 on 2fa6fbf7cf): an event handler's context and a
+// tool's `execute` context are the named parameters of `PiApi`'s `on` and `RegisteredTool`'s
+// `execute`, each scrubbing its notices, and `execute`'s other arguments reach the tool unchanged
+// in their own places. A tool's text parts and its thrown error are scrubbed; an image part is not.
+function host() {
+  const notices: string[] = [];
+  const handlers: ((event: unknown, context: SessionContext) => unknown)[] = [];
+  const tools: RegisteredTool[] = [];
+  const context = {
+    cwd: "/work",
+    ui: { notify: (text: string) => notices.push(text), setStatus: () => {} },
+  } as unknown as SessionContext;
+  const pi = {
+    on: (_event: string, handler: (event: unknown, context: SessionContext) => unknown) => {
+      handlers.push(handler);
+    },
+    registerTool: (tool: RegisteredTool) => {
+      tools.push(tool);
+    },
+    getActiveTools: () => ["one"],
+  } as unknown as PiApi;
+  return { pi, notices, handlers, tools, context };
+}
+
+test("an event handler's context scrubs its notices, and the event reaches it as it was", async () => {
+  const held = holdSecret(`dsp_${randomBytes(24).toString("base64url")}`);
+  const { pi, notices, handlers, context } = host();
+  const seen: unknown[] = [];
+  scrubbedHost(pi).on("session_start", async (event, ctx) => {
+    seen.push(event);
+    ctx.ui.notify(`the listener answered ${held}`, "warning");
+  });
+  const event = { reason: "start" };
+  await handlers[0]?.(event, context);
+  expect(seen).toEqual([event]);
+  expect(notices).toEqual(["the listener answered <withheld>"]);
+});
+
+test("a tool's execute gets its id, parameters, signal and update as given, and a scrubbing context", async () => {
+  const held = holdSecret(`dsp_${randomBytes(24).toString("base64url")}`);
+  const { pi, notices, tools, context } = host();
+  const calls: unknown[][] = [];
+  scrubbedHost(pi).registerTool({
+    name: "t",
+    label: "t",
+    description: "t",
+    parameters: {},
+    execute: async (id, parameters, signal, onUpdate, ctx) => {
+      calls.push([id, parameters, signal, onUpdate]);
+      ctx.ui.notify(`notice ${held}`, "info");
+      return {
+        content: [
+          { type: "text", text: `answer ${held}` },
+          { type: "image", data: held, mimeType: "image/png" },
+        ],
+        details: {},
+      };
+    },
+  });
+  const signal = new AbortController().signal;
+  const onUpdate = () => {};
+  const result = await tools[0]?.execute("call-1", { a: 1 }, signal, onUpdate, context);
+  expect(calls).toEqual([["call-1", { a: 1 }, signal, onUpdate]]);
+  expect(notices).toEqual(["notice <withheld>"]);
+  expect(result?.content).toEqual([
+    { type: "text", text: "answer <withheld>" },
+    { type: "image", data: held, mimeType: "image/png" },
+  ]);
+});
+
+test("a tool's thrown error is scrubbed, and the host's other members are its own", async () => {
+  const held = holdSecret(`dsp_${randomBytes(24).toString("base64url")}`);
+  const { pi, tools, context } = host();
+  const scrubbed = scrubbedHost(pi);
+  scrubbed.registerTool({
+    name: "t",
+    label: "t",
+    description: "t",
+    parameters: {},
+    execute: async () => {
+      throw new Error(`the broker answered ${held}`);
+    },
+  });
+  const error = await tools[0]
+    ?.execute("call-1", {}, undefined, undefined, context)
+    .catch((caught: unknown) => caught);
+  expect((error as Error).message).toBe("the broker answered <withheld>");
+  expect(scrubbed.getActiveTools()).toEqual(["one"]);
 });

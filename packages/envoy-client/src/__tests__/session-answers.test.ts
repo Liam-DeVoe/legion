@@ -313,6 +313,16 @@ describe("sessionAnswersWords and sessionAnswersChanged", () => {
     expect(changed([answer], [retitled])).toBe(false);
   });
 
+  // Dispatch names an item's relation at each read, from who asks and follows its ask then: an
+  // answer on an ask the session has since followed becomes an answer on its own ask, though
+  // nobody wrote anything.
+  test("the same item under another relation is a change", () => {
+    const another = { ...answer, relation: "answered_an_ask" };
+
+    expect(changed([another, comment, direct], [answer, comment, direct])).toBe(true);
+    expect(changed([answer], [another])).toBe(true);
+  });
+
   // An item a read no longer holds: its time tells one the window left behind from one a person
   // retracted (an answer set back to none), or Dispatch removed, while the window still held it.
   test("an item gone because the window left it behind is no change; one gone inside the window is", () => {
@@ -573,7 +583,8 @@ const failedReads: readonly {
   },
   {
     kind: "a 200 HTML sign-in page",
-    reason: "Dispatch answered with something that is not an answers list",
+    reason:
+      /^HTTP_200: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 200 with a body that is not JSON \("Sign in"\), which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed\.$/,
     deadlineMs: 2_000,
     respond: () => page(200, "<!doctype html><html><title>Sign in</title><form></form></html>"),
   },
@@ -591,7 +602,8 @@ const failedReads: readonly {
   },
   {
     kind: "a 200 with an empty body",
-    reason: "Dispatch answered with something that is not an answers list",
+    reason:
+      /^HTTP_200: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 200 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed\.$/,
     deadlineMs: 2_000,
     respond: () => new Response("", { status: 200 }),
   },

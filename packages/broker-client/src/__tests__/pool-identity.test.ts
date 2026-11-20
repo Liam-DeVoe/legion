@@ -198,6 +198,29 @@ test("a security token service that refuses is an error naming it, its status an
   expect(iam.posted).toHaveLength(0);
 });
 
+// A 307 or 308 in front of the security token service would send the POST, the subject token in
+// its body, on to another origin. Google's services answer no redirect, so the call follows none:
+// the redirect is the refusal, and its target is asked nothing (the review of 81d860a8f7, P1).
+test("a redirect from the security token service is refused, and its target is asked nothing", async () => {
+  const elsewhere = stubService(federating);
+  const moving = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () =>
+      new Response(null, { status: 307, headers: { Location: `${elsewhere.url}/v1/token` } }),
+  });
+  stops.push(() => moving.stop(true));
+  const iam = stubService(minting);
+  const refusal = await refusalOf(async () =>
+    (await poolAt(`http://127.0.0.1:${moving.port}`, iam.url)).read()
+  );
+  expect(refusal?.message).toBe(
+    `trade this machine's credential at the security token service http://127.0.0.1:${moving.port}/v1/token: HTTP 307`
+  );
+  expect(elsewhere.posted).toHaveLength(0);
+  expect(iam.posted).toHaveLength(0);
+});
+
 test("a security token service that answers no access_token is an error naming it", async () => {
   const sts = stubService(() => ({ body: { token_type: "Bearer", expires_in: 3600 } }));
   const iam = stubService(minting);

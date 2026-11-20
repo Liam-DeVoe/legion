@@ -12,6 +12,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { forgetHeldSecrets } from "@legion/contracts/held-secrets";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { newDpopKey } from "../dpop";
 import { metadataIdentity } from "../metadata-identity";
@@ -318,6 +319,12 @@ function tokenAsCorpus(token: BrokerToken): Record<string, unknown> {
 
 test("the wire corpus holds this client", async () => {
   for (const exchange of corpus.exchanges) {
+    // Each entry is one client's trade, held to its own answer: the tokens an earlier entry's
+    // client traded are held for the scrub (`@legion/contracts/held-secrets`), and one of them
+    // (`broker-access-token-with-no-credential`) shares a run of ten characters with a later
+    // entry's refusal text, which the scrub would then withhold. A process of its own holds
+    // nothing another one traded.
+    forgetHeldSecrets();
     const broker = stubBroker(exchange.answer.status, exchange.answer.body);
     // The caller stops waiting at the first wait the client asks for, and that wait passes only
     // when the client is closed: a refusal the client trades again on (an unregistered pod

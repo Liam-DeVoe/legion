@@ -419,6 +419,11 @@ export interface ChannelSessionOptions {
    * or `source` for a bundle outside its plugin cache).
    */
   readonly pluginVersion: string
+  /**
+   * The package every registration names: `@sjawhar/claude-envoy` under Claude Code, and
+   * `@sjawhar/codex-envoy` under Codex, the package each host's sessions update.
+   */
+  readonly pluginName: string
 }
 
 // The shared tool contract builds schemas from each host's Zod API. Claude's
@@ -635,6 +640,40 @@ export function createChannelDelivery(input: {
     },
     inbox() {
       return [...inbox]
+    },
+  }
+}
+
+/** Which session id a connection that presents a broker token is admitted as: one at a time, the
+ *  dial's first, then each `/clear`'s once its move lands (`followSession`). */
+export interface SessionAdmission {
+  /** Records that the connection is admitted as `session` now. */
+  readonly admit: (session: string) => void
+  /** Settles once the connection is admitted as `session`: at once where it is now, else when a
+   *  later `admit` names it. Only the latest id asked about is waited for: a wait for an id asked
+   *  about before it is dropped unsettled, since the live view takes only its latest id's subject.
+   *  The wait is kept through an `admit` of another id, which an earlier `/clear`'s move can land
+   *  as after the live view has heard of a later one. */
+  readonly admitted: (session: string) => Promise<void>
+}
+
+/** A {@link SessionAdmission} admitted as `first`. */
+export function sessionAdmission(first: string): SessionAdmission {
+  let current = first
+  let pending: { readonly session: string; readonly wait: PromiseWithResolvers<void> } | undefined
+  return {
+    admit: (session) => {
+      current = session
+      if (pending?.session !== session) return
+      pending.wait.resolve()
+      pending = undefined
+    },
+    admitted: (session) => {
+      if (session === current) return Promise.resolve()
+      if (pending?.session !== session) {
+        pending = { session, wait: Promise.withResolvers<void>() }
+      }
+      return pending.wait.promise
     },
   }
 }
@@ -1325,7 +1364,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           driving: false,
           selfSubscribed: true,
           clientInstanceID: options.clientInstanceID,
-          plugin: { name: packageName, version: options.pluginVersion },
+          plugin: { name: options.pluginName, version: options.pluginVersion },
           delivery: deliveryRequest,
         })
         // Held as a promise that settles either way, so a deregistration waits for the call to
@@ -2272,6 +2311,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // at a time, and a restart is a new instance with a new id.
   const clientInstanceID = newClientInstanceID()
   let runtime: ChannelToolRuntime | undefined
+  // What the start waits on, for a tool call it answers before the session is up: a start under
+  // NATS_AUTH=broker waits for the session's token for as long as the server lives.
+  let starting = "it reads its settings"
   let claim: LegionClaim | undefined
   const daemon = pane === undefined ? undefined : createLegionDaemonClient(pane.daemonUrl)
   // INFRA-220: the phase reminder's Claude Code host (`./legion-phase-hook`), which Claude Code's
@@ -2349,8 +2391,20 @@ export async function runEnvoyChannelServer(): Promise<void> {
       else if (op === "ready_for_update") phaseHook?.updateAnswered()
       return mcpResult(answer)
     }
-    if (runtime === undefined) throw new Error("Envoy channel server is still starting")
-    return mcpResult(await executeEnvoyTool(runtime, request.params.name, request.params.arguments))
+    if (runtime === undefined)
+      throw new Error(`Envoy channel server is still starting: ${starting}`)
+    try {
+      return mcpResult(
+        await executeEnvoyTool(runtime, request.params.name, request.params.arguments),
+      )
+    } catch (error) {
+      // A tool that ran and failed answers a tool result with `isError`, which the model reads as
+      // the tool's answer: the listener's own sentence, a refusal for this session's sending rate
+      // among them. A tool this server does not have stays the JSON-RPC error it always was, since
+      // MCP lists an unknown tool among the protocol's errors, not a tool's.
+      if (error instanceof UnsupportedEnvoyToolError) throw error
+      return { content: [{ type: "text", text: messageFor(error) }], isError: true }
+    }
   })
   // INFRA-1026: the link to this session's Claude Code mod, bound below once the MCP transport is
   // up. It is this process's own socket, closed with the server. `linked` resolves with it for
@@ -2477,7 +2531,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         return active === null
           ? undefined
           : new DispatchClient(active.url, active.credential, fetch, {
-              signal: AbortSignal.timeout(ms),
+              deadlineMs: ms,
             })
       },
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
@@ -2507,6 +2561,10 @@ export async function runEnvoyChannelServer(): Promise<void> {
       stampOnce(() => identity.id)
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
+      starting =
+        inbound.natsCredential.kind === "broker"
+          ? "it waits for this session's broker token, and its stderr says what each trade came to"
+          : "it connects to NATS"
       const dialled = await dialChannelNats(
         inbound,
         `claude-envoy-channel-${identity.id}`,
@@ -2521,6 +2579,21 @@ export async function runEnvoyChannelServer(): Promise<void> {
       if (dialled === undefined) return
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
+      starting = "it registers this session with Envoy"
+      // Which id the connection is admitted as, where its broker token admits one session at a
+      // time: the dial's, then each `/clear`'s once its move lands. The live view takes a new id's
+      // control subject only then (`AgentStreamOptions.admitted`).
+      const admission =
+        dialled.followSession === undefined ? undefined : sessionAdmission(identity.id)
+      const follow = dialled.followSession
+      const followSession =
+        follow === undefined || admission === undefined
+          ? undefined
+          : async (): Promise<void> => {
+              const forSession = identity.id
+              await follow()
+              admission.admit(forSession)
+            }
       const started = await startChannelSession({
         identity,
         connection,
@@ -2534,10 +2607,11 @@ export async function runEnvoyChannelServer(): Promise<void> {
         clientInstanceID,
         title,
         pluginVersion: installedPluginVersion(bundlePath) ?? "source",
+        pluginName: packageName,
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
-        ...(dialled.followSession === undefined ? {} : { followSession: dialled.followSession }),
+        ...(followSession === undefined ? {} : { followSession }),
         startSignal: booting.signal,
       }).catch((error: unknown) => {
         // A stop asked for while the session was still starting (its connection waiting on the
@@ -2558,6 +2632,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           connection: bus,
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
+          ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),
           // A pane is the session whose person messages go to the bridge's inbox, which is the
           // same signal the router reads (`inPane`): a pane holds a daemon claim only where a
           // daemon started it, and the row the bridge seeds is there either way.

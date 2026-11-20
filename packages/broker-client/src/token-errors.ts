@@ -17,7 +17,7 @@ import {
 import { SIGNIN_COMMAND } from "./signins";
 import { POD_SESSION_NOT_REGISTERED } from "./wire";
 
-/** The broker's rate limit: the first of the four refusals a later trade may be answered
+/** The broker's rate limit: the first of the five refusals a later trade may be answered
  *  differently. */
 const TOO_MANY_REQUESTS = 429;
 
@@ -32,12 +32,15 @@ const USE_DPOP_NONCE = "use_dpop_nonce";
  *  description begins {@link POD_SESSION_NOT_REGISTERED} and a colon. */
 const INVALID_GRANT = "invalid_grant";
 
+/** What the broker answers a trade naming a person Dispatch holds (`oauthwire.MembershipHeld`). */
+const MEMBERSHIP_HELD = "membership_held";
+
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
  * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
- * The four exceptions are the broker's 429, its two DPoP refusals, and a pod session it holds no
- * registration for yet (`permanent`).
+ * The five exceptions are the broker's 429, its two DPoP refusals, a pod session it holds no
+ * registration for yet, and a person Dispatch holds (`permanent`).
  */
 export class BrokerRefusedError extends Error {
   /** What the broker said, as a text may print it: its description where that is a known
@@ -86,8 +89,8 @@ export class BrokerRefusedError extends Error {
   }
 
   /**
-   * Whether this refusal is one no retry can cure, which every refusal is but four. The Go
-   * client reads it the same way, out of the same four cases (`RefusedError.Permanent`,
+   * Whether this refusal is one no retry can cure, which every refusal is but five. The Go
+   * client reads it the same way, out of the same five cases (`RefusedError.Permanent`,
    * packages/envoy/internal/brokerclient/brokerclient.go), and
    * `packages/envoy/internal/brokerclient/testdata/wire.json` holds the two to that one reading.
    *
@@ -109,12 +112,19 @@ export class BrokerRefusedError extends Error {
    * pod's trade can reach the broker before its daemon's or its session watch's registration
    * does, and a registrar can be down for minutes, so the trade that follows the registration
    * succeeds.
+   *
+   * `membership_held`: Dispatch holds the person this identity names, because Google refused
+   * their Dispatch sign-in, or no refresh has confirmed them for 24 hours. A hold revokes nothing,
+   * and the person's next Dispatch sign-in, or the next refresh that confirms them, ends it, so
+   * the identity this client trades is served again then with no new credential. A client that
+   * dropped it would need a restart after every hold.
    */
   get permanent(): boolean {
     return (
       this.status !== TOO_MANY_REQUESTS &&
       this.code !== INVALID_DPOP_PROOF &&
       this.code !== USE_DPOP_NONCE &&
+      this.code !== MEMBERSHIP_HELD &&
       !this.podSessionUnregistered
     );
   }
@@ -141,10 +151,12 @@ export class RegistrationPendingError extends Error {
 }
 
 /**
- * A call that stopped waiting, its signal ended by its own deadline, while the client's retry
- * loop was trading again after a failure a later trade may cure, other than a pod session not
- * registered yet ({@link RegistrationPendingError}): no answer within the trade's own time (`TRADE_ATTEMPT_MS`),
- * no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that could not be made.
+ * A trade failure a later trade may cure, told to a caller with no live token in hand while the
+ * client's retry loop trades again: at once to a caller that fails fast, and to one that waits for
+ * ready once its own signal ends. A pod session not registered yet is
+ * {@link RegistrationPendingError} instead. The failure is no answer within the trade's own time
+ * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that
+ * could not be made.
  * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
  * line for that failure (`Retried.said`), which names nothing a peer wrote.
  */
@@ -152,6 +164,22 @@ export class TradeRetryingError extends Error {
   constructor(said: string) {
     super(`${said}, and the trade is being retried in the background`);
     this.name = "TradeRetryingError";
+  }
+}
+
+/**
+ * A call that stopped waiting, its signal ended, while the client's first trade since its last
+ * token was still out, so no trade had ended yet to say what it came to: a broker that does not
+ * answer, named as that rather than as the signal's bare "The operation timed out.". The trade
+ * goes on, so it is not final ({@link isFinalRefusal}). Its message names the identity traded and
+ * nothing a peer wrote.
+ */
+export class TradeUnansweredError extends Error {
+  constructor(identity: string) {
+    super(
+      `the secrets broker has not yet answered the trade of ${identity}, and the trade goes on in the background`
+    );
+    this.name = "TradeUnansweredError";
   }
 }
 
@@ -165,6 +193,18 @@ export class BrokerTradeFailedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "BrokerTradeFailedError";
+  }
+}
+
+/**
+ * A call to a client that was closed (`BrokerTokenClient.close`), whose retry loop trades no
+ * more: a sign-in this machine no longer chooses, a session the process left. Its message is the
+ * client's own and names nothing a peer wrote, so a caller prints it whole.
+ */
+export class TokenClientClosedError extends Error {
+  constructor() {
+    super("the secrets broker client was closed, and trades no more");
+    this.name = "TokenClientClosedError";
   }
 }
 

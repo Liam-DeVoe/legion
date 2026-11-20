@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isKnownBrokerRefusal, KNOWN_OAUTH_ERROR_CODES } from "../refusal-text";
+import {
+  BROKER_OAUTH_ERROR_CODES,
+  isKnownBrokerRefusal,
+  KNOWN_OAUTH_ERROR_CODES,
+  LIBRARY_OAUTH_ERROR_CODES,
+} from "../refusal-text";
 import { BrokerRefusedError } from "../token-errors";
 
 // The broker's refusals as its own OAuth library writes them on the wire: the library's fixed
@@ -25,8 +30,11 @@ describe("the broker's refusals as it writes them", () => {
     expect(corpus.length).toBeGreaterThan(10);
   });
 
-  // The codes shown are the library's own (the Go code corpus writes them from its error values).
-  test("the codes the client shows are the codes the broker's library writes", () => {
+  // The library's codes shown are the library's own (the Go code corpus writes them from its
+  // error values), and the broker's own codes are every other code the wire corpus answers a
+  // trade with. Both expected sets come from the fixtures, so a code the export leaves out fails
+  // here whichever set it belongs to.
+  test("the codes the client shows are the codes the broker's library writes, and the broker's own", () => {
     const codes: string[] = JSON.parse(
       readFileSync(
         join(import.meta.dir, "../../../envoy/internal/broker/oauth/testdata/refusal-codes.json"),
@@ -34,7 +42,22 @@ describe("the broker's refusals as it writes them", () => {
       )
     );
     expect(codes.length).toBeGreaterThan(5);
-    expect([...KNOWN_OAUTH_ERROR_CODES].sort()).toEqual(codes);
+    expect([...LIBRARY_OAUTH_ERROR_CODES].sort()).toEqual(codes);
+    const wire: { exchanges: { answer: { body?: unknown } }[] } = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "../../../envoy/internal/brokerclient/testdata/wire.json"),
+        "utf8"
+      )
+    );
+    const answered = new Set<string>();
+    for (const { answer } of wire.exchanges) {
+      const error = (answer.body as { error?: unknown } | undefined)?.error;
+      if (typeof error === "string") answered.add(error);
+    }
+    const brokerOwn = [...answered].filter((code) => !codes.includes(code)).sort();
+    expect(brokerOwn.length).toBeGreaterThan(0);
+    expect([...BROKER_OAUTH_ERROR_CODES].sort()).toEqual(brokerOwn);
+    expect([...KNOWN_OAUTH_ERROR_CODES].sort()).toEqual([...codes, ...brokerOwn].sort());
   });
 
   test.each(corpus)("%p prints whole", (description) => {
