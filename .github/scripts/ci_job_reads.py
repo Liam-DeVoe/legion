@@ -417,16 +417,16 @@ CLAUDE_ENVOY_BUILD = reads(
                                      f"packages/claude-envoy; {at('test', VERIFY_BUILD_STEP)} and {at('test', BUILD_INPUTS_STEP)} "
                                      "run scripts/verify-build.sh and tests/build-inputs.test.ts of it"),
         (CONTRACTS_SRC, "packages/claude-envoy/tsconfig.json paths @legion/contracts; bundles import it"),
-        ("packages/envoy-client/bin/dispatch.ts", "packages/claude-envoy/scripts/build.ts:314 bundles BUNDLE_ENTRYPOINTS' dispatch (:47), which verify-build runs and tests/dist-fresh.test.ts:312 holds to this path"),
-        ("packages/pi-shared/src/**", "packages/claude-envoy/src/envoy-channel-server.ts:90-91, legion-claim.ts:8-11, legion-tool.ts:3-12 import @legion/pi-shared/*"),
-        ("scripts/third-party-notices.ts", "packages/claude-envoy/scripts/build.ts:24"),
-        ("scripts/pi-plugin-prepack.sh", "packages/claude-envoy/scripts/build.ts:198-202 --stage-skills @sjawhar/pi-legion"),
-        ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:231-232"),
-        ("skills/**", "packages/claude-envoy/scripts/build.ts:198-202 (staged pi-legion partition); packages/claude-envoy/skills/* symlinks into ../../../skills"),
-        (".bun-version", "packages/claude-envoy/scripts/build.ts:32 reads the Bun pin"),
+        ("packages/envoy-client/bin/dispatch.ts", "packages/claude-envoy/scripts/build.ts:323 bundles BUNDLE_ENTRYPOINTS' dispatch (:56), which verify-build runs and tests/dist-fresh.test.ts:312 holds to this path"),
+        ("packages/pi-shared/src/**", "packages/claude-envoy/src/envoy-channel-server.ts:91-92, legion-claim.ts:8-11, legion-tool.ts:3-12 import @legion/pi-shared/*"),
+        ("scripts/third-party-notices.ts", "packages/claude-envoy/scripts/build.ts:25"),
+        ("scripts/pi-plugin-prepack.sh", "packages/claude-envoy/scripts/build.ts:211-215 --stage-skills @sjawhar/pi-legion"),
+        ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:244-245"),
+        ("skills/**", "packages/claude-envoy/scripts/build.ts:211-215 (staged pi-legion partition); packages/claude-envoy/skills/* symlinks into ../../../skills"),
+        (".bun-version", "packages/claude-envoy/scripts/build.ts:40 reads the Bun pin"),
         (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "packages/claude-envoy/tests/build-inputs.test.ts:153 holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
-) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-89, hooks/session-hook.ts:93-111 import @legion/envoy-client/*")
+) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-90, hooks/session-hook.ts:93-112 import @legion/envoy-client/*")
 
 # The build above, and what only the claude-envoy job reads: the Claude Code its live answer test
 # runs, and the fixtures and modules of its other tests. The test job runs none of them.
@@ -2826,9 +2826,9 @@ GATES = [
                    overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     ], reads=reads(
         ("packages/pi-legion/**", f"{at('pi-legion', 'Typecheck pi-legion')}, test and pack in packages/pi-legion"),
-        ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:73,315 and legion-role-claim.test.ts:18,108 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1135"),
-        ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:318 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :29) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-48 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
-        ("packages/envoy-client/bin/dispatch.ts", "the sixth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:47), outside the package it builds"),
+        ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:73,315 and legion-role-claim.test.ts:18,108 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1139"),
+        ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:318 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :29) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:47-57 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
+        ("packages/envoy-client/bin/dispatch.ts", "the sixth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:56), outside the package it builds"),
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
         ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:17, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:20, scripts/prepack.test.ts:4"),
         ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts:51 "

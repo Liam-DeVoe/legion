@@ -1287,8 +1287,8 @@ jobs:
               - 'packages/broker-client/**'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/pi-shared/src/**'
-              # scripts/build.ts:115-128 generates legion/ from pi-legion's agents and the skills
-              # the prepack script stages for it, and :16 writes dist/THIRD_PARTY_NOTICES.
+              # scripts/build.ts:211-248 generates legion/ from pi-legion's agents and the skills
+              # the prepack script stages for it, and :352 writes dist/THIRD_PARTY_NOTICES.
               - 'packages/pi-legion/agents/**'
               - 'scripts/pi-plugin-prepack.sh'
               - 'skills/**'
@@ -1298,7 +1298,7 @@ jobs:
             claude_envoy:
               - *ci_router
               - '.github/workflows/ci-job-claude-envoy.yaml'
-              # .bun-version is also read by scripts/build.ts:23: the build depends on the Bun it
+              # .bun-version is also read by scripts/build.ts:40: the build depends on the Bun it
               # pins.
               - *bun_install
               - *biome
@@ -2447,7 +2447,7 @@ jobs:
               - 'packages/pi-envoy/**'
               # src/skills-guard.test.ts:29,318 spawns packages/claude-envoy/scripts/build.ts and
               # asserts an exact file list over the tree it writes, so this job reads that whole
-              # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-48) that
+              # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:47-57) that
               # lives outside it. A spawn carries no import, so no derivation of this repository
               # sees the reach: both patterns are hand-kept, with their declared reads in
               # ci_job_reads.py.

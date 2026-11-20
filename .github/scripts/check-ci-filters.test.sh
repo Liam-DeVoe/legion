@@ -2673,7 +2673,7 @@ READS = (
      "packages/pi-legion/src/skills-guard.test.ts:29,318, which spawns that builder and asserts an "
      "exact file list over what it writes"),
     ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:39-48), bundled into "
+     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:47-57), bundled into "
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
