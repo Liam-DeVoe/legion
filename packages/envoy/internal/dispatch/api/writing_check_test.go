@@ -426,10 +426,6 @@ type proseRouteCase struct {
 	wantStatus int
 }
 
-// proseDryRunRoutes are the routes whose request carries prose and that write nothing (a result's
-// dry run): the check does not read such a route's words, and the route records no row.
-var proseDryRunRoutes = map[string]bool{"POST /api/v1/issues/{key}/results/dry-run": true}
-
 func proseRouteCases() []proseRouteCase {
 	session := func(method, path func(f writingCheckFixture) string, body func(text string) map[string]any) func(*writingCheckRig, string) *httptest.ResponseRecorder {
 		return func(rig *writingCheckRig, text string) *httptest.ResponseRecorder {
@@ -606,7 +602,7 @@ func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 		t.Run(c.route, func(t *testing.T) {
 			rig.t = t
 			method, route, _ := strings.Cut(c.route, " ")
-			if proseDryRunRoutes[c.route] {
+			if _, unread := proseDryRunRoutes[c.route]; unread {
 				// The check does not read a dry run, which writes nothing, so it records nothing,
 				// whatever its words break.
 				for _, text := range []string{badProse, cleanProse} {
@@ -699,6 +695,42 @@ func TestTheWritingCheckRecordsNoRowForAReplyThatWritesNothing(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestTheWritingCheckRecordsNoRowForADocumentCallThatWritesNothing: an edit whose batch leaves the
+// document as it was, on each of the three edit routes, and an approval request on a document that
+// already stands approved at its version answer 2xx having written none of the words the check
+// read, and such a call records no row, while the edit that changes the document and the request
+// that opens an approval record one each.
+func TestTheWritingCheckRecordsNoRowForADocumentCallThatWritesNothing(t *testing.T) {
+	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	// write posts body to target as checkWriter and holds the call to its status and to the rows
+	// it recorded.
+	write := func(what, target string, body map[string]any, status, rows int) {
+		t.Helper()
+		rig.clearEvents()
+		if response := rig.asSession(http.MethodPost, target, body); response.Code != status {
+			t.Fatalf("%s: %d %s, want %d", what, response.Code, response.Body.String(), status)
+		}
+		if events := rig.events(); len(events) != rows {
+			t.Errorf("%s recorded %+v, want %d rows", what, events, rows)
+		}
+	}
+	replace := func(find, with string) map[string]any {
+		return map[string]any{"ops": []map[string]any{{"op": "replace", "find": find, "with": with}}, "summary": badProse}
+	}
+	for _, target := range []string{
+		"/api/v1/artifacts/" + rig.fixture.editOneID + "/edits",
+		"/api/v1/issues/" + rig.fixture.issue + "/artifacts/" + rig.fixture.editTwoSlug + "/edits",
+		"/api/v1/projects/WCK/artifacts/" + rig.fixture.projectDocSlug + "/edits",
+	} {
+		write("an edit that changes the document on "+target, target, replace("Seed paragraph here.", badProse), http.StatusOK, 1)
+		write("an edit that leaves it as it was on "+target, target, replace(badProse, badProse), http.StatusOK, 0)
+	}
+	approvals := "/api/v1/artifacts/" + rig.fixture.notesID + "/approval-requests"
+	write("an approval request that opens one", approvals, map[string]any{"summary": badProse}, http.StatusCreated, 1)
+	reviewDocument(t, rig.handler, rig.fixture.notesID, "alice", "approved", "")
+	write("an approval request on the document approved at its version", approvals, map[string]any{"summary": badProse}, http.StatusOK, 0)
 }
 
 // asSessionGenerated writes as checkWriter with the generated-text header, as a plugin posts the

@@ -83,18 +83,11 @@ export function heldWriteLine(held: HeldState, kind: string, id: string, names: 
 /**
  * What a command prints for its write Dispatch kept beside a held text its path names
  * (`DispatchWriteKept`): Dispatch accepted the write and runs it right after that text posts, so
- * the command did what it was asked. `before`, the lines of what the command wrote ahead of that
- * write, comes first.
+ * the command did what it was asked.
  */
-export function keptWriteResult(
-  kept: DispatchWriteKept,
-  before: readonly string[] = []
-): DispatchToolResult {
+export function keptWriteResult(kept: DispatchWriteKept): DispatchToolResult {
   return {
-    text: [
-      ...before,
-      `Kept ${heldFor(kept.held)}: Dispatch keeps this write as ${kept.id} and runs it right after that text posts. \`dispatch held ${kept.id}\` reads it.`,
-    ].join("\n"),
+    text: `Kept ${heldFor(kept.held)}: Dispatch keeps this write as ${kept.id} and runs it right after that text posts. \`dispatch held ${kept.id}\` reads it.`,
     details: { kept: kept.id, held: kept.held },
   };
 }

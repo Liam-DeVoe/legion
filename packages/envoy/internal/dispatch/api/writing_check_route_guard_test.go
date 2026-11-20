@@ -55,21 +55,29 @@ func reachesWritingCheck(graph *lockGraph, handlers []*lockFunction) bool {
 // TestEveryRouteThatTakesProseReachesTheWritingCheck holds R1 of INFRA-3231 to the server's own
 // route inventory, as the decision-block guard holds its rule: every POST, PATCH or PUT row of the
 // table whose request type carries a member the registry marks prose reaches writingCheck in what
-// its handler runs inside package api. A row the shapes do not describe is named too.
+// its handler runs inside package api, but for a row the check does not read (proseDryRunRoutes),
+// which is held to reaching it nowhere, so an exemption that has stopped being true is deleted. A
+// row the shapes do not describe is named too.
 func TestEveryRouteThatTakesProseReachesTheWritingCheck(t *testing.T) {
 	graph := copyLockGraph(t)
 	if graph.named[writingCheckFunction] == nil {
 		t.Fatalf("%s, the check this guard looks for, is gone: point the guard at its replacement", writingCheckFunction)
 	}
 	routes := writeRouteHandlers(t, graph, writingCheckMethods)
-	var unchecked, unshaped []string
+	var unchecked, unshaped, stale []string
 	checked := 0
 	for _, name := range slices.Sorted(maps.Keys(routes)) {
 		shape, shaped := routeShapes[name]
+		reason, unread := proseDryRunRoutes[name]
 		switch {
 		case !shaped:
 			unshaped = append(unshaped, name)
 		case !requestCarriesProse(shape.Request):
+		case unread:
+			t.Logf("%s: not read, %s", name, reason)
+			if reachesWritingCheck(graph, routes[name]) {
+				stale = append(stale, name)
+			}
 		case reachesWritingCheck(graph, routes[name]):
 			checked++
 			t.Logf("%s: checked", name)
@@ -81,6 +89,10 @@ func TestEveryRouteThatTakesProseReachesTheWritingCheck(t *testing.T) {
 		t.Errorf("a route whose request carries prose never reaches %s:\n\t%s\n"+
 			"Call s.writingCheck(w, r, actor, input) once the input is decoded and the actor resolved, before any transaction.",
 			writingCheckFunction, strings.Join(unchecked, "\n\t"))
+	}
+	if len(stale) > 0 {
+		t.Errorf("a route proseDryRunRoutes says the check does not read reaches %s: %s; take it out of proseDryRunRoutes",
+			writingCheckFunction, strings.Join(stale, ", "))
 	}
 	if len(unshaped) > 0 {
 		t.Errorf("a write route has no request type to read: %s", strings.Join(unshaped, ", "))

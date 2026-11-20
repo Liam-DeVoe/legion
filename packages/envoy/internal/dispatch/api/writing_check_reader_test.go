@@ -13,12 +13,25 @@ import (
 
 // --- the reader rule table -------------------------------------------------------------------
 
-// proseRoutesWithNoReaderRule is every route of shapes whose request carries prose and that rules
-// gives no reader rule: the routes TestEveryProseRouteNamesItsReaderRule fails on.
+// proseDryRunRoutes names every route whose request carries prose that the writing check does
+// not read, with the reason it does not. The route guard
+// (TestEveryRouteThatTakesProseReachesTheWritingCheck), the reader rule guard
+// (TestEveryProseRouteNamesItsReaderRule) and the write path's cases
+// (TestTheWritingCheckRecordsAndWritesOnEveryProseRoute) read this one list, so a route it names
+// is exempt from each of them.
+var proseDryRunRoutes = map[string]string{
+	"POST /api/v1/issues/{key}/results/dry-run": "a result's dry run takes the record's body and writes nothing, so it has no write for the check to read and no row to keep; the record (POST /api/v1/issues/{key}/results) reads the same words when it is made",
+}
+
+// proseRoutesWithNoReaderRule is every route of shapes whose request carries prose, that the
+// check reads (proseDryRunRoutes) and that rules gives no reader rule: the routes
+// TestEveryProseRouteNamesItsReaderRule fails on.
 func proseRoutesWithNoReaderRule(shapes map[string]routeShape, rules map[string]readerRule) []string {
 	var missing []string
 	for _, name := range slices.Sorted(maps.Keys(shapes)) {
-		if _, ruled := rules[name]; requestCarriesProse(shapes[name].Request) && !ruled {
+		_, ruled := rules[name]
+		_, unread := proseDryRunRoutes[name]
+		if requestCarriesProse(shapes[name].Request) && !ruled && !unread {
 			missing = append(missing, name)
 		}
 	}
@@ -27,11 +40,26 @@ func proseRoutesWithNoReaderRule(shapes map[string]routeShape, rules map[string]
 
 // TestEveryProseRouteNamesItsReaderRule holds writingCheckReaderRules to the registry, as the
 // route guards hold the check to it: every route whose request carries prose names the rule
-// that decides its reader, the table names no route that carries none, and the send to an agent
-// and the broadcast, and those alone, are read by no person.
+// that decides its reader, but for a route the check does not read (proseDryRunRoutes), which
+// names none; the table names no route that carries none; and the send to an agent and the
+// broadcast, and those alone, are read by no person.
 func TestEveryProseRouteNamesItsReaderRule(t *testing.T) {
 	for _, name := range proseRoutesWithNoReaderRule(routeShapes, writingCheckReaderRules) {
 		t.Errorf("%s carries prose and names no reader rule: give it one in writingCheckReaderRules", name)
+	}
+	for _, name := range slices.Sorted(maps.Keys(proseDryRunRoutes)) {
+		shape, shaped := routeShapes[name]
+		_, ruled := writingCheckReaderRules[name]
+		switch {
+		case !shaped:
+			t.Errorf("proseDryRunRoutes names %s, which is no route", name)
+		case !requestCarriesProse(shape.Request):
+			t.Errorf("proseDryRunRoutes names %s, whose request carries no prose", name)
+		case ruled:
+			t.Errorf("writingCheckReaderRules names %s, which the check does not read (%s)", name, proseDryRunRoutes[name])
+		default:
+			t.Logf("%s: not read, %s", name, proseDryRunRoutes[name])
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(writingCheckReaderRules)) {
 		shape, shaped := routeShapes[name]
@@ -53,10 +81,13 @@ func TestEveryProseRouteNamesItsReaderRule(t *testing.T) {
 }
 
 // TestTheReaderRuleGuardFindsAProseRouteWithNoRule is the guard's negative control: a prose route
-// the table does not name is found, and a route that carries no prose is not.
+// the table does not name is found, and neither a route that carries no prose nor one the check
+// does not read (proseDryRunRoutes) is.
 func TestTheReaderRuleGuardFindsAProseRouteWithNoRule(t *testing.T) {
+	const dryRun = "POST /api/v1/issues/{key}/results/dry-run"
 	shapes := map[string]routeShape{
 		"POST /api/v1/issues/{key}/comments": routeShapes["POST /api/v1/issues/{key}/comments"],
+		dryRun:                               routeShapes[dryRun],
 		"POST /api/v1/unruled/comments":      {Request: commentInput{}},
 		"POST /api/v1/unruled/handoffs":      {Request: createHandoffInput{}},
 	}

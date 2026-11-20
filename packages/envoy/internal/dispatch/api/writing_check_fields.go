@@ -21,7 +21,8 @@ import (
 // by reflection, so a route that calls it reads every prose member its request carries, nested
 // ones included. TestTheProseRegistryMarksEveryRequestStringField holds the registry to every
 // request type, and TestEveryRouteThatTakesProseReachesTheWritingCheck holds every route whose
-// request carries a prose member to the check.
+// request carries a prose member to the check, but for the routes it names as not read
+// (proseDryRunRoutes): a result's dry run, which takes the record's body and writes nothing.
 
 // proseMark is what the registry says of one member.
 type proseMark struct {

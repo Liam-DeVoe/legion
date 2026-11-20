@@ -26,8 +26,15 @@ import (
 // route's layer (recordTakenWrites) inserts it once the handler answered the write 2xx, outside
 // the write's transaction, which has ended by then, and before the request ends. A write the route
 // refused after the check - a closed issue, an unknown check, a delivery never made - records
-// nothing, as it writes nothing else, and so does a call the route answers 2xx with nothing written
-// (dropWritingCheck). A failed insert is logged and fails nothing.
+// nothing, as it writes nothing else. A call that a route answers 2xx with none of the words the
+// check read written records none either, since the route drops its rows first
+// (dropWritingCheck): on POST /api/v1/messages/{id}/reply and POST /api/v1/comments/{id}/reply,
+// a call on an attempt already answered that posts nothing and an error report repeated on an
+// attempt already failed; on the three edit routes, POST /api/v1/artifacts/{id}/edits,
+// POST /api/v1/issues/{key}/artifacts/{slug}/edits and
+// POST /api/v1/projects/{key}/artifacts/{slug}/edits, a batch that leaves the document as it was;
+// and on POST /api/v1/artifacts/{id}/approval-requests, a request whose every document already
+// stands approved at its current version. A failed insert is logged and fails nothing.
 
 // The outcomes writingCheck records besides the checker's own (writingcheck.Outcome*) and the
 // actor rule's exemptions (writingcheck.Exempt*).
@@ -322,8 +329,8 @@ func (s *server) keepWritingCheck(r *http.Request, event store.WritingCheckEvent
 }
 
 // dropWritingCheck drops the rows the writing check kept for r (keepWritingCheck), for a route that
-// answers 2xx for a call that writes nothing: a reply to an attempt already answered that posts
-// nothing, and an error report repeated on an attempt already failed.
+// answers 2xx for a call that writes none of the words the check read: the calls the file's
+// header names.
 func dropWritingCheck(r *http.Request) {
 	if kept := writingCheckRowsFrom(r.Context()); kept != nil {
 		kept.events = nil
@@ -332,9 +339,15 @@ func dropWritingCheck(r *http.Request) {
 
 // recordTakenWrites is a write route's layer for the writing check's rows: it records the rows
 // the check kept for the write (keepWritingCheck) once handler answered it 2xx. A route answers
-// 2xx for a write that took place, a write the reviewer holds among them, and for a call that
-// writes nothing, which drops its rows before it answers (dropWritingCheck). A write the handler
-// refused leaves no row, as it leaves no other: a refusal leaves every table as it found it
+// 2xx for a write that took place, a write the reviewer holds among them, and six routes answer
+// it too for a call that writes none of the words the check read, which drops its rows first
+// (dropWritingCheck): the two reply routes (POST /api/v1/messages/{id}/reply,
+// POST /api/v1/comments/{id}/reply) for a call on an attempt already answered that posts nothing
+// or an error report repeated on an attempt already failed, the three edit routes (editArtifact)
+// for a batch that leaves the document as it was, and
+// POST /api/v1/artifacts/{id}/approval-requests for a request whose every document already stands
+// approved at its current version. A write the handler refused leaves no row, as it leaves no
+// other: a refusal leaves every table as it found it
 // (TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused). Every transaction of the handler
 // has ended when it returns, so the insert takes a connection of its own. It runs on a context
 // the client's going away does not cancel (outlivingTheClient), since the write it records has

@@ -786,13 +786,24 @@ the issue's messages for the reason, then close with one that points at it). The
 
 A write whose path names a text Dispatch's reviewer holds and that has not posted (an issue, an
 ask, a comment or a message) is kept by Dispatch and runs right after that text posts: Dispatch
-answers it `202` with `{id, held}` alone, `held.waits_on` naming the held text. The client reads
-no such answer as the route's payload and throws `DispatchWriteKept` (`method`, `url`, the kept
-`id` and `held`), which is no refusal and no `DispatchServiceError`. The `dispatch` command prints
-one line for it, `Kept until held text <waits_on> posts: Dispatch keeps this write as <id> and runs
-it right after that text posts.`, with `dispatch held <id>` to read it, and exits 0. A picture
-upload ahead of the command's own write that is kept fails the command, saying the picture was not
-uploaded yet, since the call's text has no address for it until it is.
+answers it `202` with `{id, held}` alone, `held.waits_on` naming the held text. Three kinds of
+write are not kept so: a new ask, comment or message on a held issue, which the reviewer holds
+under an id of its own and answers `201` in its whole shape with `held` beside it; a reply to a
+delivered message or mention, and a delivery's resend or accept; and a result's dry run
+(`heldTargetSelf`, `packages/envoy/internal/dispatch/api/held_replay.go`). The client reads no
+such `202` as the route's payload and throws `DispatchWriteKept` (`method`, `url`, the kept `id`
+and `held`), which is no refusal and no `DispatchServiceError`. Dispatch keeps an upload to a held
+issue before its keyed layer runs, so that `202` carries no `Idempotency-Key` back, and the client
+reads it as kept all the same, not as an answer of something in Dispatch's place. The `dispatch`
+command prints one line for it, `Kept until held text <waits_on> posts: Dispatch keeps this write
+as <id> and runs it right after that text posts.`, with `dispatch held <id>` to read it, and
+exits 0. `dispatch result`, `artifact` to an issue, `claim`, `claim --release` and
+`handoff-write` reach such a write, and so do `edit-ask`, `resolve-ask`, `follow --action
+unfollow` and `resolve-comment` when given the text's full id. Given a `dispatch://` reference
+those four read the text first, as `issue-update` and `follow --action follow` always do, and
+Dispatch answers a session's read of a held text `409 HELD_TEXT`, so they send no write. A
+picture upload ahead of the command's own write that is kept fails the command, saying the
+picture was not uploaded yet, since the call's text has no address for it until it is.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec

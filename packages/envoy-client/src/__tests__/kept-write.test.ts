@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
@@ -12,10 +13,18 @@ import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 // ask, a comment or a message: `heldTargets` in packages/envoy/internal/dispatch/api/
 // held_replay.go), is kept beside that text and runs right after it posts. Dispatch answers it
 // 202 with `HeldDeferred`, `{id, held}` (`holdRequest`), and not with the route's own shape. The
-// commands read that body as their own payload: `dispatch result` threw reading
-// `recorded.result.verdict`, and `dispatch artifact` and `dispatch issue-update` printed fields
-// the body does not have. Each row drives the `dispatch` command against a stub Dispatch that
-// answers so, as `dispatch-review.test.ts` does; the last rows read the client alone.
+// commands read that body as their own payload: `dispatch result` and `dispatch claim` threw a
+// TypeError reading a field the body lacks (`recorded.result.verdict`, `claim.at`), and
+// `dispatch claim --release` printed a status of `undefined`. `dispatch artifact` threw one
+// reading `result.artifact.slug`, or, once the client knew Dispatch runs its keyed layer, failed
+// as a write that may or may not have landed: an upload to a held issue is kept before that layer
+// runs (`routeHandler`, server.go), so its 202 carries no `Idempotency-Key` back, and the client
+// read it as an answer of something in Dispatch's place. Its Markdown round trip shows the client
+// the layer first. `dispatch issue-update` reads the issue before its write, and Dispatch answers
+// a session's read of a held issue 409 HELD_TEXT (`answerHeldRead`, held_routes.go), so its
+// update is never sent. Each row drives the `dispatch` command against a stub Dispatch that
+// answers as Dispatch does, as `dispatch-review.test.ts` does; the last rows read the client
+// alone.
 
 const makeDirectory = temporaryDirectories("kept-write");
 
@@ -33,26 +42,15 @@ const KEPT_LINE =
   `Kept until held text ${HELD_ISSUE} posts: Dispatch keeps this write as ${KEPT_ID} and runs ` +
   `it right after that text posts. \`dispatch held ${KEPT_ID}\` reads it.`;
 
-const ISSUE = {
-  key: HELD_ISSUE,
-  title: "Native workspace",
-  status: "todo",
-  labels: [],
-  priority: null,
-  assignee: null,
-  route: null,
-  parent: null,
-  blocked_by: [],
-  components: [],
-  repo: null,
-  resolved_repo: null,
-  closed_at: null,
-  external_links: [],
-  advances: [],
-  advances_revision: 0,
-  artifacts: [],
-  open_asks: [],
-};
+/** A picture the `message` rows attach, and what such a call prints when Dispatch keeps its
+ *  upload. */
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+function pictureKept(): string {
+  return (
+    `images: shot.png was not uploaded yet: POST http://127.0.0.1:${server.port}/api/v1/issues/DSP-1/artifacts ` +
+    `was kept as ${KEPT_ID}, and Dispatch runs it right after held text DSP-1 posts. Nothing was posted.\n`
+  );
+}
 
 const ASK_ID = "d236c23c-240b-4854-b6fe-cbae3b6868a7";
 
@@ -63,7 +61,9 @@ interface Recorded {
 
 const requests: Recorded[] = [];
 
-const kept = () => Response.json(KEPT, { status: 202 });
+/** Dispatch's answer to a write it keeps beside the held issue, with `headers`. */
+const kept = (headers: Record<string, string> = {}) =>
+  Response.json(KEPT, { status: 202, headers });
 
 const server = Bun.serve({
   port: 0,
@@ -75,24 +75,40 @@ const server = Bun.serve({
       text === "" || !type.startsWith("application/json") ? {} : JSON.parse(text);
     requests.push({ method: request.method, path: pathname });
     const route = `${request.method} ${pathname}`;
+    // Dispatch's keyed layer carries a POST's or a PATCH's key back on every answer it gives
+    // (`keyedWrites`, request_keys.go). An upload to a held issue is kept before that layer runs
+    // (`routeHandler`, server.go), so its 202 carries none.
+    const key =
+      request.method === "POST" || request.method === "PATCH"
+        ? request.headers.get(IDEMPOTENCY_KEY_HEADER)
+        : null;
+    const echo: Record<string, string> = key === null ? {} : { [IDEMPOTENCY_KEY_HEADER]: key };
     switch (route) {
+      // A session's read of a held text by its id (`answerHeldRead`, held_routes.go).
       case "GET /api/v1/issues/DSP-1":
-        return Response.json(ISSUE);
+        return Response.json(
+          {
+            error: `this text is held by the reviewer and has not posted; read it with GET /api/v1/held/${HELD_ISSUE}`,
+            code: "HELD_TEXT",
+            held_id: HELD_ISSUE,
+          },
+          { status: 409 }
+        );
       case "GET /api/v1/issues/DSP-1/artifacts":
         return Response.json([]);
       case "POST /api/v1/markdown/round-trip":
-        return Response.json({ markdown: body.markdown });
+        return Response.json({ markdown: body.markdown }, { headers: echo });
       case "POST /api/v1/issues/DSP-1/results":
-      case "POST /api/v1/issues/DSP-1/artifacts":
-      case "PATCH /api/v1/issues/DSP-1":
       case "DELETE /api/v1/issues/DSP-1/claim":
+        return kept(echo);
+      case "POST /api/v1/issues/DSP-1/artifacts":
         return kept();
       // A message and an ask on a held issue are held beside it under ids of their own, answered
       // 201 with the route's whole shape and `held` (`reviewWrite`), never kept as above.
       case "POST /api/v1/issues/DSP-1/messages":
         return Response.json(
           { id: "message-7", issue_key: HELD_ISSUE, body: body.body, held: POSTING },
-          { status: 201 }
+          { status: 201, headers: echo }
         );
       case "POST /api/v1/issues/DSP-1/asks":
         return Response.json(
@@ -110,7 +126,7 @@ const server = Bun.serve({
             created_at: "2026-11-20T09:00:00Z",
             held: POSTING,
           },
-          { status: 201 }
+          { status: 201, headers: echo }
         );
     }
     return Response.json({ error: `unexpected ${route}` }, { status: 500 });
@@ -187,6 +203,8 @@ describe("a write Dispatch keeps beside a held text", () => {
     expect(writes()).toEqual(["POST /api/v1/issues/DSP-1/results"]);
   });
 
+  // The Markdown round trip carries its key back, which shows the client that Dispatch runs its
+  // keyed layer; the kept upload carries none, and is read as kept all the same.
   test("dispatch artifact's upload to an issue prints the kept line and exits 0", async () => {
     const { code, stdout, stderr } = await run([
       "artifact",
@@ -207,24 +225,9 @@ describe("a write Dispatch keeps beside a held text", () => {
     ]);
   });
 
-  test("dispatch issue-update prints the kept line and exits 0", async () => {
-    const { code, stdout, stderr } = await run([
-      "issue-update",
-      "--issue",
-      HELD_ISSUE,
-      "--status",
-      "in_progress",
-    ]);
-
-    expect(stderr).toBe("");
-    expect(stdout).toBe(`${KEPT_LINE}\n`);
-    expect(code).toBe(0);
-    expect(writes()).toEqual(["PATCH /api/v1/issues/DSP-1"]);
-  });
-
-  // The closing reason posts first, and on a held issue it is held beside it; the close is then
-  // kept. Both are told, the reason first, in the order they were written.
-  test("dispatch issue-update names its held closing reason before the kept close, and exits 0", async () => {
+  // The update reads the issue first, and Dispatch answers a session's read of a held issue 409
+  // HELD_TEXT: the command stops there, so neither its closing reason nor its update is sent.
+  test("dispatch issue-update stops at its read of the held issue and sends no write", async () => {
     const { code, stdout, stderr } = await run([
       "issue-update",
       "--issue",
@@ -235,18 +238,12 @@ describe("a write Dispatch keeps beside a held text", () => {
       "Shipped in the native workspace release.",
     ]);
 
-    expect(stderr).toBe("");
     expect(stdout).toBe(
-      [
-        "Held until held text DSP-1 posts: message message-7 " +
-          "(dispatch://DSP-1/message/message-7), the closing reason of DSP-1. No person sees it " +
-          "until it posts. It posts after held text DSP-1. `dispatch held message-7` reads it.",
-        KEPT_LINE,
-        "",
-      ].join("\n")
+      `HELD_TEXT: this text is held by the reviewer and has not posted; read it with GET /api/v1/held/${HELD_ISSUE}\n`
     );
-    expect(code).toBe(0);
-    expect(writes()).toEqual(["POST /api/v1/issues/DSP-1/messages", "PATCH /api/v1/issues/DSP-1"]);
+    expect(stderr).toBe("");
+    expect(code).toBe(1);
+    expect(requests).toEqual([{ method: "GET", path: "/api/v1/issues/DSP-1" }]);
   });
 
   // A DELETE goes through the client's path for a PUT or a DELETE, not the write loop of a POST
@@ -263,10 +260,7 @@ describe("a write Dispatch keeps beside a held text", () => {
   // A picture is uploaded before the call's own write, which needs the picture's address: kept,
   // the picture has none yet, so the call's own write is not sent, and the call says so.
   test("a picture upload Dispatch keeps fails the call before its own write, saying it is kept", async () => {
-    writeFileSync(
-      join(stateDir, "shot.png"),
-      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-    );
+    writeFileSync(join(stateDir, "shot.png"), PNG);
 
     const { code, stdout } = await run([
       "message",
@@ -278,12 +272,36 @@ describe("a write Dispatch keeps beside a held text", () => {
       "shot.png",
     ]);
 
-    expect(stdout).toBe(
-      `images: shot.png was not uploaded yet: POST http://127.0.0.1:${server.port}/api/v1/issues/DSP-1/artifacts ` +
-        `was kept as ${KEPT_ID}, and Dispatch runs it right after held text DSP-1 posts. Nothing was posted.\n`
-    );
+    expect(stdout).toBe(pictureKept());
     expect(code).toBe(1);
     expect(writes()).toEqual(["POST /api/v1/issues/DSP-1/artifacts"]);
+  });
+
+  // The session's write of a moment before, whose answer carried its key back, has shown the
+  // client that Dispatch runs its keyed layer; the kept upload carries none, and is still read as
+  // kept.
+  test("a picture upload Dispatch keeps after the session's last write still reads as kept", async () => {
+    writeFileSync(join(stateDir, "shot.png"), PNG);
+    expect(await run(["message", "--issue", HELD_ISSUE, "--body", "First."])).toMatchObject({
+      code: 0,
+    });
+
+    const { code, stdout } = await run([
+      "message",
+      "--issue",
+      HELD_ISSUE,
+      "--body",
+      "Look.",
+      "--image",
+      "shot.png",
+    ]);
+
+    expect(stdout).toBe(pictureKept());
+    expect(code).toBe(1);
+    expect(writes()).toEqual([
+      "POST /api/v1/issues/DSP-1/messages",
+      "POST /api/v1/issues/DSP-1/artifacts",
+    ]);
   });
 
   // The reviewer's own hold of an ask is another answer: 201 with the ask's whole shape and

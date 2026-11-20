@@ -20,7 +20,8 @@ import (
 // transaction.
 
 // readerRule is how the server finds, from the record, the person who reads the prose one route
-// writes. writingCheckReaderRules gives every route the prose registry covers its rule, and
+// writes. writingCheckReaderRules gives every route the prose registry covers its rule, but for
+// a route the check does not read (a result's dry run, which writes nothing), and
 // TestEveryProseRouteNamesItsReaderRule holds it to them.
 type readerRule string
 
@@ -71,8 +72,8 @@ const (
 	readerNone readerRule = "none"
 )
 
-// writingCheckReaderRules is the reader rule of every route whose request carries prose, by
-// "<method> <pattern>".
+// writingCheckReaderRules is the reader rule of every route whose request carries prose and whose
+// words the check reads, by "<method> <pattern>".
 var writingCheckReaderRules = map[string]readerRule{
 	"POST /api/v1/issues":                                 readerNewIssue,
 	"PATCH /api/v1/issues/{key}":                          readerIssue,
@@ -81,7 +82,6 @@ var writingCheckReaderRules = map[string]readerRule{
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions": readerIssue,
 	"POST /api/v1/issues/{key}/asks":                      readerIssue,
 	"POST /api/v1/issues/{key}/results":                   readerIssue,
-	"POST /api/v1/issues/{key}/results/dry-run":           readerIssue,
 	"POST /api/v1/issues/{key}/comments":                  readerComment,
 	"POST /api/v1/issues/{key}/messages":                  readerMessage,
 

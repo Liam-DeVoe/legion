@@ -308,6 +308,13 @@ export class DispatchWriteHeld extends Error {
   }
 }
 
+/** The answer Dispatch keeps a write with (`holdRequest`): the id it keeps the write under, and
+ *  `held`, whose `waits_on` names the held text the write runs after. */
+interface KeptAnswer {
+  readonly id: string;
+  readonly held: HeldState & { readonly waits_on: string };
+}
+
 /**
  * A write Dispatch kept beside a held text its path names (an issue, an ask, a comment or a
  * message its reviewer holds, which has not posted): Dispatch answered it 202 with `HeldDeferred`,
@@ -318,17 +325,20 @@ export class DispatchWriteHeld extends Error {
  */
 export class DispatchWriteKept extends Error {
   override readonly name = "DispatchWriteKept";
+  /** The id Dispatch keeps the write under, which `GET /api/v1/held/{id}` reads. */
+  readonly id: string;
+  readonly held: KeptAnswer["held"];
 
   constructor(
     readonly method: string,
     readonly url: string,
-    /** The id Dispatch keeps the write under, which `GET /api/v1/held/{id}` reads. */
-    readonly id: string,
-    readonly held: HeldState & { readonly waits_on: string }
+    { id, held }: KeptAnswer
   ) {
     super(
       `${method} ${url} was kept as ${id}, and Dispatch runs it right after held text ${held.waits_on} posts`
     );
+    this.id = id;
+    this.held = held;
   }
 }
 
@@ -339,10 +349,7 @@ export class DispatchWriteKept extends Error {
  * it (`Holdable`). Dispatch answers every kept write `posting` with no deadline (`holdRequest`),
  * which `held` reads where its own `state` or `deadline` is not one.
  */
-function keptAnswer(
-  status: number,
-  answer: unknown
-): { readonly id: string; readonly held: HeldState & { readonly waits_on: string } } | undefined {
+function keptAnswer(status: number, answer: unknown): KeptAnswer | undefined {
   if (status !== 202 || typeof answer !== "object" || answer === null) return undefined;
   if (Object.keys(answer).length !== 2 || !("id" in answer) || !("held" in answer)) {
     return undefined;
@@ -917,8 +924,10 @@ async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAn
  *   (`foreign-2xx`): its body is empty or not JSON-typed where its status carries one (`notJson`),
  *   whatever this process knows of the layer, a captive portal's 200 page for one; or it carried no
  *   key back from a Dispatch this process knows runs the keyed layer (`layerKnown`), whose every
- *   answer to a keyed write carries the key (`keyedWrites`, request_keys.go). A 2xx whose body is
- *   not the JSON it says it is was cut short on the way (`body-malformed`).
+ *   answer to a keyed write carries the key (`keyedWrites`, request_keys.go), but for the answer
+ *   of a write Dispatch kept beside a held text (`keptAnswer`): Dispatch keeps an upload to a held
+ *   issue before that layer runs (`routeHandler`, server.go), so that 202 carries no key. A 2xx
+ *   whose body is not the JSON it says it is was cut short on the way (`body-malformed`).
  * - Two refusals are read by their codes whatever came back with them, since Dispatch makes both
  *   before any handler or its keyed layer runs: its `401 BROKER_TOKEN_NOT_ACTIVE`
  *   (`brokerTokenActor`), a dead token to present afresh where `canTellDeadToken` (the credential
@@ -934,7 +943,8 @@ function answerEvent(
   if (status >= 200 && status < 300) {
     if (answer.notJson) return "foreign-2xx";
     if (answer.malformed) return "body-malformed";
-    return !answer.echoed && layerKnown ? "foreign-2xx" : "applied";
+    if (answer.echoed || !layerKnown) return "applied";
+    return keptAnswer(status, answer.json?.value) === undefined ? "foreign-2xx" : "applied";
   }
   if (status >= 300 && status < 400) return "redirect";
   if (status === 401 && answer.code === BROKER_TOKEN_NOT_ACTIVE) {
@@ -3028,8 +3038,7 @@ export class DispatchClient {
       throw new DispatchWriteKept(
         method,
         requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING),
-        kept.id,
-        kept.held
+        kept
       );
     }
     return payload as T;

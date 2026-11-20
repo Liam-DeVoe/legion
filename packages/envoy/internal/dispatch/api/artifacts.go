@@ -1396,6 +1396,10 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			}
 			published = append(published, event)
 		}
+	} else {
+		// Such a batch writes none of the words the check read, so its 200 records no row of the
+		// check.
+		dropWritingCheck(r)
 	}
 	// The approval this edit's own version superseded, read in the edit's read phase, where that
 	// version and any carry it made are queued: a person's approval of a spec is Legion's design

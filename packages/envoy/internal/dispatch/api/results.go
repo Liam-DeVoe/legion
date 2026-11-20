@@ -145,8 +145,13 @@ type resultRequest struct {
 // a pull request of the check's own issue (comparisonReader). The answer carries the stored
 // row and the pull-request body line it implies, so every writer writes one grammar.
 func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
-	request, ok := s.readResultRequest(w, r, true)
+	request, ok := s.readResultRequest(w, r)
 	if !ok {
+		return
+	}
+	// The dry run writes nothing, so the check reads the record's words alone. readResultRequest
+	// opens no transaction, so the check still runs before any transaction, lock or write.
+	if !s.writingCheck(w, r, request.actor, request.input) {
 		return
 	}
 	// The reading resolveCheck made is the block's only while the version and digest the index
@@ -182,7 +187,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 // does not serve it answers a path it does not know 404, where it would drop a flag it does not
 // know and record the result.
 func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
-	request, ok := s.readResultRequest(w, r, false)
+	request, ok := s.readResultRequest(w, r)
 	if !ok {
 		return
 	}
@@ -193,10 +198,9 @@ func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
 }
 
 // readResultRequest decodes a result's body and judges it as far as the record goes before it
-// opens its transaction, for the record and its dry run alike. record is whether the result is
-// recorded: the writing check reads the record's words alone, since the dry run writes nothing
-// and so has no write to read and no row to keep. A refusal is written to w and answers false.
-func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request, record bool) (resultRequest, bool) {
+// opens its transaction, for the record and its dry run alike. A refusal is written to w and
+// answers false.
+func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resultRequest, bool) {
 	refused := func(err error) (resultRequest, bool) {
 		s.writeHandlerError(w, err)
 		return resultRequest{}, false
@@ -211,9 +215,6 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request, recor
 	}
 	if err := input.refusal(); err != nil {
 		return refused(err)
-	}
-	if record && !s.writingCheck(w, r, actor, input) {
-		return resultRequest{}, false
 	}
 	issueKey := r.PathValue("key")
 	pool, err := s.readyPool()
