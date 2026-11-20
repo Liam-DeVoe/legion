@@ -22,6 +22,8 @@ import {
   ReplyBlockSchema,
   SubscriptionRemovedEventPayloadSchema,
 } from "./dispatch-api";
+import { DispatchTargetedMessageDeliverySchema } from "./dispatch-api-targeted";
+import { objectShape } from "./schema-inspection.testing";
 
 /**
  * What the inbound parsers accepted, refused and kept on the day the payload types were still
@@ -1324,4 +1326,45 @@ describe("the inbound parsers read every recorded frame as they did", () => {
       expect(samples.map(disagreement).filter((found) => found !== null)).toEqual([]);
     });
   }
+});
+
+/** Each key a reading schema of the targeted-delivery fixture declares that the fixture leaves
+ *  out, by its path, with the reason. Every other declared key must be in the fixture, so a reader
+ *  that starts reading a key the fixture does not carry, or renames one, fails here by name. */
+const TARGETED_ABSENT: Record<string, string> = {
+  "event.payload.reply_body": "model.MessageEventPayload omits it on a root message",
+  "event.payload.thread_target": "model.MessageEventPayload omits it on a root message",
+  "event.payload.thread_logins": "model.MessageEventPayload omits it on a delivery frame",
+  "event.payload.body_truncated": "model.MessageEventPayload omits it when the body is whole",
+  "event.payload.payload_omitted": "the outbox sets it on a stand-in alone (outbox/batch.go)",
+};
+
+test("the targeted-delivery fixture carries every key its reading schemas declare", () => {
+  const problems: string[] = [];
+  const excused = new Set<string>();
+  const require = (schema: unknown, schemaName: string, frame: unknown, path: string) => {
+    const shape = objectShape(schema, schemaName);
+    if (shape === undefined) throw new Error(`${schemaName} is no object schema`);
+    const held = frame as Frame;
+    for (const key of Object.keys(shape)) {
+      const at = `${path}.${key}`;
+      if (key in held) continue;
+      if (TARGETED_ABSENT[at] === undefined) {
+        problems.push(`the fixture holds no ${at}, which ${schemaName} declares`);
+      } else {
+        excused.add(at);
+      }
+    }
+  };
+  const { event, delivery } = targetedDeliveryFixture;
+  require(DispatchEventSchema, "DispatchEventSchema", event, "event");
+  require(DispatchEventSchema.shape.actor, "DispatchEventSchema.actor", event.actor, "event.actor");
+  require(DispatchTargetedMessagePayloadSchema, "DispatchTargetedMessagePayloadSchema", event.payload, "event.payload");
+  require(DispatchTargetedMessageDeliverySchema, "DispatchTargetedMessageDeliverySchema", delivery, "delivery");
+  for (const at of Object.keys(TARGETED_ABSENT)) {
+    if (!excused.has(at)) {
+      problems.push(`TARGETED_ABSENT names ${at}, which the fixture holds or no schema declares`);
+    }
+  }
+  expect(problems).toEqual([]);
 });

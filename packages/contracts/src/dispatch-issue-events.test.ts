@@ -80,9 +80,9 @@ const NEVER: Record<string, Record<string, string>> = {
 
 /** The token reasons of an actor's absent keys (api.brokerTokenActor): a broker-issued token names
  *  a person or a service, never both, and a project only beside a person. */
-const SERVICE_TOKEN = "its token names a service, so no person and no project";
-const PERSON_TOKEN = "its token names a person, so no service";
-const PERSON_ONLY_TOKEN =
+const SERVICE_CALLER = "its token names a service, so no person and no project";
+const PERSON_CALLER = "its token names a person, so no service";
+const PERSON_ONLY_CALLER =
   "its token names a person and no single project, so no service and no project";
 const NO_PLACE = "its requests name no place";
 
@@ -95,19 +95,19 @@ const NO_PLACE = "its requests name no place";
  */
 const ABSENT: Record<Example, Record<string, string>> = {
   "issue-updated-every-field.json": {
-    "event.actor.owner": SERVICE_TOKEN,
-    "event.actor.project": SERVICE_TOKEN,
-    "event.payload.claim.actor.owner": SERVICE_TOKEN,
-    "event.payload.claim.actor.project": SERVICE_TOKEN,
+    "event.actor.owner": SERVICE_CALLER,
+    "event.actor.project": SERVICE_CALLER,
+    "event.payload.claim.actor.owner": SERVICE_CALLER,
+    "event.payload.claim.actor.project": SERVICE_CALLER,
   },
   "issue-claimed-every-field.json": {
-    "event.actor.service": PERSON_TOKEN,
-    "event.payload.claim.actor.service": PERSON_TOKEN,
-    "event.payload.previous_claim.actor.owner": SERVICE_TOKEN,
-    "event.payload.previous_claim.actor.project": SERVICE_TOKEN,
+    "event.actor.service": PERSON_CALLER,
+    "event.payload.claim.actor.service": PERSON_CALLER,
+    "event.payload.previous_claim.actor.owner": SERVICE_CALLER,
+    "event.payload.previous_claim.actor.project": SERVICE_CALLER,
   },
   "issue-updated-no-field-moved.json": {
-    "event.actor.service": PERSON_TOKEN,
+    "event.actor.service": PERSON_CALLER,
     "event.payload.references_changed": "the write moved no issue's edges",
     "event.payload.thread_logins": "the write moved neither the status nor the assignee",
   },
@@ -118,11 +118,11 @@ const ABSENT: Record<Example, Record<string, string>> = {
   },
   "issue-released-null-claim.json": {
     "event.actor.origin": NO_PLACE,
-    "event.actor.service": PERSON_ONLY_TOKEN,
-    "event.actor.project": PERSON_ONLY_TOKEN,
+    "event.actor.service": PERSON_ONLY_CALLER,
+    "event.actor.project": PERSON_ONLY_CALLER,
     "event.payload.previous_claim.actor.origin": NO_PLACE,
-    "event.payload.previous_claim.actor.service": PERSON_ONLY_TOKEN,
-    "event.payload.previous_claim.actor.project": PERSON_ONLY_TOKEN,
+    "event.payload.previous_claim.actor.service": PERSON_ONLY_CALLER,
+    "event.payload.previous_claim.actor.project": PERSON_ONLY_CALLER,
   },
 };
 
@@ -281,12 +281,18 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
       // model.IssueClaimEventPayload writes both with no omitempty tag, so readers must not
       // accept a retained claimed event that loses either one.
       for (const field of ["key", "reason"] as const) {
-        expect(
-          IssueClaimEventPayloadSchema.safeParse({ ...event.payload, [field]: undefined }).success
-        ).toBe(false);
-        expect(IssueClaimEventPayloadSchema.safeParse({ ...event.payload, [field]: null }).success).toBe(
-          false
-        );
+        for (const [form, value] of [
+          ["absent", undefined],
+          ["null", null],
+        ] as const) {
+          if (
+            IssueClaimEventPayloadSchema.safeParse({ ...event.payload, [field]: value }).success
+          ) {
+            problems.push(
+              `IssueClaimEventPayloadSchema takes ${file}'s payload with "${field}" ${form}, which Go never writes`
+            );
+          }
+        }
       }
     }
     const reading = (tolerant: boolean): Reading => ({
