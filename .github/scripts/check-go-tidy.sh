@@ -13,10 +13,11 @@
 # Which modules: the main modules a go command has in the directory of each `deps` and `tidy` line
 # of the fetch files under .github/go-fetch/ (`go list -m` there: every module of the nearest
 # go.work's use lines, or the one module holding that directory). Those files list what every
-# required Go job builds - each job's fetch step runs its file, and .github/scripts/
-# check-go-offline.sh refuses a required job's go step whose modules its fetch file lacks - so a
-# go.mod no such line reaches (a test's fixture under testdata, a research prototype under docs)
-# is no module a required job builds, and is not read.
+# required Go job builds - each job's fetch step runs its file, and rule 7 of
+# .github/scripts/check-go-offline.sh refuses a go command a required job's step runs whose
+# packages no deps line of a fetch before it holds (or which it cannot read, unless a reason names
+# the line that does) - so a go.mod no such line reaches (a test's fixture under testdata, a
+# research prototype under docs) is no module a required job builds, and is not read.
 #
 # Offline. This runs with GOPROXY=off, so it reads the module cache alone, and the cache must
 # hold what tidy reads, which is more than any build: tidy reads every package any file of the

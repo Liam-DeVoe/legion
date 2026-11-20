@@ -154,7 +154,18 @@
 #    says why it need not (.github/scripts/go_offline_images.py, whose header says which builds and
 #    stages it reads). A refusal names the Dockerfile, its line, and the job and step that build it.
 #
-# Rules 4, 5 and 6 are modules of their own, each runnable alone; this script calls each one's
+# 7. Each offline go command a step of a required Go job runs in its own run text loads only
+#    packages a fetch before it in the job names: a deps line of a `go-fetch.sh file` (or a
+#    `go-fetch.sh deps`) whose patterns hold its packages, with -test where it is go test or go
+#    vet, the same tags and the same GOOS, GOARCH, CGO_ENABLED and GOWORK. A command whose
+#    packages, tags or settings are not literal is refused as well. Either says why in a
+#    `# go-offline: <why>` line above it, or above its step's name. The job's fill runs the same fetch file
+#    (check-ci-filters.sh's rule 22), so a package no line covers is read from whatever an older
+#    entry holds, and fails on the run that restores the entry its own fill saved
+#    (.github/scripts/go_offline_fetched.py, whose header says what it holds and what it does not
+#    read).
+#
+# Rules 4, 5, 6 and 7 are modules of their own, each runnable alone; this script calls each one's
 # check(), adds its problems to its own and its summary to the line a clean run ends with, and an
 # UNKNOWN of any of them is this check's UNKNOWN.
 #
@@ -176,8 +187,8 @@
 set -euo pipefail
 
 # The rules' code (go_offline_sites.py, go_offline_walk.py, go_offline_restore.py, go_offline_jobs.py,
-# package_installs.py and go_offline_images.py) and the shared reading of source files (source_scan.py
-# and the source_*.py modules) sit beside this script's own file, which a test may link into a tree of
+# package_installs.py, go_offline_images.py and go_offline_fetched.py) and the shared reading of
+# source files (source_scan.py and the source_*.py modules) sit beside this script's own file, which a test may link into a tree of
 # its own: PYTHONPATH names that directory, and the scan reads the tree this script stands in.
 # PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__. Each rule adds its problems to
 # errors and a clause to the line a clean run ends with.
@@ -188,6 +199,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 <<'PY'
 import os
 import re
 
+import go_offline_fetched as fetched
 import go_offline_images as images
 import go_offline_jobs as jobs
 import go_offline_restore as restore
@@ -286,6 +298,11 @@ clauses = [f"every one of the {summary} runs with GOPROXY=off ({offline_count}),
 # the same job that restores ~/go/pkg/mod.
 pairs = restore.check(workflows, errors)
 clauses.append(f"each of the {len(pairs)} fetch steps of a required job comes after a restore of ~/go/pkg/mod")
+
+# --- 7. Each go command a step of a required Go job runs loads only packages a fetch before it names.
+held, said = fetched.check(workflows, errors)
+clauses.append(f"each of the {held} offline go commands the steps of required Go jobs run loads only packages a "
+               f"fetch before it in its job names ({said} say which fetch covers them, or why they need none)")
 
 # --- 4, 5 and 6. Every Go job of a required workflow reads the module cache alone, no required job
 # installs a package off its apt cache, and each go command of a required job's image build reads

@@ -39,14 +39,17 @@
 # required job, each fail the check naming their line, and an UNKNOWN of either is the check's. Its
 # rule 6 (go_offline_images.py): a bare go RUN in a Dockerfile a required job builds is refused at
 # its line, the mounted offline RUN passes, and a Dockerfile only another workflow builds passes,
-# with the other forms that rule's header names. A tree with no file of a language, a tree with
-# testbuild and no caller, and a tree with no ci.yaml each give UNKNOWN and exit 2.
+# with the other forms that rule's header names. Its rule 7 (go_offline_fetched.py): a go step of a
+# required Go job whose packages, tests, tags or platform no deps line of a fetch before it holds,
+# or which it cannot read, is refused unless a reason names its fetch; a /... pattern ends at a
+# nested module; a step that goes online on purpose is not read. A tree with no file of a language,
+# a tree with testbuild and no caller, and a tree with no ci.yaml each give UNKNOWN and exit 2.
 #
 # The cases live in the files this one sources, one part of the check each:
 # check-go-offline-cases-go.sh, -typescript.sh, -python.sh and -shell.sh (rule 1 in each
 # language), -reasons.sh (its file reasons), -steps.sh (rule 2), -restores.sh (rule 3), -jobs.sh
-# (rules 4 and 5) and -images.sh (rule 6). This file holds what they share, the fixtures, and the
-# cases of a scan that cannot see.
+# (rules 4 and 5), -images.sh (rule 6) and -fetched.sh (rule 7). This file holds what they share,
+# the fixtures, and the cases of a scan that cannot see.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -174,9 +177,9 @@ passes_offline() {
 
 # --- The cases, each file one part of the check ------------------------------------------------
 # Each file this sources holds the cases of one part: rule 1's sites in each language and its file
-# reasons, rule 2's steps, rule 3's restores, rules 4 and 5's calls and rule 6's image builds.
-# They share this file's fixtures and counters.
-for part in go typescript python shell reasons steps restores jobs images; do
+# reasons, rule 2's steps, rule 3's restores, rules 4 and 5's calls, rule 6's image builds and rule
+# 7's fetches. They share this file's fixtures and counters.
+for part in go typescript python shell reasons steps restores jobs images fetched; do
   # shellcheck source=/dev/null
   source "$script_dir/check-go-offline-cases-$part.sh"
 done

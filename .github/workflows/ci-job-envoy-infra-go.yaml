@@ -118,6 +118,7 @@ jobs:
       # runs once per tag set .github/scripts/go_build_tags.py reads off the module's own build
       # constraints, so a file under a tag that lands later, or under a negated one, is vetted too.
       # One darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      # go-offline: the one tag set go_build_tags.py prints (natslive,pulumilive) is fetched by go-fetch/envoy-infra-go.txt's GOOS=darwin GOARCH=arm64 deps line.
       - name: Vet envoy-infra for darwin, its live-test tags included
         run: |
           flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
@@ -142,6 +143,7 @@ jobs:
       - name: Unit test envoy-infra
         run: scripts/race-unit.sh run
         working-directory: packages/envoy/infra
+      # go-offline: go-fetch/envoy-infra-go.txt's `deps packages/envoy/infra -test -tags natslive ./core ./seed ./gcp` fetches each package of the loop's list.
       - name: Live tests of envoy-infra against nats-server (natslive)
         # The 30 m -timeout dates from when gcp's live tests built helm, nats-server, the config
         # reloader and the exporter with go install first, minutes on a cold cache; the fetch step

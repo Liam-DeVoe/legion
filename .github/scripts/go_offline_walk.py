@@ -45,7 +45,8 @@ BUILDS = {"build", "install", "run", "list", "generate"}
 FLAGS_WITH_VALUES = {"-o", "-C", "-ldflags", "-gcflags", "-asmflags", "-tags", "-run", "-skip", "-timeout", "-count",
                      "-p", "-mod", "-modfile", "-exec", "-bench", "-benchtime", "-coverprofile", "-cpuprofile",
                      "-memprofile", "-cpu", "-parallel", "-f", "-overlay", "-pkgdir", "-toolexec", "-covermode",
-                     "-coverpkg", "-outputdir", "-buildmode", "-installsuffix"}
+                     "-coverpkg", "-outputdir", "-buildmode", "-installsuffix", "-fuzz", "-fuzztime",
+                     "-fuzzminimizetime", "-shuffle", "-vet", "-blockprofile", "-mutexprofile", "-trace", "-pgo"}
 RUNNERS = (["bun", "test"], ["bunx", "playwright", "test"], ["npx", "playwright", "test"], ["bun", "x", "playwright", "test"])
 TEST_PATH = re.compile(r"\.(?:test|spec|e2e)\.[cm]?[jt]sx?$")
 REPO = "/@repo"

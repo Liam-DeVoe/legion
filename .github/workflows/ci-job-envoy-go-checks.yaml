@@ -306,6 +306,7 @@ jobs:
       # reads off the module's own build constraints, so a file under a tag that lands later, or
       # under a negated one, is vetted too rather than passed over in silence. One
       # darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      # go-offline: the one tag set go_build_tags.py prints is fetched by go-fetch/envoy-go-checks.txt's GOOS=darwin GOARCH=arm64 deps line.
       - name: Vet envoy for darwin, its tagged tests included
         run: |
           flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)

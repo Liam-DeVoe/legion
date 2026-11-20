@@ -8,6 +8,6 @@ deps packages/envoy -test ./internal/dispatch/architecture/notes/ ./internal/run
 deps packages/envoy ./internal/broker/wake ./internal/dispatch/envoy ./loadtest/listenerclient ./internal/testnats/cmd/refillrig ./loadtest
 deps packages/daemon ./internal/notify ./internal/controller
 deps packages/envoy -test ./listenerwire/ ./internal/wirecheck/ ./internal/dispatch/pmdoc/
-deps packages/envoy ./cmd/dispatch ./cmd/spec-check ./cmd/listener
+deps packages/envoy ./cmd/dispatch ./cmd/spec-check ./cmd/listener ./internal/pgmigrate/cmd/edited-migrations
 GOOS=darwin GOARCH=arm64 deps packages/envoy -test -tags gcplive,memory,modellive,moto,multiprocess,natslive,serverchange,smoke,twobuild ./...
 tools packages/envoy/loadtest/cluster/tools.txt
