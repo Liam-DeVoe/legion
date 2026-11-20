@@ -79,12 +79,14 @@ type Deps struct {
 	// which is a single-pod broker and every test that wires none. POST
 	// /v1/secrets/{name}/reread is its one route (notifyPeers, from rereadSecret and from the
 	// reread it runs after answering, rereadAfterAnswer), which explains both when it is called
-	// and why it is called from the route rather than from RefreshOne.
+	// and why it is called from the route rather than from RefreshOne. before is the live policy
+	// as it stood before this pod's own reread of name, which cmd/broker reads what that reread
+	// moved against (policy.Current.MovedByReread) for its airlock proxy's held values.
 	//
 	// It reports nothing, because the handler has nothing to do with a failure: the local reread
 	// has already succeeded and its answer stands, so whether a failed fan-out is logged, and at
 	// what level, belongs to the function cmd/broker supplies.
-	NotifyReread func(ctx context.Context, name string)
+	NotifyReread func(ctx context.Context, name string, before *policy.Set)
 	// Detached counts the work a route starts that outlives its answer, the reread run after a
 	// 202, for the stop sequence to wait on (Detached.Wait); nil counts nothing, for a mux nothing
 	// stops.

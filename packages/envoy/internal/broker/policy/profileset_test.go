@@ -642,3 +642,55 @@ func TestARereadNamesEveryNameServedFromTheValueItReads(t *testing.T) {
 		}
 	}
 }
+
+// TestARereadMovesTheNamesOfAMintedSourceOnlyWhenItMovesItsValueVersion: MovedByReread is the
+// names a reread of a name gave a new value, read against the live set as it stood before that
+// reread. For a type source each served name carries its value version (Set.ValueVersion), so a
+// reread of the source or of a profile of it that finds the version the policy held moves
+// nothing, and one that finds a new version moves every name RereadNames gives: the source and
+// each profile of it. A stored value has no version the policy lists, so its reread is the only
+// signal of a new value, and every reread of it moves every name served from it.
+func TestARereadMovesTheNamesOfAMintedSourceOnlyWhenItMovesItsValueVersion(t *testing.T) {
+	app := []string{"GITHUB_READ", appSourceName}
+	stored := []string{"STORED_TOKEN", "STORED_TOKEN_READ", "STORED_TOKEN_SECOND"}
+	for _, row := range []struct {
+		name string
+		// reread is the name reread.
+		reread string
+		// newValue is whether the store holds a new value of the App before the reread.
+		newValue bool
+		want     []string
+	}{
+		{"a minted source whose version did not move", appSourceName, false, nil},
+		{"a profile of a minted source whose version did not move", "GITHUB_READ", false, nil},
+		{"a minted source whose version moved", appSourceName, true, app},
+		{"a profile of a minted source whose version moved", "GITHUB_READ", true, app},
+		{"a stored value, which lists no version", "STORED_TOKEN", false, stored},
+		{"a profile of a stored value, which lists no version", "STORED_TOKEN_READ", false, stored},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			store := secrets.NewLocal(appSource(), policytest.Secret("STORED_TOKEN", appOwner, policy.TierAgent, "stored-v1"))
+			cur := policytest.ProfiledCurrent(t, store, policytest.ProfilesFile(
+				`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN", `+apiProxy+`}`,
+				`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": {"hosts": ["second.example.com"]}}`,
+				`{"name": "`+appSourceName+`", `+acmeRead+`}`,
+				readProfile,
+			), daemonService)
+			before := cur.Get()
+			if row.newValue {
+				// A new version of the App's value: a trailing space, which the decoder still reads.
+				store.Put(policytest.TypeSecret(appSourceName, appOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)+" "))
+			}
+			if _, err := cur.RefreshOne(t.Context(), row.reread); err != nil {
+				t.Fatalf("RefreshOne(%s): %v", row.reread, err)
+			}
+			var got []string
+			if moved := cur.MovedByReread(row.reread, before); moved != nil {
+				got = slices.Sorted(slices.Values(moved))
+			}
+			if !slices.Equal(got, row.want) {
+				t.Errorf("MovedByReread(%s) = %v; want %v", row.reread, got, row.want)
+			}
+		})
+	}
+}

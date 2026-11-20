@@ -414,28 +414,26 @@ func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
 }
 
 // TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked: a profile whose permissions the
-// installation holds none of is refused by Create before anybody is asked to approve it
-// (secrets.ErrMintEmptyCut, inside secrets.ErrMintNarrowingRefused), naming the profile and the
-// permissions it asks for, and GitHub is asked for no token: a request naming no permissions is
-// one GitHub answers with every permission the installation holds. Every GitHub profile names
-// metadata at read, which every installation GitHub lists holds, so on GitHub a cut keeps at
-// least metadata and mints, naming each permission it left out. The installation here holds
-// nothing at all, metadata included, a shape GitHub never lists: it is the one shape that reaches
-// the rule, a cut that leaves no permission is refused and sends nothing.
+// installation holds none of but metadata is refused by Create before anybody is asked to approve
+// it (secrets.ErrMintEmptyCut, inside secrets.ErrMintNarrowingRefused), naming the profile and the
+// permission it lacks, and GitHub is asked for no token. Every GitHub profile names metadata at
+// read, and every installation GitHub lists holds it, so the installation here holds that alone,
+// the shape GitHub lists: a cut that kept it would mint a token that does nothing the profile is
+// for, and the person asked would approve a grant of no use.
 func TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked(t *testing.T) {
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
-		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/proofs"], "permissions": {"administration": "write", "metadata": "read"}}`,
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	})
 	f.stand.GitHubStand = airlocktest.NewGitHubStand(airlocktest.GitHubOptions{
 		Installations: map[string]int64{standInOwner: 7},
-		Permissions:   map[string]map[string]string{standInOwner: {}},
+		Permissions:   map[string]map[string]string{standInOwner: {"metadata": "read"}},
 	})
 
 	request, err := f.create(t, "APP_KEY")
 	if !errors.Is(err, secrets.ErrMintEmptyCut) || !errors.Is(err, secrets.ErrMintNarrowingRefused) || request.ID != "" || request.RecordID != nil {
-		t.Fatalf("Create(APP_KEY) of a profile the installation holds nothing of = %+v, %v; want ErrMintEmptyCut and no request", request, err)
+		t.Fatalf("Create(APP_KEY) of a profile the installation holds nothing of but metadata = %+v, %v; want ErrMintEmptyCut and no request", request, err)
 	}
-	for _, word := range []string{"APP_KEY", "administration: write"} {
+	for _, word := range []string{"APP_KEY", "holds none of contents: read"} {
 		if !strings.Contains(err.Error(), word) {
 			t.Errorf("the refusal says %q; want it to name %q", err, word)
 		}

@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -27,6 +28,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
+	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -103,30 +107,43 @@ type airlockRereadRig struct {
 	databaseURL         string
 	db                  *pgx.Conn
 	certFile, proxyAddr string
+	// fakeSecretsFile is the broker's fake store, which writeSecrets writes and the broker reads
+	// again at each call it makes of the store.
+	fakeSecretsFile string
 }
 
 // startAirlockReread starts the rig's broker serving profiles, the whole profiles file, with each
 // of hosts resolved to rereadBoundAddress.
 func startAirlockReread(t *testing.T, profiles string, hosts ...string) *airlockRereadRig {
 	t.Helper()
+	return startAirlockRereadWith(t, airlockRereadExtras{}, profiles, hosts...)
+}
+
+// airlockRereadExtras is what a row adds to the rig's broker: entries of its fake store beside
+// AIRLOCK_TOKEN's, each one entry's JSON, and settings beside the rig's own.
+type airlockRereadExtras struct {
+	secrets []string
+	env     []string
+}
+
+// startAirlockRereadWith is startAirlockReread with extras added to the broker it starts.
+func startAirlockRereadWith(t *testing.T, extras airlockRereadExtras, profiles string, hosts ...string) *airlockRereadRig {
+	t.Helper()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	writeWhole(t, fakeSecretsFile, `{"secrets": [
-		{"name": "`+testSecretsPrefix+`airlock-token", "kms_key_id": "`+testSecretsKMSKeyARN+`",
-		 "tags": {"owner": "`+rereadService+`", "tier": "agent"}, "value": "the-real-airlock-token"}
-	]}`)
+	r := &airlockRereadRig{t: t, databaseURL: databaseURL, fakeSecretsFile: filepath.Join(t.TempDir(), "fake-secrets.json")}
+	r.writeSecrets(extras.secrets...)
 	resolve := make([]string, len(hosts))
 	for i, host := range hosts {
 		resolve[i] = host + "=" + rereadBoundAddress
 	}
 	certFile, keyFile := airlockCAFiles(t)
-	broker := startBroker(t, brokerOptions{Env: []string{
+	broker := startBroker(t, brokerOptions{Env: append([]string{
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_FAKE_SECRETS_FILE=" + r.fakeSecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + rereadPodAudience,
 		"BROKER_SERVICE_LOGINS=" + rereadService + "=" + rereadLoginAccount,
@@ -137,13 +154,22 @@ func startAirlockReread(t *testing.T, profiles string, hosts ...string) *airlock
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_AIRLOCK_TEST_RESOLVE=" + strings.Join(resolve, " "),
 		"BROKER_PROFILES_FILE=" + profilesFile(t, profiles),
-	}})
+	}, extras.env...)})
 	requireHealthy(t, broker.Addr)
-	r := &airlockRereadRig{t: t, broker: broker, databaseURL: databaseURL, certFile: certFile, proxyAddr: airlockProxyAddr(t, broker)}
+	r.broker, r.certFile, r.proxyAddr = broker, certFile, airlockProxyAddr(t, broker)
 	r.api = podBroker{t: t, base: "http://" + broker.Addr, issuer: issuer, key: podKey, audience: rereadPodAudience}
 	r.pod = r.api.enroll(r.api.logIn(rereadService, rereadLoginAccount), "airlock-pod", rereadPodAccount, "")
 	r.db = connectToBroker(t, databaseURL)
 	return r
+}
+
+// writeSecrets writes the rig's fake store whole: AIRLOCK_TOKEN, and each of extra, one entry's
+// JSON. A value of other bytes than the one before it is a new version of that secret.
+func (r *airlockRereadRig) writeSecrets(extra ...string) {
+	r.t.Helper()
+	entries := append([]string{`{"name": "` + testSecretsPrefix + `airlock-token", "kms_key_id": "` + testSecretsKMSKeyARN + `",
+		 "tags": {"owner": "` + rereadService + `", "tier": "agent"}, "value": "the-real-airlock-token"}`}, extra...)
+	writeWhole(r.t, r.fakeSecretsFile, `{"secrets": [`+strings.Join(entries, ",\n")+`]}`)
 }
 
 // proxied is a grant of name the rig's pod is granted at once, and a command's own client of it:
@@ -286,4 +312,70 @@ func TestARereadOfASourceReachesTheProxysValuesOfEachProfileOfIt(t *testing.T) {
 	r.reread("AIRLOCK_READ")
 	r.call(second, secondHost, "/v1/third")
 	r.requireReads(second, 3, "after a reread of its sibling profile, which rereads their one source")
+}
+
+// rereadAppSecret is the fake store's entry of AIRLOCK_APP, a github-app secret of the rig's
+// service at agent tier whose github-owners tag names acme-org, holding value.
+func rereadAppSecret(t *testing.T, value string) string {
+	t.Helper()
+	quoted, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return `{"name": "` + testSecretsPrefix + `airlock-app", "kms_key_id": "` + testSecretsKMSKeyARN + `",
+		 "tags": {"owner": "` + rereadService + `", "tier": "agent", "` + policy.TagType + `": "` + policy.TypeGitHubApp + `", "` + policy.TagGitHubOwners + `": "acme-org"},
+		 "value": ` + string(quoted) + `}`
+}
+
+// TestARereadOfAGitHubAppSourceDropsItsProfilesTokensOnlyWhenItMovedItsValue: a proxied GitHub
+// profile's held value is an installation token the proxy minted from its source's stored App
+// key, so a reread of the source through the public route drops it only when the reread moved
+// the source's value version (policy.Current.MovedByReread). A reread that finds the value as the
+// broker held it leaves the proxy spending the token it holds: no read of the grant's values and
+// no token request to GitHub. A reread that finds a new version of the value has the proxy read
+// the grant's values again, which mints from the new one.
+func TestARereadOfAGitHubAppSourceDropsItsProfilesTokensOnlyWhenItMovedItsValue(t *testing.T) {
+	const boundHost = "app.airlock.test"
+	service, err := airlocktest.NewService(airlocktest.ServiceOptions{Plain: true})
+	if err != nil {
+		t.Fatalf("start the GitHub stand-in: %v", err)
+	}
+	t.Cleanup(service.Close)
+	service.AnswerWith(airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
+	tokenRequests := func() int {
+		asked := 0
+		for _, seen := range service.Requests() {
+			if seen.Method == http.MethodPost && strings.HasSuffix(seen.Path, "/access_tokens") {
+				asked++
+			}
+		}
+		return asked
+	}
+	value := policytest.TypeValue(policy.TypeGitHubApp)
+	r := startAirlockRereadWith(t, airlockRereadExtras{
+		secrets: []string{rereadAppSecret(t, value)},
+		env:     []string{"BROKER_AIRLOCK_TEST_GITHUB_API_BASE=" + service.URL()},
+	}, `{"profiles": [{"name": "AIRLOCK_APP_READ", "source": "AIRLOCK_APP",
+		"github": {"accounts": ["acme-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"},
+		"proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}}]}`, boundHost)
+	app := r.grant("AIRLOCK_APP_READ")
+	r.call(app, boundHost, "/v1/first")
+	r.requireReads(app, 1, "for its first request")
+	minted := tokenRequests()
+
+	r.reread("AIRLOCK_APP")
+	r.call(app, boundHost, "/v1/second")
+	r.requireReads(app, 1, "after a reread that found the App's value as the broker held it: the token the proxy holds is still the one that value mints")
+	if asked := tokenRequests(); asked != minted {
+		t.Fatalf("GitHub was asked for %d tokens after that reread; want none: the proxy spends the token it holds", asked-minted)
+	}
+
+	// A new version of the App's value (a trailing space, which the decoder still reads).
+	r.writeSecrets(rereadAppSecret(t, value+" "))
+	r.reread("AIRLOCK_APP")
+	r.call(app, boundHost, "/v1/third")
+	r.requireReads(app, 2, "after a reread that found a new version of the App's value")
+	if asked := tokenRequests(); asked != minted+1 {
+		t.Fatalf("GitHub was asked for %d tokens after that reread; want one, the proxy's mint from the new value", asked-minted)
+	}
 }

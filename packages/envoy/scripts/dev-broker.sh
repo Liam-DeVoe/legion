@@ -841,7 +841,8 @@ dev-broker: ready.
   $GITHUB_READ_PROFILE and $GITHUB_ADMIN_READ_PROFILE, each $GITHUB_OWNER's bare token behind the proxy, for GET
   and HEAD at $GITHUB_PROXIED_URL alone. The broker asks GitHub for each profile's permissions cut
   to what the installation holds, names what the cut left out in the release (github_left_out)
-  and in its log, and refuses a release whose cut leaves nothing (PROFILE_MINT_REFUSED).
+  and in its log, and refuses a release whose cut leaves nothing but metadata of a profile that
+  asks for more (PROFILE_MINT_REFUSED).
   Drive it with agent-secrets and agent-secrets-helper in another shell;
   press Ctrl-C here to stop the broker, its issuer, its proxy's front and the stand-ins.
 

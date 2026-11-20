@@ -47,7 +47,9 @@ type GitHubOptions struct {
 	// and its level. The installations listing names it, and the token route refuses a request
 	// naming a permission the owner's map does not hold at that level or above, as GitHub does.
 	// An owner it has no entry for, and every owner while it is nil, holds
-	// standInGitHubPermissions.
+	// standInGitHubPermissions. Every installation GitHub lists holds metadata at read, so an
+	// installation of the shape GitHub lists names it: one that holds nothing else is how a test
+	// drives the empty cut (secrets' emptyCut).
 	Permissions map[string]map[string]string
 }
 

@@ -189,7 +189,8 @@ with those and `administration`, `members` and `organization_administration`.
 The broker asks GitHub for each profile's permissions cut to what the App's installation holds,
 names what the cut left out in the release's `github_left_out` and in one log line for each
 entry, `cipherd: a profile's permission was left out, since the installation does not hold it`,
-and refuses a release whose cut leaves nothing, `PROFILE_MINT_REFUSED`.
+and refuses a release whose cut leaves nothing but `metadata` of a profile that asks for more,
+`PROFILE_MINT_REFUSED`.
 The stand's own map of what each installation holds leaves out `issues`, `workflows` and
 `statuses` at write, so a release of `DEMO_GITHUB_APP` here names those three.
 

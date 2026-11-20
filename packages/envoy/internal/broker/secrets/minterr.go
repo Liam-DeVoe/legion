@@ -116,10 +116,10 @@ var (
 	// refusal that is about the account alone is ErrMintNoInstallation.
 	ErrMintRefused = errors.New("the upstream refused the mint")
 	// ErrMintNarrowingRefused: the profile's scope in effect for the release cannot be served: its
-	// permissions, cut to what an installation holds, leave none (ErrMintEmptyCut); it names
-	// repositories, and an account in effect holds none of them; it is a bare token of more than one
-	// account; or GitHub answered its token request 422, which it does for a repository the
-	// installation does not reach (a misspelled name among them) or a permission it does not
+	// permissions, cut to what an installation holds, leave none but metadata (ErrMintEmptyCut); it
+	// names repositories, and an account in effect holds none of them; it is a bare token of more
+	// than one account; or GitHub answered its token request 422, which it does for a repository
+	// the installation does not reach (a misspelled name among them) or a permission it does not
 	// hold. The caller names another profile or a target, or the profiles file changes; neither
 	// the App nor the secret is at fault. Its name and its words are the ones it had for the
 	// narrowing a caller once asked for, which a released client still matches
@@ -141,13 +141,15 @@ var (
 )
 
 // ErrMintEmptyCut is the refusal of a profile whose permissions, cut to what an installation holds,
-// leave none: GitHub answers a token request naming no permissions with every permission the
-// installation holds, so the minter asks GitHub for no token at all. It is no class of its own:
-// it wraps ErrMintNarrowingRefused, which MintErrorClass reads, and it exists because the broker's
-// check before an approval must tell it from GitHub's 422: a search for the one repository GitHub
-// refused would read an empty cut, which every probe meets again, as the first repository it
-// asks about (requests' narrowingCause).
-var ErrMintEmptyCut = fmt.Errorf("%w: the profile's permissions, cut to what the installation holds, leave none", ErrMintNarrowingRefused)
+// leave none but metadata where it names more (GitHubApp.Mint's emptyCut): GitHub answers a token
+// request naming no permissions with every permission the installation holds, and grants metadata
+// with every token, which every installation it lists holds, so a token of metadata alone does
+// nothing the profile is for; the minter asks GitHub for no token at all. It is no class of its
+// own: it wraps ErrMintNarrowingRefused, which MintErrorClass reads, and it exists because the
+// broker's check before an approval must tell it from GitHub's 422: a search for the one
+// repository GitHub refused would read an empty cut, which every probe meets again, as the first
+// repository it asks about (requests' narrowingCause).
+var ErrMintEmptyCut = fmt.Errorf("%w: the profile's permissions, cut to what the installation holds, leave none but metadata", ErrMintNarrowingRefused)
 
 // ErrMintSeveralInstallations is the refusal of a value-token profile whose one account the App
 // has more than one installation on, logins that differ only in case, which GitHub compares as
