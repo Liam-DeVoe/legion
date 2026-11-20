@@ -726,9 +726,11 @@ catch-all write route (`^gh api `) answered a success that changed nothing, whic
 thread comment and was no review submit; no request of an agent that the run's own Dispatch server
 answered with an error, 4xx or 5xx, by the server's own line of it in `<run>/logs/dispatch.log`,
 unless `health.ts`'s `DISPATCH_DECLARED` declares that answer for the scenario and the agent's role
-(the agent booted last before the request began, by the opening line each daemon stand-in writes
-before its agent starts; `HANDOFF_NOT_FOUND` for the `plan` handoff, which no world records, is
-declared for every role, and for the `review` handoff for reviewer-text-findings' reviewer; a run
+or it is `EVERY_AGENT_DECLARED`, the one answer every agent of every run may meet (the agent booted
+last before the request began, by the opening line each daemon stand-in writes before its agent
+starts; `HANDOFF_NOT_FOUND` for the `review` handoff is declared for reviewer-text-findings'
+reviewer, and Dispatch's 403 `OAUTH_SCOPE_REQUIRED` to `dispatch send-to-agent`, which production
+gives every session of the shared agent token, for every agent; a run
 with no such log is unhealthy); the run's GitHub stand-in answered as GitHub does, by its own log,
 `<run>/logs/github.log` (no request it refused or holds no route of, no status GitHub does not
 give, and a worker world's log kept); every push of the pull request's branch was stored as

@@ -4582,6 +4582,45 @@ describe("health", () => {
     expect(verdict(stdout, messaging)).toBe("threads-closed-correct-base-14  healthy");
   });
 
+  // Catches: production's 403 to `dispatch send-to-agent` declared for some scenarios and roles
+  // alone, where production gives it every session of the shared agent token, whatever its
+  // scenario and role: threads-closed's implementer, of a scenario that declares nothing for any
+  // role, and reviewer-text-findings' reviewer, whose role declares another answer.
+  test("Dispatch's 403 to send-to-agent is healthy for every role of every scenario", () => {
+    const implementing = run("threads-closed-code-defect-head-80", [[]], {
+      dispatch: [
+        served(
+          "2026-11-13T17:50:30.000Z",
+          "POST",
+          "/api/v1/agents/{session_id}/messages",
+          "/api/v1/agents/01a1fa6a-91d9-730e-8cb2-d7c4a0372466/messages",
+          403
+        ),
+      ],
+    });
+    const reviewing = run(
+      "reviewer-text-findings-defect-head-80",
+      [[complete(200, undefined, "reviewer")]],
+      {
+        dispatch: [
+          served(
+            "2026-11-13T17:50:30.000Z",
+            "POST",
+            "/api/v1/agents/{session_id}/messages",
+            "/api/v1/agents/01a1fa6a-91d9-730e-8cb2-d7c4a0372466/messages",
+            403
+          ),
+        ],
+      }
+    );
+    const runs = [implementing, reviewing];
+    const { stdout } = health(...runs);
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-code-defect-head-80  healthy",
+      "reviewer-text-findings-defect-head-80  healthy",
+    ]);
+  });
+
   // Catches: a run that reached another run's directory measured as its own: the 2026-11-14
   // agents, refused every push, read the pointer file of a sibling in the same runs directory,
   // and of a run of another batch. Any agent's transcript counts, a later half's too.

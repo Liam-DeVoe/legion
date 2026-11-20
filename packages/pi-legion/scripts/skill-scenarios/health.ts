@@ -131,10 +131,10 @@
  *      from the wrong checkout explains every rule after it;
  *  16. Dispatch: no request of an agent of the run that the run's own Dispatch server answered
  *      with an error, 4xx or 5xx, by the server's own line of it (<run>/logs/dispatch.log), unless
- *      the scenario declares that answer for the agent's role (DISPATCH_DECLARED,
- *      `dispatchUndeclared`). A request is the agent's whose daemon stand-in opened last before the
- *      request began (`agentBoots`); a run with no such log is unhealthy. It is read right after
- *      rule 7;
+ *      the scenario declares that answer for the agent's role (DISPATCH_DECLARED) or it is the
+ *      answer every agent of every run may meet (EVERY_AGENT_DECLARED, `dispatchUndeclared`). A
+ *      request is the agent's whose daemon stand-in opened last before the request began
+ *      (`agentBoots`); a run with no such log is unhealthy. It is read right after rule 7;
  *  17. names: a word of the measurement an agent of the run says, in its own text or thinking,
  *      makes the run unhealthy only where an input held it before any agent of the run wrote it
  *      (`namesSaid`, the leak test the tester's reader uses): the run's prompt or system
@@ -1043,15 +1043,29 @@ type DispatchRequest = z.infer<typeof DispatchRequest>;
  * completion reports (packages/pi-shared/src/handoff-record.ts, `findHandoffReport`). */
 const noHandoff = (phase: string) => `GET /api/v1/issues/{key}/handoffs/${phase}/latest 404`;
 
+/** The error answer of Dispatch every agent of every run may meet, whatever its scenario and its
+ * role, beside those DISPATCH_DECLARED declares for one: OAUTH_SCOPE_REQUIRED, Dispatch's 403 to
+ * `dispatch send-to-agent` from a session of the shared agent token. The command posts to the
+ * session's conversation (packages/envoy-client/src/dispatch-http.ts, `agentMessage`), a route
+ * that needs the `person` scope (packages/envoy/internal/dispatch/api/routes_table.go,
+ * `routeScopes`), which that token does not hold; the server's line names that route, with the
+ * recipient's id in the path. Each agent of a run may message another session, and runs under the
+ * world's shared agent token, as a Legion pod's agents run under production's, and production
+ * gives that session the same 403: the tester's own pod ran `dispatch send-to-agent` under the
+ * shared token and was answered 403 OAUTH_SCOPE_REQUIRED (2026-11-20T19:53:57Z). INFRA-764's
+ * round 27 at efea8554 met it: the reviewer of threads-closed-correct-base-1 messaged the
+ * implementer that way. No other answer of that route is declared. */
+const EVERY_AGENT_DECLARED = "POST /api/v1/agents/{session_id}/messages 403";
+
 /** The error answers of Dispatch each scenario provokes on purpose, or that a correct agent meets
  * in it, by the role that meets them, each `<method> <path> <status>` with `{<name>}` for a path
- * segment of any value; every other error answer of the run's Dispatch to an agent is unhealthy
- * (rule 16). The server's line keeps the status of an answer and not the code its body carried,
- * so a declaration names a path whose status says which answer it was. Declared:
- *   - HANDOFF_NOT_FOUND for the newest `review` handoff, for the reviewer of
- *     reviewer-text-findings: its world records no review before the reviewer writes its own, and
- *     the reviewer reads that phase first, as the skill has it, and at a completion made before
- *     its own write, which the plugin reads it for.
+ * segment of any value; every other error answer of the run's Dispatch to an agent but
+ * EVERY_AGENT_DECLARED is unhealthy (rule 16). The server's line keeps the status of an answer
+ * and not the code its body carried, so a declaration names a path whose status says which answer
+ * it was. Declared: HANDOFF_NOT_FOUND for the newest `review` handoff, for the reviewer of
+ * reviewer-text-findings: its world records no review before the reviewer writes its own, and the
+ * reviewer reads that phase first, as the skill has it, and at a completion made before its own
+ * write, which the plugin reads it for.
  * Not declared: HANDOFF_NOT_FOUND for the `plan`, `implement` and `test` handoffs, which every
  * worker world records before its first agent (seed.ts's plan, implement-handoff and
  * tester-result), or for threads-closed's `review`, which its world records too (review-handoff):
@@ -1064,7 +1078,8 @@ const DISPATCH_DECLARED: Readonly<Record<string, Readonly<Record<string, readonl
   "reviewer-text-findings": { reviewer: [noHandoff("review")] },
 };
 
-/** Whether `declared`, an entry of DISPATCH_DECLARED, is the answer the server gave `request`. */
+/** Whether `declared`, EVERY_AGENT_DECLARED or an entry of DISPATCH_DECLARED, is the answer the
+ * server gave `request`. */
 function declares(declared: string, request: DispatchRequest): boolean {
   const [method, pattern = "", status] = declared.split(" ");
   const segments = pattern.split("/");
@@ -1211,15 +1226,15 @@ function agentBoots(run: Run): { readonly at: number; readonly role: string | un
 }
 
 /** Rule 16: the first request of the run's Dispatch log (DISPATCH_LOG) that the server answered
- * with an error, 4xx or 5xx, which DISPATCH_DECLARED does not declare for the scenario and the
- * role of the agent that made it: the agent booted last before the request began, its line's time
- * less its elapsed time (`agentBoots`). rig.sh runs the agents one after another and seeds the
- * world before the first and reads it back after the last with seed.ts, which takes no answer that
- * is not 2xx, so every error answer between two boots is that agent's, its plugins' included. One
- * before the first boot, or after a boot past the roles the run's boot record boots, is no role's,
- * and no declaration takes it. A run with no log is unhealthy: every run health reads has a
- * Dispatch of its own, started with that log, so whether Dispatch refused an agent of the run is
- * unknown. */
+ * with an error, 4xx or 5xx, which neither EVERY_AGENT_DECLARED nor DISPATCH_DECLARED for the
+ * scenario and the role of the agent that made it declares: the agent booted last before the
+ * request began, its line's time less its elapsed time (`agentBoots`). rig.sh runs the agents one
+ * after another and seeds the world before the first and reads it back after the last with
+ * seed.ts, which takes no answer that is not 2xx, so every error answer between two boots is that
+ * agent's, its plugins' included. One before the first boot, or after a boot past the roles the
+ * run's boot record boots, is no role's, and no declaration takes it. A run with no log is
+ * unhealthy: every run health reads has a Dispatch of its own, started with that log, so whether
+ * Dispatch refused an agent of the run is unknown. */
 function dispatchUndeclared(run: Run): string | undefined {
   const file = path.join(run.dir, DISPATCH_LOG);
   if (!existsSync(file))
@@ -1237,7 +1252,11 @@ function dispatchUndeclared(run: Run): string | undefined {
     if (request.status < 400) continue;
     const began = Date.parse(request.time) - request.elapsed_ms;
     const boot = boots.findLast((one) => one.at <= began);
-    const declared = DISPATCH_DECLARED[run.scenario]?.[boot?.role ?? ""] ?? [];
+    const role = boot?.role;
+    const declared =
+      role === undefined
+        ? []
+        : [EVERY_AGENT_DECLARED, ...(DISPATCH_DECLARED[run.scenario]?.[role] ?? [])];
     if (declared.some((answer) => declares(answer, request))) continue;
     const call = `${DISPATCH_LOG}:${index + 1}, ${request.method} ${request.path}`;
     if (boot?.role === undefined)
