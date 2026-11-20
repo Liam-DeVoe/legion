@@ -43,7 +43,7 @@ func requireCalloutRequests(t *testing.T, url string, keys testnats.CalloutKeys,
 		_ = msg.Respond(nil)
 	})
 	require.NoError(t, err)
-	require.NoError(t, service.Flush())
+	require.NoError(t, service.FlushWithContext(testnats.Context(t)))
 
 	unknown, err := testnats.ConnectSeed(t, url, "")
 	if err == nil {
@@ -58,6 +58,6 @@ func requireCalloutRequests(t *testing.T, url string, keys testnats.CalloutKeys,
 	static, err := testnats.ConnectSeed(t, url, staticSeed)
 	require.NoError(t, err, "a listed static user is admitted by the server alone")
 	static.Close()
-	require.NoError(t, service.Flush())
+	require.NoError(t, service.FlushWithContext(testnats.Context(t)))
 	require.EqualValues(t, 1, requests.Load(), "the static user's connection sent the service a request")
 }

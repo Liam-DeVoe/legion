@@ -46,6 +46,25 @@ func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	}
 }
 
+// noDeadline is t as testwait sees a test binary run under -timeout 0: with no deadline.
+type noDeadline struct{ testing.TB }
+
+func (noDeadline) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+// Under -timeout 0 the test binary has no deadline, so testwait.Context has none, and nats.go
+// refuses a flush on a context with none. Context refuses nothing there: the flush on it is made.
+func TestAFlushOnContextIsMadeWhenTheBinaryHasNoDeadline(t *testing.T) {
+	conn := Connect(t, URL(t))
+	defer conn.Close()
+	timeless := noDeadline{t}
+	if err := conn.FlushWithContext(testwait.Context(timeless)); !errors.Is(err, natsgo.ErrNoDeadlineContext) {
+		t.Fatalf("a flush on testwait's context under no deadline: %v, want nats.go's refusal %v, which Context is there to spare", err, natsgo.ErrNoDeadlineContext)
+	}
+	if err := conn.FlushWithContext(Context(timeless)); err != nil {
+		t.Fatalf("a flush on Context under no deadline: %v, want it made", err)
+	}
+}
+
 // A create right after a stream delete can meet nats-server still removing the account's streams
 // directory, and is answered with the store failure; RecreateKeyValue tries it again. Every other
 // answer is the test's own failure and must not be retried into a slower one or a pass.
@@ -462,11 +481,13 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 	}
 
 	gate.Open()
-	nc, err := natsgo.Connect(gate.URL(), natsgo.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect through the reopened gate at %s: %v", gate.URL(), err)
-	}
-	nc.Close()
+	testwait.Until(t, fmt.Sprintf("a connection through the reopened gate at %s", gate.URL()), func() (dialAttempt, bool) {
+		nc, err := natsgo.Connect(gate.URL(), natsgo.NoReconnect())
+		if err == nil {
+			nc.Close()
+		}
+		return dialAttempt{conn: nc, err: err}, err == nil
+	})
 }
 
 // Terminate ends the server for good and gives up the port its URL named, so nothing answers there
@@ -643,7 +664,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	if err := conn.PublishMsg(message); err != nil {
 		t.Fatalf("publish the trace-only message: %v", err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the trace-only message: %v", err)
 	}
 	if !strings.Contains(server.Log(), `Destination "not..a.subject" is not valid`) {
@@ -677,7 +698,7 @@ func TestARestartServesItsNewConfiguration(t *testing.T) {
 		if _, err := conn.SubscribeSync("granted.subject"); err != nil {
 			t.Fatalf("subscribe: %v", err)
 		}
-		if err := conn.Flush(); err != nil {
+		if err := conn.FlushWithContext(Context(t)); err != nil {
 			t.Fatalf("flush the subscription: %v", err)
 		}
 		return conn.LastError()
@@ -867,17 +888,14 @@ func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
 // envoyRoot is the module's directory, packages/envoy, from this package's own.
 const envoyRoot = "../.."
 
-// thisPackage is the natslive half of this rig, in image.go and image_test.go, which an untagged
-// build does not see at all.
-const thisPackage = "github.com/sjawhar/envoy/internal/testnats"
-
-// containerRigs are the packages of this module that may reach testcontainers: this rig, and the
-// two whose containers are not NATS and are not this issue's (internal/testpg runs pgvector,
-// internal/tests3 SeaweedFS). Every other package is a finding, whichever testcontainers package
-// it imports: modules/nats is the obvious way to start a NATS container, and
-// testcontainers.Run(ctx, testnats.Image) is the one that needs no such import.
+// containerRigs are the packages of this module that may reach testcontainers in an untagged build:
+// the two whose containers are not NATS and are not this issue's (internal/testpg runs pgvector,
+// internal/tests3 SeaweedFS). This rig is not among them: its container half (image.go,
+// callout_image.go) is built only under natslive, so an untagged go list reads no testcontainers
+// import of it, and one there means that half lost its tag. Every other package is a finding,
+// whichever testcontainers package it imports: modules/nats is the obvious way to start a NATS
+// container, and testcontainers.Run(ctx, testnats.Image) is the one that needs no such import.
 var containerRigs = []string{
-	thisPackage,
 	"github.com/sjawhar/envoy/internal/testpg",
 	"github.com/sjawhar/envoy/internal/tests3",
 }

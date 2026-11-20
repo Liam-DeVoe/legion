@@ -26,6 +26,7 @@
 package testnats
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -1000,6 +1001,24 @@ func MaxWait(t testing.TB) natsgo.JSOpt {
 		return natsgo.MaxWait(max(time.Until(deadline), time.Millisecond))
 	}
 	return natsgo.MaxWait(unbounded)
+}
+
+// Context is the context a test's call to nats.go takes, a flush's among them
+// (conn.FlushWithContext(testnats.Context(t))): testwait.Context(t), whose deadline is the test
+// binary's less testwait's margin, when the binary has a deadline. Under -timeout 0
+// testwait.Context has none, and nats.go refuses a flush whose context reports no deadline
+// (nats.ErrNoDeadlineContext), so the flush would fail correct code there. So with no deadline it
+// is testwait's context under a deadline unbounded off, the farthest a time.Duration reaches:
+// nats.go is shown a deadline, as it requires, and the deadline bounds nothing a test can reach,
+// so the call waits for its answer as every wait under -timeout 0 does.
+func Context(t testing.TB) context.Context {
+	ctx := testwait.Context(t)
+	if _, bounded := ctx.Deadline(); bounded {
+		return ctx
+	}
+	far, cancel := context.WithDeadline(ctx, time.Now().Add(unbounded))
+	t.Cleanup(cancel)
+	return far
 }
 
 // waitForJetStream retries a real JetStream operation rather than trusting a successful core-NATS

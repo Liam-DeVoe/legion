@@ -13,7 +13,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenfd"
@@ -110,7 +109,10 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial %s: %v\n%s", held.Addr, err, child.Output.String())
 	}
-	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	// The child's answer is bounded by the binary's deadline less testwait's margin, so a late answer
+	// costs the row time, and one that never comes fails the read below by name.
+	bound, _ := testwait.Context(t).Deadline()
+	if err := conn.SetDeadline(bound); err != nil {
 		t.Fatal(err)
 	}
 	answer, err := bufio.NewReader(conn).ReadString('\n')

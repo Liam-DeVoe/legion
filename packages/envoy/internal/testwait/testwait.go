@@ -268,11 +268,18 @@ func Quiet[T any](t testing.TB, what string, ch <-chan T, d time.Duration, why s
 // text. Before m.Run the command line is not parsed yet, so InMain parses it, as testing asks of a
 // TestMain that reads a flag and as m.Run would.
 func InMain(what string, holds func() bool) error {
+	return InHelper("TestMain", what, holds)
+}
+
+// InHelper is InMain for a wait in a helper that has no t because its callers hand it none: its
+// give-up text names helper where InMain's names TestMain ("testwait: <helper>: gave up waiting
+// for <what> …"), and its bound and its parse of the command line are InMain's.
+func InHelper(helper, what string, holds func() bool) error {
 	end, bounded := mainGiveUpAt()
 	if asked(end, bounded, holds) {
 		return nil
 	}
-	return errors.New(announce("TestMain", what, nil))
+	return errors.New(announce(helper, what, nil))
 }
 
 // requireWhy fails t when why says nothing: a span with no reason is a sleep.

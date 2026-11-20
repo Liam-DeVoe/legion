@@ -77,12 +77,30 @@ func TestAThreeCopyStreamKeepsALeaderAndTakesAPublishWithOneMemberStopped(t *tes
 func connectCluster(t *testing.T, cluster *Cluster) *natsgo.Conn {
 	t.Helper()
 	Connect(t, cluster.URL()).Close()
-	conn, err := natsgo.Connect(cluster.URL(), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(reconnectWait))
-	if err != nil {
-		t.Fatalf("connect to the cluster: %v", err)
-	}
-	t.Cleanup(conn.Close)
-	return conn
+	return dialCluster(t, cluster, "a connection to the cluster", func(*natsgo.Conn) bool { return true },
+		natsgo.MaxReconnects(-1), natsgo.ReconnectWait(reconnectWait))
+}
+
+// dialCluster dials cluster's server list with options until a dial connects and connected holds
+// of its connection, closing each other connection, and returns that one, closed at the test's
+// end. A dial that fails or lands elsewhere is made again by the shared wait, as Connect's is, so
+// a dial that nats.go's own two seconds ran out on costs the test time and not its result.
+func dialCluster(t *testing.T, cluster *Cluster, what string, connected func(*natsgo.Conn) bool, options ...natsgo.Option) *natsgo.Conn {
+	t.Helper()
+	dial := testwait.Until(t, what, func() (dialAttempt, bool) {
+		conn, err := natsgo.Connect(cluster.URL(), options...)
+		if err != nil {
+			return dialAttempt{err: err}, false
+		}
+		if !connected(conn) {
+			name := conn.ConnectedServerName()
+			conn.Close()
+			return dialAttempt{err: fmt.Errorf("connected to %q", name)}, false
+		}
+		return dialAttempt{conn: conn}, true
+	})
+	t.Cleanup(dial.conn.Close)
+	return dial.conn
 }
 
 // reconnectWait is nats.go's own wait between a client's reconnect attempts, shortened from its
@@ -96,18 +114,14 @@ const reconnectWait = 100 * time.Millisecond
 // advertise none of their own.
 func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 	cluster := StartCluster(t, 3)
-	conn, err := natsgo.Connect(cluster.URL(),
+	// The client is on the first URL's member, as DontRandomize dials the list in order; a dial that
+	// ran out on it before landing on another is made again.
+	conn := dialCluster(t, cluster, fmt.Sprintf("a connection to the first URL's member %s", cluster.Name(0)),
+		func(conn *natsgo.Conn) bool { return conn.ConnectedServerName() == cluster.Name(0) },
 		natsgo.DontRandomize(),
 		natsgo.ReconnectWait(reconnectWait),
 		natsgo.MaxReconnects(-1),
 	)
-	if err != nil {
-		t.Fatalf("connect to the cluster: %v", err)
-	}
-	t.Cleanup(conn.Close)
-	if got := conn.ConnectedServerName(); got != cluster.Name(0) {
-		t.Fatalf("the client is connected to %q, want the first URL's member %q", got, cluster.Name(0))
-	}
 	if discovered := conn.DiscoveredServers(); len(discovered) != 0 {
 		t.Fatalf("the members advertised %v to the client, want no URL beyond the ones it was given", discovered)
 	}

@@ -16,24 +16,35 @@ import (
 )
 
 // proxiedClient connects to the proxy's URL as a deployed client does, reconnecting for as long as
-// the test runs, and reports each disconnect and reconnect on the returned channels.
+// the test runs, and reports each disconnect and reconnect on the returned channels. A dial that
+// fails is made again by the shared wait, as Connect's is.
 func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected, reconnected <-chan struct{}) {
 	t.Helper()
 	down, up := make(chan struct{}, 8), make(chan struct{}, 8)
-	conn, err := natsgo.Connect(proxy.URL(),
-		natsgo.MaxReconnects(-1),
-		// nats.go's own wait between reconnect attempts, shortened from its two seconds so a test
-		// that waits for a reconnect is not held by it; no verdict here rests on an attempt not
-		// being made within it.
-		natsgo.ReconnectWait(50*time.Millisecond),
-		natsgo.DisconnectErrHandler(func(*natsgo.Conn, error) { down <- struct{}{} }),
-		natsgo.ReconnectHandler(func(*natsgo.Conn) { up <- struct{}{} }),
-	)
-	if err != nil {
-		t.Fatalf("connect through the proxy: %v", err)
+	dial := testwait.Until(t, fmt.Sprintf("a connection through the proxy at %s", proxy.URL()), func() (dialAttempt, bool) {
+		conn, err := natsgo.Connect(proxy.URL(),
+			natsgo.MaxReconnects(-1),
+			// nats.go's own wait between reconnect attempts, shortened from its two seconds so a test
+			// that waits for a reconnect is not held by it; no verdict here rests on an attempt not
+			// being made within it.
+			natsgo.ReconnectWait(50*time.Millisecond),
+			natsgo.DisconnectErrHandler(func(*natsgo.Conn, error) { down <- struct{}{} }),
+			natsgo.ReconnectHandler(func(*natsgo.Conn) { up <- struct{}{} }),
+		)
+		return dialAttempt{conn: conn, err: err}, err == nil
+	})
+	t.Cleanup(dial.conn.Close)
+	return dial.conn, down, up
+}
+
+// binaryWait is what is left of the test binary's deadline less testwait's margin, and no bound a
+// test can reach under -timeout 0: a dial given it as its timeout ends by its server's answer and
+// not by a timer of its own.
+func binaryWait(t *testing.T) time.Duration {
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		return max(time.Until(deadline), time.Millisecond)
 	}
-	t.Cleanup(conn.Close)
-	return conn, down, up
+	return unbounded
 }
 
 // A proxy relays a client's connection, credentials and all, until Cut: the connection drops at
@@ -42,13 +53,15 @@ func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected,
 func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 	proxy := StartProxy(t, URL(t))
 	conn, disconnected, reconnected := proxiedClient(t, proxy)
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush through the proxy: %v", err)
 	}
 
 	proxy.Cut()
 	testwait.Receive(t, "the client's disconnect after the cut", disconnected)
-	if refused, err := natsgo.Connect(proxy.URL(), natsgo.NoReconnect()); err == nil {
+	// The dial's own timer is the binary's remaining time, so only the cut proxy's refusal, which
+	// comes at once, ends it with an error: a dial that would get through, however slowly, does.
+	if refused, err := natsgo.Connect(proxy.URL(), natsgo.NoReconnect(), natsgo.Timeout(binaryWait(t))); err == nil {
 		refused.Close()
 		t.Fatal("a client connected through a cut proxy")
 	}
@@ -57,14 +70,10 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 
 	proxy.Restore()
 	testwait.Receive(t, "the client's reconnect after the restore", reconnected)
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush after the restore: %v", err)
 	}
-	fresh, err := natsgo.Connect(proxy.URL(), natsgo.NoReconnect())
-	if err != nil {
-		t.Fatalf("connect through the restored proxy: %v", err)
-	}
-	fresh.Close()
+	Connect(t, proxy.URL()).Close()
 }
 
 // A frozen proxy keeps the client connected and moves nothing: what the client publishes does not
@@ -80,7 +89,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 	if _, err := direct.ChanSubscribe("proxy.frozen", received); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := direct.Flush(); err != nil {
+	if err := direct.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 
@@ -108,7 +117,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 	}
 
 	proxy.Restore()
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush after the restore: %v", err)
 	}
 	if msg := testwait.Receive(t, "the publish the freeze held, after the restore", received); string(msg.Data) != "held" {
