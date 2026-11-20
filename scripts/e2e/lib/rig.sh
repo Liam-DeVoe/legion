@@ -194,9 +194,9 @@ port_answers() {
 # `|| true` this had turned that E2BIG into no holder at all. An fd directory this user may not read
 # (another user's process) or whose process ended during the walk is none of the answer; any other
 # complaint of the walk's (proc_walk_complaint) prints and fails with 2, and so does a walk still
-# running at its bound (proc_walk_bound, lib/process-tree.sh), which is ended there.
+# running at its caller's bound (proc_walk_until, lib/process-tree.sh), which is ended there.
 listening_holders() {
-  local proc=${proc_root:-/proc} inodes err status=0 complaint holder table bound
+  local proc=${proc_root:-/proc} inodes err status=0 complaint holder table until bound
   local -a holders=() tables=() entries=()
   for table in /proc/net/tcp /proc/net/tcp6; do
     [ ! -e "$table" ] || tables+=("$table")
@@ -225,7 +225,11 @@ listening_holders() {
     echo "listening_holders: no file to keep find's complaints in, so $proc was not read" >&2
     return 2
   }
-  bound=$(proc_walk_bound "${#entries[@]}")
+  until=$(proc_walk_until) && bound=$(proc_walk_bound "$until") || {
+    rm -f -- "$err"
+    proc_walk_unbounded listening_holders "the holders of port $1 were not read"
+    return 2
+  }
   # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
   # `|| exit` keeps the walk's status and keeps a caller's ERR trap (`set -E`) from firing inside
   # the substitution for the unreadable entries every walk meets. timeout leads a process group of
@@ -235,7 +239,7 @@ listening_holders() {
   wait "$!" || status=$?
   complaint=
   case $status in
-    124) complaint="the walk of ${#entries[@]} entries had not ended after ${bound}s (proc_walk_bound)" ;;
+    124) complaint="the walk of ${#entries[@]} entries had not ended after ${bound}s ($(proc_walk_bound_name))" ;;
     0) ;;
     *) complaint=$(proc_walk_complaint "$err" "$proc") || complaint= ;;
   esac

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -12,7 +12,7 @@ import {
   walkWithin,
 } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
-import { linkProcesses, procRootOf } from "./proc-root";
+import { linkProcesses, procRootOf, walkDeadlineEnv } from "./proc-root";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -138,6 +138,12 @@ async function gone(pid: number): Promise<boolean> {
   }
   return false;
 }
+// rowStarted is when the running row began: its walks are held to what is left of its limit
+// (walkDeadlineEnv, lib/proc-root.ts), Bun's 5 s for every row here but the two forced ones.
+let rowStarted = Date.now();
+beforeEach(() => {
+  rowStarted = Date.now();
+});
 
 // harness runs BODY (harnessCommand's argv and environment) in a bash with lib/rig.sh and
 // lib/arg-max-force.sh sourced for the run directory WORK, marked as a run marks itself
@@ -146,8 +152,9 @@ async function gone(pid: number): Promise<boolean> {
 // only once the shell runs, so the harness's own process carries no mark. PATH, when given, comes
 // first. The walks read `proc_root`, a proc root of the row's own processes (lib/proc-root.ts):
 // every process the row recorded so far and this test process, so a row's time is its own and not
-// the host's process count. ROOT, when given, is that root instead.
-function harnessCommand(work: string, body: string, path: string, procRoot: string) {
+// the host's process count. ROOT, when given, is that root instead. Each walk is held to what is
+// left of the row's LIMIT (proc_walk_deadline).
+function harnessCommand(work: string, body: string, path: string, procRoot: string, limit?: number) {
   return {
     argv: ownGroup([
       "bash",
@@ -165,6 +172,7 @@ ${body}`,
       PATH: `${path}${path ? ":" : ""}${process.env.PATH ?? ""}`,
       WORK: work,
       proc_root: procRoot,
+      ...walkDeadlineEnv(rowStarted, limit),
     },
   };
 }
@@ -175,14 +183,17 @@ function harness(work: string, body: string, path = "", procRoot = rowRoot()) {
 }
 // forcedHarness runs FORCE, the row's call of arg_max_force, then WALK, in a harness over ROOT, a
 // proc root the hook gave the force's entries, now holding every process the row recorded and this
-// test process too, and holds WALK alone to walkDeadline (walkWithin).
+// test process too, and holds WALK alone to walkDeadline (walkWithin). The walk's own bound is the
+// same walkDeadline from the row's start, so it ends, naming its bound, before walkWithin's timer,
+// which starts once the force is in place.
 function forcedHarness(work: string, root: string, force: string, walk: string) {
   linkProcesses(root, [...started.held.map(({ pid }) => pid), process.pid]);
   const { argv, env } = harnessCommand(
     work,
     `${force}\necho ${JSON.stringify(forcedLine)}\n${walk}`,
     "",
-    root
+    root,
+    walkDeadline
   );
   return walkWithin(argv, env, walkDeadline);
 }
@@ -358,14 +369,15 @@ test.skipIf(skip || !argMaxForceHolds())(
 );
 
 test.skipIf(skip)(
-  "held_only_by ends at its walk's bound, saying so, where the walk of every process's descriptors is held past it",
+  "held_only_by ends at its caller's bound, saying so, where the walk of every process's descriptors is held past it",
   () => {
     // held_only_by (lib/rig.sh), stage1-skeleton.sh's check of the daemon's port, walks every
     // process's descriptors (listening_holders), and no bound held that walk: its time was the
     // host's process count and their descriptors'. Its find opens no file, so no FIFO holds it;
-    // a find first on PATH that runs for 70 s stands in for a walk held past the bound of a root of
-    // one entry (proc_walk_bound, lib/process-tree.sh). The walk ends there, says so, and
-    // held_only_by fails with 2, which no check reads as the port's holders.
+    // a find first on PATH that runs for 70 s stands in for a walk held past its caller's bound,
+    // here what is left of this row's limit (proc_walk_deadline, lib/process-tree.sh). The walk
+    // ends there, says so, and held_only_by fails with 2, which no check reads as the port's
+    // holders.
     const work = join(dir, "slow-holders");
     mkdirSync(work);
     const bin = join(dir, "slow-find");
@@ -382,7 +394,7 @@ test.skipIf(skip)(
       expect(r.err).toBe("");
       expect(r.out).toBe("held_only_by 2\n");
       expect(readFileSync(join(work, "held.err"), "utf8")).toMatch(
-        /^listening_holders: find exited 124 reading \S+: the walk of 1 entries had not ended after [0-9.]+s \(proc_walk_bound\)$/m
+        /^listening_holders: find exited 124 reading \S+: the walk of 1 entries had not ended after [0-9.]+s \(proc_walk_deadline, its caller's bound\)$/m
       );
     } finally {
       listener.stop(true);
@@ -391,13 +403,14 @@ test.skipIf(skip)(
 );
 
 test.skipIf(skip)(
-  "run_processes ends at its walk's bound, saying so, where an environment never answers its reader",
+  "run_processes ends at its caller's bound, saying so, where an environment never answers its reader",
   () => {
     // run_processes, which the run's sweep and its teardown's wait read, walks every process's
     // environment (procs_naming), and a /proc entry that never answers its reader, such as the
     // environment of a process whose memory map stays locked, held it for ever; a FIFO no writer
-    // opens stands in for one here. The walk ends at its bound (proc_walk_bound) and says so, and
-    // run_processes fails with 2, which no caller reads as a run with nothing left.
+    // opens stands in for one here. The walk ends at what is left of this row's limit
+    // (proc_walk_deadline) and says so, and run_processes fails with 2, which no caller reads as a
+    // run with nothing left.
     const work = join(dir, "fifo-environ");
     mkdirSync(work);
     const root = procRootOf(dir, [process.pid]);
@@ -412,7 +425,43 @@ test.skipIf(skip)(
     expect(r.err).toBe("");
     expect(r.out).toBe("run_processes 2\n");
     expect(readFileSync(join(work, "rp.err"), "utf8")).toMatch(
-      /^procs_naming: the walk of 2 entries of \S+ had not ended after [0-9.]+s \(proc_walk_bound\)/m
+      /^procs_naming: the walk of 2 entries of \S+ had not ended after [0-9.]+s \(proc_walk_deadline, its caller's bound\)/m
+    );
+  }
+);
+
+test.skipIf(skip)(
+  "a walk whose caller sets no bound ends at the default one, naming it, and one whose caller's bound has passed does not start",
+  () => {
+    // A driver holds no clock of its own, so its walks take proc_walk_default (lib/process-tree.sh);
+    // the row makes it a second, so its FIFO ends the walk inside the row's limit. A deadline that
+    // has passed, or is no time at all, starts no walk and says so.
+    const work = join(dir, "default-bound");
+    mkdirSync(work);
+    const root = procRootOf(dir, [process.pid]);
+    mkdirSync(join(root, "999999999"));
+    expect(Bun.spawnSync(["mkfifo", join(root, "999999999", "environ")]).exitCode).toBe(0);
+    const r = harness(
+      work,
+      `unset proc_walk_deadline; proc_walk_default=1
+st=0; run_processes >/dev/null 2>"$work/default.err" || st=$?; echo "default $st"
+proc_walk_deadline=1.5
+st=0; run_processes >/dev/null 2>"$work/passed.err" || st=$?; echo "passed $st"
+proc_walk_deadline=soon
+st=0; run_processes >/dev/null 2>"$work/garbled.err" || st=$?; echo "garbled $st"`,
+      "",
+      root
+    );
+    expect(r.err).toBe("");
+    expect(r.out).toBe("default 2\npassed 2\ngarbled 2\n");
+    expect(readFileSync(join(work, "default.err"), "utf8")).toMatch(
+      /^procs_naming: the walk of 2 entries of \S+ had not ended after [0-9.]+s \(proc_walk_default, 1s\)/m
+    );
+    expect(readFileSync(join(work, "passed.err"), "utf8")).toMatch(
+      /^procs_naming: its caller's bound \(proc_walk_deadline\) had passed before the walk began, so the processes naming \S+ were not read$/m
+    );
+    expect(readFileSync(join(work, "garbled.err"), "utf8")).toMatch(
+      /^procs_naming: proc_walk_deadline \('soon'\) is not a time in seconds since the epoch, so the processes naming \S+ were not read$/m
     );
   }
 );

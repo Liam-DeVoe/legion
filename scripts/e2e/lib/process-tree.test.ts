@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { copyFileSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -478,6 +478,62 @@ echo "scratch: $scratch"
         readsStat: true,
       });
       for (const pid of asked.slice(0, 3)) expect(await gone(Number(pid))).toBe(true);
+    },
+    slow
+  );
+
+  // proc_children asks pgrep, a walk of every process, where /proc lists no children file (a
+  // kernel without CONFIG_PROC_CHILDREN), and that walk is held to its caller's bound: a pgrep held
+  // past it is ended there, named, and proc_children fails with 2, which no caller reads as no
+  // children. The harness is PID 1 of a user, mount and PID namespace of its own, with its own
+  // /proc, and an empty directory over its own task/ hides its children file; the real pgrep then
+  // names its child (the control), and a pgrep first on PATH that runs for 70 s stands in for a walk
+  // a /proc entry holds. Each call is held to a deadline a second from its start; the row's own
+  // limit is this file's minute for a row that starts real processes.
+  const userNamespaces =
+    Bun.spawnSync(["unshare", "--user", "--map-root-user", "--mount", "true"]).exitCode === 0;
+  test.skipIf(!userNamespaces)(
+    "proc_children's pgrep, where /proc has no children file, ends at its caller's bound, naming it",
+    () => {
+      const tree = join(root, "scripts/e2e/lib/process-tree.sh");
+      const r = Bun.spawnSync(
+        [
+          "unshare",
+          "--user",
+          "--map-root-user",
+          "--mount",
+          "--pid",
+          "--fork",
+          "--mount-proc",
+          "--kill-child",
+          "bash",
+          "-c",
+          `set -u
+. "$1"
+sleep 300 </dev/null >/dev/null 2>&1 &
+child=$!
+mkdir -p "$2/empty" "$2/bin" && mount --bind "$2/empty" /proc/$$/task || exit 9
+[ ! -e /proc/$$/task/$$/children ] || exit 8
+second() { local d=$((\${EPOCHREALTIME/[.,]/} + 1000000)); proc_walk_deadline=\${d:0:-6}.\${d: -6}; }
+second
+st=0; out=$(proc_children $$) || st=$?; has=no; grep -qx "$child" <<<"$out" && has=yes; echo "real: $st names the child: $has"
+printf '#!/bin/sh\\nexec sleep 70\\n' >"$2/bin/pgrep" && chmod +x "$2/bin/pgrep"
+second
+st=0; out=$(PATH="$2/bin:$PATH" proc_children $$) || st=$?; echo "held: $st [$out]"
+kill -KILL "$child"`,
+          "-",
+          tree,
+          mkdtempSync(join(dir, "pgrep-")),
+        ],
+        { env: { PATH: process.env.PATH ?? "" }, timeout: slow - 1_000 }
+      );
+      expect(r.signalCode, "proc_children was still running when the row's own limit ended it").toBeFalsy();
+      const out = r.stdout.toString().split("\n");
+      expect(out[0]).toBe("real: 0 names the child: yes");
+      expect(out[1]).toBe("held: 2 []");
+      expect(r.stderr.toString()).toMatch(
+        /^proc_children: pgrep -P 1 had not ended after [0-9.]+s \(proc_walk_deadline, its caller's bound\), so the children of 1 were not read$/m
+      );
     },
     slow
   );

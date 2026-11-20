@@ -577,13 +577,14 @@ wait_for_run_processes() {
 # service whose broker did not end it among them, cleanup-is-complete's wait still names. It reads
 # `${proc_root:-/proc}`: the host's /proc, unless a test points proc_root at a proc root of the
 # processes it started (lib/proc-root.ts), every stat by one grep for each xargs batch of them, and
-# the environment of each member of a broker's session the same way, each walk held to its bound
-# (proc_walk_bound, lib/process-tree.sh): a /proc entry that never answers its reader, which held
-# the run's teardown for ever, ends it there, named. It prints why and fails with 2 when the run's
-# processes could not be read (run_processes), the proc root lists no process at all, or a walk
-# was past its bound or failed, so a walk that read nothing never reads as one with nothing to stop.
+# the environment of each member of a broker's session the same way, both walks held to what is
+# left of one bound, its caller's (proc_walk_until, lib/process-tree.sh): a /proc entry that never
+# answers its reader, which held the run's teardown for ever, ends it there, named. It prints why
+# and fails with 2 when the run's processes could not be read (run_processes), the proc root lists
+# no process at all, or a walk was past its bound or failed, so a walk that read nothing never
+# reads as one with nothing to stop.
 stop_agent_daemons() {
-  local file dir real leader p stat sid env_dir i alive pid listed bound status=0 record path what
+  local file dir real leader p stat sid env_dir i alive pid listed until bound status=0 record path what
   local -a run=() targets=() fields=() entries=() stats=() members=() environs=()
   local -A dirs=() started=() sid_of=() env_of=()
   # A /proc that cannot be read has no /dev/fd either, so the broker.pid search below would read
@@ -607,20 +608,30 @@ stop_agent_daemons() {
     echo "stop_agent_daemons: ${proc_root:-/proc} lists no process, so no broker session was stopped" >&2
     return 2
   }
-  bound=$(proc_walk_bound "${#entries[@]}")
-  # Two walks, each under timeout, which leads a process group of its own, ends every grep at the
-  # bound and exits 124 then (`|| exit` keeps the status for the wait): every stat whole, one record
-  # a file with its path before it (-z: a process names itself, and a name may hold a newline, which
-  # a read of the first line stops at); then the environment of each member of a broker's session.
+  until=$(proc_walk_until) || {
+    proc_walk_unbounded stop_agent_daemons "no broker session was stopped"
+    return 2
+  }
+  # Two walks, each under timeout, which leads a process group of its own, ends every grep at what
+  # is left of the bound and exits 124 then (`|| exit` keeps the status for the wait): every stat
+  # whole, one record a file with its path before it (-z: a process names itself, and a name may
+  # hold a newline, which a read of the first line stops at); then the environment of each member
+  # of a broker's session. grep reads in the C locale and as text (-a): in a UTF-8 locale a stat
+  # whose name holds a byte that is no UTF-8 (a name of many bytes cut at 15) is binary to grep,
+  # which prints no record of it and exits 0, so that member was dropped without a word.
   for what in stat environ; do
+    bound=$(proc_walk_bound "$until") || {
+      proc_walk_unbounded stop_agent_daemons "no broker session was stopped"
+      return 2
+    }
     status=0
     if [ "$what" = stat ]; then
       mapfile -d '' -t stats < <(printf '%s\0' "${entries[@]}" |
-        timeout -k 5 "$bound" xargs -0 grep -sHz '' || exit)
+        LC_ALL=C timeout -k 5 "$bound" xargs -0 grep -asHz '' || exit)
     else
       ((${#members[@]} > 0)) || return 0
       mapfile -d '' -t environs < <(printf '%s/environ\0' "${members[@]}" |
-        timeout -k 5 "$bound" xargs -0 grep -sHz '^OMP_DAEMON_RUNTIME_DIR=' || exit)
+        LC_ALL=C timeout -k 5 "$bound" xargs -0 grep -asHz '^OMP_DAEMON_RUNTIME_DIR=' || exit)
     fi
     wait "$!" || status=$?
     # 123 is a batch with no match, or a file this user may not read or whose process ended during
@@ -628,7 +639,7 @@ stop_agent_daemons() {
     case $status in
       0 | 123) ;;
       124)
-        echo "stop_agent_daemons: the walk of every $what under ${proc_root:-/proc} had not ended after ${bound}s (proc_walk_bound), so no broker session was stopped" >&2
+        echo "stop_agent_daemons: the walk of every $what under ${proc_root:-/proc} had not ended after ${bound}s ($(proc_walk_bound_name)), so no broker session was stopped" >&2
         return 2
         ;;
       *)

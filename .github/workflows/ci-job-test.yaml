@@ -583,6 +583,12 @@ jobs:
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
         run: bun test scripts/e2e/lib
 
+      # The rows that once failed where their test runner is PID 1 of its PID namespace, run so,
+      # with bun and with bash as PID 1 (.github/scripts/pid1-rows.sh): the host runs above pass
+      # whatever reaps an orphan, so only this catches a revert of their fixes.
+      - name: Test the orphan rows with the test runner as PID 1
+        run: .github/scripts/pid1-rows.sh
+
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'

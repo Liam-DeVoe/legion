@@ -84,15 +84,14 @@ readonly admin_url_no_query=${admin_url%%\?*}
 readonly server_url=${admin_url%/postgres*}
 
 declare -a instance_pid=()
-# proc_walk_bound, the bound of a walk of every process (scripts/e2e/lib/process-tree.sh), which
-# cleanup's pkill makes.
+# proc_walk_until and proc_walk_bound, the bound of a walk of every process
+# (scripts/e2e/lib/process-tree.sh), which cleanup's pkill makes.
 # shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/process-tree.sh
 . "${project_root}/scripts/e2e/lib/process-tree.sh"
 cleanup() {
   # Best-effort: if an assertion fails mid-test, leave no dev-stack.sh instance, and no stub it
   # started, running.
-  local pid status=0
-  local -a entries=(/proc/[0-9]*)
+  local pid status=0 until bound
   for pid in "${instance_pid[@]}"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill -TERM "$pid" 2>/dev/null || true
@@ -101,10 +100,15 @@ cleanup() {
   done
   # The catch-all, for a stub whose instance has already gone: pkill reads every process's command
   # line, so it is held to that walk's bound, past which a /proc entry that never answers its reader
-  # held this exit for ever.
-  timeout -k 5 "$(proc_walk_bound "${#entries[@]}")" pkill -f "${temporary_dir}/dev-stack\." 2>/dev/null || status=$?
-  [[ $status -ne 124 ]] ||
-    echo "dev-stack.test.sh: pkill had not ended at its bound (proc_walk_bound); a stub of this test may still run" >&2
+  # held this exit for ever. The exit has no clock of its own, so the bound is the default one
+  # (proc_walk_default), unless the caller set proc_walk_deadline.
+  if until=$(proc_walk_until) && bound=$(proc_walk_bound "$until"); then
+    timeout -k 5 "$bound" pkill -f "${temporary_dir}/dev-stack\." 2>/dev/null || status=$?
+    [[ $status -ne 124 ]] ||
+      echo "dev-stack.test.sh: pkill had not ended after ${bound}s ($(proc_walk_bound_name)); a stub of this test may still run" >&2
+  else
+    proc_walk_unbounded dev-stack.test.sh "pkill did not run, and a stub of this test may still run" || :
+  fi
   rm -rf "$temporary_dir"
 }
 trap cleanup EXIT

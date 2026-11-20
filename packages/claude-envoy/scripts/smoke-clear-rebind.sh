@@ -17,6 +17,11 @@ for tool in tmux curl jq; do
   command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool is required" >&2; exit 1; }
 done
 
+# proc_children and proc_stat_field: one process's children and its state, each read from that
+# process's own /proc entry (scripts/e2e/lib/process-tree.sh).
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/process-tree.sh
+. "${BASH_SOURCE[0]%/*}/../../../scripts/e2e/lib/process-tree.sh"
+
 workdir="$(mktemp -d /tmp/claude-clear-rebind.XXXXXX)"
 readonly workdir
 # The smoke runs its own tmux server on a socket in its scratch directory, so its cleanup can end
@@ -42,10 +47,14 @@ fail() {
 cleanup() {
   [[ -n "$tmux_session" ]] && tmux kill-session -t "$tmux_session" 2>/dev/null || true
   # The channel server deregisters as it exits, and can outlive Claude; a registration
-  # still in flight then must land before the entries are removed below.
-  local deadline=$((SECONDS + 10)) pid
+  # still in flight then must land before the entries are removed below. Neither is this
+  # script's child, so each is waited for by its state (proc_stat_field): gone, or a zombie its
+  # reaper has not yet reaped, which signal 0 would still reach.
+  local deadline=$((SECONDS + 10)) pid state
   for pid in "$claude_pid" "$server_pid"; do
-    while [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do
+    while [[ -n "$pid" ]] && (( SECONDS < deadline )); do
+      state=$(proc_stat_field "$pid" 3 state)
+      [[ -n "$state" && "$state" != Z && "$state" != X ]] || break
       sleep 0.2
     done
   done
@@ -98,15 +107,16 @@ await_entries() {
 }
 
 # channel_server_of PID prints the first child of PID whose command line runs
-# dist/envoy-channel.js, and fails when none does. It reads PID's own children
-# (/proc/PID/task/*/children) and each child's command line, so it reads those processes alone:
-# `pgrep -P PID -f`, which this used before, reads the stat of every process on the machine, over
-# a second at 18,000 processes on a loaded devbox, with no bound.
+# dist/envoy-channel.js, and fails when none does, or when PID's children could not be read. It
+# reads PID's own children (proc_children, scripts/e2e/lib/process-tree.sh) and each child's
+# command line, so it reads those processes alone: `pgrep -P PID -f`, which this used before,
+# reads the stat of every process on the machine, over a second at 18,000 processes on a loaded
+# devbox, with no bound.
 channel_server_of() {
-  local child
-  local -a children=() args=()
-  read -r -a children < <(cat /proc/"$1"/task/*/children 2>/dev/null) || true
-  for child in "${children[@]}"; do
+  local child children
+  local -a args=()
+  children=$(proc_children "$1") || return 1
+  for child in $children; do
     { mapfile -d '' -t args <"/proc/${child}/cmdline"; } 2>/dev/null || continue
     [[ " ${args[*]} " == *dist/envoy-channel.js* ]] || continue
     printf '%s\n' "$child"

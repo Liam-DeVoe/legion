@@ -1,10 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
-import { procRootOf } from "./proc-root";
+import { procRootOf, walkDeadlineEnv } from "./proc-root";
 
 // refuse_leftovers (lib/leftovers.sh) is a stage driver's check that no earlier run of its stage left
 // a process running whose driver is gone: a process names its run by /tmp/<PREFIX>.<driver pid>. in
@@ -23,6 +23,12 @@ afterEach(() => {
       process.kill(pid, "SIGKILL");
     } catch {}
   }
+});
+// rowStarted is when the running row began: the check's walks are held to what is left of its
+// limit, Bun's 5 s (walkDeadlineEnv, lib/proc-root.ts).
+let rowStarted = Date.now();
+beforeEach(() => {
+  rowStarted = Date.now();
 });
 async function sleeper(
   options: { cwd?: string; env?: Record<string, string>; argv?: string[] } = {}
@@ -57,6 +63,7 @@ function dockerListingNone(): string {
 }
 // check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given, and
 // answers its status and what its `fail` said (a driver's fail, here one that prints and returns).
+// Its walks are held to what is left of the row's limit (proc_walk_deadline).
 function check(root: string, bin = "") {
   const ran = Bun.spawnSync(
     [
@@ -68,6 +75,7 @@ function check(root: string, bin = "") {
       env: {
         PATH: `${bin}${bin ? ":" : ""}${dockerListingNone()}:${process.env.PATH ?? ""}`,
         proc_root: root,
+        ...walkDeadlineEnv(rowStarted),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -94,6 +102,9 @@ test.skipIf(skip)(
       const said = r.out;
       for (const pid of [byArgs, byEnv, byCwd]) expect(said).toContain(`process ${pid}, `);
       for (const pid of [live, none]) expect(said).not.toContain(`process ${pid}, `);
+      // Each leftover is named by its command line, read inside the walk's bound with its start.
+      expect(said).toContain(`process ${byArgs}, bash -c sleep 60; : bash ${runDir} (kill ${byArgs})`);
+      expect(said).toContain(`process ${byCwd}, sleep 60 (kill ${byCwd})`);
       expect(said).toEndWith("status 1\n");
     } finally {
       for (const pid of started.splice(0)) {
@@ -144,10 +155,15 @@ test.skipIf(skip)("a proc root that lists no process is reported, and found no l
 // old for -files0-from (findutils before 4.9, which says so and exits 1) and one a signal ends are
 // each reported, naming the find's status and its complaint, with 2. The control is the find every
 // walk of a busy machine runs: it exits 1 for an entry of another user's process, which is no
-// complaint, so the check still answers.
+// complaint, so the check still answers. The stub stands in for that find alone: the one that
+// tells this pid namespace's processes (-samefile) is the real one.
 function findStub(body: string) {
   const bin = mkdtempSync(join(dir, "find-"));
-  writeFileSync(join(bin, "find"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  writeFileSync(
+    join(bin, "find"),
+    `#!/bin/sh\ncase " $* " in *" -samefile "*) exec /usr/bin/find "$@" ;; esac\n${body}\n`,
+    { mode: 0o755 }
+  );
   return bin;
 }
 test.skipIf(skip)(
@@ -157,12 +173,12 @@ test.skipIf(skip)(
     const said = (bin: string) => check(root, bin);
     const tooOld = said(findStub(`echo "find: unknown predicate \\\`-files0-from'" >&2\nexit 1`));
     expect(tooOld).toEqual({
-      out: `refuse_leftovers: find exited 1 reading the working directories under ${root}: find: unknown predicate \`-files0-from'\nstatus 2\n`,
+      out: `refuse_leftovers: find exited 1 reading the working directories under ${root}: find: unknown predicate \`-files0-from', so whether an earlier ${prefix} run left processes running was not read\nstatus 2\n`,
       err: "",
     });
     const killed = said(findStub("kill -KILL $$"));
     expect(killed).toEqual({
-      out: `refuse_leftovers: find exited 137 reading the working directories under ${root}: find ended with status 137 and printed nothing\nstatus 2\n`,
+      out: `refuse_leftovers: find exited 137 reading the working directories under ${root}: find ended with status 137 and printed nothing, so whether an earlier ${prefix} run left processes running was not read\nstatus 2\n`,
       err: "",
     });
     const unreadable = said(
@@ -172,14 +188,14 @@ test.skipIf(skip)(
   }
 );
 
-// The walk of every process is held to its bound (proc_walk_bound, lib/process-tree.sh), and so is
-// each of its two parts: a /proc entry that never answers its reader held the check, and the stage
-// driver that runs it, for ever. A FIFO no writer opens stands in for a command line whose process
-// holds its memory map locked, behind a namespace link of this shell's own, so the entry counts as
-// one of this pid namespace; and a find held past the bound stands in for a working directory's.
-// Each ends at the bound, named, with 2.
+// The walk of every process is held to its caller's bound, here what is left of the row's limit
+// (proc_walk_deadline, lib/process-tree.sh), and so is each of its four parts: a /proc entry that
+// never answers its reader held the check, and the stage driver that runs it, for ever. A FIFO no
+// writer opens stands in for a command line whose process holds its memory map locked, behind a
+// namespace link of this shell's own, so the entry counts as one of this pid namespace; and a find
+// held past the bound stands in for a working directory's. Each ends at the bound, named, with 2.
 test.skipIf(skip)(
-  "a command line that never answers its reader ends the walk at its bound, naming it, with 2",
+  "a command line that never answers its reader ends the walk at its caller's bound, naming it, with 2",
   async () => {
     const root = procRootOf(dir, [await sleeper()]);
     const fake = join(root, "999999999");
@@ -192,19 +208,35 @@ test.skipIf(skip)(
     expect(r.err).toBe("");
     expect(r.out).toMatch(
       new RegExp(
-        `^refuse_leftovers: the walk of 2 entries of \\S+ had not ended after [0-9.]+s \\(proc_walk_bound\\), so whether an earlier ${prefix} run left processes running was not read\\nstatus 2\\n$`
+        `^refuse_leftovers: the walk of 2 entries of \\S+ had not ended after [0-9.]+s \\(proc_walk_deadline, its caller's bound\\), so whether an earlier ${prefix} run left processes running was not read\\nstatus 2\\n$`
       )
     );
   }
 );
 test.skipIf(skip)(
-  "a find of the working directories held past the walk's bound is ended there, named, with 2",
+  "a find of the working directories held past the caller's bound is ended there, named, with 2",
   async () => {
     const root = procRootOf(dir, [await sleeper()]);
     const r = check(root, findStub("sleep 70"));
     expect(r.err).toBe("");
     expect(r.out).toMatch(
-      /^refuse_leftovers: find exited 124 reading the working directories under \S+: the walk of 1 entries had not ended after [0-9.]+s \(proc_walk_bound\)\nstatus 2\n$/
+      new RegExp(
+        `^refuse_leftovers: the walk of 1 entries of \\S+ had not ended after [0-9.]+s \\(proc_walk_deadline, its caller's bound\\), so whether an earlier ${prefix} run left processes running was not read\\nstatus 2\\n$`
+      )
     );
   }
 );
+
+// Only this pid namespace's processes count (a pid means nothing across namespaces), told by one
+// find of every entry's namespace link inside the bound: an entry whose link is another
+// namespace's names a dead driver's run and is still none of the answer.
+test.skipIf(skip)("a process of another pid namespace is no leftover, whatever it names", () => {
+  const gone = goneDriver();
+  const root = mkdtempSync(join(dir, "other-ns-"));
+  const fake = join(root, "999999998");
+  mkdirSync(join(fake, "ns"), { recursive: true });
+  writeFileSync(join(fake, "ns", "pid"), "");
+  writeFileSync(join(fake, "cmdline"), `sleep\0/tmp/${prefix}.${gone}.x\0`);
+  writeFileSync(join(fake, "environ"), "");
+  expect(check(root)).toEqual({ out: "status 0\n", err: "" });
+});

@@ -121,20 +121,30 @@ proc_unreadable() {
 # proc_children asks pgrep, which walks every process for its parent, where /proc cannot answer: a
 # host with no /proc (macOS), and a kernel built without CONFIG_PROC_CHILDREN, whose /proc has no
 # task/<tid>/children file at all, so the read below would print no child of a process that has
-# children and stop_tree would leave them running. A Linux /proc that cannot be read
-# (proc_unreadable), and pgrep's own failure, any status above 1, make it print why and fail with 2,
-# so no caller reads either as no children.
+# children and stop_tree would leave them running. That walk is held to its caller's bound
+# (proc_walk_until, below) under timeout where there is one, as Linux's coreutils has it; a host
+# with no timeout program at all (a macOS without coreutils) runs pgrep with no bound, there being
+# no other way to end it from here. A Linux /proc that cannot be read (proc_unreadable), a pgrep
+# that had not ended at its bound, and pgrep's own failure, any status above 1, make it print why
+# and fail with 2, so no caller reads any of them as no children.
 proc_children() {
-  local list status=0
+  local list status=0 until bound
   local -a more
   ! proc_unreadable proc_children "the children of $1 were not read" || return 2
   if [ ! -d /proc/self ] || { [ -d "/proc/$1" ] && [ ! -e "/proc/$1/task/$1/children" ]; }; then
-    pgrep -P "$1" || status=$?
-    [ "$status" -le 1 ] || {
-      echo "proc_children: pgrep -P $1 exited $status, so the children of $1 were not read" >&2
-      return 2
-    }
-    return 0
+    if command -v timeout >/dev/null; then
+      until=$(proc_walk_until) && bound=$(proc_walk_bound "$until") ||
+        proc_walk_unbounded proc_children "the children of $1 were not read" || return
+      timeout -k 5 "$bound" pgrep -P "$1" || status=$?
+    else
+      pgrep -P "$1" || status=$?
+    fi
+    case $status in
+      0 | 1) return 0 ;;
+      124) echo "proc_children: pgrep -P $1 had not ended after ${bound}s ($(proc_walk_bound_name)), so the children of $1 were not read" >&2 ;;
+      *) echo "proc_children: pgrep -P $1 exited $status, so the children of $1 were not read" >&2 ;;
+    esac
+    return 2
   fi
   for list in /proc/"$1"/task/*/children; do
     more=()
@@ -469,30 +479,74 @@ proc_walk_complaint() {
   return 1
 }
 
-# proc_walk_bound ENTRIES prints, in seconds, how long a walk of ENTRIES entries of a proc root may
-# take: procs_naming's grep of every <pid>/environ, listening_holders' find of every <pid>/fd
-# (lib/rig.sh), and refuse_leftovers' (lib/leftovers.sh) and stop_agent_daemons'
-# (parked-decision-devbox.sh) reads of every command line, environment and stat. Its two parts are
-# what such a walk waits on, each twice the slowest measured:
-#   - proc_walk_base_ms, the start of the walk's reader (timeout, then xargs and grep, or find),
-#     which is all a walk of a root of a few entries takes: 197 ms at the slowest of 40 starts of
-#     each reader over a root of one entry, in a scope held to 30% of one CPU (CPUQuota=30%), a
-#     share of the CPU below what a load of 960 leaves each runnable process on the devbox's 288
-#     CPUs, past the 860 that box has reached (2026-11-20, beside a one-minute load of 235 to 292);
-#   - proc_walk_entry_us, each entry: the slowest share of one entry in any walk measured beside
-#     the devbox's load (one-minute loads of 370 to 460: 20 walks of each kind over the host's
-#     /proc of about 22,300 processes, the slowest 3.2 s, and 20 over a forced row's root,
-#     lib/arg-max-force.sh), 0.91 ms, a forced row's walk of 24 fd directories, whose program starts
-#     weigh on each entry.
-# A walk still running then is ended with what it started and read as no answer: with no bound, a
-# /proc entry that never answers its reader, such as the environment of a process whose memory map
-# stays locked (a FIFO stands in for one in the rows), held the run's sweep, a check of a port, or
-# the exit that runs them, for ever. The bound starts no program.
-proc_walk_base_ms=394
-proc_walk_entry_us=1825
+# A walk of every process of a proc root (procs_naming's grep of every <pid>/environ,
+# listening_holders' find of every <pid>/fd in lib/rig.sh, refuse_leftovers' in lib/leftovers.sh and
+# stop_agent_daemons' in parked-decision-devbox.sh, proc_children's pgrep where /proc has no
+# children file) is held to its caller's own bound: with none, a /proc entry that never answers its
+# reader, such as the environment of a process whose memory map stays locked (a FIFO stands in for
+# one in the rows), held the run's sweep, a check of a port, or the exit that runs them, for ever.
+# The bound is the time left of what the caller waits on, never a floor of the walk's own: a walk's
+# cost is the machine's share of a CPU, which a loaded devbox cuts to a few percent (load 7,626 on
+# 288 CPUs, 2026-11-19), where a floor measured on a quiet share ends a walk that its caller's bound
+# still held.
+#   - proc_walk_deadline, when the caller sets it, is the moment its own bound ends, in seconds
+#     since the epoch as EPOCHREALTIME prints them: a test row sets it to the end of its limit, less
+#     what the row does after the walk (walkDeadlineEnv, lib/proc-root.ts).
+#   - proc_walk_default, 60 s, is the bound where the caller sets none, taken from the walk that has
+#     a waiter: wait_for_run_processes (parked-decision-devbox.sh) gives every process of the run
+#     600 s to end and polls run_processes at least 10 times in them, so a walk past 60 s runs that
+#     wait past its own deadline. The run's sweep, held_only_by, refuse_leftovers,
+#     stop_agent_daemons and the skill-scenario rig's stop_env_processes run in drivers that hold no
+#     clock of their own, and take the same bound: what each guards is a step of one of those runs.
+# A walk still running at its bound is ended with what it started, prints the bound it ended at
+# (proc_walk_bound_name), and fails with 2. These functions start no program.
+proc_walk_default=60
+
+# proc_walk_until prints the moment a walk starting now must end, in microseconds since the epoch:
+# proc_walk_deadline when the caller set it, else proc_walk_default seconds from now. It fails when
+# proc_walk_deadline is not a time.
+proc_walk_until() {
+  local now=${EPOCHREALTIME/[.,]/} whole fraction
+  if [ -z "${proc_walk_deadline:-}" ]; then
+    printf '%s\n' $((now + proc_walk_default * 1000000))
+    return 0
+  fi
+  whole=${proc_walk_deadline%%[.,]*} fraction=
+  [ "$whole" = "$proc_walk_deadline" ] || fraction=${proc_walk_deadline#*[.,]}
+  fraction=${fraction}000000
+  fraction=${fraction:0:6}
+  [[ $whole =~ ^[0-9]+$ && $fraction =~ ^[0-9]{6}$ ]] || return 1
+  printf '%s\n' $((10#$whole * 1000000 + 10#$fraction))
+}
+
+# proc_walk_bound UNTIL prints the seconds left until UNTIL (proc_walk_until), as timeout reads
+# them, and fails when none are left.
 proc_walk_bound() {
-  local ms=$((proc_walk_base_ms + $1 * proc_walk_entry_us / 1000))
-  printf '%d.%03d\n' $((ms / 1000)) $((ms % 1000))
+  local left=$(($1 - ${EPOCHREALTIME/[.,]/}))
+  [ "$left" -gt 0 ] || return 1
+  printf '%d.%06d\n' $((left / 1000000)) $((left % 1000000))
+}
+
+# proc_walk_bound_name prints the bound a walk is held to, for the walk's report: its caller's
+# (proc_walk_deadline) or the default one.
+proc_walk_bound_name() {
+  if [ -n "${proc_walk_deadline:-}" ]; then
+    printf 'proc_walk_deadline, its caller'\''s bound\n'
+  else
+    printf 'proc_walk_default, %ss\n' "$proc_walk_default"
+  fi
+}
+
+# proc_walk_unbounded WHO WHAT prints why a walk of WHO's did not start, with WHAT, the caller's
+# consequence ("so … were not read"), and fails with 2: proc_walk_deadline is not a time, or its
+# moment has passed.
+proc_walk_unbounded() {
+  if ! proc_walk_until >/dev/null; then
+    echo "$1: proc_walk_deadline ('${proc_walk_deadline:-}') is not a time in seconds since the epoch, so $2" >&2
+  else
+    echo "$1: its caller's bound (proc_walk_deadline) had passed before the walk began, so $2" >&2
+  fi
+  return 2
 }
 
 # procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives
@@ -501,20 +555,27 @@ proc_walk_bound() {
 # proc_root at a proc root of its own (links to the /proc entries of the processes it started,
 # scripts/e2e/lib/proc-root.ts), since a walk of the host's whole /proc holds the test's time to the
 # host's process count. Every process is read since a process that left every tree the run
-# recorded, a double-forked daemon the kernel gave to pid 1, is one of them: one grep narrows the
-# environments to those holding a NAME=DIR anywhere, and each is then read whole, variable by
-# variable. The shell's glob hands the entries to grep through xargs, which splits them into calls
-# that fit ARG_MAX: as grep's own arguments, past about 80,000 processes, grep could not start. The
-# start is read before and after the environment, and a process that ended or whose start moved
-# between is left out. xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an
-# environment this user may not read, another user's, or whose process ended during the walk),
-# which is no error here. Any other status is xargs's own, a batch it could not start or a grep a
-# signal ended (125), and like a proc root that lists no process at all (an empty tmpfs where /proc
-# should be, or one whose pid entries this user cannot see), it makes procs_naming print why and
-# fail with 2, so no caller reads an unread machine as one with nothing left.
+# recorded, a double-forked daemon the kernel gave to pid 1, is one of them. Two greps read
+# everything, each held to what is left of one bound (proc_walk_until, proc_walk_bound): the first
+# prints each variable of every environment that holds a NAME=DIR anywhere, and the second, for each
+# process the first named, prints its stat, its environment's such variables, and its stat again,
+# in that order, so the start is read before and after the environment, and a process that ended or
+# whose start moved between is left out. No file is read outside the bound: a read of an entry that
+# answered the first grep can still block after it. Each variable is then matched whole in the shell
+# (names_dir's reading). The shell's glob hands the entries to grep through xargs, which splits them
+# into calls that fit ARG_MAX: as grep's own arguments, past about 80,000 processes, grep could not
+# start. xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an entry this user may
+# not read, another user's, or whose process ended during the walk), which is no error here. Any
+# other status is xargs's own, a batch it could not start or a grep a signal ended (125), and like a
+# proc root that lists no process at all (an empty tmpfs where /proc should be, or one whose pid
+# entries this user cannot see), and a walk past its bound, it makes procs_naming print why and fail
+# with 2, so no caller reads an unread machine as one with nothing left. It runs with xtrace off, as
+# every reader of an environment here does (env_of): what grep prints are environment variables.
 procs_naming() {
-  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name bound
-  local -a names=("${@:2}") naming_patterns=() naming_files=() entries=()
+  local - dir=$1 proc=${proc_root:-/proc} pid start status=0 name until bound record text file phase
+  local -a names=("${@:2}") naming_patterns=() records=() entries=() named=() files=() fields=()
+  local -A matched=() before=() after=()
+  set +x
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
     echo "procs_naming: no run directory given, so no process was named" >&2
@@ -526,34 +587,76 @@ procs_naming() {
     return 2
   }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
-  bound=$(proc_walk_bound "${#entries[@]}")
-  # `|| exit` keeps the walk's status for the wait below, and keeps a caller's ERR trap (`set -E`)
-  # from firing inside the substitution for the batches every walk has with no match. timeout
-  # leads a process group of its own, so at the bound its TERM, and its KILL 5 s after, end every
-  # grep xargs started too, and it exits 124 (xargs's own 124, a grep that exited 255, grep never
-  # gives); a walk a signal ended of itself passes xargs's status through, as before the bound.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | timeout -k 5 "$bound" xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
-  wait "$!" || status=$?
-  case $status in
-    0 | 123) ;;
-    124)
-      echo "procs_naming: the walk of ${#entries[@]} entries of $proc had not ended after ${bound}s (proc_walk_bound), so the processes naming $dir were not read" >&2
+  until=$(proc_walk_until) || {
+    proc_walk_unbounded procs_naming "the processes naming $dir were not read"
+    return 2
+  }
+  for phase in environ start; do
+    bound=$(proc_walk_bound "$until") || {
+      proc_walk_unbounded procs_naming "the processes naming $dir were not read"
       return 2
-      ;;
-    *)
-      echo "procs_naming: xargs exited $status reading $proc/<pid>/environ, so the processes naming $dir were not read" >&2
-      return 2
-      ;;
-  esac
-  for p in ${naming_files[@]+"${naming_files[@]}"}; do
-    pid=${p%/environ}
-    pid=${pid##*/}
-    [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] || continue
-    before=$(proc_start "$pid")
-    [ -n "$before" ] || continue
-    names_dir "$dir" "${names[@]}" "$pid" || continue
-    [ "$(proc_start "$pid")" = "$before" ] || continue
-    printf '%s %s\n' "$pid" "$before"
+    }
+    status=0
+    # `|| exit` keeps the walk's status for the wait below, and keeps a caller's ERR trap
+    # (`set -E`) from firing inside the substitution for the batches every walk has with no match.
+    # timeout leads a process group of its own, so at the bound its TERM, and its KILL 5 s after,
+    # end every grep xargs started too, and it exits 124 (xargs's own 124, a grep that exited 255,
+    # grep never gives); a walk a signal ended of itself passes xargs's status through. The second
+    # grep's `)` matches every stat whole (-z: a stat holds no NUL), past a name that holds a newline.
+    if [ "$phase" = environ ]; then
+      mapfile -d '' -t records < <(printf '%s\0' "${entries[@]}" |
+        LC_ALL=C timeout -k 5 "$bound" xargs -0 grep -asHzF "${naming_patterns[@]}" || exit)
+    else
+      mapfile -d '' -t records < <(printf '%s\0' "${files[@]}" |
+        LC_ALL=C timeout -k 5 "$bound" xargs -0 grep -asHzF -e ')' "${naming_patterns[@]}" || exit)
+    fi
+    wait "$!" || status=$?
+    case $status in
+      0 | 123) ;;
+      124)
+        echo "procs_naming: the walk of ${#entries[@]} entries of $proc had not ended after ${bound}s ($(proc_walk_bound_name)), so the processes naming $dir were not read" >&2
+        return 2
+        ;;
+      *)
+        echo "procs_naming: xargs exited $status reading $proc/<pid>/environ, so the processes naming $dir were not read" >&2
+        return 2
+        ;;
+    esac
+    # A record is `$proc/<pid>/<file>:<text>`; the pid's directory holds no `/`, so the file is
+    # the word after it, whatever the text holds.
+    for record in ${records[@]+"${records[@]}"}; do
+      text=${record#"$proc"/}
+      pid=${text%%/*}
+      text=${text#"$pid"/}
+      file=${text%%:*}
+      text=${text#*:}
+      if [ "$file" = stat ]; then
+        read -r -a fields <<<"${text##*) }"
+        # A zombie runs nothing any more, so it has no start (proc_start).
+        start=
+        [ "${fields[0]-}" = Z ] || start=${fields[19]-}
+        if [ -z "${before[$pid]+set}" ]; then before[$pid]=$start; else after[$pid]=$start; fi
+        continue
+      fi
+      [ "$file" = environ ] && [ -z "${matched[$pid]+set}" ] || continue
+      # The second grep's environment counts only between the process's two stats.
+      [ "$phase" = environ ] || { [ -n "${before[$pid]+set}" ] && [ -z "${after[$pid]+set}" ]; } || continue
+      for name in "${names[@]}"; do
+        case $text in "$name=$dir" | "$name=$dir"/*) matched[$pid]=1 ;; esac
+      done
+      [ "$phase" = environ ] && [ -n "${matched[$pid]+set}" ] || continue
+      [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] || continue
+      named+=("$pid")
+      files+=("$proc/$pid/stat" "$proc/$pid/environ" "$proc/$pid/stat")
+    done
+    [ "$phase" = start ] || {
+      [ "${#named[@]}" -gt 0 ] || return 0
+      matched=()
+    }
+  done
+  for pid in "${named[@]}"; do
+    [ -n "${matched[$pid]+set}" ] && [ -n "${before[$pid]:-}" ] && [ "${after[$pid]-}" = "${before[$pid]}" ] || continue
+    printf '%s %s\n' "$pid" "${before[$pid]}"
   done
 }
 

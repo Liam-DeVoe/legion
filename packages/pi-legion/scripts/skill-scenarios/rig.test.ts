@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   appendFileSync,
   cpSync,
@@ -20,7 +20,12 @@ import {
   walkWithin,
 } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
-import { linkProcesses, procRootOf } from "../../../../scripts/e2e/lib/proc-root";
+import {
+  bunRowLimit,
+  linkProcesses,
+  procRootOf,
+  walkDeadlineEnv,
+} from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -574,9 +579,15 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       stdout: "ignore",
       stderr: "ignore",
     });
-  const groupBash = (script: string, args: string[], procRoot: string) => {
+  // rowStarted is when the running row began: a row's walks are held to what is left of its LIMIT
+  // (walkDeadlineEnv, scripts/e2e/lib/proc-root.ts), this file's minute unless the row names less.
+  let rowStarted = Date.now();
+  beforeEach(() => {
+    rowStarted = Date.now();
+  });
+  const groupBash = (script: string, args: string[], procRoot: string, limit = 60_000) => {
     const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
-      env: { ...childEnv, proc_root: procRoot },
+      env: { ...childEnv, proc_root: procRoot, ...walkDeadlineEnv(rowStarted, limit) },
     });
     return {
       code: result.exitCode,
@@ -621,7 +632,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
             scratch,
             dir,
           ]),
-          { ...childEnv, proc_root: linkProcesses(forcedRoot, [run.pid]) },
+          { ...childEnv, proc_root: linkProcesses(forcedRoot, [run.pid]), ...walkDeadlineEnv(rowStarted, walkDeadline) },
           walkDeadline
         );
         expect(
@@ -668,31 +679,37 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   // a run and its batch's teardown run, walks every process's environment (run_env_pids,
   // procs_naming), and a /proc entry that never answers its reader, such as the environment of a
   // process whose memory map stays locked, held that exit for ever; a FIFO no writer opens stands in
-  // for one here. The walk ends at its bound (proc_walk_bound, scripts/e2e/lib/process-tree.sh) and
-  // says so, and stop_env_processes says it stopped nothing and returns, so the exit goes on.
-  test("stop_env_processes returns, naming its walk's bound, where an environment never answers its reader", () => {
-    const dir = freshDir("env-fifo");
-    const proc = freshDir("env-fifo-proc");
-    mkdirSync(path.join(proc, "999999999"));
-    expect(Bun.spawnSync(["mkfifo", path.join(proc, "999999999", "environ")]).exitCode).toBe(0);
-    const rig = path.join(root, "scripts/e2e/lib/rig.sh");
-    const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
-    const stopped = groupBash(
-      `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
-      [dir],
-      proc
-    );
-    expect({ code: stopped.code, stdout: stopped.stdout }).toEqual({
-      code: 0,
-      stdout: "status 0\n",
-    });
-    expect(stopped.stderr).toMatch(
-      /^procs_naming: the walk of 1 entries of \S+ had not ended after [0-9.]+s \(proc_walk_bound\)/m
-    );
-    expect(stopped.stderr).toContain(
-      `stop_env_processes: stopped no process of the run under ${dir}`
-    );
-  });
+  // for one here. The walk ends at its caller's bound, here what is left of the row's limit, Bun's
+  // 5 s for the one bash it runs (proc_walk_deadline, scripts/e2e/lib/process-tree.sh), and says
+  // so, and stop_env_processes says it stopped nothing and returns, so the exit goes on.
+  test(
+    "stop_env_processes returns, naming its walk's bound, where an environment never answers its reader",
+    () => {
+      const dir = freshDir("env-fifo");
+      const proc = freshDir("env-fifo-proc");
+      mkdirSync(path.join(proc, "999999999"));
+      expect(Bun.spawnSync(["mkfifo", path.join(proc, "999999999", "environ")]).exitCode).toBe(0);
+      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
+      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
+      const stopped = groupBash(
+        `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+        [dir],
+        proc,
+        bunRowLimit
+      );
+      expect({ code: stopped.code, stdout: stopped.stdout }).toEqual({
+        code: 0,
+        stdout: "status 0\n",
+      });
+      expect(stopped.stderr).toMatch(
+        /^procs_naming: the walk of 1 entries of \S+ had not ended after [0-9.]+s \(proc_walk_deadline, its caller's bound\)/m
+      );
+      expect(stopped.stderr).toContain(
+        `stop_env_processes: stopped no process of the run under ${dir}`
+      );
+    },
+    bunRowLimit
+  );
 });
 
 // cmd_batch and cmd_run read SKILL_SCENARIOS_SOURCE through source_dir before they start anything.

@@ -262,7 +262,10 @@ describe("the box-login lock", () => {
     }
   });
 
-  test("refuses a second holder under another XDG_RUNTIME_DIR, naming the first, and is free again once the first is gone", async () => {
+  // The refusal names the holder by its command line as it runs now (box_login_args, its own
+  // /proc/PID/cmdline), which the row waits to be the `sleep 60` the holder execs into: a refusal
+  // that names only `pid N (` would read the same from the branch for a holder that has exited.
+  test("refuses a second holder under another XDG_RUNTIME_DIR, naming the first by its command line, and is free again once the first is gone", async () => {
     const file = join(dir, "test-box-login.lock");
     const holder = Bun.spawn(
       ["bash", "-c", helpers(file, "take_box_login_lock && echo locked && exec sleep 60")],
@@ -271,14 +274,19 @@ describe("the box-login lock", () => {
     try {
       const first = await holder.stdout.getReader().read();
       expect(new TextDecoder().decode(first.value)).toBe("locked\n");
+      // The exec into sleep is the kernel's, which no fake clock drives: the holder's own
+      // command line is read until it is sleep's.
+      for (let i = 0; i < 100; i++) {
+        if (readFileSync(`/proc/${holder.pid}/cmdline`, "utf8") === "sleep\u000060\u0000") break;
+        await Bun.sleep(20);
+      }
       const second = Bun.spawnSync(["bash", "-c", helpers(file, "take_box_login_lock")], {
         env: { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(dir, "xdg-b") },
       });
       expect(second.exitCode).toBe(1);
-      expect(second.stderr.toString()).toContain(
-        `another box-login proof holds ${file}: pid ${holder.pid} (`
+      expect(second.stderr.toString()).toBe(
+        `take_box_login_lock: another box-login proof holds ${file}: pid ${holder.pid} (sleep 60); one box-login proof runs at a time\n`
       );
-      expect(second.stderr.toString()).toContain("one box-login proof runs at a time");
     } finally {
       holder.kill();
       await holder.exited;
@@ -290,6 +298,37 @@ describe("the box-login lock", () => {
     ]);
     expect(third.exitCode).toBe(0);
     expect(third.stdout.toString()).toBe("locked\n");
+  });
+
+  // A holder that has exited while a process it started still holds the lock is named by the
+  // command line it recorded when it took the lock, and said to have exited.
+  test("names a holder that has exited by the command line it recorded, while a process it started holds the lock", () => {
+    const file = join(dir, "test-box-login-exited.lock");
+    const holder = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        helpers(file, "take_box_login_lock || exit\nsleep 60 </dev/null >/dev/null 2>&1 &\necho \"$$ $!\""),
+      ],
+      { env: { PATH: process.env.PATH ?? "" } }
+    );
+    const [pid, kept] = holder.stdout.toString().trim().split(" ").map(Number);
+    try {
+      expect(holder.exitCode).toBe(0);
+      const second = Bun.spawnSync(["bash", "-c", helpers(file, "take_box_login_lock")], {
+        env: { PATH: process.env.PATH ?? "" },
+      });
+      expect(second.exitCode).toBe(1);
+      expect(second.stderr.toString()).toStartWith(
+        `take_box_login_lock: another box-login proof holds ${file}: pid ${pid} (bash -c . `
+      );
+      expect(second.stderr.toString()).toEndWith(
+        ") has exited, and a process it started still holds the lock; one box-login proof runs at a time\n"
+      );
+    } finally {
+      // The sleep the holder left, by the pid it printed.
+      if (kept !== undefined && kept > 0) process.kill(kept, "SIGKILL");
+    }
   });
 });
 

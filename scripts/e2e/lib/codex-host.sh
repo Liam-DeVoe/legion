@@ -14,6 +14,10 @@
 # refuse, note, wait_for, isolated, close_held_fifos, register_session, told, withholds and
 # clients.sh's client_fifo, client_ready and send.
 
+# proc_children, every child of one process from its own /proc entry (lib/process-tree.sh).
+# shellcheck source-path=SCRIPTDIR source=process-tree.sh
+declare -F proc_children >/dev/null || . "${BASH_SOURCE[0]%/*}/process-tree.sh"
+
 declare -A codex_transcript=()
 
 # codex_pack: release.yaml's claude_envoy_build, scripts/build.ts --codex-out then `bun pm pack`
@@ -230,13 +234,14 @@ codex_cwd() {
 # codex_server_pid LABEL: the process of that session's plugin MCP server: the one the stand-in
 # names in its ready line, or, for a real Codex, the installed plugin's envoy-channel.js running in
 # that session's Codex home, found below the session's tmux pane (the Codex process tmux runs),
-# each process's children read from its /proc/PID/task/*/children and its command line from
-# /proc/PID/cmdline. Nothing walks every process of the machine: `pgrep -f`, which this used
-# before, reads every process's command line, with no bound, and a /proc entry that never answers
-# its reader held it for ever.
+# each process's children read from its own /proc entry (proc_children, lib/process-tree.sh) and
+# its command line from /proc/PID/cmdline. Nothing walks every process of the machine: `pgrep -f`,
+# which this used before, reads every process's command line, with no bound, and a /proc entry
+# that never answers its reader held it for ever. A tree whose children could not be read is no
+# answer: it fails, as for no server.
 codex_server_pid() {
-  local pane pid
-  local -a queue=() kids=() args=()
+  local pane pid kids
+  local -a queue=() args=()
   if [ "$hosts" = plugins ]; then
     jq -r 'select(.ready == true) | .serverPid' "${client_out[$1]}" 2>/dev/null | head -n 1
     return 0
@@ -256,9 +261,8 @@ codex_server_pid() {
           ;;
       esac
     fi
-    kids=()
-    read -r -a kids < <(cat /proc/"$pid"/task/*/children 2>/dev/null) || true
-    queue+=(${kids[@]+"${kids[@]}"})
+    kids=$(proc_children "$pid") || return 1
+    [ -z "$kids" ] || mapfile -t -O "${#queue[@]}" queue <<<"$kids"
   done
   return 1
 }

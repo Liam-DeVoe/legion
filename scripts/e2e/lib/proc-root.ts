@@ -27,3 +27,30 @@ export function linkProcesses(root: string, pids: readonly number[]): string {
   }
   return root;
 }
+
+/**
+ * Bun's own limit of a row that names none, in milliseconds.
+ */
+export const bunRowLimit = 5_000;
+
+/**
+ * What a row keeps of its limit for what it does after its walk, in milliseconds: reading the
+ * walk's answer and asserting on it, a few milliseconds of work on a quiet machine, with room for
+ * a loaded one. A walk held to the row's limit less this ends, naming its bound, before the row's
+ * limit ends the row with no word of the walk.
+ */
+export const walkReserve = 1_000;
+
+/**
+ * The environment entry that holds a walk of every process (`proc_walk_deadline`,
+ * lib/process-tree.sh) to its row's own limit: LIMIT milliseconds from STARTED, a `Date.now()`
+ * read as the row began, less walkReserve, in seconds since the epoch. The walk then gets what is
+ * left of the row's limit however slow the machine is, rather than a bound of its own measured on
+ * a quieter one.
+ */
+export function walkDeadlineEnv(
+  started: number,
+  limit = bunRowLimit
+): { readonly proc_walk_deadline: string } {
+  return { proc_walk_deadline: ((started + limit - walkReserve) / 1000).toFixed(6) };
+}
