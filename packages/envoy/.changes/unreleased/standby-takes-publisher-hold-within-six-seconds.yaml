@@ -16,11 +16,13 @@ body: |-
   holder's NATS client reconnects, through a cut or a silent connection, no longer waits for the
   reconnect: its sends wait for no connection, and its one wait is the 2 s probe of the connection,
   which ends when the batch does, so a holder whose NATS was found lost gives the hold up 2.0 to
-  2.1 s after the batch's start, where it took 6.0 to 6.1 s before. Dispatch's `/healthz` no
-  longer waits out a reconnect attempt either, so it answers through a silent cut of NATS, and nor
-  does an envoy-listener's `/healthz` for its role lane's client. A standby that takes the hold
-  over from a process that stopped renewing without releasing it now ends every database session
-  of that process, within what the six seconds leave after the old row lapsed and before it
+  2.1 s after the batch's start through a cut connection, and 2.25 to 2.3 s through a silent one,
+  where one bounded read of the connection's status adds 250 ms; before, it took 6.0 to 6.1 s.
+  Dispatch's `/healthz` no longer waits out a reconnect attempt either, so it answers through a
+  silent cut of NATS, and nor does an envoy-listener's `/healthz` for its role lane's client. A
+  standby that takes the hold over from a process that stopped renewing without releasing it now
+  ends every database session of that process, within what the six seconds leave after the old
+  row lapsed and before it
   publishes, or, when they leave too little, right after it begins to publish and before its first
   batch; so a write a frozen process had begun no longer holds that issue's other writes until the
   freeze ends. Every connection a Dispatch process opens names the process's identity, minted at

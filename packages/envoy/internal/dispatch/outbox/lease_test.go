@@ -943,7 +943,7 @@ func TestAHolderWhoseClientIsMidReconnectGivesThePublisherUpOnTime(t *testing.T)
 
 // A batch that begins while its client reconnects - the client found its connection lost a
 // moment before, as a batch that a scan starts at the loss's own wake does - ends for NATS lost
-// within probeTimeout of its start: its send does not wait for a reconnect that does not come, and
+// within probeTimeout and one bounded status read of its start: its send does not wait for a reconnect that does not come, and
 // the probe of the connection that follows is the batch's one wait for it. So a holder whose loss
 // a batch finds gives the publisher hold up in the time its grace allows (natsLossGrace), inside
 // the six seconds a standby takes over in, rather than once a send has waited out a reconnect.
