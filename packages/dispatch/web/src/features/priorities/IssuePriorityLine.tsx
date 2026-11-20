@@ -257,13 +257,16 @@ export function IssuePriorityLine({
       // as the P0-P3 tag's beside it is (`badge-select.ts`). Inside `NoTooltips` it is 28 px tall
       // from `md`, as the controls beside it in Details are (the repository's box, `main`'s input
       // in `RepoControl.tsx`, with its `md:min-h-7`; the labels' and the components' triggers'
-      // `sm:min-h-7`). Below 1280 px `styles.css` gives each a 44 px floor. The square lights under
-      // the pointer and dims while the trigger is `disabled` or `aria-disabled`, as the labels'
-      // trigger does: the trigger is the `group` its states are read from, since the square
-      // itself is never disabled.
+      // `sm:min-h-7`). Below 1280 px `styles.css` gives each a 44 px floor. On a phone, after a
+      // chip, the square stands 8 px after the chip's edge (`PriorityChip` gives its link no room
+      // at its right there): the hit area starts at that edge, over the line's gap, and keeps its
+      // 44 px to the square's right, above the chip's own target where the two meet. The square
+      // lights under the pointer and dims while the trigger is `disabled` or `aria-disabled`, as
+      // the labels' trigger does: the trigger is the `group` its states are read from, since the
+      // square itself is never disabled.
       triggerClassName={
         page === null
-          ? `group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 md:min-h-8 md:min-w-8 ${focusVisibleRing}`
+          ? `group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[a+&]:-ml-3 max-md:[a+&]:justify-start max-md:[a+&]:pl-2 md:min-h-8 md:min-w-8 ${focusVisibleRing}`
           : `inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`
       }
     >
@@ -309,7 +312,7 @@ export function IssuePriorityLine({
       // biome-ignore lint/a11y/useSemanticElements: the chips are links and a picker's trigger, which no form's fieldset holds; the group names them for a screen reader, since no word on the row does.
       <div
         aria-label="Advances"
-        className={`flex max-w-full flex-wrap items-center gap-1${className === undefined ? "" : ` ${className}`}`}
+        className={`flex max-w-full flex-wrap items-center gap-1 max-md:gap-x-3${className === undefined ? "" : ` ${className}`}`}
         data-testid="issue-advances"
         role="group"
       >

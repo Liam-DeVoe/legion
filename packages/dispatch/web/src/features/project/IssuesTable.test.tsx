@@ -1518,16 +1518,35 @@ test("a stored width under an inherited name such as toString is dropped", () =>
 });
 
 /** Makes `getBoundingClientRect` report the List's scroll box `width` pixels wide and every other
- *  element 100, each 40 high, until the row ends. The spy is on `Element.prototype`, which owns the
- *  method: one on `HTMLElement` would leave an own copy behind that shadows every later spy. */
-function stubScrollBoxWidth(width: number): void {
+ *  element 100, each 40 high, until the row ends; and the box's `offsetWidth` and `clientWidth`
+ *  its border box and the room inside its borders and beside its scrollbar, `edge` pixels less
+ *  (2, its two borders, by default). The spy is on `Element.prototype`, which owns the method:
+ *  one on `HTMLElement` would leave an own copy behind that shadows every later spy. The two
+ *  widths are getters happy-dom puts on `HTMLElement.prototype`, so they are replaced there and
+ *  put back as they were. */
+function stubScrollBoxWidth(width: number, edge = 2): void {
+  const isBox = (element: Element) => element.getAttribute("data-testid") === "issues-table-scroll";
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    const box = this.getAttribute("data-testid") === "issues-table-scroll";
-    return new DOMRect(0, 0, box ? width : 100, 40);
+    return new DOMRect(0, 0, isBox(this) ? width : 100, 40);
   });
   restores.push(() => rect.mockRestore());
+  for (const [name, boxWidth] of [
+    ["offsetWidth", width],
+    ["clientWidth", width - edge],
+  ] as const) {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+    Object.defineProperty(HTMLElement.prototype, name, {
+      configurable: true,
+      get(this: HTMLElement) {
+        return isBox(this) ? boxWidth : (original?.get?.call(this) ?? 0);
+      },
+    });
+    restores.push(() => {
+      if (original !== undefined) Object.defineProperty(HTMLElement.prototype, name, original);
+    });
+  }
 }
 
 /** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a
@@ -2426,22 +2445,26 @@ test("a project's table keeps the registry's opening set, sizes and minimums", (
 });
 
 // A table given a layout - a fault list of the priorities page - fits a desktop box: its Title
-// takes the width the other shown columns and the row's actions (104 px) leave, less the box's
-// 20 px edge, never below its 116 px minimum. One sizing path: the layout declares it (`fills`)
-// and `useTableLayout` applies it.
+// takes the width the other shown columns and the row's actions (104 px) leave inside the box's
+// borders and beside its scrollbar, never below its 116 px minimum. One sizing path: the layout
+// declares it (`fills`) and `useTableLayout` applies it.
 test("a layout's Title fills a desktop box with what the other shown columns and the row's actions leave", () => {
   const narrow = issueTableLayout(["project"], ["key", "title", "status"]);
   expect([narrow.fills, narrow.trailing]).toEqual(["title", 104]);
   const wide = renderHook(() => useTableLayout("fills-narrow", narrow));
   expect(wide.result.current.boxWidth).toBe(1000);
-  // Select 44, key 108 and status 132 shown, and the row's actions: 1000 - 388 - 20.
-  expect(wide.result.current.responsive.sizing.title).toBe(592);
+  // Select 44, key 108 and status 132 shown, and the row's actions, in a box not yet measured,
+  // whose borders read as nothing: 1000 - 388.
+  expect(wide.result.current.responsive.sizing.title).toBe(612);
   wide.unmount();
   // With more shown than leave Title its minimum, it stays at that minimum.
   const full = renderHook(() =>
     useTableLayout(
       "fills-full",
-      issueTableLayout(["project"], ["key", "title", "status", "claim", "updated", "project"])
+      issueTableLayout(
+        ["project"],
+        ["key", "title", "status", "assignee", "claim", "updated", "project"]
+      )
     )
   );
   expect(full.result.current.responsive.sizing.title).toBe(116);
@@ -2450,8 +2473,8 @@ test("a layout's Title fills a desktop box with what the other shown columns and
 
 /** A priority's page's work layout, which fits a box 606 px wide, the box that page leaves its
  *  work table beside the margin at 1280 px: it draws no row's actions (`rowActions`), so select
- *  44, key 96, status 150 and project 72 leave Title 224 of it, past its 116 px minimum, with the
- *  box's 20 px edge. */
+ *  44, key 96, status 150 and project 72 leave Title 242 of the 604 px inside the box's two
+ *  borders, past its 116 px minimum. */
 const FITS_NARROW = {
   key: "fits-narrow",
   opens: ["key", "title", "status", "project"],
@@ -2491,9 +2514,59 @@ async function narrowHeaders(width: number): Promise<{ cells: string[]; stacked:
 // columns cannot fit, keeps the phone's widths, and there Title's header stacks.
 test("a filling layout that fits a 606 px box lays it out as a desktop's", async () => {
   expect(await narrowHeaders(606)).toEqual({
-    cells: ["- 44px", "Key 96px", "Title 224px", "Project 72px", "Status 150px"],
+    cells: ["- 44px", "Key 96px", "Title 242px", "Project 72px", "Status 150px"],
     stacked: false,
   });
+});
+
+// The 20 px a narrow box keeps for its borders and a scrollbar is no gap in the table's lines:
+// Title takes the room inside the box, so the table is exactly as wide as the box's own inner
+// width and its header and rows reach the border, with two borders (604 px of 606) or with a
+// classic 17 px scrollbar beside them too (587 px), which no sideways scrollbar then follows.
+test("a filling layout's table is as wide as the room inside its box, beside a scrollbar too", async () => {
+  for (const [edge, title] of [
+    [2, 242],
+    [19, 225],
+  ] as const) {
+    stubScrollBoxWidth(606, edge);
+    table([issue("CORE-1", { advances: [{ id: "p", inherited: false }] })], "", undefined, {
+      layout: FITS_NARROW,
+      listing: { advances: "p" },
+    });
+    const list = await screen.findByRole("table", { name: "Priority issues table" });
+    await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
+    expect({
+      table: list.style.width,
+      title: within(list).getByRole("columnheader", { name: /^Title/ }).style.width,
+    }).toEqual({ table: `${606 - edge}px`, title: `${title}px` });
+    for (const restore of restores.splice(0)) restore();
+    localStorage.clear();
+  }
+});
+
+// The registry's pins are select, Priority, key and Title within 60% of a desktop's box, and
+// count the Priority column a work table opens hidden: in a 606 px box that leaves Title no room,
+// so the divider falls after the key. A layout that pins the checkbox, the key and Title keeps
+// Title pinned there, its divider after Title, as each fault list's is at 1280 px.
+test("a layout's pins keep Title pinned in a 606 px box, where the registry's would unpin it", async () => {
+  for (const [pins, last] of [
+    [undefined, "Key"],
+    [["select", "key", "title"], "Title"],
+  ] as const) {
+    stubScrollBoxWidth(606);
+    table([issue("CORE-1", { advances: [{ id: "p", inherited: false }] })], "", undefined, {
+      layout: { ...FITS_NARROW, key: `pins-${last}`, ...(pins === undefined ? {} : { pins }) },
+      listing: { advances: "p" },
+    });
+    const list = await screen.findByRole("table", { name: "Priority issues table" });
+    await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
+    const pinned = [...list.querySelectorAll<HTMLElement>("thead th")]
+      .filter((cell) => cell.style.left !== "")
+      .map((cell) => (cell.textContent ?? "").replace(/[▲▼]|Filter$/g, "") || "-");
+    expect(pinned.at(-1)).toBe(last);
+    for (const restore of restores.splice(0)) restore();
+    localStorage.clear();
+  }
 });
 
 test("the same layout in a 390 px phone's box keeps the phone's widths and stacks Title's header", async () => {
@@ -2506,7 +2579,8 @@ test("the same layout in a 390 px phone's box keeps the phone's widths and stack
 // `rowActions: false` leaves the row's actions out of a table whose listing holds rows they act
 // on: the queue's second row, which a table with them offers Start next on, draws no cell after
 // its columns, nor does the header, and the table is its columns' width alone. Title takes the
-// 104 px the actions take where they are drawn (`ROW_ACTIONS_WIDTH`): 120 + 104 in a 606 px box.
+// 104 px the actions take where they are drawn (`ROW_ACTIONS_WIDTH`): 138 + 104 in the 604 px
+// inside a 606 px box's borders.
 test("a layout that leaves out the row's actions draws no cell for them and gives their width to Title", async () => {
   stubScrollBoxWidth(606);
   const queued = { advances: [{ id: "p", inherited: false }], labels: ["legion"] };
@@ -2526,6 +2600,6 @@ test("a layout that leaves out the row's actions draws no cell for them and give
   ]);
   expect(second.querySelectorAll("td").length).toBe(headers.length);
   expect(within(list).queryByRole("button", { name: "Start next" })).toBeNull();
-  expect(within(list).getByRole("columnheader", { name: /^Title/ }).style.width).toBe("224px");
-  expect(list.style.width).toBe("586px");
+  expect(within(list).getByRole("columnheader", { name: /^Title/ }).style.width).toBe("242px");
+  expect(list.style.width).toBe("604px");
 });

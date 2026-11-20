@@ -73,8 +73,9 @@ export function IssuesTable({
   label?: string;
   /** The layout this table keeps, under its own key, where it is not its listing's: the whole
    *  set of columns it opens with shown (`opens`), registry and listing columns alike, every
-   *  other one opening hidden for the reader to show, and the widths it gives any column in
-   *  place of its own (`widths`, `issueTableLayout`). Given one, Title fills a desktop box: it
+   *  other one opening hidden for the reader to show, the widths it gives any column in place
+   *  of its own (`widths`), and the columns it pins at the left of a desktop's box in place of
+   *  the registry's (`pins`, `issueTableLayout`). Given one, Title fills a desktop box: it
    *  takes what the other shown columns and the row's actions leave (`fills`). `rowActions:
    *  false` draws no row's actions after the columns, no cell for a row's Start next, and keeps
    *  no width for them, as on a listing that holds no issue in Legion's queue (`listsQueued`):
@@ -86,6 +87,7 @@ export function IssuesTable({
     readonly opens: readonly IssueTableColumnId[];
     readonly widths?: IssueTableWidths;
     readonly rowActions?: boolean;
+    readonly pins?: readonly IssueTableColumnId[];
   };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
@@ -122,7 +124,8 @@ export function IssuesTable({
     listingColumns(listing, priorityTitles !== undefined),
     ownLayout?.opens,
     ownLayout?.widths,
-    actions
+    actions,
+    ownLayout?.pins
   );
   // One stored layout per project, one per layout a caller names, and one for every other scoped
   // table: the work advancing any priority is one table, so a reader who drags a column on it

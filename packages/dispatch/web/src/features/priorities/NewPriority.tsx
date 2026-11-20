@@ -6,12 +6,14 @@ import {
   surfaceBg,
   surfaceMutedHoverBg,
   textPrimaryOnCanvas,
+  toolbarControlHeight,
 } from "../../theme/classes";
 import { usePriorityWrites } from "./priority-writes";
 
 /** Each button here, in the classes of the Issues table toolbar's own button (`Clear filters`,
- *  `IssueTableToolbar`), so each is the size of the controls it stands beside. */
-const BUTTON = `rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`;
+ *  `IssueTableToolbar`), so each is the size of the controls it stands beside: from 1280 px up
+ *  the one height of a toolbar's controls (`toolbarControlHeight`). */
+const BUTTON = `rounded-lg border px-2 py-1.5 text-sm ${toolbarControlHeight} ${borderDefault} ${surfaceMutedHoverBg}`;
 
 /**
  * The way a priority is added: a button that opens a one-line form for its title. It stands in
@@ -45,7 +47,7 @@ export function NewPriority(): ReactNode {
         >
           <input
             aria-label="Title of the new priority"
-            className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+            className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${toolbarControlHeight} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
             maxLength={ISSUE_TITLE_MAX}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="What the new priority is"

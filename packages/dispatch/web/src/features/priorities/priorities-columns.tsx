@@ -149,9 +149,13 @@ function TitleCell({ item }: { item: PriorityItem }) {
             onSave={(next) => actions.onDescribe(item, next)}
           />
         ) : item.summary === "" ? null : (
-          // A closed row shows the description's first line, whole, muted and wrapped like the
-          // title above it; the line is its tooltip too, and the open row shows the rest.
-          <p className={`break-words text-xs ${textMutedOnCanvas}`} title={item.summary}>
+          // A closed row shows the description's first line, muted, in at most two lines that
+          // end in '…' where it runs on; the whole line is its tooltip, and the open row shows
+          // the whole description in its editor.
+          <p
+            className={`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`}
+            title={item.summary}
+          >
             {item.summary}
           </p>
         )}
@@ -160,17 +164,10 @@ function TitleCell({ item }: { item: PriorityItem }) {
   );
 }
 
-/** The owner on one line, the whole of it in the tooltip: an owner is free text, and a long one
- *  would make its row as tall as the list. */
+/** The owner, whole: an owner is free text, often a list of who holds the priority, and the
+ *  reader reads all of it, so it wraps in its column and nothing cuts it. */
 function OwnerCell({ owner }: { owner: string }) {
-  return (
-    <span
-      className={`block truncate ${textSecondaryOnCanvas}`}
-      title={owner === "" ? undefined : owner}
-    >
-      {owner}
-    </span>
-  );
+  return <span className={`block break-words ${textSecondaryOnCanvas}`}>{owner}</span>;
 }
 
 /** A count, at its column's right edge under its header's words (`numeric`). */

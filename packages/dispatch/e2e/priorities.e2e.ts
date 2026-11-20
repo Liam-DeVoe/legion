@@ -28,6 +28,7 @@ import {
 } from "./api";
 import { actionBar } from "./editor";
 import { pauseClock } from "./page-clock";
+import { settledValue } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -1611,14 +1612,14 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
     const oneHeight = (controls: readonly { height: number }[]) =>
       Math.max(...controls.map((c) => c.height)) - Math.min(...controls.map((c) => c.height)) <= 1;
     const expectTablesAndToolbars = async (where: string) => {
-      const short = await linesShort();
+      const short = await settledValue(`${where}: the tables' lines`, linesShort);
       for (const [table, gap] of Object.entries(short)) {
         soft(
           gap.header <= 1 && gap.rows <= 1,
           `${where}: the ${table}'s header line and row lines reach its box's right border (short by ${JSON.stringify(gap)} px)`
         ).toBe(true);
       }
-      for (const controls of await toolbarHeights()) {
+      for (const controls of await settledValue(`${where}: the toolbars`, toolbarHeights)) {
         const heights = controls.map((c) => `${c.name} ${Math.round(c.height)}`).join(", ");
         soft(
           oneHeight(controls),
@@ -2059,10 +2060,13 @@ test("a priority's margin is its history alone, newest first, each act with who 
     expect(acts[4]?.value).toBe("bob");
     // The margin lists them in that order, with a run of writes of one field by one person -
     // here the three saves - read as one entry, its newest. A write of another field, or by
-    // another person, ends a run. So each entry is read against the act the server holds at
-    // its place once runs are folded: who made it, and the moment it carries.
-    const listed = acts.filter((act, at) => {
-      const newer = acts[at - 1];
+    // another person, ends a run. The visibility the priority was written with is part of
+    // "wrote this priority" and no entry of its own, so it is left out before the runs fold
+    // (INFRA-2947 R7, check 138e9e4d). So each entry is read against the act the server holds
+    // at its place once runs are folded: who made it, and the moment it carries.
+    const shown = acts.filter((act) => act.field !== "visibility");
+    const listed = shown.filter((act, at) => {
+      const newer = shown[at - 1];
       return (
         newer === undefined ||
         act.field === "advances" ||

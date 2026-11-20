@@ -18,6 +18,7 @@ import {
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
+  toolbarControlHeight,
 } from "../../theme/classes";
 import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
@@ -127,6 +128,9 @@ export function ColumnFilter<TData>({
   );
 }
 
+/** How a popover's button is drawn where its host names no look of its own. */
+const POPOVER_TRIGGER = `rounded-md border px-2 py-1 text-xs font-normal whitespace-nowrap ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas}`;
+
 /** A button and the panel it opens: the table's own popovers, on the shared `AnchoredPanel`. */
 export function Popover({
   label,
@@ -166,10 +170,7 @@ export function Popover({
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={title}
-        className={
-          labelClassName ??
-          `rounded-md border px-2 py-1 text-xs font-normal whitespace-nowrap ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas}`
-        }
+        className={labelClassName ?? POPOVER_TRIGGER}
         onClick={() => setOpen(!open)}
         ref={trigger}
         title={title}
@@ -194,10 +195,15 @@ export function Popover({
 }
 
 /** The column control of a table of any row type: this table's rows are issues, and the
- *  priorities pages hold priorities and fault rows (`priorities/priority-table-controls.tsx`). */
+ *  priorities pages hold priorities and fault rows (`priorities/priority-table-controls.tsx`).
+ *  It stands in a toolbar, so from 1280 px up it is as tall as the controls beside it. */
 export function ColumnsMenu<Row>({ columns }: { columns: Column<Row, unknown>[] }): ReactNode {
   return (
-    <Popover align="right" label="Columns">
+    <Popover
+      align="right"
+      label="Columns"
+      labelClassName={`${POPOVER_TRIGGER} ${toolbarControlHeight}`}
+    >
       {() =>
         columns
           .filter((column) => column.getCanHide())
@@ -328,11 +334,13 @@ export function IssueTableToolbar({
       {/* The toolbar is one row where the search box, its whole placeholder (about 406 px) and
           the five controls after it (about 557 px with their gaps) fit; in a narrower box, as
           beside a priority's margin, the search box takes a row of its own and the controls the
-          row under it, rather than cut the placeholder and leave the last control alone. */}
+          row under it, rather than cut the placeholder and leave the last control alone. From
+          1280 px up every control stands at one height (`toolbarControlHeight`); below it each
+          takes the 44 px floor `styles.css` gives a control. */}
       <div className="@container flex flex-wrap items-center gap-2">
         <input
           aria-label="Search issues"
-          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 @max-[61rem]:basis-full ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 @max-[61rem]:basis-full ${toolbarControlHeight} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
           onChange={(event) => {
             setSearch(event.target.value);
           }}
@@ -344,7 +352,7 @@ export function IssueTableToolbar({
         <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
           Group by
           <select
-            className={`rounded-lg border px-2 py-1.5 ${borderDefault} ${surfaceBg}`}
+            className={`rounded-lg border px-2 py-1.5 ${toolbarControlHeight} ${borderDefault} ${surfaceBg}`}
             onChange={(event) => {
               setGrouping(event.target.value ? [event.target.value] : []);
               setExpanded(true);
@@ -363,10 +371,10 @@ export function IssueTableToolbar({
           </select>
         </label>
         <ColumnsMenu columns={table.getAllLeafColumns()} />
-        <IssueFlagChips />
+        <IssueFlagChips inToolbar />
         {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
           <button
-            className={`rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
+            className={`rounded-lg border px-2 py-1.5 text-sm ${toolbarControlHeight} ${borderDefault} ${surfaceMutedHoverBg}`}
             onClick={() =>
               setParams(
                 (current) => {

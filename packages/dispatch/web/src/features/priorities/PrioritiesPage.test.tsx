@@ -565,11 +565,13 @@ test("a row counts the work in flight, waiting and parked, shows its newest even
   expect(texts(second).slice(3)).toEqual(["1", "0", "3", "2", "Never"]);
 });
 
-test("the first line of a description shows on a closed row and the whole of it when it opens", async () => {
+test("the first line of a description shows on a closed row, in two lines at most, and the whole of it when it opens", async () => {
   const user = userEvent.setup();
   const { editors } = page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
   await screen.findByRole("row", { name: "#1 Legion works reliably first" });
-  expect(screen.getByText("The first line.")).toBeDefined();
+  // Closed, the row shows the description's first line, clamped to two lines that end in '…'
+  // where it runs on.
+  expect(screen.getByText("The first line.").className.split(" ")).toContain("line-clamp-2");
   await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
   // Open, the row holds the whole description in the documents' editor, its line break read as
   // the space a paragraph's soft break is.
@@ -639,14 +641,18 @@ test("a title is a link to the priority's own page, where it is renamed, and no 
   );
   expect(within(row).queryByRole("textbox")).toBeNull();
   expect(screen.getByRole("columnheader", { name: /^#/ })).toBeDefined();
-  // A long owner is cut to one line in the row, and its whole text is the cell's tooltip.
-  expect(within(row).getByTitle("BET controller").className).toContain("truncate");
+  // An owner is drawn whole: it wraps in its column, and nothing cuts it to one line.
+  const owner = within(row).getByText("BET controller");
+  expect({
+    cut: /truncate|line-clamp|text-ellipsis|whitespace-nowrap/.test(owner.className),
+    text: owner.textContent,
+  }).toEqual({ cut: false, text: "BET controller" });
 });
 
 // Production's titles run to 94 characters, and a reader reads each one whole: the title wraps
 // in its column as a link to the priority's page, and nothing clamps or cuts it. The first line
-// of the description under it reads whole too, wrapped in the small muted type, with the whole
-// line its tooltip.
+// of the description under it is clamped to two lines, in the small muted type, ending in '…'
+// where it runs on, with the whole line its tooltip.
 test("a 94-character title shows whole on its row, with no clamp and no cut", async () => {
   const long =
     "Every Legion phase worker reaches a merged pull request without a person's hands in between it";
@@ -676,10 +682,7 @@ test("a 94-character title shows whole on its row, with no clamp and no cut", as
   }
   const line = within(row).getByTitle(summary);
   expect(line.textContent).toBe(summary);
-  expect({
-    classes: line.className,
-    cut: /line-clamp|truncate|text-ellipsis|whitespace-nowrap/.test(line.className),
-  }).toEqual({ classes: `break-words text-xs ${textMutedOnCanvas}`, cut: false });
+  expect(line.className).toBe(`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`);
 });
 
 test("the reader's description kept beside a row outlives the row leaving the table, and is written when they use it", async () => {

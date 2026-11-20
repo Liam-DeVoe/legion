@@ -67,10 +67,13 @@ function firstMachine(): string {
 }
 
 /** The priorities this corpus writes, in the order they are written, which is the one order: a
- *  priority takes the last place of it as it is written (`POST /api/v1/priorities`). Each title
- *  is as long as production's run (70 to 94 characters), so the shots read whether a page shows a
- *  whole title: the Priorities tab lists five of them, the Parked tab names the first after its
- *  chip, and the first's own page is the `priority` route.
+ *  priority takes the last place of it as it is written (`POST /api/v1/priorities`). They are
+ *  shaped as production's thirteen are, so the shots read the pages a reader reads there: titles
+ *  of 12 to 94 characters, a mix of short and long; owners of 5 to 43 characters, a person's
+ *  login, a controller, a list of controllers and "None named"; and a description on every one,
+ *  of 400 to 1,900 characters, some of several paragraphs. The text is invented and names no one
+ *  real. The Priorities tab lists all of them, the Parked tab names the first after its chip,
+ *  and the first's own page is the `priority` route.
  *
  *  The first is the one `/priorities/:id` opens. It is written as the signed-in person rather
  *  than over the agent bearer, as every one is, because the margin of that page draws who wrote
@@ -81,31 +84,189 @@ function firstMachine(): string {
 const PRIORITIES = [
   {
     description:
-      "Every reader of this deployment reaches the same corpus in one command.\n\n" +
-      "The work under it is the seeding, the sign-in and the pages both review layers read, " +
-      "from [the priorities page](/priorities).",
+      "Every change that reaches the build fleet is verified before a person is asked to read " +
+      "it, so a reviewer opens work that already builds, passes its checks and says what it " +
+      "proves.\n\n" +
+      "The work under it is the verification run each change starts, the record it leaves " +
+      "beside the change, and the pages both review layers read, from " +
+      "[the priorities page](/priorities). It is finished when no reviewer reads a change whose " +
+      "checks have not run, and when a check that failed says which line of the change it read.",
+    owner: "Verify's, Fleet's and Release's controllers",
+    title: "Every change that reaches the build fleet is verified before a person reads it",
+  },
+  {
+    description:
+      "The docs site says what the product does today, in the words a new reader looks for. " +
+      "Each page names the version it was checked against, and a page nobody has checked in a " +
+      "quarter says so at its top rather than reading as current. The work is a pass over every " +
+      "page, a check that fails the docs build when a page names a command that no longer " +
+      "exists, and a short list of the pages readers open most, which are read first.",
     owner: "alice",
-    title:
-      "Local testing is one command for every reader of this deployment, on any developer machine",
+    title: "Docs refresh",
   },
   {
-    owner: "bob",
+    description:
+      "A release leaves the build fleet when its checks are green, and nobody waits on a " +
+      "person to press a button for it.\n\n" +
+      "Today a release waits for someone to read the run, compare it with the last one and " +
+      "start the rollout by hand. Most of that reading is the same every time: the same checks, " +
+      "the same thresholds, the same three dashboards. The work under this priority writes " +
+      "those readings down as checks the release run makes itself, so a release that meets " +
+      "them goes out and one that misses them stops and says which reading it missed.\n\n" +
+      "It is not finished while any release needs a person to start it. It is finished when the " +
+      "last ten releases went out on their own, and the ones that stopped stopped for a reason " +
+      "a person agreed with on reading it. A release that stopped is started again by the " +
+      "change that fixes what it missed, never by a person pressing the button anyway, so the " +
+      "readings stay the only way out of the fleet.",
+    owner: "The platform controller",
     title:
-      "Every Legion phase worker reaches a merged pull request without a person's hand in between it",
+      "A release leaves the build fleet on its own once its checks pass, and nobody waits to start it",
   },
   {
-    owner: "alice",
-    title:
-      "Dispatch answers each reader in under a second, on every page, at the load we are heading to",
+    description:
+      "The release notes are written as the work lands rather than on the day of the release. " +
+      "Each change that a reader of the notes would notice carries a line for them, written by " +
+      "whoever made the change, in the words a reader uses. The release gathers those lines, " +
+      "orders them by what a reader does first, and leaves out what no reader sees.\n\n" +
+      "It is finished when a release's notes are ready the moment its run is green, and nobody " +
+      "spends the release day reading a month of changes to find out what went into it. A " +
+      "change with no line for its readers says why it needs none.",
+    owner: "None named",
+    title: "Release notes",
   },
   {
-    owner: "bob",
-    title:
-      "Sessions resume where they stopped, across a pod replacement, with nothing a person typed lost",
+    description:
+      "The build fleet runs on hosts that are replaced as a matter of course: an image is " +
+      "built, a host takes it, and the host before it is drained and returned. Today a host " +
+      "that is drained in the middle of a build loses the build, and the build starts again " +
+      "from the beginning on another host.\n\n" +
+      "The work under this priority makes a build survive its host. A build writes what it has " +
+      "done so far where the next host can read it, the drain waits for that write, and the " +
+      "next host starts from it rather than from nothing. It is finished when a week of host " +
+      "replacements costs no build more than the minute its new host takes to start, and the " +
+      "fleet's dashboard shows no build lost to a drain.",
+    owner: "Release's and Docs' controllers",
+    title: "A build survives the replacement of the host it runs on",
   },
   {
-    owner: "alice",
-    title: "Cost per merged change falls each week, as the daily work-cost reading measures it",
+    description:
+      "Verification reads every change the same way, whoever made it and however large it is, " +
+      "and says in one place what it found.\n\n" +
+      "Today there are four places a change is checked: the unit suites, the browser suites, " +
+      "the review of its plan and the reading of its result. Each reports on its own page, in " +
+      "its own words, and a reader who wants to know whether a change is ready opens all four " +
+      "and puts the answer together themselves. Two of them can disagree, and when they do " +
+      "the reader has no way to tell which one read the newer state of the change.\n\n" +
+      "The work under this priority gives a change one record of its verification. Each check " +
+      "writes its result there, with the commit it read, the command it ran and what it found, " +
+      "and the record says which results are current and which were read from an older commit. " +
+      "A change is ready when every check it names has a current result and each result is a " +
+      "pass, and the record says so in those words.\n\n" +
+      "It also covers what happens when a check is wrong. A check that fails on a change that " +
+      "is right is a defect of the check, and the record keeps the reason a person gave for " +
+      "reading past it, so the next reader sees the same reason rather than the same failure " +
+      "with nothing beside it. A check that passes on a change that is wrong is found by the " +
+      "change that fixes it, and that change names the check, so the record of the check shows " +
+      "it once let a defect through.\n\n" +
+      "It is finished when a reader answers whether a change is ready from one page, in under " +
+      "a minute, without opening a log, and when the four places a change was checked before " +
+      "no longer report anything the record does not already hold. The pages those four places " +
+      "drew stay readable for the changes they recorded, and each one says, at its top, where " +
+      "the record of a newer change is read instead, so a reader who follows an old link is " +
+      "sent to the place that answers.",
+    owner: "The build fleet's owner",
+    title: "Verification reads every change in the same way",
+  },
+  {
+    description:
+      "A search over the docs site finds the page a reader means, by the words they use for " +
+      "it rather than the words the page was written in. The work is a list of the hundred " +
+      "searches readers made last month that opened no page, each with the page that should " +
+      "have answered it, and a change to the search that makes each of them open that page. " +
+      "It is finished when that list, read again a month later, holds fewer than ten searches.",
+    owner: "The docs controller",
+    title: "Docs search finds the page a reader means",
+  },
+  {
+    description:
+      "The test suites that fail on a change and then pass on the same change, with nothing " +
+      "changed between the two runs, are found and fixed rather than run again until they pass.\n\n" +
+      "Each run of the suites records which rows failed and on which commit. A row that fails " +
+      "and then passes on one commit is a flaky row, and it is listed with the runs it failed " +
+      "in. The work under this priority reads that list every week, fixes the row at the top of " +
+      "it, and writes down what made it flaky, so the next row that fails for the same reason " +
+      "is fixed the same way.",
+    owner: "Verification's controller",
+    title: "A failing test row is fixed, never run again",
+  },
+  {
+    description:
+      "Every host of the build fleet takes a security patch within a day of its release. " +
+      "Today a patch waits for the next image, which is built weekly, so a host can run for " +
+      "six days with a patch it does not have. The work is a patch run that builds an image " +
+      "the day a patch is released and replaces the hosts with it, one at a time, without " +
+      "losing a build; and a page that lists each host with the newest patch it runs.\n\n" +
+      "It is finished when that page shows no host more than a day behind, for a month.",
+    owner: "The fleet controller",
+    title: "Patch within a day",
+  },
+  {
+    description:
+      "A person who opens the product for the first time reaches a working setup in one " +
+      "sitting, without asking anybody for anything.\n\n" +
+      "The work under it is the first page a new reader sees, the one command that starts " +
+      "the stack on their machine, the sample data that command loads, and the short tour " +
+      "that walks them from that data to their own. Each step says what it is waiting on " +
+      "while it waits, and a step that fails says what to do next in the words of the page " +
+      "it failed on. It is finished when five people who have never used the product each " +
+      "reach their own first page in under half an hour, reading nothing but what the product " +
+      "shows them on the way.",
+    owner: "Docs and support",
+    title: "A one-sitting setup",
+  },
+  {
+    description:
+      "The cost of a merged change is read every day, from what the build fleet and the " +
+      "checks spent on it, and the reading falls from one week to the next.\n\n" +
+      "The work under it is the reading itself, which today is put together by hand once a " +
+      "month; a page that shows it each day with the week before it; and the changes that make " +
+      "it fall, chosen from what the reading shows is most of the cost. The first of those is " +
+      "the browser suite, which every change runs in full although most changes touch none of " +
+      "the pages it reads. A change that touches no page runs the rows that read the pages it " +
+      "touches and no other.",
+    owner: "The eval controller",
+    title: "The cost of a merged change falls each week, as the daily reading measures it",
+  },
+  {
+    description:
+      "A session that stops, because its host was replaced or its connection dropped, resumes " +
+      "where it stopped, with nothing a person typed into it lost.\n\n" +
+      "Today a stopped session starts again from its last saved turn, and whatever the person " +
+      "wrote after that turn is gone. Most of the time that is a sentence or two; once a week " +
+      "or so it is a long message written over several minutes, and the person writes it " +
+      "again from memory. The work under this priority keeps what a person types where the " +
+      "session's next host can read it, as they type it, and the next host offers it back to " +
+      "them the moment the session resumes.\n\n" +
+      "It is finished when a month of host replacements and dropped connections loses no word " +
+      "anybody typed, and when the page that resumes a session says it did so in one line " +
+      "rather than leaving the person to notice that nothing changed.",
+    owner: "None named",
+    title: "Sessions resume where they stopped, with nothing a person typed into them lost",
+  },
+  {
+    description:
+      "Every page a reader opens answers in under a second, at the load the product is " +
+      "heading to rather than the load it has today.\n\n" +
+      "The work under this priority is a load run that opens each page the way a reader does, " +
+      "at ten times today's traffic, and records how long each one took to answer; a list of " +
+      "the pages that took longer than a second, slowest first; and a change for each page on " +
+      "that list that brings it under. The run is part of every release, so a change that " +
+      "makes a page slower stops the release that carries it and names the page.\n\n" +
+      "It is finished when the run's list is empty for three releases in a row, and when the " +
+      "slowest page of each run is shown on the release's own page beside its checks, so a " +
+      "reader of the release sees how near the bound the slowest page stood.",
+    owner: "The release team",
+    title: "Every page answers in under a second at the load we are heading to",
   },
 ] as const;
 
@@ -260,24 +421,25 @@ Each page is read once it is drawn.
   // under them. The workflow issue stands in `in_progress`, so the first's row counts one in
   // flight and its own page lists it; the freshness-folds issue stands in `backlog`, so it is
   // the row of the second fault list, parked under the first. Three issues standing in triage
-  // advance the next three, so their rows count work waiting; the fifth has none yet. Every
+  // advance the next three, so their rows count work waiting; the rest have none yet. Every
   // other issue of the corpus that is in flight advances none, which is what fills the first
   // fault list. The relations are written last, so the activity of each issue keeps the order
   // the rows above it were seeded in, and each write is one after the other: a priority's margin
   // lists its history newest first by the order the store wrote it, so two writes made at once
   // land in either order and the page differs between two runs of one tree (the 68 pixels the
-  // visual review read on `priority` in two rounds).
-  const [first, second, third, fourth, fifth] = PRIORITIES;
+  // visual review read on `priority` in two rounds). The priorities are written one after
+  // another too, since each takes the last place of the order as it is written.
+  const [first, second, third, fourth, ...rest] = PRIORITIES;
   const priority = await createPriority(first);
-  const phases = await createPriority(second);
-  const speed = await createPriority(third);
-  const resume = await createPriority(fourth);
-  await createPriority(fifth);
+  const docs = await createPriority(second);
+  const releases = await createPriority(third);
+  const notes = await createPriority(fourth);
+  for (const one of rest) await createPriority(one);
   await patchIssue(issue, { advances: [priority.id] });
   await patchIssue(workspace.issues.folds, { advances: [priority.id] });
-  await patchIssue(workspace.issues.rotate, { advances: [phases.id] });
-  await patchIssue(workspace.issues.snooze, { advances: [speed.id] });
-  await patchIssue(workspace.issues.retracted, { advances: [resume.id] });
+  await patchIssue(workspace.issues.rotate, { advances: [docs.id] });
+  await patchIssue(workspace.issues.snooze, { advances: [releases.id] });
+  await patchIssue(workspace.issues.retracted, { advances: [notes.id] });
 
   // The slug of the `Runbook` document `seedWorkspace` creates: read back rather than assumed,
   // so a rename there fails this seed instead of the page it opens.

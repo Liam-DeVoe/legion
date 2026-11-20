@@ -26,7 +26,11 @@ import { priorityPath } from "./priority-routes";
  * since, is named by its id.
  *
  * The chip is the link's inner box, so the link can grow to the 44 px target narrow windows give
- * every link (`styles.css`) while the chip keeps its size.
+ * every link (`styles.css`) while the chip keeps its size. Below 768 px, where the untitled chip
+ * stands first in the issue header's details row, the link is as wide as the chip and its 44 px
+ * target is a box drawn round it (`::after`, centred on the chip) rather than room at its right:
+ * the row then places what follows the chip by the chip's own edge, whatever its place's digits
+ * (`IssuePriorityLine`'s "+", 8 px after it).
  */
 export function PriorityChip({
   id,
@@ -61,7 +65,7 @@ export function PriorityChip({
       className={
         titled
           ? "group flex min-w-0 items-baseline gap-1.5"
-          : "group inline-flex shrink-0 items-center"
+          : "group inline-flex shrink-0 items-center max-md:relative max-md:min-w-0! max-md:after:absolute max-md:after:inset-y-0 max-md:after:left-1/2 max-md:after:w-11 max-md:after:-translate-x-1/2"
       }
       title={tooltips ? (inherited ? `${whole}, inherited from an issue above` : whole) : undefined}
       to={priorityPath(id)}

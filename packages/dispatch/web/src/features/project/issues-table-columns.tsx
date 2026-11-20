@@ -426,7 +426,8 @@ export const ROW_ACTIONS_WIDTH = 104;
 const ALWAYS_SHOWN: ColumnId = "select";
 
 /** Each layout `issueTableLayout` built, by its listing columns, the columns it opens with (or
- *  none, for a project's opening set), the widths it names and the row's actions' width. */
+ *  none, for a project's opening set), the widths it names, the row's actions' width and the
+ *  columns it pins. */
 const layouts = new Map<string, LayoutColumns>();
 
 /**
@@ -439,17 +440,20 @@ const layouts = new Map<string, LayoutColumns>();
  * fills a desktop box (`fills`, `useTableLayout`): it takes the width the other shown columns
  * and the row's actions (`actions`, none where the table draws none) leave.
  * `widths` puts a column's starting width and minimum in place of the registry's or the listing
- * column's. A project's table names neither; each fault list of the priorities page names its
- * own. Built once for each set and kept, since the stored layout is read again whenever this
- * object changes (`useTableLayout`).
+ * column's, and `pins` the columns pinned at the left of a desktop's box in place of the
+ * registry's (`LayoutPins.wide`), where the registry's would count a column the table opens
+ * hidden. A project's table names none of them; each fault list of the priorities page and a
+ * priority's work table name their own. Built once for each set and kept, since the stored
+ * layout is read again whenever this object changes (`useTableLayout`).
  */
 export function issueTableLayout(
   columns: readonly ListingColumnId[],
   opens?: readonly IssueTableColumnId[],
   widths: IssueTableWidths = {},
-  actions = ROW_ACTIONS_WIDTH
+  actions = ROW_ACTIONS_WIDTH,
+  pins?: readonly IssueTableColumnId[]
 ): LayoutColumns {
-  const name = `${columns.join(" ")}|${opens === undefined ? "*" : opens.join(" ")}|${JSON.stringify(widths)}|${actions}`;
+  const name = `${columns.join(" ")}|${opens === undefined ? "*" : opens.join(" ")}|${JSON.stringify(widths)}|${actions}|${pins === undefined ? "*" : pins.join(" ")}`;
   const built = layouts.get(name);
   if (built !== undefined) return built;
   const listing = LISTING_COLUMNS.filter(({ id }) => columns.includes(id));
@@ -458,6 +462,7 @@ export function issueTableLayout(
   const named = Object.entries(widths).flatMap(([id, width]) =>
     width === undefined ? [] : [[id, width] as const]
   );
+  const registryPins = ISSUE_TABLE_COLUMNS.pins;
   const layout: LayoutColumns = {
     ...ISSUE_TABLE_COLUMNS,
     ids,
@@ -480,6 +485,9 @@ export function issueTableLayout(
       ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
       ...Object.fromEntries(named.map(([id, { min }]) => [id, min])),
     },
+    ...(pins === undefined || registryPins === undefined
+      ? {}
+      : { pins: { ...registryPins, wide: { ...registryPins.wide, columns: pins } } }),
     ...(opens === undefined ? {} : { fills: "title", trailing: actions }),
   };
   layouts.set(name, layout);

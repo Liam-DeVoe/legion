@@ -29,12 +29,16 @@ const WORK_PREFIX = "w";
  *  key, the project's key, and the status with its longest pill, "Needs review", whole inside
  *  the cell's padding. It draws no row's actions after them (`rowActions`), so no empty column
  *  stands at its right: the selection's bar keeps Start next. Title takes all the width they
- *  leave, and wraps in its two lines. Its key is its own, not the one a scoped table without a
- *  layout keeps (`IssuesTable`), whose stored layouts were written for a project's opening set
- *  and would show that set again here. */
+ *  leave, and wraps in its two lines. It pins the checkbox, the key and Title (`pins`), so its
+ *  pinned divider falls after Title as each fault list's does: the registry's pins count the
+ *  Priority column this table opens hidden, which in that box left Title no room to stay
+ *  pinned. Its key is its own, not the one a scoped table without a layout keeps
+ *  (`IssuesTable`), whose stored layouts were written for a project's opening set and would
+ *  show that set again here. */
 const WORK_LAYOUT = {
   key: "priority-page-work",
   opens: ["key", "title", "status", "project"],
+  pins: ["select", "key", "title"],
   rowActions: false,
   widths: {
     key: { min: 96, size: 96 },

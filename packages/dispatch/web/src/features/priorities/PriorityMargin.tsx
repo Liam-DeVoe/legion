@@ -33,12 +33,15 @@ function actWords(act: PriorityAct): string {
       return "moved the order";
     case "state":
       return act.value === "gone" ? "ended this priority" : "wrote this priority";
-    case "visibility":
-      return "wrote who can see this priority";
     default:
       return `wrote the ${act.field}`;
   }
 }
+
+/** The field of the act that writes who may see a priority. The server writes it with the
+ *  priority, and no control of these pages writes it, so it is a part of "wrote this priority"
+ *  and the margin draws no entry of its own for it; the history keeps it. */
+const VISIBILITY = "visibility";
 
 /** The history as the margin lists it, newest first: a run of consecutive writes of one field by
  *  one actor - every save of a field while it is being written, half a second apart - is one
@@ -64,7 +67,8 @@ function foldRuns(acts: readonly PriorityAct[]): PriorityAct[] {
  *  (`GET /api/v1/priorities/{id}/history`): each write of its title, description, owner and
  *  order, and each `advances` relation an issue asserted or retracted on it, each naming who
  *  stated it and when, under the day it happened on, consecutive writes of one field by one
- *  actor read as one (`foldRuns`). */
+ *  actor read as one (`foldRuns`). The visibility the priority was written with is no entry
+ *  (`VISIBILITY`). */
 function PriorityHistory({ id }: { id: string }): ReactNode {
   const history = useQuery(priorityHistoryQuery(id));
   if (history.isPending) return <LoadingSkeleton label="Loading what happened" />;
@@ -80,7 +84,7 @@ function PriorityHistory({ id }: { id: string }): ReactNode {
   let day = "";
   return (
     <ol className="space-y-3">
-      {foldRuns(history.data).map((act) => {
+      {foldRuns(history.data.filter((act) => act.field !== VISIBILITY)).map((act) => {
         const heading = dayLabel(dateKey(act.at), today);
         const first = heading !== day;
         day = heading;

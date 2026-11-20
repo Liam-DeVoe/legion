@@ -129,6 +129,31 @@ test("the margin lists the priority's own history, newest first, with each actor
   ]);
 });
 
+// The server writes a priority's visibility with the priority, and no control of these pages
+// writes it, so it is part of "wrote this priority": the margin lists no entry of its own for
+// it, while the history the server answers keeps the act.
+test("the visibility a priority is written with is no entry of the margin", async () => {
+  const visibility: PriorityAct = {
+    actor: alice,
+    asserted: true,
+    at: "2026-11-10T09:00:00Z",
+    field: "visibility",
+    issue: "",
+    value: "everyone",
+  };
+  margin([...HISTORY, visibility]);
+  await screen.findByText("wrote this priority");
+  expect(entries().map(({ words }) => words)).toEqual([
+    "retracted the relation to the issue CORE-4",
+    "related the issue CORE-4",
+    "moved the order",
+    "wrote the owner “INFRA controller”",
+    "wrote the title “Rocq and Lean speed work restarted”",
+    "wrote the description",
+    "wrote this priority",
+  ]);
+});
+
 test("the history is the whole list: nothing says the rest is not listed", async () => {
   margin();
   await screen.findByText("moved the order");

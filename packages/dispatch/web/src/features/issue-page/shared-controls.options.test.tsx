@@ -1430,9 +1430,9 @@ test("the priorities' trigger has the height of its siblings in Details", async 
       } else {
         // Outside, the trigger is a hit area that draws nothing, 44 px tall and 32 px from `md`
         // as the P0-P3 tag's beside it is, around the bordered square it draws, whose hover and
-        // dimming it keys (`group`).
+        // dimming it keys (`group`); on a phone, after a chip, its square stands 8 px after it.
         expect(trigger.getAttribute("class")).toBe(
-          "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
+          "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[a+&]:-ml-3 max-md:[a+&]:justify-start max-md:[a+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
         );
       }
     } finally {
@@ -2060,15 +2060,18 @@ test("the default shapes keep main's class strings", async () => {
     // inherited one's, the picker's trigger, a hit area that draws nothing, and the "+" it draws,
     // a square as tall as the chips, bordered as the labels' trigger is and lit and dimmed by the
     // trigger's state (`group`); then the refusal of the priorities' read and that of a save,
-    // which wrap within the line, as the row wraps.
-    "IssuePriorityLine line": "flex max-w-full flex-wrap items-center gap-1",
-    "IssuePriorityLine link": "group inline-flex shrink-0 items-center",
+    // which wrap within the line, as the row wraps. On a phone the line is the details row's
+    // first item, where the link is the chip's width with its 44 px target drawn round it and the
+    // trigger's square stands 8 px after the chip.
+    "IssuePriorityLine line": "flex max-w-full flex-wrap items-center gap-1 max-md:gap-x-3",
+    "IssuePriorityLine link":
+      "group inline-flex shrink-0 items-center max-md:relative max-md:min-w-0! max-md:after:absolute max-md:after:inset-y-0 max-md:after:left-1/2 max-md:after:w-11 max-md:after:-translate-x-1/2",
     "IssuePriorityLine chip":
       "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-transparent bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     "IssuePriorityLine inherited chip":
       "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-dashed border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400",
     "IssuePriorityLine trigger":
-      "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+      "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[a+&]:-ml-3 max-md:[a+&]:justify-start max-md:[a+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "IssuePriorityLine trigger square":
       "inline-flex size-5.5 items-center justify-center rounded-lg border text-xs leading-none font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 group-not-refused:group-hover:border-sky-500 dark:group-not-refused:group-hover:border-sky-400 group-refused:text-slate-400 dark:group-refused:text-slate-600",
     "IssuePriorityLine priorities unread":

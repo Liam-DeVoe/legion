@@ -32,9 +32,12 @@ export interface LayoutPins {
   readonly flexible: string;
 }
 
-/** What a column that fills the box leaves free at the box's right edge: the box's two borders
- *  and the widest classic vertical scrollbar (17 px on Windows), so a box whose rows scroll draws
- *  no sideways scrollbar beside it. */
+/** The room a box keeps beside its columns for its two borders and the widest classic vertical
+ *  scrollbar (17 px on Windows), which a box narrower than `PHONE_BOX_BELOW` must have to spare
+ *  to be read as a desktop's. It is no gap in the table's lines: the column that fills the box
+ *  takes the box's inner width, read off the box itself (`boxEdge`), so the table is exactly as
+ *  wide as the room inside the box's borders and beside its scrollbar, its header line and each
+ *  row's line reach the border, and a box whose rows scroll draws no sideways scrollbar. */
 const EDGE_ROOM = 20;
 
 /** A box narrower than this is a phone's, unless the table fills it (`fills`) and fits it with
@@ -54,9 +57,10 @@ export interface LayoutColumns extends StoredColumns {
   /** The columns pinned at the left. A table without it pins nothing. */
   readonly pins?: LayoutPins;
   /** The column that fills the box: in a desktop's box (`PHONE_BOX_BELOW`) it takes the width the
-   *  other shown columns, `trailing` and the box's edge leave, never below its minimum, so nothing
-   *  scrolls sideways while the columns fit. A width the reader dragged it to stays theirs, and a
-   *  phone's box keeps the widths the pins give it. A table without it fills nothing. */
+   *  other shown columns and `trailing` leave inside the box's borders and beside its scrollbar,
+   *  never below its minimum, so the lines reach the box's border and nothing scrolls sideways
+   *  while the columns fit. A width the reader dragged it to stays theirs, and a phone's box
+   *  keeps the widths the pins give it. A table without it fills nothing. */
   readonly fills?: string;
   /** The width the table draws after its columns - a row's actions - which `fills` leaves. */
   readonly trailing?: number;
@@ -108,6 +112,9 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   const [order, setOrder] = useState<ColumnOrderState>(saved.order);
   const [visibility, setVisibility] = useState<VisibilityState>(saved.visibility);
   const [boxWidth, setBoxWidth] = useState(1000);
+  /** What of the box's width is not room for the table: its two borders, and a classic vertical
+   *  scrollbar while its rows scroll. */
+  const [boxEdge, setBoxEdge] = useState(0);
   const [boxHeight, setBoxHeight] = useState(400);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pagerRef = useRef<HTMLDivElement>(null);
@@ -149,10 +156,12 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     const desktop =
       boxWidth >= PHONE_BOX_BELOW ||
       (fills !== undefined && others() + (minimums[fills] ?? 0) + EDGE_ROOM <= boxWidth);
-    // On a desktop, the column that fills the box takes what the others leave (`fills`).
+    // On a desktop, the column that fills the box takes what the others leave of the room inside
+    // the box's borders and beside its scrollbar (`fills`), to the whole pixel, so the table's
+    // lines reach the border and no fraction of a pixel scrolls sideways.
     const fill = () => {
       if (fills === undefined || sizing[fills] !== undefined) return;
-      widths[fills] = Math.max(minimums[fills] ?? 0, boxWidth - others() - EDGE_ROOM);
+      widths[fills] = Math.max(minimums[fills] ?? 0, Math.floor(boxWidth - boxEdge) - others());
     };
     if (pins === undefined) {
       if (desktop) fill();
@@ -185,13 +194,16 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     while (pinned.length > 1 && covered(pinned) > budget) pinned.pop();
     fill();
     return { sizing: widths, pinned, compact: false };
-  }, [boxWidth, columns, sizing, visibility]);
+  }, [boxEdge, boxWidth, columns, sizing, visibility]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;
     if (!box) return;
     const bounds = box.getBoundingClientRect();
     setBoxWidth(bounds.width);
+    // The box's border box less the room inside it that is beside any scrollbar: its borders
+    // and a classic scrollbar. Both are whole pixels, read where the page lays them out.
+    setBoxEdge(box.offsetWidth - box.clientWidth);
     const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
     const firstRows = [...box.querySelectorAll<HTMLElement>("[data-issue-row]")].slice(0, 3);
     const rowsHeight = firstRows.reduce(

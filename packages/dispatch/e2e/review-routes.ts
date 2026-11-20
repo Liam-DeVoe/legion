@@ -24,7 +24,7 @@ export interface ReviewSeed {
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
-  /** The priority `/priorities/:id` is opened on: the first of the five `e2e/review-seed.ts`
+  /** The priority `/priorities/:id` is opened on: the first of the thirteen `e2e/review-seed.ts`
    *  writes, which carries work in flight under it and work parked under it, so both pages draw
    *  rows rather than the sentence a deployment that has written no priority draws. */
   readonly priority: string;
@@ -310,7 +310,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   // change to that corpus fails these entries rather than a baseline.
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priorities",
     path: () => "/priorities",
     pattern: "/priorities",
@@ -536,8 +536,10 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
- *  no reading pane beside it, and the Spec's margin becomes a bottom sheet rather than a column
- *  beside the document.
+ *  no reading pane beside it, the Spec's margin becomes a bottom sheet rather than a column
+ *  beside the document, and the Priorities tab's toolbar stacks its search box over its
+ *  controls, each at the 44 px a phone's target takes, while its table keeps the order and the
+ *  title pinned and scrolls the counts sideways under them.
  *
  *  An issue's Conversation belongs in that company and is deliberately absent. At a phone width
  *  it draws a floating "Jump to latest" pill counting what has arrived since the reader last

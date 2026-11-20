@@ -6,11 +6,13 @@ import {
   surfaceBg,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
+  toolbarControlHeight,
 } from "../../theme/classes";
 import { ColumnsMenu } from "../project/issues-table-controls";
 
 /** The search, the group-by and the column control every table on these pages carries, with
- *  whatever else its own page puts beside them. */
+ *  whatever else its own page puts beside them, each at the one height of a toolbar's controls
+ *  from 1280 px up (`toolbarControlHeight`). */
 export function TableToolbar<Row>({
   children,
   searchLabel,
@@ -27,7 +29,7 @@ export function TableToolbar<Row>({
     <div className="flex flex-wrap items-center gap-2">
       <input
         aria-label={searchLabel}
-        className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+        className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${toolbarControlHeight} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
         maxLength={SEARCH_QUERY_MAX}
         onChange={(event) => table.setGlobalFilter(event.target.value)}
         placeholder={searchPlaceholder}
@@ -37,7 +39,7 @@ export function TableToolbar<Row>({
       <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
         Group by
         <select
-          className={`rounded-lg border px-2 py-1.5 ${borderDefault} ${surfaceBg}`}
+          className={`rounded-lg border px-2 py-1.5 ${toolbarControlHeight} ${borderDefault} ${surfaceBg}`}
           onChange={(event) => {
             table.setGrouping(event.target.value ? [event.target.value] : []);
             table.setExpanded(true);
