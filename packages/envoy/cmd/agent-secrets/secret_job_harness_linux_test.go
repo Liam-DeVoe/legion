@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -70,7 +71,8 @@ type promptShell struct {
 	terminal int
 	bash     *exec.Cmd
 	out      bytes.Buffer
-	from     int // where next looks from in out
+	all      bytes.Buffer // everything the terminal has shown, which reset keeps
+	from     int          // where next looks from in out
 	pid      int
 	history  string
 	typed    []string // the commands start and foregroundState typed, as the history holds them
@@ -123,8 +125,53 @@ func newPromptShell(t *testing.T) *promptShell {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+	// Every test of this family fails when its helper's own run failed (helperFailure). Cleanups
+	// run last first, so this one reads the helper's end before the one above kills it.
+	t.Cleanup(func() {
+		if failure := s.helperFailure(); failure != "" {
+			t.Errorf("the helper's own run failed: %q", failure)
+		}
+	})
 	s.wait("PROMPT$ ")
 	return s
+}
+
+// helperPassed matches the line the helper's test binary ends a passing run with: PASS, at the
+// start of a line or, where bash printed its prompt before the helper's last line, after it.
+var helperPassed = regexp.MustCompile(`(?:^|\s)PASS\r\n`)
+
+// helperFailure answers why the helper's own run failed, as the terminal shows it, or "" where
+// that run passed, or never returned from its prompt (no RETURNED line: a signal ended it, or the
+// test fails for that already). The helper is a test binary of its own, so the parent sees
+// nothing of its t.Error, or of a data race the race detector found in it, unless it reads that
+// run's end: once the helper has returned, its binary ends with PASS, or with the failure's lines
+// and FAIL. helperFailure reads on until it sees which; a race report counts wherever it shows,
+// and a run that ends in neither within promptJobWait is a failure too.
+func (s *promptShell) helperFailure() string {
+	budget := newWaitBudget(s.t)
+	buf := make([]byte, 4096)
+	for {
+		shown := s.all.String()
+		run := shown[max(strings.LastIndex(shown, "HELPER_PID="), 0):]
+		returned := strings.LastIndex(shown, "RETURNED ")
+		switch {
+		case strings.Contains(shown, "WARNING: DATA RACE") || strings.Contains(shown, "--- FAIL: TestPromptJobHelper"):
+			return run
+		case returned < 0 || helperPassed.MatchString(shown[returned:]):
+			return ""
+		case budget.spent():
+			return "no PASS or FAIL after the helper returned: " + run
+		}
+		s.read(buf)
+	}
+}
+
+// read reads what the terminal shows next, waiting up to 50 ms for it, into out and all.
+func (s *promptShell) read(buf []byte) {
+	_ = s.controller.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	n, _ := s.controller.Read(buf)
+	s.out.Write(buf[:n])
+	s.all.Write(buf[:n])
 }
 
 func (s *promptShell) send(text string) {
@@ -225,9 +272,7 @@ func (s *promptShell) waitFrom(budget *waitBudget, from int, wants ...string) (s
 		if budget.spent() {
 			s.t.Fatalf("waiting for one of %q; terminal showed %q", wants, s.out.String())
 		}
-		_ = s.controller.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-		n, _ := s.controller.Read(buf)
-		s.out.Write(buf[:n])
+		s.read(buf)
 	}
 }
 
