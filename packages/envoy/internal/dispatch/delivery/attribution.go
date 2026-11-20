@@ -144,19 +144,29 @@ func urlBound(column string) string {
 // (pull_request_texts_keys): an overlap of the list with an array under "C" reads no index.
 const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
 
-// pullRequestURLAsIssue is the column of a pull request's own URL (https://github.com/o/r/pull/N)
+// PullRequestURLAsIssueSQL is the column of a pull request's own URL (https://github.com/o/r/pull/N)
 // in the form GitHub also serves it at, https://github.com/o/r/issues/N: the URL
 // `dispatch issue --external o/r#N` stores (api's externalURL). The arm of a reader by key matches
 // a link with either form, each under lower(), which issue_external_links_url_lower serves with
-// one probe each (linkedPullRequest says why either form names one pull request at most).
-func pullRequestURLAsIssue(column string) string {
+// one probe each (linkedPullRequest says why either form names one pull request at most), and
+// api's link check probes both forms of a new link the same way.
+func PullRequestURLAsIssueSQL(column string) string {
 	return `regexp_replace(` + column + `, '/pull/([0-9]+)$', '/issues/\1', 'i')`
 }
 
-// linkURLAsPullRequest is a link's URL with an /issues/N ending read as /pull/N, so the arm of a
-// reader by issue compares the link with a pull request's own URL in the one form
-// pull_request_heads_url_lower holds. A link in any other form is its own URL.
-const linkURLAsPullRequest = `regexp_replace(l.url, '/issues/([0-9]+)$', '/pull/\1', 'i')`
+// LinkURLAsPullRequestSQL is column, a link's URL, with an /issues/N ending read as /pull/N: the one
+// form GitHub's two URLs of a pull request share (linkedPullRequest), and the form
+// pull_request_heads_url_lower holds. A link in any other form is its own URL. The arm of a reader
+// by issue compares a link in this form (linkURLAsPullRequest), and api's link check compares a new
+// link with each link of another issue in it under lower(), so no two issues hold one pull request
+// in its two forms.
+func LinkURLAsPullRequestSQL(column string) string {
+	return `regexp_replace(` + column + `, '/issues/([0-9]+)$', '/pull/\1', 'i')`
+}
+
+// linkURLAsPullRequest is LinkURLAsPullRequestSQL of l.url, the link the arm of a reader by issue
+// compares with a pull request's own URL.
+var linkURLAsPullRequest = LinkURLAsPullRequestSQL("l.url")
 
 // attributedTerms is the statement's terms over judged, a query of (repo, number) under any
 // stored name, for the schema that holds the reading. A caller adds its own select over
@@ -244,7 +254,7 @@ func attributedTermsOver(schema, judged, texts string) string {
 	), named as (
 		select src.repo as pr_repo, src.number as pr_number, l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0::bigint as n
 		from batch src cross join lateral (select l.issue_key from issue_external_links l
-			where lower(l.url) in (lower(src.url), lower(` + pullRequestURLAsIssue("src.url") + `)) offset 0) l
+			where lower(l.url) in (lower(src.url), lower(` + PullRequestURLAsIssueSQL("src.url") + `)) offset 0) l
 		where src.texts_current and src.own_head and ` + urlBound("src.url") + `
 		union all
 		select src.repo, src.number, l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, u.n

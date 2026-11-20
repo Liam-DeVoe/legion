@@ -490,15 +490,24 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			}
 			// A pull request's issue is read through lower() of its links (delivery's
 			// attributedTerms), so another issue that holds the URL in any letter case holds it
-			// here. The check compares with other issues only, and never refuses a URL this issue
-			// held before the write, in any case: the client sends the issue's links again with
-			// each write, and an issue of a pair two writes at once stored keeps its own. The
-			// lesser key in byte order is named, so the answer turns on no row order.
+			// here. GitHub serves a pull request at /pull/N and at /issues/N, and the statement
+			// reads either form as that pull request, so another issue that holds the other form
+			// holds it too: the check probes the link's /pull/ form and its /issues/ form
+			// (delivery.LinkURLAsPullRequestSQL, PullRequestURLAsIssueSQL), each under lower(),
+			// which issue_external_links_url_lower serves. Two issues that held the two forms
+			// before this check give the pull request to the issue whose key comes first in byte
+			// order, as the statement ends any tie. The check compares with other issues only, and
+			// never refuses a URL this issue held before the write, in any case or form: the
+			// client sends the issue's links again with each write, and an issue of a pair two
+			// writes at once stored keeps its own. The lesser key in byte order is named, so the
+			// answer turns on no row order.
 			var owner string
+			asPull := delivery.LinkURLAsPullRequestSQL("$1::text")
+			forms := `array[lower(` + asPull + `), lower(` + delivery.PullRequestURLAsIssueSQL(asPull) + `)]`
 			err := tx.QueryRow(r.Context(), `
 				select l.issue_key from issue_external_links l
-				where lower(l.url) = lower($1) and l.issue_key <> $2
-				  and not exists (select 1 from unnest($3::text[]) b(url) where lower(b.url) = lower($1))
+				where lower(l.url) = any(`+forms+`) and l.issue_key <> $2
+				  and not exists (select 1 from unnest($3::text[]) b(url) where lower(b.url) = any(`+forms+`))
 				order by l.issue_key collate "C" limit 1`, link.URL, key, heldBefore).Scan(&owner)
 			if err == nil {
 				writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is already linked from %s", link.URL, owner))

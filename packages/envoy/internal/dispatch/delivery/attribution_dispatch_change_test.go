@@ -133,6 +133,36 @@ func TestAPullRequestLinkInItsIssuesFormMadeAfterTheHeadIsStoredReachesEveryRead
 	wantReaders(t, ctx, pool, "ACME-155", headOf(155), `at head false, newest none, base "", window [], of issues []`)
 }
 
+// Two issues hold one pull request in its two forms, as two links stored before the link check
+// compared the forms do: ACME-158 links /pull/157 first, and then ACME-157 links /issues/157. The
+// pull request's head serves the issue whose key comes first in byte order, ACME-157, in every
+// reader, whichever link was written first; and dispatch attribution counts the pair once among the
+// links in two cases. When ACME-157's link goes, the head serves ACME-158.
+func TestAPullRequestTwoIssuesLinkInItsTwoFormsServesTheFirstKey(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	statementIssues(t, ctx, pool, "ACME-157", "ACME-158")
+	storeChangedPullRequests(t, ctx, pool, statementRepo, nil,
+		statementRow{number: 157, branch: "work/none", title: "no key", texts: readTexts("")},
+		statementRow{number: 159, branch: "work/none", title: "no key"})
+	changeIssueLink(t, ctx, pool, "ACME-158", fmt.Sprintf("https://github.com/%s/pull/157", statementRepo), "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-157", fmt.Sprintf("https://github.com/%s/issues/157", statementRepo), "github_issue", true)
+	wantAnswer(t, ctx, pool, statementRepo, 157, "ACME-157 from external_link")
+	wantListed(t, ctx, pool, "ACME-157", "#157")
+	wantListed(t, ctx, pool, "ACME-158")
+	wantReaders(t, ctx, pool, "ACME-157", headOf(157), `at head true, newest acme/stmt#157, base "main", window [acme/stmt#157], of issues [acme/stmt#157]`)
+	counts, err := ReadAttributionCounts(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.LinksInTwoCases != 1 {
+		t.Errorf("dispatch attribution counts %d links in two cases, want 1: one pull request in its two forms", counts.LinksInTwoCases)
+	}
+	changeIssueLink(t, ctx, pool, "ACME-157", fmt.Sprintf("https://github.com/%s/issues/157", statementRepo), "github_issue", false)
+	wantAnswer(t, ctx, pool, statementRepo, 157, "ACME-158 from external_link")
+	wantListed(t, ctx, pool, "ACME-158", "#157")
+	wantListed(t, ctx, pool, "ACME-157")
+}
+
 // The second source: an issue links a GitHub issue that the body of the pull request cites. The
 // external create writes only such links, with the kind github_issue.
 func TestAGitHubIssueLinkOfACitedIssueMadeAfterTheHeadIsStoredReachesEveryReader(t *testing.T) {

@@ -995,7 +995,9 @@ async function attributionCounts(): Promise<AttributionCounts> {
   const [keysWait] = line(/^Pull requests whose keys wait to be read again: ([\d,]+)\.$/m);
   const [movesWait] = line(/^Changes of attribution whose events wait: ([\d,]+)\.$/m);
   const [reading] = line(/^The key reading: (.*)\.$/m);
-  const [links] = line(/^Links that more than one issue holds in other letter cases: ([\d,]+)\.$/m);
+  const [links] = line(
+    /^Links that more than one issue holds in other letter cases, or a pull request in its other form: ([\d,]+)\.$/m
+  );
   const [failures, refusals] = line(
     /^Pull requests whose head is not read while a read is owed: ([\d,]+) that GitHub did not answer.*, and ([\d,]+) that GitHub refuses/m
   );

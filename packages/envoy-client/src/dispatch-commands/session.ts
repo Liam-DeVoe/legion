@@ -147,7 +147,7 @@ export async function attributionCommand(context: SessionContext): Promise<Dispa
       `Pull requests whose keys wait to be read again: ${count(counts.keys_on_another_reading)}.`,
       `Changes of attribution whose events wait: ${count(counts.moves_queued)}.`,
       `The key reading: ${counts.reading}.`,
-      `Links that more than one issue holds in other letter cases: ${count(counts.links_in_two_cases)}.`,
+      `Links that more than one issue holds in other letter cases, or a pull request in its other form: ${count(counts.links_in_two_cases)}.`,
       `Pull requests whose head is not read while a read is owed: ${count(counts.owed_failures)} that GitHub did not answer${failuresSince}, and ${count(counts.owed_refusals)} that GitHub refuses${refusalsSince}.`,
     ].join("\n"),
     details: { ...counts },

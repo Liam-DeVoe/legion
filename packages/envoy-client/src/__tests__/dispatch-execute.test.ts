@@ -4507,7 +4507,7 @@ describe("executeDispatchTool", () => {
       "Pull requests whose keys wait to be read again: 42.",
       "Changes of attribution whose events wait: 9.",
       "The key reading: 3c59dc048e8850243be8079a5c74d079.",
-      "Links that more than one issue holds in other letter cases: 2.",
+      "Links that more than one issue holds in other letter cases, or a pull request in its other form: 2.",
       "Pull requests whose head is not read while a read is owed: 5 that GitHub did not answer, and 6 that GitHub refuses.",
     ]);
   });

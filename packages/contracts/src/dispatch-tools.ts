@@ -2310,7 +2310,7 @@ export const dispatchToolSpecs = [
       "It prints the pull requests whose keys come from another key reading and wait to be read again. " +
       "It prints the changes of attribution whose events wait. " +
       "It names the key reading that runs now. " +
-      "It counts the links that more than one issue holds in other letter cases. " +
+      "It counts the links that more than one issue holds in other letter cases, or a pull request in its other form. " +
       "It prints the pull requests whose head is not read while a read of GitHub is owed: those GitHub did not answer and those GitHub refuses, each with the oldest time of its kind. " +
       "After a deploy, run it after each reconcile pass until the counts on its first three lines are 0.",
     arguments: () => ({}),

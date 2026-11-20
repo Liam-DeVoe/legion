@@ -265,7 +265,7 @@ const pullRequestURLPrefix = "https://github.com/"
 // the URL `dispatch issue --external <owner>/<repo>#<number>` stores (api's externalURL): a pull
 // request and an issue of one repository share one sequence of numbers, so either form names at
 // most one of them. The statement ties a link to a pull request in either form where lower() of
-// the URLs is equal (attributedTerms, pullRequestURLAsIssue). So this takes those two forms in any
+// the URLs is equal (attributedTerms, PullRequestURLAsIssueSQL). So this takes those two forms in any
 // letter case, and no other: no other part, and no zero before the number. An /issues/ link that
 // names an issue owes one read, which GitHub answers as no pull request and the reconcile settles
 // (pullRequestAbsent). ok is false for each other URL, and for a name or a number that no pull
