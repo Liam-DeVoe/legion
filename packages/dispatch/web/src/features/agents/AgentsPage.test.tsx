@@ -4791,6 +4791,90 @@ test("an edit typed over a refused row survives a reload", async () => {
   }
 });
 
+// A refused reply is kept in the tab across a reload with the copy of its message that Reply
+// took (`ReplyTarget.excerpt`, `held-sends.ts`), and the row's composer draws it again before the
+// session's conversation is read. The message may have been deleted meanwhile, so the quote gives
+// no word of it until that read answers, and then reads it as it stands: deleted, with no part of
+// the body the reply took.
+test("a reply refused before a reload quotes no word of its message until the conversation is read, then reads it as deleted", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", { issue_key: "CORE-1" });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "message-2",
+    in_reply_to: root.id,
+    issue_key: "CORE-1",
+  });
+  const before = renderAgents({ messages: [{ message: root, replies: [answer] }] });
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const turn = (await within(planner).findByText("Yes, it can.")).closest("li");
+    if (turn === null) throw new Error("answer turn missing");
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    const composer = within(planner).getByRole("form", { name: "Comment composer" });
+    expect(
+      within(composer).getByText(wholeText("Replying to Planner — Yes, it can."))
+    ).toBeTruthy();
+    before.createMessage.mockRejectedValueOnce(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+    );
+    await type(user, within(planner).getByRole("textbox", { name: "Comment" }), "Ship it.");
+    // The composer's own form submit, which user-event has no form for.
+    await act(async () => {
+      fireEvent.submit(composer);
+    });
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+  } finally {
+    before.view.unmount();
+    before.restore();
+  }
+
+  reloadTab();
+  const after = renderAgents();
+  // The session's conversation is read only once the row opens, and that read is held.
+  const conversation = Promise.withResolvers<MessageRead[]>();
+  after.listAgentMessages.mockReturnValue(conversation.promise);
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const quoteWords = () =>
+      within(planner).getByRole("form", { name: "Comment composer" }).textContent ?? "";
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+    const unread = {
+      author: quoteWords().includes("Replying to Planner"),
+      excerpt: quoteWords().includes("Yes, it can."),
+    };
+    await act(async () => {
+      conversation.resolve([
+        {
+          message: root,
+          replies: [
+            {
+              ...answer,
+              body: "",
+              deleted_at: "2026-09-14T02:00:00Z",
+              deleted_by: { id: "planner-session", kind: "session" },
+            },
+          ],
+        },
+      ]);
+    });
+    await waitFor(() => expect(quoteWords()).toContain("Deleted by"));
+    expect({
+      read: { excerpt: planner.textContent?.includes("Yes, it can.") },
+      unread,
+    }).toEqual({ read: { excerpt: false }, unread: { author: true, excerpt: false } });
+  } finally {
+    after.view.unmount();
+    after.restore();
+  }
+});
+
 // W6. A kept send belongs to the person who pressed it: a tab alice left a send in, that bob
 // signs into, sends nothing of hers, shows no row for it, and drops what was kept.
 test("a send alice left behind is not resumed for bob, and is dropped", async () => {
@@ -4956,6 +5040,54 @@ test("the Agents page marks a reply's quote of an edited parent, and not of a st
     );
     await waitFor(() => expect(turn("reply-2")?.textContent).toContain("— Yes, it can."));
     expect(turn("reply-2")?.textContent).not.toContain("edited");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A post its author deleted takes no reply (409 POST_DELETED), so the Agents row offers no Reply
+// on one - the exchange's message, or a reply under it - and a standing reply keeps its own.
+test("the Agents page offers no Reply on a deleted message, and a standing one keeps it", async () => {
+  const user = userEvent.setup();
+  const deleted = {
+    deleted_at: "2026-09-14T02:00:00Z",
+    deleted_by: { id: "alice", kind: "user" } as const,
+  };
+  const root = message("", { ...deleted, issue_key: "CORE-1" });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "reply-1",
+    in_reply_to: "message-1",
+    issue_key: "CORE-1",
+  });
+  const thanks = message("", {
+    ...deleted,
+    created_at: "2026-09-14T01:10:00Z",
+    id: "reply-2",
+    in_reply_to: "reply-1",
+    issue_key: "CORE-1",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [answer, thanks] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Yes, it can.");
+    // The Reply buttons a turn draws for its own message, and not for a reply drawn inside it.
+    const ownReplies = (id: string) => {
+      const turn = planner.querySelector(`[data-turn="message:${id}"]`);
+      if (!(turn instanceof HTMLElement)) return undefined;
+      return within(turn)
+        .queryAllByRole("button", { name: "Reply" })
+        .filter((button) => button.closest("[data-turn]") === turn).length;
+    };
+    expect({
+      answer: ownReplies("reply-1"),
+      exchange: ownReplies("message-1"),
+      thanks: ownReplies("reply-2"),
+    }).toEqual({ answer: 1, exchange: 0, thanks: 0 });
   } finally {
     page.view.unmount();
     page.restore();

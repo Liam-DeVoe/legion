@@ -2904,3 +2904,110 @@ test("the composer's quote of a message deleted while the draft is open reads as
     stub.restore();
   }
 });
+
+/** The Reply buttons `turn` draws for its own post, and not for a reply drawn inside it. */
+function ownReplies(turn: Element | null): number | undefined {
+  if (!(turn instanceof HTMLElement)) return undefined;
+  return within(turn)
+    .queryAllByRole("button", { name: "Reply" })
+    .filter((button) => button.closest("[data-turn]") === turn).length;
+}
+
+// A post its author deleted takes no reply (409 POST_DELETED), so the Conversation offers no
+// Reply on one - a message, a reply to one, a comment - as the margin's card draws no reply
+// composer under a deleted root; a standing post beside each keeps its Reply.
+test("the Conversation offers no Reply on a deleted message, reply or comment, and a standing one keeps it", async () => {
+  const deleted = { deleted_at: "2026-09-21T00:00:00Z", deleted_by: alice };
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", deleted),
+      comment("comment-2", { created_at: "2026-09-20T01:00:00Z" }),
+    ],
+    messages: [
+      thread(message("message-1", deleted), [
+        message("message-2", { created_at: "2026-09-09T01:00:00Z", in_reply_to: "message-1" }),
+      ]),
+      thread(message("message-3", { created_at: "2026-09-09T02:00:00Z" }), [
+        message("message-4", {
+          ...deleted,
+          created_at: "2026-09-09T03:00:00Z",
+          in_reply_to: "message-3",
+        }),
+      ]),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const turn = (id: string) => view.container.querySelector(`[data-turn="${id}"]`);
+
+  try {
+    await screen.findByText("Body of message-2");
+    await screen.findByText("Body of comment-2");
+    expect({
+      deletedComment: ownReplies(turn("comment:comment-1")),
+      deletedMessage: ownReplies(turn("message:message-1")),
+      deletedReply: ownReplies(turn("message:message-4")),
+      standingComment: ownReplies(turn("comment:comment-2")),
+      standingMessage: ownReplies(turn("message:message-3")),
+      standingReply: ownReplies(turn("message:message-2")),
+    }).toEqual({
+      deletedComment: 0,
+      deletedMessage: 0,
+      deletedReply: 0,
+      standingComment: 1,
+      standingMessage: 1,
+      standingReply: 1,
+    });
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A reply open when its message is deleted can no longer go: the message takes no reply (409
+// POST_DELETED), so Send says so and sends nothing, and Cancel reply takes the words the reader
+// wrote to the issue's own address, where they go as a message that answers none.
+test("a reply open when its message is deleted sends nothing, and Cancel reply takes its words to the issue", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({ messages: [thread(message("message-1", { body: "Alpha." }))] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+  const send = () => within(composer()).getByRole("button", { name: "Send" });
+  const field = () =>
+    within(composer()).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+
+  try {
+    const turn = (await screen.findByText("Alpha.")).closest("[data-turn]") as HTMLElement;
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await user.click(field());
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Ship it.");
+    stub.lists.messages = [
+      thread(
+        message("message-1", { body: "", deleted_at: "2026-09-09T03:00:00Z", deleted_by: alice })
+      ),
+    ];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+    await waitFor(() => expect(composer().textContent).toContain("Deleted by alice"));
+    const deleted = { refusal: send().getAttribute("title"), text: field().value };
+    await user.click(within(composer()).getByRole("button", { name: "Cancel reply" }));
+    expect({
+      cancelled: {
+        quoted: composer().textContent?.includes("Replying to") ?? false,
+        refusal: send().getAttribute("title"),
+        text: field().value,
+      },
+      deleted,
+    }).toEqual({
+      cancelled: { quoted: false, refusal: null, text: "Ship it." },
+      deleted: {
+        refusal:
+          "The message this reply answers was deleted, so it takes no reply. Press Cancel reply to send it as a message that answers none.",
+        text: "Ship it.",
+      },
+    });
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});

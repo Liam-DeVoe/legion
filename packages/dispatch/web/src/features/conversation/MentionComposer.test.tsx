@@ -29,7 +29,14 @@ import {
   SendExpiredError,
   SendStoppedError,
 } from "../writes/keyed-write";
-import type { ComposerOwner, DraftIntake, ReplyTarget } from "./composer-model";
+import type {
+  ComposerOwner,
+  DraftIntake,
+  ListedReplies,
+  ListedReply,
+  ReplyParent,
+  ReplyTarget,
+} from "./composer-model";
 import { MentionComposer, reconcileMentions, stoppedRoleOptions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 import { unsentDraftsOf } from "./unsent-drafts";
@@ -115,6 +122,8 @@ interface ComposerOptions {
   onSent?: () => void;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
+  /** The host's copy of the post `replyTo` answers, as its read holds it now. */
+  replyParent?: ReplyParent;
 }
 
 /** Renders the composer, and hands back `rerender` for a host that changes its props on the live
@@ -138,6 +147,7 @@ function renderComposer(options: ComposerOptions = {}) {
           onKindChange={props.onKindChange}
           onSent={props.onSent ?? (() => {})}
           owner={props.owner ?? { issueKey: "CORE-1", kind: "issue" }}
+          replyParent={props.replyParent}
           replyTo={
             props.replyTo === null
               ? null
@@ -402,7 +412,7 @@ test("a reply kept for a message its host no longer lists waits for an empty fie
     owner,
     replyTo: answered,
   });
-  const composer = (listed: ReadonlySet<string>) => (
+  const composer = (listed: ListedReplies) => (
     <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <QueryClientProvider client={queryClient}>
         <MentionComposer
@@ -417,14 +427,14 @@ test("a reply kept for a message its host no longer lists waits for an empty fie
   );
   const lines = () => screen.queryAllByRole("status").map((status) => status.textContent ?? "");
   const offersUse = () => screen.queryByRole("button", { name: "Use it here" }) !== null;
-  const view = render(composer(new Set([answered.id])));
+  const view = render(composer(new Map<string, ListedReply>([[answered.id, "standing"]])));
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     const whileListed = { lines: lines(), use: offersUse() };
     await user.click(field);
     await user.paste("Words of my own");
-    view.rerender(composer(new Set()));
+    view.rerender(composer(new Map()));
     const overOwnWords = { lines: lines(), text: field.value, use: offersUse() };
     await user.clear(field);
     const overEmptyField = { lines: lines(), use: offersUse() };
@@ -461,6 +471,131 @@ test("a reply kept for a message its host no longer lists waits for an empty fie
   }
 });
 
+// A message its author deleted keeps its place in the host's list, but Dispatch takes no reply to
+// it (409 POST_DELETED), so a reply kept for it has no Reply to go on with: it is drawn itself,
+// saying the message was deleted and giving no word of it - not the excerpt its Reply took - with
+// Discard my draft and, at the issue's own address, Use it here, which puts it in the field as a
+// message that answers none.
+test("a reply kept for a message its host lists deleted is drawn itself, saying the message was deleted", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const sendKey: MutationKey = ["conversation-composer", "CORE-1"];
+  const owner: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+  const answered: ReplyTarget = {
+    actor: plannerAuthor,
+    excerpt: "Status?",
+    id: "message-1",
+    parentKind: "message",
+  };
+  const kept = "Reply to the status";
+  unsentDraftsOf(queryClient).keepAway(composerNameOf(sendKey), {
+    draft: { body: kept, mentions: [], replacement: "" },
+    owner,
+    replyTo: answered,
+  });
+  const composer = (listed: ListedReplies) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer
+          listed={listed}
+          mutationKey={sendKey}
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={owner}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const lines = () => screen.queryAllByRole("status").map((status) => status.textContent ?? "");
+  const offersUse = () => screen.queryByRole("button", { name: "Use it here" }) !== null;
+  const view = render(composer(new Map<string, ListedReply>([[answered.id, "standing"]])));
+
+  try {
+    const whileStanding = { lines: lines(), use: offersUse() };
+    view.rerender(composer(new Map<string, ListedReply>([[answered.id, "deleted"]])));
+    const deleted = { lines: lines(), use: offersUse() };
+    const shownWords = view.container.textContent ?? "";
+    const use = screen.queryByRole("button", { name: "Use it here" });
+    if (use !== null) await user.click(use);
+    expect({
+      deleted,
+      excerptShown: shownWords.includes(answered.excerpt),
+      taken: {
+        lines: lines(),
+        text: screen.getByLabelText<HTMLTextAreaElement>("Comment").value,
+      },
+      whileStanding,
+    }).toEqual({
+      deleted: {
+        lines: [
+          `The message by Planner that your reply answered was deleted, so it takes no reply. Your reply is kept here:${kept}`,
+        ],
+        use: true,
+      },
+      excerptShown: false,
+      taken: { lines: [], text: kept },
+      whileStanding: {
+        lines: [
+          "Your reply to the message by Planner is kept. Press Reply on that message to go on with it.",
+        ],
+        use: false,
+      },
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// Reply takes the post it answers as it stands at the press (`ReplyTarget`), and a held send or a
+// kept draft keeps that copy in the tab across a reload. The quote gives the copy's words only
+// while the host holds the post now (`replyParent`): until the host's read answers, or once it
+// fails, it names the author alone, so a post deleted since never shows the words it had; once
+// the read answers, the quote reads the post as it stands - standing, then deleted.
+test("a reply's quote gives no word of its parent until the host holds the parent, then reads it as it stands", async () => {
+  // The quote is read in the commit that mounts the composer, which only a loaded engine draws
+  // (`MarkdownPreview`).
+  await warmMarkdownRenderer();
+  const replyTo = {
+    actor: plannerAuthor,
+    excerpt: "Once the build is green.",
+    id: "comment-9",
+    parentKind: "comment",
+  } as const;
+  const { rerender, view } = renderComposer({ replyTo });
+  const quote = () => {
+    const words = screen.getByRole("form", { name: "Comment composer" }).textContent ?? "";
+    return {
+      author: words.includes("Replying to Planner"),
+      deleted: words.includes("Deleted by Planner"),
+      excerpt: words.includes(replyTo.excerpt),
+    };
+  };
+
+  try {
+    const unread = quote();
+    rerender({ replyParent: { deleted_at: null, deleted_by: null, edited_at: null }, replyTo });
+    const standing = quote();
+    rerender({
+      replyParent: {
+        deleted_at: "2026-09-18T01:00:00Z",
+        deleted_by: plannerAuthor,
+        edited_at: null,
+      },
+      replyTo,
+    });
+    const deleted = quote();
+    expect({ deleted, standing, unread }).toEqual({
+      deleted: { author: true, deleted: true, excerpt: false },
+      standing: { author: true, deleted: false, excerpt: true },
+      unread: { author: true, deleted: false, excerpt: false },
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 /** Send's refusal as a reader meets it: `aria-disabled`, and the reason on `title` and in the
  *  element `aria-describedby` names. */
 interface SendRefusal {
@@ -479,6 +614,70 @@ function sendRefusal(): SendRefusal {
     title: send.getAttribute("title"),
   };
 }
+
+// A refusal the composer holds for a reply its host has moved it off stays with that reply, and
+// Send says where it was written and the way out: that message's Reply, while it stands. A message
+// its author deleted keeps its place, but Dispatch takes no reply to it, so Send names no Reply
+// that would bring the refusal back, and says the message was deleted: Discard is the way out.
+test("a refusal held for a reply to a message deleted since names no Reply to go back by", async () => {
+  const user = userEvent.setup();
+  const createMessage = spyOn(api, "createMessage").mockRejectedValue(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const owner: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+  const status: ReplyTarget = {
+    actor: plannerAuthor,
+    excerpt: "Status?",
+    id: "message-1",
+    parentKind: "message",
+  };
+  const done: ReplyTarget = { ...status, excerpt: "Done?", id: "message-2" };
+  const composer = (replyTo: ReplyTarget, first: ListedReply) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer
+          listed={
+            new Map<string, ListedReply>([
+              [status.id, first],
+              [done.id, "standing"],
+            ])
+          }
+          mutationKey={["conversation-composer", "CORE-1"]}
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={owner}
+          replyParent={{ deleted_at: null, deleted_by: null, edited_at: null }}
+          replyTo={replyTo}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(composer(status, "standing"));
+
+  try {
+    await user.click(screen.getByLabelText("Comment"));
+    await user.paste("Reply to the status");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText("Couldn't send — Dispatch refused the message");
+    // The host moves the composer to another message's reply, as another message's Reply does.
+    view.rerender(composer(done, "standing"));
+    const standing = sendRefusal().title;
+    view.rerender(composer(done, "deleted"));
+    const deleted = sendRefusal().title;
+    expect({ deleted, standing }).toEqual({
+      deleted:
+        "This message was written as a reply to a message that was deleted, which takes no reply. Discard it to write here.",
+      standing:
+        "This message was written as a reply. Reply to that message again to send it, or discard it.",
+    });
+  } finally {
+    view.unmount();
+    createMessage.mockRestore();
+  }
+});
 
 /** Presses Send both ways a reader can - the button, and Ctrl+Enter in the box - then moves the
  *  fake clock a task on. TanStack awaits `onMutate` before it calls the mutation function, so an
@@ -1533,6 +1732,8 @@ test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape"
     onCancelReply: () => {
       cancelled += 1;
     },
+    // The host holds the post the reply answers, standing: the quote gives its words only then.
+    replyParent: { deleted_at: null, deleted_by: null, edited_at: null },
     replyTo: {
       actor: plannerAuthor,
       excerpt: "Once the build is green.",

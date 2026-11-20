@@ -267,7 +267,13 @@ function ConversationReply({
               targetName,
             }
       }
-      onReply={() => onReply(replyTargetFor(reply, root, issueKey))}
+      // A post its author deleted takes no reply (`409 POST_DELETED`), so it offers no Reply, as
+      // the margin's card offers no reply composer under a deleted root.
+      onReply={
+        postDeletion(reply) === null
+          ? () => onReply(replyTargetFor(reply, root, issueKey))
+          : undefined
+      }
       quote={{
         author: parent?.author,
         block: reply.reply_block,
@@ -392,10 +398,12 @@ function MessageTurn({
         </div>
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
-          <ReplyButton
-            disabled={replyDisabled}
-            onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
-          />
+          {postDeletion(item.root) === null ? (
+            <ReplyButton
+              disabled={replyDisabled}
+              onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
+            />
+          ) : null}
           <TurnPin onPin={onPin} pinned={pinned} />
         </TurnActions>
       </div>
@@ -854,14 +862,16 @@ function CommentTurn({
           </button>
         )}
         <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
-        <ReplyButton
-          disabled={replyDisabled}
-          onClick={() => {
-            if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
-              setExpanded(true);
-            }
-          }}
-        />
+        {postDeletion(item.root) === null ? (
+          <ReplyButton
+            disabled={replyDisabled}
+            onClick={() => {
+              if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
+                setExpanded(true);
+              }
+            }}
+          />
+        ) : null}
         <TurnPin onPin={onPin} pinned={pinned} />
       </div>
     </li>
@@ -930,7 +940,11 @@ function TargetedMessageTurn({
       deleted={postDeletion(item.root)}
       deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
       header={<Avatar actor={asker} />}
-      onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
+      onReply={
+        postDeletion(item.root) === null
+          ? () => onReply(replyTargetFor(item.root, item, issueKey))
+          : undefined
+      }
       onRetry={retry.mutate}
       register={register}
       replyDisabled={replyDisabled}
@@ -1153,25 +1167,33 @@ export function ConversationTab({
     phone.parked === undefined;
   // A thread reply put away over the docked composer's own draft is out of sight, so the docked
   // composer says it is kept, whose comment it answers, and how to go on with it: that comment's
-  // Reply. Once the list no longer holds the comment, no Reply brings it back, so the docked
-  // composer draws the reply itself, for the reader to read or copy, with Discard my draft. It
-  // offers no Use it here: the docked field holds a draft of its own, which is why the reply was
-  // put away rather than carried there (`usePhoneThread`'s `cancelReply`), and Use it here would
-  // write over it.
+  // Reply. Once the list no longer holds the comment, or holds it deleted - which takes no
+  // reply - no Reply goes on with it, so the docked composer draws the reply itself, for the
+  // reader to read or copy, with Discard my draft, and says which. It offers no Use it here: the
+  // docked field holds a draft of its own, which is why the reply was put away rather than
+  // carried there (`usePhoneThread`'s `cancelReply`), and Use it here would write over it.
   let parkedNotice: ReactNode;
   if (phone.parked !== undefined && phone.replyTo !== null) {
-    parkedNotice = listed.has(phone.replyTo.id) ? (
-      <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
-        <KeptReply actor={phone.replyTo.actor} />
-      </p>
-    ) : (
-      <DraftOffer
-        body={phone.parked.body}
-        drop={{ label: "Discard my draft", press: phone.dropParked }}
-        lead={<GoneReply actor={phone.replyTo.actor} parentKind={phone.replyTo.parentKind} />}
-        replacement={phone.parked.replacement}
-      />
-    );
+    const parkedFor = listed.get(phone.replyTo.id);
+    parkedNotice =
+      parkedFor === "standing" ? (
+        <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
+          <KeptReply actor={phone.replyTo.actor} />
+        </p>
+      ) : (
+        <DraftOffer
+          body={phone.parked.body}
+          drop={{ label: "Discard my draft", press: phone.dropParked }}
+          lead={
+            <GoneReply
+              actor={phone.replyTo.actor}
+              deleted={parkedFor === "deleted"}
+              parentKind={phone.replyTo.parentKind}
+            />
+          }
+          replacement={phone.parked.replacement}
+        />
+      );
   }
   // The list is on the page only once all four reads answer: `loading` and `failed` both hide it
   // (the early returns below) and withhold `latestItemSeq`, so the two cannot drift apart. The

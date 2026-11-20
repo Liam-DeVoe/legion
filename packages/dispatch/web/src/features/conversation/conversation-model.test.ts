@@ -16,6 +16,7 @@ import {
   buildConversations,
   focusConversation,
   handoffFields,
+  listedReplies,
   matchesFilter,
 } from "./conversation-model";
 
@@ -370,6 +371,33 @@ test("an item id resolves to the conversation that holds it", () => {
   });
   expect(focusConversation("handoff-1", lists)).toEqual({ id: "handoff:handoff-1" });
   expect(focusConversation("nothing", lists)).toBeUndefined();
+});
+
+// A composer's host lists every comment and message its reads hold, each as it stands: a post its
+// author deleted keeps its place, so it is listed, as deleted, since Dispatch takes no reply to it
+// and a draft kept for it has no Reply to go on with (`ListedReplies`).
+test("the replies a host lists are every comment and message it reads, a deleted one as deleted", () => {
+  const deleted = { deleted_at: "2026-09-10T09:30:00Z", deleted_by: bob };
+  const listed = listedReplies(
+    [
+      thread(message({ created_at: "2026-09-10T09:00:00Z", id: "message-1" }), [
+        message({ created_at: "2026-09-10T09:01:00Z", id: "message-2", ...deleted }),
+      ]),
+      thread(message({ created_at: "2026-09-10T09:02:00Z", id: "message-3", ...deleted })),
+    ],
+    [
+      comment({ created_at: "2026-09-10T09:03:00Z", id: "comment-1" }),
+      comment({ created_at: "2026-09-10T09:04:00Z", id: "comment-2", ...deleted }),
+    ]
+  );
+
+  expect(Object.fromEntries(listed)).toEqual({
+    "comment-1": "standing",
+    "comment-2": "deleted",
+    "message-1": "standing",
+    "message-2": "deleted",
+    "message-3": "deleted",
+  });
 });
 
 test("each handoff version is a card of its own, closed, ordered by when it was written", () => {

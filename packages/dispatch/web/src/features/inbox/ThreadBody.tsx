@@ -54,6 +54,7 @@ import { useMarkShownRepliesRead } from "../agents/unread";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
+import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
@@ -337,7 +338,16 @@ function CommentThreadBody({
   return (
     <ThreadTurns
       composer={
-        root === undefined ? null : (
+        root === undefined ? null : postDeletion(root) !== null ? (
+          // A root its author deleted takes no reply (`409 POST_DELETED`), so the thread draws no
+          // box under it, as the margin's card draws no reply composer there: a reply the reader
+          // kept for it is drawn itself, with Discard my draft (`KeptReplyToDeleted`).
+          <KeptReplyToDeleted
+            actor={root.author}
+            mutationKey={threadSendKey(thread.thread_id)}
+            parentKind="comment"
+          />
+        ) : (
           // Keyed by the thread its send is named for (`threadSendKey`): the column draws this
           // body for one thread after another, and the composer holds the uploads made in it -
           // an upload's refusal and its Retry with them - so the next thread is drawn with a
@@ -434,7 +444,14 @@ function MessageThreadBody({
   return (
     <ThreadTurns
       composer={
-        root === undefined ? null : (
+        root === undefined ? null : postDeletion(root) !== null ? (
+          // A deleted root takes no reply, as a comment thread's does (`CommentThreadBody`).
+          <KeptReplyToDeleted
+            actor={root.author}
+            mutationKey={threadSendKey(thread.thread_id)}
+            parentKind="message"
+          />
+        ) : (
           // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
           <MentionComposer
             closed={issue.data !== undefined && issue.data.closed_at !== null}

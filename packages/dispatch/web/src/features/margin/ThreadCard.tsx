@@ -1,5 +1,5 @@
 import { hashKey, type MutationKey } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
@@ -29,7 +29,8 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useHeldSend, useHeldSendsUnder } from "../conversation/held-sends";
+import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
+import { DraftOffer, KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { KeptReply } from "../conversation/KeptReply";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
@@ -274,6 +275,46 @@ function CommentBody({
   );
 }
 
+/**
+ * The edit the reader kept for a comment its author has since deleted. Dispatch saves no edit of
+ * a deleted post (`409 POST_DELETED`), so the card opens no editor over one (`editing`): the
+ * comment reads as deleted where its body was, never as an empty field or the words it had, and
+ * the edit waits under it as the reader's own - a save Dispatch refused or the reader stopped, or
+ * what the editor held as the delete came, which it kept for the comment as it went
+ * (`useKeptDrafts`' `awayName`) - with Discard my edit, which drops it where it is kept. Nothing
+ * is saved meanwhile, and a save still out draws nothing until Dispatch answers it.
+ */
+function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
+  const mutationKey = useMemo(() => [...COMMENT_EDIT_SEND_KEY, commentId], [commentId]);
+  const store = useHeldSends();
+  const held = useHeldSend(mutationKey);
+  const unsent = useUnsentDrafts();
+  const name = hashKey(mutationKey);
+  // An edit's address is the comment its send name names, so its draft is kept for no reply and
+  // no words of a document.
+  const kept = unsent
+    .useAway(name)
+    .find((away) => away.replyTo === null && away.anchor === undefined);
+  const refused = held?.status === "refused" ? held : undefined;
+  const draft = refused?.draft.draft ?? (held === undefined ? kept?.draft : undefined);
+  if (draft === undefined) return null;
+  return (
+    <div className="mt-2">
+      <DraftOffer
+        body={draft.body}
+        drop={{
+          label: "Discard my edit",
+          press: () => {
+            if (refused !== undefined) store.discard(mutationKey);
+            else unsent.forgetAway(name, { anchor: undefined, replyTo: null });
+          },
+        }}
+        lead="This comment was deleted, and Dispatch saves no edit of a deleted comment. Your edit is kept here:"
+      />
+    </div>
+  );
+}
+
 export function ThreadCard({
   actionFailure,
   artifactSlug,
@@ -343,9 +384,13 @@ export function ThreadCard({
   const threadItems = [root, ...thread.replies];
   // An edit whose save is out, or was refused, is the held-send store's: its editor stays open on
   // its comment until the save lands or the reader drops it, whatever closed the card meanwhile.
+  // A comment its author deleted takes no edit (`409 POST_DELETED`), so no editor opens over it,
+  // whatever held one open: the comment reads as deleted, and an edit kept for it waits under it
+  // (`DeletedCommentEdit`).
   const heldEdits = useHeldSendsUnder(COMMENT_EDIT_SEND_KEY);
   const editing = (comment: ThreadComment) =>
-    editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id);
+    postDeletion(comment) === null &&
+    (editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id));
   const renderEditor = (comment: ThreadComment) => (
     <MentionComposer
       edit={{ body: comment.body, id: comment.id }}
@@ -409,13 +454,24 @@ export function ThreadCard({
   // A reply the card keeps while it is closed - typed and never sent, or a send Dispatch refused
   // or the reader stopped - is out of sight with its composer, under the thread's reply send name
   // (`MentionComposer`'s `inline`). The card says so, whose comment it answers and how to go on
-  // with it, until the reader opens the thread again: nothing is sent until they press.
+  // with it, until the reader opens the thread again: nothing is sent until they press. Under a
+  // root its author deleted the card draws no reply composer, so no Reply goes on with the reply:
+  // its own words are drawn instead, open or closed, saying the comment was deleted and giving
+  // no word of it, with Discard my draft (`KeptReplyToDeleted`).
   const heldReply = useHeldSend(replyMutationKey);
   const unsentReply = useUnsentDrafts().useKept(
     replyMutationKey === undefined ? "" : hashKey(replyMutationKey)
   );
   const keptReply =
-    !expanded && (heldReply?.status === "refused" || unsentReply) ? (
+    rootDeleted !== null ? (
+      replyMutationKey === undefined ? null : (
+        <KeptReplyToDeleted
+          actor={root.author}
+          mutationKey={replyMutationKey}
+          parentKind="comment"
+        />
+      )
+    ) : !expanded && (heldReply?.status === "refused" || unsentReply) ? (
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
           <KeptReply actor={root.author} press={reopenControl ?? "Reply"} />
@@ -521,6 +577,7 @@ export function ThreadCard({
                   showOrphan
                   showReference={showReference}
                 />
+                {rootDeleted === null ? null : <DeletedCommentEdit commentId={root.id} />}
                 {renderDeliveries?.(root)}
               </>
             )}
@@ -597,6 +654,9 @@ export function ThreadCard({
                             showOrphan={false}
                             showReference={showReference}
                           />
+                          {postDeletion(reply) === null ? null : (
+                            <DeletedCommentEdit commentId={reply.id} />
+                          )}
                           {renderDeliveries?.(reply)}
                         </>
                       )}

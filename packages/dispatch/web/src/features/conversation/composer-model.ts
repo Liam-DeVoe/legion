@@ -99,19 +99,30 @@ export function replyParentOf(
 /**
  * Which replies a composer's host lists now (`MentionComposer`'s `listed`), so that a draft the
  * composer keeps for a reply it does not show (`useKeptDrafts`' `keptAway`) is said to be kept
- * with the way back its line names - that comment's or message's Reply - only while that Reply is
- * there. A draft kept for a reply the host no longer lists is drawn itself, with its own presses
- * (`KeptDraftOffers`).
+ * with the way back its line names - that comment's or message's Reply - only while that Reply
+ * goes somewhere. A draft kept for a reply the host no longer lists is drawn itself, with its own
+ * presses (`KeptDraftOffers`), and so is one kept for a comment or message its author deleted
+ * (`"deleted"`): the post keeps its place, but Dispatch takes no reply to it (`409
+ * POST_DELETED`), so no Reply goes on with the draft, and the words say the post was deleted.
  *
- * A host that can lose a reply its composer's drafts answer passes the ids of every comment and
- * message its reads hold, whatever its filter, a fold or a Clear shows of them, since the host's
- * own controls reach the Reply of each (`listedReplies`). Every other host passes none, and every
- * kept reply is said to be kept as before: one whose composer answers no reply, one whose reads
- * have not answered yet, and one whose composer answers only the reply drawn with it - a thread
- * card's own reply - which leaves the page with the composer, so no line of the composer's can
- * outlive it.
+ * A host that can lose a reply its composer's drafts answer passes every comment and message its
+ * reads hold, by id, each as it stands, whatever its filter, a fold or a Clear shows of them,
+ * since the host's own controls reach the Reply of each (`listedReplies`). Every other host
+ * passes none, and every kept reply is said to be kept as before: one whose composer answers no
+ * reply, one whose reads have not answered yet, and one whose composer answers only the reply
+ * drawn with it - a thread card's own reply - which leaves the page with the composer, so no
+ * line of the composer's can outlive it.
  */
-export type ListedReplies = ReadonlySet<string>;
+export type ListedReplies = ReadonlyMap<string, ListedReply>;
+
+/** How a host lists a comment or message a draft answers (`ListedReplies`): standing, or deleted
+ *  by its author. */
+export type ListedReply = "deleted" | "standing";
+
+/** How the comment or message a kept draft answers is listed for its composer
+ *  (`ListedReplies`): standing, with a Reply that goes on with the draft, deleted by its author,
+ *  or no longer listed (`"gone"`). A host that passes no list lists every reply as standing. */
+export type ReplyListing = ListedReply | "gone";
 
 /** One accepted mention: the target, and the span of the body that names it. */
 export interface AcceptedMention {
