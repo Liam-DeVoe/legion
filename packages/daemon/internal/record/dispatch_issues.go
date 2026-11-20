@@ -156,6 +156,50 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 	return children, nil
 }
 
+// ChainRows walks the parent chains a decision pass reads in the database, in one statement
+// whatever their number and depth, as AncestorsOf walks the records' own: a read per link would
+// cost a round trip per level on every pass (R16 of dispatch://INFRA-3320). The walk starts from
+// every record of project not at phase done, which the issues_live index serves, every row of the
+// project's copy at todo and each of extra, and carries each walk's path, so a key it has passed
+// ends that walk however the copy loops, and its depth, so no walk climbs more than
+// MaxChainLinks+1 links: one more than Dispatch allows, which is what tells a chain a stale row
+// made too long from the longest Dispatch keeps. A link the copy holds no row of is read as a row
+// that is not Present, which ends its walk, so a missing row is a fact of the answer rather than
+// a gap in it. The walk is the copy's alone: nothing of the daemon's records decides a link.
+//
+// Each key is answered once, whichever walks reached it, with the fewest links above a start it
+// stands at, 0 for a key a walk started from. The rows of every walk together are the chain of
+// each start up to the bound, and the chain of each link above a start as far as those walks
+// reached (Chains.Chain, ChainUnread).
+func (s *Postgres) ChainRows(ctx context.Context, tx pgx.Tx, project string, extra []string) ([]ChainRow, error) {
+	rows, err := tx.Query(ctx, `with recursive starts (key) as (
+			select key from issues where project = $1 and phase <> 'done'
+			union select key from dispatch_issues where project = $1 and status = 'todo'
+			union select unnest($2::text[])
+		), walk (key, depth, parent, status, present, path) as (
+			select s.key, 0, d.parent, d.status, d.key is not null, array[s.key]
+			from starts s left join dispatch_issues d on d.key = s.key
+			union all
+			select w.parent, w.depth + 1, d.parent, d.status, d.key is not null, w.path || w.parent
+			from walk w left join dispatch_issues d on d.key = w.parent
+			where w.present and w.parent is not null and w.depth < $3 and w.parent <> all(w.path)
+		)
+		select key, min(depth), coalesce(parent, ''), coalesce(status, ''), present
+		from walk group by key, parent, status, present order by key`, project, extra, MaxChainLinks+1)
+	if err != nil {
+		return nil, fmt.Errorf("read the chains of %s: %w", project, err)
+	}
+	read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ChainRow, error) {
+		var chained ChainRow
+		err := row.Scan(&chained.Key, &chained.Depth, &chained.Parent, &chained.Status, &chained.Present)
+		return chained, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the chains of %s: %w", project, err)
+	}
+	return read, nil
+}
+
 // queryDispatchIssues is every mirrored row query selects with args, in its order.
 func queryDispatchIssues(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]DispatchIssueRow, error) {
 	rows, err := tx.Query(ctx, query, args...)

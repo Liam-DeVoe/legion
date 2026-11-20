@@ -222,6 +222,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "whether the parent still owes a forward merge of its children's work, which the daemon reads when it builds the implementing task that carries the merge: its own bookkeeping, reaching no surface"},
 	{Field: "ChildrenWaitedAt", Column: ColumnWithheld,
 		Reason: "when the parent last waited on its children, which the late-completion guard compares a phase entry against after the return: the daemon's own mark, reaching no surface"},
+	{Field: "HoldsGate", Column: ColumnWithheld,
+		Reason: "the mark that the issue has held its own design gate as a root, which the daemon reads beside the Dispatch chain to find each issue's gate root (record.Chains.HoldsOwnGate): its own mark, reaching no surface"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

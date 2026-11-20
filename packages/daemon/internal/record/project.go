@@ -81,6 +81,25 @@ func InWorkflow(issue Issue) bool {
 	return issue.Standing().InWorkflow(OutOfWorkflow)
 }
 
+// inWorkStatuses are the five Dispatch statuses an issue in Legion's work shows (R15 of
+// dispatch://INFRA-3320): todo, which hands an issue to Legion or releases it, and the four its
+// workflow writes as it runs. InLegionsWork is the one reader of the list.
+var inWorkStatuses = []string{"todo", "in_progress", "testing", "needs_review", "retro"}
+
+// InLegionsWork says whether issue, a record of the daemon's, is in Legion's work (R15 of
+// dispatch://INFRA-3320): its phase is not done and its Status is one of inWorkStatuses. Status
+// holds a status write the daemon has queued before Dispatch echoes it (Issue), so the daemon's
+// own write counts for its own decisions as written (R16): a record the daemon has set to
+// backlog is out of Legion's work while its DispatchStatus still reads in_progress, and one it
+// has set to in_progress is in it while its DispatchStatus still reads backlog. The list names
+// the statuses in work, where OutOfWorkflowStatuses names those out of the workflow, so a status
+// Dispatch adds later is out of Legion's work until it is named here. An issue the daemon does not
+// record is in no one's work: there is no record of it to ask about, and Chains reads every key it
+// holds no record of as out of Legion's work.
+func InLegionsWork(issue Issue) bool {
+	return issue.Phase != phase.Done && slices.Contains(inWorkStatuses, issue.Status)
+}
+
 // Stopped is whether the issue's own record says its work has stopped: it is out of the
 // workflow, or its tree lingers. It is the one statement of that rule, and the readers that
 // must agree — the boot's claim release pass and the row it queues — both call it.

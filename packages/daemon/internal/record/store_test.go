@@ -543,6 +543,60 @@ func TestStoreRoundTripsATreeTakenBack(t *testing.T) {
 	})
 }
 
+// The mark that an issue has held its own gate as a root (Issue.HoldsGate) is what keeps the gate
+// of an issue that ran as a root once it gets a parent in Legion's work (R15 of
+// dispatch://INFRA-3320), so it survives every write: PutIssue stores it and every read behind
+// issueColumns gives it back, and a later write of a copy that carries false — one read before a
+// pass marked the issue — keeps it. MarkHoldsGate marks many issues in one statement; a key with
+// no record writes nothing, and no keys write nothing.
+func TestStoreRoundTripsTheMarkThatAnIssueHoldsItsOwnGate(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	held := issueFixture("LEGION-217")
+	held.HoldsGate = true
+	unmarked := issueFixture("LEGION-218")
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, held))
+		must(t, records.PutIssue(ctx, tx, unmarked))
+		got, err := records.Issue(ctx, tx, held.Key)
+		must(t, err)
+		if !reflect.DeepEqual(written(t, got), &held) {
+			t.Fatalf("issue holding its own gate = %#v, want %#v", got, held)
+		}
+		both, err := records.IssuesByKey(ctx, tx, []string{held.Key, unmarked.Key})
+		must(t, err)
+		if !reflect.DeepEqual(writtenAll(t, both), []Issue{held, unmarked}) {
+			t.Fatalf("issues by key = %#v, want %#v", both, []Issue{held, unmarked})
+		}
+	})
+
+	stale := held
+	stale.HoldsGate = false
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, stale))
+		got, err := records.Issue(ctx, tx, held.Key)
+		must(t, err)
+		if !got.HoldsGate {
+			t.Fatalf("%s after a write of a copy carrying no mark holds its own gate = false, want true: the mark is never cleared", held.Key)
+		}
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.MarkHoldsGate(ctx, tx, nil))
+		must(t, records.MarkHoldsGate(ctx, tx, []string{unmarked.Key, held.Key, "LEGION-999"}))
+		marked, err := records.IssuesByKey(ctx, tx, []string{held.Key, unmarked.Key, "LEGION-999"})
+		must(t, err)
+		want := held
+		wantMarked := unmarked
+		wantMarked.HoldsGate = true
+		if !reflect.DeepEqual(writtenAll(t, marked), []Issue{want, wantMarked}) {
+			t.Fatalf("issues after the pass's mark = %#v, want %#v: both marked, and no record made for a key with none", marked, []Issue{want, wantMarked})
+		}
+	})
+}
+
 // The tree a root left is what keeps it its own tree on every later pass of the admission sweep
 // and every release of children (workflow's RanAsRoot), so PutIssue stores it and every read
 // behind issueColumns gives it back.
@@ -2280,7 +2334,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
-			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "forward_merge_owed", "children_waited_at"},
+			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "forward_merge_owed", "children_waited_at",
+			"holds_gate"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "handoff_record", "handoff_version", "reviewed_head"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},

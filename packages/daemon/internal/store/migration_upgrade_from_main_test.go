@@ -104,6 +104,9 @@ import (
 // its kinds with the two seeds, so an upgrade applies it last of the kind lists and it is the last
 // word of outbox_kind_check. It deletes nothing, so the phase_ended row 20261119003157 deleted
 // stays deleted.
+// dispatch://INFRA-4730's mark that an issue holds its own gate (20261120091044) stands above all
+// of them and is applied last: it adds issues.holds_gate, set on every record whose key is its
+// stored tree, and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -113,7 +116,7 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261114064234, 20261114232555, 20261115194357, 20261116144907, 20261116165926,
 	20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117064152, 20261117112334,
-	20261117200337, 20261119003157, 20261119185013,
+	20261117200337, 20261119003157, 20261119185013, 20261120091044,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -129,9 +132,10 @@ var thisBranchsMigrations = []int{
 // step record (20261117000528), the count of starts of each step (20261117004117) and its roll
 // forward (20261117064152), the kind list with the plan record (20261117023932),
 // dispatch://INFRA-3320's 20261114064234, 20261114232555 and 20261119185013,
-// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337 and
-// dispatch://INFRA-4374's 20261119003157. That is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as main's.
+// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
+// dispatch://INFRA-4374's 20261119003157 and dispatch://INFRA-4730's 20261120091044. That is why
+// the loop below holds the list rather than counting it, so that a version added above any of them
+// is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

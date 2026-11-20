@@ -283,6 +283,16 @@ type Issue struct {
 	// never did. It outlives the phase, which the late-completion guard needs: it refuses a
 	// completion of a phase whose entry was raised before this moment (workflow's leftItsPhase).
 	ChildrenWaitedAt *time.Time
+	// HoldsGate is the mark that the issue has held its own design gate as a root (R15 of
+	// dispatch://INFRA-3320): the half of "holds its own gate" the Dispatch chain no longer shows,
+	// an issue that ran as a root and then got a parent in Legion's work, which keeps its gate.
+	// Chains.HoldsOwnGate reads it beside Chains.IsRoot, the other half. No gate row is this fact:
+	// a root's rows exist only once its architect registers a step, and a hand-over of an earlier
+	// release copied a root's rows onto its members. The daemon sets it when it first records an
+	// issue as a root and when a decision pass finds a recorded issue a root (Store.MarkHoldsGate),
+	// and never clears it: PutIssue writes it set-only, so a write carrying false keeps a true the
+	// row holds.
+	HoldsGate bool
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -1889,6 +1899,11 @@ type Store interface {
 	// (admit's tellStalledTrees), so each write carries the row forwards anyway, and a key with
 	// no record matches no row and writes nothing.
 	MarkTreeStalledTold(ctx context.Context, tx pgx.Tx, root string, at time.Time) error
+	// MarkHoldsGate marks each of keys that the daemon records as holding its own gate
+	// (Issue.HoldsGate), in one statement however many keys: what a decision pass writes for every
+	// recorded issue it finds a root (Chains.IsRoot). The mark is never cleared, so a key already
+	// marked, a key with no record and no keys at all write nothing.
+	MarkHoldsGate(ctx context.Context, tx pgx.Tx, keys []string) error
 	// UnfilledIssues is every record of the Dispatch project key project written before the record
 	// carried its repository, by key; FillIssueRepository fills one such record, once.
 	UnfilledIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
@@ -1946,6 +1961,13 @@ type Store interface {
 	// children has no entry, and no parents reads nothing. A later step reads it to decide whether
 	// a parent's own first phase waits for a child of its own that is still open.
 	DispatchChildren(ctx context.Context, tx pgx.Tx, project string, parents []string) (map[string][]DispatchIssueRow, error)
+	// ChainRows is every row of the copy (dispatch_issues) a decision pass's chains reach, by key,
+	// in one query whatever the number of chains and links: the walk starts from every record of
+	// project at a phase other than done, every row of the project's copy at todo and each of
+	// extra, and follows each row's parent up to MaxChainLinks+1 links, ending a walk at a key it
+	// has already passed. A key the walk reaches and the copy holds no row of reads as a row that
+	// is not Present, which ends that walk. ReadChains is its one reader.
+	ChainRows(ctx context.Context, tx pgx.Tx, project string, extra []string) ([]ChainRow, error)
 	// DispatchClaim is who the claims mirror shows holding key's claim (`<kind>:<id>`, "" for
 	// nobody), "" when it holds no claim of key. It reads the claim alone (PutDispatchClaim), with
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
