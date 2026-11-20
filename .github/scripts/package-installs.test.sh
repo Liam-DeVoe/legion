@@ -300,6 +300,17 @@ check "what eval joins is read" "$(has "$out" 'step "Piped forms" runs `apt-get 
 check "a pipe into no shell and a printf into a file are no install" "$(lacks "$out" 'step "Pipes that run no install"')"
 check "seven refusals in all" "$(is "$(grep -c '::error' <<<"$out")" 7)"
 
+echo "case: an install two shells deep, and one that an echo through sudo feeds to sudo bash, are read"
+root=$(tree nested)
+one_job "$root" "      - name: Nested forms
+        run: |
+          bash -c \"sudo bash -c 'apt-get install -y n1'\"
+          sudo echo 'apt-get install -y n2' | sudo bash"
+run_rule "$root"
+check "a shell's -c inside a shell's -c is read" "$(has "$out" 'step "Nested forms" runs `apt-get install -y n1`')"
+check "an echo through sudo that feeds sudo bash is read" "$(has "$out" 'step "Nested forms" runs `apt-get install -y n2`')"
+check "two refusals in all" "$(is "$(grep -c '::error' <<<"$out")" 2)"
+
 echo "case: a called file that is missing is refused, and a tree with nothing to read is UNKNOWN"
 root=$(tree missing)
 write "$root" .github/workflows/ci.yaml <<'YAML'
