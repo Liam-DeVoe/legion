@@ -76,7 +76,7 @@ func TestARelaunchThatWouldReplaceThePodIsRefusedBeforeAnythingStops(t *testing.
 				})
 				return g, sandboxLocator(workerToken, "uid-pod-old")
 			},
-			why: "volume claim template",
+			why: string(replacedFromPreviousRelease),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
