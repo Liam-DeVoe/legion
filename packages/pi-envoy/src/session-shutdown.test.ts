@@ -5,6 +5,7 @@ import {
   HOST_SHUTDOWN_HANDLER_MS,
   HOST_SHUTDOWN_MARGIN_MS,
   SHUTDOWN_DEADLINE_MS,
+  SHUTDOWN_DELETE_MS,
   type ShutdownWarn,
 } from "./session-shutdown";
 
@@ -27,10 +28,10 @@ function shutdownRace(deregistration: Promise<void>, draining: Promise<void> = P
   return { warned, deadline, ran };
 }
 
-test("the shutdown deadline is the host's limit less its margin, and leaves the DELETE time past the settle", () => {
+test("the shutdown deadline is the host's limit less its margin, and holds the settle and the DELETE's own budget", () => {
   expect(SHUTDOWN_DEADLINE_MS).toBe(HOST_SHUTDOWN_HANDLER_MS - HOST_SHUTDOWN_MARGIN_MS);
   expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
-  expect(SHUTDOWN_DEADLINE_MS).toBeGreaterThan(SHUTDOWN_SETTLE_MS);
+  expect(SHUTDOWN_DEADLINE_MS).toBeGreaterThanOrEqual(SHUTDOWN_SETTLE_MS + SHUTDOWN_DELETE_MS);
 });
 
 test("a DELETE still pending at the deadline is given up and logged at warn with the session id", async () => {

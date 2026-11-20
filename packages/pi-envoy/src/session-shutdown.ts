@@ -15,12 +15,21 @@ export const HOST_SHUTDOWN_HANDLER_MS = 2_000;
 export const HOST_SHUTDOWN_MARGIN_MS = 1_000;
 
 /**
+ * What the DELETE needs of the shutdown deadline once the settle is spent, to reach the wire: one
+ * attempt, whose credential waits on half of it and whose request has the other half
+ * (`credentialDeadline`, `@legion/envoy-client/bearer`), so a broker credential still waiting on a
+ * trade leaves the request 375 ms to go without it.
+ */
+export const SHUTDOWN_DELETE_MS = 750;
+
+/**
  * The whole of what the `session_shutdown` handler gives its deregistration and its drain. The
  * shared `SHUTDOWN_SETTLE_MS` (`@legion/envoy-client/envoy-settings`) is what that path spends
- * waiting on a registration still on the wire, and the rest of this deadline is the DELETE's to
- * reach the wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration
- * slower than that would mean no DELETE was sent at all and the record outlived this process by
- * the gone horizon, where a DELETE that races a slow registration only may lose.
+ * waiting on a registration still on the wire, and the rest of this deadline, at least
+ * `SHUTDOWN_DELETE_MS`, is the DELETE's to reach the wire (`session-shutdown.test.ts` holds the
+ * sum): `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower than
+ * that would mean no DELETE was sent at all and the record outlived this process by the gone
+ * horizon, where a DELETE that races a slow registration only may lose.
  */
 export const SHUTDOWN_DEADLINE_MS = HOST_SHUTDOWN_HANDLER_MS - HOST_SHUTDOWN_MARGIN_MS;
 
