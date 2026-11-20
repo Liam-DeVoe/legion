@@ -141,8 +141,9 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		},
 	}, {
 		// alice's pre-mortem on the spec, with one finding (writeReasoningNodes): the lens's node
-		// with its base attributes, its part_of the spec, its has_kind, its verdict and her
-		// authored_by, which the term lens counts, and the finding's block node with its base
+		// with its base attributes, its part_of the spec, its has_kind, its verdict, the artifact_id
+		// of the spec's row the store records beside that part_of (graphstore.AttributeArtifactID)
+		// and her authored_by, which the term lens counts, and the finding's block node with its base
 		// attributes, its part_of the lens, its text and her authored_by, which lens_finding
 		// counts, in one write.
 		Name: "api/reasoning_write.go#writeReasoningNodes, a lens with a finding", Database: r.database,
@@ -160,6 +161,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			{graphstore.KindLens, graphstore.TuplePartOf}:         {graphstore.KindLens},
 			{graphstore.KindLens, graphstore.TupleHasKind}:        {graphstore.KindLens},
 			{graphstore.KindLens, graphstore.AttributeVerdict}:    {graphstore.KindLens},
+			{graphstore.KindLens, graphstore.AttributeArtifactID}: {graphstore.KindLens},
 			{graphstore.KindLens, graphstore.TupleAuthoredBy}:     {graphstore.KindLens},
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}:  {"lens_finding"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:       {"lens_finding"},

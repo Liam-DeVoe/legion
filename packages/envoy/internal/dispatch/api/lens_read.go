@@ -118,12 +118,12 @@ type lensRead struct {
 	// one are named at the version of the document that last held them, `#b-<id>@v<N>` or
 	// `@v<N>`, and a block of a comment or a part of an ask a later revision removed at the
 	// revision of its item that last held it, `#b-<id>@v<N>`: the address that reads each now
-	// (refs.PinnedParent, spec v59 R5). For the lens such a node is history and not a node taken
-	// gone, so no lens on it reads on null. On is null only for a lens the store places nowhere. It
-	// is never null for a node the reader may not see: a reader who may see the lens may see the
-	// node it stands on, since the store refuses a lens every reader may see on a node reserved for
-	// its author (graphstore.VisibilityWiderThanParentError), and the release before that rule
-	// wrote no node reserved for its author.
+	// (refs.PinnedParent, spec requirement r-proposed). For the lens such a node is history and
+	// not a node taken gone, so no lens on it reads on null. On is null only for a lens the store
+	// places nowhere. It is never null for a node the reader may not see: a reader who may see the
+	// lens may see the node it stands on, since the store refuses a lens every reader may see on a
+	// node reserved for its author (graphstore.VisibilityWiderThanParentError), and the release
+	// before that rule wrote no node reserved for its author.
 	On *string `json:"on"`
 	// Author is the person or the session its authored_by tuple names, the writer
 	// graphstore.AuthorOf names of its made_by: the session its body named for a lens written on
@@ -557,18 +557,18 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 //
 // A lens on a block a version removed, on a retired document or on a block of one, or on a block
 // of a comment or a part of an ask a revision removed, names that node at the version of its
-// document or the revision of its item that last held it (refs.PinnedParent, spec v59 R5). The
-// read of such a node answers that address as the node's own and as the on of each lens on it, so
-// a lens answers one on in every read, and a read of the address a lens answers as its on lists
-// that lens.
+// document or the revision of its item that last held it (refs.PinnedParent, spec requirement
+// r-proposed). The read of such a node answers that address as the node's own and as the on of
+// each lens on it, so a lens answers one on in every read, and a read of the address a lens answers
+// as its on lists that lens.
 //
-// Its statements, beside the node's own: the address a lens names it by, where it is a document, a
-// block of one, a block of a comment or a part of an ask (pinnedKinds); the lenses on the node; the
-// lenses a chain reaches that stand elsewhere, one
-// statement for each depth of a walk that meets any; the findings and the risks of every lens
-// answered, one statement each; and one call of the registry (refs.Nodes) for the place of every
-// lens answered that stands elsewhere than on the node or on a lens the read holds, and every check
-// a risk names.
+// Its statements, beside the node's own: the address a lens names it by, where it can be pinned -
+// a retired document, a block of a document, and a block of a comment or a part of an ask no
+// current revision holds (lensReadNode's pinnable); the lenses on the node; the lenses a chain
+// reaches that stand elsewhere, one statement for each depth of a walk that meets any; the findings
+// and the risks of every lens answered, one statement each; and one call of the registry
+// (refs.Nodes) for the place of every lens answered that stands elsewhere than on the node or on a
+// lens the read holds, and every check a risk names.
 func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address string) (nodeLenses, error) {
 	notFound := errorf(http.StatusNotFound, "NOT_FOUND", "no node %q", address)
 	// Only a document block's address is resolved (resolvedNodeAddress), and a block is a kind a
@@ -580,7 +580,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 	if !ok || !slices.Contains(lensStandsOnKinds, kind) {
 		return nodeLenses{}, notFound
 	}
-	node, found, err := lensReadNode(ctx, q, who, kind, id, address)
+	node, found, pinnable, err := lensReadNode(ctx, q, who, kind, id, address)
 	if err != nil {
 		return nodeLenses{}, err
 	}
@@ -589,7 +589,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 	}
 	on := farEndOf(node, address)
 	named := node.Ref
-	if slices.Contains(pinnedKinds, on.kind) {
+	if pinnable {
 		pinned, err := refs.PinnedParent(ctx, q, on.kind, on.id)
 		if err != nil {
 			return nodeLenses{}, err
@@ -712,9 +712,9 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 
 // pinnedKinds are the kinds of node a version, a retirement or a revision takes out of an issue,
 // as a tuple names them (farEndOf), which a lens on one names at the version or the revision that
-// last held it (refs.PinnedParent): a document and its block, and the block of a comment and the
-// part of an ask, items whose revisions are recorded.
-var pinnedKinds = []string{graphstore.KindArtifact, refs.BlockNodeKind, refs.ItemComment.BlockKind(), refs.ItemAsk.BlockKind()}
+// last held it (refs.PinnedKinds, refs.PinnedParent): a document and its block, and the block of a
+// comment and the part of an ask, items whose revisions are recorded.
+var pinnedKinds = refs.PinnedKinds()
 
 // lensReadNode is the node the lens read of address reads, which address decodes to as kind and
 // id: the node refs.Node answers, but for a document and for a block no current version or
@@ -727,42 +727,48 @@ var pinnedKinds = []string{graphstore.KindArtifact, refs.BlockNodeKind, refs.Ite
 // read at the node its address names (refs.NamedBlock), the room's node for a block of a document
 // of an issue room, which is the node a lens on it stands on. Unpinned, or pinned to a version or
 // a revision that did not hold it, it is no node, which found false says.
-func lensReadNode(ctx context.Context, q refs.Queryer, who model.Actor, kind, id, address string) (model.GraphNode, bool, error) {
+//
+// pinnable is whether a lens on the node can name it at a version or a revision
+// (refs.PinnedParent): a retired document, a block of a document, current or not, since a current
+// block of a retired document is named at its last version, and a block of a comment or a part of
+// an ask no current revision holds. A document that is not retired and a current block of an item
+// are named where they stand, and so is a node of any other kind.
+func lensReadNode(ctx context.Context, q refs.Queryer, who model.Actor, kind, id, address string) (node model.GraphNode, found, pinnable bool, err error) {
 	if kind == graphstore.KindArtifact {
 		return documentAtAddress(ctx, q, who, id)
 	}
-	node, found, err := refs.Node(ctx, q, who, kind, id, true)
+	node, found, err = refs.Node(ctx, q, who, kind, id, true)
 	if err != nil || found || !slices.Contains(pinnedKinds, kind) {
-		return node, found, err
+		return node, found, found && kind == refs.BlockNodeKind, err
 	}
 	ref, parsed := text.ParseRef(address, "")
 	if !parsed || ref.Pin == 0 {
-		return model.GraphNode{}, false, nil
+		return model.GraphNode{}, false, false, nil
 	}
 	var removed model.GraphNode
 	if kind == refs.BlockNodeKind {
 		documentKey, _, _ := strings.Cut(id, "#")
-		document, held, readErr := documentAtAddress(ctx, q, who, documentKey)
+		document, held, _, readErr := documentAtAddress(ctx, q, who, documentKey)
 		if readErr != nil || !held {
-			return model.GraphNode{}, false, readErr
+			return model.GraphNode{}, false, false, readErr
 		}
 		named, namedErr := refs.NamedBlock(ctx, q, id)
 		if namedErr != nil {
-			return model.GraphNode{}, false, namedErr
+			return model.GraphNode{}, false, false, namedErr
 		}
 		removed, err = pinnedBlockNode(ctx, q, who, document, node, false, named, ref)
 	} else {
 		item, held, readErr := refs.Node(ctx, q, who, ref.Item, ref.ID, true)
 		if readErr != nil || !held {
-			return model.GraphNode{}, false, readErr
+			return model.GraphNode{}, false, false, readErr
 		}
 		removed, err = pinnedItemBlockNode(ctx, q, who, item, node, false, id, ref)
 	}
 	var refusal *apiError
 	if errors.As(err, &refusal) && refusal.status == http.StatusNotFound {
-		return model.GraphNode{}, false, nil
+		return model.GraphNode{}, false, false, nil
 	}
-	return removed, err == nil, err
+	return removed, err == nil, err == nil, err
 }
 
 // parentAddress is the address of parent, null where there is none or it has none.

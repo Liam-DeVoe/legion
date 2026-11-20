@@ -497,17 +497,24 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
 	}, {
-		// The removal of an untouched document of the issue, made just before by typing a title:
-		// its node stated gone, which the term artifact_removed counts, and the node of its one
-		// version stated gone, which the term version_removed counts, by removedDocumentNodes in
-		// the request's transaction and under its artifact.removed in the event's batch.
+		// The removal of an untouched document of the issue, made just before by typing a title,
+		// with alice's trade-off lens on it: its node stated gone, which the term artifact_removed
+		// counts, and the node of its one version stated gone, which the term version_removed counts,
+		// by removedDocumentNodes in the request's transaction and under its artifact.removed in the
+		// event's batch; and the lens, stale once the row it recorded is deleted, stated gone through
+		// the sweep's statement (graphcensus.StateStaleLensesGone), whose state tuple the term lens
+		// counts.
 		Name: "api/artifact_removal.go#removedDocumentNodes", Database: r.database,
-		Sites: []string{"api/artifact_removal.go#removedDocumentNodes", "api/server.go#appendCausingEvent"},
+		Sites: []string{"api/artifact_removal.go#removedDocumentNodes", "api/server.go#appendCausingEvent", "graphcensus/orphans.go#StateStaleLensesGone"},
 		Ready: func(t *testing.T) {
-			r.removable = decoded[struct {
+			removable := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
 			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts",
-				map[string]any{"name": "scratch.md"}, "alice", http.StatusCreated)).Artifact.ID
+				map[string]any{"name": "scratch.md"}, "alice", http.StatusCreated)).Artifact
+			r.removable = removable.ID
+			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/lenses", map[string]any{
+				"on": "dispatch://" + r.issue + "/artifact/" + removable.Slug, "kind": "trade-off",
+			}, "alice", http.StatusCreated)
 		},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodDelete, "/api/v1/artifacts/"+r.removable, nil, "alice", http.StatusNoContent)
@@ -515,6 +522,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"},
 			{graphstore.KindVersion, graphstore.AttributeState}:  {"version_removed"},
+			{graphstore.KindLens, graphstore.AttributeState}:     {graphstore.KindLens},
 		},
 	}, {
 		// The follower route's follow of that ask (asks.Follow), whose node it moves onto the
@@ -902,6 +910,7 @@ var (
 		{graphstore.KindLens, graphstore.TuplePartOf}:         {graphstore.KindLens},
 		{graphstore.KindLens, graphstore.TupleHasKind}:        {graphstore.KindLens},
 		{graphstore.KindLens, graphstore.AttributeVerdict}:    {graphstore.KindLens},
+		{graphstore.KindLens, graphstore.AttributeArtifactID}: {graphstore.KindLens},
 		{graphstore.KindLens, graphstore.TupleAuthoredBy}:     {graphstore.KindLens},
 	}
 	findingCounted = map[graphcensus.StoredKind][]string{

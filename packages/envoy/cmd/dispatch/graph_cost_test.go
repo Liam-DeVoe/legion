@@ -397,15 +397,23 @@ const costLeaseNamespace int32 = 0x4C4F4F50
 const costLeaseWait = 5 * time.Minute
 
 // costHoldBlockIndex takes the block-index pass's own lease on this arm and answers the call
-// that gives it back, so no tick runs while a window is measured. It is memory_harness_test.go's
-// holdBlockIndexLease over a costArm's pool: duty.Exclusive takes that lease before every pass
-// and skips the pass where another session holds it.
+// that gives it back, so no tick runs while a window is measured (holdBlockIndexLease).
 func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 	t.Helper()
+	return holdBlockIndexLease(t, arm.name, arm.pool, arm.server)
+}
+
+// holdBlockIndexLease takes the block-index pass's own lease over pool, the test's own connections
+// to the database server serves, and answers the call that gives it back. It is
+// memory_harness_test.go's memoryServer.holdBlockIndexLease over any pool: duty.Exclusive takes
+// that lease before every pass and skips the pass where another session holds it. name is what a
+// failure calls the build, and server's output is printed where the lease stays held too long.
+func holdBlockIndexLease(t *testing.T, name string, pool *pgxpool.Pool, server *dispatchProcess) func() {
+	t.Helper()
 	ctx := context.Background()
-	conn, err := arm.pool.Acquire(ctx)
+	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		t.Fatalf("%s: take a connection for the block-index lease: %v", arm.name, err)
+		t.Fatalf("%s: take a connection for the block-index lease: %v", name, err)
 	}
 	deadline := time.Now().Add(costLeaseWait)
 	for {
@@ -413,7 +421,7 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
 			costLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
 			conn.Release()
-			t.Fatalf("%s: take the block-index lease: %v", arm.name, err)
+			t.Fatalf("%s: take the block-index lease: %v", name, err)
 		}
 		if held {
 			break
@@ -421,14 +429,14 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 		if time.Now().After(deadline) {
 			conn.Release()
 			t.Fatalf("%s: the block-index pass held the %q lease for more than %s:\n%s",
-				arm.name, docs.BlockIndexLease, costLeaseWait, arm.server.Output.String())
+				name, docs.BlockIndexLease, costLeaseWait, server.Output.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return func() {
 		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
 			costLeaseNamespace, docs.BlockIndexLease); err != nil {
-			t.Errorf("%s: give the block-index lease back: %v", arm.name, err)
+			t.Errorf("%s: give the block-index lease back: %v", name, err)
 		}
 	}
 }

@@ -322,17 +322,24 @@ func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.C
 // binary. The commit is the one BASELINE_SHA names (testbaseline.Commit): the fork point with
 // main for a branch that lands on main, the parent's head for a child stacked on it, and for a
 // check whose branch builds on branches that have not merged yet, a commit holding every such
-// branch (TestThePredicateAndTheLensReadsGetNoSlower's base). The source is that commit's own
-// tree, taken out of the repository with `git archive` into a directory of this test's own, so the
-// build is that commit's and not this working copy's. The binary is stamped with that commit as
-// the image build stamps one, `-ldflags "-X main.buildCommit=<commit>"`, so the process registers
-// and reports the build it is (processes.Live reads two unstamped builds as one fleet). The
-// directory and the binary go when the test ends, so every run extracts and builds again, which is
-// about a minute.
+// branch (TestThePredicateAndTheLensReadsGetNoSlower's base). It is baseBuildOf of that commit.
 func baseBuild(t *testing.T) string {
 	t.Helper()
+	return baseBuildOf(t, testbaseline.Commit(t), testbaseline.Variable)
+}
+
+// baseBuildOf builds `./cmd/dispatch` at commit, the commit the environment variable variable
+// names, and answers the binary: baseBuild's commit, or another earlier build a test serves beside
+// it, as TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress serves main's
+// (testbaseline.MainVariable). The source is that commit's own tree, taken out of the repository
+// with `git archive` into a directory of this test's own, so the build is that commit's and not
+// this working copy's. The binary is stamped with that commit as the image build stamps one,
+// `-ldflags "-X main.buildCommit=<commit>"`, so the process registers and reports the build it is
+// (processes.Live reads two unstamped builds as one fleet). The directory and the binary go when
+// the test ends, so every run extracts and builds again, which is about a minute.
+func baseBuildOf(t *testing.T, commit, variable string) string {
+	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	commit := testbaseline.Commit(t)
 	// No socket is bound anywhere under the tree, so the room asked for is the directory the
 	// build runs in rather than the longest path of the archive.
 	source := testtmp.Dir(t, filepath.Join("packages", "envoy"))
@@ -367,7 +374,7 @@ func baseBuild(t *testing.T) string {
 		Flags:  []string{"-ldflags", "-X main.buildCommit=" + commit},
 		Env:    os.Environ(),
 	})
-	t.Logf("the older build is %s, from %s, the commit %s names, stamped with that commit", binary, commit, testbaseline.Variable)
+	t.Logf("the older build is %s, from %s, the commit %s names, stamped with that commit", binary, commit, variable)
 	return binary
 }
 

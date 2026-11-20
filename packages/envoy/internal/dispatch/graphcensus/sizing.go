@@ -704,13 +704,15 @@ func storeKinds() []StoreKind {
 	}, {
 		// Counted off api's invokeLens and writeReasoningNodes: graphstore.Write's visibility, state
 		// and project, the issue's; the part_of, the has_kind and, where the body names them, the
-		// verdict value and the triggered_by; and, where graphstore.AuthorOf names a writer of its
-		// made_by, graphstore.AuthorFacts' authored_by and the author's aliases, stated once a write.
-		Name: "lens", MovedBy: movedWithLenses, Nodes: 1, Tuples: 10, Assumed: 2 * sizingWindowDays,
+		// verdict value and the triggered_by; the artifact_id value of a lens placed on a document or
+		// on a block of one (graphstore.AttributeArtifactID); and, where graphstore.AuthorOf names a
+		// writer of its made_by, graphstore.AuthorFacts' authored_by and the author's aliases, stated
+		// once a write.
+		Name: "lens", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 2 * sizingWindowDays,
 		Driver: "assumed at 2 a day, a pre-mortem and one other, since production writes no lens before" +
 			" this release: its node, its visibility, state and project, its part_of the node it analyses," +
-			" its has_kind, at most its verdict value and its triggered_by, its authored_by and at most two aliases" +
-			" of its author",
+			" its has_kind, at most its verdict value, its artifact_id value and its triggered_by, its authored_by" +
+			" and at most two aliases of its author",
 	}, {
 		// Counted off api's retireConvertedDocument, the one writer of a moved_to out of a document's
 		// address, which appends one through writeReasoningPointer each time the pre-mortem conversion

@@ -331,12 +331,13 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	t.Logf("the declined ask's entry as the read answers it: %s", entryJSON(t, refusal))
 
 	// The agent's decision: its text, its uncertainty, its reason and its author, the far end
-	// of the stored decided_by tuple, the agent's session whose credential wrote it.
+	// of the stored decided_by tuple, the agent's session whose credential wrote it, which
+	// stamped no title and so carries none.
 	d1 := requireEntry(t, entries, "the agent's decision", refs.BlockNodeKind+":"+choices.address("d1"))
 	decidedBy := requireDecidedByNode(t, database, "the agent's decision", choices.address("d1"), graphstore.KindSession, decidingSession)
 	if !strings.Contains(d1.Text, viewD1Words) || d1.Kind != "agent" || d1.Uncertainty == nil || *d1.Uncertainty != "low" ||
 		d1.UncertaintyReason == nil || *d1.UncertaintyReason != viewD1Reason || d1.DecidedBy == nil ||
-		*d1.DecidedBy != (decisionEntryNode{Kind: decidedBy.ToKind, ID: decidedBy.ToID}) {
+		*d1.DecidedBy != (decisionDecider{Kind: decidedBy.ToKind, ID: decidedBy.ToID}) {
 		t.Errorf("the agent's decision's entry = %s, want its words %q, uncertainty low, the reason %q and the author %s:%s",
 			entryJSON(t, d1), viewD1Words, viewD1Reason, decidedBy.ToKind, decidedBy.ToID)
 	}
@@ -511,6 +512,61 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	if len(heavyEntries) != 1 || heavyEntries[0].Node != (decisionEntryNode{Kind: refs.BlockNodeKind, ID: heavySpec.address("h1")}) ||
 		!strings.Contains(heavyEntries[0].Text, "The heavy spec decides once.") || heavyEntries[0].ChangedVersion != 1 {
 		t.Fatalf("the heavy spec's Decisions read answers %s, want its one decision %s, its words, at version 1", entryJSON(t, heavyEntries), heavySpec.address("h1"))
+	}
+}
+
+// A session that decided is named by the title it stamped once Envoy's registry no longer lists
+// it: the Decisions read's decided_by carries title, the newest title the session stamped on
+// anything it wrote (delivery.ResolveSessionTitles), where its write stamped one. A session whose
+// writes stamped none, and a person, carry no title at all. The decided_by members are read as
+// the response holds them, so an empty title the answer spelled would fail as a title it held.
+func TestTheDecisionsReadNamesASessionDeciderByTheTitleItStamped(t *testing.T) {
+	const (
+		titledSession = "session-titled-0123456789"
+		title         = "Legion planner · CORE-1"
+	)
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", ":::decision{#p1}\nAlice's spec decides.\n:::\n")
+	agentUploadAs(t, handler, issue.Key, "titled.md", ":::decision{#t1}\nThe titled session decides.\n:::\n",
+		map[string]any{"actor": map[string]any{"kind": "session", "id": titledSession, "origin": map[string]any{"session_title": title}}})
+	agentUploadAs(t, handler, issue.Key, "untitled.md", ":::decision{#u1}\nThe untitled session decides.\n:::\n", nil)
+
+	person := readDecisionDocument(t, database, issue.Key, "spec").address("p1")
+	titled := readDecisionDocument(t, database, issue.Key, "titled-md").address("t1")
+	untitled := readDecisionDocument(t, database, issue.Key, "untitled-md").address("u1")
+	requireDecidedBy(t, database, "the person's decision", person, "alice")
+	requireDecidedByNode(t, database, "the titled session's decision", titled, graphstore.KindSession, titledSession)
+	requireDecidedByNode(t, database, "the untitled session's decision", untitled, graphstore.KindSession, decidingSession)
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/decisions", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/issues/%s/decisions: status=%d body=%s", issue.Key, response.Code, response.Body.String())
+	}
+	read := decodeBody[struct {
+		Entries []struct {
+			Node      decisionEntryNode `json:"node"`
+			DecidedBy map[string]any    `json:"decided_by"`
+		} `json:"entries"`
+	}](t, response)
+	deciders := map[string]map[string]any{}
+	for _, entry := range read.Entries {
+		if entry.Node.Kind == refs.BlockNodeKind {
+			deciders[entry.Node.ID] = entry.DecidedBy
+		}
+	}
+	for _, want := range []struct {
+		what, node string
+		decider    map[string]any
+	}{
+		{"the titled session's decision", titled, map[string]any{"kind": graphstore.KindSession, "id": titledSession, "title": title}},
+		{"the untitled session's decision", untitled, map[string]any{"kind": graphstore.KindSession, "id": decidingSession}},
+		{"the person's decision", person, map[string]any{"kind": graphstore.KindPerson, "id": "alice"}},
+	} {
+		decider, found := deciders[want.node]
+		if !found || !reflect.DeepEqual(decider, want.decider) {
+			t.Errorf("%s (%s): the read answers the decided_by %v (an entry %t), want %v", want.what, want.node, decider, found, want.decider)
+		}
 	}
 }
 

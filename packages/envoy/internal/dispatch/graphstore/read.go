@@ -225,7 +225,7 @@ func History(ctx context.Context, q Queryer, fromKind, fromID, kind string) ([]T
 
 // ReadNode answers one node row, the projection of its tuples, and whether the store holds it.
 func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, error) {
-	node, err := scanNode(q.QueryRow(ctx, `
+	node, err := ScanNode(q.QueryRow(ctx, `
 		select `+nodeColumns+`
 		from graph_nodes
 		where kind = $1 and id = $2
@@ -242,6 +242,13 @@ func ReadNode(ctx context.Context, q Queryer, kind, id string) (Node, bool, erro
 // nodeColumns is what every node read answers, in the order a node scan takes them, and what
 // every node write writes (nodeArrays binds one array per column).
 const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, parties`
+
+// NodeColumnsOf is nodeColumns over the graph_nodes row alias names, in their order, for a
+// statement of another package that selects a node row beside columns of its own, which ScanNode
+// reads.
+func NodeColumnsOf(alias string) string {
+	return alias + `.` + strings.ReplaceAll(nodeColumns, `, `, `, `+alias+`.`)
+}
 
 // NodesOfKind answers every node of one kind, in id order. It reads through the primary key
 // (kind, id), whose leading column it binds, so a kind the store holds few of costs that few
@@ -294,7 +301,7 @@ func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, erro
 	if err != nil {
 		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
 	}
-	beneath, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Node, error) { return scanNode(row) })
+	beneath, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Node, error) { return ScanNode(row) })
 	if err != nil {
 		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
 	}
@@ -332,7 +339,7 @@ func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	defer rows.Close()
 	var nodes []Node
 	for rows.Next() {
-		node, err := scanNode(rows)
+		node, err := ScanNode(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -344,14 +351,16 @@ func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	return nodes, nil
 }
 
-// scanNode reads one node row, as ReadNode and NodesOfKind both take it. A null project_key is the
-// empty Project, and a null parties nil Parties.
-func scanNode(row pgx.Row) (Node, error) {
+// ScanNode reads one node row, as ReadNode, NodesOfKind and NodesBeneath take it: a row whose
+// first columns are nodeColumns, in their order, as a statement of another package selects them
+// through NodeColumnsOf, and whose columns after those, where it selects any, it reads into more.
+// A null project_key is the empty Project, and a null parties nil Parties.
+func ScanNode(row pgx.Row, more ...any) (Node, error) {
 	var node Node
 	var attributes, madeBy []byte
 	var project *string
-	if err := row.Scan(&node.Kind, &node.ID, &node.Supertag, &node.Visibility, &node.State,
-		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent, &project, &node.Parties); err != nil {
+	if err := row.Scan(append([]any{&node.Kind, &node.ID, &node.Supertag, &node.Visibility, &node.State,
+		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent, &project, &node.Parties}, more...)...); err != nil {
 		return Node{}, err
 	}
 	if project != nil {

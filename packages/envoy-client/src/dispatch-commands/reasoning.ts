@@ -275,7 +275,7 @@ function lensLines(lens: LensRead): string[] {
   // reader may not see: a reader who may see a lens may see the node it stands on, since Dispatch
   // refuses a lens every reader may see on a node reserved for its author.
   const lines = [
-    `- ${lens.address}${authorOnlyNote(lens.visibility)}: ${kind} on ${lens.on ?? "a node that is no longer there"}, invoked by ${authorText(lens.author)}; ${lens.state}`,
+    `- ${lens.address}${authorOnlyNote(lens.visibility)}: ${kind} on ${lens.on ?? "no node"}, invoked by ${authorText(lens.author)}; ${lens.state}`,
   ];
   if (lens.verdict !== null) lines.push(`  verdict: ${lens.verdict}`);
   // The document renders a Go list as nullable, and Dispatch answers an empty one.

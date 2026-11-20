@@ -1,16 +1,12 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
-
-	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -45,25 +41,25 @@ func storedStateOf(t *testing.T, rig reasoningRig, address string) string {
 // without the person scope, is refused 403 STATE_NOT_PERMITTED naming the node and marks it
 // overtaken instead.
 //
-// Then the tree c-settle's tester drove on a local server of e56f8d9b, on the rig of c-settle's
-// other tests (settleRig), whose two agents each hold a broker-issued token bound to a session of
-// its own, so each proves an author and holds no person scope. alice's trade-off analysis L1 on
-// the spec holds one finding F1, the first agent invokes a lens L3 on L1, and the second agent
-// invokes a lens L4 on F1 with one finding F4 and a lens L5 on F4, each reserved for itself, so
-// alice may see none of L4, F4 and L5. Her gone on L1 answers L1 alone and takes F1, L3, L4, F4
-// and L5 to gone in the same transaction, each with one new state tuple written by her, and the
-// first agent's lens read and reference read of L3, and the second agent's of L4 and of L5, answer
-// what a lens nobody wrote answers. alice writes a pre-mortem with one risk R, and the first agent
-// invokes a lens L6 on R: her gone on R takes L6 to gone with it. Her gone on a constraint of hers
-// takes the lens the first agent invoked on it to gone in the same way. The first agent's gone on
-// each of two risks under a pre-mortem of its own, one with nothing under it and one under which
-// alice reserves a lens for herself, is 403 STATE_NOT_PERMITTED naming the risk, the two answers
-// alike byte for byte once the risk is substituted and both risks at the value they held. Its gone
-// on the finding F7 of a trade-off analysis of its own, on which the second agent reserves a lens
-// L7 for itself, is refused the same way, F7 and L7 keeping their values, and alice's gone on F7
-// takes L7, which she may not see, gone with it. Each of these checks is an error and not the end
-// of the test, so a run whose route leaves a node standing, or takes a move it refuses, names each
-// node.
+// Then a tree on the rig of c-settle's other tests (settleRig), whose two agents each hold a
+// broker-issued token bound to a session of its own, so each proves an author and holds no person
+// scope. alice's trade-off analysis L1 on the spec holds one finding F1, the first agent invokes a
+// lens L3 on L1, and the second agent invokes a lens L4 on F1 with one finding F4 and a lens L5 on
+// F4, each reserved for itself, so alice may see none of L4, F4 and L5. Her gone on L1 answers L1
+// alone and takes F1, L3, L4, F4 and L5 to gone in the same transaction, each with one new state
+// tuple written by her, and the first agent's lens read and reference read of L3, and the second
+// agent's of L4 and of L5, answer what a lens nobody wrote answers. alice writes a pre-mortem with
+// one risk R, and the first agent invokes a lens L6 on R: her gone on R takes L6 to gone with it.
+// Her gone on a constraint of hers takes the lens the first agent invoked on it to gone in the same
+// way. The first agent's gone on each of two risks under a pre-mortem of its own, one with nothing
+// under it and one under which alice reserves a lens for herself, is 403 STATE_NOT_PERMITTED naming
+// the risk, the two answers alike byte for byte once the risk is substituted and both risks at the
+// value they held. Its gone on a constraint of its own is refused the same way, and its overtaken
+// on the first risk is taken. Its gone on the finding F7 of a trade-off analysis of its own, on
+// which the second agent reserves a lens L7 for itself, is refused the same way, F7 and L7 keeping
+// their values, and alice's gone on F7 takes L7, which she may not see, gone with it. Each of these
+// checks is an error and not the end of the test, so a run whose route leaves a node standing, or
+// takes a move it refuses, names each node.
 func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	rig := newReasoningRig(t)
 	first := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"The first lens's finding."}})
@@ -159,28 +155,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	}
 
 	settle := newSettleRig(t)
-	onSettleIssue := "/api/v1/issues/" + settle.issue.Key
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	// posted is what as answers for body posted to path under the settle rig's issue, failing on
-	// anything but 201; invokeAs and riskAs are the lens and the risk under lens that as writes.
-	posted := func(name, path string, as sender, body map[string]any) *httptest.ResponseRecorder {
-		t.Helper()
-		response := as(http.MethodPost, onSettleIssue+path, body)
-		if response.Code != http.StatusCreated {
-			t.Fatalf("%s: status=%d body=%s", name, response.Code, response.Body.String())
-		}
-		return response
-	}
-	invokeAs := func(name string, as sender, body map[string]any) lensInvoked {
-		t.Helper()
-		return decodeBody[lensInvoked](t, posted(name, "/lenses", as, body))
-	}
-	riskAs := func(name string, as sender, lens string) riskWritten {
-		t.Helper()
-		return decodeBody[riskWritten](t, posted(name, "/risks", as, map[string]any{
-			"lens": lens, "heading": name, "early_warning": "It shows early.", "prevention": "It is kept from happening.",
-		}))
-	}
 	// stateHistory is every state tuple the store holds of the node at address, oldest first.
 	stateHistory := func(address string) []graphstore.Tuple {
 		t.Helper()
@@ -215,16 +190,16 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	// lens L3 on L1; and the second agent's lens L4 on F1, reserved for itself, with one finding
 	// F4, and its lens L5 on F4, reserved too. L5 is a lens on a finding of a lens on the finding
 	// of L1, and alice may see none of L4, F4 and L5.
-	l1 := invokeAs("alice's trade-off analysis L1 on the spec", settle.asAlice, map[string]any{
+	l1 := settle.invoke(t, "alice's trade-off analysis L1 on the spec", settle.asAlice, map[string]any{
 		"on": settle.spec, "kind": "trade-off", "findings": []string{"F1, the one finding of L1."},
 	})
 	f1 := l1.Findings[0]
-	l3 := invokeAs("the first agent's lens L3 on L1", settle.asFirst, map[string]any{"on": l1.Address, "kind": "trade-off"})
-	l4 := invokeAs("the second agent's lens L4 on F1", settle.asSecond, map[string]any{
+	l3 := settle.invoke(t, "the first agent's lens L3 on L1", settle.asFirst, map[string]any{"on": l1.Address, "kind": "trade-off"})
+	l4 := settle.invoke(t, "the second agent's lens L4 on F1", settle.asSecond, map[string]any{
 		"on": f1.Address, "kind": "trade-off", "visibility": graphstore.VisibilityAuthor, "findings": []string{"F4, the one finding of L4."},
 	})
 	f4 := l4.Findings[0]
-	l5 := invokeAs("the second agent's lens L5 on F4", settle.asSecond, map[string]any{
+	l5 := settle.invoke(t, "the second agent's lens L5 on F4", settle.asSecond, map[string]any{
 		"on": f4.Address, "kind": "trade-off", "visibility": graphstore.VisibilityAuthor,
 	})
 	tree := []struct {
@@ -272,24 +247,11 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	// No read answers a lens of the tree live with an on or a parent naming nothing: the first
 	// agent's GET /api/v1/lenses?on= and GET /api/v1/references?to= of its L3, and the second
 	// agent's of its L4 and L5, by the lens's dispatch:// address, answer what the same read of a
-	// lens nobody wrote answers, byte for byte once the id is substituted (the reference read names
-	// such a lens by its id alone).
-	nobodysID := uuid.NewString()
-	for _, read := range []struct {
-		reader, name string
-		as           sender
-		lens         lensInvoked
-	}{{"the first agent", "L3", settle.asFirst, l3}, {"the second agent", "L4", settle.asSecond, l4}, {"the second agent", "L5", settle.asSecond, l5}} {
-		for _, route := range []string{"/api/v1/lenses?on=", "/api/v1/references?to="} {
-			own := read.as(http.MethodGet, route+url.QueryEscape(read.lens.Address), nil)
-			nobodys := read.as(http.MethodGet, route+url.QueryEscape(refs.StoreRef(graphstore.KindLens, nobodysID)), nil)
-			if own.Code != http.StatusNotFound || nobodys.Code != http.StatusNotFound ||
-				!bytes.Equal(own.Body.Bytes(), bytes.ReplaceAll(nobodys.Body.Bytes(), []byte(nobodysID), []byte(read.lens.ID))) {
-				t.Errorf("%s's GET %s%s of %s once L1 is gone answers %d %s, and of a lens nobody wrote %d %s: want one 404 NOT_FOUND once the id is substituted",
-					read.reader, route, read.lens.Address, read.name, own.Code, own.Body.String(), nobodys.Code, nobodys.Body.String())
-			}
-		}
-	}
+	// lens nobody wrote answers.
+	requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
+		return fmt.Sprintf("%s's %s once L1 is gone answers %s, want 404 NOT_FOUND as for a lens nobody wrote", login, read, status)
+	}, lensReader{"the first agent", settle.asFirst, l3}, lensReader{"the second agent", settle.asSecond, l4},
+		lensReader{"the second agent", settle.asSecond, l5})
 
 	// requireTakenWith fails, naming the node, unless alice's gone on parent, called parentName,
 	// left the node name names at address gone.
@@ -303,12 +265,12 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	// A risk's gone takes the lens on it, and so does a constraint's, whoever invoked that lens:
 	// alice's pre-mortem holds one risk R, on which the first agent invokes a lens L6, and the
 	// first agent invokes another lens on a constraint of alice's.
-	alicePremortem := invokeAs("alice's pre-mortem", settle.asAlice, map[string]any{"on": settle.spec, "kind": graphstore.LensKindPreMortem})
-	r := riskAs("R, alice's risk", settle.asAlice, alicePremortem.Address)
-	l6 := invokeAs("the first agent's lens L6 on R", settle.asFirst, map[string]any{"on": r.Address, "kind": "trade-off"})
-	aliceConstraint := decodeBody[riskWritten](t, posted("alice's constraint", "/constraints", settle.asAlice,
+	alicePremortem := settle.invoke(t, "alice's pre-mortem", settle.asAlice, map[string]any{"on": settle.spec, "kind": graphstore.LensKindPreMortem})
+	r := settle.risk(t, "R, alice's risk", settle.asAlice, alicePremortem.Address)
+	l6 := settle.invoke(t, "the first agent's lens L6 on R", settle.asFirst, map[string]any{"on": r.Address, "kind": "trade-off"})
+	aliceConstraint := decodeBody[riskWritten](t, settle.posted(t, "alice's constraint", "/constraints", settle.asAlice,
 		map[string]any{"standard": "RFC 9110", "reference": "section 9.2.2"})).Address
-	onAliceConstraint := invokeAs("the first agent's lens on alice's constraint", settle.asFirst, map[string]any{"on": aliceConstraint, "kind": "trade-off"})
+	onAliceConstraint := settle.invoke(t, "the first agent's lens on alice's constraint", settle.asFirst, map[string]any{"on": aliceConstraint, "kind": "trade-off"})
 	takeGone("R", r.Address)
 	requireTakenWith("R", r.Address, "L6", l6.Address)
 	takeGone("her constraint", aliceConstraint)
@@ -341,10 +303,10 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	}
 	// The first agent's two risks under a pre-mortem of its own: nothing stands under the first,
 	// and alice reserves a lens for herself on the second, which the agent may not see.
-	agentPremortem := invokeAs("the first agent's pre-mortem", settle.asFirst, map[string]any{"on": settle.spec, "kind": graphstore.LensKindPreMortem})
-	bare := riskAs("The first agent's risk with nothing under it", settle.asFirst, agentPremortem.Address)
-	covered := riskAs("The first agent's risk alice looks at", settle.asFirst, agentPremortem.Address)
-	invokeAs("alice's lens on the first agent's second risk, reserved for her", settle.asAlice, map[string]any{
+	agentPremortem := settle.invoke(t, "the first agent's pre-mortem", settle.asFirst, map[string]any{"on": settle.spec, "kind": graphstore.LensKindPreMortem})
+	bare := settle.risk(t, "The first agent's risk with nothing under it", settle.asFirst, agentPremortem.Address)
+	covered := settle.risk(t, "The first agent's risk alice looks at", settle.asFirst, agentPremortem.Address)
+	settle.invoke(t, "alice's lens on the first agent's second risk, reserved for her", settle.asAlice, map[string]any{
 		"on": covered.Address, "kind": "trade-off", "visibility": graphstore.VisibilityAuthor,
 	})
 	bareRefusal := refusedGone("the first agent's gone on its own risk "+bare.Address+", with nothing under it", bare.Address, bare.ID)
@@ -353,15 +315,24 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 		t.Errorf("the first agent's gone on its risk %s with nothing under it answers %s, and on its risk %s under which alice keeps a lens %s: want the two alike",
 			bare.Address, bareRefusal, covered.Address, coveredRefusal)
 	}
+	// Its gone on a constraint it wrote is refused the same way, and it marks its first risk
+	// overtaken.
+	agentConstraint := decodeBody[riskWritten](t, settle.posted(t, "the first agent's constraint", "/constraints", settle.asFirst,
+		map[string]any{"standard": "RFC 9111", "reference": "section 4"}))
+	refusedGone("the first agent's gone on its own constraint "+agentConstraint.Address, agentConstraint.Address, agentConstraint.ID)
+	if marked := settle.asFirst(http.MethodPost, statePath(settle.issue.Key, bare.Address, "state"),
+		map[string]any{"state": graphstore.StateOvertaken}); marked.Code != http.StatusOK {
+		t.Errorf("the first agent marks its own risk %s overtaken: status=%d body=%s, want 200", bare.Address, marked.Code, marked.Body.String())
+	}
 
 	// A finding's gone is a person's alone too, and takes the lens on it: the first agent's
 	// trade-off analysis holds one finding F7, on which the second agent reserves a lens L7 for
 	// itself, which alice may not see.
-	analysis := invokeAs("the first agent's trade-off analysis", settle.asFirst, map[string]any{
+	analysis := settle.invoke(t, "the first agent's trade-off analysis", settle.asFirst, map[string]any{
 		"on": settle.spec, "kind": "trade-off", "findings": []string{"F7, the first agent's own finding."},
 	})
 	f7 := analysis.Findings[0]
-	l7 := invokeAs("the second agent's lens L7 on F7", settle.asSecond, map[string]any{
+	l7 := settle.invoke(t, "the second agent's lens L7 on F7", settle.asSecond, map[string]any{
 		"on": f7.Address, "kind": "trade-off", "visibility": graphstore.VisibilityAuthor,
 	})
 	hiddenFromAlice("L7", l7.Address)
@@ -371,10 +342,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 		t.Errorf("the first agent's gone on F7 %s left L7 %s at %s, want the %s it held", f7.Address, l7.Address, state, l7Held)
 	}
 	takeGone("F7", f7.Address)
-	if state := storedNodeOf(t, settle.database, l7.Address).State; state != graphstore.StateGone {
-		t.Errorf("alice's gone on F7 %s left L7 %s at %s, want gone with it: a node's gone takes its whole part_of subtree, at every depth and whoever may see each node",
-			f7.Address, l7.Address, state)
-	}
+	requireTakenWith("F7", f7.Address, "L7", l7.Address)
 }
 
 // A lens on a block that a version removes, or on a document that is retired, or on a block of
@@ -383,15 +351,6 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 // `dispatch://KEY/artifact/<slug>#b-<id>@v<N>`, or as the retired document's at its last version,
 // `dispatch://KEY/artifact/<slug>@v<N>`, and GET /api/v1/references answers the node's `parent`
 // naming that block or document with `parent_version` N.
-//
-// Then the cases of c-lens-page as the tester's run on a local server of e56f8d9b drove them, on an
-// issue of their own: the Verification document of that issue holds the checks c-one and c-two at
-// version 1, alice invokes a BOTEC on c-two, and version 2 drops c-two. The BOTEC stays live and
-// names c-two at version 1, the last version that held it, in its on and in its parent and
-// parent_version, and the lens read of that pinned address lists it on it. A lens on a block of a
-// third document and one on that document itself do the same once the document is retired, at the
-// document's last version. No lens in any answer of these cases reads on null (requireLensAt,
-// requireOnPinned).
 func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
 	rig := newReasoningRig(t)
 	onBlock := rig.invoke(rig.secondCheck, "trade-off", "alice", nil)
@@ -433,54 +392,6 @@ func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
 			t.Errorf("the lens read of %s answers on=%v, want %s@v1, at the last version of the retired document", address, lensOn(read), on)
 		}
 		requireNamedParent(t, rig, address, on, 1)
-	}
-
-	created := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": "RSN", "title": "A lens keeps its place", "spec": ":::requirement{#r1}\nA lens keeps its place.\n:::\n",
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create the issue whose Verification document drops a check: status=%d body=%s", created.Code, created.Body.String())
-	}
-	history := rig
-	history.issue = decodeBody[struct {
-		Key string `json:"key"`
-	}](t, created).Key
-	owner := "/api/v1/issues/" + history.issue
-	served := refs.BlockRef("dispatch://"+history.issue+"/spec", "r1")
-	verification := uploadDocument(t, rig.handler, owner, "verification.md", checkServing("c-one", served)+"\n"+checkServing("c-two", served))
-	cTwo := refs.BlockRef("dispatch://"+history.issue+"/artifact/"+verification.Artifact.Slug, "c-two")
-	botec := history.invoke(cTwo, "botec", "alice", nil)
-	if dropped := uploadDocument(t, rig.handler, owner, "verification.md", checkServing("c-one", served)); dropped.Version.Number != 2 {
-		t.Fatalf("the upload that drops c-two is version %d of the Verification document, want 2", dropped.Version.Number)
-	}
-	requireLensAt(t, history, "the BOTEC", botec.Address, cTwo, 1)
-	requireOnPinned(t, rig, "the BOTEC", botec.Address, cTwo+"@v1")
-
-	third := uploadDocument(t, rig.handler, owner, "notes.md", "# Notes\n\nOne paragraph.\n")
-	thirdDocument := "dispatch://" + history.issue + "/artifact/" + third.Artifact.Slug
-	thirdBlock := refs.BlockRef(thirdDocument, firstBlockOf(t, rig.handler, third.Artifact.ID))
-	onThirdBlock := history.invoke(thirdBlock, "trade-off", "alice", nil)
-	onThirdDocument := history.invoke(thirdDocument, "trade-off", "alice", nil)
-	retirement, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the retirement of %s: %v", thirdDocument, err)
-	}
-	defer func() { _ = retirement.Rollback(ctx) }()
-	if _, err := docs.RetireDocument(ctx, retirement, third.Artifact.ID, model.Actor{Kind: "user", ID: "alice"}, "The test retires the notes."); err != nil {
-		t.Fatalf("retire %s: %v", thirdDocument, err)
-	}
-	if err := retirement.Commit(ctx); err != nil {
-		t.Fatalf("commit the retirement of %s: %v", thirdDocument, err)
-	}
-	last := third.Version.Number
-	for _, retired := range []struct {
-		name, lens, on string
-	}{
-		{"the lens on a block of the retired document", onThirdBlock.Address, thirdBlock},
-		{"the lens on the retired document", onThirdDocument.Address, thirdDocument},
-	} {
-		requireLensAt(t, history, retired.name, retired.lens, retired.on, last)
-		requireOnPinned(t, rig, retired.name, retired.lens, fmt.Sprintf("%s@v%d", retired.on, last))
 	}
 }
 

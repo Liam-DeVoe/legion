@@ -12,7 +12,9 @@
 --
 -- Two. The attribute nodes of the supertags that declare no block type, each tied to its type by an
 -- `attribute_of` tuple, so a reader of the store reads what each of this tree's types holds from
--- the store and not from Go: a lens kind's `words`; a lens's `verdict`; a risk's `heading`,
+-- the store and not from Go: a lens kind's `words`; a lens's `verdict`, and the `artifact_id` a
+-- lens on a document or on a block of one records, the `artifacts.id` of the row the artifacts
+-- table held at the document's address when a write placed the lens there; a risk's `heading`,
 -- `early_warning` and `prevention`; a constraint's `standard` and `reference`, or its
 -- `measurement`, `value` and where it was `taken_where`; and an interaction's `words`, the time it
 -- `ends_at` and each `frame` of it. An interaction's project is the base attribute `project`
@@ -46,6 +48,7 @@ with change as (
 attributes (supertag, name, kind, position) as (
   values ('lens_kind', 'words', 'string', 0),
          ('lens', 'verdict', 'string', 0),
+         ('lens', 'artifact_id', 'string', 1),
          ('risk', 'heading', 'string', 0),
          ('risk', 'early_warning', 'string', 1),
          ('risk', 'prevention', 'string', 2),

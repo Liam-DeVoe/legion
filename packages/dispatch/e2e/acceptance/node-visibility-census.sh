@@ -47,9 +47,13 @@
 #       follows, and an agent's decision with a shaped pointer at a requirement, a from_ask to that
 #       ask and a reading under it, which give the eight kinds cybermonklabs/legion#4173 adds
 #       (shaped, from_ask, decided_by, followed_by, reading_parent, ask_parent, ask_anchor and
-#       ask_answer) a row each. Before any further backfill the census, run whole, exits 0 and
-#       reads the person, the session, the role and the page kinds and each of those eight at zero
-#       differences over more than zero rows: the shared bearer proves no author, so that lens is
+#       ask_answer) a row each, and an ask the agent opens on a document of the project that belongs
+#       to no issue, the one ask whose node states an owned_by, so that with the ties above each of
+#       the six kinds the census holds of graph_edges' answer of those ties (shaped_edge,
+#       from_ask_edge, decided_by_edge, followed_by_edge, ask_parent_edge and ask_anchor_edge) holds
+#       a row too. Before any further backfill the census, run whole, exits 0 and reads the person,
+#       the session, the role and the page kinds and each of those fourteen at zero differences
+#       over more than zero rows: the shared bearer proves no author, so that lens is
 #       the project's and settles nothing, yet it names the session its body names as its writer
 #       through authored_by and its write stated that session's node (spec v46 R12), so the session
 #       is on both sides; the driver reads that authored_by tuple.
@@ -82,7 +86,8 @@
 #       second. Run whole, it exits 0, every kind of the store checked and none read apart, and it
 #       reads zero differences for the interaction and frame kinds, for both block projections of
 #       cybermonklabs/legion#3178, for comment, person, session, role and page, for the eight kinds
-#       of cybermonklabs/legion#4173, and for the visibility and state of every node of this child's
+#       of cybermonklabs/legion#4173 and the six of graph_edges' answer of them, and for the
+#       visibility and state of every node of this child's
 #       kinds, each kind having checked more than zero rows, the moved nodes counted as live ones
 #       are, and every interaction at `author`. Then,
 #       with psql, one interaction node no going_requests row projects, a copy of bob's run's node
@@ -106,7 +111,7 @@
 #       was made under, as cybermonklabs/legion#3178's erase runs: a listing, then --confirm with its
 #       digest. The block's changed_by_run tuple blocks nothing and goes with the node; no row and no
 #       node of the run is left, the backfill writes none back, and the census, run whole, exits 0
-#       and reads zero again.
+#       and reads zero again, the fourteen kinds above each over more than zero rows.
 #
 # The identity table is written into this driver by a person, and no code the server runs produces
 # it: each row is a form a record can hold of a person's identity, the node its run's authored_by
@@ -449,6 +454,17 @@ census_zero() {
 # every census of the store as its writers left it reads each through census_zero, which fails
 # on a kind that checked no row, naming it.
 readonly -a decision_kinds=(shaped from_ask decided_by followed_by reading_parent ask_parent ask_anchor ask_answer)
+# The six kinds the census holds of graph_edges' answer of those ties (graphcensus's
+# edgeProjection, graphEdgesOut): shaped, from_ask and decided_by out of a block, shaped,
+# followed_by and anchored_to out of an ask, and an ask's owned_by (ask_parent_edge), which only an
+# ask a document owns states: an ask on no issue, whose asks.artifact_id names that document
+# (graphstore.AskPlaces' Owner). The census refuses none of them for holding no row either, so H2
+# writes such an ask, and every census that reads the eight reads these six through census_zero
+# too, each named where it checked no row.
+readonly -a edge_kinds=(shaped_edge from_ask_edge decided_by_edge followed_by_edge ask_parent_edge ask_anchor_edge)
+# The fourteen kinds H2 gives a row each, decision_kinds and edge_kinds, which every census of the
+# store as its writers left it reads through census_zero.
+readonly -a populated_kinds=("${decision_kinds[@]}" "${edge_kinds[@]}")
 
 # wait_settled SECTION WHAT: waits, 120 s at most, until no document owes a settlement
 # (doc_settlements_pending) or its block index (a document_block_versions row with a null version),
@@ -1014,6 +1030,34 @@ request agent POST "/api/v1/issues/$decision_key/artifacts/spec/edits" "$(jq -cn
   fail H2 "the agent bearer writes the decision d1 into the spec of $decision_key" "HTTP $status: $(body)"
 wait_settled H2 "the decision d1 of $decision_key"
 pass H2 "the agent bearer wrote the decision d1 into the spec of $decision_key, shaping r1, settling the ask $decision_ask and holding the reading g1"
+# The ask a1 stands in an issue's spec, so its node states no owned_by, and graph_edges answers an
+# ask's owned_by out of an ask a document owns alone: without one, ask_parent_edge would be read
+# over no row. Through this head the agent bearer uploads a document of $project that belongs to
+# no issue and opens an ask on it (createAskFor), whose write states, in the transaction of its
+# asks row, the ask's node and its owned_by to that document (graphstore.AskFacts); the driver
+# reads the row, that tuple and the edge graph_edges answers out of it.
+request agent POST "/api/v1/projects/$project/artifacts" "$(jq -cn --argjson a "$(actor)" \
+  '{name: "census-notes.md", content: "# Census notes\n\nAn ask on this document belongs to no issue.\n", actor: $a}')"
+want_status 201 H2 "the agent bearer uploads a document of $project through this head"
+owner_document="$(jq -er '.artifact | select(.issue_key == null) | .id' "$work/body")" ||
+  fail H2 "the agent bearer uploads a document of $project that belongs to no issue" "$(body)"
+owner_ref="$(jq -er '.artifact.ref_key' "$work/body")" || fail H2 "upload a document of $project" "no ref_key: $(body)"
+readonly owner_document owner_ref
+request agent POST "/api/v1/artifacts/$owner_document/asks" "$(jq -cn --argjson a "$(actor)" \
+  '{question: "Which document owns this ask?", actor: $a}')"
+want_status 201 H2 "the agent bearer opens an ask on the document $owner_ref through this head"
+owned_ask="$(jq -er '.id' "$work/body")" || fail H2 "open an ask on the document $owner_ref" "no id: $(body)"
+readonly owned_ask
+want_value H2 "the ask $owned_ask belongs to no issue, its row names its node and the document $owner_ref, its node states owned_by $owner_ref, and graph_edges answers that edge" \
+  "1|1|1" \
+  "select (select count(*) from asks where id = '$owned_ask' and issue_key is null and artifact_id = '$owner_document'
+             and node_kind = 'ask' and node_address = '$owned_ask') || '|'
+          || (select count(*) from graph_tuples where from_kind = 'ask' and from_id = '$owned_ask' and kind = 'owned_by'
+             and to_kind = 'artifact' and to_id = '$owner_ref' and asserted) || '|'
+          || (select count(*) from graph_edges where from_kind = 'ask' and from_id = '$owned_ask' and kind = 'owned_by'
+             and to_kind = 'artifact' and to_id = '$owner_ref')"
+wait_settled H2 "the document $owner_ref and its ask $owned_ask"
+pass H2 "the agent bearer opened the ask $owned_ask on $owner_ref, a document of $project that belongs to no issue, which owns it"
 
 # Straight after those writes, before any further backfill: the census, run whole, exits 0.
 take_census H2 h2 0
@@ -1021,7 +1065,7 @@ census_zero H2 h2 person
 census_zero H2 h2 session
 census_zero H2 h2 role
 census_zero H2 h2 page
-for kind in "${decision_kinds[@]}"; do
+for kind in "${populated_kinds[@]}"; do
   census_zero H2 h2 "$kind"
 done
 census_differences H2 h2
@@ -1284,7 +1328,7 @@ census_zero C h3 person
 census_zero C h3 session
 census_zero C h3 role
 census_zero C h3 page
-for kind in "${decision_kinds[@]}"; do
+for kind in "${populated_kinds[@]}"; do
   census_zero C h3 "$kind"
 done
 for kind in interaction lens finding risk constraint lens_kind; do
@@ -1656,7 +1700,7 @@ census_zero E erased person
 census_zero E erased session
 census_zero E erased role
 census_zero E erased page
-for kind in "${decision_kinds[@]}"; do
+for kind in "${populated_kinds[@]}"; do
   census_zero E erased "$kind"
 done
 for kind in interaction lens finding risk constraint lens_kind; do

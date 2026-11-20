@@ -1121,9 +1121,10 @@ export const CONTROL_LABELS = freeze({
    *  identifier (R9, R22), so the page says what it is rather than which one
    *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
   unnamed_author: "An agent",
-  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task,
-   *  a note and a decision, whose reads carry none. It is the page's own word, drawn with a
-   *  shape of its own (`AuthorKind`), so no reader takes it for somebody's name. */
+  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task
+   *  and a note, whose reads carry none, and a decision whose entry in the decisions read names
+   *  no decider (`DecisionEntry.decided_by`). It is the page's own word, drawn with a shape of
+   *  its own (`AuthorKind`), so no reader takes it for somebody's name. */
   unknown_author: "Author unknown",
   /** What the claim says of a holder that has missed its heartbeats without ending: it has not
    *  gone, it still holds the issue, and it may yet answer (R11, row four). */

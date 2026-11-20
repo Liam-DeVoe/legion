@@ -719,15 +719,16 @@ var indexPasses = map[string]string{
 	// version every version insert writes, from the version its write queued and what that
 	// version's node takes of its document's row (ReadVersionOwner); a removal's document and
 	// versions stated gone, read off the nodes the store holds of them so each keeps its supertag
-	// and its values, the document's with each changed_by_run its node states retracted, and every
-	// node that stands beneath the document's gone in the same batch, each from its own row
-	// (removedDocumentNodes), which reads the store to state what it writes into those same nodes
-	// and mends no projection from it; and an issue's tree artifact, its node and its part_of written
-	// from the issue its caller names, before the rows naming it; and an issue born converted's
-	// decisions query node, its node and its part_of written the same way, from the issue its
-	// create makes, before the row naming it.
+	// and its values, the document's with each changed_by_run its node states retracted, and
+	// whether a lens stands on the document's node, off the part_of tuples into it, for the removal
+	// to state the lenses its delete leaves stale gone through the sweep's statement
+	// (graphcensus/orphans.go#StateStaleLensesGone) (removedDocumentNodes), which reads the store to
+	// state what it writes into those same nodes and mends no projection from it; and an issue's
+	// tree artifact, its node and its part_of written from the issue its caller names, before the
+	// rows naming it; and an issue born converted's decisions query node, its node and its part_of
+	// written the same way, from the issue its create makes, before the row naming it.
 	"docs/mutation.go#WriteVersionNode":            "the version its write queued and what the version's node takes of its document's row",
-	"api/artifact_removal.go#removedDocumentNodes": "the document the removal takes, the nodes the store holds of it and its versions, and every node beneath it",
+	"api/artifact_removal.go#removedDocumentNodes": "the document the removal takes, the nodes the store holds of it and its versions, and the part_of tuples into its node",
 	"api/artifacts.go#createIssueTree":             "the issue its caller names and the slugs its documents hold",
 	"api/issue_create.go#createDecisionsQuery":     "the issue its caller creates and the slugs its documents hold",
 	// The seed's comments: their nodes, their author's person node and each comment's
@@ -824,9 +825,24 @@ var indexPasses = map[string]string{
 	// gone at an issue's address that no artifacts row stands behind (graphcensus'
 	// OrphanedDocumentNodes), which it locks and reads again to find it still so under that lock.
 	// The artifact.removed event naming the address is only the cause it states the node gone
-	// under, and the sentinel where there is none, as this build's removal does. It reads no
-	// projected table, and the store only to state the store's own next fact, so it is no repair.
+	// under, and the sentinel where there is none, as this build's removal does. It states nothing
+	// beneath the node gone: the stale lenses on the document are StateStaleLensesGone's. It reads
+	// no projected table, and the store only to state the store's own next fact, so it is no repair.
 	"graphcensus/orphans.go#StateOrphanedGone": "each document node not gone at an issue's address that no artifacts row stands behind, the store's row of that node, and the artifact.removed event naming the address as its cause",
+	// The statement that states every stale lens gone, which the block-index tick runs after its
+	// sweep and a document's removal runs for the removed document's address: what decides is the
+	// lens's own recorded row (graphstore.AttributeArtifactID) against the artifacts row at its
+	// document's address (refs.StaleSQL), the lens's own fact and the address's own row, neither of
+	// which is the other side of a projection, and what stands under each stale lens goes gone with it
+	// from its own row (graphstore.NodesBeneath). It mends nothing, so it is no repair.
+	"graphcensus/orphans.go#StateStaleLensesGone": "each lens's recorded row and the artifacts row at its document's address, the rows of every node beneath each stale one, and the caller's actor and time",
+	// The store's own record, beside its write of a lens's part_of, of the row of the document the
+	// lens is placed on (graphstore.AttributeArtifactID): the lens's part_of the write states, the
+	// artifacts row at the address of the document it names - a document's id, or the address before
+	// the `#` of a block's id - the identity of the document, which no node of the store carries, and
+	// the value the lens's row held. It states the lens's own next fact from its own placement, and
+	// mends neither side of a projection, so it is no repair.
+	"graphstore/reasoning.go#queueLensArtifactIDs": "the part_of tuples the write places lenses by, the artifacts row at the address of the document each names, and the artifact_id each lens holds",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

@@ -828,8 +828,9 @@ func BacklinkKinds() []string {
 //
 // Each arm carries the visibility predicate of the node its mention comes from: the refs arm's
 // source kind is a column, so it binds the registry over every kind at once (VisibleEnd, over
-// the from side's spelling of an id), the store's reading of a document's mentions binds the
-// document's, and each block arm's source is a block of the kind its table holds.
+// the from side's spelling of an id, and over a refs row's source kinds, none of them standing:
+// refsSources), the store's reading of a document's mentions binds the document's, and each block
+// arm's source is a block of the kind its table holds.
 func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string {
 	exclude := ""
 	if len(excludeKinds) > 0 {
@@ -852,7 +853,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// from_kind is a literal, or one of a list of literals (storedSQL), of a kind nodeRegistry
 		// resolves, so the filter would drop nothing there.
 		arm(`refs r`, ` and r.from_kind = any($2) and `+store.ReferenceNotStated+` and not `+heldByABlock("r"),
-			VisibleEnd(`r.from_kind`, `r.from_id`, false, backlinkSeen)),
+			VisibleEnd(refsSources, `r.from_kind`, `r.from_id`, false, backlinkSeen)),
 		// The mentions of a document whose row names its node, in the store, read through
 		// graph_tuples_inbound: each current mentions tuple out of the document's node, joined to
 		// the artifacts row naming that node by its ref_key, counted only while the refs row of the

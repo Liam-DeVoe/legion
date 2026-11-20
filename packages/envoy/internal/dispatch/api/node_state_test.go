@@ -596,6 +596,31 @@ func (r settleRig) agent(t *testing.T, session, person, token string) sender {
 	}
 }
 
+// posted is what as answers for body posted to path under the rig's issue, failing the test,
+// naming the post name, on anything but 201.
+func (r settleRig) posted(t *testing.T, name, path string, as sender, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	response := as(http.MethodPost, "/api/v1/issues/"+r.issue.Key+path, body)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("%s: status=%d body=%s", name, response.Code, response.Body.String())
+	}
+	return response
+}
+
+// invoke is the lens of body that as invokes under the rig's issue (posted).
+func (r settleRig) invoke(t *testing.T, name string, as sender, body map[string]any) lensInvoked {
+	t.Helper()
+	return decodeBody[lensInvoked](t, r.posted(t, name, "/lenses", as, body))
+}
+
+// risk is the risk headed name that as writes under lens (posted).
+func (r settleRig) risk(t *testing.T, name string, as sender, lens string) riskWritten {
+	t.Helper()
+	return decodeBody[riskWritten](t, r.posted(t, name, "/risks", as, map[string]any{
+		"lens": lens, "heading": name, "early_warning": "It shows early.", "prevention": "It is kept from happening.",
+	}))
+}
+
 // storedNodeOf is the row the store holds of the node address names, failing where it holds none.
 func storedNodeOf(t *testing.T, database *store.Store, address string) graphstore.Node {
 	t.Helper()
@@ -984,7 +1009,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		response := asFirst(http.MethodPost, statePath(issue.Key, lens.Address, "state"), toState(graphstore.StateGone))
 		requireRefused(t, "the first agent's gone on its own lens "+lens.Address, response, http.StatusForbidden, codeStateNotPermitted, lens.Address)
 		answered[lens.ID] = strings.ReplaceAll(response.Body.String(), lens.ID, "<lens>")
-		if state := lensStateOf(t, rig.database, graphstore.KindLens+"/"+lens.ID); state != graphstore.StateLive {
+		if state := storedNodeOf(t, rig.database, lens.Address).State; state != graphstore.StateLive {
 			t.Errorf("the first agent's refused gone left its lens %s at %s, want live", lens.Address, state)
 		}
 	}
@@ -998,7 +1023,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	if marked := asFirst(http.MethodPost, statePath(issue.Key, ownOnly.Address, "state"), toState(graphstore.StateOvertaken)); marked.Code != http.StatusOK {
 		t.Fatalf("the first agent marks its own lens %s overtaken: status=%d body=%s, want 200", ownOnly.Address, marked.Code, marked.Body.String())
 	}
-	if state := lensStateOf(t, rig.database, graphstore.KindLens+"/"+ownOnly.ID); state != graphstore.StateOvertaken {
+	if state := storedNodeOf(t, rig.database, ownOnly.Address).State; state != graphstore.StateOvertaken {
 		t.Fatalf("the first agent's lens %s reads %s after it marked it overtaken", ownOnly.Address, state)
 	}
 	if taken := writeStateAs(t, rig.handler, issue.Key, holding.Address, graphstore.StateGone, "alice"); taken.Code != http.StatusOK {
@@ -1078,7 +1103,7 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 		if !strings.Contains(refusal.Error, address) {
 			t.Fatalf("%s's settle of %s is refused %q, which does not name the node %s", as.name, whose, refusal.Error, address)
 		}
-		if state := lensStateOf(t, database, address); state != graphstore.StateProposed {
+		if state := storedNodeOf(t, database, address).State; state != graphstore.StateProposed {
 			t.Fatalf("%s's refused settle left %s at %s, want proposed", as.name, whose, state)
 		}
 	}
@@ -1089,7 +1114,7 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s's settle of %s: status=%d body=%s, want 200", as.name, whose, response.Code, response.Body.String())
 		}
-		if state := lensStateOf(t, database, address); state != graphstore.StateSettled {
+		if state := storedNodeOf(t, database, address).State; state != graphstore.StateSettled {
 			t.Fatalf("%s's settle left %s at %s, want settled", as.name, whose, state)
 		}
 	}
@@ -1100,7 +1125,7 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 		requireAnswersAsALensNobodyWrote(t, as.name+" on "+whose, address, func(address string) *httptest.ResponseRecorder {
 			return request(as, address)
 		})
-		if state := lensStateOf(t, database, address); state != graphstore.StateProposed {
+		if state := storedNodeOf(t, database, address).State; state != graphstore.StateProposed {
 			t.Fatalf("%s's request left %s at %s, want proposed", as.name, whose, state)
 		}
 	}
@@ -1247,28 +1272,16 @@ func TestABrokerSessionOfAWorkloadIsNotThatWorkload(t *testing.T) {
 		})
 		requireRefused(t, as.name+"'s settle of the pod's lens", as.send(http.MethodPost, statePath(issue, lens, "settle"), map[string]any{}),
 			http.StatusForbidden, contracts.DispatchSignInRequired, "no person")
-		if state := lensStateOf(t, rig.database, lens); state != graphstore.StateProposed {
+		if state := storedNodeOf(t, rig.database, lens).State; state != graphstore.StateProposed {
 			t.Fatalf("%s's refused settle left the pod's lens at %s, want proposed", as.name, state)
 		}
 	}
 	if settled := pod.send(http.MethodPost, statePath(issue, lens, "settle"), map[string]any{}); settled.Code != http.StatusOK {
 		t.Fatalf("the pod's settle of its own lens: status=%d body=%s, want 200", settled.Code, settled.Body.String())
 	}
-	if state := lensStateOf(t, rig.database, lens); state != graphstore.StateSettled {
+	if state := storedNodeOf(t, rig.database, lens).State; state != graphstore.StateSettled {
 		t.Fatalf("the pod's settle left its own lens at %s, want settled", state)
 	}
-}
-
-// lensStateOf is the node state the store holds of the lens whose store address, lens/<uuid>,
-// is address.
-func lensStateOf(t *testing.T, database *store.Store, address string) string {
-	t.Helper()
-	node, held, err := graphstore.ReadNode(context.Background(), database.Pool, graphstore.KindLens,
-		strings.TrimPrefix(address, graphstore.KindLens+"/"))
-	if err != nil || !held {
-		t.Fatalf("read %s: held %t, %v", address, held, err)
-	}
-	return node.State
 }
 
 // requireAnswersAsALensNobodyWrote holds what request answers for the lens address to the 404 the

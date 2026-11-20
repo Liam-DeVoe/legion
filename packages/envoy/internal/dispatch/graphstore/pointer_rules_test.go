@@ -432,6 +432,57 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 	})
 }
 
+// TestTheArmsRefuseEveryPartOfOutOfALens: a lens's part_of is appended only through QueueWrite or
+// QueueCaused, whose write records the row of the document it places the lens on
+// (queueLensArtifactIDs), so the arms of a spliced write refuse it (refusePointersInArms): WriteArms
+// of a part_of tuple out of a lens at a document, WriteArms of one at a document block, and
+// WriteArmsUncaused of a part_of claim out of a lens at a document each answer errPointerInArms,
+// naming `part_of out of lens`, and build no arm. WriteArms of a page's part_of claim at a role is
+// still taken. Each that does not hold fails naming the call, what it was given and the kind of the
+// far end.
+func TestTheArmsRefuseEveryPartOfOutOfALens(t *testing.T) {
+	const lens = "lens-placed-in-arms"
+	document, block := "PTR-1/notes-md", "PTR-1/notes-md#paragraph"
+	tuple := func(toKind, toID string) Tuple {
+		return Tuple{
+			FromKind: KindLens, FromID: lens, Kind: TuplePartOf, ToKind: toKind, ToID: toID,
+			At: pointerAt, Who: pointerWho, SourceEvent: NoEvent, Asserted: true,
+		}
+	}
+	claim := Claim{
+		FromKind: KindLens, FromID: lens, Kind: TuplePartOf, ToKind: KindArtifact, ToID: document,
+		At: pointerAt, Who: pointerWho, SourceEvent: NoEvent,
+	}
+	for _, call := range []struct {
+		name, form, kind string
+		write            func() (string, error)
+	}{
+		{"WriteArms", "tuple", KindArtifact, func() (string, error) {
+			arms, _, err := WriteArms(1, nil, []Tuple{tuple(KindArtifact, document)}, nil)
+			return arms, err
+		}},
+		{"WriteArms", "tuple", blockKind, func() (string, error) {
+			arms, _, err := WriteArms(1, nil, []Tuple{tuple(blockKind, block)}, nil)
+			return arms, err
+		}},
+		{"WriteArmsUncaused", "claim", KindArtifact, func() (string, error) {
+			arms, _, _, err := WriteArmsUncaused(1, nil, nil, []Claim{claim})
+			return arms, err
+		}},
+	} {
+		if arms, err := call.write(); !errors.Is(err, errPointerInArms) || !strings.Contains(err.Error(), "part_of out of lens") || arms != "" {
+			t.Errorf("%s of a lens's part_of %s at %s = %v, want errPointerInArms", call.name, call.form, call.kind, err)
+		}
+	}
+	page := Claim{
+		FromKind: KindPage, FromID: RolePageID("worker"), Kind: TuplePartOf, ToKind: KindRole, ToID: "worker",
+		At: pointerAt, Who: pointerWho, SourceEvent: NoEvent,
+	}
+	if _, _, err := WriteArms(1, nil, nil, []Claim{page}); err != nil {
+		t.Errorf("WriteArms of a page's part_of claim at a role = %v, want it taken", err)
+	}
+}
+
 // TestTheStoreHoldsARisksCheckToTheRisksProject holds a risk's prevented_by to a check of the
 // risk's own project (spec requirement r-constraint-risk, pointerRules' ownProject): a
 // check of another issue of that project is taken, as the pre-mortem conversion writes one, and a

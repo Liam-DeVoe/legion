@@ -115,7 +115,10 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 // to its rule, and every part_of it places at a kind that takes a node reserved for its author to
 // the visibility of both its ends (pointerCheck), between its node write and its append: in Go
 // before anything is queued where the write itself holds all the rule asks, and otherwise in
-// statements of its own that read what the rule asks once the nodes are written.
+// statements of its own that read what the rule asks once the nodes are written. Beside those
+// reads, each lens a part_of of the write places records the artifacts.id of the row at the
+// address of the document it places it on, or retracts the one it held where the write places it
+// on no document (queueLensArtifactIDs).
 //
 // On a batch made for a run (store.WriteBatch's Run), the append also states one changed_by_run
 // tuple from each node the write marks changed (Node.Changed, Tuple.Changes) to that run's
@@ -137,6 +140,9 @@ func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 		return err
 	}
 	check.queue(b)
+	if err := queueLensArtifactIDs(b, tuples); err != nil {
+		return err
+	}
 	return queueAppend(b, appending{
 		tuples: tuples, nodes: nodes, mark: mark, own: tuples,
 		run: b.Run(), changes: changedByRunMarks(b.Run(), nodes, nil, tuples),
@@ -399,6 +405,9 @@ func queueCausedPart(b *store.WriteBatch, write Uncaused, tuples []Tuple, event 
 		return err
 	}
 	check.queue(b)
+	if err := queueLensArtifactIDs(b, tuples); err != nil {
+		return err
+	}
 	changes := changedByRunMarks(b.Run(), write.Nodes, write.changes, tuples)
 	for index := range changes {
 		changes[index].SourceEvent = event

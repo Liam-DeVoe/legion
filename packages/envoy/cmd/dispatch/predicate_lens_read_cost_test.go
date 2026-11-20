@@ -1001,6 +1001,13 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 // measures against holds.
 const predicateCostStoreMigration = "packages/envoy/internal/dispatch/store/migrations/20261109013400_graph_store.up.sql"
 
+// holdsTheStore reports whether commit's tree holds the migration that made the store
+// (predicateCostStoreMigration). git reads <commit>:<path> from the repository's root whatever
+// directory it runs in.
+func holdsTheStore(commit string) bool {
+	return exec.Command("git", "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run() == nil
+}
+
 // predicateCostBaseHoldsTheStore refuses a base build whose tree holds no store
 // (predicateCostStoreMigration), naming the base: `git merge-base origin/main HEAD`, the base a
 // branch that lands on main names in BASELINE_SHA, is such a base while the branches this child
@@ -1012,8 +1019,7 @@ func predicateCostBaseHoldsTheStore(t *testing.T) {
 	t.Helper()
 	commit := testbaseline.Commit(t)
 	named := fmt.Sprintf("the commit %s=%s names", testbaseline.Variable, strings.TrimSpace(os.Getenv(testbaseline.Variable)))
-	// git reads <commit>:<path> from the repository's root whatever directory it runs in.
-	if err := exec.Command("git", "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run(); err != nil {
+	if !holdsTheStore(commit) {
 		t.Fatalf("the base %s (%s) holds no migration %s (graph_store), so it is a build with no store and c-read-cost would measure nothing this child changed: set %s to the release this branch lands after, the merge base with the branch of cybermonklabs/legion#4173",
 			commit, named, predicateCostStoreMigration, testbaseline.Variable)
 	}

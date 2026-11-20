@@ -84,10 +84,11 @@ var storeWriteCallSites = map[string]string{
 	// writeReasoningNodes takes first too.
 	"api/reasoning_write.go#writeReasoningPointer": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// One node's state a request writes or settles (api/node_state.go): the issue's owner lock,
-	// then one Write of the node as the store holds it but for its state, a plain write that
-	// moves the row and appends the state tuple. It appends no event. Its order is the order
-	// TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner lock
-	// writeReasoningNodes takes first too.
+	// then one Write of the node as the store holds it but for its state, and, on a move into
+	// gone, of every node beneath it (graphstore.NodesBeneath), each as the store holds it but for
+	// its state: a plain write that moves the rows and appends their state tuples. It appends no
+	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
+	// owner lock writeReasoningNodes takes first too.
 	"api/reasoning_write.go#writeNodeState": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// An issue's own field write made for a run (api/issue_patch.go), which names the issue changed:
 	// the issue's owner lock (lockPatchOwners), the issue's row, then, on a context that carries a
@@ -181,11 +182,13 @@ var storeWriteCallSites = map[string]string{
 	// it appends, which causes them (api's TestALaterVersionStatesItsBytesInTheStoreLockOrder proves
 	// its steps, and that a later version waits for a backfill naming its node).
 	// removedDocumentNodes is a removal's nodes of the document and of its versions stated gone,
-	// with each changed_by_run of the document's node retracted, and every node beneath the
-	// document's taken to gone in the same batch, after the issue's row and before any row of the
-	// document is deleted, and removeArtifact appends what it stated in the batch that appends the
-	// artifact.removed event, appendCausingEvent (api's
-	// TestARemovalStatesItsDocumentGoneInTheStoreLockOrder).
+	// with each changed_by_run of the document's node retracted, after the issue's row and before
+	// any row of the document is deleted, and removeArtifact appends what it stated in the batch
+	// that appends the artifact.removed event, appendCausingEvent (api's
+	// TestARemovalStatesItsDocumentGoneInTheStoreLockOrder). Between the row's delete and that
+	// event, where a lens stands on the document's node, removeArtifact runs the stale lenses'
+	// statement for the document's address, whose order
+	// graphcensus/orphans.go#StateStaleLensesGone's own entry proves.
 	// createIssueTree is an issue's tree artifact (R5 of this branch's spec): its node and its
 	// part_of to the issue through QueueNodes before the artifacts row that names the node and
 	// the issue_trees row, queued at the head of its caller's write phase, whose transaction holds
@@ -344,6 +347,14 @@ var storeWriteCallSites = map[string]string{
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder).
 	"architecture/importer.go#RetireComponents": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"architecture/importer.go#stateComponents":  "architecture#TestTheImportTakesTheStoreLockOrder",
+	// The statement that states every stale lens gone with all that stands under it, in its
+	// caller's transaction (the block-index tick's own, a document's removal's): the owner lock of
+	// each issue a stale lens's document names first, which a document's removal holds already, so
+	// for it the statement takes none; then one Write of the lenses and the nodes beneath them in
+	// ascending (kind, id) and their state tuples at the sentinel, appending no event. Its order is
+	// the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner locks
+	// writeNodeState takes first too.
+	"graphcensus/orphans.go#StateStaleLensesGone": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner locks it writes under before that
 	// row, and its projection rows after it.

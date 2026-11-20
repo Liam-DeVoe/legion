@@ -99,8 +99,8 @@ func TestAnOrphanedDocumentNodeIsStatedGoneUnderItsRemoval(t *testing.T) {
 		t.Fatalf("the state history of %s is %+v (%v), want live then gone", ref, history, err)
 	}
 	gone := history[1]
-	if gone.ToID != graphstore.StateGone || gone.SourceEvent != removal || gone.Who != sweepActor {
-		t.Errorf("the gone statement of %s is %+v, want gone, caused by the removal event %d, stated by %+v", ref, gone, removal, sweepActor)
+	if gone.ToID != graphstore.StateGone || gone.SourceEvent != removal || gone.Who != SweepActor {
+		t.Errorf("the gone statement of %s is %+v, want gone, caused by the removal event %d, stated by %+v", ref, gone, removal, SweepActor)
 	}
 	requireComplete(t, ctx, database, "after the orphan was stated gone")
 	if orphaned, _ := OrphanedDocumentNodes(ctx, database.Pool, 10); len(orphaned) != 0 {
@@ -192,7 +192,7 @@ func TestTheOrphanSweepTakesTheStoreLockOrder(t *testing.T) {
 	if err := graphstore.Write(ctx, state.Tx, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,
 		ToKind: graphstore.KindValue, ToID: graphstore.StateGone,
-		At: time.Now().UTC(), Who: sweepActor, SourceEvent: removal, Asserted: true,
+		At: time.Now().UTC(), Who: SweepActor, SourceEvent: removal, Asserted: true,
 	}}); err != nil {
 		t.Fatalf("hold %s: %v", state.Name, err)
 	}

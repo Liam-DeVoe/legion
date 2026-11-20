@@ -1198,7 +1198,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"interaction":      {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
 		"frame":            {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
 		"interaction_gone": {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
-		"lens":             {tuples: 10, writes: 2 * sizingWindowDays, assumed: true},
+		"lens":             {tuples: 11, writes: 2 * sizingWindowDays, assumed: true},
 		"document_move":    {tuples: 1, writes: 1 * sizingWindowDays, assumed: true},
 		"lens_finding":     {tuples: 8, writes: 10 * sizingWindowDays, assumed: true},
 		"lens_kind":        {tuples: 8, writes: 22, assumed: true},
