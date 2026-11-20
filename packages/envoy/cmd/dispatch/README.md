@@ -2853,6 +2853,12 @@ Migration `20261120035910_pull_request_reads_owed_unreadable` adds `pull_request
 No pass reads a row whose `unreadable_revision` is its revision; a new owe gives the row a new revision, and a pass sets the column back to null where an installation of the App lists the repository (`delivery.wakeUnreadableReads`).
 The column is nullable with no default, and null on each row a release before this one wrote; the release before names the table in none of its own statements; its census answers `0`.
 
+Migration `20261120171308_pull_request_reads_owed_link_backfill` owes, once, the read of each pull request that an issue links by its `https://github.com/<owner>/<name>/pull/<number>` URL and whose head row Dispatch does not hold, as a link write of this release owes it (R5 of the results lookup, `delivery.OweLinkedPullRequestReads`): a link written before this release owed nothing, so a pull request with no event since, a merged one for instance, never got its head row.
+Each owe is a failure whose `linked_revision` is its revision, under the repository's canonical name, so the reconcile's next passes read them first, at most 200 a pass, and write each head GitHub answers; a link whose pull request has a head row, and a pull request whose read is owed already, owe nothing.
+A link of the `/issues/<number>` form owes nothing here, since `dispatch issue --external` stores that form for GitHub issues as well.
+It inserts rows and rewrites none; its census answers `0`; the release before names the table in none of its own statements, so rolling back past it is an image rollback alone.
+`20261120171308_pull_request_reads_owed_link_backfill.down.sql` is the by-hand script that also deletes each owe it wrote that no later owe changed: its `owed_at` is still the migration's `applied_at`, and its `linked_revision` still its revision (`delivery.TestTheLinkBackfillOwesTheReadOfEachLinkedPullRequestWithNoHead`).
+
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
 It cached the answer the results read asked for while that one question decided an `after_merge` and a `default_branch` check alike, a yes kept for good and a no re-read after five minutes.
 `20261107234701_branch_commits` below took that answer over, keyed by the branch as well and seeded by a merge with its own merge commit on the base branch, and `20261110004829_drop_default_branch_commits` drops this table.
