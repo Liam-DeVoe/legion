@@ -937,8 +937,8 @@ is the same for every record id and says nothing of whether the record exists or
 person signed in to one Google account is asked nothing; one signed in to several is shown
 Google's account chooser. The page's **Sign in as someone else** link, which a person already
 signed in follows, opens that account chooser (`prompt=select_account`) with the record's
-approver named in it as `login_hint`. It names none for a request of a private project Dispatch
-could not answer for, and a request the person may not see answers as an id no record has.
+approver named in it as `login_hint`. It names none for a request Dispatch could not answer for,
+and a request the person may not see answers as an id no record has.
 
 Deploy the broker with these settings before the Dispatch release whose Inbox links the page. In
 between, an open Dispatch tab's **Approve** on a secret request gets the broker's

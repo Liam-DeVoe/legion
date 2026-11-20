@@ -383,15 +383,11 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 		t.Fatalf("%s's pending list %v lacks a request of PRIV it may see (%v)", insider, got, ofPRIV)
 	}
 	for _, id := range ofPRIV {
-		detail, err := m.ReadRecord(t.Context(), id)
-		if err != nil {
-			t.Fatal(err)
+		if err := m.HideUnseen(t.Context(), id, outsider); !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("HideUnseen(record %s, %s) = %v; want pgx.ErrNoRows", id, outsider, err)
 		}
-		if may, err := m.MaySee(t.Context(), outsider, detail); err != nil || may {
-			t.Fatalf("MaySee(%s, record %s, reason %q) = %v, %v; want false", outsider, id, detail.Reason, may, err)
-		}
-		if may, err := m.MaySee(t.Context(), insider, detail); err != nil || !may {
-			t.Fatalf("MaySee(%s, record %s, reason %q) = %v, %v; want true", insider, id, detail.Reason, may, err)
+		if err := m.HideUnseen(t.Context(), id, insider); err != nil {
+			t.Fatalf("HideUnseen(record %s, %s) = %v; want nil", id, insider, err)
 		}
 	}
 }
@@ -403,12 +399,16 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 // the rest of each list is answered. An approval of the pending one answers
 // ErrProjectAccessUnavailable and leaves it pending, while the request whose reason names no key
 // is approved. Once Dispatch answers, the request is listed again. The two pending requests come
-// from pods that name no person, so the insider's list reads them (everyonesPod).
+// from pods that name no person, so the insider's list reads them (everyonesPod), and the two
+// grants are of SERVICE_KEY on pods of the fixture's service, which name no approver and no
+// operator, so the insider's list reads them too: a grant's own approver and operator list it
+// whatever Dispatch answers (namedOnGrant).
 func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
-	other, otherKey := newEnrollment(t, m.Store, "session", "box-o-"+t.Name(), new(fixtureOperator), nil)
-	_, keyedGrant := grantOf(t, m, enr, key, "INFRA-13: deploy the broker", "AUTO_TOKEN")
-	_, plainGrant := grantOf(t, m, other, otherKey, "no issue named", "AUTO_TOKEN")
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	keyedService, keyedServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-keyed-"+t.Name())
+	_, keyedGrant := grantOf(t, m, keyedService, keyedServiceKey, "INFRA-13: deploy the broker", "SERVICE_KEY")
+	plainService, plainServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-plain-"+t.Name())
+	_, plainGrant := grantOf(t, m, plainService, plainServiceKey, "no issue named", "SERVICE_KEY")
 	keyedPod, keyedKey := everyonesPod(t, m, "pod-o-keyed", "")
 	keyed, err := m.Create(t.Context(), keyedPod, signRequest(t, m, keyedKey, "INFRA-12: rotate the deploy key", "SHARED_KEY"), "", nil)
 	if err != nil || keyed.RecordID == nil {
@@ -439,16 +439,16 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 		if ids := pendingIDs(); slices.Contains(ids, *keyed.RecordID) || !slices.Contains(ids, *plain.RecordID) {
 			t.Fatalf("%s's pending list while Dispatch is down = %v; want %s (no issue named) and not %s (INFRA-12)", insider, ids, *plain.RecordID, *keyed.RecordID)
 		}
-		grants, err := m.GrantsForApprover(t.Context(), fixtureOperator)
+		grants, err := m.GrantsForApprover(t.Context(), insider)
 		if err != nil {
-			t.Fatalf("GrantsForApprover(%s) while Dispatch is down: %v; want the list answered", fixtureOperator, err)
+			t.Fatalf("GrantsForApprover(%s) while Dispatch is down: %v; want the list answered", insider, err)
 		}
 		var ids []string
 		for _, g := range grants {
 			ids = append(ids, g.GrantID)
 		}
 		if slices.Contains(ids, keyedGrant) || !slices.Contains(ids, plainGrant) {
-			t.Fatalf("%s's grants while Dispatch is down = %v; want %s (no issue named) and not %s (INFRA-13)", fixtureOperator, ids, plainGrant, keyedGrant)
+			t.Fatalf("%s's grants while Dispatch is down = %v; want %s (no issue named) and not %s (INFRA-13)", insider, ids, plainGrant, keyedGrant)
 		}
 	}
 	for _, id := range []string{*keyed.RecordID, keyedGrant} {
@@ -485,9 +485,9 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 // every agent's does (the judge's issue check needs one), and "SHA-256", which has an issue key's
 // form. A broker with no project-access client then asks Dispatch nothing at all. A broker holding
 // one asks one thing and nothing else: whether the person reading a row may see the project of
-// each key its reason names (MaySee), every key and not the first alone, since a reason naming a
-// private project's issue is that project's text. "Asks Dispatch nothing" is true of the first
-// broker; of the second it is true of everything but those reads.
+// each key its reason names (HideUnseen), every key and not the first alone, since a reason
+// naming a private project's issue is that project's text. "Asks Dispatch nothing" is true of the
+// first broker; of the second it is true of everything but those reads.
 func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 	const reason = "INFRA-12: check the SHA-256 of the deploy bundle"
 	reasonReads := []string{"access INFRA", "access SHA"}

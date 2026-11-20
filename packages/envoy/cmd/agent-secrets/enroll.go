@@ -94,7 +94,9 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	if *podFlag {
-		return cmdEnrollPod(*service, *podTokenFile, *out, projects, stdout, stderr)
+		// The list goes with whether --projects named it, so a refusal of the list names the
+		// setting it was read from (podProjects.refusal).
+		return cmdEnrollPod(*service, *podTokenFile, *out, podProjects{keys: projects, flag: flagGiven(flags, "projects")}, stdout, stderr)
 	}
 	return cmdEnrollHelper(*runtimeID, *thumbprint, *sessionID, projects, stdout, stderr)
 }

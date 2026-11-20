@@ -711,7 +711,7 @@ func IssueKeysInReason(reason string) []string {
 
 // MaxReasonProjects is the most projects the issue keys of one new request's reason may name: as
 // many as one credential may name (oauthwire.MaxProjects). Each is one Dispatch read for every
-// reader that decides whose text the reason is (requests.Machine.MaySee), so the bound on the
+// reader that decides whose text the reason is (requests.Machine.HideUnseen), so the bound on the
 // reads is a bound on the reason.
 const MaxReasonProjects = oauthwire.MaxProjects
 

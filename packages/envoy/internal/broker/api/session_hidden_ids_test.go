@@ -5,7 +5,9 @@
 // its own credential does not name, or whose list no longer holds the session's person. Such an id
 // answers every session but the one that holds it exactly as an id nothing has, whoever owns it,
 // so 403 NOT_YOURS only ever says that an id exists in a project the caller sees. The session that
-// holds it reads, cancels, releases and revokes it as before.
+// holds it reads, cancels, releases and revokes it as before. A pod's credential names the project
+// its operator's entry maps its account to, so the next pod of a claim reads and cancels a
+// private project's request of the claim only when its own account maps to that project.
 package api_test
 
 import (
@@ -14,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/api"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 )
 
@@ -31,8 +35,8 @@ func privAndPubDispatch(t *testing.T) *projectaccesstest.Server {
 }
 
 // sessionAs enrolls a session of operator on a box of its own, records the person as its owner,
-// as enroll.Service.Create records a person's ("person:<login>"), so every session of one person
-// shares an owner, and has its enrollment name projects, as a session started with
+// as enroll.Service.Create records a person's (exchange.PersonPrincipal), so every session of one
+// person shares an owner, and has its enrollment name projects, as a session started with
 // AGENT_SECRETS_PROJECTS does.
 func (ts *testServer) sessionAs(t *testing.T, box, operator string, projects ...string) enrolled {
 	t.Helper()
@@ -40,7 +44,7 @@ func (ts *testServer) sessionAs(t *testing.T, box, operator string, projects ...
 	if projects == nil {
 		projects = []string{}
 	}
-	if _, err := ts.Store.Pool.Exec(t.Context(), `update enrollments set owner=$2, projects=$3 where id=$1`, id, "person:"+operator, projects); err != nil {
+	if _, err := ts.Store.Pool.Exec(t.Context(), `update enrollments set owner=$2, projects=$3 where id=$1`, id, exchange.PersonPrincipal(operator), projects); err != nil {
 		t.Fatalf("record the owner and projects of %s: %v", box, err)
 	}
 	return enrolled{id: id, key: key}
@@ -89,6 +93,13 @@ var sessionRoutes = []sessionRoute{
 // the first naming PRIV and the second naming nothing; other, mallory's, naming nothing; and
 // plain, testApprover's, naming nothing, which asked for SHARED_KEY with pubReason
 // (publicRequest, pending) and holds WORKER_TOKEN's grant asked with pubReason (publicGrant).
+//
+// Its token exchange maps workerAccount to PRIV and otherAccount to PUB, both for testApprover, as
+// BROKER_EXCHANGE_ACCOUNTS maps a private project's agents, and the Legion daemon's login enrols
+// four pods of one claim, so all four share an owner: two of workerAccount that each asked for
+// DEEL_API_KEY with a reason naming no issue (podHidden, podServed: pending, and PRIV's only
+// because the credential that asked names PRIV), and two that ask nothing, podMapped of
+// workerAccount and podElsewhere of otherAccount.
 type sessionHiddenRig struct {
 	ts                            *testServer
 	access                        *projectaccesstest.Swappable
@@ -97,11 +108,20 @@ type sessionHiddenRig struct {
 	hiddenRequest, hiddenGrant    string
 	publicRequest, publicGrant    string
 	missingRequest, missingGrant  string
+	podMapped, podElsewhere       enrolled
+	podHidden, podServed          string
 }
 
 func newSessionHiddenRig(t *testing.T) *sessionHiddenRig {
 	t.Helper()
-	ts, access := hiddenServer(t)
+	pods, err := exchange.NewSet([]exchange.AccountEntry{
+		{Account: workerAccount, Project: "PRIV", Person: testApprover},
+		{Account: otherAccount, Project: "PUB", Person: testApprover},
+	}, nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	ts, access := hiddenServer(t, func(d *api.Deps) { d.Machine.Exchange = pods })
 	access.Serve(privAndPubDispatch(t))
 	r := &sessionHiddenRig{ts: ts, access: access, missingRequest: uuid.NewString(), missingGrant: uuid.NewString()}
 	r.holder = ts.sessionAs(t, "holder", testApprover, "PRIV")
@@ -113,6 +133,16 @@ func newSessionHiddenRig(t *testing.T) *sessionHiddenRig {
 	r.hiddenGrant = ts.approveAs(t, ts.askWith(t, r.holder, privReason, "DEEL_API_KEY", "pending"), testApprover)
 	r.publicRequest = ts.askWith(t, plain, pubReason, "SHARED_KEY", "pending").RequestID
 	r.publicGrant = *ts.askWith(t, plain, pubReason, "WORKER_TOKEN", "granted").GrantID
+
+	daemon := ts.serviceLogin(t)
+	pod := func(account, session string) enrolled {
+		t.Helper()
+		return ts.enrolPodWith(t, daemon, podEnrolment{account: account, podUID: uuid.NewString(), claim: plannerClaim, session: session})
+	}
+	r.podHidden = ts.askPending(t, pod(workerAccount, "planner-session-hidden"), "DEEL_API_KEY").RequestID
+	r.podServed = ts.askPending(t, pod(workerAccount, "planner-session-served"), "DEEL_API_KEY").RequestID
+	r.podMapped = pod(workerAccount, "planner-session-mapped")
+	r.podElsewhere = pod(otherAccount, "planner-session-elsewhere")
 	return r
 }
 
@@ -135,8 +165,16 @@ func (r *sessionHiddenRig) requireUntouched(t *testing.T) {
 	}
 }
 
+// requirePending fails t unless request id is still pending.
+func (r *sessionHiddenRig) requirePending(t *testing.T, id, what string) {
+	t.Helper()
+	if got := r.ts.column(t, `select state from requests where id=$1`, id); len(got) != 1 || got[0] != "pending" {
+		t.Errorf("%s's state = %v; want it pending", what, got)
+	}
+}
+
 // requireHiddenFrom fails t unless every session route answers s the hidden id exactly as it
-// answers an id nothing has.
+// answers an id nothing has, in status and body.
 func (r *sessionHiddenRig) requireHiddenFrom(t *testing.T, s enrolled, who string) {
 	t.Helper()
 	for _, route := range sessionRoutes {
@@ -155,8 +193,8 @@ func (r *sessionHiddenRig) requireHiddenFrom(t *testing.T, s enrolled, who strin
 
 // TestASessionsRoutesAnswerAnIDOfAProjectItCannotSeeAsAnIDNothingHas holds every row of the
 // session routes' project check, in one broker so each row reads the same ids. Its subtests run in
-// order: the rows that must leave the hidden request and grant as they are come first, and the
-// rows that cancel, release and revoke them last.
+// order: the rows that must leave the hidden requests and grant as they are come first, and the
+// rows that cancel and release them last.
 func TestASessionsRoutesAnswerAnIDOfAProjectItCannotSeeAsAnIDNothingHas(t *testing.T) {
 	r := newSessionHiddenRig(t)
 	ts := r.ts
@@ -182,6 +220,21 @@ func TestASessionsRoutesAnswerAnIDOfAProjectItCannotSeeAsAnIDNothingHas(t *testi
 		r.requireUntouched(t)
 	})
 
+	t.Run("a pod of the same claim whose account maps elsewhere reads its sibling's request of PRIV as an id nothing has", func(t *testing.T) {
+		for _, route := range sessionRoutes {
+			if route.grant {
+				continue
+			}
+			answers := map[string]answerRead{
+				"the sibling's request of PRIV": ts.as(t, r.podElsewhere, route.method, route.path(r.podHidden)),
+				"a request id no request has":   ts.as(t, r.podElsewhere, route.method, route.path(r.missingRequest)),
+			}
+			requireSameAnswers(t, route.name+" by the pod mapped to PUB", answers)
+			requireAnswered(t, route.name+" by the pod mapped to PUB of the sibling's request", answers["the sibling's request of PRIV"], route.status, route.code)
+		}
+		r.requirePending(t, r.podHidden, "the sibling's request of PRIV")
+	})
+
 	down := downDispatch(t)
 	r.access.Serve(down)
 	t.Run("while Dispatch cannot answer, an id that touches a project is 503 and nothing changes", func(t *testing.T) {
@@ -201,6 +254,25 @@ func TestASessionsRoutesAnswerAnIDOfAProjectItCannotSeeAsAnIDNothingHas(t *testi
 		r.requireUntouched(t)
 		if down.Calls() == 0 {
 			t.Fatal("the down Dispatch was never asked: the rows above are blind")
+		}
+	})
+	t.Run("while Dispatch cannot answer, a pod of the same claim is 503 for its sibling's request of PRIV and cancels nothing", func(t *testing.T) {
+		before := down.Calls()
+		for _, caller := range []struct {
+			who string
+			s   enrolled
+		}{{"the pod mapped to PRIV", r.podMapped}, {"the pod mapped to PUB", r.podElsewhere}} {
+			for _, route := range sessionRoutes {
+				if route.grant {
+					continue
+				}
+				requireAnswered(t, route.name+" by "+caller.who+" while Dispatch is down", ts.as(t, caller.s, route.method, route.path(r.podHidden)),
+					http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE")
+			}
+		}
+		r.requirePending(t, r.podHidden, "the sibling's request of PRIV")
+		if down.Calls() == before {
+			t.Fatal("the down Dispatch was never asked for the pods: the rows above are blind")
 		}
 	})
 	r.access.Serve(privAndPubDispatch(t))
@@ -229,7 +301,10 @@ func TestASessionsRoutesAnswerAnIDOfAProjectItCannotSeeAsAnIDNothingHas(t *testi
 		if got := decode[wireRequestStatus](t, body); status != http.StatusOK || got.RecordID == nil {
 			t.Fatalf("the read by testApprover's other session naming PRIV = %d %s; want 200 naming its record", status, body)
 		}
-		for _, route := range sessionRoutes[2:] {
+		for _, route := range sessionRoutes {
+			if !route.grant {
+				continue
+			}
 			requireAnswered(t, route.name+" of the holder's grant by testApprover's other session naming PRIV",
 				ts.as(t, r.sameNaming, route.method, route.path(r.hiddenGrant)), http.StatusForbidden, "NOT_YOURS")
 		}
@@ -242,28 +317,8 @@ func TestASessionsRoutesAnswerAnIDOfAProjectItCannotSeeAsAnIDNothingHas(t *testi
 		}
 	})
 
-	t.Run("the holder that names the project still reads, cancels, releases and revokes", func(t *testing.T) {
-		// A holder of its own, so what this row ends is nothing another row reads.
-		holder := ts.sessionAs(t, "own-holder", testApprover, "PRIV")
-		pending := ts.askWith(t, holder, privReason, "SHARED_KEY", "pending")
-		grant := ts.approveAs(t, ts.askWith(t, holder, privReason, "DEEL_API_KEY", "pending"), testApprover)
-		status, body := ts.session(t, holder.key, holder.id, http.MethodGet, "/v1/requests/"+pending.RequestID, nil)
-		if got := decode[wireRequestStatus](t, body); status != http.StatusOK || got.State != "pending" {
-			t.Fatalf("the holder's read of its request = %d %s; want 200 pending", status, body)
-		}
-		status, body = ts.session(t, holder.key, holder.id, http.MethodPost, "/v1/requests/"+pending.RequestID+"/cancel", nil)
-		if status != http.StatusOK || decode[stateBody](t, body).State != "cancelled" {
-			t.Fatalf("the holder's cancel of its own request = %d %s; want 200 cancelled", status, body)
-		}
-		status, body = ts.session(t, holder.key, holder.id, http.MethodPost, "/v1/grants/"+grant+"/values", nil)
-		if got := decode[struct {
-			Values map[string]string `json:"values"`
-		}](t, body); status != http.StatusOK || got.Values["DEEL_API_KEY"] != "deel-v1" {
-			t.Fatalf("the holder's release of its grant = %d %s; want 200 with DEEL_API_KEY", status, body)
-		}
-		status, body = ts.session(t, holder.key, holder.id, http.MethodPost, "/v1/grants/"+grant+"/revoke", nil)
-		if status != http.StatusOK || decode[stateBody](t, body).State != "revoked" {
-			t.Fatalf("the holder's revoke of its grant = %d %s; want 200 revoked", status, body)
-		}
+	t.Run("a pod of the same claim whose account maps to PRIV reads and cancels its sibling's request of PRIV", func(t *testing.T) {
+		ts.wantState(t, r.podMapped, r.podServed, "pending")
+		ts.wantCancelled(t, r.podMapped, r.podServed)
 	})
 }

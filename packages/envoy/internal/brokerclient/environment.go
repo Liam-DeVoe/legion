@@ -41,8 +41,8 @@ const (
 	// ProjectsVar is the projects a session works on, project keys separated by white space,
 	// which a trade that acts as its person may ask the broker to name in its token
 	// (TradeProjects). The broker names only projects the person may see, and a restricted
-	// member's token must name at least one. The TypeScript sign-in client sends it; no Go trade
-	// of this release reads it yet.
+	// member's token must name at least one. The TypeScript sign-in client sends it, and so do
+	// natsprobe's trade and `agent-secrets register`, `enroll --helper` and `enroll --pod`.
 	ProjectsVar = "AGENT_SECRETS_PROJECTS"
 	// SignInIssuerVar is the OpenID provider a person signs in at, Google's unless a dev stack
 	// says otherwise.

@@ -2,14 +2,14 @@
 // projects, on the real handlers api_test.go mounts. BROKER_POD_OPERATORS maps the pod's account
 // to bob, a restricted member, who sees only the projects whose access list names him. The pod
 // logs in with its own token and names its projects as bob's own session does, and the broker
-// checks them against bob.
+// takes them. The refusals of a pod's list are enroll.Service.Create's, which
+// enroll/person_pod_test.go drives for a person's pod.
 package api_test
 
 import (
 	"crypto/ecdsa"
 	"net/http"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -27,23 +27,18 @@ const (
 )
 
 // newPersonPodProjectsServer is newTestServer with bob's account mapped to bob and a client of a
-// Dispatch stand-in in which bob is a restricted member. PRIV and LATE are private and their
-// access lists name bob; a test asks about LATE only while Dispatch is down, so no answer the
-// broker's client still holds (projectaccess.CacheTTL) stands in for Dispatch. ELSE is private
-// and does not name him. It answers the stand-in, so that a test can take it down.
-func newPersonPodProjectsServer(t *testing.T) (*testServer, *projectaccesstest.Server) {
+// Dispatch stand-in in which bob is a restricted member, and PRIV is private and its access list
+// names bob.
+func newPersonPodProjectsServer(t *testing.T) *testServer {
 	t.Helper()
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		"PRIV": {Visibility: "private", Owner: testApprover, Listed: []string{projectsPodPerson}},
-		"LATE": {Visibility: "private", Owner: testApprover, Listed: []string{projectsPodPerson}},
-		"ELSE": {Visibility: "private", Owner: testApprover},
 	}, map[string]string{projectsPodPerson: projectaccess.MemberRestricted})
-	ts := newTestServerWith(t, func(d *api.Deps) {
+	return newTestServerWith(t, func(d *api.Deps) {
 		d.Enroll.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 		d.Enroll.ServiceLogins[projectsPodAccount] = projectsPodService
 		d.Enroll.PodOperators = map[string]string{projectsPodAccount: projectsPodPerson}
 	})
-	return ts, dispatch
 }
 
 // bobsPod is one pod of bob's account: its pod UID, the login its own token made and that
@@ -81,25 +76,13 @@ func (p bobsPod) enrol(t *testing.T, ts *testServer, projects []string) (int, []
 	return ts.launcher(t, p.loginKey, p.login, http.MethodPost, "/v1/enrollments", body)
 }
 
-// enrollments counts the enrollments naming the pod, live or not.
-func (p bobsPod) enrollments(t *testing.T, ts *testServer) int {
-	t.Helper()
-	var n int
-	if err := ts.Store.Pool.QueryRow(t.Context(), `select count(*) from enrollments where runtime_id=$1`, p.uid).Scan(&n); err != nil {
-		t.Fatalf("count the enrollments of pod %s: %v", p.uid, err)
-	}
-	return n
-}
-
 // TestARestrictedMembersPodEnrollsNamingItsProjects: bob's pod naming PRIV, whose access list
 // names him, is enrolled: 201, and the same call again answers 200 with the same enrollment, as
 // the route answers a key already enrolled. GET /v1/enrollments/self answers bob as its operator
-// and PRIV as its projects. Then each refusal by its own code: a pod naming no project 403
-// PROJECTS_REQUIRED, saying to set AGENT_SECRETS_PROJECTS and never PROJECTS_NEED_A_PERSON; a pod
-// naming ELSE 403 PROJECT_NOT_VISIBLE; and a pod naming LATE, which bob may see, while Dispatch
-// is down 503 PROJECTS_UNCHECKED. No refusal enrols anything.
+// and PRIV as its projects. So the route takes a pod's projects and gives them to the rule that
+// checks a person's pod against its person.
 func TestARestrictedMembersPodEnrollsNamingItsProjects(t *testing.T) {
-	ts, dispatch := newPersonPodProjectsServer(t)
+	ts := newPersonPodProjectsServer(t)
 
 	pod := logInBobsPod(t, ts, "pod-uid-bob-priv")
 	status, body := pod.enrol(t, ts, []string{"PRIV"})
@@ -119,30 +102,5 @@ func TestARestrictedMembersPodEnrollsNamingItsProjects(t *testing.T) {
 	}](t, body)
 	if status != http.StatusOK || self.Kind != "pod" || self.Operator == nil || *self.Operator != projectsPodPerson || !slices.Equal(self.Projects, []string{"PRIV"}) {
 		t.Fatalf("GET /v1/enrollments/self of bob's pod = %d %s; want a pod of %s naming [PRIV]", status, body, projectsPodPerson)
-	}
-
-	for _, c := range []struct {
-		name     string
-		uid      string
-		projects []string
-		down     bool
-		status   int
-		code     string
-		says     string
-	}{
-		{"no project", "pod-uid-bob-none", nil, false, http.StatusForbidden, "PROJECTS_REQUIRED", "AGENT_SECRETS_PROJECTS"},
-		{"ELSE, whose list does not name bob", "pod-uid-bob-else", []string{"ELSE"}, false, http.StatusForbidden, "PROJECT_NOT_VISIBLE", "ELSE"},
-		{"LATE while Dispatch is down", "pod-uid-bob-down", []string{"LATE"}, true, http.StatusServiceUnavailable, "PROJECTS_UNCHECKED", ""},
-	} {
-		dispatch.SetDown(c.down)
-		refused := logInBobsPod(t, ts, c.uid)
-		status, body := refused.enrol(t, ts, c.projects)
-		got := decode[wireError](t, body)
-		if status != c.status || got.Code != c.code || !strings.Contains(got.Error, c.says) {
-			t.Errorf("POST /v1/enrollments for bob's pod naming %s = %d %s; want %d %s saying %q", c.name, status, body, c.status, c.code, c.says)
-		}
-		if n := refused.enrollments(t, ts); n != 0 {
-			t.Errorf("enrollments of bob's pod %s after the refusal = %d, want none", c.uid, n)
-		}
 	}
 }

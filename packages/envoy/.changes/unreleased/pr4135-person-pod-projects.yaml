@@ -11,8 +11,14 @@ body: |-
   none enrolls as the person's session does. The pod's list, not its account's
   `BROKER_EXCHANGE_ACCOUNTS` project, is what it names for a private project's secret, and each
   release asks Dispatch again whether the person still sees the project; once the setting no
-  longer maps the account, the pod names no list of its own. Any other pod naming projects is
-  refused `400 PROJECTS_NEED_A_PERSON`.
+  longer maps the account, the pod names no list of its own. So while both settings map a pod's
+  account, its grant of a secret of the private project `BROKER_EXCHANGE_ACCOUNTS` maps it to ends
+  at the grant's next release unless the pod's list names that project. The pod cannot add the
+  project to a live enrollment: `enroll --pod` naming another list is refused
+  `409 ALREADY_ENROLLED` while the old lease lives, from a new key directory too, so a new pod, or
+  the same pod once its old lease has lapsed, enrolls with the new list. Any other pod naming
+  projects is refused `400 PROJECTS_NEED_A_PERSON`, and `enroll --pod` then names the setting the
+  list came from, `--projects` or `AGENT_SECRETS_PROJECTS`, which a service's pod leaves unset.
 time: 2026-11-20T06:47:38Z
 custom:
     Issue: pr4135

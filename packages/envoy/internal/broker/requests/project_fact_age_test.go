@@ -222,12 +222,8 @@ func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 
 	t.Run("the approval page", func(t *testing.T) {
 		m, _, id, front := pendingShared(t, privateTeam(fixtureOperator))
-		detail, err := m.ReadRecord(t.Context(), id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if may, err := m.MaySee(t.Context(), outsider, detail); err != nil || may {
-			t.Errorf("MaySee(%s) on TEAM's aged public answer = %v, %v; want false: TEAM is private now", outsider, may, err)
+		if err := m.HideUnseen(t.Context(), id, outsider); !errors.Is(err, pgx.ErrNoRows) {
+			t.Errorf("HideUnseen(%s) on TEAM's aged public answer = %v; want pgx.ErrNoRows: TEAM is private now", outsider, err)
 		}
 		handedAged(t, front)
 	})
@@ -287,12 +283,8 @@ func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 	})
 	t.Run("an aged answer Dispatch still gives stands", func(t *testing.T) {
 		m, _, id, front := pendingShared(t, publicTeam)
-		detail, err := m.ReadRecord(t.Context(), id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if may, err := m.MaySee(t.Context(), outsider, detail); err != nil || !may {
-			t.Errorf("MaySee(%s) on TEAM's aged public answer while TEAM is still public = %v, %v; want true", outsider, may, err)
+		if err := m.HideUnseen(t.Context(), id, outsider); err != nil {
+			t.Errorf("HideUnseen(%s) on TEAM's aged public answer while TEAM is still public = %v; want nil", outsider, err)
 		}
 		handedAged(t, front)
 	})

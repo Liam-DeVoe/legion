@@ -128,8 +128,8 @@ func TestARequestStoredOverTheCapStaysVisibleAndAsksDispatchNothing(t *testing.T
 	if err != nil || detail.Reason != over {
 		t.Fatalf("ReadRecord(the stored request) = %+v, %v; want it read and verified", detail, err)
 	}
-	if may, err := m.MaySee(t.Context(), fixtureOperator, detail); err != nil || !may {
-		t.Errorf("MaySee(%s, the stored request) = %v, %v; want its approver to see it", fixtureOperator, may, err)
+	if err := m.HideUnseen(t.Context(), *pending.RecordID, fixtureOperator); err != nil {
+		t.Errorf("HideUnseen(the stored request, %s) = %v; want its approver to see it", fixtureOperator, err)
 	}
 	if listed := pendingRecords(t, m, fixtureOperator); !slices.Contains(listed, *pending.RecordID) {
 		t.Errorf("PendingForApprover(%s) = %v; want the stored request %s", fixtureOperator, listed, *pending.RecordID)

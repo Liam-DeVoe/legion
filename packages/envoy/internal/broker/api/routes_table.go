@@ -395,17 +395,18 @@ func routes() []apiRoute {
 		// which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeLauncherCredential)},
 		// List the live grants of the named person's sessions, automatic or approved, and those the
-		// person approved. The person is the one the caller names.
+		// person approved, whatever project they touch. The person is the one the caller names.
 		{http.MethodGet, "/v1/grants", accountAuth(relaysDecisions, (*server).listGrantsForApprover)},
-		// End a grant as its approver or as its enrollment's operator, or, for a grant the model
-		// judge approved in anyone's stead, as anyone, each only when the grant's private project,
-		// if it has one, lets the person see it. The operator's revoke also withholds the secrets
-		// the grant's request got automatically from that session, even when the grant had already
-		// ended: its other grants that got them automatically end too, and it asks before it gets
-		// them again. A grant id no grant has, and a grant a private project hides from the person,
-		// are one 404 NOT_FOUND, and a grant Dispatch cannot answer for is 503
-		// PROJECT_ACCESS_UNAVAILABLE, revoking nothing. The revoking person is the login the request
-		// names, which the broker still takes on the caller's word: a revoke only takes power away.
+		// End a grant as its approver or as its enrollment's operator, whatever project it touches
+		// and whether or not Dispatch answers, or, for a grant the model judge approved in anyone's
+		// stead, as anyone the grant's private project, if it has one, lets see it. The operator's
+		// revoke also withholds the secrets the grant's request got automatically from that session,
+		// even when the grant had already ended: its other grants that got them automatically end
+		// too, and it asks before it gets them again. To anyone else, a grant id no grant has and a
+		// grant a private project hides from the person are one 404 NOT_FOUND, and a grant Dispatch
+		// cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, revoking nothing. The revoking person
+		// is the login the request names, which the broker still takes on the caller's word: a
+		// revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
 		// List the sign-ins the named person made on their machines with `agent-secrets login`,
 		// by machine: one row per box key they signed in with and have not revoked, each naming
@@ -447,9 +448,11 @@ func routes() []apiRoute {
 		// Dispatch's Live grants page lists them.
 		{http.MethodGet, "/v1/operator/grants", launcherAuth((*server).listOperatorGrants)},
 		// End a grant as the operator: the revocation Dispatch's page offers, which also withholds an
-		// automatic grant's secrets from its session. It is refused as the person's own revoke of
-		// the grant is: one 404 NOT_FOUND for an id no grant has and for a grant a private project
-		// hides from the operator, and 503 PROJECT_ACCESS_UNAVAILABLE while Dispatch cannot answer.
+		// automatic grant's secrets from its session. It answers as the person's own revoke of the
+		// grant does: a grant that names the operator as its approver or its enrollment's operator
+		// is ended whatever Dispatch answers, and of any other grant an id no grant has and a grant a
+		// private project hides from the operator are one 404 NOT_FOUND, and a grant Dispatch cannot
+		// answer for is 503 PROJECT_ACCESS_UNAVAILABLE.
 		{http.MethodPost, "/v1/operator/grants/{id}/revoke", launcherAuth((*server).revokeOperatorGrant)},
 		// The store, the namespace prefix, the agent-secrets key and the account or project it is
 		// in, and the Google exchange audience: what the CLI needs so it and the broker never
