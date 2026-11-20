@@ -45,11 +45,12 @@ const (
 	// a raise rolls them as well, which costs a restart and keeps one rule.
 	clusteredHubMaxFileStoreAnnotation = "envoy-infra.sjawhar.dev/max-file-store"
 	// clusteredHubAuthCalloutAnnotation, on the hub's pod template, holds the SHA-256 of auth.conf's
-	// callout lines (core.Authorization.CalloutBlock), and is absent without authCallout.
-	// nats-server v2.15.1 refuses a whole reload that changes the callout ("config reload not
-	// supported for AuthCallout", which clusteredhub_callout_live_test.go measures), so a callout
-	// change, a user added to or removed from auth_users among them, rolls the pods as a
-	// session-user change does; a change of a grant alone leaves the lines as they were.
+	// callout lines, the auth_callout block and the ping lines (core.Authorization.CalloutLines),
+	// and is absent without authCallout. A change of either, a user added to or removed from
+	// auth_users among them, rolls the pods as a session-user change does; a change of a grant
+	// alone leaves the lines as they were. CalloutLines' doc comment says why a change rolls the
+	// pods rather than reloads, and why the routes' ping pin (clusteredHubCluster) arrives with that
+	// roll; clusteredhub_callout_live_test.go measures the refused reload.
 	clusteredHubAuthCalloutAnnotation = "envoy-infra.sjawhar.dev/auth-callout"
 	// clusteredHubAuthConf is the file of the chart's ConfigMap holding the users' authorization,
 	// which nats.conf includes and the reloader watches.
@@ -97,8 +98,8 @@ func refuseClusteredHubSecret(value pulumi.StringInput, name, input string) pulu
 
 // newClusteredHubKubernetes registers the hub's Kubernetes children, each the component's child
 // on the Kubernetes provider it builds from kubeconfig: the priority class read, the nats chart,
-// the hub pods' NetworkPolicy and their PodMonitoring and, with tailnet, the tailnet hosts
-// (newClusteredHubTailnetHosts) and the session listener they forward to
+// the hub pods' NetworkPolicy and their PodMonitoring, with tailnet the tailnet hosts
+// (newClusteredHubTailnetHosts), and with a session listener that listener
 // (newClusteredHubListener).
 func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name string, args *ClusteredNatsHubArgs, s clusteredHubSettings) error {
 	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
@@ -154,21 +155,26 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 			}},
 		}},
 	}, child...)
-	if err != nil || s.tailnet == nil {
+	if err != nil {
 		return err
 	}
-	if err := newClusteredHubTailnetHosts(ctx, name, args.TailnetAuthKey, s, classRead, child...); err != nil {
-		return err
+	if s.tailnet != nil {
+		if err := newClusteredHubTailnetHosts(ctx, name, args.TailnetAuthKey, s, classRead, child...); err != nil {
+			return err
+		}
+	}
+	if s.listener == nil {
+		return nil
 	}
 	return newClusteredHubListener(ctx, s, classRead, child...)
 }
 
 // clusteredHubIngress is what the hub pods' NetworkPolicy admits, by TCP port: NATS's client port
-// from every pod of each client namespace and, with tailnet, from the component's tailnet hosts,
-// which forward the tailnet's NATS port to it, and from its session listener, which since the
-// split is a pod of neither kind: it carried the tailnet hosts' labels while it was a container
-// of their pods, and without a rule of its own it would reach NATS only while clientNamespaces
-// happened to name the hub's namespace; the route port from the hub pods alone, which is
+// from every pod of each client namespace, with tailnet from the component's tailnet hosts, which
+// forward the tailnet's NATS port to it, and with a session listener from that listener, which is
+// a pod of neither kind: it carried the tailnet hosts' labels while it was a container of their
+// pods, and without a rule of its own it would reach NATS only while clientNamespaces happened to
+// name the hub's namespace; the route port from the hub pods alone, which is
 // all that keeps anything else from joining the cluster, since routes carry no credential; the
 // monitoring port from each monitor namespace, and from none without one, as an empty from would
 // admit every pod; and the exporter's port from each metrics namespace.
@@ -176,6 +182,8 @@ func clusteredHubIngress(s clusteredHubSettings) networkingv1.NetworkPolicyIngre
 	ingress := networkingv1.NetworkPolicyIngressRuleArray{ingressFrom(natsPort, namespacePeers(s.clientNamespaces))}
 	if s.tailnet != nil {
 		ingress = append(ingress, ingressFrom(natsPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubTailnetSelector(s.name))}))
+	}
+	if s.listener != nil {
 		ingress = append(ingress, ingressFrom(natsPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubListenerSelector(s.name))}))
 	}
 	ingress = append(ingress, ingressFrom(clusteredHubClusterPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubSelector(s.name))}))
@@ -237,7 +245,7 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 		"fullnameOverride": pulumi.String(s.name),
 		"natsBox":          pulumi.Map{"enabled": pulumi.Bool(false)},
 		"config": pulumi.Map{
-			"cluster": pulumi.Map{"enabled": pulumi.Bool(true), "replicas": pulumi.Int(clusteredHubServers), "noAdvertise": pulumi.Bool(true)},
+			"cluster": clusteredHubCluster(s),
 			"jetstream": pulumi.Map{
 				"enabled":     pulumi.Bool(true),
 				"fileStore":   pulumi.Map{"pvc": jetstreamPVC, "maxSize": gibibytes(s.size.maxFileStoreGb)},
@@ -280,6 +288,28 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 			clusteredHubDependsOnAnnotation: pulumi.String(clusteredHubConfigMapRef(s.namespace, s.name)),
 		}}}},
 	}
+}
+
+// clusteredHubCluster is the chart's cluster values: three servers that advertise no pod address
+// and, beside a callout, whose routes keep their own ping. The settings carry a callout exactly
+// when calloutDigest is set.
+//
+// The merge pins the routes' own ping_interval and ping_max at what routes used before the
+// callout. A route reads cluster.ping_interval first and the top-level ping_interval otherwise
+// (server/client.go:5957-5964, :6042-6049, :7124), so the callout's top-level 20 s would govern
+// routes too. A route is pinged on every tick whether or not it carries traffic (:5968-5970), and a
+// PING queues behind pending data, so a route whose queue takes longer than 2 to 3 intervals to
+// drain is closed as stale and loses what was in transit. Without a callout, the 2-minute default
+// (server/const.go:120) is capped for routes at routeMaxPingInterval, 30 s (server/route.go:144,
+// :152; client.go:6005-6010), and a route takes the top-level ping_max, 2 (const.go:123;
+// client.go:5983-5986). Pinned, only client connections get the 20 s ping. Without a callout the
+// cluster block is as it was (R9).
+func clusteredHubCluster(s clusteredHubSettings) pulumi.Map {
+	cluster := pulumi.Map{"enabled": pulumi.Bool(true), "replicas": pulumi.Int(clusteredHubServers), "noAdvertise": pulumi.Bool(true)}
+	if s.calloutDigest != "" {
+		cluster["merge"] = pulumi.Map{"ping_interval": pulumi.String("30s"), "ping_max": pulumi.Int(2)}
+	}
+	return cluster
 }
 
 // chartResources is a container's resources as chart values: the request and the limit equal.

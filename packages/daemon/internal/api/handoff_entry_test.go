@@ -20,8 +20,8 @@ import (
 )
 
 // A tester's turn outlives its phase: the daemon ends no turn when a phase ends, so when the
-// head starts conflicting with its base the implementer starts at once and the tester goes on
-// working. Its issue comes back to
+// tester sends the work back with its own backward move the implementer starts at once and the
+// tester's turn goes on. Its issue comes back to
 // testing on the implementer's pass, where a second testing entry hands the tester a second
 // task — and the completion the first task's turn reports is of work the issue has moved past. The
 // run cannot tell the two apart, since the issue never left run 1, and neither can the phase, which
@@ -50,12 +50,12 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	firstTesting := takeStart(t, h, tester.token, "LEGION-208", claim.RoleTester)
 
-	// The head starts conflicting with its base while the tester works. The issue goes back to
-	// implementing, the implementer starts at once, and the tester's turn, its process and its
-	// claim are untouched: its delivery is still pending and confirmed.
-	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "github", "conflict", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 42,
-		HeadSHA: "head", Base: "main", Mergeable: record.MergeabilityConflicting}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the conflicting head = %+v, %v", result.Refusal, err)
+	// The tester sends the work back with its own backward move while its turn goes on. The
+	// issue goes back to implementing, the implementer starts at once, and the tester's turn, its
+	// process and its claim are untouched: its delivery is still pending and confirmed.
+	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "api", "move-back", intake.BackwardMove{Issue: "LEGION-208",
+		Requester: claim.RoleTester, To: phase.Implementing, Reason: "the fix does not cover the empty list"}, engine); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the tester's move back = %+v, %v", result.Refusal, err)
 	}
 	assertIssuePhase(t, h, phase.Implementing)
 	testerMachine, ok := h.supervisor.Machine(tester.token)
@@ -63,13 +63,13 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		t.Fatal("no machine for the tester")
 	}
 	if p := testerMachine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != firstTesting {
-		t.Fatalf("the tester's delivery after the conflict is %+v, want the task of its first entry still confirmed and pending", p)
+		t.Fatalf("the tester's delivery after its move back is %+v, want the task of its first entry still confirmed and pending", p)
 	}
 
 	// The implementer's second round ends and the issue is in testing again: the tester's second
 	// entry, which its first task's turn knows nothing of.
 	takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "merged the base forward", Commit: "handoff-2",
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "covered the empty list", Commit: "handoff-2",
 		HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
@@ -631,6 +631,43 @@ func TestAFurtherCompletionAfterATakenBehindCompletionIsAnsweredAsNoLongerTheRol
 		t.Fatalf("the refusal = %q, want no task named as owed: the issue has left testing and the tester's answer stands", message)
 	}
 	assertIssuePhase(t, h, phase.Reviewing)
+}
+
+// R2: a root architect's completion at admitted is answered as it was while phase.RoleFor named
+// no role for that phase, though admitted is now the architect's and its row carries an entry
+// there. Behind that entry the entry fence answers HANDOFF_NOT_CURRENT_PHASE, as it answers any
+// role at a phase it does not work (entryFence's guard for admitted). Level with it the
+// completion goes on to the workflow, which refuses the architect before it reads the phase the
+// completion is of (phase.Of, which answers admitted for the architect where the route took the
+// issue's phase for its empty answer). The control is the same behind completion at accepting,
+// which the architect worked before this change too: there the fence reads on and refuses it for
+// its entry. Every one of them leaves the issue where it stood and the row on its entry.
+func TestArchitectUnchangedByItsCompletionAtAdmitted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   phase.Phase
+		// served is the entry of the task the architect's claim took; its row is on entry 2.
+		served int64
+		code   string
+	}{
+		{name: "behind its entry at admitted", at: phase.Admitted, served: 1, code: "HANDOFF_NOT_CURRENT_PHASE"},
+		{name: "level with its entry at admitted", at: phase.Admitted, served: 2, code: "ACCEPTANCE_IS_SIGN_OFF"},
+		{name: "the control, behind its entry at accepting", at: phase.Accepting, served: 1, code: staleEntryCode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, _ := newEntryHarness(t)
+			seedIssueAt(t, h, "LEGION-208", tc.at)
+			seedEntry(t, h, "LEGION-208", claim.RoleArchitect, 2)
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			takeTask(t, h, architect.token, "outbox:77", "architect LEGION-208", tc.served, 1)
+
+			refused(t, h.complete(HandoffCompleteRequest{GrantID: architect.grant(t), Summary: "spec written"}), http.StatusConflict, tc.code)
+			assertIssuePhase(t, h, tc.at)
+			if entry := rowEntry(t, h, "LEGION-208", claim.RoleArchitect); entry != 2 {
+				t.Fatalf("the architect's row is on entry %d after the refusal, want 2, where it stood", entry)
+			}
+		})
+	}
 }
 
 // newEntryHarness serves the daemon's routes with the workflow deciding every fact they apply

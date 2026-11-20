@@ -12,11 +12,12 @@ type Permissions struct {
 // connections with, so a hub's static user and an admitted connection of the same kind hold the
 // same lists; each set's reach is documented there.
 
-// rules wraps a natsgrant grant as the allow rules of a User.
+// rules wraps a natsgrant grant as the rules of a User: its allow lists, and its deny lists, which
+// every set natsgrant builds today leaves empty, so a hub's rendered users are unchanged by them.
 func rules(grant natsgrant.Permissions) Permissions {
 	return Permissions{
-		Publish:   Rules{Allow: grant.Publish},
-		Subscribe: Rules{Allow: grant.Subscribe},
+		Publish:   Rules{Allow: grant.Publish, Deny: grant.PublishDeny},
+		Subscribe: Rules{Allow: grant.Subscribe, Deny: grant.SubscribeDeny},
 	}
 }
 

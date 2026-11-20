@@ -422,8 +422,8 @@ const systemdSpecial = `\'"$%`
 // no env file and no fetch: its environment names the audience its bus asks the metadata server,
 // on the host's network, for an identity token for. It listens on the VM's loopback, where
 // Tailscale Serve forwards the tailnet's connections to its port, and reaches NATS there too. It
-// is stopped with docker stop -t 30, since the listener's own shutdown takes up to about
-// twenty-three seconds.
+// is stopped with docker stop -t 30, since the listener's own shutdown takes up to 28 seconds
+// (stopBudget in packages/envoy/cmd/listener/main.go).
 func (v vm) listenerUnit() string {
 	var run, service []string
 	if v.listener.seedSecret != "" {
