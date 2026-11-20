@@ -264,7 +264,7 @@ it, are the plugin-pack job's.
 ## daemon_go_tests: The removal of each gone test stack's Postgres
 
 The removal of each gone test stack's Postgres, which the Stage 1 proof's start runs with Bun
-(scripts/e2e/stage1-skeleton.sh:26-27, through scripts/e2e/lib/leftovers.sh), and the modules that
+(scripts/e2e/stage1-skeleton.sh:27-28, through scripts/e2e/lib/leftovers.sh), and the modules that
 command imports; and the Bun that runs it, its version (.bun-version) and the action that installs
 it (.github/actions/setup-bun).
 
