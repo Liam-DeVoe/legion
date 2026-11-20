@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { join } from "node:path";
+import { recordTimers } from "@legion/test-fixtures/timer-record";
 import { settled } from "@legion/test-fixtures/wait";
 import type { ServerWebSocket } from "bun";
 
@@ -18,7 +20,9 @@ import { readAgentReplay } from "./agent-replay";
 // real timers, read against real socket traffic. A row about a read that ends on what Dispatch
 // sent gives it a timeout no row reaches (`NO_TIMEOUT_MS`), so a read that waited for its timeout
 // rather than ending on that frame never ends there, and the row's wait for it fails by name; the
-// row whose point is the timeout gives it 1 s, and `emptyAfterMs` is 300 ms throughout.
+// row whose point is the timeout gives it 1 s and holds the read to the timer it armed for that
+// second, from the read's own record of its timers (`@legion/test-fixtures/timer-record`), not to
+// how long it took. `emptyAfterMs` is 300 ms throughout.
 
 const SESSION = "01a0e0c1-0000-7000-8000-00000000beef";
 const SUB = "dispatch-user-turns";
@@ -61,12 +65,20 @@ async function outcome(
   );
 }
 
+/** The file whose function these rows run: the name its evaluated source carries. */
+const AGENT_REPLAY_SOURCE = join(import.meta.dir, "agent-replay.ts");
+
 /** readAgentReplay as `page.evaluate` runs it: its source, evaluated in the global scope, where
  *  nothing of this module or of agent-replay.ts is reachable. Evaluating that source is the point
- *  of these rows, and the source is this repository's own, not a value from anywhere else. */
+ *  of these rows, and the source is this repository's own, not a value from anywhere else. Its
+ *  `sourceURL` names agent-replay.ts and changes nothing the source does. Without it Bun names the
+ *  evaluated code's frames by the file that called `eval`, this test, whose timers the timer
+ *  record leaves out; with it the record keeps the timers the read arms as the program's. */
 // biome-ignore lint/security/noGlobalEval: these rows exist to run the function's own source as the page does
 const evaluateInGlobalScope = eval;
-const inPage = evaluateInGlobalScope(`(${readAgentReplay.toString()})`) as typeof readAgentReplay;
+const inPage = evaluateInGlobalScope(
+  `(${readAgentReplay.toString()})\n//# sourceURL=${AGENT_REPLAY_SOURCE}`
+) as typeof readAgentReplay;
 
 const read = (url: string, timeoutMs = NO_TIMEOUT_MS) =>
   inPage({ emptyAfterMs: 300, sessionId: SESSION, timeoutMs, url });
@@ -134,10 +146,23 @@ test("a session that answers a re-arm after not responding still gives its repla
 
 test("a session that never answers ends at the timeout, saying it is not responding", async () => {
   const dispatch = dispatchAnswering((socket) => socket.send(responder(false)));
-  const result = await outcome("the read to end at its 1 s timeout", read(dispatch.wsUrl, 1_000));
-  expect(result.error).toBe(
-    "the session did not answer Dispatch's replay request within 1s (responding: false), so the agent view has no replay"
-  );
+  const steps: unknown[] = [];
+  const stopRecording = recordTimers([import.meta.dir], (step) => steps.push(step));
+  try {
+    const result = await outcome("the read to end at its 1 s timeout", read(dispatch.wsUrl, 1_000));
+    expect(result.error).toBe(
+      "the session did not answer Dispatch's replay request within 1s (responding: false), so the agent view has no replay"
+    );
+  } finally {
+    stopRecording();
+  }
+  // The read's own record of its timers, to its end: it armed one, its timeout, for the 1 s it was
+  // given, and that timer ran, its error the read's end. So the read ended at its timeout: one
+  // armed later, or a wait on another timer of its own before the end, shows its delay here.
+  expect(steps).toEqual([
+    { delayMs: 1_000, from: expect.stringContaining(`${AGENT_REPLAY_SOURCE}:`), timer: 1 },
+    { fired: 1 },
+  ]);
 });
 
 test("a socket closed before the replay says so", async () => {
