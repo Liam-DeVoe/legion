@@ -81,7 +81,20 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// (resolveAnchor), the comment's own words; a replace's and a delete's wrap document text,
 	// which stays in the document (docs.RejectDeletedCommentSuggestion). So the clear below
 	// empties an insert's quote with its suggestion, and the anchor keeps its document, its block
-	// and its mark id. An orphaned mark answers no kind, and its quote stays as it was stored.
+	// and its mark id. The kind is the mark's own, which the reject answers while the mark stands.
+	//
+	// An orphaned mark answers no kind, and the row records none: the suggestion holds
+	// replace_with and accepted, the anchor its document, block, mark id, version, quote and
+	// orphaned flag, and the margin record the create wrote the kind into is rewritten without
+	// it by the first projection that finds the mark gone (projectThreadMark). So the row's own
+	// text decides: the words an insert put in the document are the words its suggestion
+	// records, so its quote is its replace_with, and the clear empties an orphaned suggestion's
+	// quote when the two are the same bytes. Such a quote is a copy of the text the clear takes
+	// off the row, whatever kind the mark was: a replace's equals its replace_with only when it
+	// would write the very text it quotes. Any other quote stays: a replace's or a delete's
+	// document text, or the words of an insert that a browser edit changed before it orphaned
+	// the mark (an anchor refresh moves the quote, never replace_with), which no fact of the row
+	// tells from document text.
 	//
 	// Everything up to Commit is the read phase (Docs.Join): this route and the document
 	// operations queue their writes on the ledger, in the order made, and Commit sends them as
@@ -89,6 +102,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	quoteIsBody := false
 	if comment.Suggestion != nil && comment.Suggestion.Accepted == nil && comment.Anchor != nil {
 		kind, err := s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
+		quoteIsBody = kind == "insert"
 		if err != nil {
 			if !errors.Is(err, docs.ErrAnchorOrphaned) {
 				s.writeHandlerError(w, err)
@@ -98,8 +112,8 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
+			quoteIsBody = comment.Anchor.Quote == comment.Suggestion.ReplaceWith
 		}
-		quoteIsBody = kind == "insert"
 	}
 	// An accepted suggestion's proof is a version of the document, which the accept named
 	// after the comment's body (acceptedVersionName); every read of the document's versions

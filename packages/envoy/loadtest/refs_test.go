@@ -145,7 +145,9 @@ func TestRefWriterAuthorBytes(t *testing.T) {
 
 // TestRefSeedTakesALandedWriteAsMade: a write of the reference seed that landed before its answer
 // was lost (409 KEY_COMMITTED) made its version, so the seed counts it and goes on to the next
-// write; a refusal still stops the seed.
+// write; a refusal still stops the seed. The read of the document's token before each later
+// version (refDocumentToken) is keyless, and the fake answers it as Dispatch does, so keys holds
+// the keyed writes alone.
 func TestRefSeedTakesALandedWriteAsMade(t *testing.T) {
 	p := refPlan{
 		targets: []refTarget{{n: 0, issue: "LGB-1", versions: 3, writers: []int{0}, order: []int{0, 0, 0}}},
@@ -157,9 +159,15 @@ func TestRefSeedTakesALandedWriteAsMade(t *testing.T) {
 	var keys []string
 	refused := ""
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/artifacts/a/text" {
+			_, _ = io.WriteString(w, `{"token":"t"}`)
+			return
+		}
 		key := r.Header.Get(contracts.IdempotencyKeyHeader)
 		mu.Lock()
-		keys = append(keys, key)
+		if key != "" {
+			keys = append(keys, key)
+		}
 		refuse := key == refused
 		mu.Unlock()
 		switch {
@@ -193,5 +201,60 @@ func TestRefSeedTakesALandedWriteAsMade(t *testing.T) {
 	mu.Unlock()
 	if _, err := writeRefTargets(ctx, a, p); err == nil || !strings.Contains(err.Error(), "409") {
 		t.Fatalf("a 409 ISSUE_CLOSED gave %v, want the seed stopped naming the status", err)
+	}
+}
+
+// TestRefSeedReadsBackTheDocumentALandedFirstVersionMade: a first version that landed with no
+// answer to give (409 KEY_COMMITTED) made the document, but no earlier version gave its id, so the
+// seed reads the issue's documents back and takes the id of the one with the target's name. The
+// later versions read their base from that document. The fake lists another document first, and
+// answers a token read of no other id, so the seed can only go on with the id of the right name.
+func TestRefSeedReadsBackTheDocumentALandedFirstVersionMade(t *testing.T) {
+	p := refPlan{
+		targets: []refTarget{{n: 0, issue: "LGB-1", versions: 3, writers: []int{0}, order: []int{0, 0, 0}}},
+	}
+	landed := map[string]bool{refTargetKey(0, 1): true}
+	var mu sync.Mutex
+	var writes, reads []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			mu.Lock()
+			reads = append(reads, r.URL.Path)
+			mu.Unlock()
+			switch r.URL.Path {
+			case "/api/v1/issues/LGB-1/artifacts":
+				_, _ = io.WriteString(w, `[{"id":"other","name":"ref-target-1.md"},{"id":"d","name":"ref-target-0.md"}]`)
+			case "/api/v1/artifacts/d/text":
+				_, _ = io.WriteString(w, `{"token":"t"}`)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"error":"no such document","code":"NOT_FOUND"}`)
+			}
+			return
+		}
+		key := r.Header.Get(contracts.IdempotencyKeyHeader)
+		mu.Lock()
+		writes = append(writes, key)
+		mu.Unlock()
+		if landed[key] {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "landed", "code": contracts.IdempotencyKeyCommitted})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"artifact":{"id":"d"}}`)
+	}))
+	defer srv.Close()
+
+	versions, err := writeRefTargets(context.Background(), newAPI(srv.URL, "token", 2), p)
+	if err != nil || versions != 3 {
+		t.Fatalf("the targets wrote %d versions (%v), want all 3: the landed version 1 is made, and versions 2 and 3 read the document it made", versions, err)
+	}
+	if want := []string{refTargetKey(0, 1), refTargetKey(0, 2), refTargetKey(0, 3)}; !slices.Equal(writes, want) {
+		t.Errorf("the seed sent %v, want each version once: %v", writes, want)
+	}
+	if want := []string{"/api/v1/issues/LGB-1/artifacts", "/api/v1/artifacts/d/text", "/api/v1/artifacts/d/text"}; !slices.Equal(reads, want) {
+		t.Errorf("the seed read %v, want the issue's documents read back once, then the token of the one named %s before versions 2 and 3: %v",
+			reads, "ref-target-0.md", want)
 	}
 }
