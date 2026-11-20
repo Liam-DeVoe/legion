@@ -53,7 +53,8 @@ const (
 	KeepRefLine Keep = "ref_line"
 	// KeepPictureLines: each line of an ask that holds only a picture, byte for byte.
 	KeepPictureLines Keep = "picture_lines"
-	// KeepLinks: each link of an ask's question, somewhere in its text.
+	// KeepLinks: each link of an ask's question, somewhere in the rewrite's question, and each link
+	// of an option's description, in the rewrite's description of that option.
 	KeepLinks Keep = "links"
 	// KeepOptionLines: each option line of a decision block that the ask-edit route does not
 	// rewrite, because it holds more than its plain text (docs.LostOptionWords).
@@ -89,10 +90,10 @@ func (n *NotApplied) Error() string {
 // words or more and each of its typed blocks' fences, holds no tag of the record that the text
 // does not hold, and holds no long run of the record's words that neither the text nor answer
 // holds. An ask and a decision block keep their options, their choice, their first line, their
-// `Ref: ` line, their picture lines and their links; a decision block also keeps the option
-// lines its document's ask-edit route does not rewrite, which Preserve weighs where the record
-// holds the document and the block's id; a comment keeps its first line. Every other kind keeps
-// nothing more.
+// `Ref: ` line, their picture lines, the links of their question and the links of each option's
+// description; a decision block also keeps the option lines its document's ask-edit route does
+// not rewrite, which Preserve weighs where the record holds the document and the block's id; a
+// comment keeps its first line. Every other kind keeps nothing more.
 func Preserve(record Record, answer string, rewrite Text) *NotApplied {
 	original := record.Text
 	if broken := keepMostWords(original, rewrite); broken != nil {
@@ -113,6 +114,9 @@ func Preserve(record Record, answer string, rewrite Text) *NotApplied {
 			return broken
 		}
 		if broken := keepLines(original.Body, rewrite.Body, KeepFirstLine); broken != nil {
+			return broken
+		}
+		if broken := keepOptionLinks(original.Options, rewrite.Options); broken != nil {
 			return broken
 		}
 		if original.Kind == KindDecisionBlock {
@@ -407,6 +411,20 @@ func keepLines(was, now string, first Keep) *NotApplied {
 	for _, link := range links(was) {
 		if !strings.Contains(now, link) {
 			return &NotApplied{KeepLinks, "the rewrite drops the link " + strconv.Quote(link)}
+		}
+	}
+	return nil
+}
+
+// keepOptionLinks weighs a rewrite's options against the ask's: each link of an option's
+// description is in the rewrite's description of that option. The options are weighed by their
+// place, which keepOptions holds to the ask's with their labels.
+func keepOptionLinks(was, now []model.AskOption) *NotApplied {
+	for i, option := range was {
+		for _, link := range links(option.Description) {
+			if !strings.Contains(now[i].Description, link) {
+				return &NotApplied{KeepLinks, fmt.Sprintf("the rewrite drops the link %s of option %d's description", strconv.Quote(link), i+1)}
+			}
 		}
 	}
 	return nil

@@ -67,9 +67,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reason is sentences every later reader of the result reads, so the writing check reads
 	// it, after the input is known good and before the transaction opens.
-	if !s.writingCheck(w, r, actor, input) {
-		return
-	}
+	s.writingCheck(r, actor, input)
 	resultID := r.PathValue("id")
 	// Asked before the transaction opens, because a cookie caller's credential is read through
 	// the pool (identity), and a caller that already holds a connection of the pool is refused

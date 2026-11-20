@@ -9,7 +9,8 @@ body: |-
   unresponsive and its host takes side questions, Dispatch first asks it one side question and
   waits up to 60 seconds for the answer.
   Dispatch does not apply a rewrite that loses what the question must keep: most of its words, its
-  options' labels, number and order, its choice, a `Ref:` line, a picture or a link. Nor does it
+  options' labels, number and order, its choice, a `Ref:` line, a picture, or a link of the
+  question or of an option's description. Nor does it
   apply one that pastes more than 100 words in a row of the record, words that neither the
   question nor the agent's answer holds. Nor does it apply one when the agent changed, answered or
   closed the question meanwhile.

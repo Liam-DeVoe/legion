@@ -21,8 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
-	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/candidates"
-	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/reader"
 )
 
 // --- the registry ----------------------------------------------------------------------------
@@ -212,10 +210,9 @@ const (
 	daemonID    = "legion-daemon:WCK"
 )
 
-// writingCheckOn is the check as the tests run it: on, with the bundle's structure rules, and
-// with the bundle's detector where the bundle ships one and a test gives a reader.
-func writingCheckOn(r writingcheck.Reader) *WritingCheck {
-	return NewWritingCheck(WritingCheckConfig{Enabled: true, Detector: r != nil, Reader: r})
+// writingCheckOn is the check as cmd/dispatch runs it: on, with the bundle's structure rules.
+func writingCheckOn() *WritingCheck {
+	return NewWritingCheck(WritingCheckConfig{Enabled: true})
 }
 
 type writingCheckRig struct {
@@ -587,7 +584,7 @@ func (rig *writingCheckRig) multipartUpload(target, name, contentType, content, 
 // to her, she wrote the comment and the message the replies answer, and she opened the direct
 // conversation.
 func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	cases := proseRouteCases()
 	var covered []string
 	for _, c := range cases {
@@ -667,7 +664,7 @@ func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 // report on such an attempt, and an error report repeated on an attempt already failed - and such a
 // call records no row, while the reply and the report it repeats record one each.
 func TestTheWritingCheckRecordsNoRowForAReplyThatWritesNothing(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	rig.deliverComment(rig.fixture.comment, checkWriter, 2)
 	rig.deliverMessage(rig.fixture.message, checkWriter, 2)
 	for _, target := range []string{
@@ -703,7 +700,7 @@ func TestTheWritingCheckRecordsNoRowForAReplyThatWritesNothing(t *testing.T) {
 // read, and such a call records no row, while the edit that changes the document and the request
 // that opens an approval record one each.
 func TestTheWritingCheckRecordsNoRowForADocumentCallThatWritesNothing(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	// write posts body to target as checkWriter and holds the call to its status and to the rows
 	// it recorded.
 	write := func(what, target string, body map[string]any, status, rows int) {
@@ -757,7 +754,7 @@ func (rig *writingCheckRig) asSessionGenerated(method, target string, body map[s
 // its reader. The same text with no header is read, and the header on any other route is not
 // read (the negative controls).
 func TestTheWritingCheckRecordsAGeneratedReplyExemptGenerated(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	// The reply with no header answers attempt 2: a second reply to attempt 1 would be its replay,
 	// which posts nothing and records no row.
 	rig.deliverComment(rig.fixture.comment, checkWriter, 2)
@@ -791,7 +788,7 @@ func TestTheWritingCheckRecordsAGeneratedReplyExemptGenerated(t *testing.T) {
 // TestTheWritingCheckActorCases is R3 through the server: who is read and who is exempt, with the
 // personal token recorded on a daemon-named write made with it.
 func TestTheWritingCheckActorCases(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
 	ask := func() string {
 		response := rig.asSession(http.MethodPost, "/api/v1/issues/"+rig.fixture.issue+"/asks", map[string]any{"question": "Which port should the server use?"})
@@ -856,7 +853,7 @@ func TestTheWritingCheckActorCases(t *testing.T) {
 // TestTheWritingCheckReadsAMarkdownUploadAndNotAFile: an upload stored as a Markdown document is
 // read as inline content is, and any other file is stored unread.
 func TestTheWritingCheckReadsAMarkdownUploadAndNotAFile(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	target := "/api/v1/issues/" + rig.fixture.issue + "/artifacts"
 	rig.clearEvents()
 	if response := rig.multipartUpload(target, "plan.md", "text/markdown", badProse+"\n", "", checkWriter); response.Code != http.StatusCreated {
@@ -899,7 +896,7 @@ func TestTheWritingCheckReadsAMarkdownUploadAndNotAFile(t *testing.T) {
 // generated reply's exempt_generated among them, and give the write that posted over a finding to
 // its reader.
 func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": badProse})
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": cleanProse})
@@ -950,7 +947,7 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 		t.Fatalf("state: %d %s", state.Code, state.Body.String())
 	}
 	got := decodeBody[writingCheckState](t, state)
-	if !got.Enabled || !slices.Equal(got.Rules, writingcheck.EnabledRules) || got.Detector.On || got.Model != nil {
+	if !got.Enabled || !slices.Equal(got.Rules, writingcheck.EnabledRules) || got.Detector.On || got.Detector.Reason != writingCheckDetectorElsewhere {
 		t.Errorf("state = %+v", got)
 	}
 	for _, measured := range writingcheck.MeasuredOff {
@@ -958,15 +955,8 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 			t.Errorf("state names no measured reason for %s: %+v", measured.ID, got.RulesLeftOut)
 		}
 	}
-	off := NewWritingCheck(WritingCheckConfig{Enabled: true, RulesOff: []string{badRule}, Detector: true}).state()
-	if slices.Contains(off.Rules, badRule) || off.Detector.On != writingcheck.DetectorEnabled {
-		t.Errorf("state with %s off and the detector asked for = %+v, want the bundle's detector %t", badRule, off, writingcheck.DetectorEnabled)
-	}
-	if !writingcheck.DetectorEnabled && !strings.Contains(off.Detector.Reason, "the bundle ships the detector off") {
-		t.Errorf("state names no bundle reason for its detector: %+v", off.Detector)
-	}
-	if !slices.Contains(off.RulesLeftOut, writingCheckRuleLeftOut{badRule, "the server's configuration turns it off"}) {
-		t.Errorf("state with %s off names no reason for it: %+v", badRule, off.RulesLeftOut)
+	if off := NewWritingCheck(WritingCheckConfig{}).state(); off.Enabled || off.Detector.On || off.Detector.Reason != "the check is off" {
+		t.Errorf("the state of a check that is off = %+v", off)
 	}
 }
 
@@ -1022,78 +1012,6 @@ func TestTheWritingCheckCountsPageTheirRows(t *testing.T) {
 			!strings.Contains(response.Body.String(), "INVALID_QUERY") {
 			t.Errorf("?%s: %d %s, want 400 INVALID_QUERY", query, response.Code, response.Body.String())
 		}
-	}
-}
-
-// timeoutReader is a reader whose every call times out.
-type timeoutReader struct{ calls int64 }
-
-func (r *timeoutReader) Read(context.Context, []candidates.Candidate) ([]reader.Verdict, string) {
-	r.calls++
-	return nil, reader.OutcomeTimeout
-}
-
-func (r *timeoutReader) Calls() int64 { return r.calls }
-
-// TestTheWritingCheckLetsAWriteThroughWhenTheReaderTimesOut: a reader fault never refuses. While
-// the bundle ships the detector off, a reader the server is given is never called, whatever the
-// write holds; the fault itself is the checker's own test (writingcheck.TestAReaderFaultIsTheOutcome).
-func TestTheWritingCheckLetsAWriteThroughWhenTheReaderTimesOut(t *testing.T) {
-	stub := &timeoutReader{}
-	rig := newWritingCheckRig(t, writingCheckOn(stub))
-	rig.clearEvents()
-	if response := rig.asSession(http.MethodPost, "/api/v1/issues/"+rig.fixture.issue+"/comments", map[string]any{"body": "This names the problem."}); response.Code != http.StatusCreated {
-		t.Fatalf("a write whose reader timed out: %d %s, want 201", response.Code, response.Body.String())
-	}
-	event := rig.lastEvent("reader timeout")
-	switch {
-	case !writingcheck.DetectorEnabled && (event.Outcome != "clean" || stub.calls != 0):
-		t.Errorf("detector off in the bundle: event = %+v, %d calls, want clean and no call", event, stub.calls)
-	case writingcheck.DetectorEnabled && (event.Outcome != reader.OutcomeTimeout || event.Candidates == 0 || stub.calls != 1):
-		t.Errorf("reader timeout event = %+v, %d calls", event, stub.calls)
-	}
-}
-
-// namingReader is a reader that calls every candidate it is sent vacuous.
-type namingReader struct{ calls int64 }
-
-func (r *namingReader) Read(_ context.Context, cands []candidates.Candidate) ([]reader.Verdict, string) {
-	r.calls++
-	verdicts := make([]reader.Verdict, len(cands))
-	for i, c := range cands {
-		verdicts[i] = reader.Verdict{ID: c.ID, Vacuous: true, Rewrite: "Say what the problem is."}
-	}
-	return verdicts, reader.OutcomeRead
-}
-
-func (r *namingReader) Calls() int64 { return r.calls }
-
-// TestTheWritingCheckPostsACommentTheDetectorFlagsAtOnce: a test's DetectorTestHook runs the
-// detector although the bundle ships it off, and an agent's comment holding a sentence its reader
-// calls vacuous posts at once, 201, recorded findings under the detector's rule; the state route
-// says what turned the detector on. Detector off still turns it off.
-func TestTheWritingCheckPostsACommentTheDetectorFlagsAtOnce(t *testing.T) {
-	stub := &namingReader{}
-	check := NewWritingCheck(WritingCheckConfig{Enabled: true, Detector: true, DetectorTestHook: true, Reader: stub})
-	rig := newWritingCheckRig(t, check)
-	rig.clearEvents()
-	response := rig.asSession(http.MethodPost, "/api/v1/issues/"+rig.fixture.issue+"/comments", map[string]any{"body": "This names the problem."})
-	if response.Code != http.StatusCreated {
-		t.Fatalf("a comment the reader calls vacuous: %d %s, want 201", response.Code, response.Body.String())
-	}
-	if posted := decodeBody[model.Comment](t, response); posted.Body != "This names the problem." {
-		t.Errorf("posted comment body = %q, want the text as written", posted.Body)
-	}
-	if event := rig.lastEvent("detector test hook"); event.Outcome != writingCheckFindings || stub.calls != 1 ||
-		!slices.Equal(event.Rules, []string{writingcheck.DetectorRule}) || event.Reader != "alice" {
-		t.Errorf("event = %+v, %d calls, want %s under %s after one call", event, stub.calls, writingCheckFindings, writingcheck.DetectorRule)
-	}
-	state := check.state()
-	if !state.Detector.On || (!writingcheck.DetectorEnabled && !strings.Contains(state.Detector.Reason, "a test turns on the detector")) {
-		t.Errorf("state detector = %+v, want on and the test hook named", state.Detector)
-	}
-	if off := NewWritingCheck(WritingCheckConfig{Enabled: true, Detector: false, DetectorTestHook: true, Reader: stub}).state(); off.Detector.On {
-		t.Errorf("detector off beside the test hook: state detector = %+v, want off", off.Detector)
 	}
 }
 

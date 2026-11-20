@@ -80,11 +80,13 @@ const (
 // reviewerActor is the actor the writer's frame comes from: Dispatch itself.
 var reviewerActor = model.Actor{Kind: "system", ID: "dispatch-reviewer"}
 
-// ReviewerConfig is the reviewer as cmd/dispatch configured it from DISPATCH_REVIEWER_*.
+// ReviewerConfig is the reviewer as cmd/dispatch configured it from DISPATCH_REVIEWER_*, which
+// sets every field: the defaults of the settings it leaves unset are cmd/dispatch's, from the
+// constants below and reviewer.DefaultTimeout.
 type ReviewerConfig struct {
 	// Asks, Issues, Comments and Messages are each kind's choice: ReviewOff, ReviewAfter or
-	// ReviewHold. An empty choice is ReviewOff. The choice also says whether an agent's edit of a
-	// posted text of the kind is reviewed after the save (Decision 8): any choice but ReviewOff.
+	// ReviewHold. The choice also says whether an agent's edit of a posted text of the kind is
+	// reviewed after the save (Decision 8): any choice but ReviewOff.
 	Asks, Issues, Comments, Messages string
 	// Documents is the choice for a document version an agent saves (DISPATCH_REVIEWER_DOCUMENTS):
 	// ReviewOff or ReviewAfter; a version is never held.
@@ -94,20 +96,19 @@ type ReviewerConfig struct {
 	// block in its document and keeps it out of every person's Inbox, counts and notices until
 	// the review ends (decision_blocks.go).
 	DecisionBlocks string
-	// Rules are the rule sets the reviewer applies (DISPATCH_REVIEWER_RULES); nil is
-	// DefaultReviewerRules.
+	// Rules are the rule sets the reviewer applies (DISPATCH_REVIEWER_RULES).
 	Rules []reviewer.RuleSet
-	// Model is the reviewer's model group, with its pacer's share; the draft route calls it
-	// whatever the four choices say.
+	// Model is the reviewer's model group, with its pacer's share and its calls' time bound; the
+	// draft route calls it whatever the four choices say.
 	Model reviewer.Model
 	// Timeout bounds a whole review, the record's read and every model call
-	// (DISPATCH_REVIEWER_TIMEOUT); zero is reviewer.DefaultTimeout.
+	// (DISPATCH_REVIEWER_TIMEOUT).
 	Timeout time.Duration
 	// WriterWindow is how long the writer session has to act on a held text's findings
-	// (DISPATCH_REVIEWER_WRITER_WINDOW); zero is five minutes.
+	// (DISPATCH_REVIEWER_WRITER_WINDOW).
 	WriterWindow time.Duration
 	// Unedited is what posts when the writer does not act: UneditedRewrite or
-	// UneditedAsWritten; empty is UneditedRewrite.
+	// UneditedAsWritten.
 	Unedited string
 }
 
@@ -117,26 +118,14 @@ type Reviewer struct {
 	config ReviewerConfig
 }
 
-// defaultWriterWindow is ReviewerConfig.WriterWindow left zero.
-const defaultWriterWindow = 5 * time.Minute
+// DefaultWriterWindow is DISPATCH_REVIEWER_WRITER_WINDOW unset.
+const DefaultWriterWindow = 5 * time.Minute
 
 // DefaultReviewerRules are the rule sets DISPATCH_REVIEWER_RULES names unset.
 var DefaultReviewerRules = []reviewer.RuleSet{reviewer.RuleNoslop, reviewer.RulePhrases, reviewer.RuleReaderWords, reviewer.RuleAskParts}
 
-// NewReviewer is the reviewer cfg describes, its zero fields given their defaults.
+// NewReviewer is the reviewer cfg describes, every field of which its caller set.
 func NewReviewer(cfg ReviewerConfig) *Reviewer {
-	for _, choice := range []*string{&cfg.Asks, &cfg.Issues, &cfg.Comments, &cfg.Messages, &cfg.Documents, &cfg.DecisionBlocks} {
-		*choice = cmp.Or(*choice, ReviewOff)
-	}
-	cfg.Timeout = cmp.Or(cfg.Timeout, reviewer.DefaultTimeout)
-	cfg.WriterWindow = cmp.Or(cfg.WriterWindow, defaultWriterWindow)
-	cfg.Unedited = cmp.Or(cfg.Unedited, UneditedRewrite)
-	if cfg.Rules == nil {
-		cfg.Rules = DefaultReviewerRules
-	}
-	if cfg.Model.Timeout == 0 {
-		cfg.Model.Timeout = cfg.Timeout
-	}
 	return &Reviewer{config: cfg}
 }
 
@@ -226,7 +215,8 @@ type postedReview struct {
 func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, write reviewedWrite) (*postedReview, bool) {
 	rv := s.deps.Reviewer
 	if !rv.reviewsAny() || s.deps.Store == nil {
-		return nil, s.writingCheck(w, r, actor, input)
+		s.writingCheck(r, actor, input)
+		return nil, true
 	}
 	ctx := r.Context()
 	parent, err := s.heldParentOf(ctx, write.names)
@@ -254,7 +244,8 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 		reviews = reader != ""
 	}
 	if parent == nil && !reviews {
-		return nil, s.writingCheck(w, r, actor, input)
+		s.writingCheck(r, actor, input)
+		return nil, true
 	}
 	if parent != nil && project == "" {
 		project = parent.project
@@ -279,7 +270,7 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 		// A write that waits on a held text and that the reviewer does not read before it posts
 		// (a person's typed write among them): the writing check reads it now, as it reads any
 		// write, and it posts right after the text it waits on.
-		s.writingCheck(w, r, actor, input)
+		s.writingCheck(r, actor, input)
 	}
 	s.holdWrite(w, r, actor, write, heldWriteOf{
 		route: method + " " + route, reader: reader, project: project, parent: parent, reviewed: holds, event: event,
@@ -336,11 +327,15 @@ func (s *server) projectOfText(ctx context.Context, subject reviewer.Subject) st
 
 // reviewPosted starts review, the review of a text the write posted under id, in the background:
 // a nil review, which every write the reviewer does not read after its post gets, starts nothing.
-func (s *server) reviewPosted(_ context.Context, review *postedReview, id string) {
+// Its row records the id of the write ctx is the request of (writeIDOf), which the writing check's
+// row of that write records too, so the counts count the text once; a review whose row names its
+// write already keeps it.
+func (s *server) reviewPosted(ctx context.Context, review *postedReview, id string) {
 	if review == nil {
 		return
 	}
 	review.subject.ID = id
+	review.event.WriteID = cmp.Or(review.event.WriteID, writeIDOf(ctx))
 	s.detached.goDetached(func() { s.runPostedReview(s.lifetime, *review, id) })
 }
 
@@ -604,12 +599,12 @@ func (s *server) sendSystemFrame(ctx context.Context, frame systemFrame) error {
 }
 
 // recordHeld records one decision about the held text row in writing_check_events, under the
-// route, the actor, the reader and the project of the write that held it.
+// route, the actor, the reader and the project of the write that held it, and its id, the write's.
 func (s *server) recordHeld(ctx context.Context, row heldRow, outcome string, rules []string, detail string) {
 	method, route, _ := strings.Cut(row.route, " ")
 	event := store.WritingCheckEvent{
 		Route: route, Method: method, ActorKind: row.actor.Kind, ActorID: row.actor.ID, Outcome: outcome,
-		Rules: rules, Detail: detail, Reader: row.reader, Project: row.project,
+		Rules: rules, Detail: detail, Reader: row.reader, Project: row.project, WriteID: row.id,
 	}
 	if row.actor.Act != nil {
 		event.ActSession, event.TokenID = row.actor.Act.Session, row.actor.Act.TokenID

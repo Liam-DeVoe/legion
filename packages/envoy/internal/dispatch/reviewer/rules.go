@@ -135,21 +135,29 @@ type prepared struct {
 	calls         []Call
 }
 
+// systemPrompt is the data of the system prompt named prompt for a text of kind by rules, and the
+// rule sets of rules that apply to it: answer says the call reads the writer's answer, and define
+// that it defines words.
+func systemPrompt(prompt string, rules []RuleSet, kind Kind, answer, define bool) (promptData, []RuleSet) {
+	on := applies(rules, kind, define)
+	data := promptData{
+		Kind: kind.spoken(), On: map[string]bool{},
+		Ask: kind.asks(), Block: kind == KindDecisionBlock, Comment: kind == KindComment, Issue: kind == KindIssue,
+		Answer: answer, Define: define, Review: prompt == "review",
+		Noslop: noslopText, Phrases: phrasesText,
+	}
+	for _, set := range on {
+		data.On[string(set)] = true
+	}
+	return data, on
+}
+
 // prepare builds the call named prompt about record: the rule sets of rules that apply, the
 // structure rules' and the detector's findings where they are on (the detector's own model call
 // among the calls), and the user message with the parts of x the call reads.
 func prepare(ctx context.Context, m Model, prompt string, rules []RuleSet, record Record, x extra) (prepared, error) {
-	kind := record.Text.Kind
-	p := prepared{on: applies(rules, kind, x.words != nil)}
-	data := promptData{
-		Kind: kind.spoken(), On: map[string]bool{},
-		Ask: kind.asks(), Block: kind == KindDecisionBlock, Comment: kind == KindComment, Issue: kind == KindIssue,
-		Answer: x.answer != "", Define: x.words != nil, Review: prompt == "review",
-		Noslop: noslopText, Phrases: phrasesText,
-	}
-	for _, set := range p.on {
-		data.On[string(set)] = true
-	}
+	data, on := systemPrompt(prompt, rules, record.Text.Kind, x.answer != "", x.words != nil)
+	p := prepared{on: on}
 	x.readerWords = data.On[string(RuleReaderWords)]
 	x.structureOn, x.detectorOn = data.On[string(RuleStructure)], data.On[string(RuleDetector)]
 	if x.structureOn || x.detectorOn {
@@ -162,6 +170,32 @@ func prepare(ctx context.Context, m Model, prompt string, rules []RuleSet, recor
 	}
 	p.input = record.input(x)
 	return p, nil
+}
+
+// LeastSystemPromptRunes is how many characters the shortest system prompt has that a call by
+// rules sends: a review of a text some rule set of rules applies to, a rewrite or a definition, of
+// any kind of text and with no answer of the writer's. Every such call is charged at least
+// modelpace.Charge of it and the call's reply bound, so cmd/dispatch refuses a model group's
+// minute's quota that is not more than that.
+func LeastSystemPromptRunes(rules []RuleSet) (int, error) {
+	least := -1
+	for _, kind := range []Kind{KindAsk, KindIssue, KindComment, KindMessage, KindDocument, KindDecisionBlock} {
+		for _, prompt := range []string{"review", "rewrite", "define"} {
+			data, on := systemPrompt(prompt, rules, kind, false, prompt == "define")
+			if prompt == "review" && len(on) == 0 {
+				// Review makes no call for a text no rule set applies to.
+				continue
+			}
+			system, err := render(prompt, data)
+			if err != nil {
+				return 0, err
+			}
+			if n := utf8.RuneCountInString(system); least < 0 || n < least {
+				least = n
+			}
+		}
+	}
+	return least, nil
 }
 
 // runChecks runs writingcheck over text: its structure rules where structure is on, and its
@@ -231,7 +265,7 @@ func (p *pacedReader) Read(ctx context.Context, cands []candidates.Candidate) ([
 		for _, cand := range cands {
 			chars += utf8.RuneCountInString(cand.Sentence.Text) + utf8.RuneCountInString(strings.Join(cand.Before, " ")) + utf8.RuneCountInString(strings.Join(cand.After, " "))
 		}
-		if err := p.pace.Wait(ctx, chars/charsPerToken+reader.DefaultMaxOutputTokens); err != nil {
+		if err := p.pace.WaitFor(ctx, chars, reader.DefaultMaxOutputTokens); err != nil {
 			// The pacer refuses a call it cannot serve in the time left: the call's time ran
 			// out before it was made (modelpace.ErrPastDeadline is a deadline).
 			p.call.Fault = agentloop.FaultTime

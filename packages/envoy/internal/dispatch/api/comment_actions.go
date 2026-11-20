@@ -196,9 +196,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		}
 		carried = &refs.CarriedEdit{BaseRevision: *input.BaseRevision, Blocks: input.Blocks}
 	}
-	if !s.writingCheck(w, r, actor, input) {
-		return
-	}
+	s.writingCheck(r, actor, input)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

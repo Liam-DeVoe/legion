@@ -222,8 +222,8 @@ func newAnswerer(cfg answererConfig, pacer *modelpace.Pacer) (*going.Answerer, e
 // pacer with: the deployment as the pacer keys it (pacedDeployment), and
 // DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE as the ceiling on its share and as the quota it states
 // for that deployment. The endpoint form names no quota, so its share states none. The boot
-// weighs this same share against the reply bound of a model group on the answerer's deployment
-// (refuseQuotaUnderReplyBound).
+// weighs this same share against the least a call of a model group on the answerer's deployment
+// is charged (refuseQuotaNoCallFits).
 func (cfg answererConfig) share() (modelpace.Share, error) {
 	deployment, err := pacedDeployment(cfg.Place, cfg.Endpoint, cfg.Model)
 	if err != nil {

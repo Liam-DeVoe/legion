@@ -20,7 +20,7 @@ import (
 func newReviewer(cfg writingSettings, pacer *modelpace.Pacer) (*api.Reviewer, error) {
 	group := cfg.ReviewerModel
 	if group.Kind == "" {
-		slog.Info("dispatch: the reviewer reads no text: its model group is unset", "setting", modelGroups[0].prefix+"KIND")
+		slog.Info("dispatch: the reviewer reads no text: its model group is unset", "setting", reviewerModelSpec.prefix+"KIND")
 		return nil, nil
 	}
 	model, err := group.agentloopModel()
@@ -31,10 +31,6 @@ func newReviewer(cfg writingSettings, pacer *modelpace.Pacer) (*api.Reviewer, er
 	if err != nil {
 		return nil, fmt.Errorf("the reviewer's model: %w", err)
 	}
-	rules := make([]reviewer.RuleSet, len(cfg.ReviewerRules))
-	for i, rule := range cfg.ReviewerRules {
-		rules[i] = reviewer.RuleSet(rule)
-	}
 	slog.Info("dispatch: the reviewer reads agents' texts to people", "kind", group.Kind, "deployment", group.Deployment,
 		"stand_in", group.StandIn, "asks", cfg.ReviewAsks, "issues", cfg.ReviewIssues, "comments", cfg.ReviewComments,
 		"messages", cfg.ReviewMessages, "documents", cfg.ReviewDocuments, "decision_blocks", cfg.ReviewDecisionBlocks,
@@ -42,7 +38,7 @@ func newReviewer(cfg writingSettings, pacer *modelpace.Pacer) (*api.Reviewer, er
 	return api.NewReviewer(api.ReviewerConfig{
 		Asks: cfg.ReviewAsks, Issues: cfg.ReviewIssues, Comments: cfg.ReviewComments, Messages: cfg.ReviewMessages,
 		Documents: cfg.ReviewDocuments, DecisionBlocks: cfg.ReviewDecisionBlocks,
-		Rules:        rules,
+		Rules:        cfg.ReviewerRules,
 		Model:        reviewer.Model{Model: model, Pace: pace, Timeout: cfg.ReviewerTimeout},
 		Timeout:      cfg.ReviewerTimeout,
 		WriterWindow: cfg.ReviewerWriterWindow,
@@ -59,7 +55,7 @@ func newReviewer(cfg writingSettings, pacer *modelpace.Pacer) (*api.Reviewer, er
 func newRewriteDefine(cfg writingSettings, pacer *modelpace.Pacer) (*api.RewriteDefine, error) {
 	group := cfg.RewriteDefineModel
 	if group.Kind == "" {
-		slog.Info("dispatch: Rewrite and Define are off: their model group is unset", "setting", modelGroups[1].prefix+"KIND")
+		slog.Info("dispatch: Rewrite and Define are off: their model group is unset", "setting", rewriteDefineModelSpec.prefix+"KIND")
 		return nil, nil
 	}
 	model, err := group.agentloopModel()
@@ -70,15 +66,11 @@ func newRewriteDefine(cfg writingSettings, pacer *modelpace.Pacer) (*api.Rewrite
 	if err != nil {
 		return nil, fmt.Errorf("Rewrite and Define's model: %w", err)
 	}
-	rules := make([]reviewer.RuleSet, len(cfg.ReviewerRules))
-	for i, rule := range cfg.ReviewerRules {
-		rules[i] = reviewer.RuleSet(rule)
-	}
 	slog.Info("dispatch: Rewrite and Define are on", "kind", group.Kind, "deployment", group.Deployment,
 		"stand_in", group.StandIn, "rules", cfg.ReviewerRules)
 	return api.NewRewriteDefine(api.RewriteDefineConfig{
 		Model: reviewer.Model{Model: model, Pace: pace},
-		Rules: rules,
+		Rules: cfg.ReviewerRules,
 	}), nil
 }
 

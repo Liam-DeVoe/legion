@@ -172,7 +172,7 @@ func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, as
 	}); err != nil {
 		return nil, err
 	}
-	event.Outcome = reviewHeld
+	event.Outcome, event.WriteID = reviewHeld, ask.ID
 	return func() {
 		s.recordWritingCheck(s.postContext(), event)
 		s.startReview(ask.ID)

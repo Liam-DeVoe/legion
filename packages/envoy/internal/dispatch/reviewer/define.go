@@ -60,8 +60,10 @@ func Define(ctx context.Context, m Model, rules []RuleSet, record Record, words 
 		return defined, err
 	}
 	for i := range reply.Definitions {
-		if reply.Definitions[i].Links == nil {
-			reply.Definitions[i].Links = []string{}
+		definition := &reply.Definitions[i]
+		definition.Words, definition.Meaning = unembedded(definition.Words), unembedded(definition.Meaning)
+		if definition.Links == nil {
+			definition.Links = []string{}
 		}
 	}
 	defined.Definitions = reply.Definitions

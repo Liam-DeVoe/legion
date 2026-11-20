@@ -2,14 +2,17 @@
 // token limiter per deployment, which every caller of that deployment shares, so the process
 // never spends more of a deployment's quota a minute than the deployment has, however many of its
 // parts call it. Each caller's own tokens-per-minute setting is a ceiling on its share inside
-// that limiter: one caller cannot take the whole quota from the others.
+// that limiter: a caller whose ceiling is under the deployment's rate leaves the rest of the rate
+// to the others, and a caller whose ceiling is the rate can take all of it.
 //
 // A deployment's rate is, in order: its quota from DISPATCH_MODEL_DEPLOYMENT_QUOTAS (Config.Quotas),
 // else the quota a caller's own setting states for it (Share.StatesQuota, the answerer's
-// DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE), else the largest ceiling any caller sets for it. Each
-// limiter, the deployment's and each caller's, holds a minute's tokens as its burst, as
+// DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE), else the largest ceiling any caller sets for it. So
+// where no quota is set, the caller with the largest ceiling can hold back every other caller of
+// its deployment; a quota above each caller's ceiling leaves each of them a part. Each limiter, the
+// deployment's and each caller's, holds a minute's tokens as its burst, as
 // embed.RateLimitedEmbedder's quota does, and is charged with a call's estimated tokens before
-// the call is made.
+// the call is made (Charge).
 package modelpace
 
 import (
@@ -26,6 +29,18 @@ import (
 // ever: a call that costs more than a minute's whole quota. It wraps context.DeadlineExceeded,
 // because that is what it is to the caller - its deadline reached with no call made.
 var ErrPastDeadline = fmt.Errorf("modelpace: the quota cannot pace this call inside the time left: %w", context.DeadlineExceeded)
+
+// CharsPerToken is how many characters a token is taken to hold when a call is charged before it
+// is made (Charge): a rough estimate for English prose, which pacing a shared quota needs.
+const CharsPerToken = 4
+
+// Charge is what a call is charged before it is made: its prompt's estimated tokens, promptRunes
+// characters at CharsPerToken, and replyBound, the most tokens its reply may hold, whole, since
+// the reply's length is not known before it comes. Every caller charges its calls so (WaitFor),
+// and the boot (cmd/dispatch) refuses with it a quota that no call of a caller could fit.
+func Charge(promptRunes, replyBound int) int {
+	return promptRunes/CharsPerToken + replyBound
+}
 
 // Deployment names one model deployment, which is one limiter: the protocol its endpoint speaks
 // (the caller's own kind, such as azure or anthropic), the host of that endpoint, and the
@@ -178,6 +193,12 @@ func (c *Caller) Wait(ctx context.Context, tokens int) error {
 		return err
 	}
 	return nil
+}
+
+// WaitFor is Wait charged with Charge(promptRunes, replyBound): a call of promptRunes characters
+// of prompt whose reply may hold replyBound tokens.
+func (c *Caller) WaitFor(ctx context.Context, promptRunes, replyBound int) error {
+	return c.Wait(ctx, Charge(promptRunes, replyBound))
 }
 
 // newLimiter is a limiter of tokensPerMinute holding a minute's tokens, or one that serves every

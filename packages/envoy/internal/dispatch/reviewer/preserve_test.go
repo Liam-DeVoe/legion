@@ -11,14 +11,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// pictureAsk is an ask whose question holds a picture line and links. Its options carry no id, as
-// the ask's row holds them (AskSubject).
+// pictureAsk is an ask whose question holds a picture line and links, and one of whose options'
+// descriptions holds a link. Its options carry no id, as the ask's row holds them (AskSubject).
 func pictureAsk() Text {
 	return Text{
 		Kind: KindAsk,
 		Body: "Finding from tester\nThe chart shows the wait. See https://ci.test/run/7 and [the log](https://ci.test/log/7).\n" +
 			"![the wait](https://ci.test/chart.png)\nRef: dispatch://PRJ-1/comment/c1",
-		Options: []model.AskOption{{Label: "Ship"}, {Label: "Hold", Description: "Wait"}},
+		Options: []model.AskOption{{Label: "Ship"}, {Label: "Hold", Description: "Wait for [the run](https://ci.test/run/8)."}},
 	}
 }
 
@@ -59,6 +59,11 @@ func TestEachBreakOfWhatARewriteKeepsIsNotApplied(t *testing.T) {
 			`the rewrite drops the link "https://ci.test/run/7"`},
 		{"a Markdown link's address", edit(func(r *Text) { r.Body = strings.Replace(r.Body, "[the log](https://ci.test/log/7)", "the log", 1) }), KeepLinks,
 			`the rewrite drops the link "https://ci.test/log/7"`},
+		{"an option description's link", edit(func(r *Text) { r.Options[1].Description = "Wait for the run." }), KeepLinks,
+			`the rewrite drops the link "https://ci.test/run/8" of option 2's description`},
+		{"an option description's link moved to another option", edit(func(r *Text) {
+			r.Options[0].Description, r.Options[1].Description = "See [the run](https://ci.test/run/8).", "Wait."
+		}), KeepLinks, `the rewrite drops the link "https://ci.test/run/8" of option 2's description`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := Preserve(Record{Text: ask}, "", test.rewrite)
@@ -73,7 +78,7 @@ func TestEachBreakOfWhatARewriteKeepsIsNotApplied(t *testing.T) {
 
 	kept := edit(func(r *Text) {
 		r.Body = strings.Replace(r.Body, "The chart shows the wait.", "The test waits 40 s for the store.", 1)
-		r.Options[1].Description = "Wait until the store answers in under 1 s"
+		r.Options[1].Description = "Wait until the store answers in under 1 s, as [the run](https://ci.test/run/8) shows"
 	})
 	if got := Preserve(Record{Text: ask}, "", kept); got != nil {
 		t.Errorf("a rewrite that keeps every rule: %v", got)
@@ -148,7 +153,7 @@ func TestARewriteOfFewerThanAThirdOfTheWordsIsNotApplied(t *testing.T) {
 	ask := pictureAsk()
 	stub := ask
 	stub.Body, stub.Options = "placeholder", nil
-	if got := Preserve(Record{Text: ask}, "", stub); got == nil || got.Rule != KeepMostWords || got.Reason != "the rewrite has 1 word, fewer than a third of the text's 20" {
+	if got := Preserve(Record{Text: ask}, "", stub); got == nil || got.Rule != KeepMostWords || got.Reason != "the rewrite has 1 word, fewer than a third of the text's 23" {
 		t.Errorf("Preserve of a stub ask = %+v", got)
 	}
 	// An issue counts its title with its spec.

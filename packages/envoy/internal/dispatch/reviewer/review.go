@@ -78,6 +78,7 @@ func Review(ctx context.Context, m Model, rules []RuleSet, record Record) (Revie
 	}
 	text := form(readerFields(record.Text))
 	for _, finding := range reply.Findings {
+		finding.Quote, finding.Why, finding.Fix = unembedded(finding.Quote), unembedded(finding.Why), unembedded(finding.Fix)
 		if quote := form(finding.Quote); quote == "" || !strings.Contains(text, quote) {
 			reviewed.Dropped = append(reviewed.Dropped, DroppedFinding{RuleSet: finding.RuleSet, Quote: finding.Quote})
 			continue
@@ -119,8 +120,10 @@ func askQuoteForm(text string) string {
 	return strings.Join(strings.Fields(optionSyntax.ReplaceAllString(quoteForm(text), " ")), " ")
 }
 
-// ofKind is a reply's text as a text of kind: its kind set, and only the fields the kind has.
+// ofKind is a reply's text as a text of kind: its kind set, only the fields the kind has, and each
+// field's words as the text holds them (unembedded).
 func ofKind(text Text, kind Kind) Text {
+	text = text.unembedded()
 	text.Kind = kind
 	if kind != KindIssue {
 		text.Title = ""

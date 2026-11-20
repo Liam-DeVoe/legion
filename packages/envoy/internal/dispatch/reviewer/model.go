@@ -22,9 +22,6 @@ const (
 	// spends its reasoning against this bound before it writes a review's findings and a rewrite.
 	// A caller that rewrites longer texts sets Model.OutputTokens.
 	DefaultOutputTokens = 32768
-	// charsPerToken is how many characters a token is taken to hold when a call is charged to
-	// the pacer before it is made.
-	charsPerToken = 4
 	// callTries is the most tries one call makes: a reply that is not the object its schema
 	// names, or one its caller cannot use, is asked again up to twice more.
 	callTries = 3
@@ -163,8 +160,7 @@ func call[T any](ctx context.Context, m Model, purpose, system, input string, sc
 func (m Model) try(ctx context.Context, c *Call, system, input string, schema json.RawMessage) (value json.RawMessage, made bool, err error) {
 	output := cmp.Or(m.OutputTokens, DefaultOutputTokens)
 	if m.Pace != nil {
-		tokens := (utf8.RuneCountInString(system)+utf8.RuneCountInString(input))/charsPerToken + output
-		if err := m.Pace.Wait(ctx, tokens); err != nil {
+		if err := m.Pace.WaitFor(ctx, utf8.RuneCountInString(system)+utf8.RuneCountInString(input), output); err != nil {
 			return nil, false, &ModelError{Purpose: c.Purpose, Err: fmt.Errorf("pace the call: %w", err)}
 		}
 	}

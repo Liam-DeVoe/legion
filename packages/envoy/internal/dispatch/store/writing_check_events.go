@@ -6,9 +6,16 @@ import (
 	"time"
 )
 
-// WritingCheckRetention is how long a writing_check_events row is kept. The daily sweep
-// (SweepWritingCheckEvents) deletes every row older than this.
+// WritingCheckRetention is how long a writing_check_events row R8's counts do not read is kept.
+// The daily sweep (SweepWritingCheckEvents) deletes every such row older than this.
 const WritingCheckRetention = 90 * 24 * time.Hour
+
+// countedOutcomes are the outcomes whose rows R8's counts read for their rows of each day,
+// project and person (countWritingCheckRows). The sweep keeps these rows whatever their age, so
+// the counts of a day past WritingCheckRetention are whole.
+var countedOutcomes = []string{
+	"rewrite_requested", "held", "rewrite_posted", "passed", "posted_unreviewed", "findings", "posted_as_written", "reviewed_after",
+}
 
 // WritingCheckEvent is one row of writing_check_events: what the writing check, or the reviewer,
 // decided for one write. Every string the write did not carry is "", stored as null; ReaderMS is
@@ -33,6 +40,10 @@ type WritingCheckEvent struct {
 	// Project is the project of the text's issue or document, "" where the writer did not record
 	// it; the counts give each row to its project.
 	Project string
+	// WriteID is the id of the write the row decides, which each row of a write that more than
+	// one row records names: a held text's id, else an id the server made for the write's request;
+	// "" for a row that is its write's only one. The counts count each write's text once by it.
+	WriteID string
 }
 
 // InsertWritingCheckEvent records one decision of the writing check. It runs in a transaction of
@@ -58,10 +69,10 @@ func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckE
 	if _, err := tx.Exec(ctx, `
 		insert into writing_check_events (
 			route, method, actor_kind, actor_id, act_session, token_id, outcome,
-			rules, fields, candidates, reader_ms, detail, reader, project
-		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, $10, $11, nullif($12, ''), nullif($13, ''), nullif($14, ''))
+			rules, fields, candidates, reader_ms, detail, reader, project, write_id
+		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, $10, $11, nullif($12, ''), nullif($13, ''), nullif($14, ''), nullif($15, ''))
 	`, event.Route, event.Method, event.ActorKind, event.ActorID, event.ActSession, event.TokenID, event.Outcome,
-		rules, fields, event.Candidates, event.ReaderMS, event.Detail, event.Reader, event.Project); err != nil {
+		rules, fields, event.Candidates, event.ReaderMS, event.Detail, event.Reader, event.Project, event.WriteID); err != nil {
 		return fmt.Errorf("record writing check event: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -71,10 +82,11 @@ func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckE
 }
 
 // SweepWritingCheckEvents deletes every writing_check_events row older than
-// WritingCheckRetention, on the created_at index, and answers how many it deleted.
+// WritingCheckRetention but those of the outcomes R8's counts read (countedOutcomes), on the
+// created_at index, and answers how many it deleted.
 func (s *Store) SweepWritingCheckEvents(ctx context.Context) (int64, error) {
-	tag, err := s.Pool.Exec(ctx, `delete from writing_check_events where created_at < now() - $1::interval`,
-		fmt.Sprintf("%d seconds", int64(WritingCheckRetention/time.Second)))
+	tag, err := s.Pool.Exec(ctx, `delete from writing_check_events where created_at < now() - $1::interval and outcome <> all($2)`,
+		fmt.Sprintf("%d seconds", int64(WritingCheckRetention/time.Second)), countedOutcomes)
 	if err != nil {
 		return 0, fmt.Errorf("sweep writing check events: %w", err)
 	}
@@ -136,8 +148,12 @@ type WritingCheckRow struct {
 // countWritingCheckRows is WritingCheckRow's counts, each from the rows of its own source over the
 // days $1 to $2 (dates) and the times $3 to $4 (their first midnight and the midnight after the
 // last), summed by day, project and person. An ask answered and an ask commented on are a person's
-// own act: an actor of kind user with no session acting for them, as a record's person is. It
-// orders nothing: CountWritingCheck pages it in day, project and person order.
+// own act: an actor of kind user with no session acting for them, as a record's person is. A text
+// posted over a finding is counted once however many rows record a finding of it - the writing
+// check's findings and the reviewer's own, which name one write (WritingCheckEvent.WriteID) - on
+// the day, project and person of the first of its rows that names a project. The outcomes it reads
+// of writing_check_events are countedOutcomes. It orders nothing: CountWritingCheck pages it in
+// day, project and person order.
 const countWritingCheckRows = `
 select day::text, project, person,
 	sum(word_questions)::int, sum(texts)::int, sum(texts_unread)::int, sum(asks_answered)::int,
@@ -182,11 +198,21 @@ from (
 		count(*) filter (where outcome = 'rewrite_posted'),
 		count(*) filter (where outcome = 'passed'),
 		count(*) filter (where outcome = 'posted_unreviewed'),
-		count(*) filter (where outcome in ('findings', 'posted_as_written') or outcome = 'reviewed_after')
+		0
 	from writing_check_events
 	where created_at >= $3 and created_at < $4
-		and (outcome in ('rewrite_requested', 'held', 'rewrite_posted', 'passed', 'posted_unreviewed',
-			'findings', 'posted_as_written') or (outcome = 'reviewed_after' and cardinality(rules) > 0))
+		and outcome in ('rewrite_requested', 'held', 'rewrite_posted', 'passed', 'posted_unreviewed')
+	group by 1, 2, 3
+	union all
+	select day, project, person, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, count(*)
+	from (
+		select distinct on (coalesce(write_id, id::text))
+			(created_at at time zone 'UTC')::date as day, coalesce(project, '') as project, coalesce(reader, '') as person
+		from writing_check_events
+		where created_at >= $3 and created_at < $4
+			and (outcome in ('findings', 'posted_as_written') or (outcome = 'reviewed_after' and cardinality(rules) > 0))
+		order by coalesce(write_id, id::text), project is null, created_at, id
+	) over_finding
 	group by 1, 2, 3
 ) counted
 group by 1, 2, 3`

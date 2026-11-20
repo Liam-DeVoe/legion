@@ -525,7 +525,7 @@ func TestAskAskedOf(t *testing.T) {
 			t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 			return documentService
 		}, func(input *DepsInput) {
-			input.Reviewer = NewReviewer(ReviewerConfig{DecisionBlocks: ReviewHold, Model: reviewerModel(reviewStandIn(t).URL)})
+			input.Reviewer = testReviewer(ReviewerConfig{DecisionBlocks: ReviewHold, Model: reviewerModel(reviewStandIn(t).URL)})
 		})
 		issue := createInteractionIssue(t, handler, "EVENTS", "Every ask event", "The quick brown fox")
 

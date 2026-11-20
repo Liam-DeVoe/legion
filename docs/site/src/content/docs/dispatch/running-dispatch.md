@@ -367,15 +367,18 @@ Each part that calls a model has a model group of its own: `DISPATCH_REVIEWER_MO
 `DISPATCH_REWRITE_DEFINE_MODEL_*` and `DISPATCH_WORD_RECORDS_MODEL_*`. Each group takes `_KIND`
 (`azure` or `anthropic`), `_ENDPOINT`, `_DEPLOYMENT` and `_TOKENS_PER_MINUTE`, and `_API_VERSION`
 and `_SCOPE` for `azure` or `_KEY_FILE` for `anthropic`. An `azure` group signs in with the same
-keyless Azure settings as the embedder. No group is set by default. A group set in part, and a
-reviewer setting other than `off` with no reviewer's group, stop Dispatch from starting, naming
-the setting.
+keyless Azure settings as the embedder. An `anthropic` group's `_ENDPOINT` is https, or http to a
+host inside the cluster (localhost, a loopback address, or a Service name ending `.svc` or
+`.cluster.local`), since each call carries the group's key. No group is set by default. A group
+set in part, an http endpoint outside the cluster, and a reviewer setting other than `off` with no
+reviewer's group, stop Dispatch from starting, naming the setting.
 
 Every caller of one deployment shares one quota, which `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` sets as
-`name=tokens_per_minute,…`. Each call holds its whole reply bound before it is sent: 32,768
-tokens for the reviewer and for Rewrite and Define, and 1,024 for the records job. Dispatch does
-not start when a group's `_TOKENS_PER_MINUTE`, or its deployment's quota, is under that bound, so
-set more: a group makes at most about ceiling / (bound + prompt) calls a minute.
+`name=tokens_per_minute,…`. Each call holds its prompt's estimated tokens and its whole reply
+bound before it is sent: 32,768 tokens for the reviewer and for Rewrite and Define, and 1,024 for
+the records job. Dispatch does not start when a group's `_TOKENS_PER_MINUTE`, or its deployment's
+quota, is not more than the least a call is charged, that bound and the group's shortest system
+prompt, so set well more: a group makes at most about ceiling / (bound + prompt) calls a minute.
 
 `GET /api/v1/writing-check/counts` counts, for each day, project and person, what the check and
 the reviewer decided, the questions people asked about words, and their Rewrite and Define uses.

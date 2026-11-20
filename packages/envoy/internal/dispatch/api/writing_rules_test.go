@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -92,6 +93,51 @@ func TestTheWritingRulesAnswerTheSkillForTheWritesReader(t *testing.T) {
 	long := strings.Repeat("a", int(maxJSONRequestBytes)-64)
 	if full := rules("POST /api/v1/issues/"+key+"/comments", map[string]any{"body": long}); full.Reader != *issue.Assignee {
 		t.Fatalf("a comment at the JSON limit: reader %q, want %q", full.Reader, *issue.Assignee)
+	}
+}
+
+// A person at a browser reads no other person's recorded words in the written rules, as
+// GET /api/v1/readers/{login}/words serves them none (Decision 14 of INFRA-3231's plan): the rules
+// bob asks for a comment alice reads name alice as its reader and leave her words out, while the
+// rules alice asks for, and those an agent's token asks for, show them.
+func TestTheWrittenRulesShowAPersonAtABrowserNoOtherPersonsWords(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{writingRules: WritingRulesConfig{
+		Refusal: true, Extra: []string{WritingRulesReaderWords},
+	}})
+	key := createTestIssue(t, handler, "RWD", "The reader's words")
+	if _, err := database.Pool.Exec(t.Context(), `
+		insert into word_questions (source, text_key, event_id, person, written_at, day, verdict, words, state, model)
+		values ('event', 'event:9999001', 9999001, 'alice', now() - interval '1 day', current_date - 1,
+			'asks_word_meaning', '{store}', 'done', 'stand-in')`); err != nil {
+		t.Fatalf("record alice's question about a store: %v", err)
+	}
+	route := "POST /api/v1/issues/" + key + "/comments"
+	rules := func(who string, answer *httptest.ResponseRecorder) writingRulesResponse {
+		t.Helper()
+		if answer.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", who, answer.Code, answer.Body.String())
+		}
+		got := decodeBody[writingRulesResponse](t, answer)
+		if got.Reader != "alice" {
+			t.Fatalf("%s: reader %q, want alice", who, got.Reader)
+		}
+		return got
+	}
+	for who, answer := range map[string]*httptest.ResponseRecorder{
+		"alice at a browser": dispatchRequest(t, handler, http.MethodPost, "/api/v1/writing-rules",
+			map[string]any{"route": route, "body": map[string]any{"body": "The logs go to disk."}}, "alice"),
+		"an agent's token": agentRequest(t, handler, http.MethodPost, "/api/v1/writing-rules", map[string]any{
+			"route": route, "body": map[string]any{"body": "The logs go to disk.", "actor": map[string]any{"kind": "session", "id": "s-writer"}},
+		}, "agent-token"),
+	} {
+		if got := rules(who, answer); !strings.Contains(got.Text, "## Words that this reader asked about") || !strings.Contains(got.Text, "\n- store\n") {
+			t.Errorf("%s: the rules for alice's write lack her word store", who)
+		}
+	}
+	bob := rules("bob at a browser", dispatchRequest(t, handler, http.MethodPost, "/api/v1/writing-rules",
+		map[string]any{"route": route, "body": map[string]any{"body": "The logs go to disk."}}, "bob"))
+	if bob.Text != plainwords.Rules {
+		t.Errorf("bob at a browser reads alice's words in the rules for her write: %q", strings.TrimPrefix(bob.Text, plainwords.Rules))
 	}
 }
 

@@ -154,7 +154,7 @@ func TestATryAgainThatCannotStartInsideTheBoundIsNotMade(t *testing.T) {
 	}
 	// A quota of one and a half tries a minute serves the first try at once, and the second only
 	// about 20 s later, well past the call's bound.
-	tokens := (utf8.RuneCountInString(p.system)+utf8.RuneCountInString(p.input))/charsPerToken + m.OutputTokens
+	tokens := modelpace.Charge(utf8.RuneCountInString(p.system)+utf8.RuneCountInString(p.input), m.OutputTokens)
 	m.Pace = modelpace.New(modelpace.Config{Quotas: map[string]int{"reviewer": tokens + tokens/2}}).Join(modelpace.Share{
 		Deployment: modelpace.Deployment{Kind: "azure", Host: "stand-in", Name: "reviewer"},
 	})

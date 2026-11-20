@@ -1,103 +1,15 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"os"
-	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/agentloop"
-	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
-	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 )
-
-// standInToken is the credential every call to the stand-in model presents (DISPATCH_TEST_MODEL_URL),
-// which reads none.
-const standInToken = "stand-in"
-
-// agentloopModel is the model a set group calls through agentloop: an azure group's chat
-// deployment (agentloop.OpenAIChat), its api-version on every request and a token of the shared
-// Azure sign-in at its scope; an anthropic group's Messages service (agentloop.AnthropicMessages),
-// its key file read on each call, so a key rewritten under the process is the next call's. A group
-// beside the stand-in model presents no credential of its own. An anthropic group asks for no
-// thinking (effort "off"). An azure group sends no reasoning effort at all: agentloop sends "off"
-// as `none`, which a Foundry chat deployment refuses (measured on grok-4.7, as the detector's
-// reader found: writingcheck.ReaderNoEffort). A test model whose name asks for an effort
-// (`<id>:<effort>`, DISPATCH_TEST_MODELS) asks for that one on either kind. It reads no file and
-// calls nothing.
-func (g modelGroup) agentloopModel() (agentloop.Model, error) {
-	var token func(context.Context) (string, error)
-	switch {
-	case g.StandIn:
-		token = func(context.Context) (string, error) { return standInToken, nil }
-	case g.Kind == modelKindAzure:
-		source, err := embed.NewEntraTokenSource(embed.EntraConfig{
-			TenantID: g.TenantID, ClientID: g.ClientID, TokenFile: g.FederatedToken, Scope: g.Scope,
-		})
-		if err != nil {
-			return agentloop.Model{}, err
-		}
-		token = source.Token
-	case g.Kind == modelKindAnthropic:
-		keyFile := g.KeyFile
-		token = func(context.Context) (string, error) {
-			key, err := os.ReadFile(keyFile)
-			if err != nil {
-				return "", fmt.Errorf("read the model group's key file: %w", err)
-			}
-			return strings.TrimSpace(string(key)), nil
-		}
-	}
-	endpoint := agentloop.Endpoint{BaseURL: strings.TrimRight(g.Endpoint, "/"), Token: token}
-	effort := "off"
-	switch g.Kind {
-	case modelKindAzure:
-		endpoint.Kind = agentloop.OpenAIChat
-		if g.APIVersion != "" {
-			endpoint.Query = url.Values{"api-version": {g.APIVersion}}
-		}
-		if writingcheck.ReaderNoEffort {
-			effort = ""
-		}
-	case modelKindAnthropic:
-		endpoint.Kind = agentloop.AnthropicMessages
-	default:
-		return agentloop.Model{}, fmt.Errorf("a model group of kind %q calls no model", g.Kind)
-	}
-	if g.Effort != "" {
-		effort = g.Effort
-	}
-	return agentloop.Model{Endpoint: endpoint, ID: g.Deployment, Effort: effort}, nil
-}
-
-// share is what the group asks of its deployment on the pacer: the deployment as the pacer keys
-// it (pacedDeployment), with the group's tokens-per-minute setting the ceiling on its share. The
-// boot weighs this same share against the reply bound of the group's calls
-// (refuseQuotaUnderReplyBound).
-func (g modelGroup) share() (modelpace.Share, error) {
-	deployment, err := pacedDeployment(g.Kind, g.Endpoint, g.Deployment)
-	if err != nil {
-		return modelpace.Share{}, fmt.Errorf("the model group's endpoint %q is not a URL", g.Endpoint)
-	}
-	return modelpace.Share{Deployment: deployment, TokensPerMinute: g.TokensPerMinute}, nil
-}
-
-// pace is the group's share of its deployment on pacer, the process's one pacer (modelpace): its
-// tokens-per-minute setting is the ceiling on that share.
-func (g modelGroup) pace(pacer *modelpace.Pacer) (*modelpace.Caller, error) {
-	share, err := g.share()
-	if err != nil {
-		return nil, err
-	}
-	return pacer.Join(share), nil
-}
 
 // newWordRecords builds the records job of INFRA-3231's R8 (wordrecords.Job), or nil where it is
 // off: DISPATCH_WORD_RECORDS=off, or its model group (DISPATCH_WORD_RECORDS_MODEL_*) unset, each of
@@ -111,7 +23,7 @@ func newWordRecords(cfg writingSettings, pacer *modelpace.Pacer, database *store
 		slog.Info("dispatch: the records of the words people ask about are off", "setting", "DISPATCH_WORD_RECORDS")
 		return nil, nil
 	case cfg.WordRecordsModel.Kind == "":
-		slog.Info("dispatch: the records of the words people ask about are off: the records job's model group is unset", "setting", modelGroups[2].prefix+"KIND")
+		slog.Info("dispatch: the records of the words people ask about are off: the records job's model group is unset", "setting", wordRecordsModelSpec.prefix+"KIND")
 		return nil, nil
 	}
 	model, err := cfg.WordRecordsModel.agentloopModel()

@@ -1548,7 +1548,7 @@ A process that finds it held tries again
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
 
-- The writing check event sweep (`api.RunWritingCheckEventSweep`) deletes the `writing_check_events` rows older than 90 days (`store.WritingCheckRetention`, Writing check below) once a day, its first pass at start.
+- The writing check event sweep (`api.RunWritingCheckEventSweep`) deletes the `writing_check_events` rows older than 90 days (`store.WritingCheckRetention`, Writing check below) but those the counts' rows read, once a day, its first pass at start.
   It takes no lease and records no `duty_passes` row, so it holds no connection of the lease pool: the pass is one delete by age on the shared pool, which every process runs, and a second process's pass the same day deletes nothing the first left.
 
 - The records job of the words people ask about (`wordrecords.Job.Run`, lease `word-records`, The word records below) runs every 10 seconds through `duty.RunLeased`, its first pass at start, while `DISPATCH_WORD_RECORDS` is `on` and its model group is set.
@@ -3673,7 +3673,8 @@ The setting is read on the server, so one change applies to every session:
   The command keeps the answer in the session's state file for 10 minutes, and a server without the route refuses nothing.
 
 - `POST /api/v1/writing-rules` takes `{route, body}` of a write the command has not sent, `route` being `"<method> <path>"`, and answers `{reader, text}`: the person who reads that write, decided as the writing check decides it (`writing_check_reader.go`), and the rules text.
-  `reader_words` adds the words that person asked about before (The word records, below), and `ask_parts` adds the five parts of an ask to an ask's rules.
+  `reader_words` adds the words that person asked about before (The word records, below), and `ask_parts` adds the five parts of an ask to an ask's rules; both come from the reviewer's prompts (`internal/dispatch/reviewer/prompts/written-rules.md`), whose `ask_parts` rule set reads the same five parts.
+  A person signed in at a browser gets the reader's words only for a write that person reads, as `GET /api/v1/readers/{login}/words` serves them; an agent's token gets any reader's.
 
 The server embeds the skill from `internal/dispatch/writingcheck/plainwords/skill/`, a copy that `go generate ./internal/dispatch/writingcheck/plainwords` makes; `TestTheCopyIsTheSkill` fails while the copy and `skills/plain-words` differ.
 
@@ -3721,7 +3722,7 @@ Three groups, one each for the reviewer (`DISPATCH_REVIEWER_MODEL_*`), Rewrite a
 
 - `_KIND`: `azure`, a chat deployment of an Azure AI Foundry resource, reached with the shared Azure sign-in (`DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`, `DISPATCH_AZURE_FEDERATED_TOKEN_FILE`) as an `azure` answerer is; or `anthropic`, an Anthropic Messages service such as the operator's model gateway.
 
-- `_ENDPOINT`: the base URL the kind's route is appended to, `/chat/completions` or `/v1/messages`: https for `azure`, http or https for `anthropic`, since the model gateway serves plain HTTP inside the cluster.
+- `_ENDPOINT`: the base URL the kind's route is appended to, `/chat/completions` or `/v1/messages`: https for `azure`; https for `anthropic`, or http to a host inside the cluster (localhost, a loopback address, or a Service name ending `.svc` or `.cluster.local`), since the model gateway serves plain HTTP inside the cluster and each call carries the group's key. http to any other host refuses the boot.
 
 - `_DEPLOYMENT`: the Azure deployment's name or the Anthropic model's id, which each request names as its model.
 
@@ -3730,7 +3731,7 @@ Three groups, one each for the reviewer (`DISPATCH_REVIEWER_MODEL_*`), Rewrite a
 - `_KEY_FILE`: `anthropic` only, and required there: the file holding the key each call presents, read on each call.
 
 - `_TOKENS_PER_MINUTE`: required, the group's ceiling on its share of its deployment's quota (One pacer per deployment, below).
-  A ceiling under the reply bound of the group's calls refuses the boot.
+  A ceiling not more than the least a call of the group is charged refuses the boot.
 
 A group is set whole or not at all: a group set in part refuses the boot, naming each setting it is missing, and so does a setting its kind does not read.
 An `azure` group reads the shared Azure sign-in, so a deployment with neither an `azure` embedder nor an `azure` answerer may set the sign-in for its `azure` groups alone.
@@ -3741,17 +3742,19 @@ Rewrite and Define are on whenever their group is set.
 Every caller of a model deployment in one process charges one token limiter (`internal/dispatch/modelpace`), keyed by the caller's kind, the endpoint's host and the deployment's name or model id.
 The limiter's rate is the deployment's quota in `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` (`name=tokens_per_minute,…`), else the answerer's `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE` for the answerer's deployment, else the largest ceiling any caller sets for it.
 Each caller's own tokens-per-minute setting is a ceiling on its share inside that limiter, and each limiter holds a minute's tokens as its burst.
+So a caller whose ceiling is under the deployment's rate leaves the rest to the others, and where no quota is set, the caller with the largest ceiling can take the whole rate; a quota above each caller's ceiling leaves each of them a part.
 The answerer joins the process's pacer at boot (`newAnswerer`); a call the limiters cannot serve inside the run's time left ends the run as its deadline does.
 
-Each call is charged its prompt's estimated tokens and its whole reply bound before it is sent, and the pacer refuses for good a call that costs more than a minute's whole quota.
-So a minute's quota under the reply bound could serve no call: each call would fail, and each reviewed text would post as written.
+Each call is charged before it is sent: its prompt's estimated tokens, the system prompt and the user message at four characters a token, and its whole reply bound (`modelpace.Charge`, which every caller charges with through `modelpace.Caller.WaitFor`); the pacer refuses for good a call that costs more than a minute's whole quota.
 The reply bound is `reviewer.DefaultOutputTokens`, 32768 tokens, for the reviewer's group and for Rewrite and Define's, and `wordrecords.CallOutputTokens`, 1024 tokens, for the records job's.
-The boot is refused, naming the setting, its value and the bound (`refuseQuotaUnderReplyBound`), when a set group's `_TOKENS_PER_MINUTE` is under its reply bound, and when the quota that paces the group's deployment is under it.
+No call's prompt is shorter than the shortest system prompt of the group's calls: the reviewer's under `DISPATCH_REVIEWER_RULES` (`reviewer.LeastSystemPromptRunes`), and the records job's selection prompt.
+So a minute's quota not more than the charge of that prompt and the reply bound could serve no call: each call would fail, and each reviewed text would post as written.
+The boot is refused, naming the setting, its value and that least charge (`refuseQuotaNoCallFits`), when a set group's `_TOKENS_PER_MINUTE` is not more than it, and when the quota that paces the group's deployment is not more than it.
 That quota is the one `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` names for the group's deployment.
 Where it names none, it is the answerer's `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE` if the group's deployment is the answerer's under the limiter's key: an `azure` group whose endpoint has the host of `DISPATCH_AZURE_CHAT_ENDPOINT` and whose deployment is `DISPATCH_AZURE_CHAT_DEPLOYMENT`.
-An answerer on another endpoint host, of another deployment or beside a group of another kind is another limiter, and its quota is not held to the group's bound.
-A quota for a deployment that no set group and no test model names is not held to a bound.
-Set more than the bound, since each call also carries its prompt: a group serves at most about ceiling / (bound + prompt) calls a minute, and a deployment's callers together about quota / (bound + prompt).
+An answerer on another endpoint host, of another deployment or beside a group of another kind is another limiter, and its quota is not held to the group's charge.
+A quota for a deployment that no set group and no test model names is not held to one.
+Set well more, since each call also carries its text: a group serves at most about ceiling / (bound + prompt) calls a minute, and a deployment's callers together about quota / (bound + prompt).
 
 ### The stand-in model
 
@@ -3771,7 +3774,7 @@ A name of the id alone asks for its kind's own effort, as a model group does: no
 So one list can hold a model at its own effort and at another, each under its own name, and the header picks one by its whole name.
 The detector's reader asks for the effort it always asks for, whatever the name says.
 No model group takes an effort setting.
-The test models serve the reviewer's calls and Rewrite and Define's, so each kind's `_TOKENS_PER_MINUTE`, and the quota that paces a test model's deployment, is held to the reply bound of those calls as a group's is.
+The test models serve the reviewer's calls and Rewrite and Define's, so each kind's `_TOKENS_PER_MINUTE`, and the quota that paces a test model's deployment, is held to the least charge of those calls as a group's is.
 A request that names a model the list does not hold is refused 400 `TEST_MODEL_REFUSED`, and so is any request with the header on a server without the test hooks, so a deployment's own model never answers a request that asked for another.
 
 ## Writing check
@@ -3822,24 +3825,24 @@ A reader fault (`reader_timeout`, `reader_error`, `reader_malformed`, `reader_bu
 ### Records
 
 Each decision about a write that took place is one row of `writing_check_events`:
-the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, the code stage's candidate count, how long the model reader took, `reader`, the login of the person who reads the text (null where no person does), on every row, and `project`, the project of the text's issue or document where the writer records it.
+the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, the code stage's candidate count, how long the model reader took, `reader`, the login of the person who reads the text (null where no person does), on every row, `project`, the project of the text's issue or document where the writer records it, and `write_id`, the id of the write where more than one row records it (a held text's id on its rows; an id the server makes for the write on the check's row and on the review of the text after its post), so the counts count its text once.
 The outcomes are `findings` (a sentence breaks a rule; the write went on), `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader`, `exempt_generated`, and the reader's fail-open outcomes with `no_model`.
 The table also admits the reviewer's outcomes (`held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`), a person's typed command (`exempt_person_typed`) and each Rewrite a person asks for (`rewrite_requested`, its `reader` the person who asked), which the reviewer and Rewrite record.
 A write that carries no prose text is not recorded, and neither is a write the route refuses after the check (a closed issue, an unknown check, a delivery never made), which writes nothing else either.
 Nor is a call a reply route answers with a 2xx status and nothing written: a reply to an attempt already answered, which posts nothing, and an error report repeated on an attempt already failed.
 The server inserts the row once the route answered the write with a 2xx status, outside the write's transaction, which has ended by then, and before the request ends; an insert that fails is logged with the route and the write stands.
-A daily sweep deletes the rows older than 90 days (Background loops, above).
+A daily sweep deletes the rows older than 90 days but those of the outcomes the counts' rows read (`store.SweepWritingCheckEvents`, Background loops, above).
 
 `GET /api/v1/writing-check` answers the check as this process runs it:
-`enabled`, the `rules` it applies, `rules_left_out` with each reason, the `detector` (`on` and why not), the reader's `model` (endpoint host, deployment, api version, tokens per minute, never a credential), `reader_calls` since the process started, and `bundle_model_id`.
+`enabled`, the `rules` it applies, `rules_left_out` with each reason, the check's own `detector`, off, with why (the phrase detector runs as the reviewer's `detector` rule set), and `bundle_model_id`.
 `GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, items, total, limit, offset}`:
 
-- `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route.
+- `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route. A day older than 90 days counts only the outcomes the rows below read, which the sweep keeps.
 
 - `items`: one page of the rows of each day, project and person with a count, in that order: `limit` rows (1 to 200, default 50) from `offset`, and `total` counts every row.
   From `word_questions` (The word records, above): `word_questions`, `texts` (every text of the person the job read), `texts_unread` (still waiting for its model) and `define_uses`.
   From the event log: `asks_answered`, the asks the person answered, and `asks_replied_before_answer`, those of them a person commented on in the ask's thread before the answer.
-  From `writing_check_events`, each row given to its `reader` and `project`: `rewrite_uses` (`rewrite_requested`), `reviewer_held`, `reviewer_rewrote` (`rewrite_posted`), `reviewer_passed`, `reviewer_posted_unreviewed`, and `posted_over_finding` (`findings`, `posted_as_written`, and `reviewed_after` with findings).
+  From `writing_check_events`, each row given to its `reader` and `project`: `rewrite_uses` (`rewrite_requested`), `reviewer_held`, `reviewer_rewrote` (`rewrite_posted`), `reviewer_passed`, `reviewer_posted_unreviewed`, and `posted_over_finding` (`findings`, `posted_as_written`, and `reviewed_after` with findings), which counts a text once by its `write_id` where the writing check and the reviewer both record a finding of it, on the project of the first of its rows that names one.
   `project` is `""` for a text on no project or whose project was not recorded, and `person` `""` for a person the record does not name.
 
 A day's writes with findings, by rule and route:

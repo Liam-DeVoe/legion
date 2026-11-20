@@ -9,9 +9,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // askBlockIDs collects the id of every ask block tree holds (pmdoc.WalkAskBlocks). It never
@@ -301,7 +301,7 @@ func storableAskBlockID(id string) bool {
 
 // askAuthorsStatement records a document's ask block authors, keeping the author an earlier
 // registration of a block already recorded; person_typed marks the blocks of a write a person
-// typed in a session (events.PersonTyped).
+// typed in a session (store.PersonTyped).
 const askAuthorsStatement = `
 	insert into doc_ask_block_authors (artifact_id, block_id, actor, person_typed)
 	select $1::uuid, block, actor, $4::boolean from unnest($2::text[], $3::jsonb[]) as author(block, actor)
@@ -356,12 +356,12 @@ func queueAskAuthors(ctx context.Context, tx pgx.Tx, plan *appendPlan, room stri
 // registration of a block already recorded: queueAskAuthors as one write of its own. It goes
 // through write, so a transaction whose writes are queued runs it in its write phase and reads
 // the rows it will add from its ledger until then (Ledger.queuedAskAuthors,
-// transactionRecordedAskAuthors). A write a person typed in a session (events.PersonTyped on
+// transactionRecordedAskAuthors). A write a person typed in a session (store.PersonTyped on
 // ctx) records its blocks as theirs, which the settlement that opens their asks reads
 // (transactionRecordedAskAuthors).
 func recordAskAuthors(ctx context.Context, tx pgx.Tx, room string, authors map[string]model.Actor) error {
 	var plan appendPlan
-	if err := queueAskAuthors(ctx, tx, &plan, room, authors, events.PersonTyped(ctx)); err != nil {
+	if err := queueAskAuthors(ctx, tx, &plan, room, authors, store.PersonTyped(ctx)); err != nil {
 		return err
 	}
 	return plan.send(ctx, tx)
@@ -406,7 +406,7 @@ func recordStampedAskAuthors(ctx context.Context, tx pgx.Tx, room string, stampe
 			if _, kept := typedRenames[ask.minted]; kept {
 				continue
 			}
-			if typed[ask.previous] && !events.PersonTyped(ctx) {
+			if typed[ask.previous] && !store.PersonTyped(ctx) {
 				if typedRenames == nil {
 					typedRenames = make(map[string]model.Actor, len(renames))
 				}
@@ -420,7 +420,7 @@ func recordStampedAskAuthors(ctx context.Context, tx pgx.Tx, room string, stampe
 		}
 	}
 	var plan appendPlan
-	if err := queueAskAuthors(ctx, tx, &plan, room, authors, events.PersonTyped(ctx)); err != nil {
+	if err := queueAskAuthors(ctx, tx, &plan, room, authors, store.PersonTyped(ctx)); err != nil {
 		return err
 	}
 	if err := queueAskAuthors(ctx, tx, &plan, room, typedRenames, true); err != nil {

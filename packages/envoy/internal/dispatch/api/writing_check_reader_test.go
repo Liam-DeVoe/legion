@@ -165,7 +165,7 @@ func (rig *writingCheckRig) session(method, target string, body map[string]any) 
 // summary are read by the person the ask waits on - the person it was handed to, else the issue's
 // assignee, else the project's default assignee.
 func TestTheWritingCheckReaderOfAnAsk(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	rig.exec(`update projects set default_assignee = 'dana' where key = 'WCK'`)
 	rig.exec(`update asks set asked_of = 'bob' where id = $1`, rig.fixture.askEdit)
 	asks := "/api/v1/issues/" + rig.fixture.issue + "/asks"
@@ -190,7 +190,7 @@ func TestTheWritingCheckReaderOfAnAsk(t *testing.T) {
 // the project's default assignee, and by nobody where the record names neither; a reply to a
 // person's comment is read by that person whatever the issue names.
 func TestTheWritingCheckReaderOfACommentOnAnIssue(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	rig.exec(`update projects set default_assignee = 'dana' where key = 'WCK'`)
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
 	comment := map[string]any{"body": badProse}
@@ -254,7 +254,7 @@ func (rig *writingCheckRig) wantReader(what, reader, route string, values map[st
 // refuses a write on such a text, since the owner check takes a document only where no issue
 // holds it (unlinkedArtifactRead), so the rule is read for each route directly (wantReader).
 func TestTheWritingCheckReaderOfTextOnAnIssuesDocument(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	rig.exec(`update projects set default_assignee = 'dana' where key = 'WCK'`)
 	onDocument := func(author string) string {
 		return rig.insertID(`insert into comments (artifact_id, author, body) values ($1::uuid, $2::jsonb, 'The cache is warm.') returning id::text`,
@@ -291,7 +291,7 @@ func TestTheWritingCheckReaderOfTextOnAnIssuesDocument(t *testing.T) {
 // session opened to another session, and a file put where no person has a conversation, by
 // nobody. The send to an agent and the broadcast are read by nobody.
 func TestTheWritingCheckReaderOfADirectConversation(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	reply := map[string]any{"body": badProse, "attempt": 1}
 	fromBob := rig.openConversation("user", "bob", checkWriter)
 	fromSession := rig.openConversation("session", "s-other", checkWriter)
@@ -318,7 +318,7 @@ func TestTheWritingCheckReaderOfADirectConversation(t *testing.T) {
 // TestTheWritingCheckReaderOfAProjectDocument: a project's document and the text on it are read
 // by the project's default assignee, and by nobody where the project names none.
 func TestTheWritingCheckReaderOfAProjectDocument(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	rig.exec(`update projects set default_assignee = 'dana' where key = 'WCK'`)
 	edit := map[string]any{"ops": []map[string]any{{"op": "replace", "find": "Seed paragraph here.", "with": badProse}}}
 	// The second edit replaces what the first wrote, so it finds what it replaces.
@@ -344,7 +344,7 @@ func TestTheWritingCheckReaderOfAProjectDocument(t *testing.T) {
 // goes to: the assignee the create names, else, for a session that acts for nobody, the
 // project's default assignee.
 func TestTheWritingCheckReaderOfANewIssue(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig := newWritingCheckRig(t, writingCheckOn())
 	rig.exec(`update projects set default_assignee = 'dana' where key = 'WCK'`)
 	rig.wantRead("a new issue naming bob", "bob", rig.session(http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "WCK", "title": "A worker for the queue", "spec": badProse, "assignee": "Bob"}))

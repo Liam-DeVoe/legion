@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -9,8 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
@@ -20,14 +22,15 @@ import (
 // writing_check.go puts the writing check (INFRA-3231) on the server's write path. A route whose
 // request carries prose (writing_check_fields.go) calls writingCheck once the request is decoded
 // and its writer resolved, and before it opens a transaction, takes a lock or writes anything: the
-// check may call a model, and no database transaction waits on it. The check refuses no write:
-// every write it reads goes on. Every decision the check makes for a write that took place is one
-// row of writing_check_events. The check keeps the row on the request (keepWritingCheck), and the
-// route's layer (recordTakenWrites) inserts it once the handler answered the write 2xx, outside
-// the write's transaction, which has ended by then, and before the request ends. A write the route
-// refused after the check - a closed issue, an unknown check, a delivery never made - records
-// nothing, as it writes nothing else. A call that a route answers 2xx with none of the words the
-// check read written records none either, since the route drops its rows first
+// check reads the record to decide the write's reader, and no database transaction waits on it.
+// The check refuses no write: every write it reads goes on. Every decision the check makes for a
+// write that took place is one row of writing_check_events. The check keeps the row on the
+// request (keepWritingCheck), and the route's layer (recordTakenWrites) inserts it once the
+// handler answered the write 2xx, outside the write's transaction, which has ended by then, and
+// before the request ends. A write the route refused after the check - a closed issue, an unknown
+// check, a delivery never made - records nothing, as it writes nothing else. A call that a route
+// answers 2xx with none of the words the check read written records none either, since the route
+// drops its rows first
 // (dropWritingCheck): on POST /api/v1/messages/{id}/reply and POST /api/v1/comments/{id}/reply,
 // a call on an attempt already answered that posts nothing and an error report repeated on an
 // attempt already failed; on the three edit routes, POST /api/v1/artifacts/{id}/edits,
@@ -81,11 +84,11 @@ func personTypedWrite(r *http.Request) bool {
 }
 
 // markPersonTyped gives a write a person typed in a session the context that marks its events
-// (events.WithPersonTyped), so the event the write emits carries person_typed: true.
+// (store.WithPersonTyped), so the event the write emits carries person_typed: true.
 func markPersonTyped(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if personTypedWrite(r) {
-			r = r.WithContext(events.WithPersonTyped(r.Context()))
+			r = r.WithContext(store.WithPersonTyped(r.Context()))
 		}
 		handler(w, r)
 	}
@@ -117,33 +120,12 @@ func (s *server) recordPersonTyped(r *http.Request, actor model.Actor, input any
 	s.keepWritingCheck(r, event)
 }
 
-// WritingCheckModel is the model the writing check's reader calls, as GET /api/v1/writing-check
-// shows it: no key, token or credential is part of it.
-type WritingCheckModel struct {
-	EndpointHost    string `json:"endpoint_host"`
-	Deployment      string `json:"deployment"`
-	APIVersion      string `json:"api_version"`
-	TokensPerMinute int    `json:"tokens_per_minute"`
-}
-
-// WritingCheckConfig is the writing check as its builder configured it: cmd/dispatch turns it on
-// with the bundle's structure rules alone, and a test sets the rest.
+// WritingCheckConfig is the writing check as cmd/dispatch configured it: on, with the bundle's
+// structure rules (writingcheck.EnabledRules). The phrase detector does not run in the check: it
+// runs as the reviewer's detector rule set (Decision 11 of INFRA-3231's plan).
 type WritingCheckConfig struct {
 	// Enabled turns the check on.
 	Enabled bool
-	// RulesOff is the rule ids the check does not apply, the detector's
-	// writingcheck.DetectorRule among them where it names it.
-	RulesOff []string
-	// Detector is whether the bundle's detector is left on.
-	Detector bool
-	// DetectorTestHook runs the detector although the bundle ships it off, so a test reads the
-	// detector's findings. Detector off still turns it off.
-	DetectorTestHook bool
-	// Reader is the model reader the detector calls; nil where no model is configured, and the
-	// structure rules then run alone.
-	Reader writingcheck.Reader
-	// Model describes the model Reader calls, for the state route; nil where Reader is nil.
-	Model *WritingCheckModel
 }
 
 // WritingCheck is the writing check one server runs: the checker and what the state route
@@ -153,16 +135,11 @@ type WritingCheck struct {
 	checker *writingcheck.Checker
 }
 
-// NewWritingCheck builds the check cfg describes, over the bundle: its rules
-// (writingcheck.EnabledRules), and its detector (writingcheck.DetectorEnabled), which cfg can
-// turn off and, outside a test process's DetectorTestHook, never on.
+// NewWritingCheck builds the check cfg describes, over the bundle's structure rules.
 func NewWritingCheck(cfg WritingCheckConfig) *WritingCheck {
 	return &WritingCheck{config: cfg, checker: writingcheck.New(writingcheck.Config{
-		Enabled:  cfg.Enabled,
-		Rules:    writingcheck.EnabledRules,
-		RulesOff: cfg.RulesOff,
-		Detector: cfg.Detector && (writingcheck.DetectorEnabled || cfg.DetectorTestHook),
-		Reader:   cfg.Reader,
+		Enabled: cfg.Enabled,
+		Rules:   writingcheck.EnabledRules,
 	})}
 }
 
@@ -184,20 +161,20 @@ func writingCheckReads(actor model.Actor) (checked bool, exemption string) {
 type unreadUploadCarrier interface{ unreadUpload() string }
 
 // writingCheck runs the writing check over the prose input carries (proseFieldsOf), for the write
-// actor makes, keeps its decision for the record of the write once it took place
-// (keepWritingCheck), and reports whether the write goes on, which it always does:
-// the check refuses no write. It reads a write only when the actor rule says an agent makes it
-// (writingCheckReads), a person reads it (writingCheckReader) and no plugin generated it
-// (generatedText), and it records that person on every row. Call it once input is decoded and
-// actor resolved, and before any transaction, lock or write.
-func (s *server) writingCheck(_ http.ResponseWriter, r *http.Request, actor model.Actor, input any) bool {
+// actor makes, and keeps its decision for the record of the write once it took place
+// (keepWritingCheck). It refuses no write, so the write goes on whatever it finds. It reads a
+// write only when the actor rule says an agent makes it (writingCheckReads), a person reads it
+// (writingCheckReader) and no plugin generated it (generatedText), and it records that person on
+// every row. Call it once input is decoded and actor resolved, and before any transaction, lock
+// or write.
+func (s *server) writingCheck(r *http.Request, actor model.Actor, input any) {
 	if personTypedWrite(r) {
 		s.recordPersonTyped(r, actor, input, "")
-		return true
+		return
 	}
 	check := s.deps.WritingCheck
 	if !check.on() {
-		return true
+		return
 	}
 	fields := proseFieldsOf(input)
 	unread := ""
@@ -207,7 +184,7 @@ func (s *server) writingCheck(_ http.ResponseWriter, r *http.Request, actor mode
 	if len(fields) == 0 && unread == "" {
 		// A write that carries no prose (a status change, an empty note) gives the check nothing
 		// to read and nothing to record.
-		return true
+		return
 	}
 	method, route, found := strings.Cut(r.Pattern, " ")
 	if !found {
@@ -227,28 +204,23 @@ func (s *server) writingCheck(_ http.ResponseWriter, r *http.Request, actor mode
 		event.Detail = "the reader could not be decided: " + err.Error()
 	}
 	event.Reader = readerOf
-	if generatedText(r, method+" "+route) {
+	switch checked, exemption := writingCheckReads(actor); {
+	case generatedText(r, method+" "+route):
 		event.Outcome = writingCheckGenerated
-		s.keepWritingCheck(r, event)
-		return true
-	}
-	if checked, exemption := writingCheckReads(actor); !checked {
+	case !checked:
 		event.Outcome = exemption
-		s.keepWritingCheck(r, event)
-		return true
-	}
-	if readerOf == "" {
+	case readerOf == "":
 		event.Outcome = writingCheckNoReader
-		s.keepWritingCheck(r, event)
-		return true
+	default:
+		checkFields(&event, check.checker.Check(r.Context(), fields), unread)
 	}
-	started := time.Now()
-	result := check.checker.Check(r.Context(), fields)
-	event.Candidates = result.Candidates
-	if result.ReaderCalled {
-		took := int(time.Since(started) / time.Millisecond)
-		event.ReaderMS = &took
-	}
+	s.keepWritingCheck(r, event)
+}
+
+// checkFields records on event what the check found in a write's fields: findings, with each
+// rule broken and each field it stands in, or clean; and, for an upload whose file the check does
+// not read, that file's type.
+func checkFields(event *store.WritingCheckEvent, result writingcheck.Result, unread string) {
 	event.Outcome = result.Outcome
 	for _, finding := range result.Findings {
 		if !slices.Contains(event.Rules, finding.Rule) {
@@ -267,11 +239,7 @@ func (s *server) writingCheck(_ http.ResponseWriter, r *http.Request, actor mode
 	case unread != "":
 		event.Outcome = writingCheckUnreadUpload
 		event.Detail = "file of type " + unread + " not read; the outcome of its summary: " + result.Outcome
-	case result.Outcome != writingcheck.OutcomeClean:
-		event.Detail = "the write went through with the structure rules alone"
 	}
-	s.keepWritingCheck(r, event)
-	return true
 }
 
 // writingCheckTokenID is the personal token a write was made with, "" for any other credential:
@@ -307,14 +275,35 @@ func (s *server) recordWritingCheck(ctx context.Context, event store.WritingChec
 type writingCheckRowsKey struct{}
 
 // writingCheckRows are the rows the writing check decided for one write, kept until its handler
-// has answered it.
-type writingCheckRows struct{ events []store.WritingCheckEvent }
+// has answered it, and the id of the write that every row of it records (writeIDOf).
+type writingCheckRows struct {
+	events []store.WritingCheckEvent
+	// write is the write's id: the held text's where the reviewer holds the write (holdWrite),
+	// else one made for the first row that is recorded apart from these (writeIDOf), "" while
+	// there is none.
+	write string
+}
 
 // writingCheckRowsFrom is the rows ctx keeps for its write (recordTakenWrites), nil for a request
 // served outside that layer.
 func writingCheckRowsFrom(ctx context.Context) *writingCheckRows {
 	kept, _ := ctx.Value(writingCheckRowsKey{}).(*writingCheckRows)
 	return kept
+}
+
+// writeIDOf is the id of the write ctx is the request of, which a row the reviewer records apart
+// from the check's (the review of the write's text after its post) records as its WriteID, so the
+// counts count the text once (store.WritingCheckEvent.WriteID). It is made the first time a row
+// asks for it, and is "" for a request served outside recordTakenWrites.
+func writeIDOf(ctx context.Context) string {
+	kept := writingCheckRowsFrom(ctx)
+	if kept == nil {
+		return ""
+	}
+	if kept.write == "" {
+		kept.write = uuid.NewString()
+	}
+	return kept.write
 }
 
 // keepWritingCheck keeps event, the check's decision about r's write, for the route's layer to
@@ -338,10 +327,11 @@ func dropWritingCheck(r *http.Request) {
 }
 
 // recordTakenWrites is a write route's layer for the writing check's rows: it records the rows
-// the check kept for the write (keepWritingCheck) once handler answered it 2xx. A route answers
-// 2xx for a write that took place, a write the reviewer holds among them, and six routes answer
-// it too for a call that writes none of the words the check read, which drops its rows first
-// (dropWritingCheck): the two reply routes (POST /api/v1/messages/{id}/reply,
+// the check kept for the write (keepWritingCheck) once handler answered it 2xx, each with the
+// write's id where a row the reviewer records apart took one (writeIDOf, holdWrite). A route
+// answers 2xx for a write that took place, a write the reviewer holds among them, and six routes
+// answer it too for a call that writes none of the words the check read, which drops its rows
+// first (dropWritingCheck): the two reply routes (POST /api/v1/messages/{id}/reply,
 // POST /api/v1/comments/{id}/reply) for a call on an attempt already answered that posts nothing
 // or an error report repeated on an attempt already failed, the three edit routes (editArtifact)
 // for a batch that leaves the document as it was, and
@@ -364,6 +354,7 @@ func (s *server) recordTakenWrites(handler http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx := outlivingTheClient(r)
 		for _, event := range kept.events {
+			event.WriteID = cmp.Or(event.WriteID, kept.write)
 			s.recordWritingCheck(ctx, event)
 		}
 	}
@@ -395,15 +386,11 @@ func (w *answerStatus) taken() bool {
 // writingCheckState is the body of GET /api/v1/writing-check: the check as this process runs it.
 type writingCheckState struct {
 	Enabled bool `json:"enabled"`
-	// Rules is the structure rules the check applies: the bundle's, less those turned off.
+	// Rules is the structure rules the check applies: the bundle's.
 	Rules []string `json:"rules"`
 	// RulesLeftOut is every rule the check does not apply, with why.
 	RulesLeftOut []writingCheckRuleLeftOut `json:"rules_left_out"`
 	Detector     writingCheckDetector      `json:"detector"`
-	// Model is the model the reader calls; null where none is configured.
-	Model *WritingCheckModel `json:"model"`
-	// ReaderCalls is how many calls this process's reader has made since it started.
-	ReaderCalls int64 `json:"reader_calls"`
 	// BundleModelID is the model id the bundle was measured with, "" while it pins none.
 	BundleModelID string `json:"bundle_model_id"`
 }
@@ -414,22 +401,23 @@ type writingCheckRuleLeftOut struct {
 	Reason string `json:"reason"`
 }
 
-// writingCheckDetector is whether the detector runs, and why where it does not run or runs
-// with no model.
+// writingCheckDetector is whether the check runs the phrase detector, and why it does not.
 type writingCheckDetector struct {
 	On     bool   `json:"on"`
 	Reason string `json:"reason"`
 }
 
+// writingCheckDetectorElsewhere is why the check runs no detector while it is on.
+const writingCheckDetectorElsewhere = "the phrase detector runs as the reviewer's detector rule set (DISPATCH_REVIEWER_RULES), not in the check"
+
 // state is what GET /api/v1/writing-check answers.
 func (c *WritingCheck) state() writingCheckState {
-	var cfg WritingCheckConfig
-	if c != nil {
-		cfg = c.config
-	}
 	state := writingCheckState{
-		Enabled: cfg.Enabled, Rules: []string{}, RulesLeftOut: []writingCheckRuleLeftOut{},
-		Model: cfg.Model, BundleModelID: writingcheck.BundleModelID,
+		Enabled: c.on(), Rules: []string{}, RulesLeftOut: []writingCheckRuleLeftOut{},
+		Detector: writingCheckDetector{Reason: writingCheckDetectorElsewhere}, BundleModelID: writingcheck.BundleModelID,
+	}
+	if !state.Enabled {
+		state.Detector.Reason = "the check is off"
 	}
 	for _, rule := range rules.All() {
 		measured := slices.IndexFunc(writingcheck.MeasuredOff, func(m writingcheck.RuleMeasurement) bool { return m.ID == rule.ID })
@@ -438,33 +426,12 @@ func (c *WritingCheck) state() writingCheckState {
 			state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{rule.ID, writingcheck.MeasuredOff[measured].Reason})
 		case !slices.Contains(writingcheck.EnabledRules, rule.ID):
 			state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{rule.ID, "the bundle does not enable it"})
-		case slices.Contains(cfg.RulesOff, rule.ID):
-			state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{rule.ID, "the server's configuration turns it off"})
 		default:
 			state.Rules = append(state.Rules, rule.ID)
 		}
 	}
 	for _, omission := range rules.LeftOut {
 		state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{omission.ID, omission.Reason})
-	}
-	switch {
-	case !cfg.Enabled:
-		state.Detector.Reason = "the check is off"
-	case !writingcheck.DetectorEnabled && !cfg.DetectorTestHook:
-		state.Detector.Reason = "the bundle ships the detector off"
-	case !cfg.Detector:
-		state.Detector.Reason = "the server's configuration turns the detector off"
-	case slices.Contains(cfg.RulesOff, writingcheck.DetectorRule):
-		state.Detector.Reason = "the server's configuration turns " + writingcheck.DetectorRule + " off"
-	case cfg.Reader == nil:
-		state.Detector = writingCheckDetector{On: true, Reason: "no model is configured: the structure rules run alone, and each check records no_model"}
-	case !writingcheck.DetectorEnabled:
-		state.Detector = writingCheckDetector{On: true, Reason: "a test turns on the detector the bundle ships off, for this process alone"}
-	default:
-		state.Detector.On = true
-	}
-	if cfg.Reader != nil {
-		state.ReaderCalls = cfg.Reader.Calls()
 	}
 	return state
 }
@@ -478,7 +445,9 @@ func (s *server) getWritingCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // writingCheckCountsDays is the counts route's range when its query names none, the last 14 days
-// with today, and writingCheckCountsMostDays the longest range it counts.
+// with today, and writingCheckCountsMostDays the longest range it counts. The sweep keeps every
+// row the counts' items read (store.SweepWritingCheckEvents), so a range back past
+// store.WritingCheckRetention counts its items whole.
 const (
 	writingCheckCountsDays     = 14
 	writingCheckCountsMostDays = 366
@@ -539,10 +508,11 @@ func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 const writingCheckSweepInterval = 24 * time.Hour
 
 // RunWritingCheckEventSweep deletes the writing_check_events rows older than
-// store.WritingCheckRetention once a day, the first pass at start, on the store's own pool. It
-// takes no lease: the pass is one idempotent delete by age, so every process runs it and a second
-// process's pass the same day deletes what the first left, which is nothing, and the sweep holds
-// no connection of the lease pool. It stops when ctx is done.
+// store.WritingCheckRetention that R8's counts do not read (store.SweepWritingCheckEvents) once a
+// day, the first pass at start, on the store's own pool. It takes no lease: the pass is one
+// idempotent delete by age, so every process runs it and a second process's pass the same day
+// deletes what the first left, which is nothing, and the sweep holds no connection of the lease
+// pool. It stops when ctx is done.
 func RunWritingCheckEventSweep(ctx context.Context, database *store.Store) {
 	ticker := time.NewTicker(writingCheckSweepInterval)
 	defer ticker.Stop()

@@ -21,25 +21,24 @@ import (
 // batch has run - an event's id, a returned timestamp - is read by the statement's callback (Exec,
 // QueryRow, Query), which runs as Send reads that statement's result, in statement order.
 //
-// A batch is built under a context (NewWriteBatch, RunWrite): its writers read a mark of the write
-// off it (Context) as a write run at once reads the mark off the context it is run with - the
-// person-typed mark of a text event (events.WithPersonTyped) is one.
+// A batch carries one mark of the write it belongs to, read off the context it is built under
+// (NewWriteBatch, RunWrite): whether a person typed the write in a session (WithPersonTyped), which
+// marks each text event queued on it (events.Broker.QueueAppendWithLogins).
 type WriteBatch struct {
-	batch pgx.Batch
-	ctx   context.Context
+	batch       pgx.Batch
+	personTyped bool
 }
 
-// NewWriteBatch is an empty batch built under ctx (Context).
+// NewWriteBatch is an empty batch of the write ctx is the context of, carrying its mark
+// (PersonTyped).
 func NewWriteBatch(ctx context.Context) *WriteBatch {
-	return &WriteBatch{ctx: ctx}
+	return &WriteBatch{personTyped: PersonTyped(ctx)}
 }
 
-// Context is the context the batch is built under, Background for a batch built under none.
-func (b *WriteBatch) Context() context.Context {
-	if b.ctx == nil {
-		return context.Background()
-	}
-	return b.ctx
+// PersonTyped reports whether the batch's write is one a person typed in a session
+// (WithPersonTyped on the context the batch was built under).
+func (b *WriteBatch) PersonTyped() bool {
+	return b.personTyped
 }
 
 // LatestEventID is the SQL expression for the id of the event this session appended last: the
@@ -137,38 +136,56 @@ func (r batchRow) Scan(dest ...any) error {
 	return r.queued.failed(r.rows.Err())
 }
 
-// Send sends every queued statement to tx in one batch, under the context the batch is built under
-// (Context), and reads their results in order, running each statement's callback as it reads its
-// result. It returns the first failure: the first statement that failed (the server runs none
-// after it) or the first callback that returned an error (whose later statements ran, and are
-// rolled back with the transaction the caller now abandons), whichever comes first in the batch.
-// The batch is empty again afterwards. An empty batch sends nothing.
-func (b *WriteBatch) Send(tx pgx.Tx) error {
+// Send sends every queued statement to tx in one batch and reads their results in order, running
+// each statement's callback as it reads its result. It returns the first failure: the first
+// statement that failed (the server runs none after it) or the first callback that returned an
+// error (whose later statements ran, and are rolled back with the transaction the caller now
+// abandons), whichever comes first in the batch. The batch is empty again afterwards. An empty
+// batch sends nothing.
+func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 	if b.batch.Len() == 0 {
 		return nil
 	}
 	batch := b.batch
 	b.batch = pgx.Batch{}
-	return tx.SendBatch(b.Context(), &batch).Close()
+	return tx.SendBatch(ctx, &batch).Close()
 }
 
-// RunWrite runs write's statements in tx at once, as a batch of their own built under ctx (Send):
-// what a write step does in a transaction that queues no write phase.
+// RunWrite runs write's statements in tx at once, as a batch of their own of the write ctx is the
+// context of (NewWriteBatch, Send): what a write step does in a transaction that queues no write
+// phase.
 func RunWrite(ctx context.Context, tx pgx.Tx, write func(*WriteBatch) error) error {
 	batch := NewWriteBatch(ctx)
 	if err := write(batch); err != nil {
-		return batch.SendFailed(tx, err)
+		return batch.SendFailed(ctx, tx, err)
 	}
-	return batch.Send(tx)
+	return batch.Send(ctx, tx)
 }
 
 // SendFailed ends a batch whose building failed with err partway: it sends what was queued before
 // the failure and returns the first failure among those statements, else err. Run one at a time,
 // those statements would have run before the write that failed was reached, so one of them failing
 // is the first failure of the write phase, which the caller answers as it always has.
-func (b *WriteBatch) SendFailed(tx pgx.Tx, err error) error {
-	if sendErr := b.Send(tx); sendErr != nil {
+func (b *WriteBatch) SendFailed(ctx context.Context, tx pgx.Tx, err error) error {
+	if sendErr := b.Send(ctx, tx); sendErr != nil {
 		return sendErr
 	}
 	return err
+}
+
+// personTypedKey marks the context of a write a person typed in a session: the write carried
+// Dispatch-Person-Typed: 1 (Decision 26 of INFRA-3231's plan), which the server's routes read.
+type personTypedKey struct{}
+
+// WithPersonTyped is ctx marked as a person's typed write's: a batch built under it carries the
+// mark (NewWriteBatch), so every text event queued on it carries person_typed: true, and a
+// document write under it records its asks' authors as the person's.
+func WithPersonTyped(ctx context.Context) context.Context {
+	return context.WithValue(ctx, personTypedKey{}, true)
+}
+
+// PersonTyped reports whether ctx is a person's typed write's (WithPersonTyped).
+func PersonTyped(ctx context.Context) bool {
+	typed, _ := ctx.Value(personTypedKey{}).(bool)
+	return typed
 }

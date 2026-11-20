@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
@@ -19,6 +21,9 @@ const (
 	reviewerModel      = "DISPATCH_REVIEWER_MODEL_"
 	rewriteDefineModel = "DISPATCH_REWRITE_DEFINE_MODEL_"
 	wordRecordsModel   = "DISPATCH_WORD_RECORDS_MODEL_"
+	// gatewayEndpoint is the model gateway as a pod reaches it, over plain HTTP to a cluster
+	// Service.
+	gatewayEndpoint = "http://model-gateway.model-gateway.svc.cluster.local:4000"
 )
 
 // groupOf is each model group of a resolved boot, by its settings' prefix.
@@ -43,7 +48,7 @@ func azureGroup(prefix string, overrides map[string]string) map[string]string {
 func anthropicGroup(prefix string, overrides map[string]string) map[string]string {
 	return withOverrides(map[string]string{
 		prefix + "KIND":              "anthropic",
-		prefix + "ENDPOINT":          "http://model-gateway.example:4000",
+		prefix + "ENDPOINT":          gatewayEndpoint,
 		prefix + "DEPLOYMENT":        "claude-haiku-4-5-20251001",
 		prefix + "KEY_FILE":          "/var/run/model-gateway-key/key",
 		prefix + "TOKENS_PER_MINUTE": "40000",
@@ -72,7 +77,7 @@ func TestEveryWritingDefaultKeepsEachChangeOff(t *testing.T) {
 		"DISPATCH_REVIEWER_COMMENTS": writing.ReviewComments, "DISPATCH_REVIEWER_MESSAGES": writing.ReviewMessages,
 		"DISPATCH_REVIEWER_DOCUMENTS": writing.ReviewDocuments, "DISPATCH_REVIEWER_DECISION_BLOCKS": writing.ReviewDecisionBlocks,
 	} {
-		if choice != reviewOff {
+		if choice != api.ReviewOff {
 			t.Errorf("%s = %q, want off", name, choice)
 		}
 	}
@@ -101,7 +106,7 @@ func TestAWholeModelGroupParses(t *testing.T) {
 				t.Errorf("azure group = %+v, want %+v", got, want)
 			}
 			if got, want := group(resolveWith(t, anthropicGroup(prefix, nil)).Writing), (modelGroup{
-				Kind: "anthropic", Endpoint: "http://model-gateway.example:4000", Deployment: "claude-haiku-4-5-20251001",
+				Kind: "anthropic", Endpoint: gatewayEndpoint, Deployment: "claude-haiku-4-5-20251001",
 				KeyFile: "/var/run/model-gateway-key/key", TokensPerMinute: 40000,
 			}); got != want {
 				t.Errorf("anthropic group = %+v, want %+v", got, want)
@@ -157,7 +162,7 @@ func testModelsEnv(overrides map[string]string) map[string]string {
 		"DISPATCH_TEST_MODELS":                             " grok-4.7=azure , claude-haiku-5-5 = anthropic,",
 		"DISPATCH_TEST_MODELS_AZURE_ENDPOINT":              "https://models.example/models",
 		"DISPATCH_TEST_MODELS_AZURE_TOKENS_PER_MINUTE":     "60000",
-		"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT":          "http://model-gateway.example:4000",
+		"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT":          gatewayEndpoint,
 		"DISPATCH_TEST_MODELS_ANTHROPIC_KEY_FILE":          "/var/run/model-gateway-key/key",
 		"DISPATCH_TEST_MODELS_ANTHROPIC_TOKENS_PER_MINUTE": "40000",
 	}, azureFederated), overrides)
@@ -194,7 +199,7 @@ func TestATestModelNamedWithAnEffortAsksForIt(t *testing.T) {
 		TokensPerMinute: 60000, TenantID: "tenant-id", ClientID: "client-id", FederatedToken: "/var/run/secrets/azure-federation/token"}
 	off := plain
 	off.Effort = "off"
-	high := modelGroup{Kind: "anthropic", Endpoint: "http://model-gateway.example:4000", Deployment: "claude-haiku-5-5",
+	high := modelGroup{Kind: "anthropic", Endpoint: gatewayEndpoint, Deployment: "claude-haiku-5-5",
 		KeyFile: "/var/run/model-gateway-key/key", TokensPerMinute: 40000, Effort: "high"}
 	if want := map[string]modelGroup{"Kimi-K3.1-Pro": plain, "Kimi-K3.1-Pro:off": off, "claude-haiku-5-5:high": high}; !maps.Equal(models, want) {
 		t.Errorf("TestModels = %+v, want %+v", models, want)
@@ -229,7 +234,7 @@ func TestTheTestModels(t *testing.T) {
 	want := map[string]modelGroup{
 		"grok-4.7": {Kind: "azure", Endpoint: "https://models.example/models", Deployment: "grok-4.7", Scope: embed.DefaultEntraScope,
 			TokensPerMinute: 60000, TenantID: "tenant-id", ClientID: "client-id", FederatedToken: "/var/run/secrets/azure-federation/token"},
-		"claude-haiku-5-5": {Kind: "anthropic", Endpoint: "http://model-gateway.example:4000", Deployment: "claude-haiku-5-5",
+		"claude-haiku-5-5": {Kind: "anthropic", Endpoint: gatewayEndpoint, Deployment: "claude-haiku-5-5",
 			KeyFile: "/var/run/model-gateway-key/key", TokensPerMinute: 40000},
 	}
 	if !maps.Equal(models, want) {
@@ -256,22 +261,41 @@ func TestTheTestModels(t *testing.T) {
 		"DISPATCH_TEST_MODELS names an azure model, but no DISPATCH_TEST_MODELS_AZURE_* setting is set")
 }
 
-// Each call is charged its whole reply bound before it is sent, so a minute's quota under that
-// bound could serve no call. A set group's ceiling one token under the bound of its calls refuses
-// the boot, naming the setting, its value and the bound, and a ceiling at the bound starts. So it
-// is with the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, and a quota
-// for a deployment no group names is not judged by this rule. A group beside the stand-in model
-// is paced as any other, so it is held to the same bound. A group on the answerer's deployment
-// (the same kind, endpoint host and deployment) is paced at the answerer's quota where no quota
-// names that deployment, so that quota is held to the bound too; an answerer on another endpoint
-// host, of another deployment or beside a group of another kind is another limiter and is not
-// judged. The test models serve the reviewer's calls and Rewrite and Define's, so each kind's
-// ceiling and each test model's quota are held to the reply bound of those calls.
-func TestAMinutesQuotaUnderAReplyBoundRefusesBoot(t *testing.T) {
+// leastCharged is the least a call of a group is charged under the default rule sets, as the boot
+// weighs it: the pacer's charge (modelpace.Charge) of the group's shortest system prompt with its
+// reply bound. The reviewer's group and Rewrite and Define's send the reviewer's prompts; the
+// records job sends its selection prompt alone.
+func leastCharged(t *testing.T, prefix string) (least, bound int) {
+	t.Helper()
+	if prefix == wordRecordsModel {
+		return modelpace.Charge(utf8.RuneCountInString(wordrecords.SelectPrompt), wordrecords.CallOutputTokens), wordrecords.CallOutputTokens
+	}
+	runes, err := reviewer.LeastSystemPromptRunes(api.DefaultReviewerRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return modelpace.Charge(runes, reviewer.DefaultOutputTokens), reviewer.DefaultOutputTokens
+}
+
+// Each call is charged its prompt's estimated tokens and its whole reply bound before it is sent,
+// and no call's prompt is shorter than the shortest system prompt of the group's calls, so a
+// minute's quota not more than that charge could serve no call. A set group's ceiling at that
+// charge refuses the boot, naming the setting, its value, the charge and the bound, and a ceiling
+// one token more starts; the rule sets of DISPATCH_REVIEWER_RULES set the reviewer's shortest
+// prompt, so a ceiling that fits the structure rule set alone is refused under the default ones.
+// So it is with the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, and a
+// quota for a deployment no group names is not judged by this rule. A group beside the stand-in
+// model is paced as any other, so it is held to the same charge. A group on the answerer's
+// deployment (the same kind, endpoint host and deployment) is paced at the answerer's quota where
+// no quota names that deployment, so that quota is held to it too; an answerer on another
+// endpoint host, of another deployment or beside a group of another kind is another limiter and
+// is not judged. The test models serve the reviewer's calls and Rewrite and Define's, so each
+// kind's ceiling and each test model's quota are held to the charge of those calls.
+func TestAMinutesQuotaNoCallFitsRefusesBoot(t *testing.T) {
 	const (
 		quotas        = "DISPATCH_MODEL_DEPLOYMENT_QUOTAS"
 		answererQuota = "DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE"
-		why           = ": each call is charged its whole reply bound before it is sent, so a smaller minute's quota could serve no call"
+		why           = ": each call is charged its prompt's estimated tokens and its whole reply bound before it is sent, so a minute's quota no larger could serve no call"
 	)
 	// starts fails the test where the boot refuses env.
 	starts := func(t *testing.T, what string, env map[string]string) {
@@ -280,30 +304,40 @@ func TestAMinutesQuotaUnderAReplyBoundRefusesBoot(t *testing.T) {
 			t.Errorf("%s: the boot is refused: %v", what, err)
 		}
 	}
-	for _, row := range []struct {
-		prefix, whose string
-		bound         int
-	}{
-		{reviewerModel, "the reviewer's", reviewer.DefaultOutputTokens},
-		{rewriteDefineModel, "Rewrite and Define's", reviewer.DefaultOutputTokens},
-		{wordRecordsModel, "the records job's", wordrecords.CallOutputTokens},
+	for _, row := range []struct{ prefix, whose string }{
+		{reviewerModel, "the reviewer's"},
+		{rewriteDefineModel, "Rewrite and Define's"},
+		{wordRecordsModel, "the records job's"},
 	} {
 		t.Run(row.prefix, func(t *testing.T) {
-			ceiling, under, at := row.prefix+"TOKENS_PER_MINUTE", strconv.Itoa(row.bound-1), strconv.Itoa(row.bound)
-			calls := ", the reply bound of " + row.whose + " calls"
-			refusedWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: under}), ceiling+"="+under+" is under "+at+calls+why)
-			refusedWith(t, standInGroup(row.prefix, "azure", map[string]string{ceiling: under}), ceiling+"="+under+" is under "+at+calls+why)
-			if got := groupOf[row.prefix](resolveWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: at})).Writing).TokensPerMinute; got != row.bound {
-				t.Errorf("a ceiling at the bound: TokensPerMinute = %d, want %d", got, row.bound)
+			least, bound := leastCharged(t, row.prefix)
+			if least <= bound {
+				t.Fatalf("the least charge %d is not more than the reply bound %d: the system prompt adds nothing", least, bound)
+			}
+			ceiling, at, over := row.prefix+"TOKENS_PER_MINUTE", strconv.Itoa(least), strconv.Itoa(least+1)
+			charged := strconv.Itoa(least) + ", the least " + row.whose + " calls are charged (a reply bound of " + strconv.Itoa(bound) + " tokens and the shortest system prompt)"
+			refusedWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: at}), ceiling+"="+at+" is not more than "+charged+why)
+			refusedWith(t, standInGroup(row.prefix, "azure", map[string]string{ceiling: at}), ceiling+"="+at+" is not more than "+charged+why)
+			if got := groupOf[row.prefix](resolveWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: over})).Writing).TokensPerMinute; got != least+1 {
+				t.Errorf("a ceiling one over the charge: TokensPerMinute = %d, want %d", got, least+1)
+			}
+			if row.prefix == reviewerModel {
+				runes, err := reviewer.LeastSystemPromptRunes([]reviewer.RuleSet{reviewer.RuleStructure})
+				if err != nil {
+					t.Fatal(err)
+				}
+				fits := strconv.Itoa(modelpace.Charge(runes, bound) + 1)
+				starts(t, "a ceiling over the charge of the structure rule set alone", anthropicGroup(row.prefix, map[string]string{ceiling: fits, "DISPATCH_REVIEWER_RULES": "structure"}))
+				refusedWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: fits}), ceiling+"="+fits+" is not more than "+charged+why)
 			}
 
 			// anthropicGroup's deployment is claude-haiku-4-5-20251001, and grok-4.7 is no group's.
 			const deployment = "claude-haiku-4-5-20251001"
-			refusedWith(t, anthropicGroup(row.prefix, map[string]string{quotas: deployment + "=" + under}),
-				quotas+" names "+deployment+"="+under+", under "+at+calls+", which go to that deployment ("+row.prefix+"DEPLOYMENT)"+why)
-			got := resolveWith(t, anthropicGroup(row.prefix, map[string]string{quotas: deployment + "=" + at + ",grok-4.7=1"})).Writing.DeploymentQuotas
-			if want := map[string]int{deployment: row.bound, "grok-4.7": 1}; !maps.Equal(got, want) {
-				t.Errorf("a quota at the bound, and one for a deployment no group names: DeploymentQuotas = %v, want %v", got, want)
+			refusedWith(t, anthropicGroup(row.prefix, map[string]string{quotas: deployment + "=" + at}),
+				quotas+" names "+deployment+"="+at+", not more than "+charged+", which go to that deployment ("+row.prefix+"DEPLOYMENT)"+why)
+			got := resolveWith(t, anthropicGroup(row.prefix, map[string]string{quotas: deployment + "=" + over + ",grok-4.7=1"})).Writing.DeploymentQuotas
+			if want := map[string]int{deployment: least + 1, "grok-4.7": 1}; !maps.Equal(got, want) {
+				t.Errorf("a quota one over the charge, and one for a deployment no group names: DeploymentQuotas = %v, want %v", got, want)
 			}
 
 			// The answerer's deployment is chat-deployment at chat.example (azureChatEnvironment).
@@ -314,31 +348,31 @@ func TestAMinutesQuotaUnderAReplyBoundRefusesBoot(t *testing.T) {
 					answererQuota: quota, row.prefix + "ENDPOINT": "https://chat.example/openai/v1", row.prefix + "DEPLOYMENT": "chat-deployment",
 				}), overrides))
 			}
-			refusedWith(t, onAnswerer(under, nil), answererQuota+"="+under+" is under "+at+calls+
+			refusedWith(t, onAnswerer(at, nil), answererQuota+"="+at+" is not more than "+charged+
 				", which go to the answerer's deployment ("+row.prefix+"DEPLOYMENT) and are paced at its quota, since "+quotas+" names none for it"+why)
-			starts(t, "the answerer's quota at the bound", onAnswerer(at, nil))
-			starts(t, "a group on another endpoint host", onAnswerer(under, map[string]string{row.prefix + "ENDPOINT": "https://models.example/models"}))
-			starts(t, "a group of another deployment", onAnswerer(under, map[string]string{row.prefix + "DEPLOYMENT": "grok-4.7"}))
-			starts(t, "a quota that names the answerer's deployment", onAnswerer(under, map[string]string{quotas: "chat-deployment=" + at}))
+			starts(t, "the answerer's quota one over the charge", onAnswerer(over, nil))
+			starts(t, "a group on another endpoint host", onAnswerer(at, map[string]string{row.prefix + "ENDPOINT": "https://models.example/models"}))
+			starts(t, "a group of another deployment", onAnswerer(at, map[string]string{row.prefix + "DEPLOYMENT": "grok-4.7"}))
+			starts(t, "a quota that names the answerer's deployment", onAnswerer(at, map[string]string{quotas: "chat-deployment=" + over}))
 			starts(t, "a group of another kind", azureChatEnvironment(anthropicGroup(row.prefix, map[string]string{
-				answererQuota: under, row.prefix + "ENDPOINT": "https://chat.example", row.prefix + "DEPLOYMENT": "chat-deployment",
+				answererQuota: at, row.prefix + "ENDPOINT": "https://chat.example", row.prefix + "DEPLOYMENT": "chat-deployment",
 			})))
 		})
 	}
 	t.Run("the test models", func(t *testing.T) {
-		bound := reviewer.DefaultOutputTokens
-		under, at := strconv.Itoa(bound-1), strconv.Itoa(bound)
+		least, bound := leastCharged(t, reviewerModel)
+		at, over := strconv.Itoa(least), strconv.Itoa(least+1)
 		for kind, model := range map[string]string{"azure": "grok-4.7", "anthropic": "claude-haiku-5-5"} {
 			ceiling := "DISPATCH_TEST_MODELS_" + strings.ToUpper(kind) + "_TOKENS_PER_MINUTE"
-			calls := ", the reply bound of the " + kind + " test models' calls"
-			refusedWith(t, testModelsEnv(map[string]string{ceiling: under}), ceiling+"="+under+" is under "+at+calls+why)
-			if got := resolveWith(t, testModelsEnv(map[string]string{ceiling: at})).Writing.TestModels[model].TokensPerMinute; got != bound {
-				t.Errorf("%s at the bound: TokensPerMinute = %d, want %d", ceiling, got, bound)
+			charged := at + ", the least the " + kind + " test models' calls are charged (a reply bound of " + strconv.Itoa(bound) + " tokens and the shortest system prompt)"
+			refusedWith(t, testModelsEnv(map[string]string{ceiling: at}), ceiling+"="+at+" is not more than "+charged+why)
+			if got := resolveWith(t, testModelsEnv(map[string]string{ceiling: over})).Writing.TestModels[model].TokensPerMinute; got != least+1 {
+				t.Errorf("%s one over the charge: TokensPerMinute = %d, want %d", ceiling, got, least+1)
 			}
-			refusedWith(t, testModelsEnv(map[string]string{quotas: model + "=" + under}),
-				quotas+" names "+model+"="+under+", under "+at+calls+", which go to that deployment (DISPATCH_TEST_MODELS)"+why)
-			if got := resolveWith(t, testModelsEnv(map[string]string{quotas: model + "=" + at})).Writing.DeploymentQuotas[model]; got != bound {
-				t.Errorf("%s's quota at the bound: %d, want %d", model, got, bound)
+			refusedWith(t, testModelsEnv(map[string]string{quotas: model + "=" + at}),
+				quotas+" names "+model+"="+at+", not more than "+charged+", which go to that deployment (DISPATCH_TEST_MODELS)"+why)
+			if got := resolveWith(t, testModelsEnv(map[string]string{quotas: model + "=" + over})).Writing.DeploymentQuotas[model]; got != least+1 {
+				t.Errorf("%s's quota one over the charge: %d, want %d", model, got, least+1)
 			}
 		}
 		// An azure test model the answerer's deployment names, at the answerer's endpoint host.
@@ -348,21 +382,27 @@ func TestAMinutesQuotaUnderAReplyBoundRefusesBoot(t *testing.T) {
 				"DISPATCH_TEST_MODELS_AZURE_ENDPOINT": "https://chat.example/models",
 			}))
 		}
-		refusedWith(t, onAnswerer(under), answererQuota+"="+under+" is under "+at+", the reply bound of the azure test models' calls"+
-			", which go to the answerer's deployment (DISPATCH_TEST_MODELS) and are paced at its quota, since "+quotas+" names none for it"+why)
-		starts(t, "the answerer's quota at the bound", onAnswerer(at))
+		refusedWith(t, onAnswerer(at), answererQuota+"="+at+" is not more than "+at+", the least the azure test models' calls are charged (a reply bound of "+strconv.Itoa(bound)+
+			" tokens and the shortest system prompt), which go to the answerer's deployment (DISPATCH_TEST_MODELS) and are paced at its quota, since "+quotas+" names none for it"+why)
+		starts(t, "the answerer's quota one over the charge", onAnswerer(over))
 	})
 }
 
 // The boot refuses the answerer's quota exactly where the pacer would refuse a group's call for
-// good. Each row is the reviewer's group beside an answerer whose quota is one token under the
-// group's reply bound. The boot is asked first. Then the answerer and the group join a pacer as
-// main joins them (newAnswerer, modelGroup.pace), and the group is charged one reply bound: the
-// pacer refuses it for good in the rows the boot refuses, and serves it in the others. The boot
-// models how the pacer picks a deployment's rate, and this holds the two together.
+// good. Each row is the reviewer's group beside an answerer whose quota is the least the group's
+// calls are charged. The boot is asked first. Then the answerer and the group join a pacer as
+// main joins them (newAnswerer, modelGroup.pace), and the group is charged a call of its shortest
+// system prompt and a user message of one token, as it charges every call
+// (modelpace.Caller.WaitFor): the pacer refuses it for good in the rows the boot refuses, and
+// serves it in the others. The boot models how the pacer picks a deployment's rate and what it
+// charges, and this holds the two together.
 func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T) {
-	bound := reviewer.DefaultOutputTokens
-	under, at := strconv.Itoa(bound-1), strconv.Itoa(bound)
+	least, bound := leastCharged(t, reviewerModel)
+	runes, err := reviewer.LeastSystemPromptRunes(api.DefaultReviewerRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, over := strconv.Itoa(least), strconv.Itoa(least+1)
 	for name, row := range map[string]struct {
 		overrides map[string]string
 		refused   bool
@@ -370,7 +410,7 @@ func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T
 		"a group on the answerer's deployment":         {nil, true},
 		"a group on another endpoint host":             {map[string]string{reviewerModel + "ENDPOINT": "https://models.example/models"}, false},
 		"a group of another deployment":                {map[string]string{reviewerModel + "DEPLOYMENT": "grok-4.7"}, false},
-		"a quota that names the answerer's deployment": {map[string]string{"DISPATCH_MODEL_DEPLOYMENT_QUOTAS": "chat-deployment=" + at}, false},
+		"a quota that names the answerer's deployment": {map[string]string{"DISPATCH_MODEL_DEPLOYMENT_QUOTAS": "chat-deployment=" + over}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			env := func(answererQuota string) map[string]string {
@@ -380,12 +420,13 @@ func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T
 					reviewerModel + "DEPLOYMENT":            "chat-deployment",
 				}), row.overrides))
 			}
-			if _, err := resolveBootConfig(bootEnvironment(env(under))); (err != nil) != row.refused {
+			if _, err := resolveBootConfig(bootEnvironment(env(at))); (err != nil) != row.refused {
 				t.Errorf("the boot: %v, want refused %t", err, row.refused)
 			}
-			// The settings resolve with the answerer's quota at the bound, and it is lowered after.
-			boot := resolveWith(t, env(at))
-			boot.Answerer.TokensPerMinute = bound - 1
+			// The settings resolve with the answerer's quota over the charge, and it is lowered
+			// to it after.
+			boot := resolveWith(t, env(over))
+			boot.Answerer.TokensPerMinute = least
 			pacer := modelpace.New(modelpace.Config{Quotas: boot.Writing.DeploymentQuotas})
 			if _, err := newAnswerer(boot.Answerer, pacer); err != nil {
 				t.Fatalf("newAnswerer: %v", err)
@@ -398,10 +439,30 @@ func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T
 			if row.refused {
 				want = modelpace.ErrPastDeadline
 			}
-			if err := pace.Wait(t.Context(), bound); !errors.Is(err, want) {
-				t.Errorf("the pacer, charged one reply bound: %v, want %v", err, want)
+			if err := pace.WaitFor(t.Context(), runes+modelpace.CharsPerToken, bound); !errors.Is(err, want) {
+				t.Errorf("the pacer, charged the shortest call: %v, want %v", err, want)
 			}
 		})
+	}
+}
+
+// An anthropic group's call carries its key, so its endpoint is http only to a host inside the
+// machine or the cluster: localhost, a loopback address, or a cluster Service's name. http to any
+// other host refuses the boot, naming the setting, for a group and for the anthropic test models,
+// and https to it starts.
+func TestAnAnthropicGroupCallsPlainHTTPOnlyInsideTheCluster(t *testing.T) {
+	for _, endpoint := range []string{
+		gatewayEndpoint, "http://model-gateway.model-gateway.svc:4000", "http://localhost:4000", "http://127.0.0.1:4000",
+		"http://[::1]:4000", "https://model-gateway.example:4000",
+	} {
+		resolveWith(t, anthropicGroup(reviewerModel, map[string]string{reviewerModel + "ENDPOINT": endpoint}))
+		resolveWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT": endpoint}))
+	}
+	for _, endpoint := range []string{"http://model-gateway.example:4000", "http://10.0.0.7:4000", "http://model-gateway:4000", "http://svc.example"} {
+		refusedWith(t, anthropicGroup(reviewerModel, map[string]string{reviewerModel + "ENDPOINT": endpoint}),
+			reviewerModel+"ENDPOINT="+strconv.Quote(endpoint)+" is http to a host outside the cluster, which would carry the reviewer's model group's key in clear text")
+		refusedWith(t, testModelsEnv(map[string]string{"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT": endpoint}),
+			"DISPATCH_TEST_MODELS_ANTHROPIC_ENDPOINT="+strconv.Quote(endpoint)+" is http to a host outside the cluster")
 	}
 }
 
@@ -410,21 +471,21 @@ func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T
 func writingSettingCases() map[string]func(t *testing.T) {
 	cases := map[string]func(t *testing.T){
 		"DISPATCH_REVIEWER_RULES": func(t *testing.T) {
-			if got := resolveWith(t, nil).Writing.ReviewerRules; !slices.Equal(got, []string{"noslop", "phrases", "reader_words", "ask_parts"}) {
+			if got := resolveWith(t, nil).Writing.ReviewerRules; !slices.Equal(got, api.DefaultReviewerRules) {
 				t.Errorf("unset: ReviewerRules = %v", got)
 			}
-			if got := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_RULES": " detector, structure,,detector "}).Writing.ReviewerRules; !slices.Equal(got, []string{"detector", "structure"}) {
+			if got := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_RULES": " detector, structure,,detector "}).Writing.ReviewerRules; !slices.Equal(got, []reviewer.RuleSet{reviewer.RuleDetector, reviewer.RuleStructure}) {
 				t.Errorf("ReviewerRules = %v, want detector and structure, each once", got)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_REVIEWER_RULES": "noslop,passive-voice"}, `DISPATCH_REVIEWER_RULES names "passive-voice"`)
 		},
-		"DISPATCH_REVIEWER_TIMEOUT":       durationCase("DISPATCH_REVIEWER_TIMEOUT", 120*time.Second, func(w writingSettings) time.Duration { return w.ReviewerTimeout }),
-		"DISPATCH_REVIEWER_WRITER_WINDOW": durationCase("DISPATCH_REVIEWER_WRITER_WINDOW", 5*time.Minute, func(w writingSettings) time.Duration { return w.ReviewerWriterWindow }),
+		"DISPATCH_REVIEWER_TIMEOUT":       durationCase("DISPATCH_REVIEWER_TIMEOUT", reviewer.DefaultTimeout, func(w writingSettings) time.Duration { return w.ReviewerTimeout }),
+		"DISPATCH_REVIEWER_WRITER_WINDOW": durationCase("DISPATCH_REVIEWER_WRITER_WINDOW", api.DefaultWriterWindow, func(w writingSettings) time.Duration { return w.ReviewerWriterWindow }),
 		"DISPATCH_REVIEWER_UNEDITED": func(t *testing.T) {
-			if got := resolveWith(t, nil).Writing.ReviewerUnedited; got != uneditedRewrite {
+			if got := resolveWith(t, nil).Writing.ReviewerUnedited; got != api.UneditedRewrite {
 				t.Errorf("unset: ReviewerUnedited = %q, want rewrite", got)
 			}
-			if got := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_UNEDITED": " as_written "}).Writing.ReviewerUnedited; got != uneditedAsWritten {
+			if got := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_UNEDITED": " as_written "}).Writing.ReviewerUnedited; got != api.UneditedAsWritten {
 				t.Errorf("ReviewerUnedited = %q, want as_written", got)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_REVIEWER_UNEDITED": "post"}, `DISPATCH_REVIEWER_UNEDITED="post" (expected rewrite or as_written)`)
@@ -542,10 +603,10 @@ func writingSettingCases() map[string]func(t *testing.T) {
 		"DISPATCH_REVIEWER_DECISION_BLOCKS": func(w writingSettings) string { return w.ReviewDecisionBlocks },
 	}
 	for name, choiceOf := range holdable {
-		cases[name] = reviewChoiceCase(name, []string{reviewAfter, reviewHold}, "off, after or hold", choiceOf)
+		cases[name] = reviewChoiceCase(name, []string{api.ReviewAfter, api.ReviewHold}, "off, after or hold", choiceOf)
 	}
 	cases["DISPATCH_REVIEWER_DOCUMENTS"] = func(t *testing.T) {
-		reviewChoiceCase("DISPATCH_REVIEWER_DOCUMENTS", []string{reviewAfter}, "off or after", func(w writingSettings) string { return w.ReviewDocuments })(t)
+		reviewChoiceCase("DISPATCH_REVIEWER_DOCUMENTS", []string{api.ReviewAfter}, "off or after", func(w writingSettings) string { return w.ReviewDocuments })(t)
 		refusedWith(t, anthropicGroup(reviewerModel, map[string]string{"DISPATCH_REVIEWER_DOCUMENTS": "hold"}), `DISPATCH_REVIEWER_DOCUMENTS="hold" (expected off or after)`)
 	}
 	for prefix, group := range groupOf {
@@ -559,7 +620,7 @@ func writingSettingCases() map[string]func(t *testing.T) {
 // value refused naming the values it takes.
 func reviewChoiceCase(name string, choices []string, expected string, choiceOf func(writingSettings) string) func(t *testing.T) {
 	return func(t *testing.T) {
-		if got := choiceOf(resolveWith(t, nil).Writing); got != reviewOff {
+		if got := choiceOf(resolveWith(t, nil).Writing); got != api.ReviewOff {
 			t.Errorf("unset: %s = %q, want off", name, got)
 		}
 		for _, choice := range choices {

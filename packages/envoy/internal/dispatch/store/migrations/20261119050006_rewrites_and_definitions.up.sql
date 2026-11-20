@@ -65,3 +65,9 @@ create table definitions (
 
 -- GET /api/v1/me/definitions reads one person's definitions, the newest first.
 create index definitions_person on definitions (person, created_at desc);
+-- An ask's delete and a document's removal cascade to the definitions that name them, inside the
+-- delete's own transaction, so each column a delete cascades by has an index of the rows that
+-- name one, as asks_artifact_id and comments_ask_id are; the table is new, so they cost nothing
+-- to build.
+create index definitions_ask_id on definitions (ask_id) where ask_id is not null;
+create index definitions_artifact_id on definitions (artifact_id) where artifact_id is not null;

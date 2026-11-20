@@ -18,7 +18,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -370,9 +369,15 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Each row of this write records the held text's id as the write's (writeIDOf): the check's
+	// row of it, the reviewer's rows of the held text (recordHeld) and the review of it after its
+	// post (afterHeldPost), so the counts count the text once.
+	if kept := writingCheckRowsFrom(ctx); kept != nil {
+		kept.write = id
+	}
 	if of.reviewed {
 		event := of.event
-		event.Outcome = reviewHeld
+		event.Outcome, event.WriteID = reviewHeld, id
 		s.recordWritingCheck(ctx, event)
 		// A text that waits on a held text is reviewed once that text posts (claimHeldReview,
 		// afterHeldPost); this start takes it at once where the text posted before this row was
@@ -1090,7 +1095,7 @@ func (s *server) releaseHeldPost(ctx context.Context, id string) error {
 }
 
 // runHeldPost runs the held text's create path. A write a person typed posts with its events
-// marked theirs (events.WithPersonTyped).
+// marked theirs (store.WithPersonTyped).
 func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 	write, err := row.write()
 	if err != nil {
@@ -1100,7 +1105,7 @@ func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 		write = withRewrite(write, *row.rewrite)
 	}
 	if row.personTyped {
-		ctx = events.WithPersonTyped(ctx)
+		ctx = store.WithPersonTyped(ctx)
 	}
 	held := &heldPost{id: row.id}
 	switch create := write.request.(type) {
@@ -1172,6 +1177,7 @@ func (s *server) afterHeldPost(ctx context.Context, row heldRow) {
 	subject.Text, subject.Writer, subject.Reader = write.text, row.writer, row.reader
 	event := store.WritingCheckEvent{
 		Route: route, Method: method, ActorKind: row.actor.Kind, ActorID: row.actor.ID, Reader: row.reader, Project: row.project,
+		WriteID: row.id,
 	}
 	if row.actor.Act != nil {
 		event.ActSession, event.TokenID = row.actor.Act.Session, row.actor.Act.TokenID

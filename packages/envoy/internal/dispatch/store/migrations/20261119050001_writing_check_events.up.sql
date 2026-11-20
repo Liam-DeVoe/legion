@@ -17,14 +17,19 @@
 --
 -- The server inserts the row outside the write's own transaction, after the decision and before
 -- the answer, so a failed insert is logged and never fails the write, and a write that rolls back
--- keeps its row. A daily sweep deletes the rows older than 90 days, on created_at's index.
+-- keeps its row. A daily sweep deletes the rows older than 90 days but those of the outcomes the
+-- counts' rows of each day, project and reader read, on created_at's index.
 --
 -- token_id is the personal token row the write was made with, where there is one: the day's
 -- exemptions are read by it, so a daemon-named write made with a person's token is counted under
 -- that token. rules and fields are the rule ids the write broke and the request fields they
 -- stand in, for a write with findings; candidates is how many sentences the code stage gave the
 -- reader, and reader_ms how long the reader took, null where it was not called. project is the
--- project of the text's issue or document, null where the writer did not record it.
+-- project of the text's issue or document, null where the writer did not record it. write_id is
+-- the id of the write the row decides, where more than one row records one write: a held text's
+-- id on each row of the held text, and an id the server makes for the write on the check's row
+-- of it and on the reviewer's row of its review after the post, so the counts count its text
+-- once; null on a row that is its write's only one.
 --
 -- A new table no earlier release names: nothing existing is read or rewritten, and the release
 -- before this one neither reads nor writes it, so it rolls (cmd/dispatch/README.md, "Database
@@ -52,7 +57,8 @@ create table writing_check_events (
   candidates int not null default 0,
   reader_ms int,
   detail text,
-  project text
+  project text,
+  write_id text
 );
 
 -- The sweep deletes by age and the counts route reads days, both by created_at. The table is

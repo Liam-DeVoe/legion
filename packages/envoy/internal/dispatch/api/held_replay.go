@@ -246,10 +246,12 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 	method, route := routeOf(r)
 	setting := rv.setting(kind)
 	if !rv.reviewsAny() || s.deps.Store == nil || setting == ReviewOff || generatedText(r, method+" "+route) || personTypedWrite(r) {
-		return nil, s.writingCheck(w, r, actor, input)
+		s.writingCheck(r, actor, input)
+		return nil, true
 	}
 	if checked, _ := writingCheckReads(actor); !checked {
-		return nil, s.writingCheck(w, r, actor, input)
+		s.writingCheck(r, actor, input)
+		return nil, true
 	}
 	ctx := r.Context()
 	reader, err := s.writingCheckReader(ctx, r, method+" "+route, actor, input)
@@ -258,7 +260,8 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 		reader = ""
 	}
 	if reader == "" {
-		return nil, s.writingCheck(w, r, actor, input)
+		s.writingCheck(r, actor, input)
+		return nil, true
 	}
 	text := reviewer.Text{Kind: kind, Body: body}
 	subject.Text, subject.Writer, subject.Reader = text, writerOf(actor), reader

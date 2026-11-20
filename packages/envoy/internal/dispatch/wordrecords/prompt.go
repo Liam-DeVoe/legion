@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/prompttags"
 )
 
 // SelectPrompt is the selection prompt, the system prompt of every call. dataset/DATASET in
@@ -66,12 +68,17 @@ type Text struct {
 	Text string
 }
 
+// messageTags are the tags of the user message (Input), escaped in each text it holds
+// (prompttags), so no text opens or closes one; ParseVerdict reads the reply's words back.
+var messageTags = prompttags.New("agent_text", "quoted_part", "person_text")
+
 // Input is the user message of one call: the agent text the person's text replies to, left out
 // where its words are empty; what the person's text points to, left out where it is empty: the
 // part of a document its anchor quotes, then the lines it quotes itself (SplitQuote); and the
 // person's own lines. A quoted line is not the person's words (INFRA-3231's R7, Quote reply), so
 // a question in it is no question of theirs, while the words they ask about may be in it. Each
-// part is cut at its bound (Clip).
+// part is cut at its bound (Clip), and then holds each opening and closing of the message's own
+// tags escaped (messageTags).
 func Input(agent Text, quote string, person Text) string {
 	own, quoted := SplitQuote(person.Text)
 	pointed := quote
@@ -83,12 +90,12 @@ func Input(agent Text, quote string, person Text) string {
 	}
 	var b strings.Builder
 	if strings.TrimSpace(agent.Text) != "" {
-		fmt.Fprintf(&b, "<agent_text kind=%q>\n%s\n</agent_text>\n\n", agent.Kind, Clip(agent.Text, AgentChars))
+		fmt.Fprintf(&b, "<agent_text kind=%q>\n%s\n</agent_text>\n\n", agent.Kind, messageTags.Escape(Clip(agent.Text, AgentChars)))
 	}
 	if pointed != "" {
-		fmt.Fprintf(&b, "<quoted_part>\n%s\n</quoted_part>\n\n", Clip(pointed, QuoteChars))
+		fmt.Fprintf(&b, "<quoted_part>\n%s\n</quoted_part>\n\n", messageTags.Escape(Clip(pointed, QuoteChars)))
 	}
-	fmt.Fprintf(&b, "<person_text kind=%q>\n%s\n</person_text>\n", person.Kind, Clip(own, PersonChars))
+	fmt.Fprintf(&b, "<person_text kind=%q>\n%s\n</person_text>\n", person.Kind, messageTags.Escape(Clip(own, PersonChars)))
 	return b.String()
 }
 
@@ -141,7 +148,8 @@ func Clip(s string, n int) string {
 }
 
 // ParseVerdict reads a reply of VerdictSchema: its verdict, and its words, an empty list where it
-// gives none. A reply that is not one verdict of the schema is an error that quotes it.
+// gives none, each as the text holds it (the message's escape undone, messageTags). A reply that
+// is not one verdict of the schema is an error that quotes it.
 func ParseVerdict(value json.RawMessage) (verdict string, words []string, err error) {
 	var reply struct {
 		Verdict string   `json:"verdict"`
@@ -152,6 +160,9 @@ func ParseVerdict(value json.RawMessage) (verdict string, words []string, err er
 	}
 	if reply.Words == nil {
 		reply.Words = []string{}
+	}
+	for i, word := range reply.Words {
+		reply.Words[i] = messageTags.Unescape(word)
 	}
 	return reply.Verdict, reply.Words, nil
 }

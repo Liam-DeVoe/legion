@@ -2,25 +2,33 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"maps"
+	"net"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/wordrecords"
+	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
 )
 
 // writing_settings.go reads the settings of the work on agents' texts (INFRA-3231): the reviewer,
 // Rewrite and Define, the records of the words people ask about, the written rules' refusal, the
 // three model groups those call, the deployments' quotas and a test process's stand-in model. It
-// reads them into writingSettings and builds none of them: it calls nothing and reads no file, so
-// a model service that is down, or a key file not written yet, never refuses boot.
+// reads them into writingSettings, and a model group into the model it calls and its share of the
+// pacer (modelGroup.agentloopModel, modelGroup.pace); it calls nothing and reads no file, so a
+// model service that is down, or a key file not written yet, never refuses boot.
 
 // The kinds of a model group.
 const (
@@ -32,50 +40,67 @@ const (
 	modelKindAnthropic = "anthropic"
 )
 
-// modelGroups are the three model groups, each by the prefix of its settings, whose group it is,
-// as a refusal names it, and the reply bound of its calls: the most tokens one reply may hold,
-// which a minute's quota must cover (refuseQuotaUnderReplyBound).
-var modelGroups = []struct {
+// modelGroupSpec is one model group's settings: the prefix of its settings, whose group it is, as
+// a refusal names it, and what each of its calls is charged on the pacer at the least
+// (modelpace.Charge), which a minute's quota must be more than (refuseQuotaNoCallFits): the reply
+// bound of its calls, the most tokens one reply may hold, and its shortest system prompt under
+// the reviewer's rule sets (leastPrompt).
+type modelGroupSpec struct {
 	prefix, whose string
 	replyBound    int
-}{
-	{"DISPATCH_REVIEWER_MODEL_", "the reviewer's", reviewer.DefaultOutputTokens},
-	{"DISPATCH_REWRITE_DEFINE_MODEL_", "Rewrite and Define's", reviewer.DefaultOutputTokens},
-	{"DISPATCH_WORD_RECORDS_MODEL_", "the records job's", wordrecords.CallOutputTokens},
+	leastPrompt   func(rules []reviewer.RuleSet) (int, error)
 }
 
-// reviewerReplyBound and recordsReplyBound are the two reply bounds of modelGroups, as the
-// settings table's descriptions state them.
+// The three model groups, and each kind's test models, which serve the reviewer's calls and
+// Rewrite and Define's.
 var (
-	reviewerReplyBound = strconv.Itoa(reviewer.DefaultOutputTokens)
-	recordsReplyBound  = strconv.Itoa(wordrecords.CallOutputTokens)
+	reviewerModelSpec      = modelGroupSpec{"DISPATCH_REVIEWER_MODEL_", "the reviewer's", reviewer.DefaultOutputTokens, reviewer.LeastSystemPromptRunes}
+	rewriteDefineModelSpec = modelGroupSpec{"DISPATCH_REWRITE_DEFINE_MODEL_", "Rewrite and Define's", reviewer.DefaultOutputTokens, reviewer.LeastSystemPromptRunes}
+	wordRecordsModelSpec   = modelGroupSpec{"DISPATCH_WORD_RECORDS_MODEL_", "the records job's", wordrecords.CallOutputTokens, selectPromptRunes}
 )
 
-// What the reviewer does with one kind of text (DISPATCH_REVIEWER_<KIND>).
-const (
-	// reviewOff reads no text of the kind.
-	reviewOff = "off"
-	// reviewAfter posts the text at once and sends the findings to the writer session.
-	reviewAfter = "after"
-	// reviewHold keeps the text from every person until the review ends and the writer acts.
-	reviewHold = "hold"
-)
+// selectPromptRunes is the records job's one system prompt's characters (wordrecords.SelectPrompt),
+// which no rule set changes.
+func selectPromptRunes([]reviewer.RuleSet) (int, error) {
+	return utf8.RuneCountInString(wordrecords.SelectPrompt), nil
+}
 
-// What posts when the writer does not act on a held text in time (DISPATCH_REVIEWER_UNEDITED).
-const (
-	uneditedRewrite   = "rewrite"
-	uneditedAsWritten = "as_written"
-)
+// testModelSpec is the spec of the test models of kind (DISPATCH_TEST_MODELS_<KIND>_*).
+func testModelSpec(kind string) modelGroupSpec {
+	return modelGroupSpec{testModelPrefixes[kind], testModelsWhose(kind), reviewer.DefaultOutputTokens, reviewer.LeastSystemPromptRunes}
+}
 
+// leastCharge is the least any call of the group is charged on the pacer under rules: its
+// shortest system prompt and its reply bound (modelpace.Charge).
+func (s modelGroupSpec) leastCharge(rules []reviewer.RuleSet) (int, error) {
+	least, err := s.leastPrompt(rules)
+	if err != nil {
+		return 0, fmt.Errorf("%s calls' shortest system prompt: %w", s.whose, err)
+	}
+	return modelpace.Charge(least, s.replyBound), nil
+}
+
+// The reply bounds of the groups, and the least their calls are charged under the default rule
+// sets, as the settings table's descriptions state them.
 var (
-	// reviewerRuleSets are the rule sets DISPATCH_REVIEWER_RULES may name, the reviewer's own
-	// (reviewer.AllRuleSets), and defaultReviewerRules those it names unset.
-	reviewerRuleSets     = ruleSetNames(reviewer.AllRuleSets...)
-	defaultReviewerRules = ruleSetNames(reviewer.RuleNoslop, reviewer.RulePhrases, reviewer.RuleReaderWords, reviewer.RuleAskParts)
-	// writingRulesExtraSets are the rule sets DISPATCH_WRITING_RULES_EXTRA may name, the ones the
-	// server's writing rules show (api.WritingRulesConfig).
-	writingRulesExtraSets = []string{api.WritingRulesReaderWords, api.WritingRulesAskParts}
+	reviewerReplyBound  = strconv.Itoa(reviewerModelSpec.replyBound)
+	recordsReplyBound   = strconv.Itoa(wordRecordsModelSpec.replyBound)
+	reviewerLeastCharge = leastChargeText(reviewerModelSpec)
+	recordsLeastCharge  = leastChargeText(wordRecordsModelSpec)
 )
+
+// leastChargeText is the least the calls of spec are charged under api.DefaultReviewerRules.
+func leastChargeText(spec modelGroupSpec) string {
+	charge, err := spec.leastCharge(api.DefaultReviewerRules)
+	if err != nil {
+		panic(err)
+	}
+	return strconv.Itoa(charge)
+}
+
+// writingRulesExtraSets are the rule sets DISPATCH_WRITING_RULES_EXTRA may name, the ones the
+// server's writing rules show (api.WritingRulesConfig).
+var writingRulesExtraSets = []string{api.WritingRulesReaderWords, api.WritingRulesAskParts}
 
 // ruleSetNames is the names of sets, as a setting spells them.
 func ruleSetNames(sets ...reviewer.RuleSet) []string {
@@ -86,33 +111,30 @@ func ruleSetNames(sets ...reviewer.RuleSet) []string {
 	return names
 }
 
-const (
-	defaultReviewerTimeout      = 120 * time.Second
-	defaultReviewerWriterWindow = 5 * time.Minute
-	// defaultWordRecordsFrom is DISPATCH_WORD_RECORDS_FROM unset: the first event of the event
-	// log the records job's backfill reads.
-	defaultWordRecordsFrom = "2026-10-16T00:00:00Z"
-)
+// defaultWordRecordsFrom is DISPATCH_WORD_RECORDS_FROM unset: the first event of the event log the
+// records job's backfill reads.
+const defaultWordRecordsFrom = "2026-10-16T00:00:00Z"
 
 // writingSettings are the settings of the work on agents' texts, as resolveWritingSettings
 // checked them. Every default keeps each change to a text off.
 type writingSettings struct {
-	// The reviewer's choice for each kind of text an agent writes: reviewOff, reviewAfter or,
-	// for every kind but a document version, reviewHold.
+	// The reviewer's choice for each kind of text an agent writes: api.ReviewOff, api.ReviewAfter
+	// or, for every kind but a document version, api.ReviewHold.
 	ReviewAsks           string
 	ReviewIssues         string
 	ReviewComments       string
 	ReviewMessages       string
 	ReviewDocuments      string
 	ReviewDecisionBlocks string
-	// ReviewerRules are the rule sets the reviewer applies (DISPATCH_REVIEWER_RULES).
-	ReviewerRules []string
+	// ReviewerRules are the rule sets the reviewer, Rewrite and Define apply
+	// (DISPATCH_REVIEWER_RULES).
+	ReviewerRules []reviewer.RuleSet
 	// ReviewerTimeout bounds the reviewer's model call (DISPATCH_REVIEWER_TIMEOUT).
 	ReviewerTimeout time.Duration
 	// ReviewerWriterWindow is the time a writer session has to act on a held text
 	// (DISPATCH_REVIEWER_WRITER_WINDOW).
 	ReviewerWriterWindow time.Duration
-	// ReviewerUnedited is uneditedRewrite or uneditedAsWritten (DISPATCH_REVIEWER_UNEDITED).
+	// ReviewerUnedited is api.UneditedRewrite or api.UneditedAsWritten (DISPATCH_REVIEWER_UNEDITED).
 	ReviewerUnedited string
 	// The three model groups. A group whose Kind is "" is unset: no model.
 	ReviewerModel      modelGroup
@@ -172,13 +194,110 @@ type modelGroup struct {
 	Effort string
 }
 
+// specGroup is one model group of a writingSettings with its spec.
+type specGroup struct {
+	spec  modelGroupSpec
+	group *modelGroup
+}
+
+// modelGroups is each model group of cfg with its spec, each named rather than placed.
+func (cfg *writingSettings) modelGroups() []specGroup {
+	return []specGroup{
+		{reviewerModelSpec, &cfg.ReviewerModel},
+		{rewriteDefineModelSpec, &cfg.RewriteDefineModel},
+		{wordRecordsModelSpec, &cfg.WordRecordsModel},
+	}
+}
+
+// standInToken is the credential every call to the stand-in model presents (DISPATCH_TEST_MODEL_URL),
+// which reads none.
+const standInToken = "stand-in"
+
+// agentloopModel is the model a set group calls through agentloop: an azure group's chat
+// deployment (agentloop.OpenAIChat), its api-version on every request and a token of the shared
+// Azure sign-in at its scope; an anthropic group's Messages service (agentloop.AnthropicMessages),
+// its key file read on each call, so a key rewritten under the process is the next call's. A group
+// beside the stand-in model presents no credential of its own. An anthropic group asks for no
+// thinking (effort "off"). An azure group sends no reasoning effort at all: agentloop sends "off"
+// as `none`, which a Foundry chat deployment refuses (measured on grok-4.7, as the detector's
+// reader found: writingcheck.ReaderNoEffort). A test model whose name asks for an effort
+// (`<id>:<effort>`, DISPATCH_TEST_MODELS) asks for that one on either kind. It reads no file and
+// calls nothing.
+func (g modelGroup) agentloopModel() (agentloop.Model, error) {
+	var token func(context.Context) (string, error)
+	switch {
+	case g.StandIn:
+		token = func(context.Context) (string, error) { return standInToken, nil }
+	case g.Kind == modelKindAzure:
+		source, err := embed.NewEntraTokenSource(embed.EntraConfig{
+			TenantID: g.TenantID, ClientID: g.ClientID, TokenFile: g.FederatedToken, Scope: g.Scope,
+		})
+		if err != nil {
+			return agentloop.Model{}, err
+		}
+		token = source.Token
+	case g.Kind == modelKindAnthropic:
+		keyFile := g.KeyFile
+		token = func(context.Context) (string, error) {
+			key, err := os.ReadFile(keyFile)
+			if err != nil {
+				return "", fmt.Errorf("read the model group's key file: %w", err)
+			}
+			return strings.TrimSpace(string(key)), nil
+		}
+	}
+	endpoint := agentloop.Endpoint{BaseURL: strings.TrimRight(g.Endpoint, "/"), Token: token}
+	effort := "off"
+	switch g.Kind {
+	case modelKindAzure:
+		endpoint.Kind = agentloop.OpenAIChat
+		if g.APIVersion != "" {
+			endpoint.Query = url.Values{"api-version": {g.APIVersion}}
+		}
+		if writingcheck.ReaderNoEffort {
+			effort = ""
+		}
+	case modelKindAnthropic:
+		endpoint.Kind = agentloop.AnthropicMessages
+	default:
+		return agentloop.Model{}, fmt.Errorf("a model group of kind %q calls no model", g.Kind)
+	}
+	if g.Effort != "" {
+		effort = g.Effort
+	}
+	return agentloop.Model{Endpoint: endpoint, ID: g.Deployment, Effort: effort}, nil
+}
+
+// share is what the group asks of its deployment on the pacer: the deployment as the pacer keys
+// it (pacedDeployment), with the group's tokens-per-minute setting the ceiling on its share. The
+// boot weighs this same share against the least the group's calls are charged
+// (refuseQuotaNoCallFits).
+func (g modelGroup) share() (modelpace.Share, error) {
+	deployment, err := pacedDeployment(g.Kind, g.Endpoint, g.Deployment)
+	if err != nil {
+		return modelpace.Share{}, fmt.Errorf("the model group's endpoint %q is not a URL", g.Endpoint)
+	}
+	return modelpace.Share{Deployment: deployment, TokensPerMinute: g.TokensPerMinute}, nil
+}
+
+// pace is the group's share of its deployment on pacer, the process's one pacer (modelpace): its
+// tokens-per-minute setting is the ceiling on that share.
+func (g modelGroup) pace(pacer *modelpace.Pacer) (*modelpace.Caller, error) {
+	share, err := g.share()
+	if err != nil {
+		return nil, err
+	}
+	return pacer.Join(share), nil
+}
+
 // resolveWritingSettings reads the settings of the work on agents' texts and refuses, naming the
 // setting, every value the work could not run on: a choice outside its values, a rule set no
 // reviewer applies, a duration or a time that does not parse, a malformed quota, a reviewer that
-// reviews with no model group, a model group set in part (resolveModelGroup), a minute's quota
-// under the reply bound of the calls it paces (refuseQuotaUnderReplyBound), and
-// DISPATCH_TEST_MODEL_URL and DISPATCH_TEST_MODELS without the test hooks. answerer is the
-// answerer the boot resolved (resolveAnswerer), whose quota paces a group on its deployment.
+// reviews with no model group, a model group set in part (resolveModelGroup), a minute's quota no
+// call of the calls it paces fits in (refuseQuotaNoCallFits), and DISPATCH_TEST_MODEL_URL and
+// DISPATCH_TEST_MODELS without the test hooks. Each setting left unset is the default the api and
+// reviewer packages export, the one place each default is written. answerer is the answerer the
+// boot resolved (resolveAnswerer), whose quota paces a group on its deployment.
 func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer answererConfig) (writingSettings, error) {
 	var cfg writingSettings
 	if err := testHookURL(env, "DISPATCH_TEST_MODEL_URL", testHooksEnabled, &cfg.TestModelURL); err != nil {
@@ -188,14 +307,12 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 	if cfg.TestModels, err = resolveTestModels(env, testHooksEnabled, cfg.TestModelURL); err != nil {
 		return writingSettings{}, err
 	}
-	for i, group := range []*modelGroup{&cfg.ReviewerModel, &cfg.RewriteDefineModel, &cfg.WordRecordsModel} {
-		resolved, err := resolveModelGroup(env, modelGroups[i].prefix, modelGroups[i].whose, cfg.TestModelURL)
-		if err != nil {
+	for _, named := range cfg.modelGroups() {
+		if *named.group, err = resolveModelGroup(env, named.spec.prefix, named.spec.whose, cfg.TestModelURL); err != nil {
 			return writingSettings{}, err
 		}
-		*group = resolved
 	}
-	holdable := []string{reviewOff, reviewAfter, reviewHold}
+	holdable := []string{api.ReviewOff, api.ReviewAfter, api.ReviewHold}
 	for _, row := range []struct {
 		name    string
 		target  *string
@@ -205,28 +322,28 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 		{"DISPATCH_REVIEWER_ISSUES", &cfg.ReviewIssues, holdable},
 		{"DISPATCH_REVIEWER_COMMENTS", &cfg.ReviewComments, holdable},
 		{"DISPATCH_REVIEWER_MESSAGES", &cfg.ReviewMessages, holdable},
-		{"DISPATCH_REVIEWER_DOCUMENTS", &cfg.ReviewDocuments, []string{reviewOff, reviewAfter}},
+		{"DISPATCH_REVIEWER_DOCUMENTS", &cfg.ReviewDocuments, []string{api.ReviewOff, api.ReviewAfter}},
 		{"DISPATCH_REVIEWER_DECISION_BLOCKS", &cfg.ReviewDecisionBlocks, holdable},
 	} {
-		choice, err := choiceSetting(env, row.name, row.choices, reviewOff)
+		choice, err := choiceSetting(env, row.name, row.choices, api.ReviewOff)
 		if err != nil {
 			return writingSettings{}, err
 		}
-		if choice != reviewOff && cfg.ReviewerModel.Kind == "" {
-			return writingSettings{}, fmt.Errorf("%s=%s needs the reviewer's model group (%sKIND and the settings beside it): with no model the reviewer reads nothing", row.name, choice, modelGroups[0].prefix)
+		if choice != api.ReviewOff && cfg.ReviewerModel.Kind == "" {
+			return writingSettings{}, fmt.Errorf("%s=%s needs the reviewer's model group (%sKIND and the settings beside it): with no model the reviewer reads nothing", row.name, choice, reviewerModelSpec.prefix)
 		}
 		*row.target = choice
 	}
-	if cfg.ReviewerRules, err = listSetting(env, "DISPATCH_REVIEWER_RULES", reviewerRuleSets, defaultReviewerRules); err != nil {
+	if cfg.ReviewerRules, err = listSetting(env, "DISPATCH_REVIEWER_RULES", reviewer.AllRuleSets, api.DefaultReviewerRules); err != nil {
 		return writingSettings{}, err
 	}
-	if cfg.ReviewerTimeout, err = durationSetting(env, "DISPATCH_REVIEWER_TIMEOUT", defaultReviewerTimeout); err != nil {
+	if cfg.ReviewerTimeout, err = durationSetting(env, "DISPATCH_REVIEWER_TIMEOUT", reviewer.DefaultTimeout); err != nil {
 		return writingSettings{}, err
 	}
-	if cfg.ReviewerWriterWindow, err = durationSetting(env, "DISPATCH_REVIEWER_WRITER_WINDOW", defaultReviewerWriterWindow); err != nil {
+	if cfg.ReviewerWriterWindow, err = durationSetting(env, "DISPATCH_REVIEWER_WRITER_WINDOW", api.DefaultWriterWindow); err != nil {
 		return writingSettings{}, err
 	}
-	if cfg.ReviewerUnedited, err = choiceSetting(env, "DISPATCH_REVIEWER_UNEDITED", []string{uneditedRewrite, uneditedAsWritten}, uneditedRewrite); err != nil {
+	if cfg.ReviewerUnedited, err = choiceSetting(env, "DISPATCH_REVIEWER_UNEDITED", []string{api.UneditedRewrite, api.UneditedAsWritten}, api.UneditedRewrite); err != nil {
 		return writingSettings{}, err
 	}
 	if cfg.WordRecords, err = onOffSetting(env, "DISPATCH_WORD_RECORDS", true); err != nil {
@@ -245,19 +362,22 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 	if cfg.DeploymentQuotas, err = deploymentQuotas(env); err != nil {
 		return writingSettings{}, err
 	}
-	if err := refuseQuotaUnderReplyBound(cfg, answerer); err != nil {
+	if err := refuseQuotaNoCallFits(cfg, answerer); err != nil {
 		return writingSettings{}, err
 	}
 	return cfg, nil
 }
 
-// refuseQuotaUnderReplyBound refuses a minute's quota that could serve no call of a set model
-// group or of a test model, because it is under the reply bound of the group's calls. The pacer
-// (modelpace) charges a call its prompt's estimated tokens and its whole reply bound before the
-// call is sent, and refuses for good a call that costs more than a minute's whole quota. Under
-// such a quota every call would fail with nothing at boot saying why, and each reviewed text
-// would post as written. Three settings can be that quota, and each is weighed as the pacer
-// reads it, from the shares main joins the pacer with (modelGroup.share, answererConfig.share):
+// refuseQuotaNoCallFits refuses a minute's quota that could serve no call of a set model group or
+// of a test model: one at or under the least any of the group's calls is charged, its reply bound
+// and the estimated tokens of its shortest system prompt under DISPATCH_REVIEWER_RULES
+// (modelGroupSpec.leastCharge, modelpace.Charge, the charge the pacer takes). The pacer charges a
+// call its prompt, the system prompt and the user message together, and its whole reply bound
+// before the call is sent, and refuses for good a call that costs more than a minute's whole quota;
+// every call's user message holds some of the text. Under such a quota every call would fail with
+// nothing at boot saying why, and each reviewed text would post as written. Three settings can be
+// that quota, and each is weighed as the pacer reads it, from the shares main joins the pacer with
+// (modelGroup.share, answererConfig.share):
 //
 //   - the group's own _TOKENS_PER_MINUTE ceiling;
 //   - the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, which is then
@@ -266,20 +386,20 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 //     answerer's as the pacer keys it (pacedDeployment). An answerer of another kind, on another
 //     endpoint host or of another deployment is another limiter, and is not weighed.
 //
-// A test model serves the reviewer's calls and Rewrite and Define's, which have one reply bound,
-// so it is held to that bound. A quota for a deployment that no group and no test model names is
-// not weighed.
-func refuseQuotaUnderReplyBound(cfg writingSettings, answerer answererConfig) error {
-	const why = "each call is charged its whole reply bound before it is sent, so a smaller minute's quota could serve no call"
+// A test model serves the reviewer's calls and Rewrite and Define's, so it is held to theirs. A
+// quota for a deployment that no group and no test model names is not weighed.
+func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
+	const why = "each call is charged its prompt's estimated tokens and its whole reply bound before it is sent, so a minute's quota no larger could serve no call"
 	// stated is what the answerer asks of its deployment. A share of no tokens states no quota,
 	// as the pacer reads it: the endpoint form's, and that of no answerer.
 	stated, err := answerer.share()
 	if err != nil {
 		return err
 	}
-	// refuse weighs a set group's ceiling, then the quota that paces its deployment, against
-	// bound. ceiling and deployment are the settings that name the group's two.
-	refuse := func(group modelGroup, ceiling, deployment, whose string, bound int) error {
+	// refuse weighs a set group's ceiling, then the quota that paces its deployment, against the
+	// least its calls are charged. ceiling and deployment are the settings that name the group's
+	// two.
+	refuse := func(spec modelGroupSpec, group modelGroup, ceiling, deployment string) error {
 		if group.Kind == "" {
 			return nil
 		}
@@ -287,31 +407,36 @@ func refuseQuotaUnderReplyBound(cfg writingSettings, answerer answererConfig) er
 		if err != nil {
 			return err
 		}
-		if asked.TokensPerMinute < bound {
-			return fmt.Errorf("%s=%d is under %d, the reply bound of %s calls: %s", ceiling, asked.TokensPerMinute, bound, whose, why)
+		least, err := spec.leastCharge(cfg.ReviewerRules)
+		if err != nil {
+			return err
+		}
+		charged := fmt.Sprintf("%d, the least %s calls are charged (a reply bound of %d tokens and the shortest system prompt)", least, spec.whose, spec.replyBound)
+		if asked.TokensPerMinute <= least {
+			return fmt.Errorf("%s=%d is not more than %s: %s", ceiling, asked.TokensPerMinute, charged, why)
 		}
 		if quota, named := cfg.DeploymentQuotas[asked.Deployment.Name]; named {
-			if quota < bound {
-				return fmt.Errorf("%s names %s=%d, under %d, the reply bound of %s calls, which go to that deployment (%s): %s",
-					deploymentQuotasSetting, asked.Deployment.Name, quota, bound, whose, deployment, why)
+			if quota <= least {
+				return fmt.Errorf("%s names %s=%d, not more than %s, which go to that deployment (%s): %s",
+					deploymentQuotasSetting, asked.Deployment.Name, quota, charged, deployment, why)
 			}
 			return nil
 		}
-		if stated.StatesQuota && stated.Deployment == asked.Deployment && 0 < stated.TokensPerMinute && stated.TokensPerMinute < bound {
-			return fmt.Errorf("%s=%d is under %d, the reply bound of %s calls, which go to the answerer's deployment (%s) and are paced at its quota, since %s names none for it: %s",
-				answererQuotaSetting, stated.TokensPerMinute, bound, whose, deployment, deploymentQuotasSetting, why)
+		if stated.StatesQuota && stated.Deployment == asked.Deployment && 0 < stated.TokensPerMinute && stated.TokensPerMinute <= least {
+			return fmt.Errorf("%s=%d is not more than %s, which go to the answerer's deployment (%s) and are paced at its quota, since %s names none for it: %s",
+				answererQuotaSetting, stated.TokensPerMinute, charged, deployment, deploymentQuotasSetting, why)
 		}
 		return nil
 	}
-	for i, group := range []modelGroup{cfg.ReviewerModel, cfg.RewriteDefineModel, cfg.WordRecordsModel} {
-		row := modelGroups[i]
-		if err := refuse(group, row.prefix+"TOKENS_PER_MINUTE", row.prefix+"DEPLOYMENT", row.whose, row.replyBound); err != nil {
+	for _, named := range cfg.modelGroups() {
+		if err := refuse(named.spec, *named.group, named.spec.prefix+"TOKENS_PER_MINUTE", named.spec.prefix+"DEPLOYMENT"); err != nil {
 			return err
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.TestModels)) {
 		group := cfg.TestModels[name]
-		if err := refuse(group, testModelPrefixes[group.Kind]+"TOKENS_PER_MINUTE", testModelsSetting, testModelsWhose(group.Kind), reviewer.DefaultOutputTokens); err != nil {
+		spec := testModelSpec(group.Kind)
+		if err := refuse(spec, group, spec.prefix+"TOKENS_PER_MINUTE", testModelsSetting); err != nil {
 			return err
 		}
 	}
@@ -327,8 +452,8 @@ const answererQuotaSetting = azureChatSettingPrefix + "TOKENS_PER_MINUTE"
 // missing or unknown is counted too, so resolveModelGroup's refusal of that kind is the one an
 // operator reads, not a refusal of the sign-in beside it.
 func modelGroupsReadSignIn(env settingValues) bool {
-	for _, group := range modelGroups {
-		if len(settingsSet(env, group.prefix)) > 0 && strings.TrimSpace(env.get(group.prefix+"KIND")) != modelKindAnthropic {
+	for _, spec := range []modelGroupSpec{reviewerModelSpec, rewriteDefineModelSpec, wordRecordsModelSpec} {
+		if len(settingsSet(env, spec.prefix)) > 0 && strings.TrimSpace(env.get(spec.prefix+"KIND")) != modelKindAnthropic {
 			return true
 		}
 	}
@@ -351,9 +476,22 @@ var modelKinds = map[string]struct {
 }{
 	modelKindAzure: {schemes: []string{"https"}, route: "/chat/completions", notRead: []string{"KEY_FILE"},
 		why: "an azure group signs in with the shared Azure sign-in and presents no key"},
-	// The model gateway serves plain HTTP inside the cluster.
+	// The model gateway serves plain HTTP inside the cluster: http is taken for a cluster-local
+	// host alone (clusterLocalHost).
 	modelKindAnthropic: {schemes: []string{"http", "https"}, route: "/v1/messages", notRead: []string{"API_VERSION", "SCOPE"},
 		why: "an anthropic group sends no api-version and asks for no Azure token"},
+}
+
+// clusterLocalHost reports whether host is reached inside the machine or the cluster: localhost, a
+// loopback address, or a Kubernetes Service's name (ending .svc or .cluster.local). A call over
+// plain http goes to such a host alone, since each call of a model group carries its key (OWASP
+// ASVS 5.0 12.3.1).
+func clusterLocalHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return host == "localhost" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".cluster.local")
 }
 
 // resolveModelGroup reads the model group whose settings begin with prefix. A group none of whose
@@ -361,10 +499,11 @@ var modelKinds = map[string]struct {
 // its kind is neither azure nor anthropic; when it is missing a setting it needs (its kind, its
 // endpoint, its deployment, its tokens-per-minute ceiling, and an anthropic group's key file);
 // when it sets one its kind does not read (an azure group's key file, an anthropic group's
-// api-version or scope); when its endpoint or its ceiling is malformed; and when an azure group
-// finds the shared Azure sign-in unset or set in part. Under testModelURL, the stand-in takes the
-// place of the group's endpoint and credential: the group needs neither, refuses its endpoint,
-// key file and scope, and reads no sign-in.
+// api-version or scope); when its endpoint or its ceiling is malformed, or its endpoint is http
+// on a host outside the cluster (clusterLocalHost); and when an azure group finds the shared
+// Azure sign-in unset or set in part. Under testModelURL, the stand-in takes the place of the
+// group's endpoint and credential: the group needs neither, refuses its endpoint, key file and
+// scope, and reads no sign-in.
 func resolveModelGroup(env settingValues, prefix, whose, testModelURL string) (modelGroup, error) {
 	set := settingsSet(env, prefix)
 	if len(set) == 0 {
@@ -416,6 +555,10 @@ func resolveModelGroup(env settingValues, prefix, whose, testModelURL string) (m
 	if err != nil || !slices.Contains(kind.schemes, parsed.Scheme) || parsed.Host == "" || strings.ContainsAny(group.Endpoint, "?#") {
 		return modelGroup{}, fmt.Errorf("%sENDPOINT=%q (expected an absolute %s URL with a host and no query or fragment, the base URL %s is appended to)",
 			prefix, group.Endpoint, strings.Join(kind.schemes, " or "), kind.route)
+	}
+	if parsed.Scheme == "http" && !clusterLocalHost(parsed.Hostname()) {
+		return modelGroup{}, fmt.Errorf("%sENDPOINT=%q is http to a host outside the cluster, which would carry %s model group's key in clear text: use https, or http to localhost, a loopback address or a cluster Service (*.svc, *.cluster.local)",
+			prefix, group.Endpoint, whose)
 	}
 	if group.Kind == modelKindAnthropic {
 		group.KeyFile = value("KEY_FILE")
@@ -592,19 +735,23 @@ func choiceSetting(env settingValues, name string, choices []string, fallback st
 
 // listSetting reads a comma list of names from known, each once in the order given; unset or
 // empty, it is fallback.
-func listSetting(env settingValues, name string, known, fallback []string) ([]string, error) {
+func listSetting[T ~string](env settingValues, name string, known, fallback []T) ([]T, error) {
 	raw := strings.TrimSpace(env.get(name))
 	if raw == "" {
 		return slices.Clone(fallback), nil
 	}
-	list := []string{}
-	for _, item := range strings.Split(raw, ",") {
-		item = strings.TrimSpace(item)
+	list := []T{}
+	for _, entry := range strings.Split(raw, ",") {
+		item := T(strings.TrimSpace(entry))
 		if item == "" || slices.Contains(list, item) {
 			continue
 		}
 		if !slices.Contains(known, item) {
-			return nil, fmt.Errorf("%s names %q, which is not one of %s", name, item, strings.Join(known, ", "))
+			names := make([]string, len(known))
+			for i, set := range known {
+				names[i] = string(set)
+			}
+			return nil, fmt.Errorf("%s names %q, which is not one of %s", name, item, strings.Join(names, ", "))
 		}
 		list = append(list, item)
 	}

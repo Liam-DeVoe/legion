@@ -87,7 +87,7 @@ func TestEveryRouteThatTakesProseReachesTheWritingCheck(t *testing.T) {
 	}
 	if len(unchecked) > 0 {
 		t.Errorf("a route whose request carries prose never reaches %s:\n\t%s\n"+
-			"Call s.writingCheck(w, r, actor, input) once the input is decoded and the actor resolved, before any transaction.",
+			"Call s.writingCheck(r, actor, input) once the input is decoded and the actor resolved, before any transaction.",
 			writingCheckFunction, strings.Join(unchecked, "\n\t"))
 	}
 	if len(stale) > 0 {

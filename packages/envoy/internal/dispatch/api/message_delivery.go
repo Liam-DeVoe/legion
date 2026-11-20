@@ -988,8 +988,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			reviewer.Subject{InReplyTo: r.PathValue("id")}); !proceed {
 			return
 		}
-	} else if !s.writingCheck(w, r, actor, input) {
-		return
+	} else {
+		s.writingCheck(r, actor, input)
 	}
 
 	tx, err := s.begin(r.Context())

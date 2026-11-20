@@ -16,12 +16,10 @@ const (
 	// DefaultCallTime bounds one call, its retry inside agentloop included.
 	DefaultCallTime = 120 * time.Second
 	// CallOutputTokens is the most tokens one reply may hold: one verdict and a few words. Each
-	// call is charged it whole to the pacer before it is made, so the job's model group needs a
-	// minute's quota of at least this (cmd/dispatch: DISPATCH_WORD_RECORDS_MODEL_TOKENS_PER_MINUTE).
+	// call is charged it whole to the pacer before it is made, with the prompt's estimated tokens
+	// (modelpace.Charge), so the job's model group needs a minute's quota of more than this and
+	// the charge of SelectPrompt (cmd/dispatch: DISPATCH_WORD_RECORDS_MODEL_TOKENS_PER_MINUTE).
 	CallOutputTokens = 1024
-	// charsPerToken is how many characters a token is taken to hold when a call is charged to
-	// the pacer before it is made.
-	charsPerToken = 4
 )
 
 // Classifier gives one person's text its verdict with the selection prompt.
@@ -52,8 +50,7 @@ func (c Classifier) Classify(ctx context.Context, input string) (Verdict, error)
 	ctx, cancel := context.WithTimeout(ctx, callTime)
 	defer cancel()
 	if c.Pace != nil {
-		tokens := (utf8.RuneCountInString(SelectPrompt)+utf8.RuneCountInString(input))/charsPerToken + CallOutputTokens
-		if err := c.Pace.Wait(ctx, tokens); err != nil {
+		if err := c.Pace.WaitFor(ctx, utf8.RuneCountInString(SelectPrompt)+utf8.RuneCountInString(input), CallOutputTokens); err != nil {
 			return Verdict{}, fmt.Errorf("pace the call: %w", err)
 		}
 	}

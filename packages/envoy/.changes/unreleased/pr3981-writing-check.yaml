@@ -14,8 +14,10 @@ body: |-
   Each decision about a write that took place is one row of the new table `writing_check_events`,
   with its outcome (`findings`, `clean` or an `exempt_*` outcome), its route, its writer, the rules
   it broke and its reader. A write the route refuses after the check records no row, and neither
-  does a reply's repeat that writes nothing. A daily sweep deletes the rows older than 90 days.
+  does a reply's repeat that writes nothing. A daily sweep deletes the rows older than 90 days but
+  those the counts' rows of each day, project and person read.
   `GET /api/v1/writing-check` answers the check as the process runs it: its rules, the rules it
-  leaves out and why, and the detector's state.
+  leaves out and why, and that its own phrase detector is off, since the detector runs as the
+  reviewer's `detector` rule set.
   The image's third-party notices now carry the licence of the ported rules and of the data the
   tagger's model was trained on.

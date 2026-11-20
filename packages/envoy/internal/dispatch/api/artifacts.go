@@ -307,7 +307,8 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 // Markdown document's text, read as inline content is, and the summary, which is read on a file
 // upload too. A new version of a document uploaded whole is read for the blocks it adds to the
 // newest saved version alone. Any other file is not read, and its record says so
-// (exempt_unread_upload). It answers whether the upload goes on, as writingCheck does.
+// (exempt_unread_upload). It answers whether the upload goes on: false where the read of the
+// document's newest version failed, which it answered.
 func (s *server) checkUploadWriting(
 	w http.ResponseWriter, r *http.Request, input artifactUploadInput, actor model.Actor, kind, mediaType string,
 	target artifactTarget,
@@ -315,7 +316,8 @@ func (s *server) checkUploadWriting(
 	checked := jsonArtifactUpload{Summary: input.summary}
 	if kind != "doc" {
 		checked.unreadFile = mediaType
-		return s.writingCheck(w, r, actor, checked)
+		s.writingCheck(r, actor, checked)
+		return true
 	}
 	content := string(input.content)
 	if s.deps.WritingCheck.on() {
@@ -335,7 +337,8 @@ func (s *server) checkUploadWriting(
 		}
 	}
 	checked.Content = &content
-	return s.writingCheck(w, r, actor, checked)
+	s.writingCheck(r, actor, checked)
+	return true
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -1359,9 +1362,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !s.writingCheck(w, r, actor, input) {
-		return
-	}
+	s.writingCheck(r, actor, input)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1453,9 +1454,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// An edit adds only what its operations write (with, markdown), and the check reads only
 	// that: the text an operation finds is the document's already.
-	if !s.writingCheck(w, r, actor, input) {
-		return
-	}
+	s.writingCheck(r, actor, input)
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)

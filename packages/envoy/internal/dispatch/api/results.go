@@ -151,9 +151,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	// The dry run writes nothing, so the check reads the record's words alone. readResultRequest
 	// opens no transaction, so the check still runs before any transaction, lock or write.
-	if !s.writingCheck(w, r, request.actor, request.input) {
-		return
-	}
+	s.writingCheck(r, request.actor, request.input)
 	// The reading resolveCheck made is the block's only while the version and digest the index
 	// holds for it have not moved since, which the locked half re-reads and judges; the one
 	// re-read a moved pair needs runs there too, with every lock given back.

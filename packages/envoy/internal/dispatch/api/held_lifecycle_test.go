@@ -309,7 +309,7 @@ func TestAHeldIssuesAnswerReadsTriageAndTheAssigneeItPostsUnder(t *testing.T) {
 // project is. Before, the scope check found no row for the held key and refused the token's own
 // write 403 PROJECT_SCOPE.
 func TestAProjectScopedTokenWritesBesideAHeldTextOfItsOwnProject(t *testing.T) {
-	rig := newBrokerTokenRigOn(t, testServerOptions{reviewer: NewReviewer(ReviewerConfig{Issues: ReviewHold})})
+	rig := newBrokerTokenRigOn(t, testServerOptions{reviewer: testReviewer(ReviewerConfig{Issues: ReviewHold})})
 	caller := newBrokerCaller(t)
 	const token = "a-token-writing-beside-a-held-issue"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))

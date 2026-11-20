@@ -380,9 +380,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 			return
 		}
 	}
-	if !s.writingCheck(w, r, actor, input) {
-		return
-	}
+	s.writingCheck(r, actor, input)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -579,9 +577,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if !s.writingCheck(w, r, actor, input) {
-		return
-	}
+	s.writingCheck(r, actor, input)
 	pool, err := s.readyPool()
 	if err != nil {
 		s.writeHandlerError(w, err)

@@ -78,6 +78,12 @@ Dispatch does not use a rewrite that changes one of these things.
 {{- end}}
 {{- end}}
 
+{{define "ask-parts"}}1. The decision that the reader must make.
+2. Why the decision is necessary now.
+3. The facts that the reader must know to make the decision.
+4. {{if .}}Your recommendation{{else}}The recommendation of the writer{{end}}, with its reason.
+5. What each option causes.{{end}}
+
 {{define "rules"}}## The rules
 {{- if .On.noslop}}
 
@@ -116,11 +122,7 @@ The fix keeps the word and adds that meaning, in a few words. A word in quotatio
 
 An ask must give the reader these five parts:
 
-1. The decision that the reader must make.
-2. Why the decision is necessary now.
-3. The facts that the reader must know to make the decision.
-4. The recommendation of the writer, with its reason.
-5. What each option causes.
+{{template "ask-parts" false}}
 
 An ask breaks this rule set for each part that it does not give. A part that the record{{if .Answer}} or the answer of the writer agent{{end}} does not hold is a missing fact, not a part for you to write.
 {{- end}}

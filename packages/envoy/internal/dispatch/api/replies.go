@@ -449,9 +449,9 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 			"cursor is a query parameter of state=%s alone; this state pages with limit and offset",
 			myRepliesStateDismissed)
 	}
-	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
+	if value, present, valid := parseQueryInt(query, "limit", 1, listMaxLimit); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
+			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", listMaxLimit)
 		}
 		limit = &value
 	}

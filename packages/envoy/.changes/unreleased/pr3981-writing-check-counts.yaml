@@ -8,4 +8,7 @@ body: |-
   their word questions, their texts and those the job has not read yet, their Define and Rewrite
   uses, the asks they answered and how many of those a person replied to before the answer, and
   the texts to them that the reviewer held, rewrote, passed or posted unreviewed, or that posted
-  over a finding.
+  over a finding, each such text once though the writing check and the reviewer both record a
+  finding of it. The sweep keeps the rows these counts read past the 90 days it keeps every other
+  row, so a day older than that counts its rows whole, and its `days` entry counts only the
+  outcomes those rows read.

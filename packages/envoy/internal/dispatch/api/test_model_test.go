@@ -69,7 +69,7 @@ func newTestModelRig(t *testing.T, hooks bool) *testModelRig {
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
 		testHooks:  hooks,
 		testModels: map[string]reviewer.Model{testModelName: candidate},
-		reviewer: NewReviewer(ReviewerConfig{
+		reviewer: testReviewer(ReviewerConfig{
 			Model: reviewerModel(stand.URL), Rules: []reviewer.RuleSet{reviewer.RuleNoslop, reviewer.RuleDetector},
 		}),
 		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), SideQuestionWait: time.Second}),

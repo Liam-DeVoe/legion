@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/plainwords"
 )
 
@@ -22,12 +23,13 @@ import (
 // GET /api/v1/settings/writing-rules, and the rules it shows from POST /api/v1/writing-rules.
 
 // The rule sets the refusal may show beside the written rules (WritingRulesConfig.Extra,
-// cmd/dispatch: DISPATCH_WRITING_RULES_EXTRA).
+// cmd/dispatch: DISPATCH_WRITING_RULES_EXTRA): two of the reviewer's rule sets, written for the
+// writer (reviewer.WrittenReaderWords, reviewer.WrittenAskParts).
 const (
 	// WritingRulesReaderWords is the words the write's reader asked about before.
-	WritingRulesReaderWords = "reader_words"
+	WritingRulesReaderWords = string(reviewer.RuleReaderWords)
 	// WritingRulesAskParts is the parts of an ask, for a write of an ask.
-	WritingRulesAskParts = "ask_parts"
+	WritingRulesAskParts = string(reviewer.RuleAskParts)
 )
 
 // WritingRulesConfig is the refusal as the deployment set it (cmd/dispatch:
@@ -104,9 +106,14 @@ var writingRulesAskRoutes = []string{
 // postWritingRules is POST /api/v1/writing-rules: the rules text for the reader of the write the
 // body names. It writes nothing. It decides the reader as the writing check decides the reader
 // of that write when it arrives (writingCheckReader), from the record and the body's fields that
-// name a person or a text it answers, and with the actor the write would carry.
+// name a person or a text it answers, and with the actor the write would carry. A person at a
+// browser reads their own recorded words alone, as GET /api/v1/readers/{login}/words serves them
+// (Decision 14 of INFRA-3231's plan), so the rules such a caller gets for another person's write
+// leave that person's words out; an agent's token gets them for any reader.
 func (s *server) postWritingRules(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	caller, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	var input writingRulesInput
@@ -145,7 +152,8 @@ func (s *server) postWritingRules(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("decide the reader of %s: %w", pending.Pattern, err))
 		return
 	}
-	text, err := s.writingRulesText(r.Context(), pending.Pattern, reader)
+	ownWords := !human || model.CanonicalLogin(caller.ID) == model.CanonicalLogin(reader)
+	text, err := s.writingRulesText(r.Context(), pending.Pattern, reader, ownWords)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -154,38 +162,35 @@ func (s *server) postWritingRules(w http.ResponseWriter, r *http.Request) {
 }
 
 // writingRulesText is the written rules (plainwords.Rules), then each rule set of
-// WritingRulesConfig.Extra that applies to a write on route read by reader.
-func (s *server) writingRulesText(ctx context.Context, route, reader string) (string, error) {
+// WritingRulesConfig.Extra that applies to a write on route read by reader: the reader's words
+// where readerWords allows the caller to read them, and the parts of an ask for an ask's write.
+func (s *server) writingRulesText(ctx context.Context, route, reader string, readerWords bool) (string, error) {
 	var text strings.Builder
 	text.WriteString(plainwords.Rules)
 	for _, set := range s.deps.WritingRules.Extra {
+		var section string
+		var err error
 		switch set {
 		case WritingRulesReaderWords:
-			if reader == "" {
+			if reader == "" || !readerWords {
 				continue
 			}
-			words, err := s.readerWords(ctx, reader)
-			if err != nil {
-				return "", fmt.Errorf("the written rules of a write on %s: %w", route, err)
+			var words []string
+			if words, err = s.readerWords(ctx, reader); err != nil || len(words) == 0 {
+				break
 			}
-			if len(words) == 0 {
-				continue
-			}
-			fmt.Fprintf(&text, "\n## Words that this reader asked about\n\n%s asked what these words mean, or said that a text with these words was not clear. Do not use these words. If you must use one of them, write in plain words what it is.\n\n", reader)
-			for _, word := range words {
-				fmt.Fprintf(&text, "- %s\n", word)
-			}
+			section, err = reviewer.WrittenReaderWords(reader, words)
 		case WritingRulesAskParts:
 			if !slices.Contains(writingRulesAskRoutes, route) {
 				continue
 			}
-			text.WriteString("\n## The parts of an ask\n\n" +
-				"An ask gives the person these five parts:\n\n" +
-				"1. The decision that the person must make.\n" +
-				"2. Why the decision is necessary now.\n" +
-				"3. The facts that the person must know to make the decision.\n" +
-				"4. Your recommendation.\n" +
-				"5. What each option causes.\n")
+			section, err = reviewer.WrittenAskParts()
+		}
+		if err != nil {
+			return "", fmt.Errorf("the written rules of a write on %s: %w", route, err)
+		}
+		if section != "" {
+			text.WriteString("\n" + section)
 		}
 	}
 	return text.String(), nil

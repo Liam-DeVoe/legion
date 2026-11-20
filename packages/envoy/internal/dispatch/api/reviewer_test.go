@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -229,6 +230,23 @@ func reviewerModel(url string) reviewer.Model {
 	}
 }
 
+// testReviewer is NewReviewer of cfg with each field a test leaves zero set as cmd/dispatch sets
+// its setting unset: every kind off, reviewer.DefaultTimeout, DefaultWriterWindow, UneditedRewrite
+// and DefaultReviewerRules, and the model's time bound the review's.
+func testReviewer(cfg ReviewerConfig) *Reviewer {
+	for _, choice := range []*string{&cfg.Asks, &cfg.Issues, &cfg.Comments, &cfg.Messages, &cfg.Documents, &cfg.DecisionBlocks} {
+		*choice = cmp.Or(*choice, ReviewOff)
+	}
+	cfg.Timeout = cmp.Or(cfg.Timeout, reviewer.DefaultTimeout)
+	cfg.WriterWindow = cmp.Or(cfg.WriterWindow, DefaultWriterWindow)
+	cfg.Unedited = cmp.Or(cfg.Unedited, UneditedRewrite)
+	if cfg.Rules == nil {
+		cfg.Rules = DefaultReviewerRules
+	}
+	cfg.Model.Timeout = cmp.Or(cfg.Model.Timeout, cfg.Timeout)
+	return NewReviewer(cfg)
+}
+
 // newReviewRig builds the rig with cfg, its model pointed at stand (reviewStandIn where nil).
 func newReviewRig(t *testing.T, cfg ReviewerConfig, stand *modeltest.Model) *reviewRig {
 	t.Helper()
@@ -238,7 +256,7 @@ func newReviewRig(t *testing.T, cfg ReviewerConfig, stand *modeltest.Model) *rev
 	cfg.Model = reviewerModel(stand.URL)
 	listenerURL, listener := newFakeReviewListener(t, heldWriter)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		reviewer: NewReviewer(cfg), envoyURL: listenerURL, envoyTimeout: 2 * time.Second,
+		reviewer: testReviewer(cfg), envoyURL: listenerURL, envoyTimeout: 2 * time.Second,
 	})
 	rig := &reviewRig{t: t, handler: handler, database: database, served: served, stand: stand, listener: listener}
 	rig.issue = createInteractionIssue(t, handler, "RVW", "Reviewer issue", "Seed paragraph here.\n").Key

@@ -54,9 +54,7 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		added := addedMarkdownBlocks(previous, *input.Markdown)
 		checked.Markdown = &added
 	}
-	if !s.writingCheck(w, r, actor, checked) {
-		return
-	}
+	s.writingCheck(r, actor, checked)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

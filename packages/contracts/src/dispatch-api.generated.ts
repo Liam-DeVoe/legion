@@ -3326,7 +3326,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The writing check as this process runs it: {enabled, rules, rules_left_out, detector, model, reader_calls, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {on, reason}, reason saying why it is off or runs with no model; model the reader's {endpoint_host, deployment, api_version, tokens_per_minute}, or null where none is configured, never a key or a token; reader_calls the reader calls this process made since it started; bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it. */
+    /** @description The writing check as this process runs it: {enabled, rules, rules_left_out, detector, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {on, reason}, the check's own phrase detector, which is off, reason saying why: the detector runs as the reviewer's detector rule set (DISPATCH_REVIEWER_RULES); bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it. */
     get: operations["getApiV1WritingCheck"];
     put?: never;
     post?: never;
@@ -3343,7 +3343,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The counts of the texts agents and people write (INFRA-3231's R8) for the UTC days ?first= to ?last=, both YYYY-MM-DD and both counted (default: last today, first the 13 days before it; at most 366 days): {first, last, days, items, total, limit, offset}. days lists each day of the range, {day, total, outcomes, routes}: the writing check's and the reviewer's decisions counted by outcome and by "<method> <route>". items is one page of the rows of each day, project and person that has a count, in day, project and person order: ?limit= rows (1 to 200, default 50) from ?offset=, and total counts every row. A row is {day, project, person, word_questions, texts, texts_unread, asks_answered, asks_replied_before_answer, rewrite_uses, define_uses, reviewer_held, reviewer_rewrote, reviewer_passed, reviewer_posted_unreviewed, posted_over_finding}: the texts the person wrote that the records job read, those in which they ask what a word means, say they cannot understand a text or complain about its words, and those still waiting for the job's model; the asks they answered and those of them a person commented on in the ask's thread before the answer; their Rewrite and Define uses; the texts written to them that the reviewer held, rewrote, passed and posted unreviewed; and the texts written to them that posted over a finding. project is "" for a text on no project or one whose project was not recorded, and person "" for a person the record does not name. A day that is not YYYY-MM-DD, a first after last, a longer range, and a limit or an offset out of its bounds are 400 INVALID_QUERY. The decisions are kept 90 days. Any signed-in caller reads it. */
+    /** @description The counts of the texts agents and people write (INFRA-3231's R8) for the UTC days ?first= to ?last=, both YYYY-MM-DD and both counted (default: last today, first the 13 days before it; at most 366 days): {first, last, days, items, total, limit, offset}. days lists each day of the range, {day, total, outcomes, routes}: the writing check's and the reviewer's decisions counted by outcome and by "<method> <route>". items is one page of the rows of each day, project and person that has a count, in day, project and person order: ?limit= rows (1 to 200, default 50) from ?offset=, and total counts every row. A row is {day, project, person, word_questions, texts, texts_unread, asks_answered, asks_replied_before_answer, rewrite_uses, define_uses, reviewer_held, reviewer_rewrote, reviewer_passed, reviewer_posted_unreviewed, posted_over_finding}: the texts the person wrote that the records job read, those in which they ask what a word means, say they cannot understand a text or complain about its words, and those still waiting for the job's model; the asks they answered and those of them a person commented on in the ask's thread before the answer; their Rewrite and Define uses; the texts written to them that the reviewer held, rewrote, passed and posted unreviewed; and the texts written to them that posted over a finding, each text once though the writing check and the reviewer both record a finding of it. project is "" for a text on no project or one whose project was not recorded, and person "" for a person the record does not name. A day that is not YYYY-MM-DD, a first after last, a range of more than 366 days, and a limit or an offset out of its bounds are 400 INVALID_QUERY. A daily sweep deletes the decisions older than 90 days but those the rows count, so a day older than that counts its rows whole, while its days entry counts only the outcomes the rows read. Any signed-in caller reads it. */
     get: operations["getApiV1WritingCheckCounts"];
     put?: never;
     post?: never;
@@ -3362,7 +3362,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description The written rules for one write that the caller did not send yet {route, body}: route is "<method> <path>" of a route whose text a person may read, and body is the JSON that the write would send. Answers {reader, text}. reader is the login of the person who reads the write, as the writing check decides it, and "" for none. text is skills/plain-words (ce-noslop's tests, its pattern catalog and its terminology, and the six phrases to stop), then each rule set of DISPATCH_WRITING_RULES_EXTRA that applies: the words that the reader asked about before (reader_words), and the parts of an ask for the write of an ask (ask_parts). The route writes nothing. A route that is no such write is 400 INVALID_BODY, and a body that is not the JSON of a write to that route is 400 INVALID_BODY. */
+    /** @description The written rules for one write that the caller did not send yet {route, body}: route is "<method> <path>" of a route whose text a person may read, and body is the JSON that the write would send. Answers {reader, text}. reader is the login of the person who reads the write, as the writing check decides it, and "" for none. text is skills/plain-words (ce-noslop's tests, its pattern catalog and its terminology, and the six phrases to stop), then each rule set of DISPATCH_WRITING_RULES_EXTRA that applies: the words that the reader asked about before (reader_words), and the parts of an ask for the write of an ask (ask_parts). A person signed in at a browser gets the reader's words only where the reader is that person, as GET /api/v1/readers/{login}/words serves them; an agent's token gets any reader's. The route writes nothing. A route that is no such write is 400 INVALID_BODY, and a body that is not the JSON of a write to that route is 400 INVALID_BODY. */
     post: operations["postApiV1WritingRules"];
     delete?: never;
     options?: never;
@@ -7183,12 +7183,6 @@ export interface components {
       on: boolean;
       reason: string;
     };
-    WritingCheckModel: {
-      api_version: string;
-      deployment: string;
-      endpoint_host: string;
-      tokens_per_minute: number;
-    };
     WritingCheckRow: {
       asks_answered: number;
       asks_replied_before_answer: number;
@@ -7214,9 +7208,6 @@ export interface components {
       bundle_model_id: string;
       detector: components["schemas"]["WritingCheckDetector"];
       enabled: boolean;
-      model: components["schemas"]["WritingCheckModel"] | null;
-      /** Format: int64 */
-      reader_calls: number;
       rules: string[] | null;
       rules_left_out: components["schemas"]["WritingCheckRuleLeftOut"][] | null;
     };
@@ -16628,7 +16619,6 @@ export type WriteSuggestion = components["schemas"]["WriteSuggestion"];
 export type WritingCheckCounts = components["schemas"]["WritingCheckCounts"];
 export type WritingCheckDay = components["schemas"]["WritingCheckDay"];
 export type WritingCheckDetector = components["schemas"]["WritingCheckDetector"];
-export type WritingCheckModel = components["schemas"]["WritingCheckModel"];
 export type WritingCheckRow = components["schemas"]["WritingCheckRow"];
 export type WritingCheckRuleLeftOut = components["schemas"]["WritingCheckRuleLeftOut"];
 export type WritingCheckState = components["schemas"]["WritingCheckState"];

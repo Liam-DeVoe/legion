@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -293,7 +292,7 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 	batch := store.NewWriteBatch(ctx)
 	for _, step := range queue {
 		if err := step(batch); err != nil {
-			return batch.SendFailed(l.writer, err)
+			return batch.SendFailed(ctx, l.writer, err)
 		}
 	}
 	if after != nil {
@@ -301,10 +300,10 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 		err := after(withLedger(ctx, l))
 		l.batch = nil
 		if err != nil {
-			return batch.SendFailed(l.writer, err)
+			return batch.SendFailed(ctx, l.writer, err)
 		}
 	}
-	return batch.Send(l.writer)
+	return batch.Send(ctx, l.writer)
 }
 
 // eventSink is where an event a document operation appends goes once appended: ctx's ledger, which
@@ -1442,7 +1441,7 @@ func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 			return err
 		}
 		authors := writtenAskAuthors(write)
-		if events.PersonTyped(ctx) && write.tree != nil {
+		if store.PersonTyped(ctx) && write.tree != nil {
 			// A person typed this write in a session: every ask block it leaves in the document is
 			// recorded as theirs, so the settlement that rewords one of them reads the rewording as
 			// the person's and reviews none of it (transactionRecordedAskAuthors). The settlement that

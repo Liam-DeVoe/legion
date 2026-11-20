@@ -486,9 +486,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	if asThePerson != nil {
 		writer = *asThePerson
 	}
-	if !s.writingCheck(w, r, writer, input) {
-		return
-	}
+	s.writingCheck(r, writer, input)
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
