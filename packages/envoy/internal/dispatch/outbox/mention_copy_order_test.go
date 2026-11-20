@@ -238,8 +238,10 @@ func heldGauges(t *testing.T, registry *metrics.Registry) string {
 }
 
 // heldClock is a clock for the held-copy record (newHeldCopies) that stands still until the test
-// moves it. A test starts it far from the wall clock, so a read of the wall clock anywhere in the
-// record reads an age of months, or a negative one, rather than one near the test's.
+// moves it. A test starts it months before the wall clock, so a read of the wall clock anywhere in
+// the record shows in what the test reads: the gauges find the copy stale (no pass found it
+// waiting for fallbackClaim before the read) or its age below zero, which reads as 0, and read 0
+// where a row wants 1; and a sweep on the wall clock drops no stale entry.
 type heldClock struct {
 	mu sync.Mutex
 	at time.Time
@@ -259,10 +261,11 @@ func (c *heldClock) advance(d time.Duration) {
 
 // A fallback copy that waits behind an earlier event of its owner shows: the gauges count it and
 // read how long the oldest has waited, naming no owner, since /metrics answers whoever reaches the
-// port; and once it has waited past the warn threshold the pass logs one WARN naming the owner,
-// the event it waits behind and that event's last publish error - once, however many passes find
-// it waiting. When the event is published the row's copy goes and the gauges read none: the
-// control, as is the scrape before any pass.
+// port with no credential and an owner label would have no bound, one series for each issue,
+// document or project with a held copy; and once it has waited past the warn threshold the pass
+// logs one WARN naming the owner, the event it waits behind and that event's last publish error -
+// once, however many passes find it waiting. When the event is published the row's copy goes and
+// the gauges read none: the control, as is the scrape before any pass.
 //
 // The record reads a clock the test moves (heldClock), so each reading below is exact: the oldest
 // copy's age is the 1.1 s the test moved the clock by between the passes, and the gauge reads it
@@ -329,7 +332,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	}
 	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(line, "envoy_dispatch_outbox_fallback_cop") && (strings.Contains(line, "{") || strings.Contains(line, "T-1")) {
-			t.Fatalf("the gauges read %q, want no label and no owner's key: /metrics answers whoever reaches the port", line)
+			t.Fatalf("the gauges read %q, want no label and no owner's key: /metrics answers whoever reaches the port, and an owner label would have no bound", line)
 		}
 	}
 	logged := logs.String()
