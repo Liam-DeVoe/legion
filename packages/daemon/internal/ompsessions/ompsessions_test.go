@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 const sessionPath = "/home/legion/.omp/profiles/legion/agent/sessions/--legion-workspaces--/2026-10-08T12-00-00-000Z_0001.jsonl"
@@ -261,6 +262,17 @@ func TestOnlyAStoreThatDidNotAnswerTheStartIsTheStoresFault(t *testing.T) {
 		}},
 		"a connection the store reset once it was open":        {fault: true, err: func() error { return ended(true) }},
 		"a connection the store closed once it was open (EOF)": {fault: true, err: func() error { return ended(false) }},
+		"a connection the store reset while it was opened": {fault: true, err: func() error {
+			return connectTo(context.Background(), "postgres://legion@"+testdb.Ending(t, true)+"/sessions?sslmode=disable&connect_timeout=5")
+		}},
+		"a connection the store closed while it was opened (EOF)": {fault: true, err: func() error {
+			return connectTo(context.Background(), "postgres://legion@"+testdb.Ending(t, false)+"/sessions?sslmode=disable&connect_timeout=5")
+		}},
+		// A generation proxy's socket ends a connection whose database it could not reach, or whose
+		// sign-in the instance refused, and records which itself.
+		"control: a connection a unix socket ended while it was opened": {err: func() error {
+			return connectTo(context.Background(), "postgres://legion@/sessions?sslmode=disable&connect_timeout=5&host="+endingSocket(t))
+		}},
 		"a server starting up (57P03)": {fault: true, err: func() error {
 			return connectTo(context.Background(), answering("57P03", "the database system is starting up"))
 		}},
@@ -342,6 +354,32 @@ func silentListener(t *testing.T) string {
 		}
 	})
 	return listener.Addr().String()
+}
+
+// endingSocket is a directory holding a unix socket of Postgres's default port that ends every
+// connection once it has read the client's first bytes, as a generation proxy's socket does when
+// the proxy cannot reach its database.
+func endingSocket(t *testing.T) string {
+	t.Helper()
+	dir := testtmp.Dir(t, SocketName)
+	listener, err := net.Listen("unix", filepath.Join(dir, SocketName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Read(make([]byte, 1024))
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = listener.Close(); <-done })
+	return dir
 }
 
 // claudeTranscript is a Claude Code transcript's path, the key its role launcher keeps it under,
