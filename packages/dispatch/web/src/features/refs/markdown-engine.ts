@@ -766,9 +766,11 @@ export function linkWordsAt(
  *  space. A line ends at every block boundary, at a hard break, and at a newline in a text or an
  *  HTML value - which is where a code block's lines end, and a block of HTML's, which the engine
  *  draws as one `html` node holding all of its lines. A table's row is the exception: it reads as
- *  one line, every boundary or break inside it a space, so its cells read in a row. A link's
- *  words name no reference of their own, as a rendered body links none there, and a link a hard
- *  break cuts is read once, as the one link it is (`linkWordsAt`). */
+ *  one line, every boundary or break inside it a space, so its cells read in a row. An item of an
+ *  ordered list opens on its number, as a rendered body draws it: the list's `order` and the
+ *  item's place in it, so `1. Stand the harness up.` keeps its `1.`. A link's words name no
+ *  reference of their own, as a rendered body links none there, and a link a hard break cuts is
+ *  read once, as the one link it is (`linkWordsAt`). */
 function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedText[] {
   const lines: ProjectedText[] = [];
   let words = "";
@@ -779,6 +781,9 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
   // The link being read, and whether a name was written in place of its words: the text nodes
   // after its first, which formatting inside the link cuts its words into, then add nothing.
   let reading: { link: Mark; drawn: boolean } | undefined;
+  // The number each item of an ordered list opens on, by the item, written once its first block
+  // has opened its line.
+  const numbers = new Map<ProseMirrorNode, string>();
   const breakLine = (position: number): void => {
     if (position < rowEnd) {
       words += " ";
@@ -842,6 +847,12 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
       breakLine(position);
       if (node.type.name === "table_row" || node.type.name === "table_header_row") {
         rowEnd = position + node.nodeSize;
+      }
+      if (node.type.name === "list_item" && parent?.type.name === "ordered_list") {
+        const order = parent.attrs.order;
+        numbers.set(node, `${(typeof order === "number" ? order : 1) + index}. `);
+      } else if (parent !== null && index === 0) {
+        words += numbers.get(parent) ?? "";
       }
     } else if (node.isLeaf) {
       words += " ";
@@ -941,21 +952,9 @@ export function useMarkdownHeadline(
   const [headline, setHeadline] = useState<MarkdownHeadline>();
   useLayoutEffect(() => {
     const fit = (document: ProseMirrorNode | undefined): void => {
-      if (document === undefined) {
-        setHeadline(undefined);
-        return;
-      }
-      // The line is read from the parsed document, never from the markdown, by the projection
-      // that reads a whole text, so the two cannot disagree on what a line holds.
-      const projected = firstLine ? firstLineOf(document, naming) : plainWords(document, naming);
-      const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
-      const cut = characters.length > max;
-      setHeadline({
-        addresses: projected.addresses,
-        questions: projected.questions,
-        cut,
-        text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
-      });
+      setHeadline(
+        document === undefined ? undefined : headlineOf(document, max, naming, firstLine)
+      );
     };
     if (tree !== undefined) {
       return drawWithEngine(tree, fit);
@@ -976,4 +975,46 @@ export function useMarkdownHeadline(
     );
   }, [firstLine, markdown, max, naming, tree]);
   return headline;
+}
+
+/** The headline of a parsed document (`useMarkdownHeadline`). The line is read from the parsed
+ *  document, never from the markdown, by the projection that reads a whole text, so the two
+ *  cannot disagree on what a line holds. */
+function headlineOf(
+  document: ProseMirrorNode,
+  max: number,
+  naming: ReferenceNaming,
+  firstLine: boolean
+): MarkdownHeadline {
+  const projected = firstLine ? firstLineOf(document, naming) : plainWords(document, naming);
+  const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
+  const cut = characters.length > max;
+  return {
+    addresses: projected.addresses,
+    questions: projected.questions,
+    cut,
+    text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
+  };
+}
+
+/** `useMarkdownHeadline`'s projection made in this task with the engine a load has already given
+ *  (`loadedEngine`), for a caller that must answer now. `undefined` until a load has resolved,
+ *  for a tree the schema refuses, and for a text with no tree that the parse worker would read,
+ *  which this never parses on the page's thread. */
+export function projectNow(
+  tree: DisplayTree | undefined,
+  max: number,
+  markdown?: string,
+  naming: ReferenceNaming = NO_REFERENCE_NAMING,
+  firstLine = false
+): MarkdownHeadline | undefined {
+  const engine = readyEngine;
+  if (engine === undefined) return undefined;
+  const document =
+    tree !== undefined
+      ? engine.draw(tree)
+      : markdown !== undefined && !parsesInTheWorker(markdown)
+        ? engine.parse(markdown, firstLine ? "line" : "space")
+        : undefined;
+  return document === undefined ? undefined : headlineOf(document, max, naming, firstLine);
 }

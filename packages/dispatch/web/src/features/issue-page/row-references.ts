@@ -1,12 +1,8 @@
 import { isPartyRoute } from "../refs/party-references";
-import {
-  type DispatchReferenceRoute,
-  parseNodeReference,
-  referenceHref,
-  shortForm,
-} from "../refs/routes";
+import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
 import { textHead } from "../refs/tree-fragment";
+import { documentWord } from "./node-row-chip";
 
 /** How many characters of a target's words a link to it draws: a link's title elsewhere is cut
  *  at the same count (`TITLE_HEADLINE_MAX`, `refs/reference-target.ts`). It is written again
@@ -18,41 +14,47 @@ const TITLE_MAX = 60;
 /**
  * What a node's words cite, and how a row of the issue page draws it.
  *
- * A row names every reference in its words from the page's one batched read of what the tree's
- * references point at (`GET /api/v1/reference-targets`, `useIssueTree.ts`), which it reads
- * through `useKnownReferenceNames`: an issue by its key and its title, anything else by its
- * target's own words, as every other surface of Dispatch draws a reference. It asks the server
- * nothing of its own. The link pass every other body runs reads one issue summary for each key
- * and one item for each comment or ask a text cites (`RefLink.tsx`, `useTextReferences.ts`),
- * which on an issue of 73 comments was 19 requests of a first load R21 holds to 40.
+ * A row names every reference in its words by the one rule every plain line names one by
+ * (`refs/plain-text.tsx`'s `useReferenceNames`): from the page's one batched read of what the
+ * tree's references point at (`GET /api/v1/reference-targets`, `useIssueTree.ts`), which the
+ * page publishes (`refs/reference-names.tsx`) - an issue by its key and its title, anything else
+ * by its target's own words, as every other surface of Dispatch draws a reference - and a party,
+ * which that read is never asked for, by its own read. It asks the server nothing for a
+ * reference the page reads. The link pass every other body runs reads one issue summary for
+ * each key and one item for each comment or ask a text cites (`RefLink.tsx`,
+ * `useTextReferences.ts`), which on an issue of 73 comments was 19 requests of a first load R21
+ * holds to 40.
  *
  * The references are found by the one reader of what a text cites (`text-references.ts`), so a
  * row links exactly what the server indexed for the same words. An issue key links only where
  * the batched read answered that its issue exists: `UTF-16` and `SHA-256` are read as keys by
  * the grammar the web shares with the server, name no issue, and are drawn as the words they
  * are. A short reference the read answered ambiguous links nothing either and is drawn as
- * written (`useKnownAmbiguousReferences`).
+ * written (`useKnownAmbiguousReferences`). A reference with no name yet - its target has not
+ * answered, or Dispatch answered it has none - reads as the words its author wrote (R8,
+ * INFRA-1196 decision 350).
  *
- * A party - an agent's session, a role or a person - is never asked for: the graph holds no node
- * for one, so the batched read refuses the whole request that names one (`INVALID_REFERENCE`).
- * A row links one from its address alone, as every other sink of a reference does
- * (`referenceHref`): an agent to its live view, a role to its agents list, and a person to
- * nothing, since no page shows one (R5). A party's link keeps the words its writer wrote
- * (`RowReference.written`), since a row has no read to name it by, which is how every renderer
- * draws a party whose name has not resolved.
+ * A party - an agent's session, a role or a person - is never asked of the batched read: the
+ * graph holds no node for one, so the batched read refuses the whole request that names one
+ * (`INVALID_REFERENCE`). A row links one from its address alone, as every other sink of a
+ * reference does (`referenceHref`): an agent to its live view and a role to its agents list,
+ * and a person to nothing, since no page shows one (R5); and it names one as the party's own
+ * read names it: an agent by its session's title, a role by its token and a person by their
+ * login, each once Dispatch knows it (R5).
  */
 
 /** One reference in a text, where it stands and what it names. */
 export interface RowReference {
   readonly end: number;
-  /** The address a link to it goes to (`referenceHref`). */
-  readonly path: string;
+  /** The address a link to it goes to (`referenceHref`); absent for a person, whom no page
+   *  shows (R5), and whom a row names with no link. */
+  readonly path?: string;
   /** The reference as the batched read is asked for it. */
   readonly reference: string;
-  /** What it names: anything a page shows, so never a person, whom no address opens. */
+  /** What it names: anything a page shows, and a person. */
   readonly route: DispatchReferenceRoute;
   readonly start: number;
-  /** The reference as the text wrote it, which a party's link is drawn in. */
+  /** The reference as the text wrote it, which it reads as until it has a name. */
   readonly written: string;
 }
 
@@ -185,14 +187,14 @@ export function knownIssueKeys(names: ReadonlyMap<string, string>): string[] {
 /** No reference read as ambiguous: what a caller that hands no set of them reads by. */
 const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
 
-/** The references of `text` a row links, in the order it holds them: every address that names
- *  something a page shows (`referenceHref`), which is every node, an agent and a role but never a
- *  person, and each bare key among `issues`. A `#id` is left as written: its question map is a
- *  read of its own, one per document, which a row does not make. A reference in `ambiguous` - one
- *  the batched read answered that two or more targets carry the short id of, which the page
- *  publishes (`useKnownAmbiguousReferences`) - is left out too, so the row draws it as the text
- *  it is and links nothing, as the tree's chip draws it (`NodeChip.ambiguous`): a link would draw
- *  it as its short form, which names no one target. */
+/** The references of `text` a row draws by name, in the order it holds them: every address that
+ *  names something a page shows (`referenceHref`), which is every node, an agent and a role, a
+ *  person, whom no page shows and a row names with no link (R5), and each bare key among
+ *  `issues`. A `#id` is left as written: its question map is a read of its own, one per
+ *  document, which a row does not make. A reference in `ambiguous` - one the batched read
+ *  answered that two or more targets carry the short id of, which the page publishes
+ *  (`useKnownAmbiguousReferences`) - is left out too, so the row draws it as the text it is and
+ *  links nothing, as the tree's chip draws it (`NodeChip.ambiguous`): it names no one target. */
 export function rowReferences(
   text: string,
   issues: readonly string[],
@@ -205,12 +207,12 @@ export function rowReferences(
       return [];
     }
     const path = referenceHref(one.route);
-    return path === undefined
+    return path === undefined && one.route.kind !== "person"
       ? []
       : [
           {
             end: one.end,
-            path,
+            ...(path === undefined ? {} : { path }),
             reference: one.reference,
             route: one.route,
             start: one.start,
@@ -222,91 +224,104 @@ export function rowReferences(
 }
 
 /**
- * What a row draws a reference as: an issue by its key, then its title once the batched read
- * has brought it; a party by the words its writer wrote, since the read is never asked for one;
- * anything else by its target's own words, cut to at most `TITLE_MAX` characters by `textHead` -
- * at a word where one ends in the budget's second half - and drawn with no ellipsis; and until
- * the read names it, or where nothing answers to it, by its short form, as a link of any other
- * body reads until its title resolves (`shortForm`).
+ * What a row draws a reference as, from `names`, the name each reference has (`RowText.tsx`'s
+ * names, by `useReferenceNames`): a whole document by the page's word for it, the one the page
+ * published (`tree-drafts.ts`'s `documentWord`) or, until it has, the word for a document
+ * (`node-row-chip.ts`'s `documentWord`); an issue by its key, then its title; a party by the name
+ * its own read gives it; anything else by its target's own words, cut to at most `TITLE_MAX`
+ * characters by `textHead` - at a word where one ends in the budget's second half - and drawn
+ * with no ellipsis. A reference with no name - its target has not answered yet, or Dispatch
+ * answered it has none - reads as the words its author wrote, as a link of any other body reads
+ * until its title resolves (R8, INFRA-1196 decision 350, which replaces decision 95's short
+ * form).
  */
 export function rowReferenceWords(
   one: Pick<RowReference, "reference" | "route" | "written">,
   names: ReadonlyMap<string, string>
 ): { readonly key: string | undefined; readonly words: string } {
-  if (isPartyRoute(one.route)) return { key: undefined, words: one.written };
   const name = (names.get(one.reference) ?? "").replace(/\s+/gu, " ").trim();
+  const word = documentWord(one.route);
+  if (word !== undefined) return { key: undefined, words: name === "" ? word : name };
+  if (name === "") return { key: undefined, words: one.written };
   if (one.route.kind === "issue") return { key: one.route.key, words: name };
-  return {
-    key: undefined,
-    words: name === "" ? shortForm(one.route) : textHead(name, TITLE_MAX),
-  };
+  return { key: undefined, words: isPartyRoute(one.route) ? name : textHead(name, TITLE_MAX) };
 }
 
-/** The mark a row's own link carries: the reference it names, by which a later pass gives it
- *  the name the batched read has brought since. */
+/** The mark a row's own reference carries: the reference it names, by which a later pass gives
+ *  it the name it has come to have since. */
 const ROW_REFERENCE = "data-row-reference";
 
-/** The words a row's own link was made over, as the text wrote them, which a later pass names a
- *  party's link by and puts back where the reference is read as ambiguous since
- *  (`linkRowReferences`). */
+/** The words a row's own reference was made over, as the text wrote them, which a later pass
+ *  puts back where the reference is read as ambiguous since (`linkRowReferences`). */
 const ROW_WRITTEN = "data-row-written";
 
 /** A link in a node's words that are drawn as stored: the words' own ink over the bullets'
  *  grey, as `styles.css` draws one in a drawn text. */
 export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]";
 
-/** Writes `anchor`'s words: an issue's key set apart from its title, as a link to an issue reads
- *  everywhere (`RefLink.tsx`). An anchor that already reads them is left as it is: only this
- *  writes a row's link, so its words tell what it holds, and a pass whose names changed nothing
- *  writes nothing. */
-function nameAnchor(
-  anchor: HTMLAnchorElement,
+/** Writes `element`'s words: an issue's key set apart from its title, as a link to an issue
+ *  reads everywhere (`RefLink.tsx`). An element that already reads them is left as it is: only
+ *  this writes a row's reference, so its words tell what it holds, and a pass whose names
+ *  changed nothing writes nothing. Answers whether it wrote anything. */
+function nameReference(
+  element: HTMLElement,
   one: Pick<RowReference, "reference" | "route" | "written">,
   names: ReadonlyMap<string, string>
-): void {
+): boolean {
   const { key, words } = rowReferenceWords(one, names);
   if (key === undefined) {
-    if (anchor.textContent !== words) anchor.textContent = words;
-    return;
+    if (element.textContent === words) return false;
+    element.textContent = words;
+    return true;
   }
   const title = words === "" ? "" : ` ${words}`;
-  if (anchor.textContent === `${key}${title}`) return;
+  if (element.textContent === `${key}${title}`) return false;
   const strong = document.createElement("span");
   strong.className = "font-semibold whitespace-nowrap";
   strong.textContent = key;
-  anchor.replaceChildren(strong, title);
+  element.replaceChildren(strong, title);
+  return true;
 }
 
 /**
- * The row's own link pass over words a reading painted into `root` (`RowText.tsx`): every
- * reference its text holds outside a link and outside code becomes a link to its target, named
- * from `names` (a party's by the words its writer wrote, `rowReferenceWords`), and a link an
- * earlier pass made takes the name the read has brought since. A reference in `ambiguous` links
- * nothing (`rowReferences`), and a link an earlier pass made for one the read has answered
- * ambiguous since is put back as the words it was made over, so it is drawn as written. Out of
- * the tab order, as everything inside a row is (R9). Run again after every paint and whenever
- * `names` or `ambiguous` changes; it finds nothing to do twice.
+ * The row's own pass over words a reading painted into `root` (`RowText.tsx`): every reference
+ * its text holds outside a link and outside code becomes a link to its target - a person, whom
+ * no page shows, words with no link (R5) - named from `names` (`rowReferenceWords`), and a
+ * reference an earlier pass made takes the name it has come to have since. A bare key is read
+ * as one only where it is among `issues`, the keys the page's batched read named an issue for.
+ * A reference in `ambiguous` links nothing (`rowReferences`), and one an earlier pass made for a
+ * reference the read has answered ambiguous since is put back as the words it was made over, so
+ * it is drawn as written. Out of the tab order, as everything inside a row is (R9). Run again
+ * after every paint and whenever `names`, `issues` or `ambiguous` changes; it finds nothing to
+ * do twice. Answers whether it changed the words, which then lay out anew.
  */
 export function linkRowReferences(
   root: HTMLElement,
   names: ReadonlyMap<string, string>,
+  issues: readonly string[],
   ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
-): void {
-  for (const anchor of root.querySelectorAll<HTMLAnchorElement>(`a[${ROW_REFERENCE}]`)) {
-    const reference = anchor.getAttribute(ROW_REFERENCE) ?? "";
-    const written = anchor.getAttribute(ROW_WRITTEN) ?? reference;
+): boolean {
+  let changed = false;
+  for (const element of root.querySelectorAll<HTMLElement>(`[${ROW_REFERENCE}]`)) {
+    const reference = element.getAttribute(ROW_REFERENCE) ?? "";
+    const written = element.getAttribute(ROW_WRITTEN) ?? reference;
     if (ambiguous.has(reference)) {
-      anchor.replaceWith(written);
+      element.replaceWith(written);
+      changed = true;
       continue;
     }
     const route = parseNodeReference(reference);
-    if (route !== undefined) nameAnchor(anchor, { reference, route, written }, names);
+    if (route !== undefined && nameReference(element, { reference, route, written }, names)) {
+      changed = true;
+    }
   }
-  const issues = knownIssueKeys(names);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node instanceof Text && node.parentElement?.closest("a, code, pre") == null) {
+    if (
+      node instanceof Text &&
+      node.parentElement?.closest(`a, code, pre, [${ROW_REFERENCE}]`) == null
+    ) {
       texts.push(node);
     }
   }
@@ -314,20 +329,24 @@ export function linkRowReferences(
     const value = text.data;
     const found = rowReferences(value, issues, ambiguous);
     if (found.length === 0) continue;
-    const pieces: (HTMLAnchorElement | string)[] = [];
+    const pieces: (HTMLElement | string)[] = [];
     let at = 0;
     for (const one of found) {
       pieces.push(value.slice(at, one.start));
-      const anchor = document.createElement("a");
-      anchor.setAttribute("href", one.path);
-      anchor.setAttribute(ROW_REFERENCE, one.reference);
-      anchor.setAttribute(ROW_WRITTEN, one.written);
-      anchor.tabIndex = -1;
-      nameAnchor(anchor, one, names);
-      pieces.push(anchor);
+      const element = document.createElement(one.path === undefined ? "span" : "a");
+      if (one.path !== undefined) {
+        element.setAttribute("href", one.path);
+        element.tabIndex = -1;
+      }
+      element.setAttribute(ROW_REFERENCE, one.reference);
+      element.setAttribute(ROW_WRITTEN, one.written);
+      nameReference(element, one, names);
+      pieces.push(element);
       at = one.end;
     }
     pieces.push(value.slice(at));
     text.replaceWith(...pieces);
+    changed = true;
   }
+  return changed;
 }

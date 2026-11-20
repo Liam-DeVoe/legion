@@ -69,6 +69,7 @@ export type DispatchReadingSurface =
   | "inbox-thread-title"
   | "issue-decision"
   | "decision-heading-words"
+  | "decision-change-quote"
   | "issue-open-question"
   | "item-match-first-line"
   | "spec-requirement-words"
@@ -109,6 +110,9 @@ export type DispatchReadingSurface =
   | "issue-page-title"
   | "node-row-words"
   | "node-row-child-title"
+  | "node-row-first-line"
+  | "node-row-parent-line"
+  | "node-row-chip"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -259,6 +263,14 @@ const PLAIN_WORDS_REASON =
  *  a blank there would leave a link with no words or a control with no name. */
 const LOAD_STATE_REASON =
   "Until the reader's engine has answered, the place carries the text as written, which is a load state rather than a second reader.";
+
+/** What a node's one line on the new issue page cannot carry: a row of the outline reads no
+ *  question map, and its one line names a reference by the same rule its row does
+ *  (`node-row-words`), so the two draw a `#id` alike. */
+const NODE_LINE_NO_QUESTION_ID: DispatchReadingUncarried = {
+  forms: ["question-id"],
+  why: "A node's one line names its references by the rule its row does: a `#id` is read against its document's questions, one read for each document, which no row of the outline makes (`row-references.ts`), so it is drawn as written, in the line as in the row.",
+};
 
 /** Why what a check says and what a run of it printed are shown as written, which is what the
  *  five surfaces of the Verification tab that draw them say. */
@@ -528,6 +540,48 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "node-row-child-title",
   },
+  // The new issue page's one line of a node, drawn as plain words: a folded branch's line, and
+  // the line a filter's row names a node's parent by, each projected from the node's own words
+  // and cut by R1's first-line rule; and a chip, which names a tie's target.
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+      test: "a folded branch's line reads a reference as its target's name, and as its author's words until it resolves",
+    },
+    reach: "/issues/<ISSUE> with the new issue page on, a folded branch's one line",
+    reason: `A folded branch is one line, its node's first line, cut by R1's first-line rule with its ellipsis and drawn beside the count of what it holds. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "node-row-first-line",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+      test: "a parent line is its parent's projected first line, a reference in it read by its target's name",
+    },
+    reach:
+      "/issues/<ISSUE>?preset=plan with the new issue page on, a plan task's line naming the statement it serves",
+    reason: `A filter's row names a parent it draws no row for on one line, the parent's first line cut by R1's first-line rule, in the words of a link to it. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "node-row-parent-line",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+      test: "a numbered step keeps its number in a chip and in a folded line",
+    },
+    reach: "/issues/<ISSUE> with the new issue page on, a plan task's needs chip",
+    reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record. The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
+    record: false,
+    rendered: false,
+    surface: "node-row-chip",
+  },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
   {
@@ -721,6 +775,20 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "decision-heading-words",
+  },
+  // The words a Change of a decision is anchored to, quoted over the box on the new issue page.
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/DecisionActions.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/DecisionActions.test.tsx",
+      test: "the Change quotes its block's plain-text projection and anchors to the document's own words",
+    },
+    reach:
+      "/issues/<ISSUE>?preset=decisions with the new issue page on, a waiting decision's Change, the quote over its box",
+    reason: `The Change quotes the decision's first block below its heading, the words the change is anchored to, on one line over the box. ${PLAIN_WORDS_REASON} The write still anchors to the decisions document's own words, which the server matches (\`anchor-quote\`). ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "decision-change-quote",
   },
   // A requirement's line in the spec's Requirements list.
   {

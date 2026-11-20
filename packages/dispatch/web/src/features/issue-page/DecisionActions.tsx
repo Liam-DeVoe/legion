@@ -11,7 +11,7 @@ import {
 } from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
@@ -30,9 +30,10 @@ import {
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
-import { textSourceOf } from "../refs/text-references";
+import { usePlainHeadline } from "../refs/plain-text";
+import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
+import { anchorBlock, anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -187,14 +188,17 @@ function DecisionControls({
     if (open) drafts?.set(decision.ref, "");
     else drafts?.delete(decision.ref);
   };
-  // Read once per answer of the decisions read, which is when the decision is a new object.
+  // Read once per answer of the decisions read, which is when the decision is a new object: the
+  // block a Change is anchored to, and its words, which the write anchors to.
+  const block = useMemo(() => anchorBlock(decision), [decision]);
   const quote = useMemo(() => anchorQuote(decision), [decision]);
+  const source = useMemo(
+    () => textSourceOf("artifact", documentId, issueKey),
+    [documentId, issueKey]
+  );
   // The heading as plain words, which Keep and Change are named after: a write's label and a
   // form's name hold no markup (the reading list's `decision-heading-words`).
-  const { reads, words: name } = useDecisionHeadingWords(
-    decision,
-    textSourceOf("artifact", documentId, issueKey)
-  );
+  const { reads, words: name } = useDecisionHeadingWords(decision, source);
   const keep = useKeyedWrite({
     inline: true,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
@@ -269,6 +273,7 @@ function DecisionControls({
       )}
       {changing && quote !== undefined ? (
         <ChangeComposer
+          block={block}
           decision={decision}
           documentId={documentId}
           issueKey={issueKey}
@@ -276,6 +281,7 @@ function DecisionControls({
           name={name}
           onDone={() => change(false)}
           quote={quote}
+          source={source}
         />
       ) : null}
     </>
@@ -287,6 +293,7 @@ function DecisionControls({
  *  in mounts (`MentionField`), with the reference picker in it (the writing list's
  *  `decisions-change`). */
 function ChangeComposer({
+  block,
   decision,
   documentId,
   focusField,
@@ -294,7 +301,10 @@ function ChangeComposer({
   name,
   onDone,
   quote,
+  source,
 }: {
+  /** The block the change is anchored to (`anchorBlock`), whose words the form quotes. */
+  block: DisplayTree | undefined;
   decision: Decision;
   documentId: string;
   /** Whether the field takes the caret as it mounts: it does when a press on Change opened the
@@ -305,8 +315,21 @@ function ChangeComposer({
    *  write are named after. */
   name: string;
   onDone: () => void;
+  /** The words of `block` as the decisions document holds them, which the change is anchored to
+   *  (`anchorQuote`). */
   quote: string;
+  /** The decisions document, the record the quote is a passage of. */
+  source: TextSource | undefined;
 }): ReactNode {
+  // The quote as the reader reads the decision: the block's plain-text projection, so a
+  // reference in it reads as its target's name and as the words its author wrote until it
+  // resolves (R8, the reading list's `decision-change-quote`), while the change is still
+  // anchored to the document's own words (`quote`), which the server matches. Until the
+  // projection answers, the form quotes those words.
+  const { reads: quoteReads, text: quoted } = usePlainHeadline(block, undefined, {
+    source,
+    surface: "decision-change-quote",
+  });
   const drafts = useContext(ChangeDrafts);
   // The words the reader typed before the body last closed, if it did.
   const [body, setBody] = useState(() => drafts?.get(decision.ref) ?? "");
@@ -416,7 +439,8 @@ function ChangeComposer({
         data-testid="decision-quote"
         {...authorText}
       >
-        {quote}
+        {quoteReads}
+        {quoted?.text ?? quote}
       </blockquote>
       <MentionField
         body={body}
