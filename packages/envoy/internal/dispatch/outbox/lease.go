@@ -767,6 +767,7 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 	deps := o.deps
 	deps.lanes = newLanes(o.signal)
 	by := o.firstReadsBy
+	budget := by
 	o.firstReadsBy = time.Time{}
 	// The batches' own context: a hard stop ends the ones still running at once, while ctx, which
 	// is the process's, still tells a stop from an end of this scan's own making.
@@ -833,7 +834,9 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 						// The take-over's first batch's reads did not answer within the
 						// take-over's budget, and wrote nothing: the take-over is late, by name,
 						// and the scan returns due, so serve scans again at once with no bound.
-						slog.Warn(lateTakeOverLine, "instance", o.instance, "cause", lateCauseFirstReads, "error", ran.err)
+						slog.Warn(lateTakeOverLine, "instance", o.instance, "cause", lateCauseFirstReads,
+							"budget", budget.Format(time.RFC3339Nano), "past_budget", time.Since(budget).Round(time.Millisecond).String(),
+							"error", ran.err)
 						due = true
 					} else {
 						slog.Error("dispatch outbox: scan", "instance", o.instance, "error", ran.err)

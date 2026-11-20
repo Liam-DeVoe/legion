@@ -909,13 +909,15 @@ func TestAHolderKeepsItsHoldWhileALateEndingAndASlowFirstRecordShareTheOutboxPoo
 				_, _, sent := recordOf(recorder, sentBatchLine)
 				return sent
 			})
-			_, _, late := recordOf(recorder, lateTakeOverLine)
+			lateRecord, _, late := recordOf(recorder, lateTakeOverLine)
 			_, _, lost := recordOf(recorder, lostHoldLine)
 			batch, _, _ := recordOf(recorder, sentBatchLine)
 			t.Logf("late take-over logged %t; publishing %t; lost line %t; the batch sent %s and published %s, %v after its record began",
 				late, standby.Publishing(), lost, stringAttribute(batch, "sent"), stringAttribute(batch, "published"), time.Since(recordAt).Round(time.Millisecond))
 			if late != row.ending {
-				t.Fatalf("a late take-over was logged: %t, want %t: %q", late, row.ending, loggedMessages(recorder))
+				t.Fatalf("a late take-over was logged: %t, want %t (cause %q, budget %s, past_budget %s, past_deadline %s, error %q): %q", late, row.ending,
+					stringAttribute(lateRecord, "cause"), stringAttribute(lateRecord, "budget"), stringAttribute(lateRecord, "past_budget"),
+					stringAttribute(lateRecord, "past_deadline"), stringAttribute(lateRecord, "error"), loggedMessages(recorder))
 			}
 			if lost || !standby.Publishing() {
 				t.Errorf("the holder, still running, lost the publisher hold while its first batch's record was held 4.5 s (publishing %t, lost line %t): %q", standby.Publishing(), lost, loggedMessages(recorder))
