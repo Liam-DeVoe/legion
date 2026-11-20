@@ -134,7 +134,7 @@ func TestEveryListenerReplicaAnswersTheProof(t *testing.T) {
 	require.NoError(t, a.Prove(t.Context()))
 	require.True(t, a.Ready())
 	report := a.Report()
-	require.Len(t, report.Listeners, 3)
+	require.Len(t, report.Listeners, 3, "the proof did not read every replica %s resolves to (%s, %s, %s): %+v", workloadName, replicaHealthy1, replicaBroken, replicaHealthy3, report.Listeners)
 	for i, address := range []string{replicaHealthy1, replicaBroken, replicaHealthy3} {
 		require.Equal(t, busprojects.ReplicaReport{Workload: workload, Address: address, Instance: "envoy-listener-" + string(rune('a'+i)), Required: true, Source: workloadSource, Read: busprojects.ReadAnswered}, report.Listeners[i])
 	}
