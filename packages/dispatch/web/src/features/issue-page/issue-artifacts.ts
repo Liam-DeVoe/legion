@@ -1,4 +1,4 @@
-import type { ArtifactV2, IssueDetails } from "../../api/types";
+import type { Artifact, IssueDetails } from "../../api/types";
 
 /**
  * Which artifact of the issue each node of the tree belongs to.
@@ -12,13 +12,13 @@ import type { ArtifactV2, IssueDetails } from "../../api/types";
  */
 
 /** Each artifact of the issue by its slug, which is how every block node of the tree names one. */
-export function artifactsBySlug(issue: IssueDetails): ReadonlyMap<string, ArtifactV2> {
+export function artifactsBySlug(issue: IssueDetails): ReadonlyMap<string, Artifact> {
   return new Map((issue.artifacts ?? []).map((artifact) => [artifact.slug, artifact]));
 }
 
 /** One node's place in a document: the document itself, and the block of it the node is. */
 export interface NodeDocument {
-  readonly artifact: ArtifactV2;
+  readonly artifact: Artifact;
   readonly blockId: string;
 }
 
@@ -27,7 +27,7 @@ export interface NodeDocument {
  *  tree (R3), so every node of one is a block of it. */
 export function documentOfNode(
   nodeId: string,
-  bySlug: ReadonlyMap<string, ArtifactV2>
+  bySlug: ReadonlyMap<string, Artifact>
 ): NodeDocument | undefined {
   const cut = nodeId.indexOf("#b-");
   if (cut === -1) return undefined;

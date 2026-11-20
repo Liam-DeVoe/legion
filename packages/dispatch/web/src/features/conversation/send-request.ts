@@ -27,7 +27,7 @@ export interface SentDraft {
   readonly replacement: string;
 }
 
-/** The block ids an edit's save carries (`PATCH /api/v2/comments/{id}`): the revision the blocks
+/** The block ids an edit's save carries (`PATCH /api/v1/comments/{id}`): the revision the blocks
  *  route answered, and each carried id with where its block starts in the body sent. */
 export type CarriedBlockIds = Required<Pick<EditCommentInput, "base_revision" | "blocks">>;
 

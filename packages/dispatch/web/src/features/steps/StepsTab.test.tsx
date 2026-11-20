@@ -7,12 +7,12 @@ import { renderWithQueries } from "../../__tests__/query-provider";
 import { installResizeObserver, layOutScrollBox } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { StepRecord } from "../../api/types";
+import type { IssueSteps } from "../../api/types";
 import { scrollFadeTrailing } from "../../theme/classes";
 import { StepsTab } from "./StepsTab";
 import { defaultRuns, stepRecord as record } from "./step-record-fixture";
 
-function renderTab(read: () => Promise<StepRecord[]>) {
+function renderTab(read: () => Promise<IssueSteps>) {
   const listSteps = spyOn(api, "listSteps").mockImplementation(read);
   const view = renderWithQueries(<StepsTab active issueKey="CORE-1" />);
   return {
@@ -41,12 +41,20 @@ function bodyRows(table: HTMLElement): string[][] {
 // task back to, a run that has not ended says it runs, and a field the record does not hold reads
 // as a dash rather than as an empty cell.
 test("the Steps tab draws each task's runs as a table, a running run as running", async () => {
-  const tab = renderTab(async () => [
-    defaultRuns.implement1,
-    defaultRuns.review1,
-    defaultRuns.implement2,
-    defaultRuns.merge1,
-  ]);
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          defaultRuns.implement1,
+          defaultRuns.review1,
+          defaultRuns.implement2,
+          defaultRuns.merge1,
+        ],
+        task: "default",
+      },
+    ],
+  }));
 
   try {
     const table = await screen.findByRole("table", { name: "Steps of task default" });
@@ -83,19 +91,30 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
 // Two tasks are two tables under two headings, in the server's order, and each table holds its own
 // task's runs and none of the other's.
 test("the Steps tab draws each of two tasks as its own table, with its own runs", async () => {
-  const tab = renderTab(async () => [
-    record({ id: "docs-implement-1", task: "docs" }),
-    record({
-      attempt: 2,
-      id: "docs-review-1",
-      result: "stopped",
-      role: "reviewer",
-      step: 3,
-      task: "docs",
-      type: "review",
-    }),
-    record({ id: "default-plan-1", role: "planner", step: 1, type: "plan" }),
-  ]);
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({ id: "docs-implement-1", task: "docs" }),
+          record({
+            attempt: 2,
+            id: "docs-review-1",
+            result: "stopped",
+            role: "reviewer",
+            step: 3,
+            task: "docs",
+            type: "review",
+          }),
+        ],
+        task: "docs",
+      },
+      {
+        steps: [record({ id: "default-plan-1", role: "planner", step: 1, type: "plan" })],
+        task: "default",
+      },
+    ],
+  }));
 
   try {
     const tables = await screen.findAllByRole("table");
@@ -129,13 +148,21 @@ test("the Steps tab draws each of two tasks as its own table, with its own runs"
 // components, so the hour and minute each cell must show hold in any time zone, and differ in day
 // and time, so a cell that shows one fixed instant, or the other cell's, cannot pass.
 test("the Steps tab shows each run's own start and end, as a clock and calendar read them", async () => {
-  const tab = renderTab(async () => [
-    record({
-      ended_at: new Date(2026, 10, 17, 14, 40).toISOString(),
-      id: "implement-1",
-      started_at: new Date(2026, 10, 16, 9, 5).toISOString(),
-    }),
-  ]);
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({
+            ended_at: new Date(2026, 10, 17, 14, 40).toISOString(),
+            id: "implement-1",
+            started_at: new Date(2026, 10, 16, 9, 5).toISOString(),
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
   try {
     const table = await screen.findByRole("table", { name: "Steps of task default" });
     const [cells] = bodyRows(table);
@@ -150,9 +177,15 @@ test("the Steps tab shows each run's own start and end, as a clock and calendar 
 // between its words, and the last break must not fall inside the phrase: at 390 px it left the
 // number alone on the last line.
 test("the Steps tab keeps the step a run returned to whole, with its number", async () => {
-  const tab = renderTab(async () => [
-    record({ id: "docs-1", result: "stopped", returned_to: 1, step: 1, task: "docs" }),
-  ]);
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [record({ id: "docs-1", result: "stopped", returned_to: 1, step: 1 })],
+        task: "docs",
+      },
+    ],
+  }));
   try {
     const table = await screen.findByRole("table", { name: "Steps of task docs" });
     expect(bodyRows(table)[0]?.[8]).toBe("stopped, returned to step 1");
@@ -166,13 +199,21 @@ test("the Steps tab keeps the step a run returned to whole, with its number", as
 // single letter stays with the part before it: at 1440 px with the margin open, the Agent column
 // put "2-" of `legion-core-core-2-implementer` on a line alone and tore the key `core-2` in two.
 test("the Steps tab never leaves a number or a single letter of an id on a line alone", async () => {
-  const tab = renderTab(async () => [
-    record({
-      agent: "legion-core-core-2-implementer-with-a-long-name",
-      id: "implement-1",
-      model: "openai/gpt-6.1-sol",
-    }),
-  ]);
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({
+            agent: "legion-core-core-2-implementer-with-a-long-name",
+            id: "implement-1",
+            model: "openai/gpt-6.1-sol",
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
   try {
     const table = await screen.findByRole("table", { name: "Steps of task default" });
     const cells = bodyRows(table)[0];
@@ -194,7 +235,10 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
 // fits, and not at the end of the scroll.
 test("a Steps table wider than its box wears the trailing fade, and one that fits or is scrolled to its end does not", async () => {
   const sizes = installResizeObserver();
-  const tab = renderTab(async () => [record({ id: "implement-1" })]);
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+  }));
   try {
     const table = await screen.findByRole("table", { name: "Steps of task default" });
     const scroller = table.parentElement;
@@ -232,7 +276,7 @@ test("a Steps table wider than its box wears the trailing fade, and one that fit
 
 // An issue Legion never ran - or ran before the release that records steps - has no task.
 test("the Steps tab says so when no step of the issue has run in Legion", async () => {
-  const tab = renderTab(async () => []);
+  const tab = renderTab(async () => ({ issue: "CORE-1", tasks: [] }));
   try {
     const empty = await screen.findByRole("region", { name: "Steps empty state" });
     expect(empty.textContent).toBe("No step of this issue has run in Legion.");
@@ -248,7 +292,7 @@ test("the Steps tab says so when no step of the issue has run in Legion", async 
 test("the Steps tab says what failed when the read fails, and reads again on Retry", async () => {
   await onFakeClock(async () => {
     const user = userOnFakeClock();
-    let answer: () => Promise<StepRecord[]> = async () => {
+    let answer: () => Promise<IssueSteps> = async () => {
       throw new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
     };
     const tab = renderTab(() => answer());
@@ -260,7 +304,10 @@ test("the Steps tab says what failed when the read fails, and reads again on Ret
       );
       expect(screen.queryByRole("region", { name: "Steps empty state" })).toBeNull();
 
-      answer = async () => [record({ id: "implement-1" })];
+      answer = async () => ({
+        issue: "CORE-1",
+        tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+      });
       await user.click(within(alert).getByRole("button", { name: "Retry" }));
       await tick(0);
       expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();

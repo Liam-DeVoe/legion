@@ -1,6 +1,6 @@
 import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
 
-import type { AskV2, Comment, MessageThreadV2 } from "../../api/types";
+import type { Ask, Comment, MessageRead } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
@@ -208,8 +208,8 @@ export function issueAddress(
 export function agentsOnlyItem(
   target: AddressTarget | undefined,
   comments: readonly Pick<Comment, "ask_id" | "author" | "id" | "reply_to">[] | undefined,
-  messages: readonly MessageThreadV2[] | undefined,
-  asks: readonly Pick<AskV2, "id" | "kind">[] | undefined
+  messages: readonly MessageRead[] | undefined,
+  asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): string | undefined {
   if (target?.kind !== "item") return undefined;
   return agentsOnlyIds(comments, messages, asks).has(target.id) ? target.id : undefined;

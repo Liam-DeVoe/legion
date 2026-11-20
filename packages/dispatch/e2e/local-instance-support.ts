@@ -568,7 +568,7 @@ function shownInboxRead(diff: SeededInboxDiff): string {
       diff.unexpected.map((row) => {
         const on =
           row.issue_key ??
-          (row.document === null ? "no issue" : `the document ${row.document.name}`);
+          (row.document === undefined ? "no issue" : `the document ${row.document.name}`);
         return `ask ${row.id} on ${on} (block ${row.block_id ?? "none"})`;
       })
     ),
@@ -578,9 +578,8 @@ function shownInboxRead(diff: SeededInboxDiff): string {
 /**
  * Reads the Inbox with `read` until it lists exactly the rows `declared`, and answers the pass
  * line, or throws a block that names every missing and every unexpected row once `boundMs` has
- * passed. `read` is ONE UNFILTERED Inbox read (`getInbox`, `GET /api/v2/asks` narrowed to no
- * project): the seed declares that set, and a filtered read (`?waiting_on=none`, say) holds
- * another.
+ * passed. `read` is ONE UNFILTERED Inbox read (`GET /api/v1/inbox` with no query): the seed
+ * declares that set, and a filtered read (`?assignee=unassigned`, say) holds another.
  *
  * Each declared row takes the first Inbox row it names that no declared row took before it; a
  * declared row that takes none is missing, and an Inbox row that none took is unexpected, a

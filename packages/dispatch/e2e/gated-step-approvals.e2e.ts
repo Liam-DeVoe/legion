@@ -15,8 +15,8 @@ import { asUser } from "./users";
 
 /**
  * The design gate in a root issue's header: one approval line per step the project's deployment
- * publishes (`PATCH /api/v2/projects/{key}` with `gated_steps`), each naming the document that
- * step reviews and where that document stands, and the one chip the header has always drawn
+ * publishes (`PUT /api/v1/projects/{key}/gated-steps`), each naming the document that step
+ * reviews and where that document stands, and the one chip the header has always drawn
  * everywhere else - a project that publishes no list, and every issue that is not its tree's
  * root.
  *
@@ -50,9 +50,9 @@ test("a root issue of a project gating three steps reads each step's own documen
   browser,
 }) => {
   await createProject({ key: "GATETHREE", name: "Three steps" });
-  expect(await setGatedSteps("GATETHREE", ["decisions", "criteria", "spec"])).toMatchObject({
-    gated_steps: ["decisions", "criteria", "spec"],
-    key: "GATETHREE",
+  expect(await setGatedSteps("GATETHREE", ["decisions", "criteria", "spec"])).toEqual({
+    project: "GATETHREE",
+    steps: ["decisions", "criteria", "spec"],
   });
   const issue = await createIssue({
     project: "GATETHREE",

@@ -1,24 +1,24 @@
 import { expect, test } from "bun:test";
 
 import type {
+  Artifact,
   ArtifactBlock,
-  ArtifactV2,
+  Ask,
   AskResolution,
-  AskV2,
   BlockAttributeValue,
+  CheckBlock,
   CheckResult,
-  CheckV2,
   Comment,
   CommentWithTrees,
   Decision,
   DisplayTree,
-  IssueChecksV2,
+  IssueCheckResults,
   IssueChild,
   IssueCoverage,
-  IssueDecisionsV2,
+  IssueDecisions,
   IssueDetails,
   Message,
-  MessageThreadV2,
+  MessageRead,
   ReferenceTarget,
   RequirementCoverage,
 } from "../../api/types";
@@ -70,28 +70,24 @@ const KEY = "CORE-1";
 const SPEC = "spec";
 const VERIFICATION = "verification-md";
 
-function artifact(id: string, slug: string, name: string, primary = false): ArtifactV2 {
+function artifact(id: string, slug: string, name: string, primary = false): Artifact {
   return {
     created_at: "2026-11-05T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id,
     issue_key: KEY,
     kind: "doc",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
     name,
     primary,
     project: "CORE",
     ref_key: `artifact:${id}`,
     session_id: null,
     slug,
-    unsettled: null,
-    version_count: 0,
+    versions: [],
   };
 }
 
-function issueDetails(artifacts: readonly ArtifactV2[]): IssueDetails {
+function issueDetails(artifacts: readonly Artifact[]): IssueDetails {
   return {
     advances: [],
     advances_revision: 0,
@@ -120,18 +116,16 @@ function issueDetails(artifacts: readonly ArtifactV2[]): IssueDetails {
     project: "CORE",
     progress: { children: null, tasks: null },
     rank: "U",
-    reach: {
-      holder_state: null,
-      last_seen: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-      takeable_at: null,
-    },
     referenced_by_count: 0,
     repo: null,
     resolved_repo: null,
     route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    holder_state: null,
+    last_seen: null,
+    takeable_at: null,
     status: "todo",
     title: "The issue page draws one ordered body",
     updated_at: "2026-11-05T00:00:00Z",
@@ -223,16 +217,16 @@ function recorded(
 }
 
 /** One check of the Verification document with the results recorded against it, newest first,
- *  as `GET /api/v2/issues/{key}/checks` answers them. `payload` is whatever the case changes
+ *  as `GET /api/v1/issues/{key}/results` answers them. `payload` is whatever the case changes
  *  about the check the server sends, including a field it sends no value for at all. */
 function checkedResults(
   blocks: readonly {
     blockId: string;
-    payload?: Partial<CheckV2>;
+    payload?: Partial<CheckBlock>;
     results: readonly CheckResult[];
   }[]
-): IssueChecksV2 {
-  const checks: CheckV2[] = blocks.map((one) => ({
+): IssueCheckResults {
+  const checks: CheckBlock[] = blocks.map((one) => ({
     artifact_id: "artifact-verification",
     block_id: one.blockId,
     compared_with: [{ commit: RESULT_COMMIT, kind: "pull_request", pull_request: 7 }],
@@ -249,14 +243,7 @@ function checkedResults(
     when: "before_merge",
     ...one.payload,
   }));
-  return {
-    issue: KEY,
-    items: checks,
-    limit: 50,
-    offset: 0,
-    total: checks.length,
-    verification_artifact_id: "artifact-verification",
-  };
+  return { checks, issue: KEY, verification_artifact_id: "artifact-verification" };
 }
 
 /** One decision of `decisions.md` whose blocks link `shaped`, which is the `shaped` edge as
@@ -303,14 +290,11 @@ function decision(
 
 /** The decisions read over `made`, which names the decisions document by its own address, as
  *  the server does (`api/decisions.go`'s `artifactReference`). */
-function decisions(made: readonly Decision[]): IssueDecisionsV2 {
+function decisions(made: readonly Decision[]): IssueDecisions {
   return {
+    decisions: [...made],
     document: `dispatch://${KEY}/artifact/decisions-md`,
-    items: [...made],
-    limit: 50,
-    offset: 0,
     open_questions: [],
-    total: made.length,
   };
 }
 
@@ -364,7 +348,7 @@ function depthOf(node: TreeNode): number {
 }
 
 /** One question asked of the issue, under no document unless `extra` names its block. */
-function question(id: string, extra: Partial<AskV2> = {}): AskV2 {
+function question(id: string, extra: Partial<Ask> = {}): Ask {
   return {
     anchor: null,
     answer: null,
@@ -375,19 +359,14 @@ function question(id: string, extra: Partial<AskV2> = {}): AskV2 {
     asked_of_by: null,
     block_id: null,
     created_at: "2026-11-05T00:00:00Z",
-    document: null,
     edited_at: null,
     id,
-    issue: null,
     issue_key: KEY,
     kind: "question",
-    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
-    priority: null,
     question: `Question ${id}?`,
-    ref: `dispatch://${KEY}/ask/${id}`,
     state: "open",
     urgency: "med",
     ...extra,
@@ -418,8 +397,7 @@ function comment(id: string, createdAt: string): Comment {
   };
 }
 
-/** One message thread of the issue: its root message's own fields with the replies under it. */
-function thread(id: string, createdAt: string): MessageThreadV2 {
+function thread(id: string, createdAt: string): MessageRead {
   const message: Message = {
     author: { id: "bob", kind: "user" },
     body: `Message ${id}.`,
@@ -432,7 +410,7 @@ function thread(id: string, createdAt: string): MessageThreadV2 {
     reply_block: null,
     target: null,
   };
-  return { ...message, replies: [] };
+  return { message, replies: [] };
 }
 
 // R4: a check serves every requirement its `serves` names, edited under the first and
@@ -1579,10 +1557,7 @@ test("no document is a node, and each typed block and child sits under the issue
   const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
-  const image: ArtifactV2 = {
-    ...artifact("artifact-image", "shot-png", "shot.png"),
-    kind: "image",
-  };
+  const image: Artifact = { ...artifact("artifact-image", "shot-png", "shot.png"), kind: "image" };
   const root = buildIssueTree({
     coverage: coverage([requirement("r1", "The first.")]),
     documents: [
@@ -2030,35 +2005,45 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
   // As the reads sent them: the spec and the decisions document as the issue read lists them,
   // the decision as the decisions read stored it, the requirements its tie names as the blocks
   // read and the coverage read hold them, and the Change as the comments read sent it.
-  const spec: ArtifactV2 = {
+  const spec: Artifact = {
     approval: { latest_version: 2, state: "draft" },
     created_at: "2026-11-16T11:11:06.995403Z",
     created_by: { id: "alice", kind: "user" },
     id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
     issue_key: "LAY-2",
     kind: "doc",
-    latest_version: 2,
-    latest_version_at: "2026-11-16T11:11:07.35439Z",
-    latest_version_size: 1713,
     name: "spec.md",
     primary: true,
     project: "LAY",
     ref_key: "LAY-2/spec",
     session_id: null,
     slug: "spec",
-    unsettled: null,
-    version_count: 2,
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-11-16T11:11:06.995403Z",
+        named: false,
+        number: 1,
+        size: 1594,
+        summary: null,
+      },
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-11-16T11:11:07.35439Z",
+        named: false,
+        number: 2,
+        size: 1713,
+        summary: null,
+      },
+    ],
   };
-  const made: ArtifactV2 = {
+  const made: Artifact = {
     approval: { latest_version: 1, state: "draft" },
     created_at: "2026-11-16T11:11:07.225118Z",
     created_by: { id: "alice", kind: "user" },
     id: "3cdf7bea-53ea-4d9e-8576-68f45d5685a6",
     issue_key: "LAY-2",
     kind: "doc",
-    latest_version: 1,
-    latest_version_at: "2026-11-16T11:11:07.225118Z",
-    latest_version_size: 1024,
     name: "decisions.md",
     primary: false,
     project: "LAY",
@@ -2066,8 +2051,16 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
     role: "decisions",
     session_id: null,
     slug: "decisions-md",
-    unsettled: null,
-    version_count: 1,
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-11-16T11:11:07.225118Z",
+        named: false,
+        number: 1,
+        size: 1024,
+        summary: null,
+      },
+    ],
   };
   const reviewed: Decision = {
     asks: [],
@@ -2281,12 +2274,9 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
         spec_artifact_id: "98141a74-a34b-4cc1-b58c-57b6de4ed1f4",
       },
       decisions: {
+        decisions: [reviewed],
         document: "dispatch://LAY-2/artifact/decisions-md",
-        items: [reviewed],
-        limit: 50,
-        offset: 0,
         open_questions: [],
-        total: 1,
       },
       documents: [{ artifactId: spec.id, blocks }],
       issue,
@@ -2514,7 +2504,7 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
     asks: [question("ask-1")],
     comments: [status, among, answer, joined, person, underAsk],
     issue: issueDetails([]),
-    messages: [{ ...daemon, author: agent }],
+    messages: [{ ...daemon, message: { ...daemon.message, author: agent } }],
   });
 
   for (const id of ["status", "among", "answer", "daemon"]) {
@@ -2599,7 +2589,7 @@ test("a declined ask is drawn Declined, as the card beside it is", () => {
     kind: "declined",
     reason: "The release owner decides this one.",
   };
-  const declined: AskV2 = {
+  const declined: Ask = {
     anchor: null,
     answer: null,
     author: { id: "planner", kind: "session" },
@@ -2610,19 +2600,14 @@ test("a declined ask is drawn Declined, as the card beside it is", () => {
     block_artifact: { id: spec.id, primary: true, slug: SPEC },
     block_id: "q1",
     created_at: "2026-11-05T00:00:00Z",
-    document: null,
     edited_at: null,
     id: "ask-1",
-    issue: null,
     issue_key: KEY,
     kind: "question",
-    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
-    priority: null,
     question: "Which width does the tree read at?",
-    ref: `dispatch://${KEY}/ask/ask-1`,
     resolution: declining,
     state: "resolved",
     urgency: "med",
@@ -2844,7 +2829,7 @@ test("a check block outside the Verification document draws no state and is coun
   ]);
   expect(filterSignals(root, "").verification).toEqual({ count: 1 });
   // The statement is read from its one check, which passed.
-  const answered = results.items ?? [];
+  const answered = results.checks ?? [];
   expect(
     verificationReading({ checks: answered, view: view.root }).statements.map((held) =>
       held.checks.map((one) => one.node.id)
@@ -2864,7 +2849,7 @@ test("a check block outside the Verification document draws no state and is coun
 /** The state the page reads for the one check of a Verification document: what `payload`
  *  changes about the check the server sends, over the results recorded against it. */
 function stateOfOneCheck(
-  payload: Partial<CheckV2>,
+  payload: Partial<CheckBlock>,
   results: readonly CheckResult[]
 ): string | undefined {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -3039,7 +3024,7 @@ test("a node holds the server's reading of its text where its read sends one", (
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const question: AskV2 = {
+  const question: Ask = {
     anchor: null,
     answer: null,
     author: { id: "planner", kind: "session" },
@@ -3049,19 +3034,14 @@ test("a node holds the server's reading of its text where its read sends one", (
     asked_of_by: null,
     block_id: null,
     created_at: "2026-11-05T00:00:00Z",
-    document: null,
     edited_at: null,
     id: "ask-1",
-    issue: null,
     issue_key: KEY,
     kind: "question",
-    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
-    priority: null,
     question: "Which **width**?",
-    ref: `dispatch://${KEY}/ask/ask-1`,
     state: "open",
     urgency: "med",
   };
@@ -3074,7 +3054,7 @@ test("a node holds the server's reading of its text where its read sends one", (
       { ...decision("d1", "## Keep it", []), text_tree: readingOf("decision") },
     ]),
     issue: issueDetails([spec, checks, made]),
-    messages: [{ ...message, body_tree: readingOf("message") }],
+    messages: [{ ...message, message: { ...message.message, body_tree: readingOf("message") } }],
     results: checkedResults([{ blockId: "c1", results: [recorded("res-1", "A control.")] }]),
   });
 

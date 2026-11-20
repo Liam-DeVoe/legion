@@ -80,7 +80,7 @@ test("the machine-login page finds a pending login by its typed code and Approve
 // R7 of dispatch://INFRA-958: a broker started with no BROKER_MACHINE_LOGIN_URL serves no device
 // grant, so no machine ever prints a code and Dispatch serves no page to type one into. Dispatch
 // cannot reach the broker from a browser, so it relays that one fact out of the broker's RFC
-// 8414 metadata (GET /api/v2/settings/credential-broker) and the app gates the route on it. Both
+// 8414 metadata (GET /api/v1/credentials/capabilities) and the app gates the route on it. Both
 // answers are driven here against the same page, because "the page is gone" is only worth
 // anything beside "the page is there".
 //

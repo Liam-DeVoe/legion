@@ -1,7 +1,7 @@
 import { GATED_STEPS } from "@legion/contracts";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
-import type { ArtifactV2, GatedStep, IssueDetails, ProjectV2 } from "../../api/types";
+import type { Artifact, GatedStep, IssueDetails, Project } from "../../api/types";
 
 /** What the page calls the document each design-gate step reviews: Dispatch's own name for that
  *  document, so a reader is told which document waits rather than the enumeration's word for the
@@ -18,12 +18,12 @@ export const STEP_LABELS: Record<GatedStep, string> = {
 export interface StepEntry {
   step: GatedStep;
   label: string;
-  document: ArtifactV2 | undefined;
+  document: Artifact | undefined;
 }
 
 /** The document the issue holds for `step`, by the id the issue names for it, never by the
  *  document's role or name among `issue.artifacts`. */
-function stepDocument(issue: IssueDetails, step: GatedStep): ArtifactV2 | undefined {
+function stepDocument(issue: IssueDetails, step: GatedStep): Artifact | undefined {
   switch (step) {
     case "spec":
       return primarySpec(issue);
@@ -45,7 +45,7 @@ function stepDocument(issue: IssueDetails, step: GatedStep): ArtifactV2 | undefi
  * newer than this build may gate a fourth step, and the header draws the steps it knows.
  */
 export function gatedStepEntries(
-  project: ProjectV2 | undefined,
+  project: Project | undefined,
   issue: IssueDetails | undefined
 ): StepEntry[] {
   const steps = project?.gated_steps;
@@ -60,7 +60,7 @@ export function gatedStepEntries(
     .map((step) => ({ step, label: STEP_LABELS[step], document: stepDocument(issue, step) }));
 }
 
-/** Whether this build knows a step word. `ProjectV2.gated_steps` is a list of plain strings in the
+/** Whether this build knows a step word. `Project.gated_steps` is a list of plain strings in the
  *  generated document, because a Dispatch newer than this build may gate a fourth step, so this
  *  is where one it does not know is left out rather than drawn without a name. */
 function isGatedStep(step: string): step is GatedStep {

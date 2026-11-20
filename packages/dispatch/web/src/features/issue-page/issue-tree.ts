@@ -1,15 +1,17 @@
 import type {
   Actor,
   ArtifactBlock,
-  AskV2,
+  Ask,
+  AskWithTrees,
+  Comment,
   CommentWithTrees,
   DisplayTree,
-  IssueChecksV2,
+  IssueCheckResults,
   IssueChild,
   IssueCoverage,
-  IssueDecisionsV2,
+  IssueDecisions,
   IssueDetails,
-  MessageThreadV2,
+  MessageRead,
   ReferenceTarget,
 } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
@@ -65,18 +67,17 @@ import {
  *   so it is a block and nothing more, and no statement (`isStatement`); so is a `check` block of
  *   any document but the Verification document, which is no check (`isCheck`).
  * - **No `shaped` on a decision.** The decisions read answers `kind` and a boolean `unsure`
- *   (`Decision`, `packages/contracts/src/dispatch-api-v2.generated.ts:3655-3677`) and no
- *   `shaped` edge, so today a decision's links to spec blocks stand for it: they are its chips,
- *   and they are what the `shaped_disagreement` gap reads, drawn on a requirement whose `from`
- *   names a node other than a decision that links to it. No requirement carries a `from`
- *   (above), so no disagreement is found in today's data. What places a decision is the asks
- *   its blocks mention (`Decision.asks`), which is the question it answers.
+ *   (`packages/contracts/src/dispatch-api.ts:2519-2534`) and no `shaped` edge, so today a
+ *   decision's links to spec blocks stand for it: they are its chips, and they are what the
+ *   `shaped_disagreement` gap reads, drawn on a requirement whose `from` names a node other than
+ *   a decision that links to it. No requirement carries a `from` (above), so no disagreement is
+ *   found in today's data. What places a decision is the asks its blocks mention
+ *   (`Decision.asks`), which is the question it answers.
  * - **No identities behind a requirement's coverage.** The coverage read counts the serving
- *   checks and plan tasks without naming them (`RequirementCoverage`,
- *   `packages/contracts/src/dispatch-api-v2.generated.ts:5677-5690`), so a requirement draws
- *   those two counts and coverage's own gaps; what serves it is placed from each check's and
- *   each plan task's own `serves` pointer instead, which is the same edge read from the other
- *   end.
+ *   checks and plan tasks without naming them
+ *   (`packages/contracts/src/dispatch-api.ts:805-816`), so a requirement draws those two counts
+ *   and coverage's own gaps; what serves it is placed from each check's and each plan task's own
+ *   `serves` pointer instead, which is the same edge read from the other end.
  *
  * ## The reads
  *
@@ -280,7 +281,7 @@ export interface TreeNode {
   /** Whether this node waits on the reader: a decision waiting for their review, which is where
    *  Keep and Change are drawn and what the Decisions preset opens on (R7), or an open question
    *  whose turn is the reader's own - it waits on a person, and that person
-   *  (`AskV2.waiting_on_person`) is the reader's login. Nothing waits on a reader whose login has
+   *  (`Ask.waiting_on_person`) is the reader's login. Nothing waits on a reader whose login has
    *  not resolved. The header's count of what waits puts the focus on the first of them (R13,
    *  `waiting.ts`). */
   readonly waiting: boolean;
@@ -312,30 +313,32 @@ export function isCheck(node: Pick<TreeNode, "state" | "type">): boolean {
   return node.type === "check" && node.state !== undefined;
 }
 
-/** One document's blocks, as `GET /api/v2/artifacts/{id}?include=blocks` answers them. */
+/** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them. */
 export interface DocumentBlocks {
   readonly artifactId: string;
   readonly blocks: readonly ArtifactBlock[];
 }
 
+/** An ask as the tree reads it: the issue read's open asks and the asks read both send the
+ *  server's reading of the question beside it, which `Ask` leaves out. */
+export type TreeAsk = Ask & Pick<AskWithTrees, "question_tree">;
+
 /** The page's reads, as one value. Every field but the issue is optional, because the tree draws
  *  from the reads that have answered rather than waiting for the last of them. */
 export interface IssueTreeReads {
-  /** The issue's asks, from the conversation; merged with the issue read's open asks by id. Both
-   *  reads send the server's reading of each question beside it (`question_tree`). */
-  readonly asks?: readonly AskV2[];
+  /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
+  readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
-  readonly decisions?: IssueDecisionsV2;
+  readonly decisions?: IssueDecisions;
   /** The issue's comments, each a node of the tree (`addTurns`), with each body's reading. */
-  readonly comments?: readonly CommentWithTrees[];
+  readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   /** One entry per document of the issue whose blocks the page has read. */
   readonly documents?: readonly DocumentBlocks[];
   readonly issue: IssueDetails;
-  /** The issue's message threads, each its root message with the replies under it, each a node
-   *  of the tree (`addTurns`). */
-  readonly messages?: readonly MessageThreadV2[];
+  /** The issue's messages with their replies, each a node of the tree (`addTurns`). */
+  readonly messages?: readonly MessageRead[];
   /** Each check of the Verification document with the results recorded against it. */
-  readonly results?: IssueChecksV2;
+  readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */
   readonly targets?: readonly ReferenceTarget[];
   /** The reader's login, which an open question waits on where its turn is theirs

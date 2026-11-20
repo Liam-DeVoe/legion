@@ -15,8 +15,7 @@ import { answerAgentStates } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
 import { userAgentStateQuery } from "../../api/queries";
-import type { Agent, AgentMessageV2, Marks } from "../../api/types";
-import { type MarkFields, markOf, marksOf } from "../agents/marks-fixture";
+import type { Agent, MessageRead, UserAgentStates } from "../../api/types";
 import * as conversation from "./conversation";
 import { LiveViewRoute, MountedLiveViews } from "./MountedLiveViews";
 // The host loads the view's own module lazily, and the first row to mount it would otherwise
@@ -59,18 +58,20 @@ function agentOf(sessionId: string, title: string): Agent {
 }
 
 /** One of the viewer's messages to `session` and the session's reply to it, written at `at`. */
-function exchange(session: string, at: string): AgentMessageV2 {
+function exchange(session: string, at: string): MessageRead {
   return {
-    author: { id: "sami", kind: "user" },
-    body: "Where is the dashboard?",
-    broadcast_id: null,
-    created_at: "2026-09-27T21:16:15Z",
-    deliveries: [],
-    id: `m-${session}`,
-    in_reply_to: null,
-    issue_key: null,
-    reply_block: null,
-    target: `session:${session}`,
+    message: {
+      author: { id: "sami", kind: "user" },
+      body: "Where is the dashboard?",
+      broadcast_id: null,
+      created_at: "2026-09-27T21:16:15Z",
+      deliveries: [],
+      id: `m-${session}`,
+      in_reply_to: null,
+      issue_key: null,
+      reply_block: null,
+      target: `session:${session}`,
+    },
     replies: [
       {
         author: { id: session, kind: "session" },
@@ -85,7 +86,6 @@ function exchange(session: string, at: string): AgentMessageV2 {
         target: `session:${session}`,
       },
     ],
-    unread: false,
   };
 }
 
@@ -111,7 +111,7 @@ let sockets: FakeLiveSockets;
 /** The sessions Dispatch lists, and each one's stored conversation: both change under the page,
  *  as a session renaming itself or answering a message changes them. */
 let registry: Agent[] = [];
-let threads: Record<string, AgentMessageV2[]> = {};
+let threads: Record<string, MessageRead[]> = {};
 
 beforeEach(() => {
   sockets = installFakeLiveSockets();
@@ -132,21 +132,17 @@ afterEach(() => {
 });
 
 /** Dispatch's reads, signed in as sami, and the one write these rows make: the read mark. */
-function mockDispatch(
-  agentState: Readonly<Record<string, MarkFields>> = {}
-): Mock<typeof api.putAgentState> {
-  const putAgentState = answerAgentStates().mockImplementation(async (session, input) =>
-    markOf("agent", session, {
-      cleared_before: input.cleared_before ?? undefined,
-      read_through: input.read_through ?? undefined,
-      unread_replies: 0,
-    })
-  );
+function mockDispatch(agentState: UserAgentStates = {}): Mock<typeof api.putAgentState> {
+  const putAgentState = answerAgentStates().mockImplementation(async (_session, input) => ({
+    cleared_before: input.cleared_before ?? undefined,
+    read_through: input.read_through ?? undefined,
+    unread_replies: 0,
+  }));
   spies.push(
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "sami" }),
     spyOn(api, "listAgents").mockImplementation(async () => registry),
     spyOn(api, "listAgentMessages").mockImplementation(async (session) => threads[session] ?? []),
-    spyOn(api, "getMyAgentState").mockResolvedValue(marksOf("agent", agentState)),
+    spyOn(api, "getMyAgentState").mockResolvedValue(agentState),
     putAgentState
   );
   return putAgentState;
@@ -342,10 +338,10 @@ test("only the view in front marks the session's replies read", async () => {
   threads[PLANNER] = [exchange(PLANNER, "2026-09-27T21:31:00Z")];
   threads[REVIEWER] = [exchange(REVIEWER, "2026-09-27T21:31:00Z")];
   await act(async () => {
-    queryClient.setQueryData<Marks>(
-      userAgentStateQuery().queryKey,
-      marksOf("agent", { [PLANNER]: { unread_replies: 1 }, [REVIEWER]: { unread_replies: 1 } })
-    );
+    queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, {
+      [PLANNER]: { unread_replies: 1 },
+      [REVIEWER]: { unread_replies: 1 },
+    });
     await queryClient.invalidateQueries({ queryKey: ["agents"] });
   });
 

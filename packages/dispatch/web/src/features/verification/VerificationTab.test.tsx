@@ -4,7 +4,7 @@ import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { ArtifactV2, CheckBasis, CheckResult, CheckV2 } from "../../api/types";
+import type { Artifact, CheckBasis, CheckBlock, CheckResult } from "../../api/types";
 import { VerificationTab } from "./VerificationTab";
 
 const commit = "0123456789abcdef0123456789abcdef01234567";
@@ -43,7 +43,7 @@ function result(overrides: Partial<CheckResult> = {}): CheckResult {
   };
 }
 
-function check(blockId: string, results: CheckResult[], overrides: Partial<CheckV2> = {}) {
+function check(blockId: string, results: CheckResult[], overrides: Partial<CheckBlock> = {}) {
   return {
     artifact_id: "artifact-1",
     block_id: blockId,
@@ -60,14 +60,14 @@ function check(blockId: string, results: CheckResult[], overrides: Partial<Check
     version: 2,
     when: "before_merge",
     ...overrides,
-  } satisfies CheckV2;
+  } satisfies CheckBlock;
 }
 
 /** A check CI proves, as the server answers one: `ci_check` names the CI run, it carries no `run`
  *  of its own, and `ci` is what the server read of that run at the issue's pull request head.
  *  The server gives `ci` only to such a check, and its one result, where it has one, is the one
  *  derived from that run (`ciResult`). */
-function ciCheck(blockId: string, ci: NonNullable<CheckV2["ci"]>, results: CheckResult[]) {
+function ciCheck(blockId: string, ci: NonNullable<CheckBlock["ci"]>, results: CheckResult[]) {
   return check(blockId, results, {
     ci,
     ci_check: ci.run,
@@ -89,7 +89,7 @@ function ciResult(): CheckResult {
   });
 }
 
-const verification: ArtifactV2 = {
+const verification: Artifact = {
   created_at: "2026-10-01T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
@@ -102,20 +102,13 @@ const verification: ArtifactV2 = {
   ref_key: "CORE-1/verification-md",
   session_id: null,
   slug: "verification-md",
-  latest_version: 1,
-  latest_version_at: "2026-09-10T00:00:00Z",
-  latest_version_size: null,
-  unsettled: null,
-  version_count: 1,
+  versions: [],
 };
 
-function renderTab(artifact: ArtifactV2 | undefined, checks: CheckV2[]) {
+function renderTab(artifact: Artifact | undefined, checks: CheckBlock[]) {
   const getIssueResults = spyOn(api, "getIssueResults").mockResolvedValue({
+    checks,
     issue: "CORE-1",
-    items: checks,
-    limit: 50,
-    offset: 0,
-    total: checks.length,
     verification_artifact_id: artifact?.id ?? "",
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -296,7 +289,7 @@ test("a check names what the server compared its results with", async () => {
       ],
     }),
     check("c-nothing", [result({ id: "result-2" })], {
-      compared_nothing: "no_pull_request",
+      compared_nothing: "no_pull_request_or_branch",
       compared_with: [],
       pass_stands: { answer: "no" },
     }),
@@ -313,9 +306,8 @@ test("a check names what the server compared its results with", async () => {
   expect(compared[0]).toContain(`branch main, the head of pull request 7 ${commit}`);
   // A head carries when Dispatch learned it, so a comparison older than a push reads as one.
   expect(compared[0]).toContain("Dispatch read it");
-  // A check that compared with nothing says why instead of showing a blank: `/api/v2` names the
-  // issue that holds no pull request apart from the one that maps to no repository.
-  expect(compared[1]).toBe("This issue holds no pull request.");
+  // A check that compared with nothing says why instead of showing a blank.
+  expect(compared[1]).toBe("This issue holds no pull request and no branch.");
 });
 
 test("a result shows how it ran, what was seen, its counts, its role and its screenshots", async () => {

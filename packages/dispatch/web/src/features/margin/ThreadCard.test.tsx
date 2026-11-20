@@ -19,7 +19,6 @@ import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
 import { SendStoppedError } from "../writes/keyed-write";
 import { marginReplySendKey } from "./margin-context";
-import { issue as issueFixture } from "./margin-fixture";
 import { ThreadCard } from "./ThreadCard";
 import type { Thread } from "./useMarginItems";
 
@@ -855,8 +854,7 @@ for (const order of ["oldest", "newest"] as const) {
 // predicate decides which bodies show cards.
 test("a comment of several references shows a card for each of them", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
-    ...issueFixture,
-    artifacts: [],
+    documents: [],
     key,
     project: "CORE",
     status: "in_progress",

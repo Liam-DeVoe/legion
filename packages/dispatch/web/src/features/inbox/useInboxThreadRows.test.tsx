@@ -16,7 +16,7 @@ import { type ReactNode, useRef } from "react";
 
 import { api } from "../../api/client";
 import { dismissedThreadsQuery, whoAmIQuery } from "../../api/queries";
-import type { MyReplyRow, MyThreadsV2 } from "../../api/types";
+import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { replyRow } from "../threads/replies-fixture";
 import { rowId } from "./list-row";
 import { useInboxThreadRows } from "./useInboxThreadRows";
@@ -31,14 +31,14 @@ afterEach(() => {
   for (const mock of restores.splice(0)) mock.mockRestore();
 });
 
-function dismissedPage(rows: readonly MyReplyRow[]): MyThreadsV2 {
-  return { as_of: AS_OF, items: [...rows], limit: 0, offset: 0, total: rows.length };
+function dismissedPage(rows: readonly MyReplyRow[]): MyRepliesResponse {
+  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
 }
 
 /** A client holding the sign-in read and one settled page of the Dismissed read, so the hook
  *  renders over pages it never has to fetch. */
 function seeded(rows: readonly MyReplyRow[]): QueryClient {
-  restores.push(spyOn(api, "listMyThreads").mockResolvedValue(dismissedPage(rows)));
+  restores.push(spyOn(api, "listMyReplies").mockResolvedValue(dismissedPage(rows)));
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });

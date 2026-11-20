@@ -109,13 +109,10 @@ LISTED = [
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
     # which bundles the four entries the dashboard imports (web/vite.config.ts:117-126 aliases the
-    # same four) and src/dispatch-api-v2.ts, the `/api/v2` types entry, which the dashboard
-    # (web/src/api/paths.ts:9, web/src/api/types.ts) and the e2e helpers (e2e/api.ts) import as
-    # types alone: dispatch_ui's programs compile that entry and the generated module it
-    # re-exports, so they are in its set, and their bundle is one no row loads. So that step
-    # compiles nothing outside dispatch_ui's set: not packages/contracts/src/legion-api.ts, which
-    # neither Dispatch nor the command imports. A change that breaks the package's full `build`
-    # fails the contracts job's own `Build contracts` step, whose filter takes the whole tree.
+    # same four) and so compiles nothing outside dispatch_ui's set: not
+    # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
+    # change that breaks the package's full `build` fails the contracts job's own
+    # `Build contracts` step, whose filter takes the whole tree.
     ("dispatch_browser", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the browser suite runs the SPA built from packages/dispatch and the Playwright config and e2e helpers of "
      "packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its rows spawn "

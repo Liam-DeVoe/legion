@@ -53,9 +53,7 @@ function liveHolderOf(
   if (claim === null || claim.actor.kind !== "session") {
     return undefined;
   }
-  return claimHoldingFromRead(claim, registry, issue.reach) === "holds"
-    ? claim.actor.id
-    : undefined;
+  return claimHoldingFromRead(claim, registry, issue) === "holds" ? claim.actor.id : undefined;
 }
 
 /**

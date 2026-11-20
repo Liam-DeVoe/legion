@@ -2,8 +2,8 @@
  * The agents a person has pinned (INFRA-812, R1).
  *
  * A pin belongs to the person, not to the browser it was made in: it is the session's
- * `pinned_at` in the viewer's mark of it (`userAgentStateQuery`), written through
- * `PATCH /api/v2/me/marks/agent/{session}` (`agentStateRequest`). Every surface that shows or
+ * `pinned_at` in the viewer's per-agent state (`userAgentStateQuery`), written through
+ * `PUT /api/v1/me/agents/{session}/state` (`agentStateRequest`). Every surface that shows or
  * moves a pin - the Agents page's row, the live view's header and the rail's Agents list - reads
  * and writes it here, so a pin made in one shows in the others at once, and in another browser
  * of the same person without a reload, from the `user_agent_state.updated` event that write
@@ -14,7 +14,7 @@ import { useCallback, useMemo } from "react";
 
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
-import type { Marks, MarkV2 } from "../../api/types";
+import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { useAgentText } from "../refs/AgentName";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -50,7 +50,7 @@ function comparePins(left: Pin, right: Pin): number {
 /** The sessions the viewer has pinned, oldest pin first: the rail's Agents list, and the Agents
  *  page's pin order. A session the viewer has only read, or cleared, carries no `pinned_at` and
  *  is not among them. */
-export function pinnedAgentSessions(states: Marks | undefined): string[] {
+export function pinnedAgentSessions(states: UserAgentStates | undefined): string[] {
   const pins: Pin[] = [];
   for (const [sessionId, state] of Object.entries(states ?? {})) {
     if (state.pinned_at !== undefined) pins.push({ at: state.pinned_at, sessionId });
@@ -64,19 +64,13 @@ export function usePinnedAgents(): readonly string[] {
   return useMemo(() => pinnedAgentSessions(states), [states]);
 }
 
-/** One session's mark as a pin or an unpin leaves it, touching neither its Clear nor its read
+/** One session's state as a pin or an unpin leaves it, touching neither its Clear nor its read
  *  mark: the page shows the pin from the press, and Dispatch's answer replaces it. A session the
- *  viewer holds no mark of has no reply they have not read either, so the drawn mark counts none
- *  until Dispatch answers. */
-function withPin(
-  state: MarkV2 | undefined,
-  sessionId: string,
-  pinned: boolean,
-  at: string
-): MarkV2 {
-  const fresh: MarkV2 = { id: sessionId, kind: "agent", unread_replies: 0 };
-  const { pinned_at: _was, ...rest } = state ?? fresh;
-  return pinned ? { ...rest, pinned: true, pinned_at: at } : { ...rest, pinned: false };
+ *  viewer holds no state for has no reply they have not read either, so the drawn state counts
+ *  none until Dispatch answers. */
+function withPin(state: UserAgentState | undefined, pinned: boolean, at: string): UserAgentState {
+  const { pinned_at: _was, ...rest } = state ?? { unread_replies: 0 };
+  return pinned ? { ...rest, pinned_at: at } : rest;
 }
 
 /**
@@ -100,15 +94,15 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
   const reread = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
   }, [queryClient]);
-  const { mutateAsync } = useKeyedWrite<MarkV2, PinPress>({
+  const { mutateAsync } = useKeyedWrite<UserAgentState, PinPress>({
     label: ({ pinned, sessionId }) =>
       `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
     onError: reread,
     onMutate: ({ pinned, sessionId }) => {
       const at = new Date().toISOString();
-      queryClient.setQueryData<Marks>(userAgentStateQuery().queryKey, (current) => ({
+      queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
         ...current,
-        [sessionId]: withPin(current?.[sessionId], sessionId, pinned, at),
+        [sessionId]: withPin(current?.[sessionId], pinned, at),
       }));
     },
     onSuccess: (next, { sessionId }) => {

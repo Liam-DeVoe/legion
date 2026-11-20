@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api, isSubscriberNotFound, removedEvenIfGone } from "../../api/client";
-import type { ArtifactV2 } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
@@ -32,7 +32,7 @@ import { useProjectArtifact } from "./useProjectArtifact";
  * unsubscribe of its own, never under another document's refusal with that document's
  * unsubscribe as its Retry.
  */
-function DocumentSubscribers({ artifact }: { readonly artifact: ArtifactV2 }): ReactNode {
+function DocumentSubscribers({ artifact }: { readonly artifact: Artifact }): ReactNode {
   const queryClient = useQueryClient();
   const subscribers = useQuery({
     queryKey: ["subscribers", artifact.id],

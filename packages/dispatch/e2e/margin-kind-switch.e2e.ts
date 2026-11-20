@@ -126,13 +126,13 @@ test("switching an anchored composer from Comment to Ask retypes its mark and as
         throw new Error("The switched ask has no margin id.");
       }
       const ask = await getAsk(askId);
-      if (ask.anchor === null) {
+      if (ask.ask.anchor === null) {
         throw new Error("The switched ask has no anchor.");
       }
-      expect(ask.anchor.quote).toBe("brown");
+      expect(ask.ask.anchor.quote).toBe("brown");
       await Promise.all([
-        expectMark(alicePage, ask.anchor.mark_id, "brown"),
-        expectMark(bobPage, ask.anchor.mark_id, "brown"),
+        expectMark(alicePage, ask.ask.anchor.mark_id, "brown"),
+        expectMark(bobPage, ask.ask.anchor.mark_id, "brown"),
       ]);
       expect(await listComments(issueKey, artifactId)).toEqual([]);
     }
@@ -145,7 +145,7 @@ test("a send holds every suggestion control and restores its replacement on refu
   await withReaders(browser, "Held suggestion", async ({ alicePage }) => {
     await selectEditorText(alicePage, "quick");
     await barAction(alicePage, "Suggest");
-    const refusal = await refusePosts(alicePage, "**/api/v2/issues/*/comments");
+    const refusal = await refusePosts(alicePage, "**/api/v1/issues/*/comments");
     const form = composer(alicePage);
     const reason = form.getByLabel("Reason");
     const replacement = form.getByLabel("Replacement");
@@ -167,7 +167,7 @@ test("a send holds every ask control", async ({ browser }) => {
   await withReaders(browser, "Held ask", async ({ alicePage }) => {
     await selectEditorText(alicePage, "brown");
     await barAction(alicePage, "Ask");
-    const refusal = await refusePosts(alicePage, "**/api/v2/issues/*/asks");
+    const refusal = await refusePosts(alicePage, "**/api/v1/issues/*/asks");
     const form = composer(alicePage);
     const question = form.getByLabel("Question");
     await question.fill("Why brown?");
@@ -189,7 +189,7 @@ test("an Escape in Send's task cannot open a margin Discard prompt", async ({ br
   await withReaders(browser, "Held margin close", async ({ alicePage }) => {
     await selectEditorText(alicePage, "brown");
     await barAction(alicePage, "Comment");
-    const refusal = await refusePosts(alicePage, "**/api/v2/issues/*/comments");
+    const refusal = await refusePosts(alicePage, "**/api/v1/issues/*/comments");
     const form = composer(alicePage);
     const field = form.getByLabel("Comment");
     await field.fill("Keep this draft");

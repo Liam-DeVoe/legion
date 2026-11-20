@@ -5,15 +5,15 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
-import { type AnswerAskInput, api } from "../../api/client";
+import { api } from "../../api/client";
 import type {
+  AnswerAskInput,
+  Ask,
   AskAnswer,
-  AskV2,
-  AskWithThread,
+  AskRead,
   MyAnswerRow,
-  PageOfMyAnswerRow,
+  MyAnswersResponse,
 } from "../../api/types";
-import { referencesRead } from "../refs/reference-fixture";
 import { AnswersPage } from "./AnswersPage";
 
 let whoAmI: Mock<typeof api.whoAmI>;
@@ -26,9 +26,10 @@ beforeEach(() => {
     kind: "user",
     login: "alice",
   });
-  getReferences = spyOn(api, "getReferences").mockResolvedValue(
-    referencesRead(graphNode({ id: "ask-1", kind: "ask" }))
-  );
+  getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "ask-1", kind: "ask" }),
+  });
   // A change card with an issue names who the ask reaches, which reads the issue's subscribers;
   // nobody is subscribed here, so the card lists its followers alone.
   getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
@@ -64,11 +65,11 @@ function answerRow(overrides: Partial<MyAnswerRow> = {}): MyAnswerRow {
   };
 }
 
-function page(rows: MyAnswerRow[], total = rows.length, offset = 0): PageOfMyAnswerRow {
-  return { items: rows, limit: 50, offset, total };
+function page(rows: MyAnswerRow[], total = rows.length, offset = 0): MyAnswersResponse {
+  return { limit: 50, offset, rows, total };
 }
 
-function answeredAsk(answer: AskAnswer, overrides: Partial<AskV2> = {}): AskV2 {
+function answeredAsk(answer: AskAnswer, overrides: Partial<Ask> = {}): Ask {
   return {
     anchor: null,
     answer,
@@ -79,40 +80,17 @@ function answeredAsk(answer: AskAnswer, overrides: Partial<AskV2> = {}): AskV2 {
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-10-08T00:00:00Z",
-    document: null,
     edited_at: null,
     id: "ask-1",
-    issue: { assignee: "alice", key: "CORE-1", title: "Release train" },
     issue_key: "CORE-1",
     kind: "question",
-    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [{ label: "Ship" }, { label: "Hold" }],
-    priority: null,
     question: "Which release path?",
-    ref: "dispatch://CORE-1/ask/ask-1",
     state: "answered",
     urgency: "med",
     ...overrides,
-  };
-}
-
-/** The ask read with its thread, as `getAsk` answers it: the answers it holds, and no reply. */
-function threadOf(ask: AskV2, answers: AskAnswer[]): AskWithThread {
-  return {
-    ...ask,
-    thread: {
-      answers,
-      claimant: null,
-      edits: [],
-      followers: [],
-      replies: [],
-      route: null,
-      route_status: null,
-      route_holder: null,
-      route_status_reason: null,
-    },
   };
 }
 
@@ -288,7 +266,18 @@ test("Change answer opens its card under the answer row, not a newer reply on th
     ])
   );
   const ask = answeredAsk(shipAnswer);
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(threadOf(ask, [shipAnswer]));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    answers: [shipAnswer],
+    ask,
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
   const { view } = renderPage();
   try {
     await user.click(await view.findByRole("button", { name: "Change answer" }));
@@ -325,8 +314,33 @@ test("a row's Change answer opens the seeded form; after Save the row and the ca
       ? page([answerRow({ answer: holdAnswer, at: holdAnswer.at }), answerRow({ current: false })])
       : page([answerRow()])
   );
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async () =>
-    changed ? threadOf(after, [shipAnswer, holdAnswer]) : threadOf(before, [shipAnswer])
+  const getAsk = spyOn(api, "getAsk").mockImplementation(
+    async (): Promise<AskRead> =>
+      changed
+        ? {
+            answers: [shipAnswer, holdAnswer],
+            ask: after,
+            claimant: null,
+            edits: [],
+            followers: [],
+            replies: [],
+            route: null,
+            route_status: null,
+            route_holder: null,
+            route_status_reason: null,
+          }
+        : {
+            answers: [shipAnswer],
+            ask: before,
+            claimant: null,
+            edits: [],
+            followers: [],
+            replies: [],
+            route: null,
+            route_status: null,
+            route_holder: null,
+            route_status_reason: null,
+          }
   );
   const sent: AnswerAskInput[] = [];
   const answerAsk = spyOn(api, "answerAsk").mockImplementation(async (_id, input) => {

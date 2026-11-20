@@ -5,7 +5,7 @@ import { useRef, useSyncExternalStore } from "react";
 import {
   ApiError,
   api,
-  isApiV1Ended,
+  goesUnderKey,
   type WriteBounds,
   type WriteMethod,
   type WriteRequest,
@@ -56,9 +56,9 @@ export interface WriteBase<D = unknown> {
   readonly key: string;
   readonly kind: string;
   readonly login: string | undefined;
-  /** Whether the request it makes goes under its key: every write's does, a `PUT` and a `DELETE`
-   *  as well as a `POST` and a `PATCH` (`send`), so its Retry after it ended without Dispatch's
-   *  verdict asks again under that key, but for a write whose spec says it goes under none
+  /** Whether the request it makes goes under its key (`goesUnderKey`): a `POST` or a `PATCH`,
+   *  whose Retry after it ended without Dispatch's verdict asks again under that key, and not a
+   *  `PUT` or a `DELETE`, which sends none, nor a write whose spec says it goes under none
    *  (`WriteSpec.keyed`). Read from what its spec names at the press (`WriteSpec`), never from
    *  what goes out later, since a write can end stopped before any attempt of it sends a
    *  request; kept with it (`KeptWrite.keyed`), so a reload reads it back. */
@@ -223,7 +223,7 @@ export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
          *  and every attempt must make that one (`OneRequestPerWriteError`). */
         readonly write: Attempt<T>;
         /** The method of the request every attempt of `write` makes, which no attempt says
-         *  until it goes out. */
+         *  until it goes out: what tells whether the write goes under its key (`Write.keyed`). */
         readonly method: WriteMethod;
       }
   );
@@ -477,7 +477,7 @@ export class Writes {
         inline: spec.inline ?? false,
         joined: this.#nextJoin(),
         key,
-        keyed: spec.keyed ?? true,
+        keyed: spec.keyed ?? goesUnderKey(request === undefined ? spec.method : request.method),
         kind: spec.kind.name,
         label: spec.label,
         login,
@@ -525,9 +525,6 @@ export class Writes {
   retry(id: number): void {
     const entry = this.#entries.get(id);
     if (entry?.write.status !== "refused" || entry.keeping !== undefined) return;
-    // A write `/api/v1`'s end refused is the one request it was kept as, which goes nowhere else:
-    // making it again would meet the same `410`.
-    if (isApiV1Ended(entry.write.refusal)) return;
     const old = entry.write.key;
     if (retriesUnderItsKey(entry.write.refusal)) {
       this.#retryUnder(entry, old, entry.write.sent);
@@ -1132,10 +1129,7 @@ export class Writes {
    *  refusal itself or it is never shown - and the next write of its target goes. One Dispatch
    *  refused because someone else is signed in goes with every write of its login, and the page
    *  reads who is signed in again. A refused sign-out leaves its person signed in, so every write
-   *  of theirs it held goes on. A write a build older than `/api/v2` kept, made again to its own
-   *  `/api/v1` path after the deployment ended `/api/v1` (`410`, `isApiV1Ended`), is dropped from
-   *  what the store keeps, so no reload brings it back to meet the same answer, and stays on the
-   *  page as not saved until the reader discards it (`PendingWritesIndicator`). */
+   *  of theirs it held goes on. */
   #refused(entry: Entry, refusal: Error): void {
     entry.press?.reject(refusal);
     entry.press = undefined;
@@ -1150,14 +1144,8 @@ export class Writes {
       return;
     }
     const write: Write = { ...baseOf(entry.write), refusal, status: "refused" };
-    if (entry.write.inline || entry.write.presentation === "quiet") {
-      this.#remove(entry);
-    } else if (isApiV1Ended(refusal)) {
-      this.#forget(entry);
-      this.#show(entry, write);
-    } else {
-      this.#update(entry, write);
-    }
+    if (entry.write.inline || entry.write.presentation === "quiet") this.#remove(entry);
+    else this.#update(entry, write);
     kinds.get(write.kind)?.undone?.(this.#client, write);
     this.#emit({ kind: "refused", refusal, write });
     this.#advance(write.target);

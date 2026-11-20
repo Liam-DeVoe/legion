@@ -1,4 +1,4 @@
-import type { CheckResult, CheckV2 } from "../../../api/types";
+import type { CheckBlock, CheckResult } from "../../../api/types";
 import { checkFacts, resultFacts } from "../check-facts";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
@@ -46,7 +46,7 @@ export function node(partial: Partial<TreeNode> & { id: string; type: NodeType }
 }
 
 /** One check of the Verification document as the results read answers it. */
-export function check(partial: Partial<CheckV2> & { block_id: string }): CheckV2 {
+export function check(partial: Partial<CheckBlock> & { block_id: string }): CheckBlock {
   const blockId = partial.block_id;
   return {
     artifact_id: "artifact-verification",
@@ -99,7 +99,7 @@ export function result(partial: Partial<CheckResult> & { id: string }): CheckRes
 /** A check's node, as `tree-drafts.ts` builds one for an issue with this check alone: the
  *  block's address as its reference, the state `checkStanding` reads from its results, the four
  *  attributes its body draws, and one node per result. */
-export function checkNode(block: CheckV2): TreeNode {
+export function checkNode(block: CheckBlock): TreeNode {
   return node({
     children: (block.results ?? []).map((recorded) =>
       node({

@@ -6,7 +6,7 @@ import {
   type Page,
 } from "@playwright/test";
 
-import type { Actor, ArtifactUploadV2 } from "../web/src/api/types";
+import type { Actor, ArtifactUploadResponse } from "../web/src/api/types";
 import {
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
@@ -1010,11 +1010,11 @@ async function uploadPicture(key: string, name: string): Promise<string> {
     name
   );
   const response = await fetch(
-    new URL(`/api/v2/issues/${encodeURIComponent(key)}/artifacts`, baseUrl),
+    new URL(`/api/v1/issues/${encodeURIComponent(key)}/artifacts`, baseUrl),
     { body: form, headers: await userHeaders(READER), method: "POST" }
   );
   expect(response.ok, `the upload of ${name} to ${key} was refused`).toBe(true);
-  return ((await response.json()) as ArtifactUploadV2).artifact.slug;
+  return ((await response.json()) as ArtifactUploadResponse).artifact.slug;
 }
 
 /**

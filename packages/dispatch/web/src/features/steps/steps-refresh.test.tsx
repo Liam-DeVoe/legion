@@ -8,7 +8,7 @@ import { ApiError, api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
 import { refreshQueries } from "../../api/query-refresh";
-import type { DispatchEvent, StepRecord } from "../../api/types";
+import type { DispatchEvent, IssueSteps } from "../../api/types";
 import { StepsTab } from "./StepsTab";
 import { stepRecord } from "./step-record-fixture";
 
@@ -19,7 +19,7 @@ import { stepRecord } from "./step-record-fixture";
 // start. Every row here runs on the fake clock, and each event takes the feed's own path
 // (`eventRefreshTargets`, then the scheduler).
 
-const NO_STEPS: StepRecord[] = [];
+const NO_STEPS: IssueSteps = { issue: "CORE-1", tasks: [] };
 
 /** The release that ends a role's run, as Legion's daemon writes it. */
 const released: DispatchEvent = {
@@ -49,7 +49,7 @@ const released: DispatchEvent = {
  *  `fetchedAt` holds the fake clock's time at each read. The client is the page's own, with its
  *  retry policy: a failed read is asked again twice, 500 ms apart, where nothing stops it
  *  (`main.tsx`). */
-function renderLiveTab(read: () => StepRecord[] | Promise<StepRecord[]>, shown = true) {
+function renderLiveTab(read: () => IssueSteps | Promise<IssueSteps>, shown = true) {
   const fetchedAt: number[] = [];
   const listSteps = spyOn(api, "listSteps").mockImplementation(async () => {
     fetchedAt.push(Date.now());
@@ -86,14 +86,22 @@ function renderLiveTab(read: () => StepRecord[] | Promise<StepRecord[]>, shown =
 // 2 s, so only the event's read can have redrawn them.
 test("an event of the issue redraws the Steps tab's rows with what the records now hold", async () => {
   await onFakeClock(async () => {
-    let answer: StepRecord[] = [stepRecord({ ended_at: null, id: "implement-1", result: "" })];
+    let answer: IssueSteps = {
+      issue: "CORE-1",
+      tasks: [
+        { steps: [stepRecord({ ended_at: null, id: "implement-1", result: "" })], task: "default" },
+      ],
+    };
     const tab = renderLiveTab(() => answer);
     try {
       await tick(0);
       expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
       expect(screen.getByRole("cell", { name: "running" })).toBeDefined();
 
-      answer = [stepRecord({ id: "implement-1" })];
+      answer = {
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+      };
       tab.deliver();
       await tick(1_500);
       expect(screen.getByRole("cell", { name: "passed" })).toBeDefined();
@@ -117,7 +125,10 @@ test("a record written 30 seconds after its event shows with no other event and 
       expect(screen.getByRole("region", { name: "Steps empty state" })).toBeDefined();
 
       await tick(30_000, 1_000);
-      answer = [stepRecord({ id: "late-run" })];
+      answer = {
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "late-run" })], task: "default" }],
+      };
       await tick(14_000, 1_000);
       expect(screen.queryByRole("table")).toBeNull();
       await tick(1_000);
@@ -210,7 +221,10 @@ test("two events 100 ms apart read once, and again when the second ends with wha
       const firstAt = Date.now();
       tab.deliver();
       await tick(100, 100);
-      answer = [stepRecord({ id: "second-run" })];
+      answer = {
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "second-run" })], task: "default" }],
+      };
       const secondAt = Date.now();
       tab.deliver();
       await tick(800, 100);
@@ -262,8 +276,8 @@ test("an event 100 ms after a read of the catch-up reads when that read's second
 // after that deadline is read too.
 test("a read still out at the next deadline lands and is drawn, and the deadline's read follows it", async () => {
   await onFakeClock(async () => {
-    const held = Promise.withResolvers<StepRecord[]>();
-    let read: () => StepRecord[] | Promise<StepRecord[]> = () => NO_STEPS;
+    const held = Promise.withResolvers<IssueSteps>();
+    let read: () => IssueSteps | Promise<IssueSteps> = () => NO_STEPS;
     const tab = renderLiveTab(() => read());
     try {
       await tick(301_000, 1_000);
@@ -275,9 +289,20 @@ test("a read still out at the next deadline lands and is drawn, and the deadline
       expect(tab.fetchedAt.slice(before).map((at) => at - firstAt)).toEqual([0]);
       expect(screen.getByRole("region", { name: "Steps empty state" })).toBeDefined();
 
-      read = () => [stepRecord({ id: "implement-1" })];
+      read = () => ({
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+      });
       const landedAt = Date.now();
-      held.resolve([stepRecord({ ended_at: null, id: "implement-1", result: "" })]);
+      held.resolve({
+        issue: "CORE-1",
+        tasks: [
+          {
+            steps: [stepRecord({ ended_at: null, id: "implement-1", result: "" })],
+            task: "default",
+          },
+        ],
+      });
       await tick(0);
       expect(screen.getByRole("cell", { name: "running" })).toBeDefined();
 
@@ -417,7 +442,10 @@ test("a catch-up read that fails after one that answered keeps the rows, under t
       if (failing) {
         throw new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
       }
-      return [stepRecord({ id: "implement-1" })];
+      return {
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+      };
     });
     const rowsUnderFailure = () => {
       const alert = screen.getByRole("alert");

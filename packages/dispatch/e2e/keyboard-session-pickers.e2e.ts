@@ -128,8 +128,11 @@ async function storedSwitch(
   let found: { id: string; author: { kind: string; id: string } } | undefined;
   await expect
     .poll(async () => {
-      const read = (await listAgentMessages(sessionID)).find((row) => row.body === body);
-      found = read === undefined || (read.deliveries ?? []).length === 0 ? undefined : read;
+      const read = (await listAgentMessages(sessionID)).find((row) => row.message.body === body);
+      found =
+        read === undefined || (read.message.deliveries ?? []).length === 0
+          ? undefined
+          : read.message;
       return found !== undefined;
     }, PROBE)
     .toBe(true);

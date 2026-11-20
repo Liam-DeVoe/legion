@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
-import type { ArtifactV2, Decision, IssueDecisionsV2 } from "../../api/types";
+import type { Artifact, Decision, IssueDecisions } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
@@ -107,12 +107,12 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * the focused row's and a row the reader pinned open, so the page offers one Keep and one
  * Change at a time, on the decision in front of the reader.
  *
- * Both writes are the ones that tab made, unchanged: Keep is the issue's
- * `PUT /issues/{key}/decisions/{block_id}/state` to `kept`, carrying the sum of the text this
- * node drew, so a decision the agent changed since is refused rather than agreed with, and Change
- * is a comment anchored to the words of the decision's first block (`anchorQuote`). They are read
- * from the decisions read the tree is already built from (`["decisions", <key>]`), so the node
- * makes no read of its own.
+ * Both writes are the ones that tab made, unchanged: Keep is
+ * `POST /artifacts/{id}/blocks/{block}/keep` carrying the sum of the text this node drew, so a
+ * decision the agent changed since is refused rather than agreed with, and Change is a comment
+ * anchored to the words of the decision's first block (`anchorQuote`). They are read from the
+ * decisions read the tree is already built from (`["decisions", <key>]`), so the node makes no
+ * read of its own.
  */
 export function DecisionActions({
   document,
@@ -120,10 +120,9 @@ export function DecisionActions({
   nodeReference,
   tabStops = false,
 }: {
-  /** The decisions document this node is a block of, which a Change is anchored to and whose
-   *  issue the Keep is written on; `undefined` for a decision whose document the issue read does
-   *  not carry. */
-  document: ArtifactV2 | undefined;
+  /** The decisions document this node is a block of, which the Keep writes against;
+   *  `undefined` for a decision whose document the issue read does not carry. */
+  document: Artifact | undefined;
   isClosed: boolean;
   /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
   nodeReference: string | undefined;
@@ -133,7 +132,7 @@ export function DecisionActions({
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
   const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
-  const decision = (decisions.data?.items ?? []).find((row) => row.ref === nodeReference);
+  const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
   if (decision === undefined || document === undefined || isClosed) return null;
   return (
     <DecisionControls
@@ -175,26 +174,24 @@ function DecisionControls({
   const keep = useKeyedWrite({
     inline: true,
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
-    method: "PUT",
+    method: "POST",
     // The sum of the text this node showed: a decision the agent changed since is refused
-    // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see. The
-    // keep is the issue's (`PUT /api/v2/issues/{key}/decisions/{block_id}/state`): the route
-    // names the issue, never the decisions.md that holds the decision.
-    write: (key: string, bounds) =>
-      api.keepDecision(key, decision.block_id, decision.text_sha256, bounds),
+    // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
+    write: (id: string, bounds) =>
+      api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     onSuccess: (kept) => {
       if (kept === null) {
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
         return;
       }
-      queryClient.setQueryData<IssueDecisionsV2>(["decisions", issueKey], (view) =>
+      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
         view === undefined
           ? view
           : {
               ...view,
               // The Keep is of the text this node showed, which the server took, so it applies
               // to the row that still holds that text.
-              items: (view.items ?? []).map((row) =>
+              decisions: (view.decisions ?? []).map((row) =>
                 row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
                   ? { ...row, kept, waiting_review: false }
                   : row
@@ -215,7 +212,7 @@ function DecisionControls({
             disabled={keep.isPending}
             onClick={(event) => {
               keepFocusOnRow(event.currentTarget);
-              keep.mutate(issueKey);
+              keep.mutate(documentId);
             }}
             tabIndex={tabStops ? undefined : -1}
             type="button"
@@ -366,9 +363,8 @@ function ChangeComposer({
             setReading(false);
             const anchor = changeAnchor(
               decision,
-              queryClient.getQueryData<IssueDecisionsV2>(
-                issueDecisionsQuery(issueKey, true).queryKey
-              )?.items,
+              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+                ?.decisions,
               tree
             );
             send.mutate({ anchor: anchor ?? { quote }, body });

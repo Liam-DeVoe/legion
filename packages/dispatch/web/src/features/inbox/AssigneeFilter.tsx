@@ -42,7 +42,7 @@ export function AssigneeFilter({
   viewer: string;
 }): ReactNode {
   // Every Inbox reader renders this control and few open it, so the people are fetched on the
-  // first open and kept from then on: a reader who never filters costs no `/api/v2/users`.
+  // first open and kept from then on: a reader who never filters costs no `/api/v1/users`.
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
 

@@ -8,15 +8,14 @@
  *  `POST /` with `{ health, projects, refusal }` starts a fake Dispatch, a `Bun.serve` on
  *  127.0.0.1 on a port the kernel picks, and answers `{ port }`. That fake answers
  *  `/healthz` with the status `health` and the body `{ ok }`, true only when `health` is 200. It
- *  answers `/api/v2/projects` with 200 and an empty page (`{items, limit, offset, total}`) when
- *  the request carries a credential (an `Authorization` or a `Cookie`), as Dispatch would. When
- *  the request carries none, it answers with the status `projects`: for 302, a redirect to a
- *  sign-in page; for 200, an empty page; for any other status, `refusal` as the body. Every other
- *  path answers 404. Like any HTTP server, it holds a connection that sends nothing, so the
- *  script's probe of its port reads REACHED through curl's exit 28; it holds one for as long as
- *  its client waits (`idleTimeout` 0, where Bun's own 10 s would drop a read this host was kept
- *  from answering under load, before the script's own bound for it ends). It records every
- *  request it answers:
+ *  answers `/api/v1/projects` with 200 and an empty list when the request carries a credential
+ *  (an `Authorization` or a `Cookie`), as Dispatch would. When the request carries none, it
+ *  answers with the status `projects`: for 302, a redirect to a sign-in page; for 200, an empty
+ *  list; for any other status, `refusal` as the body. Every other path answers 404. Like any HTTP
+ *  server, it holds a connection that sends nothing, so the script's probe of its port reads
+ *  REACHED through curl's exit 28; it holds one for as long as its client waits (`idleTimeout`
+ *  0, where Bun's own 10 s would drop a read this host was kept from answering under load, before
+ *  the script's own bound for it ends). It records every request it answers:
  *  `GET /<port>/seen` answers that record, in the order it answered them, and `DELETE /<port>`
  *  stops that fake and closes its connections.
  *
@@ -59,11 +58,10 @@ function serveFake({ health, projects, refusal }: Answers): Fake {
       const credential = request.headers.get("authorization") ?? request.headers.get("cookie");
       seen.push({ method: request.method, path: pathname, credential });
       if (pathname === "/healthz") return Response.json({ ok: health === 200 }, { status: health });
-      if (pathname === "/api/v2/projects") {
+      if (pathname === "/api/v1/projects") {
         const status = credential === null ? projects : 200;
         if (status === 302) return Response.redirect("https://accounts.example/signin", 302);
-        const page = { items: [], limit: 50, offset: 0, total: 0 };
-        return Response.json(status === 200 ? page : refusal, { status });
+        return Response.json(status === 200 ? [] : refusal, { status });
       }
       return Response.json({ code: "NOT_FOUND" }, { status: 404 });
     },

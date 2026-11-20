@@ -20,10 +20,11 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
 import type {
   ArchitectureSource,
-  ArtifactApprovalWithTrees,
+  ArtifactApproval,
   Issue,
   IssueComponents,
   IssueDetails,
+  UserIssueState,
 } from "../../api/types";
 import { withoutEllipsis } from "../../components/tooltips";
 import {
@@ -36,7 +37,6 @@ import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import type { StepEntry } from "../issue/gated-steps";
 import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels, labelsControlName } from "../issue/IssueLabels";
-import type { IssueState } from "../issue/pins";
 import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
@@ -61,7 +61,7 @@ import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIss
 /** The issue both callers write: the margin fixture's issue, at a later event and admitted. */
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
-const state: IssueState = { last_read_seq: 0, pinned: false, pinned_items: [], seq: 0 };
+const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 
 /** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
 function narrowIssue(details: IssueDetails): Issue {
@@ -209,7 +209,7 @@ test("a parent save the reader stopped says it may have been saved, not that it 
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
   const patchIssue = answerIssuePatches().mockRejectedValue(
-    new NetworkError(`/api/v2/issues/${issue.key}`, new TypeError("Failed to fetch"))
+    new NetworkError(`/api/v1/issues/${issue.key}`, new TypeError("Failed to fetch"))
   );
   jest.useFakeTimers();
   const hook = renderHook(() => useIssueHeaderWrites(issue, state), { wrapper });
@@ -756,12 +756,8 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
 // approval's Approve draws its version, and its name says the version of the document. Naming
 // one document, each action is named by its words alone, as on `main`.
 test("ApprovalSteps names each document's actions when actionsOn holds two documents", async () => {
-  const awaiting: ArtifactApprovalWithTrees = {
-    latest_version: 1,
-    state: "awaiting",
-    waiting_on: "human",
-  };
-  const stepsWith = (specApproval: ArtifactApprovalWithTrees): StepEntry[] => [
+  const awaiting: ArtifactApproval = { latest_version: 1, state: "awaiting", waiting_on: "human" };
+  const stepsWith = (specApproval: ArtifactApproval): StepEntry[] => [
     { document: doc(SPEC_ID, "spec.md", specApproval), label: "Spec", step: "spec" },
     {
       document: doc(VERIFICATION_ID, "verification.md", awaiting),

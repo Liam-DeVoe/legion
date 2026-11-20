@@ -15,7 +15,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError, type WholeList } from "../../api/client";
+import { api, NetworkError } from "../../api/client";
 import {
   inboxQuery,
   inboxThreadsQuery,
@@ -24,7 +24,15 @@ import {
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { Agent, Comment, IssueDetails, Message, MyReplyRow } from "../../api/types";
+import type {
+  Agent,
+  Comment,
+  IssueDetails,
+  Message,
+  MessageRead,
+  MyRepliesResponse,
+  MyReplyRow,
+} from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -87,8 +95,8 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
   };
 }
 
-function threadsRead(rows: readonly MyReplyRow[]): WholeList<"/api/v2/me/threads"> {
-  return { as_of: AS_OF, items: [...rows], limit: 0, offset: 0, total: rows.length };
+function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
+  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
 }
 
 /** A client holding everything the Inbox reads but the thread's own comments. */
@@ -142,7 +150,7 @@ function widenToReadingPane(): () => void {
 
 function mockCommentReads(): void {
   spy("getIssue", { closed_at: null } as unknown as IssueDetails);
-  spy("getCredentialPending", []);
+  spy("getCredentialPending", { pending: [] });
   spy("listComments", [
     comment("comment-1", "The retry budget is too small."),
     comment("comment-2", "Agreed.", {
@@ -236,7 +244,7 @@ test("a row read in the column stays in the list after the selection moves off i
 // composer's and speak of a message: it says what its Retry does with the mark.
 test("a Mark read the reader stopped says what Retry does, not a message's words", async () => {
   answerThreadReads().mockRejectedValue(
-    new NetworkError("/api/v2/me/marks/thread/comment-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/me/threads/comment-1/read", new TypeError("Failed to fetch"))
   );
   mockCommentReads();
   // No thread is unread to the card's watcher, so the press is the one write the card makes.
@@ -272,7 +280,7 @@ test("a Mark read the reader stopped says what Retry does, not a message's words
 // through the reply that mark was of, not through the newer one the card draws by then.
 test("a Mark read's Retry marks what the stopped press marked, not the row's newer reply", async () => {
   const mark = answerThreadReads().mockRejectedValue(
-    new NetworkError("/api/v2/me/marks/thread/comment-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/me/threads/comment-1/read", new TypeError("Failed to fetch"))
   );
   mockCommentReads();
   const client = seeded([]);
@@ -345,16 +353,12 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
 
 test("an Agent thread is read by reply id, and moves no session read mark", async () => {
   const viewport = installIntersectionObserver();
-  const state = answerAgentStates().mockResolvedValue({
-    id: "planner",
-    kind: "agent",
-    unread_replies: 0,
-  });
+  const state = answerAgentStates().mockResolvedValue({ unread_replies: 0 });
   const threadMark = answerThreadReads().mockResolvedValue(undefined);
   spy("listAgents", [session]);
   spy("listAgentMessages", [
     {
-      ...message("message-1", "Have a look at the build"),
+      message: message("message-1", "Have a look at the build"),
       replies: [
         message("reply-1", "Looked at it.", {
           author: { id: "planner", kind: "session" },
@@ -362,13 +366,12 @@ test("an Agent thread is read by reply id, and moves no session read mark", asyn
           in_reply_to: "message-1",
         }),
       ],
-      unread: true,
-    },
+    } satisfies MessageRead,
   ]);
   const client = seeded([]);
   // The server still counts a reply of this session's unread, so the mark is wanted.
   client.setQueryData(userAgentStateQuery().queryKey, {
-    planner: { id: "planner", kind: "agent", unread_replies: 1 },
+    planner: { unread_replies: 1 },
   });
   render(
     <MemoryRouter>

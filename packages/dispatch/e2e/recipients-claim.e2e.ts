@@ -1,4 +1,3 @@
-import type { Result } from "../web/src/api/paths";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import { setLiveSessions } from "./agents";
@@ -47,8 +46,8 @@ test("the ask card lists the issue's claimant and route, and drops the claimant 
     { session_id: routed, title: "Routed (e2e)" },
   ]);
   const read = await getAsk(ask.id);
-  expect((read.thread.followers ?? []).map((row) => row.session_id)).toEqual([asker.id]);
-  expect([read.thread.claimant, read.thread.route]).toEqual([claimant.id, `session:${routed}`]);
+  expect((read.followers ?? []).map((row) => row.session_id)).toEqual([asker.id]);
+  expect([read.claimant, read.route]).toEqual([claimant.id, `session:${routed}`]);
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -128,9 +127,7 @@ test("a follower that holds the claim is listed once, and unfollowing it says th
     title: "A roster probe for the reviewer role",
   });
   await patchIssue(probe.key, { route: "role:reviewer" });
-  await expect
-    .poll(async () => (await getIssue(probe.key)).reach.route_holder, ROSTER)
-    .toBe(routed);
+  await expect.poll(async () => (await getIssue(probe.key)).route_holder, ROSTER).toBe(routed);
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -196,7 +193,7 @@ test("a role route held by the claimant is counted once, under the claim that na
   await expect
     .poll(async () => {
       const read = await getAsk(ask.id);
-      return [read.thread.claimant, read.thread.route, read.thread.route_holder];
+      return [read.claimant, read.route, read.route_holder];
     }, ROSTER)
     .toEqual([claimant.id, "role:e2e-reach-implementer", claimant.id]);
 
@@ -241,60 +238,39 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
   await expect
     .poll(async () => {
       const read = await getAsk(ask.id);
-      return [read.thread.route, read.thread.route_status, read.thread.route_holder];
+      return [read.route, read.route_status, read.route_holder];
     }, ROSTER)
     .toEqual(["role:reviewer", "live", asker.id]);
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  // The listener answering nothing is forced on the real reads: the issue page's (its `reach`),
-  // the ask's thread and the Inbox rows' threads keep every other field the server sent.
+  // The listener answering nothing is forced on the real reads: the issue, the ask's thread and
+  // the Inbox rows keep every other field the server sent.
   const unknownReach = {
     route_holder: null,
     route_status: "unknown",
     route_status_reason: "unreachable",
   };
-  await page.route(
-    (url) =>
-      url.pathname === `/api/v2/issues/${issue.key}` &&
-      url.searchParams.getAll("include").includes("reach"),
-    async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as Result<"/api/v2/issues/{key}", "get">;
-      await route.fulfill({
-        json: { ...body, reach: { ...body.reach, ...unknownReach } },
-        response,
-      });
-    }
-  );
-  await page.route(
-    (url) => url.pathname === `/api/v2/asks/${ask.id}`,
-    async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as Result<"/api/v2/asks/{id}", "get">;
-      await route.fulfill({
-        json: { ...body, thread: { ...body.thread, ...unknownReach } },
-        response,
-      });
-    }
-  );
-  await page.route(
-    (url) =>
-      url.pathname === "/api/v2/asks" && url.searchParams.getAll("include").includes("thread"),
-    async (route) => {
-      const response = await route.fetch();
-      const body = (await response.json()) as Result<"/api/v2/asks", "get">;
-      await route.fulfill({
-        json: {
-          ...body,
-          items: body.items?.map((row) =>
-            row.id === ask.id ? { ...row, thread: { ...row.thread, ...unknownReach } } : row
-          ),
-        },
-        response,
-      });
-    }
-  );
+  await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as Record<string, unknown>;
+    await route.fulfill({ json: { ...body, ...unknownReach }, response });
+  });
+  await page.route(`**/api/v1/asks/${ask.id}`, async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as Record<string, unknown>;
+    await route.fulfill({ json: { ...body, ...unknownReach }, response });
+  });
+  await page.route("**/api/v1/inbox*", async (route) => {
+    const response = await route.fetch();
+    const rows = (await response.json()) as { id: string; thread: Record<string, unknown> }[];
+    await route.fulfill({
+      json: rows.map((row) =>
+        row.id === ask.id ? { ...row, thread: { ...row.thread, ...unknownReach } } : row
+      ),
+      response,
+    });
+  });
   try {
     await page.goto(`/issues/${issue.key}`);
     const headerMarker = page.getByTestId("issue-route-unknown");
@@ -433,23 +409,19 @@ test("a claim that lands while the Inbox is loading reaches the card that mounts
   const releaseFirst = Promise.withResolvers<void>();
   let staleClaimant: unknown;
   let inboxRequests = 0;
-  await page.route(
-    (url) =>
-      url.pathname === "/api/v2/asks" && url.searchParams.getAll("include").includes("thread"),
-    async (route) => {
-      inboxRequests += 1;
-      if (inboxRequests === 1) {
-        const response = await route.fetch();
-        const body = (await response.json()) as Result<"/api/v2/asks", "get">;
-        staleClaimant = body.items?.find((row) => row.id === ask.id)?.thread?.claimant;
-        firstFetched.resolve();
-        await releaseFirst.promise;
-        await route.fulfill({ response });
-        return;
-      }
-      await route.fallback();
+  await page.route("**/api/v1/inbox*", async (route) => {
+    inboxRequests += 1;
+    if (inboxRequests === 1) {
+      const response = await route.fetch();
+      const rows = (await response.json()) as { id: string; thread: { claimant: unknown } }[];
+      staleClaimant = rows.find((row) => row.id === ask.id)?.thread.claimant;
+      firstFetched.resolve();
+      await releaseFirst.promise;
+      await route.fulfill({ response });
+      return;
     }
-  );
+    await route.fallback();
+  });
   const streamOpened = page.waitForEvent(
     "websocket",
     (socket) => new URL(socket.url()).pathname === "/ws/live"
@@ -457,7 +429,7 @@ test("a claim that lands while the Inbox is loading reaches the card that mounts
   const pinnedListRead = () =>
     page.waitForRequest((request) => {
       const url = new URL(request.url());
-      return url.pathname === "/api/v2/issues" && url.searchParams.get("pinned") === "true";
+      return url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true";
     });
   try {
     const firstPinnedRead = pinnedListRead();

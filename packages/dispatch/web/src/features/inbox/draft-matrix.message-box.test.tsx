@@ -65,7 +65,7 @@ import { api } from "../../api/client";
 import type {
   IssueDetails,
   Message,
-  MessageThreadV2,
+  MessageRead,
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
@@ -94,9 +94,9 @@ function issueMessage(id: string, issueKey: string): Message {
 }
 
 /** Each issue's message conversation: its root message and no replies yet. */
-const conversations: Record<string, MessageThreadV2[]> = {
-  "CORE-1": [{ ...issueMessage("message-1", "CORE-1"), replies: [] }],
-  "CORE-2": [{ ...issueMessage("message-9", "CORE-2"), replies: [] }],
+const conversations: Record<string, MessageRead[]> = {
+  "CORE-1": [{ message: issueMessage("message-1", "CORE-1"), replies: [] }],
+  "CORE-2": [{ message: issueMessage("message-9", "CORE-2"), replies: [] }],
 };
 
 function messageRow(overrides: Partial<MyReplyThreadRow>): MyReplyThreadRow {

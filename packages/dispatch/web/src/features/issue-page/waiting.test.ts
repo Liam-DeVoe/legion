@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 
 import type {
+  Artifact,
   ArtifactBlock,
-  ArtifactV2,
   Comment,
   Decision,
   DisplayTree,
   IssueCoverage,
-  IssueDecisionsV2,
+  IssueDecisions,
   IssueDetails,
 } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
@@ -28,24 +28,20 @@ const KEY = "CORE-1";
 /** One open ask as the issue read carries it. */
 type OpenAsk = NonNullable<IssueDetails["open_asks"]>[number];
 
-function issueDocument(id: string, slug: string, primary = false): ArtifactV2 {
+function issueDocument(id: string, slug: string, primary = false): Artifact {
   return {
     created_at: "2026-11-05T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id,
     issue_key: KEY,
     kind: "doc",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
     name: slug,
     primary,
     project: "CORE",
     ref_key: `artifact:${id}`,
     session_id: null,
     slug,
-    unsettled: null,
-    version_count: 0,
+    versions: [],
   };
 }
 
@@ -64,19 +60,14 @@ function openAsk(id: string, kind: "approval" | "question", person: string): Ope
     author: { id: "planner", kind: "session" },
     block_id: null,
     created_at: "2026-11-05T00:00:00Z",
-    document: null,
     edited_at: null,
     id,
-    issue: null,
     issue_key: KEY,
     kind,
     last_reply: null,
     multiple: false,
-    opened_event_id: 1,
     options: [],
-    priority: null,
     question: `Ask ${id}?`,
-    ref: `dispatch://${KEY}/ask/${id}`,
     state: "open",
     urgency: "med",
     waiting_on: "human",
@@ -99,8 +90,10 @@ const issue: IssueDetails = {
   decisions_artifact_id: made.id,
   design_gates: [],
   external_links: [],
+  holder_state: null,
   key: KEY,
   labels: [],
+  last_seen: null,
   last_seq: 1,
   number: 1,
   open_asks: [
@@ -115,19 +108,15 @@ const issue: IssueDetails = {
   progress: { children: null, tasks: null },
   project: "CORE",
   rank: "U",
-  reach: {
-    holder_state: null,
-    last_seen: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-    takeable_at: null,
-  },
   referenced_by_count: 0,
   repo: null,
   resolved_repo: null,
   route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
   status: "todo",
+  takeable_at: null,
   title: "The issue page draws one ordered body",
   updated_at: "2026-11-05T00:00:00Z",
   verification_artifact_id: "",
@@ -187,17 +176,14 @@ function waitingDecision(blockId: string, shaped: readonly string[]): Decision {
   };
 }
 
-const decisions: IssueDecisionsV2 = {
-  document: `dispatch://${KEY}/artifact/decisions-md`,
-  items: [
+const decisions: IssueDecisions = {
+  decisions: [
     waitingDecision("listed", ["r1"]),
     waitingDecision("untied", []),
     waitingDecision("changed", ["r1"]),
   ],
-  limit: 50,
-  offset: 0,
+  document: `dispatch://${KEY}/artifact/decisions-md`,
   open_questions: [],
-  total: 3,
 };
 
 /** The Change a person asked of the decision `changed`, after its words last changed. */
@@ -421,7 +407,7 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
   });
   const first = worded("d1", [], "## Keep the model pure\n\nKeep the model pure. Draw it once.");
   const second = worded("d2", ["r1"], "## Draw it once\n\nDraw it once.");
-  const both: IssueDecisionsV2 = { ...decisions, items: [first, second] };
+  const both: IssueDecisions = { ...decisions, decisions: [first, second] };
   const anchor = {
     artifact_id: made.id,
     block_id: "d2-words",
@@ -497,9 +483,9 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
       to: { ...link.to, id: plan.id, ref: `dispatch://${KEY}/artifact/plan-md#b-p1` },
     })),
   };
-  const both: IssueDecisionsV2 = {
+  const both: IssueDecisions = {
     ...decisions,
-    items: [waitingDecision("listed", ["r1"]), toPlan],
+    decisions: [waitingDecision("listed", ["r1"]), toPlan],
   };
   const waitingDecisions = (read: IssueCoverage | undefined): string[] =>
     waitingIn(
@@ -540,9 +526,9 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
       })),
     };
   };
-  const reviewed: IssueDecisionsV2 = {
+  const reviewed: IssueDecisions = {
     ...decisions,
-    items: [
+    decisions: [
       tiedTo("short", "r1", spec.id, `dispatch://${KEY}/spec#b-r1`),
       tiedTo("slugged", "r1", spec.id, `dispatch://${KEY}/artifact/spec#b-r1`),
       tiedTo("unlisted", "r2", spec.id, `dispatch://${KEY}/spec#b-r2`),
@@ -571,10 +557,10 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
   const waitingDecisions = waitingIn(root).filter((id) => id.startsWith("decisions-md#"));
   expect(waitingDecisions).toEqual(["decisions-md#b-short", "decisions-md#b-slugged"]);
   const listed = coverageStatements(planned, coverage);
-  const tied = reviewed.items ?? [];
+  const tied = reviewed.decisions ?? [];
   expect(tied).toHaveLength(5);
   for (const decision of tied) {
-    const alone: IssueDecisionsV2 = { ...reviewed, items: [decision] };
+    const alone: IssueDecisions = { ...reviewed, decisions: [decision] };
     const counted = waitingOnReader(planned, "alice", alone, listed, [], documents);
     const marked = waitingDecisions.includes(`decisions-md#b-${decision.block_id}`);
     expect(counted.decisions, decision.block_id).toBe(marked ? 1 : 0);
@@ -931,6 +917,6 @@ test("a decision whose reading holds no blocks is read by its stored markdown", 
     id: "c-quoted",
   };
   expect(
-    decisionChangeComments({ ...decisions, items: rows }, [quoted], issue.artifacts, undefined)
+    decisionChangeComments({ ...decisions, decisions: rows }, [quoted], issue.artifacts, undefined)
   ).toEqual(new Map([["c-quoted", first.ref]]));
 });

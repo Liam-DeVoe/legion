@@ -30,13 +30,13 @@ function dispatchHoldingAssignee() {
   const patchIssue = answerIssuePatches().mockImplementation((key, input, bounds) => {
     let answer = answers.get(bounds.key);
     if (answer === undefined) {
-      held.assignee = typeof input.assignee === "string" ? input.assignee : null;
+      held.assignee = input.assignee ?? null;
       answer = { assignee: held.assignee, key } as Issue;
       answers.set(bounds.key, answer);
     }
     return held.answering
       ? Promise.resolve(answer)
-      : Promise.reject(new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch")));
+      : Promise.reject(new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch")));
   });
   return { held, patchIssue };
 }

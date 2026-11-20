@@ -316,7 +316,7 @@ test("an Inbox card gains its count when a project document cites the ask", asyn
   });
 });
 
-// `dispatch doc-edit` writes through `POST /api/v2/artifacts/{id}/edits`, which records its own
+// `dispatch doc-edit` writes through `POST /api/v1/artifacts/{id}/edits`, which records its own
 // version and appends its own event: the path agents actually use has to name what it cited.
 test("an Inbox card gains its count when a document edit cites the ask", async ({ page }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -423,7 +423,7 @@ test("an Inbox of twenty asks reads no backlinks until a card is opened", async 
 
   let referenceReads = 0;
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/v2/references") {
+    if (new URL(request.url()).pathname === "/api/v1/references") {
       referenceReads += 1;
     }
   });

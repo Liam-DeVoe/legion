@@ -63,7 +63,7 @@ function recorded(options: {
               { name: "Accept", value: "application/json" },
             ],
             method: "GET",
-            url: `${from}${options.url ?? "/api/v2/asks?state=open"}`,
+            url: `${from}${options.url ?? "/api/v1/inbox"}`,
           },
           response: {
             bodySize: 81,
@@ -71,7 +71,7 @@ function recorded(options: {
             content: {
               mimeType: "application/json",
               size: 81,
-              text: options.body ?? '{"items":[],"limit":50,"offset":0,"total":0}',
+              text: options.body ?? '{"rows":[],"total":0}',
             },
             headers: [
               { name: "Date", value: options.at ?? "Mon, 09 Nov 2026 00:00:00 GMT" },
@@ -92,16 +92,16 @@ function recorded(options: {
 describe("a committed recording", () => {
   test("names the placeholder origin, not the harness it was recorded against", () => {
     const written = normalise(recorded({}), from);
-    expect(written.log.entries[0].request.url).toBe(`${recordedOrigin}/api/v2/asks?state=open`);
+    expect(written.log.entries[0].request.url).toBe(`${recordedOrigin}/api/v1/inbox`);
     expect(retargeted(JSON.stringify(written), "http://127.0.0.1:4319")).toContain(
-      "http://127.0.0.1:4319/api/v2/asks?state=open"
+      "http://127.0.0.1:4319/api/v1/inbox"
     );
   });
 
   test("keeps its bodies exactly as the server wrote them", () => {
     // The committed body is what the page is answered with, so a token in place of a timestamp
     // would make the page render an invalid date. Masking belongs to the comparison alone.
-    const body = '{"as_of":"2026-11-09T00:51:05.715869Z","items":[]}';
+    const body = '{"as_of":"2026-11-09T00:51:05.715869Z","rows":[]}';
     expect(normalise(recorded({ body }), from).log.entries[0].response.content.text).toBe(body);
   });
 
@@ -126,7 +126,7 @@ describe("a committed recording", () => {
               request: {
                 headers: [{ name: "cookie", value: "dsession=2.YWxpY2U.0.1" }],
                 method: "GET",
-                url: `${recordedOrigin}/api/v2/asks?state=open`,
+                url: `${recordedOrigin}/api/v1/inbox`,
               },
               response: { content: {}, headers: [], status: 200 },
             },
@@ -143,7 +143,7 @@ describe("a committed recording", () => {
                 cookies: [{ name: "dsession", value: "2.YWxpY2U.0.1" }],
                 headers: [],
                 method: "GET",
-                url: `${recordedOrigin}/api/v2/asks?state=open`,
+                url: `${recordedOrigin}/api/v1/inbox`,
               },
               response: { content: {}, headers: [], status: 200 },
             },
@@ -161,7 +161,7 @@ describe("the drift the nightly judges", () => {
     const first = normalise(
       recorded({
         at: "2026-11-09T00:00:00Z",
-        body: '{"as_of":"2026-11-09T00:51:05.7Z","id":"42017c43-4482-482a-8604-f183face92e3","items":[],"total":0}',
+        body: '{"as_of":"2026-11-09T00:51:05.7Z","id":"42017c43-4482-482a-8604-f183face92e3","rows":[],"total":0}',
         cookie: "dsession=2.YWxpY2U.0.1",
         frame: "frame@1",
         time: 12.5,
@@ -171,7 +171,7 @@ describe("the drift the nightly judges", () => {
     const second = normalise(
       recorded({
         at: "2026-11-09T01:17:42Z",
-        body: '{"as_of":"2026-11-09T02:11:09.3Z","id":"343a818f-e378-4d4b-9dc6-83512adccc7a","items":[{"anchor":null}],"total":1}',
+        body: '{"as_of":"2026-11-09T02:11:09.3Z","id":"343a818f-e378-4d4b-9dc6-83512adccc7a","rows":[{"anchor":null}],"total":1}',
         cookie: "dsession=2.YWxpY2U.0.9",
         frame: "frame@beef",
         time: 44.25,
@@ -189,7 +189,7 @@ describe("the drift the nightly judges", () => {
       normalise(recorded({ status: 404 }), from)
     );
     expect(drift).toEqual([
-      "GET /api/v2/asks: the recording holds 200, the server now answers 404",
+      "GET /api/v1/inbox: the recording holds 200, the server now answers 404",
     ]);
   });
 
@@ -197,7 +197,7 @@ describe("the drift the nightly judges", () => {
     // A page's reads race: one run makes a poll the next does not. A recording the fresh run
     // wrote nothing for at all is a different finding, and the tool reports that one.
     const before = normalise(recorded({}), from);
-    const after = normalise(recorded({ url: "/api/v2/me/threads" }), from);
+    const after = normalise(recorded({ url: "/api/v1/inbox/threads" }), from);
     expect(statusDrift(before, after)).toEqual([]);
     expect(statusDrift(after, before)).toEqual([]);
   });
@@ -210,8 +210,8 @@ describe("the drift the nightly judges", () => {
 
   test("the ids the server mints are masked out of a route", () => {
     const one = statusesByRoute(
-      normalise(recorded({ url: "/api/v2/artifacts/42017c43-4482-482a-8604-f183face92e3" }), from)
+      normalise(recorded({ url: "/api/v1/artifacts/42017c43-4482-482a-8604-f183face92e3" }), from)
     );
-    expect([...one.keys()]).toEqual(["GET /api/v2/artifacts/<uuid>"]);
+    expect([...one.keys()]).toEqual(["GET /api/v1/artifacts/<uuid>"]);
   });
 });

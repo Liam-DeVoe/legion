@@ -23,16 +23,14 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type {
-  ArtifactV2,
-  AskWithThread,
+  Artifact,
+  AskRead,
   Comment,
   CredentialPendingRow,
   InboxRow,
   Issue,
   IssueDetails,
-  MarkV2,
 } from "../../api/types";
-import { markOf } from "../agents/marks-fixture";
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
@@ -48,7 +46,7 @@ import {
   installInboxApiMocks,
   issueAsk,
   mockAskReads,
-  withSnooze,
+  withWaitingOnPerson,
 } from "./inbox-fixture";
 import { SnoozeControl } from "./SnoozeControl";
 
@@ -57,18 +55,44 @@ const mocks = installInboxApiMocks();
 /** A question on a project document. It has no issue, so the person it reaches is its project's
  *  default assignee - `projectDefault`, `null` for a row the server resolved nobody for. */
 function artifactAsk(projectDefault: string | null = FIXTURE_PROJECT_DEFAULT): InboxRow {
-  return issueAsk(
-    {
-      artifact_id: "artifact-1",
-      document: { name: "Design notes", project: "CORE", slug: "design-notes" },
-      id: "ask-1",
-      issue: null,
-      issue_key: null,
-      question: "Does this design need review?",
-      ref: "dispatch://CORE/artifact/design-notes/ask/ask-1",
+  const row: InboxRow = {
+    anchor: null,
+    answer: null,
+    artifact_id: "artifact-1",
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "session-1", kind: "session" },
+    created_at: "2026-09-11T00:00:00Z",
+    document: { name: "Design notes", project: "CORE", slug: "design-notes" },
+    block_id: null,
+    edited_at: null,
+    id: "ask-1",
+    issue_key: null,
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    opened_event_id: 1,
+    options: [],
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
     },
-    projectDefault
-  );
+    question: "Does this design need review?",
+    priority: null,
+    snoozed_until: null,
+    state: "open",
+    waiting_on: "human",
+    urgency: "med",
+  };
+  return withWaitingOnPerson(row, projectDefault);
 }
 
 function inboxIssue(
@@ -176,9 +200,7 @@ test("a cold Inbox hydrates every ask thread from its one list response", async 
     await waitFor(() =>
       expect(
         rows.map(
-          (row) =>
-            queryClient.getQueryData<AskWithThread>(["ask-thread", row.id])?.thread.replies?.[0]
-              ?.body
+          (row) => queryClient.getQueryData<AskRead>(["ask-thread", row.id])?.replies?.[0]?.body
         )
       ).toEqual(rows.map((row) => row.thread.replies?.[0]?.body))
     );
@@ -254,7 +276,18 @@ test("an unchanged old Inbox cache does not refetch every thread on remount", as
 test("Inbox labels an artifact-owned ask with its project and document page link", async () => {
   const ask = artifactAsk();
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([ask]);
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(ask);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ask,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // A document ask has no issue, so it reaches its project's default assignee: that person's
   // list is where it shows.
@@ -288,9 +321,18 @@ test("Inbox puts every ask waiting on the viewer under Waiting on you", async ()
     question: "Which format?",
   });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) =>
-    id === askA.id ? askA : askB
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : askB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
@@ -324,9 +366,18 @@ test("Inbox keeps rows waiting on agents below Waiting on you without duplicatin
     question: "Which format?",
   });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) =>
-    id === askA.id ? askA : askB
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : askB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
@@ -370,9 +421,18 @@ test("Inbox keeps an agent's latest reply on its Waiting-on-you row", async () =
     question: "Which format?",
   });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) =>
-    id === askA.id ? askA : askB
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : askB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
@@ -403,7 +463,18 @@ test("Inbox partitions by waiting_on: an agent's progress note keeps its ask und
     waiting_on: "agent",
   });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([noted]);
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(noted);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ask: noted,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
@@ -449,9 +520,18 @@ test("Inbox preserves server priority order within Waiting on you", async () => 
     question: "Waiting on agent",
   });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([p0, agentWaits, p2]);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(
-    async (id: string) => [p0, p2, agentWaits].find((ask) => ask.id === id) ?? p0
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: [p0, p2, agentWaits].find((ask) => ask.id === id) ?? p0,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on&sort=priority"]}>
@@ -577,7 +657,7 @@ function secretRequest(overrides: Partial<CredentialPendingRow> = {}): Credentia
 
 test("a credential request alone is listed and on the banner, and nothing says nothing needs you", async () => {
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
-  mocks.getCredentialPending.mockResolvedValue([secretRequest()]);
+  mocks.getCredentialPending.mockResolvedValue({ pending: [secretRequest()] });
   // A listed request names what the broker can still offer; this one needs no machine code.
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
     machine_code_page: false,
@@ -601,12 +681,14 @@ test("a credential request alone is listed and on the banner, and nothing says n
 // them, with no banner, and lists the expired request above that, marked and with Dismiss.
 test("an expired credential request alone is listed with Dismiss, and the Inbox still says nothing needs you", async () => {
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
-  mocks.getCredentialPending.mockResolvedValue([
-    secretRequest({
-      expires_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-      state: "expired",
-    }),
-  ]);
+  mocks.getCredentialPending.mockResolvedValue({
+    pending: [
+      secretRequest({
+        expires_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        state: "expired",
+      }),
+    ],
+  });
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
     machine_code_page: false,
   });
@@ -632,9 +714,11 @@ test("the banner counts credential requests beside the asks waiting on you, olde
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([
     issueAsk({ created_at: new Date().toISOString() }),
   ]);
-  mocks.getCredentialPending.mockResolvedValue([
-    secretRequest({ requested_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() }),
-  ]);
+  mocks.getCredentialPending.mockResolvedValue({
+    pending: [
+      secretRequest({ requested_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() }),
+    ],
+  });
   // A listed request names what the broker can still offer; this one needs no machine code.
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
     machine_code_page: false,
@@ -681,9 +765,18 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
   });
   const rows = [fromPlanner, plannerWaits, fromReviewer];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(
-    async (id: string) => rows.find((ask) => ask.id === id) ?? fromPlanner
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: rows.find((ask) => ask.id === id) ?? fromPlanner,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([
     {
       capabilities: [],
@@ -747,9 +840,18 @@ test("Inbox ?section=needs-you keeps only the agent's asks waiting on the viewer
   });
   const rows = [fromPlanner, plannerWaits];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(
-    async (id: string) => rows.find((ask) => ask.id === id) ?? fromPlanner
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: rows.find((ask) => ask.id === id) ?? fromPlanner,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -780,7 +882,18 @@ test("Inbox ?section=needs-you keeps only the agent's asks waiting on the viewer
 
 test("Inbox filtered to an agent with no open asks says so and still offers to clear", async () => {
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(issueAsk());
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ask: issueAsk(),
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const view = render(
     <MemoryRouter initialEntries={["/?agent=idle-session"]}>
@@ -824,9 +937,18 @@ test("a row being typed into stays under Waiting on you when an agent's note fli
     question: "Brand new ask",
   });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(
-    async (id: string) => [askA, askB, askC].find((ask) => ask.id === id) ?? askA
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: [askA, askB, askC].find((ask) => ask.id === id) ?? askA,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
@@ -915,10 +1037,18 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
   let inboxRows = [askA, askB, askC];
   let repliesB: Comment[] = [];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => inboxRows);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => {
-    const row = [askA, askB, askC].find((ask) => ask.id === id) ?? askA;
-    return { ...row, thread: { ...row.thread, replies: id === askB.id ? repliesB : [] } };
-  });
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: [askA, askB, askC].find((ask) => ask.id === id) ?? askA,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: id === askB.id ? repliesB : [],
+  }));
   // The server records the clarification: the turn is the agent's, and the inbox says so on
   // the next refetch.
   const createComment = spyOn(api, "createComment").mockImplementation(async (issueKey, input) => {
@@ -1027,9 +1157,18 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
   };
   let threadB = askB;
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) =>
-    id === askA.id ? askA : threadB
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : threadB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
@@ -1090,9 +1229,18 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
   });
   let inboxRows = [askA, askB];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => inboxRows);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) =>
-    id === askA.id ? askA : askB
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : askB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
     inboxRows = [askA];
     return {
@@ -1378,9 +1526,18 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
   });
   let threadB = askB;
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
-  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) =>
-    id === askA.id ? askA : threadB
-  );
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : threadB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
   const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(new Error("offline"));
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -2170,12 +2327,11 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
   let served: InboxRow[] = [askA, askB];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
-    served = served.map((row) => (row.id === id ? withSnooze(row, until) : row));
-    return { id, kind: "ask", snoozed_until: until ?? undefined };
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
   });
   const unsnoozeAsk = spyOn(api, "unsnoozeAsk").mockImplementation(async (id) => {
-    served = served.map((row) => (row.id === id ? withSnooze(row, null) : row));
-    return { id, kind: "ask" };
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: null } : row));
   });
   const getAsk = mockAskReads([askA, askB]);
   const { unmount } = renderInbox("/?group=waiting-on");
@@ -2221,10 +2377,12 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
 
 test("an agent's reply on a snoozed row leaves it in Later and off Waiting on you", async () => {
   const user = userEvent.setup();
-  const snoozed = withSnooze(
-    issueAsk({ id: "ask-snoozed", question: "Which format?", waiting_on: "agent" }),
-    soon()
-  );
+  const snoozed = issueAsk({
+    id: "ask-snoozed",
+    question: "Which format?",
+    snoozed_until: soon(),
+    waiting_on: "agent",
+  });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([snoozed]);
   const getAsk = mockAskReads([snoozed]);
   const { queryClient, unmount } = renderInbox();
@@ -2267,10 +2425,11 @@ test("an agent's reply on a snoozed row leaves it in Later and off Waiting on yo
 });
 
 test("a snooze whose moment has passed is an ordinary row again", async () => {
-  const lapsed = withSnooze(
-    issueAsk({ id: "ask-lapsed", question: "Which format?" }),
-    "2020-01-01T00:00:00.000Z"
-  );
+  const lapsed = issueAsk({
+    id: "ask-lapsed",
+    question: "Which format?",
+    snoozed_until: "2020-01-01T00:00:00.000Z",
+  });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([lapsed]);
   const getAsk = mockAskReads([lapsed]);
   const { unmount } = renderInbox("/?group=waiting-on");
@@ -2297,8 +2456,10 @@ test("a snooze still saving says Snoozing…, not Un-snoozing…, in the band it
     (id, { snoozed_until: until }) =>
       new Promise((resolve) => {
         settle = () => {
-          served = served.map((each) => (each.id === id ? withSnooze(each, until) : each));
-          resolve({ id, kind: "ask", snoozed_until: until ?? undefined });
+          served = served.map((each) =>
+            each.id === id ? { ...each, snoozed_until: until } : each
+          );
+          resolve({ snoozed_until: until });
         };
       })
   );
@@ -2370,7 +2531,7 @@ test("a snooze the reader stopped says what Retry does, not a message's words", 
   const row = issueAsk({ id: "ask-b", question: "Which format?" });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([row]);
   const snoozeAsk = answerAskSnoozes().mockRejectedValue(
-    new NetworkError("/api/v2/me/marks/ask/ask-b", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/me/asks/ask-b/snooze", new TypeError("Failed to fetch"))
   );
   const getAsk = mockAskReads([row]);
   const { queryClient, unmount } = renderInbox("/?group=waiting-on");
@@ -2407,7 +2568,7 @@ test("a snooze's Retry is of the ask its press was of, whichever ask the control
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const snoozeAsk = answerAskSnoozes().mockRejectedValue(
-    new NetworkError("/api/v2/me/marks/ask/ask-a", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/me/asks/ask-a/snooze", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -2426,9 +2587,7 @@ test("a snooze's Retry is of the ask its press was of, whichever ask the control
     const stopped = snoozeAsk.mock.calls.length;
 
     view.rerender(drawn("ask-b"));
-    snoozeAsk.mockImplementation(async (id, { snoozed_until }) =>
-      markOf("ask", id, snoozed_until === null ? {} : { snoozed_until })
-    );
+    snoozeAsk.mockImplementation(async (_id, { snoozed_until }) => ({ snoozed_until }));
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(1_000);
 
@@ -2448,7 +2607,7 @@ test("a snooze's Retry is of the ask its press was of, whichever ask the control
 // for the ask it shows, and lets the first go once Dispatch answers.
 test("a snooze out when the control is drawn for another ask holds the row of the ask it was pressed on", async () => {
   const user = userEvent.setup();
-  const landing = Promise.withResolvers<MarkV2>();
+  const landing = Promise.withResolvers<{ snoozed_until: string }>();
   const snoozeAsk = answerAskSnoozes().mockImplementation(() => landing.promise);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -2471,7 +2630,7 @@ test("a snooze out when the control is drawn for another ask holds the row of th
     view.rerender(drawn("ask-b"));
     expect(liveness).toEqual([["ask-a", true]]);
 
-    landing.resolve(markOf("ask", "ask-a", { snoozed_until: "2026-11-17T09:00:00Z" }));
+    landing.resolve({ snoozed_until: "2026-11-17T09:00:00Z" });
     await waitFor(() => expect(liveness.length).toBe(2));
     expect(liveness).toEqual([
       ["ask-a", true],
@@ -2698,7 +2857,7 @@ test("?item= selects the row it names, and one the list does not hold falls back
 test("?item= naming a row in the folded Later band opens the band and selects it", async () => {
   const narrow = widenToReadingPane();
   const open = inboxIssue("ask-a", "CORE-1", "Which approach?");
-  const later = withSnooze(inboxIssue("ask-later", "CORE-2", "Which format?"), soon());
+  const later = inboxIssue("ask-later", "CORE-2", "Which format?", { snoozed_until: soon() });
   const rows = [open, later];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
@@ -3056,17 +3215,27 @@ test("a selected row the server drops leaves the list at once and the next row i
 
 /** The ask's thread read once an agent has retracted it: what the card draws its closed state
  *  from, whatever the Inbox list still says. */
-function retracted(row: InboxRow): AskWithThread {
+function retracted(row: InboxRow): AskRead {
   return {
-    ...row,
-    resolution: {
-      actor: { id: "session-1", kind: "session" },
-      at: "2026-09-11T03:00:00Z",
-      kind: "retracted",
-      reason: "A newer question supersedes this one.",
+    answers: [],
+    ask: {
+      ...row,
+      resolution: {
+        actor: { id: "session-1", kind: "session" },
+        at: "2026-09-11T03:00:00Z",
+        kind: "retracted",
+        reason: "A newer question supersedes this one.",
+      },
+      state: "resolved",
     },
-    state: "resolved",
-    thread: { ...row.thread, answers: [], replies: [] },
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
   };
 }
 
@@ -3093,7 +3262,7 @@ test("a question the reader was answering keeps its text in the column, closed, 
     // other dropped row, and its own read says it is closed.
     served = [second];
     await act(async () => {
-      queryClient.setQueryData<AskWithThread>(["ask-thread", "ask-a"], retracted(first));
+      queryClient.setQueryData<AskRead>(["ask-thread", "ask-a"], retracted(first));
       await queryClient.refetchQueries({ queryKey: ["inbox"] });
     });
     expect(rowIds()).toEqual(["ask-b"]);
@@ -3124,7 +3293,7 @@ test("a question the reader was answering keeps its text in the column, closed, 
     await user.paste(lastTyped);
     served = [];
     await act(async () => {
-      queryClient.setQueryData<AskWithThread>(["ask-thread", "ask-b"], retracted(second));
+      queryClient.setQueryData<AskRead>(["ask-thread", "ask-b"], retracted(second));
       await queryClient.refetchQueries({ queryKey: ["inbox"] });
     });
     await waitFor(() => expect(rowIds()).toEqual([]));
@@ -3185,7 +3354,7 @@ test.each(
 
     served = rows.filter((row) => row.id !== held.id);
     await act(async () => {
-      queryClient.setQueryData<AskWithThread>(["ask-thread", held.id], retracted(held));
+      queryClient.setQueryData<AskRead>(["ask-thread", held.id], retracted(held));
       await queryClient.refetchQueries({ queryKey: ["inbox"] });
     });
     await waitFor(() => expect(rowIds()).toEqual(served.map((row) => row.id)));
@@ -3799,7 +3968,7 @@ test("a step out of a column held open over a hidden row drops the record, where
     await user.paste("Whichever the mirror already holds.");
     served = rows.filter((row) => row.id !== "ask-a");
     await act(async () => {
-      queryClient.setQueryData<AskWithThread>(["ask-thread", "ask-a"], retracted(rows[0]));
+      queryClient.setQueryData<AskRead>(["ask-thread", "ask-a"], retracted(rows[0]));
       await queryClient.refetchQueries({ queryKey: ["inbox"] });
     });
     await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
@@ -3853,7 +4022,7 @@ test("a step that moves nothing in a column held open over a hidden row keeps th
     await user.paste("Whichever the mirror already holds.");
     served = rows.filter((row) => row.id !== "ask-a");
     await act(async () => {
-      queryClient.setQueryData<AskWithThread>(["ask-thread", "ask-a"], retracted(rows[0]));
+      queryClient.setQueryData<AskRead>(["ask-thread", "ask-a"], retracted(rows[0]));
       await queryClient.refetchQueries({ queryKey: ["inbox"] });
     });
     await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
@@ -3954,8 +4123,8 @@ test("a snooze under h drops the record: Escape lands on the question the column
   let served: InboxRow[] = rows;
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
-    served = served.map((row) => (row.id === id ? withSnooze(row, until) : row));
-    return { id, kind: "ask", snoozed_until: until ?? undefined };
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
@@ -4036,10 +4205,7 @@ test("a question the server withdraws drops the record: Escape lands on the one 
     // question the column takes next is the change the layout effect reads after it.
     served = rows.filter((row) => row.id !== "ask-b");
     await act(async () => {
-      queryClient.setQueryData<AskWithThread>(
-        ["ask-thread", "ask-b"],
-        retracted(rows[1] as InboxRow)
-      );
+      queryClient.setQueryData<AskRead>(["ask-thread", "ask-b"], retracted(rows[1] as InboxRow));
       await queryClient.refetchQueries({ queryKey: ["inbox"] });
     });
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-c"]));
@@ -4319,23 +4485,19 @@ function askBlockNode(blockId: string, question: string): ProseMirrorNode {
   ]);
 }
 
-const SPEC_DOCUMENT: ArtifactV2 = {
+const SPEC_DOCUMENT: Artifact = {
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
   issue_key: "CORE-1",
   kind: "doc",
-  latest_version: null,
-  latest_version_at: null,
-  latest_version_size: null,
   name: "spec.md",
   primary: true,
   project: "CORE",
   ref_key: "CORE-1/spec",
   session_id: null,
   slug: "spec",
-  unsettled: null,
-  version_count: 0,
+  versions: [],
 };
 
 test("the answer keys act on the selected decision block, not the first one in the document", async () => {
@@ -4361,14 +4523,12 @@ test("the answer keys act on the selected decision block, not the first one in t
   const getIssue = mockIssueReads();
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    ...SPEC_DOCUMENT,
     markdown: "",
     token: "",
+    version: null,
     unsettled: true,
   });
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-  // The document's own read carries only its newest version; the versions are their own read.
-  const listArtifactVersions = spyOn(api, "listArtifactVersions").mockResolvedValue([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
     rows.map((row) => ({ ...row, last_reply: null }))
   );
@@ -4427,7 +4587,6 @@ test("the answer keys act on the selected decision block, not the first one in t
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
-    listArtifactVersions.mockRestore();
     listIssueAsks.mockRestore();
   }
 });
@@ -4469,13 +4628,12 @@ function mockDocumentColumnReads(rows: readonly InboxRow[]) {
     mockIssueReads(),
     getArtifact,
     spyOn(api, "getArtifactText").mockResolvedValue({
-      ...SPEC_DOCUMENT,
       markdown: "",
       token: "",
+      version: null,
       unsettled: true,
     }),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
-    spyOn(api, "listArtifactVersions").mockResolvedValue([]),
     spyOn(api, "listIssueAsks").mockResolvedValue(
       rows.map((row) => ({ ...row, last_reply: null }))
     ),
@@ -4642,13 +4800,12 @@ test("a refused hand-on from the column's decision block keeps the row, with the
   const people = mockPeople();
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    ...SPEC_DOCUMENT,
     markdown: "",
     token: "",
+    version: null,
     unsettled: true,
   });
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-  const listArtifactVersions = spyOn(api, "listArtifactVersions").mockResolvedValue([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
     rows.map((row) => ({ ...row, last_reply: null }))
   );
@@ -4705,7 +4862,6 @@ test("a refused hand-on from the column's decision block keeps the row, with the
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
-    listArtifactVersions.mockRestore();
     listIssueAsks.mockRestore();
   }
 });
@@ -4733,9 +4889,11 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
   const people = mockPeople();
-  const threads = {
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
     as_of: "2026-10-12T00:00:00Z",
-    items: [
+    limit: 200,
+    offset: 0,
+    rows: [
       replyRow("ask-theirs", {
         issue: { key: "CORE-2", title: "Carol's issue" },
         kind: "ask",
@@ -4743,13 +4901,8 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
         subject: "Which approach?",
       }),
     ],
-    limit: 200,
-    offset: 0,
     total: 1,
-  };
-  // The Inbox's own list reads every page; the card's read mark reads its owner's unread set.
-  const listEveryMyThread = spyOn(api, "listEveryMyThread").mockResolvedValue(threads);
-  const listMyThreads = spyOn(api, "listMyThreads").mockResolvedValue(threads);
+  });
   const handOn = Promise.withResolvers<InboxRow>();
   const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
   const { unmount } = renderInbox("/");
@@ -4787,8 +4940,7 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
   } finally {
     unmount();
     handAskTo.mockRestore();
-    listEveryMyThread.mockRestore();
-    listMyThreads.mockRestore();
+    listMyReplies.mockRestore();
     people.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
@@ -4835,8 +4987,8 @@ test("a bulk snooze of the selected row keeps the list and the picker the reader
   const landing = Promise.withResolvers<void>();
   const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
     await landing.promise;
-    served = served.map((each) => (each.id === id ? withSnooze(each, until) : each));
-    return { id, kind: "ask", snoozed_until: until ?? undefined };
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
@@ -5029,8 +5181,8 @@ test("a row the reader defers hands the selection to the next one, and the last 
   let served: InboxRow[] = rows;
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
-    served = served.map((row) => (row.id === id ? withSnooze(row, until) : row));
-    return { id, kind: "ask", snoozed_until: until ?? undefined };
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();

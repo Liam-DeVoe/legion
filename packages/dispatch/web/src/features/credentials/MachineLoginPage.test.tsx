@@ -48,14 +48,11 @@ test("code -> lookup -> Approve posts the looked-up code", async () => {
   const record = machineRecord();
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
   // The page lists the viewer's machine logins beside the code form; no test here reads them.
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
-  // The decision answers the record as it left it.
-  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue(
-    machineRecord({
-      decided: { at: "2026-09-27T00:05:00Z", credential_id: "cred-9", event: "approved" },
-      state: "approved",
-    })
-  );
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
 
   try {
     renderPage();
@@ -72,7 +69,11 @@ test("code -> lookup -> Approve posts the looked-up code", async () => {
     await user.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => expect(approveCredentialRecord).toHaveBeenCalledTimes(1));
-    expect(approveCredentialRecord).toHaveBeenCalledWith("req-2", "ABCD-1234", keyedAttempt);
+    expect(approveCredentialRecord).toHaveBeenCalledWith(
+      "req-2",
+      { code: "ABCD-1234" },
+      keyedAttempt
+    );
   } finally {
     cleanup();
     lookupMachineCredential.mockRestore();
@@ -86,7 +87,7 @@ test("a NO_SUCH_CODE lookup failure renders inline under the input", async () =>
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockRejectedValue(
     new ApiError(404, { code: "NO_SUCH_CODE", error: "No pending request matches that code." })
   );
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
 
   try {
     renderPage();
@@ -108,13 +109,10 @@ test("code -> lookup -> Deny posts the looked-up code too, which the broker requ
   const user = userEvent.setup();
   const record = machineRecord();
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
-  const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockResolvedValue(
-    machineRecord({
-      decided: { at: "2026-09-27T00:05:00Z", credential_id: null, event: "denied" },
-      state: "denied",
-    })
-  );
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockResolvedValue({
+    state: "denied",
+  });
 
   try {
     renderPage();
@@ -131,7 +129,7 @@ test("code -> lookup -> Deny posts the looked-up code too, which the broker requ
     await user.click(screen.getByRole("button", { name: "Deny" }));
 
     await waitFor(() => expect(denyCredentialRecord).toHaveBeenCalledTimes(1));
-    expect(denyCredentialRecord).toHaveBeenCalledWith("req-2", "ABCD-1234", keyedAttempt);
+    expect(denyCredentialRecord).toHaveBeenCalledWith("req-2", { code: "ABCD-1234" }, keyedAttempt);
   } finally {
     cleanup();
     lookupMachineCredential.mockRestore();
@@ -144,15 +142,10 @@ test("a pending service login from before token logins offers Deny alone, which 
   const user = userEvent.setup();
   const record = machineRecord({ approver: "anyone", service: "legion-daemon" });
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
-  const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockResolvedValue(
-    machineRecord({
-      approver: "anyone",
-      decided: { at: "2026-09-27T00:05:00Z", credential_id: null, event: "denied" },
-      service: "legion-daemon",
-      state: "denied",
-    })
-  );
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockResolvedValue({
+    state: "denied",
+  });
 
   try {
     renderPage();
@@ -169,7 +162,11 @@ test("a pending service login from before token logins offers Deny alone, which 
 
     await user.click(screen.getByRole("button", { name: "Deny" }));
     await waitFor(() =>
-      expect(denyCredentialRecord).toHaveBeenCalledWith("req-2", "ABCD-1234", keyedAttempt)
+      expect(denyCredentialRecord).toHaveBeenCalledWith(
+        "req-2",
+        { code: "ABCD-1234" },
+        keyedAttempt
+      )
     );
   } finally {
     cleanup();
@@ -181,7 +178,7 @@ test("a pending service login from before token logins offers Deny alone, which 
 
 /** A fetch that failed, which the write is tried again after: it goes late, for the reader to
  *  stop. */
-const dropped = () => new NetworkError("/api/v2/credential-requests", new TypeError("Failed"));
+const dropped = () => new NetworkError("/api/v1/credential-requests", new TypeError("Failed"));
 
 /** The page over `queryClient`, on the held clock, with the code looked up when `answerLookup`
  *  is given: it answers the lookup the press of Look up sent, inside `act` once that press is
@@ -215,7 +212,7 @@ async function stoppedPage(
 test("a lookup the reader stopped says it may have been made, not that it failed", async () => {
   jest.useFakeTimers();
   const lookup = spyOn(api, "lookupMachineCredential").mockRejectedValue(dropped());
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
     await stoppedPage(queryClient);
@@ -240,7 +237,7 @@ test("an approval the reader stopped says it may have been made, not that it fai
   jest.useFakeTimers();
   const lookedUp = Promise.withResolvers<RecordResponse>();
   const lookup = spyOn(api, "lookupMachineCredential").mockReturnValue(lookedUp.promise);
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   const approve = spyOn(api, "approveCredentialRecord").mockRejectedValue(dropped());
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
@@ -268,7 +265,7 @@ test("a denial the reader stopped says it may have been made, not that it failed
   jest.useFakeTimers();
   const lookedUp = Promise.withResolvers<RecordResponse>();
   const lookup = spyOn(api, "lookupMachineCredential").mockReturnValue(lookedUp.promise);
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   const deny = spyOn(api, "denyCredentialRecord").mockRejectedValue(dropped());
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {

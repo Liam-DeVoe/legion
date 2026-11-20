@@ -3,10 +3,9 @@
 // project's daemon is named, listed, refused a bad URL, and removed.
 // Every spec is tagged `@legion`, so `--grep @legion` runs this file's work and nothing else.
 //
-// A project's daemon is named by `PUT /api/v2/projects/{key}/legion/daemon` and removed by its
-// DELETE, both deployment-scoped rows of the INFRA-979 tree, which answer at /api/v2 as at their
-// /api/v1 path; the route stores a base URL and never calls the host, so these specs need no
-// daemon to be reachable.
+// A project's daemon is named by `PUT /api/v1/projects/{key}/legion/daemon` and removed by its
+// DELETE, both deployment-scoped; the route stores a base URL and never calls the host, so these
+// specs need no daemon to be reachable.
 import { baseUrl, userHeaders } from "./api";
 import { LEGION_PROJECT, seedLegionDaemon, seedLegionProject } from "./legion-seed";
 import { expect, test } from "./test";
@@ -32,7 +31,7 @@ test("the Settings page names a project's Legion daemon @legion", async ({ brows
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith(`/api/v2/projects/${LEGION_PROJECT}/legion/daemon`)
+        response.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
     );
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     expect((await saved).status()).toBe(200);
@@ -61,7 +60,7 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
   try {
     // What the server says about this URL, so the page can be held to its wording.
     const refusal = await fetch(
-      new URL(`/api/v2/projects/${LEGION_PROJECT}/legion/daemon`, baseUrl),
+      new URL(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`, baseUrl),
       {
         body: JSON.stringify({ state_url: bad }),
         headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
@@ -81,7 +80,7 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     page.on("request", (request) => {
       if (
         request.method() === "PUT" &&
-        request.url().endsWith(`/api/v2/projects/${LEGION_PROJECT}/legion/daemon`)
+        request.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
       ) {
         wrote = true;
       }
@@ -100,7 +99,7 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
     const removed = page.waitForResponse(
       (response) =>
         response.request().method() === "DELETE" &&
-        response.url().endsWith(`/api/v2/projects/${LEGION_PROJECT}/legion/daemon`)
+        response.url().endsWith(`/api/v1/projects/${LEGION_PROJECT}/legion/daemon`)
     );
     await page
       .getByRole("button", { name: `Remove the Legion daemon of ${LEGION_PROJECT}` })

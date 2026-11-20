@@ -42,7 +42,7 @@ const columns: readonly RevocableColumn<PersonSignInResp>[] = [
  */
 export function SignInsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const signIns = useQuery(signInsQuery());
+  const signIns = useQuery({ ...signInsQuery(), select: (data) => data.signins ?? [] });
 
   return (
     <RevocableList

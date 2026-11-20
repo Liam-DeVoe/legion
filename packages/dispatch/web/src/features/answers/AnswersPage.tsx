@@ -3,7 +3,7 @@ import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { MyAnswerRow, PageOfMyAnswerRow } from "../../api/types";
+import type { MyAnswerRow, MyAnswersResponse } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
@@ -41,7 +41,7 @@ function ChangeAnswerCard({ askId }: { askId: string }): ReactNode {
       <p className={`text-sm ${dangerText}`}>Could not load the ask: {thread.error.message}</p>
     );
   }
-  return <AskCard ask={thread.data} initialThread={thread.data} mode="change" />;
+  return <AskCard ask={thread.data.ask} initialThread={thread.data} mode="change" />;
 }
 
 function AnswerRow({
@@ -132,16 +132,16 @@ function AnswerRow({
 }
 
 /** `/answers`: every answer the signed-in person gave and every reply they wrote on an ask,
- *  newest first, from one `GET /api/v2/me/answers`. A current, non-approval answer can be
+ *  newest first, from one `GET /api/v1/me/answers`. A current, non-approval answer can be
  *  changed in place: the card opens below its row and stays open across the refetch the change
  *  causes, which puts the new answer at the top and marks the old row "Changed since". */
 export function AnswersPage(): ReactNode {
   useDocumentTitle("Answered by you · Dispatch");
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
   const answers = useInfiniteQuery({
-    getNextPageParam: (last: PageOfMyAnswerRow) =>
-      last.offset + (last.items ?? []).length < last.total
-        ? last.offset + (last.items ?? []).length
+    getNextPageParam: (last: MyAnswersResponse) =>
+      last.offset + (last.rows ?? []).length < last.total
+        ? last.offset + (last.rows ?? []).length
         : undefined,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listMyAnswers({ limit: PAGE_SIZE, offset: pageParam }),
@@ -152,7 +152,7 @@ export function AnswersPage(): ReactNode {
   if (answers.isError) {
     return <p className={dangerText}>Could not load your answers: {answers.error.message}</p>;
   }
-  const rows = answers.data.pages.flatMap((page) => page.items ?? []);
+  const rows = answers.data.pages.flatMap((page) => page.rows ?? []);
   // The card belongs to the ask, under the first answer row that names it: after a change that is
   // the new answer's row, so the card the person is looking at stays mounted where they are. A
   // reply the person wrote on the same ask can sort above it, and is never the card's row.

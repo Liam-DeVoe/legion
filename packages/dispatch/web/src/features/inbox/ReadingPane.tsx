@@ -3,10 +3,11 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useStat
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
-import { artifactVersionsQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import type { AskApproval, InboxRow } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
+import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
@@ -64,7 +65,13 @@ interface PaneFlowProps {
  *  showing that answer. */
 function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswered">): ReactNode {
   return (
-    <AskCard ask={ask} initialThread={ask} key={ask.id} onAnswered={onAnswered} variant="full" />
+    <AskCard
+      ask={ask}
+      initialThread={{ ask, ...ask.thread }}
+      key={ask.id}
+      onAnswered={onAnswered}
+      variant="full"
+    />
   );
 }
 
@@ -173,10 +180,8 @@ function ApprovalBody({
     baselineText === undefined
       ? undefined
       : { markdown: baselineText.markdown, tree: baselineText.markdown_tree };
-  const latestVersion = artifact?.latest_version ?? undefined;
-  // When the drawn version was made, which the document's own read does not carry: its list of
-  // versions does, and the column draws without it until the list answers.
-  const versionList = useQuery({ ...artifactVersionsQuery(artifactId), enabled: settled });
+  const latestVersion =
+    artifact === undefined ? undefined : versionsNewestFirst(artifact.versions)[0]?.number;
   // A document the column cannot read, and a request on a document that holds no version to
   // show, both fall back to the card.
   const failed = artifactQuery.isError || (artifact !== undefined && latestVersion === undefined);
@@ -297,7 +302,8 @@ function ApprovalBody({
             asks={[]}
             changeBaseline={changeBaseline}
             createdAt={
-              versionList.data?.find((version) => version.number === latestVersion)?.created_at
+              (artifact.versions ?? []).find((version) => version.number === latestVersion)
+                ?.created_at
             }
             highlight={undefined}
             owner={

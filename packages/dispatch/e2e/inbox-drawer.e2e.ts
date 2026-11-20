@@ -51,7 +51,7 @@ test("a half-typed message in a live conversation survives opening the drawer, a
     await expect(card).toHaveCount(0);
     await expect
       .poll(() => getAsk(askId))
-      .toMatchObject({ answer: { selected: ["Yes"], user: "alice" }, state: "answered" });
+      .toMatchObject({ ask: { answer: { selected: ["Yes"], user: "alice" }, state: "answered" } });
 
     await page.keyboard.press("Escape");
     await expect(drawer(page)).toHaveCount(0);
@@ -138,7 +138,7 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
   const renamed = "Picked under a held save, renamed while it is out";
   const inDrawer = '[role="dialog"][aria-label="Inbox"]';
   // Nobody handed the ask on: it waits on bob, the issue's assignee.
-  expect(await getAsk(askId)).toMatchObject({ asked_of: null, waiting_on_person: "bob" });
+  expect((await getAsk(askId)).ask).toMatchObject({ asked_of: null, waiting_on_person: "bob" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();

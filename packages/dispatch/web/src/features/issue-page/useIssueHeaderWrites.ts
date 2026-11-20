@@ -3,9 +3,9 @@ import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { api, apiErrorCodeIn, apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
 import { userStateQuery } from "../../api/queries";
-import type { Issue, IssueDetails, Marks, MarkV2 } from "../../api/types";
+import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { type IssueState, stateForIssue } from "../issue/pins";
+import { stateForIssue } from "../issue/pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "../issue/useIssueDrafts";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
@@ -81,7 +81,7 @@ export interface IssueHeaderWrites {
   /** The labels, which the popover saves as one set when it closes. */
   readonly labels: KeyedWriteResult<Issue, IssueLabelsSave, unknown>;
   /** The pin, applied to the person's state at once and rolled back on a refusal. */
-  readonly pin: KeyedWriteResult<MarkV2, IssuePinSave, PinRollback>;
+  readonly pin: KeyedWriteResult<UserIssueState, IssuePinSave, PinRollback>;
   /** One press at a time on the pin, whose write is optimistic. */
   readonly pinGuard: SubmitGuard;
   /** The release of the claim on the issue a press names, by its key. */
@@ -136,10 +136,13 @@ export interface IssuePinSave {
 
 /** What the pin's optimistic write puts back when Dispatch refuses it. */
 interface PinRollback {
-  readonly previous: Marks | undefined;
+  readonly previous: UserState | undefined;
 }
 
-export function useIssueHeaderWrites(issue: IssueDetails, state: IssueState): IssueHeaderWrites {
+export function useIssueHeaderWrites(
+  issue: IssueDetails,
+  state: UserIssueState
+): IssueHeaderWrites {
   const queryClient = useQueryClient();
   // Every write here states its method - `write` with its own, a `request` with the request's -
   // and takes the issue it is of from its press, never from the issue this hook is drawn for
@@ -223,34 +226,25 @@ export function useIssueHeaderWrites(issue: IssueDetails, state: IssueState): Is
     },
     onMutate: async ({ issueKey, pinned }) => {
       await queryClient.cancelQueries({ queryKey: userStateQuery().queryKey });
-      const previous = queryClient.getQueryData<Marks>(userStateQuery().queryKey);
+      const previous = queryClient.getQueryData<UserState>(userStateQuery().queryKey);
       // The press's issue shows pinned at once: from the state this hook is handed where the
       // press is of its issue, else as the person's state read holds that issue.
       const shown = issueKey === issue.key ? state : stateForIssue(previous, issueKey);
-      queryClient.setQueryData<Marks>(userStateQuery().queryKey, (current) => ({
+      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
         ...current,
-        [issueKey]: {
-          ...current?.[issueKey],
-          id: issueKey,
-          kind: "issue",
-          last_read_seq: shown.last_read_seq,
-          pinned,
-          pinned_items: [...shown.pinned_items],
-          seq: shown.seq,
-        },
+        [issueKey]: { ...shown, pinned },
       }));
       return { previous };
     },
     onError: (_error, { issueKey }, context) => {
-      // The mark as it stood before the pin; none reads as an unpinned issue (`stateForIssue`).
-      queryClient.setQueryData<Marks>(userStateQuery().queryKey, (current) => ({
+      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
         ...current,
-        [issueKey]: { ...context?.previous?.[issueKey], id: issueKey, kind: "issue" },
+        [issueKey]: stateForIssue(context?.previous, issueKey),
       }));
     },
     onSuccess: (next, { issueKey }) => {
       if (next === null) return;
-      queryClient.setQueryData<Marks>(userStateQuery().queryKey, (current) => ({
+      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
         ...current,
         [issueKey]: next,
       }));

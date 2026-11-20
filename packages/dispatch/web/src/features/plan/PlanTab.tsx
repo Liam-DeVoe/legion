@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
 import { artifactBlocksQuery } from "../../api/queries";
-import type { ArtifactBlock, ArtifactV2 } from "../../api/types";
+import type { Artifact, ArtifactBlock } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { card, dangerText, textMutedOnCanvas, textMutedOnSurface } from "../../theme/classes";
 import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
@@ -72,7 +72,7 @@ interface PlanTask {
   readonly needs: readonly string[];
 }
 
-function Tasks({ artifact }: { artifact: ArtifactV2 }): ReactNode {
+function Tasks({ artifact }: { artifact: Artifact }): ReactNode {
   // The same key the document's own block read uses, so a tab opened after the document is
   // already answered.
   const blocks = useQuery(artifactBlocksQuery(artifact.id));
@@ -140,7 +140,7 @@ export function PlanTab({
   children,
   issueKey,
 }: {
-  artifact: ArtifactV2 | undefined;
+  artifact: Artifact | undefined;
   children?: ReactNode;
   issueKey: string;
 }): ReactNode {

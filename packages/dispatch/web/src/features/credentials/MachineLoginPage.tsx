@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
-import type { RecordResponse } from "../../api/types";
+import type { DecisionResponse, StateResponse } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -86,11 +86,11 @@ export function MachineLoginPage(): ReactNode {
   // The code the shown record was looked up by, not whatever the field holds now.
   const lookedUpCode = lookup.variables ?? "";
 
-  // Each is typed by its answer, which its callbacks read: the record as the decision left it.
-  const approve = useKeyedWrite<RecordResponse>({
+  // Each is typed by its answer, which its callbacks read.
+  const approve = useKeyedWrite<DecisionResponse>({
     method: "POST",
     write: (_variables, bounds) =>
-      api.approveCredentialRecord(record?.record_id ?? "", lookedUpCode, bounds),
+      api.approveCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
     label: () => "Approval of a machine login",
     onSettled: () => submitGuard.release(),
@@ -101,10 +101,10 @@ export function MachineLoginPage(): ReactNode {
       if (decided === null) lookup.mutate(lookedUpCode);
     },
   });
-  const deny = useKeyedWrite<RecordResponse>({
+  const deny = useKeyedWrite<StateResponse>({
     method: "POST",
     write: (_variables, bounds) =>
-      api.denyCredentialRecord(record?.record_id ?? "", lookedUpCode, bounds),
+      api.denyCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
     label: () => "Denial of a machine login",
     onSettled: () => submitGuard.release(),
@@ -124,12 +124,27 @@ export function MachineLoginPage(): ReactNode {
       lookup.mutate(code);
     });
   };
-  // A decision made on this page answers the record as it left it: decided, an approval with the
-  // launcher credential it minted and a denial with none.
-  const madeHere = approve.data ?? deny.data ?? undefined;
-  // The looked-up record and its decision as the page now knows them.
-  const shown = madeHere ?? record;
-  const view = shown === undefined ? undefined : { decided: shown.decided, record: shown };
+  // What a decision made on this page left: an approval names the launcher credential it minted,
+  // and a denial names none, which is the broker's own split between the two answers.
+  const approved = approve.data ?? undefined;
+  const denied = deny.data ?? undefined;
+  const madeHere =
+    approved !== undefined
+      ? { credential_id: approved.credential_id, state: approved.state }
+      : denied === undefined
+        ? undefined
+        : { credential_id: null, state: denied.state };
+  // The looked-up record and its decision as the page now knows them: a decision made here leaves
+  // the record decided, with the credential an approval minted.
+  const view =
+    record === undefined
+      ? undefined
+      : madeHere === undefined
+        ? { decided: record.decided, record }
+        : {
+            decided: { credential_id: madeHere.credential_id, event: madeHere.state },
+            record: { ...record, state: madeHere.state },
+          };
 
   return (
     <section className="max-w-2xl space-y-6">

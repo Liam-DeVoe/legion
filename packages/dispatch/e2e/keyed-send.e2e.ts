@@ -27,8 +27,8 @@ import { asUser } from "./users";
 // end in one message per recipient and the composer cleared. Dispatch answers a repeat under a key
 // it has answered with the first answer's status, marked `Idempotency-Replayed: ?1`.
 
-const messages = `/api/v2/agents/${plannerSession.session_id}/messages`;
-const broadcasts = "/api/v2/broadcasts";
+const messages = `/api/v1/agents/${plannerSession.session_id}/messages`;
+const broadcasts = "/api/v1/broadcasts";
 
 /** Opens the Planner's composer from the keyboard, types `body` and sends it. */
 async function send(page: Page, body: string): Promise<void> {
@@ -403,7 +403,7 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
 }) => {
   test.setTimeout(120_000);
   const issueKey = await seedAgents();
-  const path = `/api/v2/issues/${issueKey}/comments`;
+  const path = `/api/v1/issues/${issueKey}/comments`;
   await slowWrites("POST", path, 18_000);
   const alice = await asUser(browser, "alice");
   try {
@@ -464,7 +464,7 @@ test("a comment whose @-mention's send is slow is answered before the send, with
 }) => {
   test.setTimeout(120_000);
   const issueKey = await seedAgents();
-  const path = `/api/v2/issues/${issueKey}/comments`;
+  const path = `/api/v1/issues/${issueKey}/comments`;
   await setSessionSendDelay(plannerSession.session_id, 4_000);
   const alice = await asUser(browser, "alice");
   try {

@@ -28,7 +28,7 @@ export interface AskHandOnWrite {
  * once, so the row leaves the list it was in and joins theirs on the press, rolls back if the
  * server refuses, and every read carrying the ask - the Inbox and its owner's lists
  * (`invalidateOwnerReads`), and the ask's own thread - refetches once the hand-on settles, the
- * same shape as `useAskSnooze`, over `PATCH /api/v2/asks/{id}` with `asked_of`.
+ * same shape as `useAskSnooze`, over `PUT /api/v1/asks/{id}/asked-of`.
  *
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was

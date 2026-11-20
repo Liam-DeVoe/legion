@@ -228,7 +228,7 @@ export async function seedEveryField(): Promise<{
     "It moved to 03:00 last week."
   );
   const listed = await listMyReplies({ state: "unread" });
-  const readRow = (listed.items ?? []).find((row) => row.thread_id === read);
+  const readRow = (listed.rows ?? []).find((row) => row.thread_id === read);
   if (readRow === undefined) throw new Error("the thread to mark read was never listed");
   await markThreadRead(read, readRow.reply.created_at);
   rows.push({
@@ -250,7 +250,7 @@ export async function lastActivity(): Promise<ReadonlyMap<string, string>> {
   for (const ask of await getInbox()) {
     at.set(ask.id, ask.last_reply?.created_at ?? ask.created_at);
   }
-  for (const thread of (await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).items ??
+  for (const thread of (await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).rows ??
     []) {
     at.set(
       `${thread.kind === "agent" ? "agent" : "reply"}:${thread.thread_id}`,

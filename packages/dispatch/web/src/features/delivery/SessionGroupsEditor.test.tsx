@@ -194,7 +194,7 @@ test("a change the reader stopped says it may have been saved, not that it faile
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const remove = spyOn(api, "deleteDeliverySessionGroup").mockRejectedValue(
-    new NetworkError("/api/v2/session-groups/1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/delivery/session-groups", new TypeError("Failed to fetch"))
   );
   const { queryClient } = renderEditor([crew]);
   try {

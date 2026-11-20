@@ -1,4 +1,4 @@
-import type { ArtifactUploadV2 } from "../web/src/api/types";
+import type { ArtifactUploadResponse } from "../web/src/api/types";
 import {
   REF_PREVIEW_CLOSE_DELAY_MS,
   REF_PREVIEW_OPEN_DELAY_MS,
@@ -56,30 +56,19 @@ async function expectFullSize(page: Page, caption: string, src: string): Promise
   return lightbox;
 }
 
-/** The server's answer to the next `method` request to `path`; a row checks it is a success with
+/** The server's answer to the next `POST` to `path`; a row checks it is a success with
  *  `expectSucceeded`, so a refusal fails naming its status rather than timing out. */
-function answerTo(page: Page, method: string, path: string) {
+function posted(page: Page, path: string) {
   return page.waitForResponse(
     (response) =>
-      response.request().method() === method && new URL(response.url()).pathname === path
+      response.request().method() === "POST" && new URL(response.url()).pathname === path
   );
 }
 
 async function expectSucceeded(answer: Promise<Response>): Promise<Response> {
   const response = await answer;
-  expect(
-    response.status(),
-    `${response.request().method()} ${new URL(response.url()).pathname}`
-  ).toBeLessThan(300);
+  expect(response.status(), `POST ${new URL(response.url()).pathname}`).toBeLessThan(300);
   return response;
-}
-
-/** Where every `<img>` of the picture `upload` stored loads its first version from, once the
- *  upload has succeeded: that version's bytes route, addressed by the document's id
- *  (`artifactVersionPath`, web/src/api/client.ts). */
-async function uploadedPictureSrc(upload: Promise<Response>): Promise<string> {
-  const { artifact } = (await (await expectSucceeded(upload)).json()) as ArtifactUploadV2;
-  return `/api/v2/artifacts/${artifact.id}/versions/1`;
 }
 
 // @pr: Upload and download: a picture pasted into a message is uploaded and drawn inline in the conversation.
@@ -96,13 +85,13 @@ test("a picture pasted into an issue message shows inline in the conversation @p
     const field = composer.getByRole("textbox", { name: "Comment" });
     await field.fill("The broken layout:");
 
-    const uploaded = answerTo(page, "POST", `/api/v2/issues/${issue.key}/artifacts`);
+    const uploaded = posted(page, `/api/v1/issues/${issue.key}/artifacts`);
     await pastePicture(field, "shot.png");
-    const src = await uploadedPictureSrc(uploaded);
+    await expectSucceeded(uploaded);
     const syntax = `![shot.png](dispatch://${issue.key}/artifact/shot-png@v1)`;
     await expect(field).toHaveValue(`The broken layout: ${syntax}`);
 
-    const sent = answerTo(page, "POST", `/api/v2/issues/${issue.key}/comments`);
+    const sent = posted(page, `/api/v1/issues/${issue.key}/comments`);
     await field.press("Control+Enter");
     expect((await expectSucceeded(sent)).request().postDataJSON()).toMatchObject({
       body: `The broken layout: ${syntax}`,
@@ -115,7 +104,10 @@ test("a picture pasted into an issue message shows inline in the conversation @p
       .getByRole("link", { name: "shot.png" })
       .filter({ has: page.locator("img") });
     await expect(link).toHaveAttribute("href", `/issues/${issue.key}/artifacts/shot-png?v=1`);
-    await expectDrawn(link.locator("img"), src);
+    await expectDrawn(
+      link.locator("img"),
+      `/api/v1/issues/${issue.key}/artifacts/shot-png/versions/1`
+    );
 
     // The picture opens its own page, which shows it and its versions.
     await link.click();
@@ -144,16 +136,15 @@ test("a picture pasted into an ask's answer shows inline in the answer", async (
     const card = page.getByTestId(`ask-${ask.id}`);
     const answer = card.getByLabel("Your answer");
 
-    const uploaded = answerTo(page, "POST", `/api/v2/issues/${issue.key}/artifacts`);
+    const uploaded = posted(page, `/api/v1/issues/${issue.key}/artifacts`);
     await pastePicture(answer, "screen.png");
-    const src = await uploadedPictureSrc(uploaded);
+    await expectSucceeded(uploaded);
     const syntax = `![screen.png](dispatch://${issue.key}/artifact/screen-png@v1)`;
     await expect(answer).toHaveValue(syntax);
 
-    const answered = answerTo(page, "PUT", `/api/v2/asks/${ask.id}/state`);
+    const answered = posted(page, `/api/v1/asks/${ask.id}/answer`);
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
     expect((await expectSucceeded(answered)).request().postDataJSON()).toMatchObject({
-      state: "answered",
       text: syntax,
     });
 
@@ -162,7 +153,7 @@ test("a picture pasted into an ask's answer shows inline in the answer", async (
     const picture = page
       .locator("#issue-conversation-panel")
       .getByRole("img", { name: "screen.png" });
-    await expectDrawn(picture, src);
+    await expectDrawn(picture, `/api/v1/issues/${issue.key}/artifacts/screen-png/versions/1`);
   } finally {
     await alice.close();
   }
@@ -189,23 +180,30 @@ test("a picture pasted into a direct message on the Agents page shows inline and
     await row.getByRole("button", { exact: true, name: "Planner" }).click();
     const field = row.getByRole("textbox", { name: "Comment" });
 
-    const uploaded = answerTo(page, "POST", `/api/v2/agents/${planner.session_id}/artifacts`);
+    const uploaded = posted(page, `/api/v1/agents/${planner.session_id}/artifacts`);
     await pastePicture(field, "shot.png");
-    const src = await uploadedPictureSrc(uploaded);
+    await expectSucceeded(uploaded);
     const syntax = `![shot.png](dispatch://agent/${planner.session_id}/artifact/shot-png@v1)`;
     await expect(field).toHaveValue(syntax);
 
-    const sent = answerTo(page, "POST", `/api/v2/agents/${planner.session_id}/messages`);
+    const sent = posted(page, `/api/v1/agents/${planner.session_id}/messages`);
     await field.press("Control+Enter");
     expect((await expectSucceeded(sent)).request().postDataJSON()).toMatchObject({ body: syntax });
 
     const conversation = row.getByRole("list", { name: "Conversation with Planner" });
     const picture = conversation.getByRole("img", { name: "shot.png" });
-    await expectDrawn(picture, src);
+    await expectDrawn(
+      picture,
+      `/api/v1/agents/${planner.session_id}/artifacts/shot-png/versions/1`
+    );
 
     // A click opens the picture at full size over the page, and a click on it closes it.
     await picture.click();
-    const lightbox = await expectFullSize(page, "shot.png", src);
+    const lightbox = await expectFullSize(
+      page,
+      "shot.png",
+      `/api/v1/agents/${planner.session_id}/artifacts/shot-png/versions/1`
+    );
     await lightbox.click();
     await expect(lightbox).toHaveCount(0);
     await expect(page).not.toHaveURL(/\/artifacts\//);
@@ -233,6 +231,7 @@ test("a picture written into a spec draws in the editor and in a past version, w
     title: "Pictures in specs",
   });
   const syntax = `![shot.png](dispatch://${issue.key}/artifact/shot-png@v1)`;
+  const src = `/api/v1/issues/${issue.key}/artifacts/shot-png/versions/1`;
   const alice = await asUser(browser, "alice");
   try {
     // The picture reaches the issue the way a person's does: pasted into a comment and sent, so
@@ -242,11 +241,11 @@ test("a picture written into a spec draws in the editor and in a past version, w
     const field = page
       .getByRole("form", { name: "Comment composer" })
       .getByRole("textbox", { name: "Comment" });
-    const uploaded = answerTo(page, "POST", `/api/v2/issues/${issue.key}/artifacts`);
+    const uploaded = posted(page, `/api/v1/issues/${issue.key}/artifacts`);
     await pastePicture(field, "shot.png");
-    const src = await uploadedPictureSrc(uploaded);
+    await expectSucceeded(uploaded);
     await expect(field).toHaveValue(syntax);
-    const sent = answerTo(page, "POST", `/api/v2/issues/${issue.key}/comments`);
+    const sent = posted(page, `/api/v1/issues/${issue.key}/comments`);
     await field.press("Control+Enter");
     await expectSucceeded(sent);
 
@@ -268,7 +267,11 @@ test("a picture written into a spec draws in the editor and in a past version, w
       agentSession
     );
     const newestVersion = async () =>
-      (await getArtifact(issue.primary_artifact_id)).latest_version ?? 0;
+      Math.max(
+        ...((await getArtifact(issue.primary_artifact_id)).versions ?? []).map(
+          ({ number }) => number
+        )
+      );
     await expect.poll(newestVersion).toBeGreaterThan(1);
     const pictured = await newestVersion();
 
@@ -411,7 +414,7 @@ test("a long-named picture in a comment draws, its link to a long-named document
   try {
     const page = await alice.newPage();
     const pictureName = `${"a".repeat(2600)}.png`;
-    const upload = await page.request.post(`/api/v2/issues/${issue.key}/artifacts`, {
+    const upload = await page.request.post(`/api/v1/issues/${issue.key}/artifacts`, {
       headers: { Origin: dashboardOrigin },
       multipart: {
         file: {
@@ -423,8 +426,7 @@ test("a long-named picture in a comment draws, its link to a long-named document
       },
     });
     expect(upload.status(), await upload.text()).toBeLessThan(300);
-    const { artifact: picture } = (await upload.json()) as ArtifactUploadV2;
-    const pictureSlug = picture.slug;
+    const pictureSlug = ((await upload.json()) as ArtifactUploadResponse).artifact.slug;
     // Words, so the link's title - the document's name - wraps in the column.
     const design = await createIssueArtifact(issue.key, {
       content: "# Design\n\nThe long-named design.\n",
@@ -454,7 +456,7 @@ test("a long-named picture in a comment draws, its link to a long-named document
 
     // The source is asserted before the picture is waited on: one the browser cannot fetch
     // (`dispatch://…`) would fail as an image that never loads rather than naming its source.
-    const src = `/api/v2/artifacts/${picture.id}/versions/1`;
+    const src = `/api/v1/issues/${issue.key}/artifacts/${pictureSlug}/versions/1`;
     const shot = thread.getByRole("img", { name: "shot" });
     await expect(shot).toHaveAttribute("src", src);
     await expectDrawn(shot, src);

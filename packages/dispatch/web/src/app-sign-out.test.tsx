@@ -16,7 +16,6 @@ import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api, NetworkError } from "./api/client";
 import { aliceWrite, keptWrites, type OtherTab, otherTab, renderApp } from "./app-sign-out-fixture";
-import { markOf } from "./features/agents/marks-fixture";
 import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
 import { answerDraft, setAnswerDraft } from "./features/inbox/answer-drafts";
 import { setReplyDraft, useReplyDraft } from "./features/inbox/reply-drafts";
@@ -291,9 +290,7 @@ test("a composer's typed text is not shown to another person signed in from anot
     spyOn(api, "listAgentMessages").mockResolvedValue([]),
     spyOn(api, "getMyAgentState").mockResolvedValue({}),
   ];
-  answerAgentStates().mockImplementation(async (session) =>
-    markOf("agent", session, { unread_replies: 0 })
-  );
+  answerAgentStates().mockImplementation(async () => ({ unread_replies: 0 }));
   const app = renderApp({
     at: "/agents",
     whoAmI: async () => ({ event_head: "0", kind: "user", login }),
@@ -327,7 +324,7 @@ test("a composer's typed text is not shown to another person signed in from anot
 });
 
 // `/auth/logout` sits outside Dispatch's keyed layer: the sign-out is a `POST` that sends no key,
-// and its write says so (`Write.keyed`), the one write that goes under none.
+// and its write says so (`Write.keyed`), as a `PUT`'s or a `DELETE`'s does.
 test("a sign-out's write says it goes under no key, since /auth/logout sends none", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();

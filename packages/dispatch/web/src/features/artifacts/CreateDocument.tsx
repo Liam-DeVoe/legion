@@ -3,7 +3,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import type { ArtifactV2 } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
@@ -44,7 +44,7 @@ function documentPath(owner: DocumentOwner, slug: string): string {
  * and prefers the one whose slug it is (`artifactByNameOrSlugSQL`), so this reads the same two
  * fields the same way rather than holding a second copy of the server's `artifactSlug` here.
  */
-function documentHolding(documents: readonly ArtifactV2[], title: string): ArtifactV2 | undefined {
+function documentHolding(documents: readonly Artifact[], title: string): Artifact | undefined {
   return (
     documents.find((document) => document.slug === title) ??
     documents.find((document) => document.name === title)
@@ -70,14 +70,14 @@ export function CreateDocument({
   refusal = null,
   refusalShownBy,
 }: {
-  readonly documents: readonly ArtifactV2[];
+  readonly documents: readonly Artifact[];
   readonly owner: DocumentOwner;
   readonly refusal?: string | null;
   readonly refusalShownBy?: string;
 }): ReactNode {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
-  const [takenBy, setTakenBy] = useState<ArtifactV2 | undefined>();
+  const [takenBy, setTakenBy] = useState<Artifact | undefined>();
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
   const navigate = useNavigate();

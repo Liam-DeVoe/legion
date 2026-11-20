@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { api, documentReadRequest } from "../../api/client";
-import type { ArtifactBlock, ArtifactV2, IssueDecisionsV2, ReferencesV2 } from "../../api/types";
+import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -36,9 +36,9 @@ export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
 /** Every spec block a stale link of any decision names, each once, in the order the view names
  *  them. A link is stale when its decision changed after it first linked the block and the block
  *  has not changed since. */
-export function staleSpecBlocks(decisions: IssueDecisionsV2 | undefined): string[] {
+export function staleSpecBlocks(decisions: IssueDecisions | undefined): string[] {
   const stale: string[] = [];
-  for (const decision of decisions?.items ?? []) {
+  for (const decision of decisions?.decisions ?? []) {
     for (const link of decision.links ?? []) {
       const blockId = link.to.block_id;
       if (link.stale && blockId !== undefined && !stale.includes(blockId)) stale.push(blockId);
@@ -48,8 +48,8 @@ export function staleSpecBlocks(decisions: IssueDecisionsV2 | undefined): string
 }
 
 /** The spec's blocks from a read of its `part_of` edges. */
-export function specBlockParts(references: ReferencesV2): SpecBlockPart[] {
-  return (references.items ?? []).flatMap((edge) => {
+export function specBlockParts(references: GraphReferences): SpecBlockPart[] {
+  return (references.edges ?? []).flatMap((edge) => {
     const blockId = edge.node.block_id;
     if (edge.kind !== "part_of" || edge.node.kind !== "block" || blockId === undefined) return [];
     return [
@@ -120,7 +120,7 @@ export function useSpecMarks({
   issueKey,
   shownVersion,
 }: {
-  artifact: ArtifactV2;
+  artifact: Artifact;
   /** The live spec of an issue, on its own page. */
   enabled: boolean;
   issueKey: string;
@@ -140,8 +140,7 @@ export function useSpecMarks({
   const [opened, setOpened] = useState<{ artifactId: string; version: number | null }>();
   const readAtOpen = opened?.artifactId === artifact.id ? opened : undefined;
   if (enabled && readAtOpen === undefined && read.data !== undefined) {
-    // A document the person never read answers its mark with no `read_version`.
-    setOpened({ artifactId: artifact.id, version: read.data.read_version ?? null });
+    setOpened({ artifactId: artifact.id, version: read.data.version });
   }
   const readVersion = readAtOpen?.version ?? null;
   const specReference = `dispatch://${issueKey}/spec`;

@@ -313,13 +313,11 @@ async function sourcesOf(
 /** A fetch that failed, which the write is tried again after: it goes late, for the reader to
  *  stop. */
 const dropped = () =>
-  Promise.reject(
-    new NetworkError("/api/v2/projects/CORE/architecture-sources", new TypeError("Failed to fetch"))
-  );
+  Promise.reject(new NetworkError("/api/v1/projects/CORE", new TypeError("Failed to fetch")));
 
 // A save or a removal the reader stopped may have been made: the section says so, and that its
-// Retry asks again under the same key - every write goes under its key, a `PUT` or a `DELETE`
-// too - rather than that it failed.
+// Retry sends the same change again - a `PUT` or a `DELETE` sends no key - rather than that it
+// failed.
 test("a source save the reader stopped says Retry sends it again, not that it failed", async () => {
   const server = sourceServer([]);
   const page = await sourcesOf(server.list, dropped, server.remove);

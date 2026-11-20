@@ -78,17 +78,14 @@ function header(
   liveness: ClaimHolderLiveness = {}
 ): { client: QueryClient; unmount: () => void; user: UserEvent } {
   const details: IssueDetails = {
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    holder_state: null,
+    last_seen: null,
+    takeable_at: null,
     ...issue,
-    // The issue read carries the holder's liveness under `reach`, beside the route's.
-    reach: {
-      holder_state: null,
-      last_seen: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-      takeable_at: null,
-      ...liveness,
-    },
+    ...liveness,
     artifacts: [],
     children: [],
     design_gates: [],
@@ -132,7 +129,7 @@ function header(
   };
 }
 
-/** One live session, as `GET /api/v2/agents` lists it. */
+/** One live session, as `GET /api/v1/agents` lists it. */
 function running(sessionID: string, title: string): Agent {
   return {
     session_id: sessionID,
@@ -455,9 +452,9 @@ test("claimIsTakeable follows the server's refusal: held inside the grace, takea
 
 /** A fetch that failed, which the write is tried again after: it goes late, for the reader to
  *  stop. */
-const dropped = () => new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"));
+const dropped = () => new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
 
-/** One removable subscriber of CORE-1, as `GET /api/v2/issues/{key}/subscribers` lists it. */
+/** One removable subscriber of CORE-1, as `GET /api/v1/issues/{key}/subscribers` lists it. */
 const planner: Subscriber = {
   last_seen: 1,
   live: true,
@@ -479,8 +476,8 @@ async function unsubscribePlanner(user: UserEvent, held: boolean) {
 }
 
 // A release, a pin or an unsubscribe the reader stopped may have been made: the header says so,
-// and that its Retry asks again under the same key - every write goes under its key, a `PUT` or a
-// `DELETE` too - rather than that it failed.
+// and that its Retry sends the same change again - a `PUT` or a `DELETE` sends no key - rather
+// than that it failed.
 test("a release the reader stopped says Retry sends it again, not that it failed", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([

@@ -6,8 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { IssueSummary, Marks } from "../../api/types";
-import { marksOf } from "../agents/marks-fixture";
+import type { IssueSummary, UserState } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
@@ -79,7 +78,7 @@ function StripAndList() {
 
 function renderStrip(
   issues: IssueSummary[],
-  state: Marks = {},
+  state: UserState = {},
   initialEntry = "/projects/CORE",
   login = "alice"
 ) {
@@ -135,10 +134,10 @@ test("Unread keeps only issues with events past last_read_seq and lives in the U
       issue({ key: "CORE-1", last_seq: 4, title: "Unread" }),
       issue({ key: "CORE-2", last_seq: 3, title: "Read" }),
     ],
-    marksOf("issue", {
-      "CORE-1": { last_read_seq: 3, pinned: false, pinned_items: [], seq: 0 },
-      "CORE-2": { last_read_seq: 3, pinned: false, pinned_items: [], seq: 0 },
-    })
+    {
+      "CORE-1": { dismissed: [], last_read_seq: 3, pinned: false, seq: 0 },
+      "CORE-2": { dismissed: [], last_read_seq: 3, pinned: false, seq: 0 },
+    }
   );
 
   try {
@@ -167,11 +166,11 @@ test("label chips send every selection to the API and retain only AND matches", 
     await openFilters();
     await pickOption("Labels", "frontend");
     await waitFor(() =>
-      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend"], project: ["CORE"] })
+      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend"], project: "CORE" })
     );
     await pickOption("Labels", "docs");
     await waitFor(() =>
-      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend", "docs"], project: ["CORE"] })
+      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend", "docs"], project: "CORE" })
     );
     // The board draws the labelled list once that request has answered, not when it is made.
     expect(await screen.findByText("Guidance")).toBeTruthy();
@@ -199,7 +198,7 @@ test("restores every filter from the URL and writes changes back to it", async (
     await screen.findByText("Guidance");
     await openFilters();
     await waitFor(() =>
-      expect(listIssues).toHaveBeenCalledWith({ label: ["docs"], project: ["CORE"] })
+      expect(listIssues).toHaveBeenCalledWith({ label: ["docs"], project: "CORE" })
     );
     await user.click(screen.getByRole("button", { name: "Labels · 1" }));
     expect(screen.getByRole("option", { name: "docs" })).toHaveAttribute("aria-selected", "true");
@@ -207,7 +206,7 @@ test("restores every filter from the URL and writes changes back to it", async (
 
     await pickOption("Labels", "frontend");
     await waitFor(() =>
-      expect(listIssues).toHaveBeenCalledWith({ label: ["docs", "frontend"], project: ["CORE"] })
+      expect(listIssues).toHaveBeenCalledWith({ label: ["docs", "frontend"], project: "CORE" })
     );
     expect(screen.getByTestId("location-search").textContent).toBe("?label=docs&label=frontend");
 

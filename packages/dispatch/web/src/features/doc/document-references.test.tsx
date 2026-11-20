@@ -17,8 +17,7 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
-import type { AskV2, AskWithThread, IssueDetails } from "../../api/types";
-import { issue as issueFixture } from "../margin/margin-fixture";
+import type { Ask, AskRead, IssueReferenceSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DocumentRuntime } from "./runtime";
 import { VersionView } from "./VersionView";
@@ -28,15 +27,12 @@ answerTextReadsWithTheSeededText();
 /**
  * The document surface's own shared reads (`documentSurfaceHandlers`), and the read this file
  * adds to them: the two issues the text names are seeded in the query cache below, so the only
- * key that reaches the issue's own read is one no issue holds.
+ * key that reaches the summary route is one no issue holds.
  */
 beforeEach(() => {
   answerRequests(
-    http.get("/api/v2/issues/:key", ({ params }) =>
-      Response.json(
-        { code: "ISSUE_NOT_FOUND", error: `no issue ${String(params.key)}` },
-        { status: 404 }
-      )
+    http.get("/api/v1/issues/:key/summary", ({ params }) =>
+      Response.json({ code: "NOT_FOUND", error: `no issue ${String(params.key)}` }, { status: 404 })
     ),
     ...documentSurfaceHandlers()
   );
@@ -50,7 +46,7 @@ const TEXT = "See CORE-2 and #q2 and dispatch://CORE-1/artifact/design here.";
  *  for a link whose text is its own destination. */
 const AUTOLINK = "dispatch://CORE-1/artifact/design";
 
-const ask: AskV2 = {
+const ask: Ask = {
   anchor: null,
   answer: null,
   artifact_id: null,
@@ -61,52 +57,47 @@ const ask: AskV2 = {
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "q2",
   created_at: "2026-09-09T00:00:00Z",
-  document: null,
   edited_at: null,
   id: "ask-1",
-  issue: null,
   issue_key: "CORE-1",
   kind: "question",
-  last_reply: null,
   multiple: false,
   opened_event_id: 1,
   options: [],
-  priority: null,
   question: "Which way round?",
-  question_block_id: "q2",
-  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "med",
 };
 
-const askRead: AskWithThread = {
-  ...ask,
-  thread: {
-    answers: [],
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-  },
+const askRead: AskRead = {
+  answers: [],
+  ask,
+  claimant: null,
+  edits: [],
+  followers: [],
+  replies: [],
+  route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
 };
 
-/** The issue's own read (`GET /api/v2/issues/{key}`), which a reference to it or to one of its
- *  documents reads: its title and status, and its documents' rows. */
-const summary: IssueDetails = {
-  ...issueFixture,
-  artifacts: [
-    { ...artifact, latest_version: 1 },
+const summary: IssueReferenceSummary = {
+  documents: [
     {
-      ...artifact,
+      id: "artifact-1",
+      kind: "doc",
+      latest_version: 1,
+      name: "spec.md",
+      primary: true,
+      slug: "spec",
+    },
+    {
       id: "artifact-2",
+      kind: "doc",
       latest_version: 2,
       name: "design.md",
       primary: false,
-      ref_key: "CORE-1/design",
       slug: "design",
     },
   ],
@@ -116,9 +107,8 @@ const summary: IssueDetails = {
   title: "Ship the release",
 };
 
-const referenced: IssueDetails = {
-  ...issueFixture,
-  artifacts: [],
+const referenced: IssueReferenceSummary = {
+  documents: [],
   key: "CORE-2",
   project: "CORE",
   status: "open",
@@ -133,11 +123,10 @@ function seededQueryClient(): QueryClient {
   queryClient.setQueryData(["issue-summary", "CORE-1"], summary);
   queryClient.setQueryData(["issue-summary", "CORE-2"], referenced);
   // The question map of this document, under the key the route's read is cached by: the
-  // document is the source of its own text (`refs.ScopeOf`), and each question block's row
-  // names the ask settled for it by its reference.
+  // document is the source of its own text (`refs.ScopeOf`).
   queryClient.setQueryData(["references", "questions", "artifact", artifact.id], {
     document: artifact.id,
-    items: [ask],
+    questions: [{ ask: ask.id, block_id: "q2", reference: `dispatch://CORE-1/ask/${ask.id}` }],
   });
   queryClient.setQueryData(["ask", "ask-1"], askRead);
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });

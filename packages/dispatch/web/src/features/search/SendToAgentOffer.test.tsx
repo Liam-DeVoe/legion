@@ -61,8 +61,10 @@ function issueDetails(
     decisions_artifact_id: "",
     design_gates: [],
     external_links: [],
+    holder_state: holderState,
     key: issueKey,
     labels: [],
+    last_seen: null,
     last_seq: 1,
     number: 7,
     open_asks: [],
@@ -73,19 +75,15 @@ function issueDetails(
     progress: { children: null, tasks: null },
     project: "CORE",
     rank: "U",
-    reach: {
-      holder_state: holderState,
-      last_seen: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-      takeable_at: null,
-    },
     referenced_by_count: 0,
     repo: null,
     resolved_repo: null,
     route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
     status: "in_progress",
+    takeable_at: null,
     title: "The rota",
     updated_at: "2026-11-07T06:00:00Z",
     verification_artifact_id: "",
@@ -306,7 +304,7 @@ test("a send the person stopped says it may have been sent, not that it could no
   const bar = openBar(sessionClaim, "live");
   try {
     bar.createAgentMessage.mockRejectedValue(
-      new NetworkError("/api/v2/agents/session-one/messages", new TypeError("Failed to fetch"))
+      new NetworkError("/api/v1/agents/session-one/messages", new TypeError("Failed to fetch"))
     );
     await typeWords(user);
     const row = await waitFor(() => screen.getByText(offerLabel));

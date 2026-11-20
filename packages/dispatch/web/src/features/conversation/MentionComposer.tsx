@@ -25,7 +25,7 @@ import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
   Agent,
   AskUrgency,
-  CollaboratorV2,
+  IssueCollaboratorAgent,
   IssueCollaboratorLegionAgent,
 } from "../../api/types";
 import { Chip } from "../../components/Chip";
@@ -199,8 +199,7 @@ export function mentionOptions(
 
 /**
  * The picker's "Not running" options: one per Legion role token the issue's collaborators record
- * (the `legion` of each `session` row of `GET /api/v2/issues/{key}/collaborators`) that no live
- * agent holds - the live agents' `roles`, the
+ * (`IssueCollaborators.agents[].legion`) that no live agent holds - the live agents' `roles`, the
  * rule the live role options follow - addressed `role:<token>` and drawn by the role's newest
  * session, the one entry per token the server leaves unreplaced (`legion.replaced_by` null), so a
  * replaced session is never an option of its own. A session the live list itself names is left
@@ -212,15 +211,13 @@ export function mentionOptions(
  */
 export function stoppedRoleOptions(
   live: readonly Agent[],
-  collaborators: readonly CollaboratorV2[],
+  collaborators: readonly IssueCollaboratorAgent[],
   text: Pick<AgentText, "sessionText">
 ): MentionOption[] {
   const held = new Set(live.flatMap((agent) => agent.roles));
   const running = new Set(live.map((agent) => agent.session_id));
-  const offered = (agent: CollaboratorV2): agent is IssueCollaboratorLegionAgent =>
-    agent.kind === "session" &&
-    agent.session_id !== undefined &&
-    agent.legion !== undefined &&
+  const offered = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
+    agent.legion !== null &&
     agent.legion.replaced_by === null &&
     !held.has(agent.legion.role_token) &&
     !running.has(agent.session_id);
@@ -602,7 +599,7 @@ export function MentionComposer({
   // as the picker can tell, which is what `agentsCurrent` false says of it, so no role is offered
   // as not running.
   const stoppedOptions = useMemo(
-    () => (agentsCurrent ? stoppedRoleOptions(agents, collaborators.data?.items ?? [], text) : []),
+    () => (agentsCurrent ? stoppedRoleOptions(agents, collaborators.data?.agents ?? [], text) : []),
     [agents, agentsCurrent, collaborators.data, text]
   );
   const [filteredOptions, filteredStoppedOptions] = useMemo<

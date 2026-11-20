@@ -50,7 +50,7 @@ async function tick(ms: number): Promise<void> {
 }
 
 /** A fetch that failed: what the client makes of a browser's `TypeError`. */
-const dropped = (path = "/api/v2/issues/CORE-1") =>
+const dropped = (path = "/api/v1/issues/CORE-1") =>
   new NetworkError(path, new TypeError("Failed to fetch"));
 
 /** One attempt that tells `sent` the request as `api.send` does on the real path, then answers
@@ -68,14 +68,15 @@ function attemptOf(
 const patch: WriteRequest = {
   body: { status: "done" },
   method: "PATCH",
-  path: "/api/v2/issues/CORE-1",
+  path: "/api/v1/issues/CORE-1",
 };
 
-/** A resolve of a comment: a `PUT`, which goes under its write's key as every write does. */
+/** A pin of CORE-1: a `PUT` sends no `Idempotency-Key`, since making it again is the same
+ *  change. */
 const put: WriteRequest = {
-  body: { state: "resolved" },
+  body: { dismissed: [], seq: 2 },
   method: "PUT",
-  path: "/api/v2/comments/comment-1/state",
+  path: "/api/v1/me/state/CORE-1",
 };
 
 /** The answers of this file's writes made from their request alone: a test's own spy on
@@ -109,7 +110,7 @@ function uploadOf(file: File): WriteRequest {
   const body = new FormData();
   body.set("name", file.name);
   body.set("file", file);
-  return { body, method: "POST", path: "/api/v2/issues/CORE-1/artifacts" };
+  return { body, method: "POST", path: "/api/v1/issues/CORE-1/artifacts" };
 }
 
 /** Presses an upload of `file` in `writes`, its attempts answered by `answer`. */
@@ -329,6 +330,11 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
   await onFakeClock(async () => {
     const tab = keptTab();
     const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    const put: WriteRequest = {
+      body: { until: "2026-11-01T00:00:00Z" },
+      method: "PUT",
+      path: "/api/v1/asks/ask-1/snooze",
+    };
     const before = new Writes(signedIn(), tab.page(), memoryFiles());
     try {
       const hang = () => Promise.withResolvers<never>().promise;
@@ -337,7 +343,7 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
         .run({
           detail: null,
           kind: plainWrite,
-          label: "Comment resolved",
+          label: "Ask snoozed",
           method: "PUT",
           presentation: "indicator",
           write: attemptOf(put, hang),
@@ -385,117 +391,6 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
       );
     } finally {
       send.mockRestore();
-      tab.close();
-    }
-  });
-});
-
-/** A fetch that records what each request carried - its method, its path, its body and its
- *  `Idempotency-Key` - and answers it with `answer()`: the wire, under the page's own client. */
-function recordedFetch(answer: () => Response): {
-  fetched: { body: unknown; key: string | null; method: string | undefined; path: string }[];
-  restore: () => void;
-} {
-  const fetched: { body: unknown; key: string | null; method: string | undefined; path: string }[] =
-    [];
-  const spy = spyOn(globalThis, "fetch").mockImplementation((async (
-    input: RequestInfo | URL,
-    init?: RequestInit
-  ) => {
-    fetched.push({
-      body: init?.body,
-      key: new Headers(init?.headers).get("Idempotency-Key"),
-      method: init?.method,
-      path: String(input),
-    });
-    return answer();
-  }) as typeof fetch);
-  return { fetched, restore: () => spy.mockRestore() };
-}
-
-/** A status pick of CORE-1 as a build of the page older than `/api/v2` kept it: to its `/api/v1`
- *  path, the request it first went out as. */
-const keptV1Patch: WriteRequest = {
-  body: { status: "done" },
-  method: "PATCH",
-  path: "/api/v1/issues/CORE-1",
-};
-
-// Decision 14. A write a build older than `/api/v2` kept goes, after the reload that brings this
-// build, to the path it was kept with, under the key it was kept with: Dispatch's record of that
-// key names the `/api/v1` route, so the repeat is answered with what the first request did. The
-// same key sent to the route's `/api/v2` successor would be refused `422 KEY_REUSED`, and a new
-// key would make a write that landed a second time.
-test("a write an older build kept goes to its own /api/v1 path under its own key", async () => {
-  await onFakeClock(async () => {
-    const tab = keptTab();
-    const wire = recordedFetch(() => Response.json({ key: "CORE-1", status: "done" }));
-    try {
-      const key = keyMinted(Date.now());
-      const writes = resuming(tab, key, { status: "sending" }, keptV1Patch);
-      await settle();
-      expect(wire.fetched).toEqual([
-        {
-          body: JSON.stringify({ status: "done" }),
-          key,
-          method: "PATCH",
-          path: "/api/v1/issues/CORE-1",
-        },
-      ]);
-      expect(writes.rows()).toEqual([]);
-      expect(tab.kept(key)).toBeUndefined();
-    } finally {
-      wire.restore();
-      tab.close();
-    }
-  });
-});
-
-// Once a deployment has ended `/api/v1`, it answers the kept write's own path `410 API_V1_ENDED`,
-// and nothing can make that write now: its key names the `/api/v1` route alone. The store drops
-// it from what it keeps, so no reload brings it back to meet the same answer, makes it no more -
-// a Retry included - and shows it refused for the reader to see and discard.
-test("a kept /api/v1 write answered 410 is dropped from the store and made no more", async () => {
-  await onFakeClock(async () => {
-    const tab = keptTab();
-    const wire = recordedFetch(() =>
-      Response.json(
-        {
-          code: "API_V1_ENDED",
-          error: "/api/v1 ended at 2026-11-20T00:00:00Z; GET /api/v2 lists every route",
-          hint: "GET /api/v2",
-        },
-        { status: 410 }
-      )
-    );
-    try {
-      const key = keyMinted(Date.now());
-      const writes = resuming(tab, key, { status: "sending" }, keptV1Patch);
-      await tick(60_000);
-      expect(wire.fetched.map(({ path }) => path)).toEqual(["/api/v1/issues/CORE-1"]);
-      const ended = row(writes);
-      expect(ended).toMatchObject({ label: "CORE-1 set to done", status: "refused" });
-      expect(ended?.status === "refused" ? ended.refusal : undefined).toMatchObject({
-        code: "API_V1_ENDED",
-        status: 410,
-      });
-      expect(tab.kept(key)).toBeUndefined();
-
-      writes.retry(ended?.id ?? 0);
-      await tick(60_000);
-      expect(wire.fetched).toHaveLength(1);
-      expect(row(writes)).toBe(ended);
-
-      const reloaded = new Writes(signedIn(), tab.page(), memoryFiles());
-      reloaded.resume("alice");
-      await tick(60_000);
-      expect(reloaded.rows()).toEqual([]);
-      expect(wire.fetched).toHaveLength(1);
-
-      expect(writes.discard(ended?.id ?? 0)).toBe(true);
-      expect(writes.rows()).toEqual([]);
-    } finally {
-      wire.restore();
       tab.close();
     }
   });
@@ -1522,7 +1417,7 @@ test("a resent DELETE answered 404 lands", async () => {
     const { writes } = storeOf();
     const remove: WriteRequest = {
       method: "DELETE",
-      path: "/api/v2/projects/CORE/architecture-sources/legion/arch",
+      path: "/api/v1/projects/CORE/architecture-sources/legion/arch",
     };
     let attempts = 0;
     const landed = writes.run({
@@ -1742,7 +1637,7 @@ test("a route that keeps answering 503 backs off to its cap while other requests
     }).catch(() => {});
     for (let elapsed = 0; elapsed < 91_500; elapsed += 500) {
       // Another route's 2xx, while Dispatch was reachable all along.
-      reachable("answer", routeOf("GET", "/api/v2/projects"));
+      reachable("answer", routeOf("GET", "/api/v1/projects"));
       await tick(500);
     }
     const gaps = times.slice(1).map((at, index) => at - (times[index] ?? 0));
@@ -1779,7 +1674,7 @@ test("a route that keeps failing at the connection backs off to its cap while ot
         times.push(Date.now() - start);
         throw new TypeError("Failed to fetch");
       }
-      if (path === "/api/v2/projects" && !projectsUp) throw new TypeError("Failed to fetch");
+      if (path === "/api/v1/projects" && !projectsUp) throw new TypeError("Failed to fetch");
       return new Response("{}", { headers: { "Content-Type": "application/json" }, status: 200 });
     }) as typeof fetch);
     try {
@@ -1904,7 +1799,7 @@ test("a plain write on a line goes out as the very request it is kept as", async
       write: (bounds) => {
         attempts += 1;
         if (attempts === 1) return attemptOf(patch, () => Promise.reject(dropped()))(bounds);
-        return attemptOf({ ...patch, path: "/api/v2/issues/CORE-2" }, async () => ({}))(bounds);
+        return attemptOf({ ...patch, path: "/api/v1/issues/CORE-2" }, async () => ({}))(bounds);
       },
     });
     await tick(1_500);
@@ -2065,20 +1960,21 @@ test("a resumed write that sent nothing makes its attempt on the first Retry", a
   });
 });
 
-// A `PUT` goes under its key as a `POST` does, so a tab that slept past the key's lifetime holding
-// one makes no attempt either: Dispatch has forgotten the key, and a request under it would be a
-// new write rather than the first one asked again.
-test("a resumed PUT whose key Dispatch has forgotten makes no attempt either", async () => {
+// A `PUT` sends no key: Dispatch keeps nothing under one for it, and making it again is the same
+// change. So a tab that slept past the key's lifetime makes that write again rather than ending
+// it and telling the reader a Retry may save it a second time.
+test("a resumed write that sends no key goes out under a key older than the lifetime", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
-    const send = spyOn(api, "send").mockResolvedValue({ id: "comment-1" } as never);
+    const send = spyOn(api, "send").mockResolvedValue({ seq: 2 } as never);
     try {
       const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
       const writes = resuming(tab, spent, { status: "sending" }, put);
       await tick(60_000);
-      expect(send).not.toHaveBeenCalled();
-      const resumed = row(writes);
-      expect(resumed?.status === "refused" && resumed.refusal).toBeInstanceOf(SendExpiredError);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]?.[0]).toEqual(put);
+      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(spent);
+      expect(writes.rows()).toEqual([]);
     } finally {
       send.mockRestore();
       tab.close();
@@ -2185,12 +2081,11 @@ test("an entry kept with no carried loads, and reads as what it sent", async () 
   });
 });
 
-// Whether a write goes under its key is its press's to say (`WriteSpec.keyed`: every write does,
-// a `PUT` as well as a `POST`, but one whose spec sends it under none, as the sign-out's does),
-// and a reload reads it back from what was kept (`KeptWrite.keyed`), not from a request: a write
-// its kind makes again from its own record, kept before any attempt of it went out, holds none.
-// So the indicator says of the unkeyed one that came back interrupted that its Retry sends the
-// same change again, and of the keyed one that it asks again under the same key.
+// Whether a write goes under its key is its press's to say (`WriteSpec.method`), and a reload
+// reads it back from what was kept (`KeptWrite.keyed`), not from a request: a write its kind
+// makes again from its own record, kept before any attempt of it went out, holds none. So the
+// indicator says of a `PUT` that came back interrupted that its Retry sends the same change
+// again, and of a `POST` that it asks again under the same key.
 test("a reload reads back whether each write goes under its key, with no request to read it from", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
@@ -2206,7 +2101,6 @@ test("a reload reads back whether each write goes under its key, with no request
             method,
             presentation: "indicator",
             write: hang,
-            ...(method === "PUT" ? { keyed: false as const } : {}),
           })
           .catch(() => {});
       }

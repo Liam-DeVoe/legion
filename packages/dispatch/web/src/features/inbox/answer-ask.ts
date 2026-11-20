@@ -1,8 +1,7 @@
-import type { AnswerAskInput } from "../../api/client";
-import type { AskAnswer, AskV2 } from "../../api/types";
+import type { AnswerAskInput, Ask, AskAnswer } from "../../api/types";
 
 export function answerAskInput(
-  ask: Pick<AskV2, "edited_at">,
+  ask: Pick<Ask, "edited_at">,
   selected: string[],
   text: string,
   replacing?: AskAnswer

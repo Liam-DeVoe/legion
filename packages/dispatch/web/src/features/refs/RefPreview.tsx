@@ -549,19 +549,19 @@ function AskPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   if (ask === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
-  const options = (ask.options ?? []).length;
+  const options = (ask.ask.options ?? []).length;
   return (
     <>
       <Heading>
         <MarkdownPreview
           lines={2}
-          markdown={ask.question}
-          source={textSourceOf("ask", ask.id)}
-          tree={ask.question_tree}
+          markdown={ask.ask.question}
+          source={textSourceOf("ask", ask.ask.id)}
+          tree={ask.ask.question_tree}
         />
       </Heading>
       <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
-        {ask.state}
+        {ask.ask.state}
         {options === 0 ? null : ` · ${options} ${options === 1 ? "option" : "options"}`}
       </span>
     </>
@@ -576,12 +576,12 @@ function CommentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode
   return (
     <>
       <Heading>
-        <AgentName actor={comment.author} kind="static" />
+        <AgentName actor={comment.comment.author} kind="static" />
       </Heading>
       <Body
-        markdown={comment.body}
-        source={textSourceOf("comment", comment.id)}
-        tree={comment.body_tree}
+        markdown={comment.comment.body}
+        source={textSourceOf("comment", comment.comment.id)}
+        tree={comment.comment.body_tree}
       />
     </>
   );
@@ -595,12 +595,12 @@ function MessagePreview({ route }: { route: DispatchReferenceRoute }): ReactNode
   return (
     <>
       <Heading>
-        <AgentName actor={message.author} kind="static" />
+        <AgentName actor={message.message.author} kind="static" />
       </Heading>
       <Body
-        markdown={message.body}
-        source={textSourceOf("message", message.id)}
-        tree={message.body_tree}
+        markdown={message.message.body}
+        source={textSourceOf("message", message.message.id)}
+        tree={message.message.body_tree}
       />
     </>
   );

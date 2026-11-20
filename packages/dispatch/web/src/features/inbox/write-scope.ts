@@ -1,26 +1,26 @@
 /**
  * The narrowing the Inbox's two list writes carry - **Mark all read** (`mark-all.ts`) and
- * **Dismiss** (`useInboxDismiss.ts`), each a `PATCH /api/v2/me/marks` with a `filter` - and the
- * page's own copy of the rule that says which thread row one of them takes.
+ * **Dismiss** (`useInboxDismiss.ts`) - and the page's own copy of the rule that says which thread
+ * row one of them takes.
  *
- * Both writes read the same four fields, each absent list meaning every value, and both act on
- * exactly the threads `GET /api/v2/me/threads` answers under them. So the filter's fields are
- * built here once and that rule is read here once: a value the list spells one way is written by
- * that same spelling, and the rows the page takes off the screen are the rows the request takes.
+ * Both routes read the same four fields, each absent list meaning every value, and both act on
+ * exactly the threads `GET /api/v1/me/replies` answers under them. So the body's fields are built
+ * here once and that rule is read here once: a value the list spells one way is written by that
+ * same spelling, and the rows the page takes off the screen are the rows the request takes.
  */
 
 import { INBOX_THREAD_KINDS, type InboxThreadKind } from "@legion/contracts";
 
-import type { InboxThreadFilters, MarkInboxReadPriority, MyReplyRow } from "../../api/types";
+import type { InboxReadRequest, MarkInboxReadPriority, MyReplyRow } from "../../api/types";
 import { INBOX_PRIORITY_VALUES, INBOX_URGENCY_VALUES } from "../refs/routes";
 import { inFieldFilter } from "./grouping";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowType } from "./list-row";
 
-/** The four narrowing fields both filters carry; the assignee filter is not among them, because
- *  a thread row is the reader's own and nobody else's, so a selection naming anyone else leaves
- *  the list with no thread row to write. */
-export type InboxWriteScope = Pick<InboxThreadFilters, "kind" | "priority" | "project" | "urgency">;
+/** The four narrowing fields both bodies carry; the assignee filter is not among them, because a
+ *  thread row is the reader's own and nobody else's, so a selection naming anyone else leaves the
+ *  list with no thread row to write. */
+export type InboxWriteScope = Pick<InboxReadRequest, "kind" | "priority" | "project" | "urgency">;
 
 /** Every field of `InboxWriteScope`: its type names each one, so a field the type gains must be
  *  added here before the page builds, and `sameWriteScope` compares it too. */
@@ -67,7 +67,7 @@ export function scopeKinds(filters: InboxFilters): InboxThreadKind[] {
   return INBOX_THREAD_KINDS.filter((kind) => type.includes(kind));
 }
 
-/** The list's own narrowing as a filter carries it: the kinds the Type filter shows, and the
+/** The list's own narrowing as a body carries it: the kinds the Type filter shows, and the
  *  priorities, urgencies and projects the other three show. A field the reader has not narrowed
  *  is left out, which the route reads as every value. */
 export function inboxWriteScope(filters: InboxFilters): InboxWriteScope {

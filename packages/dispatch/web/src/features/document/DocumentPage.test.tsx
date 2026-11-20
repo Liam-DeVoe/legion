@@ -12,14 +12,28 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { ArtifactText, ArtifactV2, GraphEdge, Subscriber } from "../../api/types";
-import { type DocumentFixture, documentRead, serveVersions } from "../artifacts/artifact-fixture";
+import type { Artifact, GraphEdge, Subscriber } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { DocumentPage } from "./DocumentPage";
 
-const artifact: DocumentFixture = {
+const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+  edges: [],
+  node: graphNode({ id: "artifact-1", kind: "artifact" }),
+});
+// The document's own blocks and the asks anchored in it: every rendered page reads both, and
+// none of these rows carries either.
+const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([]);
+
+afterAll(() => {
+  getReferences.mockRestore();
+  getArtifactBlocks.mockRestore();
+  listArtifactAsks.mockRestore();
+});
+
+const artifact: Artifact = {
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
@@ -31,7 +45,6 @@ const artifact: DocumentFixture = {
   ref_key: "CORE/design-notes",
   session_id: null,
   slug: "design-notes",
-  unsettled: null,
   versions: [
     {
       authors: [{ id: "alice", kind: "user" }],
@@ -42,39 +55,6 @@ const artifact: DocumentFixture = {
     },
   ],
 };
-
-/** The document's own read, as the page reads it by its project and slug and by its id. */
-const read = documentRead(artifact);
-
-/** The document's live text, as a member of its own read (`include=text`). */
-const text: ArtifactText = {
-  ...read,
-  markdown: "# Design notes",
-  token: "sha256:design-notes",
-  unsettled: false,
-  version: 1,
-};
-
-const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-  items: [],
-  limit: 50,
-  node: graphNode({ id: "artifact-1", kind: "artifact" }),
-  offset: 0,
-  total: 0,
-});
-// The document's own blocks and the asks anchored in it: every rendered page reads both, and
-// none of these rows carries either. Its versions are its own list, which the header's picker
-// reads.
-const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([]);
-const listArtifactVersions = serveVersions([artifact]);
-
-afterAll(() => {
-  getReferences.mockRestore();
-  getArtifactBlocks.mockRestore();
-  listArtifactAsks.mockRestore();
-  listArtifactVersions.mockRestore();
-});
 
 /** The document page at `design-notes`, with `beside` drawn next to its routes: a way to another
  *  address, for a case that moves the page while it stays mounted. */
@@ -102,12 +82,17 @@ function renderDocumentPage(beside: ReactNode = null) {
 }
 
 test("renders the header, the document, versions, and Referenced by for an unlinked document", async () => {
-  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(read);
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(read);
+  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(artifact);
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
   const getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(text);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "# Design notes",
+    version: 1,
+    unsettled: false,
+    token: "sha256:design-notes",
+  });
   getReferences.mockResolvedValueOnce({
-    items: [
+    edges: [
       {
         created_at: "2026-09-10T00:00:00Z",
         direction: "in",
@@ -123,15 +108,12 @@ test("renders the header, the document, versions, and Referenced by for an unlin
         source_seq: 1,
       },
     ],
-    limit: 50,
     node: graphNode({
       id: "artifact-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE/artifact/design-notes",
     }),
-    offset: 0,
-    total: 1,
   });
   const { runtime, view } = renderDocumentPage();
 
@@ -167,10 +149,15 @@ test("renders the header, the document, versions, and Referenced by for an unlin
 // During a release a newer Dispatch can answer with an edge kind, or a node kind at its other end,
 // that this page does not render. The page leaves such an edge out of the list and its count.
 test("Referenced by leaves out an edge whose kind or node kind the page does not render", async () => {
-  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(read);
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(read);
+  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(artifact);
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
   const getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(text);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "# Design notes",
+    version: 1,
+    unsettled: false,
+    token: "sha256:design-notes",
+  });
   const mention: GraphEdge = {
     created_at: "2026-09-10T00:00:00Z",
     direction: "in",
@@ -185,7 +172,7 @@ test("Referenced by leaves out an edge whose kind or node kind the page does not
     source_seq: 1,
   };
   getReferences.mockResolvedValueOnce({
-    items: [
+    edges: [
       mention,
       { ...mention, kind: "supersedes" } as unknown as GraphEdge,
       {
@@ -193,15 +180,12 @@ test("Referenced by leaves out an edge whose kind or node kind the page does not
         node: { id: "future-1", kind: "future", ref: "dispatch://CORE-1/future/future-1" },
       } as unknown as GraphEdge,
     ],
-    limit: 50,
     node: graphNode({
       id: "artifact-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE/artifact/design-notes",
     }),
-    offset: 0,
-    total: 3,
   });
   const { runtime, view } = renderDocumentPage();
 
@@ -244,9 +228,14 @@ test("shows Document not found with a way back for an unknown slug", async () =>
 
 test("shows Subscribed agents and unsubscribes after confirming the dialog", async () => {
   const user = userEvent.setup();
-  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(read);
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(read);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(text);
+  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(artifact);
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "# Design notes",
+    version: 1,
+    unsettled: false,
+    token: "sha256:design-notes",
+  });
   let currentSubscribers: Subscriber[] = [
     {
       last_seen: 1,
@@ -342,9 +331,14 @@ async function unsubscribing(unsubscribe: (subscribers: Subscriber[]) => Promise
     },
   ];
   const mocks = [
-    spyOn(api, "getProjectArtifact").mockResolvedValue(read),
-    spyOn(api, "getArtifact").mockResolvedValue(read),
-    spyOn(api, "getArtifactText").mockResolvedValue(text),
+    spyOn(api, "getProjectArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "# Design notes",
+      version: 1,
+      unsettled: false,
+      token: "sha256:design-notes",
+    }),
     spyOn(api, "getArtifactSubscribers").mockImplementation(async () => [...subscribers]),
     spyOn(api, "unsubscribeArtifactSession").mockImplementation(() => unsubscribe(subscribers)),
     spyOn(api, "listAgents").mockResolvedValue([]),
@@ -372,10 +366,10 @@ async function unsubscribing(unsubscribe: (subscribers: Subscriber[]) => Promise
 }
 
 // An unsubscribe the reader stopped may have been made: the page says so, and that its Retry
-// asks again under the same key, which the `DELETE` goes under as every write does.
+// sends the same `DELETE` again, which is the same however often it is made.
 test("an unsubscribe the reader stopped says Retry sends it again, not that it failed", async () => {
   const page = await unsubscribing(() =>
-    Promise.reject(new NetworkError("/api/v2/artifacts/artifact-1", new TypeError("Failed")))
+    Promise.reject(new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed")))
   );
   try {
     jest.useFakeTimers();
@@ -414,8 +408,8 @@ test("an unsubscribe answered SUBSCRIBER_NOT_FOUND is the unsubscribe done, not 
 });
 
 /** A second document of the project, which the reader moves to from the first by a link. */
-const releaseNotes: ArtifactV2 = {
-  ...read,
+const releaseNotes: Artifact = {
+  ...artifact,
   id: "artifact-2",
   name: "Release notes",
   ref_key: "CORE/release-notes",
@@ -442,12 +436,17 @@ test("after a refused unsubscribe, the next document's page shows no refusal and
   );
   const mocks = [
     spyOn(api, "getProjectArtifact").mockImplementation(async (_project, slug) =>
-      slug === releaseNotes.slug ? releaseNotes : read
+      slug === releaseNotes.slug ? releaseNotes : artifact
     ),
     spyOn(api, "getArtifact").mockImplementation(async (id) =>
-      id === releaseNotes.id ? releaseNotes : read
+      id === releaseNotes.id ? releaseNotes : artifact
     ),
-    spyOn(api, "getArtifactText").mockResolvedValue(text),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "# Design notes",
+      version: 1,
+      unsettled: false,
+      token: "sha256:design-notes",
+    }),
     spyOn(api, "getArtifactSubscribers").mockResolvedValue([
       {
         last_seen: 1,

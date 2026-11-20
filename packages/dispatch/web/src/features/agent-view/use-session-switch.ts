@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { CreateAgentMessageInput, Message, MessageThreadV2 } from "../../api/types";
+import type { CreateAgentMessageInput, Message, MessageRead } from "../../api/types";
 import { rowAnsweredWithError } from "../conversation/delivery";
 import { storedMessages } from "./stored-messages";
 
@@ -85,7 +85,7 @@ const ANSWER_LOST =
  * is neither.
  */
 function storedAnswer(
-  stored: readonly MessageThreadV2[],
+  stored: readonly MessageRead[],
   sessionId: string,
   messageId: string,
   waiting: boolean
@@ -130,7 +130,7 @@ function storedAnswer(
  */
 export function useSessionSwitch(
   sessionId: string,
-  stored: readonly MessageThreadV2[] | undefined
+  stored: readonly MessageRead[] | undefined
 ): SessionSwitch {
   const [current, setCurrent] = useState<SwitchState | null>(null);
   const latest = useRef(0);

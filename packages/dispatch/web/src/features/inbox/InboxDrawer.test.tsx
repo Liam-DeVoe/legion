@@ -9,7 +9,7 @@ import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { InboxDrawer } from "./InboxDrawer";
-import { installInboxApiMocks, issueAsk, mockAskReads, withSnooze } from "./inbox-fixture";
+import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 
 installInboxApiMocks();
 
@@ -122,8 +122,8 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
   let served: InboxRow[] = [issueAsk()];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(async (id, until) => {
-    served = served.map((row) => (row.id === id ? withSnooze(row, until) : row));
-    return { id, kind: "ask", snoozed_until: until };
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
   });
   const getAsk = mockAskReads([issueAsk()]);
   const view = renderDrawer();

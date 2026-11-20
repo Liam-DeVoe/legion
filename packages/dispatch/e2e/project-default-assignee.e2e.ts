@@ -85,7 +85,7 @@ test("a question on an issue nobody holds follows its project's default assignee
   const issue = await patchIssue(created.key, { assignee: null }, asker);
   expect(issue.assignee).toBeNull();
   const ask = await createAsk(issue.key, { question: "Which rollout flag?" }, asker);
-  expect((await getAsk(ask.id)).waiting_on_person).toBe("alice");
+  expect((await getAsk(ask.id)).ask.waiting_on_person).toBe("alice");
 
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -130,7 +130,7 @@ test("a question on an issue nobody holds follows its project's default assignee
     await expect(inboxRow(bobPage, ask.id)).toHaveCount(0);
     await expect(bobPage.getByText("Nothing needs you")).toBeVisible();
     await expectInboxCount(bobPage, 0);
-    expect((await getAsk(ask.id)).waiting_on_person).toBe("alice");
+    expect((await getAsk(ask.id)).ask.waiting_on_person).toBe("alice");
   } finally {
     await alice.close();
     await bob.close();
@@ -161,8 +161,8 @@ test("issue and document pages follow a default move: a question's Asked-of badg
     { question: "Keep the runbook in the repository?" },
     asker
   );
-  expect((await getAsk(issueAsk.id)).waiting_on_person).toBe("alice");
-  expect((await getAsk(docAsk.id)).waiting_on_person).toBe("alice");
+  expect((await getAsk(issueAsk.id)).ask.waiting_on_person).toBe("alice");
+  expect((await getAsk(docAsk.id)).ask.waiting_on_person).toBe("alice");
 
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -196,8 +196,8 @@ test("issue and document pages follow a default move: a question's Asked-of badg
         path: shot,
       });
     }
-    expect((await getAsk(issueAsk.id)).waiting_on_person).toBe("bob");
-    expect((await getAsk(docAsk.id)).waiting_on_person).toBe("bob");
+    expect((await getAsk(issueAsk.id)).ask.waiting_on_person).toBe("bob");
+    expect((await getAsk(docAsk.id)).ask.waiting_on_person).toBe("bob");
   } finally {
     await alice.close();
     await bob.close();

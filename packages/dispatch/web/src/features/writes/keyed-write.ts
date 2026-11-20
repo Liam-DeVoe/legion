@@ -4,6 +4,7 @@ import {
   AnswerNotKeptError,
   ApiError,
   busyRetryAfterMs,
+  goesUnderKey,
   isKeyCommitted,
   isKeyInFlight,
   isUnauthorized,
@@ -78,15 +79,16 @@ export function keyExpired(key: string, now: number): boolean {
 }
 
 /**
- * Whether `key` is spent by `now`: a request has already gone out under it - every write goes
- * under its key, a `PUT` and a `DELETE` as well as a `POST` and a `PATCH` - and Dispatch has
- * forgotten the key (`keyExpired`). Another request under a spent key would be a second write of
- * the person's action rather than a repeat of the first, which is why no attempt may go out under
- * one.
+ * Whether `key` is spent by `now`: a request has already gone out under it, that request is one
+ * that goes under its key (`goesUnderKey`), and Dispatch has forgotten the key (`keyExpired`).
+ * Another request under a spent key would be a second write of the person's action rather than
+ * a repeat of the first, which is why no attempt may go out under one.
  *
  * `carried` is what the key has carried: the method of an attempt that went out under it, or
  * `null` where none has. A key that has carried nothing is never spent however old it is -
- * Dispatch has never seen it, so there is nothing under it a request now would repeat.
+ * Dispatch has never seen it, so there is nothing under it a request now would repeat - and a
+ * key whose request was a `PUT` or a `DELETE` is never spent either, since neither sends a key
+ * and making one again is the same change however late.
  *
  * This is the one place that question is answered, and both askers are told the same fact: the
  * store keeps what each key has carried (`Writes` `#carried`, kept with the write as
@@ -96,7 +98,7 @@ export function keyExpired(key: string, now: number): boolean {
  * two cannot answer the same write differently.
  */
 export function keySpent(carried: WriteMethod | null, key: string, now: number): boolean {
-  return carried !== null && keyExpired(key, now);
+  return carried !== null && goesUnderKey(carried) && keyExpired(key, now);
 }
 
 /** A write that stopped trying before Dispatch confirmed it: the reader pressed Stop trying. Not
@@ -163,12 +165,11 @@ export function retriesUnderItsKey(refusal: Error | undefined): boolean {
 /**
  * What a Retry of a write `refusal` ended does, in the reader's words: the one account of it a
  * surface's sentence (`stoppedWriteNote`) and the shell's indicator both end with. A write that
- * goes under its key (`keyed`: every write, of any method, `send`) is asked again under it while
- * Dispatch holds it (`sameKeyRetryNote`), and made as a new write once Dispatch has forgotten it
- * (`expiredRetryNote`), as `retriesUnderItsKey` says of `refusal`. A write whose spec sends it
- * under no key (`WriteSpec.keyed`), and one an older build kept that went under none
- * (`KeptWrite.keyed`), has Dispatch keep nothing under one for it, so neither promise is true of
- * its Retry: that sends the same change again.
+ * goes under its key (`keyed`: a `POST` or a `PATCH`, `goesUnderKey`) is asked again under it
+ * while Dispatch holds it (`sameKeyRetryNote`), and made as a new write once Dispatch has
+ * forgotten it (`expiredRetryNote`), as `retriesUnderItsKey` says of `refusal`. A `PUT` or a
+ * `DELETE` sends no key, and Dispatch keeps nothing under one for it, so neither promise is true
+ * of its Retry: that sends the same change again, which is the same however often it is made.
  */
 export function retryNote(keyed: boolean, refusal: Error, made: string): string {
   if (!keyed) {
@@ -178,10 +179,11 @@ export function retryNote(keyed: boolean, refusal: Error, made: string): string 
 }
 
 /** What a surface's control does with a write the reader stopped (`stoppedWriteNote`): a control
- *  that makes that very press again (`retry`, `again`), with `method` the write's own. A plain
- *  Retry button the sentence does not name carries no label; one with its own words carries
- *  `again`, named so the sentence says which control to press. `anew` says what a control that is
- *  a press of its own sends (`mutate`, under a key of its own). */
+ *  that makes that very press again (`retry`, `again`), with `method` the write's own, which says
+ *  whether that press goes under its key (`goesUnderKey`). A plain Retry button the sentence does
+ *  not name carries no label; one with its own words carries `again`, named so the sentence says
+ *  which control to press. `anew` says what a control that is a press of its own sends (`mutate`,
+ *  under a key of its own). */
 export type StoppedControl =
   | { readonly method: WriteMethod; readonly stopped: SendStoppedError }
   | { readonly again: string; readonly method: WriteMethod; readonly stopped: SendStoppedError }
@@ -191,9 +193,9 @@ export type StoppedControl =
  * What a surface says of its write the reader stopped, in place of a failure it cannot know of:
  * Dispatch has not confirmed `what`, which may have been `made`, and what pressing the surface's
  * control does now. A control that makes the stopped press again ends with what that Retry does
- * (`retryNote`): the press went under its key, whatever its method, so its Retry asks again
- * under that key. A control that is a press of its own says what it sends. `SendStoppedError`'s
- * own words are a composer's, of a message and its Retry, so a form says these instead.
+ * (`retryNote`), by the write's method. A control that is a press of its own says what it sends.
+ * `SendStoppedError`'s own words are a composer's, of a message and its Retry, so a form says
+ * these instead.
  */
 export function stoppedWriteNote(what: string, made: string, control: StoppedControl): string {
   const unconfirmed = `Dispatch has not confirmed ${what}: it may have been ${made}.`;
@@ -201,7 +203,8 @@ export function stoppedWriteNote(what: string, made: string, control: StoppedCon
     return `${unconfirmed} ${control.anew}`;
   }
   const pressed = "again" in control ? ` Pressing ${control.again} again retries it.` : "";
-  return `${unconfirmed}${pressed} ${retryNote(true, control.stopped, made)}`;
+  const note = retryNote(goesUnderKey(control.method), control.stopped, made);
+  return `${unconfirmed}${pressed} ${note}`;
 }
 
 /** What ended one attempt without Dispatch's verdict, and so makes the write again under its key:
@@ -339,7 +342,8 @@ export class OneRequestPerWriteError extends Error {
  * attempt would be a new write to Dispatch rather than a repeat of the first. The key is spent
  * by what it has carried: `carried`, the method that went out under it before this call, and
  * then the request of this call's own first attempt, told as it goes out. A key that has
- * carried nothing stops nothing, however old it is.
+ * carried nothing stops nothing, however old it is, and neither does one a `PUT` or a `DELETE`
+ * went under, since those send no key at all.
  */
 export async function writeUnderKey<T>(
   attempt: (bounds: WriteBounds) => Promise<T>,

@@ -2,7 +2,7 @@ import { statusText } from "../project/board-model";
 
 /**
  * What the bar's chips narrow a search by: one project key, one issue status, one author (a
- * person's login or a session id, which is what `GET /api/v2/search-results` matches an item's actor
+ * person's login or a session id, which is what `GET /api/v1/search` matches an item's actor
  * against) and the day at or after which the item was last written, held as the date control's
  * own `YYYY-MM-DD`. Each holds what the person picked rather than a query string, so a chip
  * reads it back in their own words and removing one leaves the rest untouched.
@@ -22,18 +22,16 @@ export interface SearchFilterChip {
   readonly label: string;
 }
 
-/** What one search sends: the parameters the chips narrow by, each absent when no chip set it -
- *  `project` (the route's repeatable filter, which the bar's one chip fills with one key) and
- *  `from`, the start of the window on the row's last write - `number_project`, the project of the
- *  page the bar was opened on, which narrows nothing (`packages/envoy/cmd/dispatch/README.md`,
- *  "Search"), and `keywords_only`, which the bar sets behind a keystroke so the server runs the
- *  keyword leg alone and embeds nothing. */
+/** What one search sends: the parameters the chips narrow by, each absent when no chip set it,
+ *  `number_project`, the project of the page the bar was opened on, which narrows nothing
+ *  (`packages/envoy/cmd/dispatch/README.md`, "Search"), and `keywords_only`, which the bar sets
+ *  behind a keystroke so the server runs the keyword leg alone and embeds nothing. */
 export interface SearchRequest {
-  readonly project?: string[];
+  readonly project?: string;
   readonly number_project?: string;
   readonly status?: string;
   readonly author?: string;
-  readonly from?: string;
+  readonly updated_since?: string;
   readonly keywords_only?: boolean;
 }
 
@@ -97,10 +95,10 @@ export function searchFilterChips(
 export function searchRequest(filters: SearchBarFilters, numberProject?: string): SearchRequest {
   const since = filters.updatedSince === undefined ? undefined : pickedDay(filters.updatedSince);
   return {
-    ...(filters.project === undefined ? {} : { project: [filters.project] }),
+    ...(filters.project === undefined ? {} : { project: filters.project }),
     ...(numberProject === undefined ? {} : { number_project: numberProject }),
     ...(filters.status === undefined ? {} : { status: filters.status }),
     ...(filters.author === undefined ? {} : { author: filters.author }),
-    ...(since === undefined ? {} : { from: since.toISOString() }),
+    ...(since === undefined ? {} : { updated_since: since.toISOString() }),
   };
 }

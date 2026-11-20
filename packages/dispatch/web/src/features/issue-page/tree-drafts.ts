@@ -3,10 +3,10 @@ import { parseBlockPointerValue } from "@legion/contracts";
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import type {
   Actor,
-  ArtifactV2,
-  AskV2,
+  Artifact,
+  Ask,
+  CheckBlock,
   CheckResult,
-  CheckV2,
   Decision,
   DisplayTree,
   IssueChild,
@@ -41,6 +41,7 @@ import type {
   NodeCounts,
   NodeFact,
   NodeOption,
+  TreeAsk,
 } from "./issue-tree";
 import {
   type AskState,
@@ -399,7 +400,7 @@ export function treeContext(
  * flagged `primary` or carrying that part's `role` is named by the page's word for a document:
  * a chip naming "Spec" or "Decisions" opens a document whose blocks the tree reads as that part.
  */
-function documentWord(issue: IssueDetails, document: Pick<ArtifactV2, "id"> | undefined): string {
+function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;
   if (document.id === primarySpec(issue)?.id) return PRESET_NAMES.spec;
   for (const role of ["plan", "verification", "decisions"] as const) {
@@ -797,7 +798,7 @@ function addAsks(
   reads: IssueTreeReads,
   context: TreeContext
 ): ReadonlyMap<string, string> {
-  const asks = new Map<string, AskV2>();
+  const asks = new Map<string, TreeAsk>();
   for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
     if (ask.kind === "question") asks.set(ask.id, ask);
   }
@@ -845,7 +846,7 @@ function addAsks(
 
 /** An ask's answer as the tree holds it: the person it is theirs, with the agent they answered
  *  through where they did, and their choices and words as stored. */
-function answerOf(answer: NonNullable<AskV2["answer"]>): NodeAnswer {
+function answerOf(answer: NonNullable<Ask["answer"]>): NodeAnswer {
   return {
     at: answer.at,
     by: { id: answer.user, kind: "user", ...(answer.act === undefined ? {} : { act: answer.act }) },
@@ -858,11 +859,11 @@ function answerOf(answer: NonNullable<AskV2["answer"]>): NodeAnswer {
  * How an ask stands, in one of the words the page declares for an ask (`NODE_STATE_WORDS.ask`):
  * the kind of its resolution for an ask that was closed rather than answered, so the tree says
  * "Declined" where the card and the margin beside it say "Declined", and the `state` the server
- * wrote for every other ask. The server types both as plain strings (`AskV2.state`,
+ * wrote for every other ask. The server types both as plain strings (`Ask.state`,
  * `AskResolution.kind`), and a token the page declares no word for is drawn as no state rather
  * than as the server's own token (R21).
  */
-function askState(ask: AskV2): AskState | undefined {
+function askState(ask: Ask): AskState | undefined {
   const words: Readonly<Record<string, string | undefined>> = NODE_STATE_WORDS.ask;
   const token =
     ask.state === "resolved" && ask.resolution !== undefined ? ask.resolution.kind : ask.state;
@@ -943,9 +944,8 @@ function addTurns(
           ? (context.nodeIdOf(changeOf.get(comment.id) ?? "") ?? null)
           : (asks.get(comment.ask_id) ?? comment.ask_id)),
     })),
-    // A thread is its root message's own fields with the replies under it.
     ...(reads.messages ?? [])
-      .flatMap((thread) => [thread, ...(thread.replies ?? [])])
+      .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
       .map((message) => ({
         at: message.created_at,
         author: message.author,
@@ -977,7 +977,7 @@ function addTurns(
  * spine parent is absent does, and never inside `decisions.md`, which is no node at all. It
  * carries no gap for that: a lack every such decision shares tells none of them apart (R10). It
  * names every spec block it links as a chip, since a link places nothing. The read carries no
- * `shaped` edge (`Decision`, `packages/contracts/src/dispatch-api-v2.generated.ts:3655-3677`), so
+ * `shaped` edge (`packages/contracts/src/dispatch-api.ts:2519-2534`), so
  * today a decision's links stand for it: they are its chips here, and what `addRequirements`
  * reads a `shaped_disagreement` from.
  */
@@ -1001,7 +1001,7 @@ function addDecisions(
   // (`Draft.statement`): a spec's `requirement` block that read does not hold - each one, before
   // it answers - is a statement on its row, and a tie to it puts no decision on the list.
   const isCoverageStatement = coverageStatements(reads.issue, reads.coverage);
-  (reads.decisions?.items ?? []).forEach((decision, index) => {
+  (reads.decisions?.decisions ?? []).forEach((decision, index) => {
     const id = context.nodeIdOf(decision.ref);
     if (id === undefined) return;
     const held = drafts.get(id);
@@ -1094,7 +1094,7 @@ function addRequirements(
   // The node of every decision whose links name each requirement, by the requirement's node id.
   // A decision the tree addresses no node for is one `addDecisions` draws nothing for either.
   const shapers = new Map<string, Set<string>>();
-  for (const decision of reads.decisions?.items ?? []) {
+  for (const decision of reads.decisions?.decisions ?? []) {
     const shaper = context.nodeIdOf(decision.ref);
     if (shaper === undefined) continue;
     for (const link of decision.links ?? []) {
@@ -1158,7 +1158,7 @@ function requirementGaps(
  * as the server reads the commit each of its results ran at (`checkStanding`), so the row, the
  * fold's frontier, the Verification filter's failing count and its body read one state, and the
  * row reads what its result's own fact reads. The check's `serves` is no part of this read
- * (`CheckV2` carries none), so its placement is the block's own pointer, below.
+ * (`CheckBlock` carries none), so its placement is the block's own pointer, below.
  *
  * A result is drawn from the server's reading of its observed text (`observed_tree`) where the
  * read carries one, so the page parses no result's text; only from a server that sends none, a
@@ -1167,7 +1167,7 @@ function requirementGaps(
  * a `#id` in its observed text declares nothing.
  */
 function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
-  for (const check of reads.results?.items ?? []) {
+  for (const check of reads.results?.checks ?? []) {
     const slug = context.slugOf(check.artifact_id);
     if (slug === undefined) continue;
     const id = blockNodeId(slug, check.block_id);
@@ -1252,8 +1252,8 @@ function checkState(check: CheckStateReads): CheckState {
  *  themselves. `pass_stands` is declared required by the API types and is missing from what
  *  the deployed server sends, so it is optional here and the page reads a payload without it
  *  rather than throwing over the whole issue page. */
-export type CheckStateReads = Pick<CheckV2, "results"> & {
-  readonly pass_stands?: CheckV2["pass_stands"];
+export type CheckStateReads = Pick<CheckBlock, "results"> & {
+  readonly pass_stands?: CheckBlock["pass_stands"];
 };
 
 /** How one check stands, as the server reads the commit each of its results ran at. */

@@ -1,4 +1,4 @@
-import type { DispatchEvent, Marks } from "../../api/types";
+import type { DispatchEvent, UserIssueState, UserState } from "../../api/types";
 
 const pinnedItemPrefix = "pinned_items:";
 
@@ -6,16 +6,16 @@ export function eventItemId(event: Pick<DispatchEvent, "id">): string {
   return `event:${event.id}`;
 }
 
-/** The `pinned_items` entry that records `id` (an `eventItemId`) as pinned. */
+/** The `dismissed` entry that records `id` (an `eventItemId`) as pinned. */
 export function pinnedItemMarker(id: string): string {
   return `${pinnedItemPrefix}${id}`;
 }
 
-export function isPinnedEvent(dismissed: readonly string[], eventId: number): boolean {
+export function isPinnedEvent(dismissed: string[], eventId: number): boolean {
   return dismissed.includes(pinnedItemMarker(eventItemId({ id: eventId })));
 }
 
-export function pinnedEventIds(dismissed: readonly string[]): string[] {
+export function pinnedEventIds(dismissed: string[]): string[] {
   const prefix = `${pinnedItemPrefix}event:`;
   return dismissed
     .filter((item) => item.startsWith(prefix))
@@ -44,14 +44,11 @@ export function conversationItemId(kind: ConversationPinKind, id: string): strin
 
 /** `conversationId` is a conversation's own id (`ask:<id>`, `comment:<id>`, `message:<id>`,
  *  `handoff:<id>`). */
-export function isPinnedConversation(
-  dismissed: readonly string[],
-  conversationId: string
-): boolean {
+export function isPinnedConversation(dismissed: string[], conversationId: string): boolean {
   return dismissed.includes(pinnedItemMarker(conversationId));
 }
 
-export function pinnedConversations(dismissed: readonly string[]): PinnedConversation[] {
+export function pinnedConversations(dismissed: string[]): PinnedConversation[] {
   const pinned: PinnedConversation[] = [];
   for (const item of dismissed) {
     if (!item.startsWith(pinnedItemPrefix)) continue;
@@ -65,23 +62,7 @@ export function pinnedConversations(dismissed: readonly string[]): PinnedConvers
   return pinned;
 }
 
-/** The viewer's state of one issue with every field present: what their mark of it holds
- *  (`GET /api/v2/me/marks?kind=issue`), which leaves out a field it holds no value for. */
-export interface IssueState {
-  readonly last_read_seq: number;
-  readonly pinned: boolean;
-  /** The markers of the issue's pinned items (`pinnedItemMarker`). */
-  readonly pinned_items: readonly string[];
-  readonly seq: number;
-}
-
-/** The viewer's state of an issue, defaulted: no mark and an unvisited issue read alike. */
-export function stateForIssue(state: Marks | undefined, issueKey: string): IssueState {
-  const mark = state?.[issueKey];
-  return {
-    last_read_seq: mark?.last_read_seq ?? 0,
-    pinned: mark?.pinned ?? false,
-    pinned_items: mark?.pinned_items ?? [],
-    seq: mark?.seq ?? 0,
-  };
+/** The viewer's row for an issue, defaulted: absent state and an unvisited issue read alike. */
+export function stateForIssue(state: UserState | undefined, issueKey: string): UserIssueState {
+  return state?.[issueKey] ?? { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 }

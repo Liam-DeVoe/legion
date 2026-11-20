@@ -61,13 +61,7 @@ test("ProofDocument repairs a document outside the schema by an upload under its
     new ApiError(409, { code: "DOC_SCHEMA", error: SCHEMA_REFUSAL })
   );
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({
-    // The document as the upload left it, read again after the commit: it counts the new version.
-    artifact: {
-      ...artifact,
-      latest_version: 2,
-      latest_version_at: "2026-10-02T00:00:00Z",
-      version_count: 2,
-    },
+    artifact,
     version: {
       authors: [{ id: "alice", kind: "user" }],
       created_at: "2026-10-02T00:00:00Z",
@@ -84,7 +78,6 @@ test("ProofDocument repairs a document outside the schema by an upload under its
     const picked = new File(["repaired\n"], "spec (1).md", { type: "text/markdown" });
     await user.upload(screen.getByLabelText("Upload artifact"), picked);
     getArtifactText.mockResolvedValue({
-      ...artifact,
       markdown: "repaired\n",
       token: "sha256:repaired",
       version: 2,
@@ -171,9 +164,9 @@ test("ProofDocument waits for a fresh text read before reconnecting from cached 
 
     await act(async () => {
       resolveText({
-        ...artifact,
         markdown: "fresh document",
         token: "sha256:fresh-document",
+        version: null,
         unsettled: true,
       });
       await textRead;
@@ -381,7 +374,6 @@ test("ProofDocument offers a rebuild for a history that cannot load and reconnec
     expect(await screen.findByText(UNLOADABLE_REFUSAL)).not.toBeNull();
     expect(connections).toHaveLength(0);
     getArtifactText.mockResolvedValue({
-      ...artifact,
       markdown: "The live document",
       token: "sha256:live-document",
       version: 1,
@@ -412,7 +404,7 @@ test("a rebuild the reader stopped says it may have been made, not a message's w
     })
   );
   const rebuildArtifact = spyOn(api, "rebuildArtifact").mockRejectedValue(
-    new NetworkError("/api/v2/artifacts/artifact-1/rebuilds", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/artifacts/rebuild", new TypeError("Failed to fetch"))
   );
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
   const queryClient = createQueryClient();
@@ -494,7 +486,6 @@ test("ProofDocument shows content this build cannot show yet without a replace d
     await waitFor(() => expect(getArtifactText.mock.calls.length).toBeGreaterThan(1));
 
     getArtifactText.mockResolvedValue({
-      ...artifact,
       markdown: "The live document",
       token: "sha256:live-document",
       version: 1,
@@ -707,7 +698,7 @@ test("ProofDocument connects with the schema it was built with and reads none fr
   const schemaReads: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = input.toString();
-    if (path.startsWith("/api/v2/block-schema")) {
+    if (path.startsWith("/api/v1/schema/blocks")) {
       schemaReads.push(path);
       return Response.json({ ...manifest, version: manifest.version + 1 });
     }

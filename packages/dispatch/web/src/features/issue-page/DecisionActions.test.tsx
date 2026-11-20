@@ -5,8 +5,8 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { ApiError, api, type WholeList } from "../../api/client";
-import type { ArtifactText, ArtifactV2, Decision } from "../../api/types";
+import { ApiError, api } from "../../api/client";
+import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -32,23 +32,19 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 const KEY = "CORE-1";
 const REFERENCE = `dispatch://${KEY}/artifact/decisions-md#b-d1`;
 
-const document_: ArtifactV2 = {
+const document_: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-decisions",
   issue_key: KEY,
   kind: "doc",
-  latest_version: 1,
-  latest_version_at: "2026-11-05T00:00:00Z",
-  latest_version_size: null,
   name: "decisions.md",
   primary: false,
   project: "CORE",
   ref_key: "artifact:artifact-decisions",
   session_id: null,
   slug: "decisions-md",
-  unsettled: null,
-  version_count: 1,
+  versions: [],
 };
 
 const decision: Decision = {
@@ -70,16 +66,10 @@ const decision: Decision = {
   waiting_review: true,
 };
 
-/** The decisions read `getIssueDecisions` answers: every decision, and the open questions. */
-type DecisionsRead = WholeList<"/api/v2/issues/{key}/decisions">;
-
-const read: DecisionsRead = {
+const read: IssueDecisions = {
+  decisions: [decision],
   document: document_.id,
-  items: [decision],
-  limit: 50,
-  offset: 0,
   open_questions: [],
-  total: 1,
 };
 
 /** The decisions document `read` is the read of: its title, then the one decision. */
@@ -95,12 +85,11 @@ function spyDocumentText(markdown: string | Error): DocumentTextSpy {
   return spyOn(api, "getArtifactText").mockImplementation(async (): Promise<ArtifactText> => {
     if (markdown instanceof Error) throw markdown;
     return {
-      ...document_,
       markdown,
       markdown_tree: displayTree(markdown),
       token: "token",
-      unsettled: false,
       version: 1,
+      unsettled: false,
     };
   });
 }
@@ -109,7 +98,7 @@ function spyDocumentText(markdown: string | Error): DocumentTextSpy {
  *  by `documentText`; inside the page's `NoTooltips` where `page` says so, as the issue page
  *  draws them. */
 function renderActions(
-  answer: DecisionsRead = read,
+  answer: IssueDecisions = read,
   documentText: string | Error = DOCUMENT_TEXT,
   { page = false }: { page?: boolean } = {}
 ): { text: DocumentTextSpy; unmount: () => void } {
@@ -153,39 +142,6 @@ test("the change form opens with the caret in its field", async () => {
     ).toBe(field);
   } finally {
     unmount();
-  }
-});
-
-// R7: Keep is the issue's write (`PUT /api/v2/issues/{key}/decisions/{block_id}/state`), never
-// the decisions document's: it names the issue the document belongs to, the decision's block and
-// the sum of the words the row drew, and the decision it kept no longer waits for review.
-test("Keep writes the keep on the decision's issue, and the kept decision offers no Keep", async () => {
-  const keepDecision = spyOn(api, "keepDecision").mockResolvedValue({
-    artifact_id: document_.id,
-    block_id: decision.block_id,
-    changed_version: decision.changed_version,
-    kept_at: "2026-11-06T00:00:00Z",
-    kept_by: "alice",
-  });
-  const user = userEvent.setup();
-  const { unmount } = renderActions();
-  try {
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
-    await waitFor(() => expect(keepDecision).toHaveBeenCalledTimes(1));
-    expect(keepDecision.mock.calls[0]?.slice(0, 3)).toEqual([
-      KEY,
-      decision.block_id,
-      decision.text_sha256,
-    ]);
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: CONTROL_LABELS.keep_decision }),
-        "the kept decision still offers Keep"
-      ).toBeNull()
-    );
-  } finally {
-    unmount();
-    keepDecision.mockRestore();
   }
 });
 
@@ -451,7 +407,7 @@ test("a Change names which place of the quote is its decision's own", async () =
   );
   const user = userEvent.setup();
   const { unmount } = renderActions(
-    { ...read, items: [ABOVE, OWN] },
+    { ...read, decisions: [ABOVE, OWN] },
     twoDecisionsText("The decisions this issue made.")
   );
   try {
@@ -482,7 +438,7 @@ test("a Change's send reads the decisions document once and counts its quote's p
   );
   const user = userEvent.setup();
   const { text, unmount } = renderActions(
-    { ...read, items: [ABOVE, OWN] },
+    { ...read, decisions: [ABOVE, OWN] },
     twoDecisionsText("Draw it once. That is the rule of every decision below.")
   );
   try {
@@ -523,7 +479,7 @@ test("a Change whose document read fails names no place, and its refusal keeps t
   );
   const user = userEvent.setup();
   const { text, unmount } = renderActions(
-    { ...read, items: [ABOVE, OWN] },
+    { ...read, decisions: [ABOVE, OWN] },
     new ApiError(503, { code: "UNAVAILABLE", error: "the store is not reachable" })
   );
   try {
@@ -553,7 +509,7 @@ beforeAll(async () => {
  *  review so its node draws the Change. */
 async function quoteOf(fields: Pick<Decision, "text" | "text_tree">): Promise<string> {
   const user = userEvent.setup();
-  const { unmount } = renderActions({ ...read, items: [{ ...decision, ...fields }] });
+  const { unmount } = renderActions({ ...read, decisions: [{ ...decision, ...fields }] });
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     return screen.getByTestId("decision-quote").textContent ?? "";

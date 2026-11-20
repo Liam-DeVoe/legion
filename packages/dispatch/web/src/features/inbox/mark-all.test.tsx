@@ -6,12 +6,12 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
-import { answerMarksPatches } from "../../__tests__/send-answers";
+import { answerInboxReads } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError, type WholeList } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
-import type { MyReplyRow } from "../../api/types";
+import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { InboxBar, type InboxFilters } from "./InboxBar";
@@ -23,8 +23,8 @@ afterEach(cleanup);
 
 const AS_OF = "2026-10-12T02:00:00Z";
 
-function threadsRead(rows: readonly MyReplyRow[]): WholeList<"/api/v2/me/threads"> {
-  return { as_of: AS_OF, items: [...rows], limit: 0, offset: 0, total: rows.length };
+function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
+  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
 }
 
 function noop(): void {}
@@ -37,7 +37,7 @@ function noop(): void {}
  */
 function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
   const read = useQuery(inboxThreadsQuery());
-  const rows: readonly InboxListRow[] = (read.data?.items ?? []).map((thread) => ({
+  const rows: readonly InboxListRow[] = (read.data?.rows ?? []).map((thread) => ({
     kind: "thread",
     thread,
   }));
@@ -47,9 +47,7 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
     <>
       <output data-testid="inbox-count">{count}</output>
       <output data-testid="listed">{rows.length}</output>
-      <output data-testid="unread">
-        {(read.data?.items ?? []).filter((t) => t.unread).length}
-      </output>
+      <output data-testid="unread">{(read.data?.rows ?? []).filter((t) => t.unread).length}</output>
       <InboxBar
         agentToken={undefined}
         assignees={undefined}
@@ -115,18 +113,18 @@ function unread(): string {
 test("the body carries the list's read mark and the filters the list is under", () => {
   // Nothing narrowed: both kinds, and no list for the three fields, which the route reads as
   // every value.
-  expect(markAllReadBody({}, AS_OF)).toEqual({
-    filter: { kind: ["reply", "agent"] },
-    set: { read_through: AS_OF },
-  });
+  expect(markAllReadBody({}, AS_OF)).toEqual({ kind: ["reply", "agent"], read_through: AS_OF });
   expect(
     markAllReadBody(
       { priority: ["P0", "none"], project: ["CORE"], type: ["reply"], urgency: ["none"] },
       AS_OF
     )
   ).toEqual({
-    filter: { kind: ["reply"], priority: ["P0", "none"], project: ["CORE"], urgency: ["none"] },
-    set: { read_through: AS_OF },
+    kind: ["reply"],
+    priority: ["P0", "none"],
+    project: ["CORE"],
+    read_through: AS_OF,
+    urgency: ["none"],
   });
 });
 
@@ -154,8 +152,8 @@ test("the button shows only while the list holds an unread Reply or Agent row", 
 
 test("one press zeroes the count and draws the rows read, without taking one out of the list", async () => {
   const user = userEvent.setup();
-  const marked = answerMarksPatches();
-  const settle = Promise.withResolvers<{ updated: number }>();
+  const marked = answerInboxReads();
+  const settle = Promise.withResolvers<{ marked: number }>();
   marked.mockReturnValue(settle.promise);
   renderBar([replyRow("c1", { priority: 1 }), replyRow("c2", { priority: 1 })], 2, {
     priority: ["P1"],
@@ -174,16 +172,17 @@ test("one press zeroes the count and draws the rows read, without taking one out
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
   expect(marked.mock.calls[0]?.[0]).toEqual({
-    filter: { kind: ["reply", "agent"], priority: ["P1"] },
-    set: { read_through: AS_OF },
+    kind: ["reply", "agent"],
+    priority: ["P1"],
+    read_through: AS_OF,
   });
-  settle.resolve({ updated: 2 });
+  settle.resolve({ marked: 2 });
   await waitFor(() => expect(marked).toHaveBeenCalledTimes(1));
 });
 
 test("a refused press brings the rows and the counts back and says nothing was marked", async () => {
   const user = userEvent.setup();
-  const marked = answerMarksPatches();
+  const marked = answerInboxReads();
   // An old server mid-deploy has no such route, which is a failed request like any other.
   marked.mockRejectedValue(new ApiError(404, { error: "not found" }));
   renderBar([replyRow("c1"), replyRow("c2")], 2);
@@ -205,7 +204,7 @@ test("a refused press brings the rows and the counts back and says nothing was m
 // did not make there, and the refusal does not come back when they return to the first list.
 test("a refused press's word goes once the reader narrows the list another way", async () => {
   const user = userEvent.setup();
-  answerMarksPatches().mockRejectedValue(new ApiError(404, { error: "not found" }));
+  answerInboxReads().mockRejectedValue(new ApiError(404, { error: "not found" }));
   const bar = renderBar([replyRow("c1", { priority: 1 }), replyRow("c2")], 2);
 
   await user.click(screen.getByRole("button", { name: "Mark all read" }));
@@ -224,14 +223,13 @@ test("a refused press's word goes once the reader narrows the list another way",
 test("a stopped press reads the list again rather than saying nothing was marked", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  answerMarksPatches().mockRejectedValue(
-    new NetworkError("/api/v2/me/marks", new TypeError("Failed to fetch"))
+  answerInboxReads().mockRejectedValue(
+    new NetworkError("/api/v1/me/inbox/read", new TypeError("Failed to fetch"))
   );
-  // The count reads one row of the list and its total (`myRepliesCountQuery`), and the list reads
-  // every row (`inboxThreadsQuery`): Dispatch holds both rows read.
-  const recount = spyOn(api, "listMyThreads").mockResolvedValue(threadsRead([]));
-  const reread = spyOn(api, "listEveryMyThread").mockResolvedValue(
-    threadsRead([replyRow("c1", { unread: false }), replyRow("c2", { unread: false })])
+  const reread = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    page.limit === 1
+      ? threadsRead([])
+      : threadsRead([replyRow("c1", { unread: false }), replyRow("c2", { unread: false })])
   );
   const { client } = renderBar([replyRow("c1"), replyRow("c2")], 2);
   try {
@@ -249,7 +247,6 @@ test("a stopped press reads the list again rather than saying nothing was marked
     expect(listed()).toBe("2");
   } finally {
     reread.mockRestore();
-    recount.mockRestore();
     realClock();
   }
 });

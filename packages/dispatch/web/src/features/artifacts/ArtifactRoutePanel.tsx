@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { ArtifactV2 } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import { dangerText, linkHoverText, linkText } from "../../theme/classes";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath, type DispatchRoute } from "../refs/routes";
@@ -23,7 +23,7 @@ export function ArtifactRoutePanel({
   toolbar,
 }: {
   active: boolean;
-  artifact: ArtifactV2 | undefined;
+  artifact: Artifact | undefined;
   artifactRoute: Extract<DispatchRoute, { kind: "artifact" }> | undefined;
   children: ReactNode;
   isClosed: boolean;

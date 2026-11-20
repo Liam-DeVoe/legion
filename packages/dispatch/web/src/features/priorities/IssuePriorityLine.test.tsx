@@ -9,8 +9,8 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError, type WholeList } from "../../api/client";
-import type { Issue, PriorityRow } from "../../api/types";
+import { ApiError, api, NetworkError } from "../../api/client";
+import type { Issue, Priorities, PriorityRow } from "../../api/types";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
@@ -41,16 +41,13 @@ function priority(id: string, title: string): PriorityRow {
 }
 
 /** The read's answer, in rank order: the line's order ("P2") is a row's place in this list. */
-const body: WholeList<"/api/v2/priorities"> = {
-  items: [
+const body: Priorities = {
+  priorities: [
     priority("evals-now", "Evals collecting data now"),
     priority("rocq-lean", "Rocq and Lean speed work restarted"),
     priority("oss-verify", "OSS Verify: curl, TLS and Rustls"),
   ],
-  limit: 50,
-  offset: 0,
   priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-  total: 3,
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
 
@@ -226,7 +223,7 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
 test("a write the reader stopped says it may have been saved, not that it failed", async () => {
   const view = renderLine([{ id: "evals-now", inherited: false }]);
   view.patchIssue.mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-9", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/issues/CORE-9", new TypeError("Failed to fetch"))
   );
   try {
     const remove = await view.q.findByRole("button", {

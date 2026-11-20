@@ -43,12 +43,12 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
   const issueRequests: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (request.method() === "GET" && url.pathname === "/api/v2/issues") {
+    if (request.method() === "GET" && url.pathname === "/api/v1/issues") {
       issueRequests.push(url.search);
     }
     if (
       request.method() === "GET" &&
-      url.pathname.startsWith("/api/v2/issues/") &&
+      url.pathname.startsWith("/api/v1/issues/") &&
       !url.pathname.endsWith("/subscribers")
     ) {
       issueRequests.push(url.pathname);
@@ -67,7 +67,7 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
     await expect(navigation.locator('a[href="/projects/OPS"]')).toContainText("1");
     await expect(navigation.getByRole("link", { name: "Settings" })).toBeVisible();
     await expect(navigation.getByRole("link", { name: /^(CORE|OPS)-\d+/ })).toHaveCount(0);
-    // The Inbox makes no per-issue read of its own either: the list is one `GET /asks`, and
+    // The Inbox makes no per-issue read of its own either: the list is one `GET /inbox`, and
     // the reading pane (INFRA-575) draws the selected question from the row it already holds.
     // Only a question written as a decision block has its issue read, for the one field the
     // live document is handed - whether the issue is closed (`DecisionBody` in

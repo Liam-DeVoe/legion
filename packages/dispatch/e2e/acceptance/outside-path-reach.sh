@@ -54,7 +54,7 @@
 #
 # It prints the origin, this device's name and the UTC time, a line for the origin's positive
 # control and one per target, then its verdict:
-#   PASS     exit 0: Dispatch answered at the origin (/healthz 200, and /api/v2/projects with no
+#   PASS     exit 0: Dispatch answered at the origin (/healthz 200, and /api/v1/projects with no
 #            credential 401 with Dispatch's own NO_IDENTITY refusal), the probe connected to the
 #            origin in every round, and every target was unreachable.
 #   FAIL     exit 1: a target was reached, or the origin served a read with no credential.
@@ -540,11 +540,11 @@ fetch() {
 # NO_IDENTITY refusal, which shows the path ends at Dispatch and Dispatch is the boundary.
 health=$(fetch /healthz)
 health=${health#"${health%???}"}
-projects=$(fetch /api/v2/projects)
+projects=$(fetch /api/v1/projects)
 refusal=none
 case ${projects%???} in *'"code":"NO_IDENTITY"'* | *'"code": "NO_IDENTITY"'*) refusal=NO_IDENTITY ;; esac
 projects=${projects#"${projects%???}"}
-printf 'dispatch: GET /healthz %s, GET /api/v2/projects with no credential %s, code %s\n' \
+printf 'dispatch: GET /healthz %s, GET /api/v1/projects with no credential %s, code %s\n' \
   "$health" "$projects" "$refusal"
 [ "$projects" != 200 ] || {
   printf 'FAIL: %s served a read with no credential\n' "$origin"

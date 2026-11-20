@@ -2,39 +2,33 @@ import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import type { ArtifactV2, AskV2, AskWithThread, Comment, IssueDetails } from "../../api/types";
+import type { Artifact, Ask, Comment, IssueDetails } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { KEEPS_DETAILS_ATTRIBUTE } from "./Margin";
 import { type DocumentBridge, useMargin } from "./margin-context";
 
-export const specArtifact: ArtifactV2 = {
+export const specArtifact: Artifact = {
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
   issue_key: "CORE-1",
   project: "CORE",
   kind: "doc",
-  latest_version: null,
-  latest_version_at: null,
-  latest_version_size: null,
   name: "spec.md",
   primary: true,
   ref_key: "CORE-1/spec",
   session_id: null,
   slug: "spec",
-  unsettled: null,
-  version_count: 0,
+  versions: [],
 };
 
 export const issue: IssueDetails = {
-  reach: {
-    holder_state: null,
-    last_seen: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-    takeable_at: null,
-  },
+  route_status: null,
+  route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   advances: [],
   advances_revision: 0,
   artifacts: [specArtifact],
@@ -96,7 +90,7 @@ export const comment: Comment = {
   ...commentDeliveryFields(),
 };
 
-export const anchoredAsk: AskV2 = {
+export const anchoredAsk: Ask = {
   anchor: {
     artifact_id: "artifact-1",
     block_id: null,
@@ -113,41 +107,17 @@ export const anchoredAsk: AskV2 = {
   asked_of_by: null,
   block_id: null,
   created_at: "2026-09-09T00:00:00Z",
-  document: null,
   edited_at: null,
   id: "ask-1",
-  issue: null,
   issue_key: "CORE-1",
-  last_reply: null,
   kind: "question",
   multiple: false,
   opened_event_id: 1,
   options: [{ label: "Ship" }],
-  priority: null,
   question: "Should this ship?",
-  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "med",
 };
-
-/** `ask` read with its thread (`include=thread`), with nothing answered, edited, replied or
- *  followed: what a card's own read of an ask nobody has acted on answers. */
-export function withEmptyThread(ask: AskV2): AskWithThread {
-  return {
-    ...ask,
-    thread: {
-      answers: [],
-      claimant: null,
-      edits: [],
-      followers: [],
-      replies: [],
-      route: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-    },
-  };
-}
 
 /** The address a margin landing starts from beside its document on the new issue page: the
  *  address of the document the comment is anchored in, with the comment named by `?mark=`

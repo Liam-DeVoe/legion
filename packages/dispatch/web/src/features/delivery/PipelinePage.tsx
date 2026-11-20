@@ -1,6 +1,6 @@
 // The prototype's web/src/pages/Pipeline.tsx, ported as it is: the header line, six cards, the
 // slowest-jobs table and the failed-in-24-hours table, each with the prototype's data-* attributes.
-// Every number, every target and every day comes from GET /api/v2/delivery/pipeline; nothing is
+// Every number, every target and every day comes from GET /api/v1/delivery/pipeline; nothing is
 // computed here but the two lead-time cards' met/missed, which the prototype judges on the page as
 // this does, against the targets the response carries. Differences, each from LEGION-567's slice 3
 // plan or for the same reason as the measures panel's: Dispatch's sidebar replaces the

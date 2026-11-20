@@ -53,7 +53,9 @@ test("an email address written into a spec is a mailto link in the editor and in
     agentSession
   );
   const newestVersion = async () =>
-    (await getArtifact(issue.primary_artifact_id)).latest_version ?? 0;
+    Math.max(
+      ...((await getArtifact(issue.primary_artifact_id)).versions ?? []).map(({ number }) => number)
+    );
   await expect.poll(newestVersion).toBeGreaterThan(1);
   const written = await newestVersion();
 

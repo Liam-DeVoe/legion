@@ -896,10 +896,8 @@ test("a picture is a Dispatch reference only when its source parses as one, capt
 
 // An author names a picture's source and a link's target explicitly, and drawing or opening the
 // node is a read, so a document whose name is past the bound text is held to (2683 characters,
-// which a new upload's reference key still holds) is named whole - its owner, its slug and the
-// version it pins, which `/api/v2` serves by the id the owner's read gives that slug
-// (`MarkdownBody.test.tsx` draws it) - and linked to its page all the same, though the same
-// string as bare text cites nothing.
+// which a new upload's reference key still holds) is drawn from its version's bytes and linked to
+// its page all the same, though the same string as bare text cites nothing.
 test("a picture and an explicit link naming a long-named document are that document", () => {
   const slug = "a".repeat(2683);
   const source = `dispatch://CORE-1/artifact/${slug}@v1`;
@@ -910,10 +908,12 @@ test("a picture and an explicit link naming a long-named document are that docum
     route: { key: "CORE-1", kind: "artifact", slug, version: 1 },
     source,
   });
-  expect(picture?.named?.version).toBe(1);
-  expect(artifactVersionPath("artifact-long", picture?.named?.version ?? 0)).toBe(
-    "/api/v2/artifacts/artifact-long/versions/1"
-  );
+  const named = picture?.named;
+  expect(
+    named?.version === undefined
+      ? undefined
+      : artifactVersionPath(named.owner, named.slug, named.version)
+  ).toBe(`/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
 
   const target = `dispatch://CORE-1/artifact/${slug}`;
   expect(parseDispatchReference(target)).toBeUndefined();

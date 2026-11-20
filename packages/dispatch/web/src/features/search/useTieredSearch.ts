@@ -3,7 +3,7 @@ import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { api } from "../../api/client";
-import type { SearchResultsV2 } from "../../api/types";
+import type { SearchResponse } from "../../api/types";
 import type { SearchRequest } from "./search-filters";
 
 /** How long the bar waits after a keystroke before it searches the words alone. Short enough
@@ -24,7 +24,7 @@ export interface TieredSearch {
    *  tier only ever replaces for the same words. The list's hits answer these words. */
   readonly asked: string;
   /** The one answer the list, what it says about itself and the highlight all read. */
-  readonly search: UseQueryResult<SearchResultsV2>;
+  readonly search: UseQueryResult<SearchResponse>;
   /** Whether the box has moved on from the words the answer in hand was asked for, so the hits
    *  the list would show are of a query the reader has already typed past. */
   readonly waiting: boolean;

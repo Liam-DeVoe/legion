@@ -306,7 +306,7 @@ func (s *server) revokeCredentialGrantV2(w http.ResponseWriter, r *http.Request)
 // listCredentialRequestsV2 answers GET /api/v2/credential-requests: one page of the requests GET
 // /api/v1/credential-requests?approver=me relays. A Dispatch with no broker is 404 FEATURE_OFF, as
 // every other credential route but the capabilities read answers it, where /api/v1 answers null:
-// an empty page would read as nothing waiting, and the web app stops asking only on the refusal.
+// an empty page would read as nothing waiting, and a client stops asking only on the refusal.
 func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {

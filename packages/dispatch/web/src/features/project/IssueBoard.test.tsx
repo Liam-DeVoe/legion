@@ -20,8 +20,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { Issue, IssueSummary, Marks } from "../../api/types";
-import { marksOf } from "../agents/marks-fixture";
+import type { Issue, IssueSummary, UserState } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { issueStatuses } from "./board-model";
@@ -73,7 +72,7 @@ const issues: IssueSummary[] = [
 ];
 
 function renderBoard(
-  state: Marks = {},
+  state: UserState = {},
   showEdges?: boolean,
   list: IssueSummary[] = issues,
   initialEntry = "/projects/CORE",
@@ -161,12 +160,10 @@ test("the whole card is the drag activator: no Reorder button, no status pill, s
 });
 
 test("board cards show the unread dot when events are newer than the viewer's last read", async () => {
-  const { cleanup } = renderBoard(
-    marksOf("issue", {
-      "CORE-1": { last_read_seq: 1, pinned: false, pinned_items: [], seq: 0 },
-      "CORE-2": { last_read_seq: 2, pinned: false, pinned_items: [], seq: 0 },
-    })
-  );
+  const { cleanup } = renderBoard({
+    "CORE-1": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
+    "CORE-2": { dismissed: [], last_read_seq: 2, pinned: false, seq: 0 },
+  });
   try {
     const board = await screen.findByRole("region", { name: "Project board" });
     const unread = within(board).getByRole("article", { name: "CORE-2 Ship the work" });
@@ -964,11 +961,11 @@ test("the strip's search hides board cards, counts the visible column, and drags
 
 test("Needs you and Unread from the URL keep only matching cards on the board", async () => {
   const { cleanup } = renderBoard(
-    marksOf("issue", {
-      "CORE-1": { last_read_seq: 1, pinned: false, seq: 0 },
-      "CORE-2": { last_read_seq: 1, pinned: false, seq: 0 },
-      "CORE-3": { last_read_seq: 1, pinned: false, seq: 0 },
-    }),
+    {
+      "CORE-1": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
+      "CORE-2": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
+      "CORE-3": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
+    },
     undefined,
     [
       issue({ key: "CORE-1", last_seq: 4, open_asks: 1, status: "todo", title: "Wanted" }),
@@ -1036,7 +1033,7 @@ test("a move the reader stopped says it may have been made, not that it failed",
   const queryKey = ["issues", "project", "CORE"] as const;
   queryClient.setQueryData(queryKey, issues);
   const patchIssue = answerIssuePatches().mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
   );
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
   const hook = renderMoves(queryClient);

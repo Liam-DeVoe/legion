@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 
-import type { ArtifactV2, GatedStep, IssueDetails, ProjectV2 } from "../../api/types";
+import type { Artifact, GatedStep, IssueDetails, Project } from "../../api/types";
 import { issue as fixture, specArtifact } from "../margin/margin-fixture";
 import { gatedStepEntries } from "./gated-steps";
 
-const decisionsDoc: ArtifactV2 = {
+const decisionsDoc: Artifact = {
   ...specArtifact,
   id: "artifact-2",
   name: "decisions.md",
@@ -13,7 +13,7 @@ const decisionsDoc: ArtifactV2 = {
   role: "decisions",
 };
 
-const verificationDoc: ArtifactV2 = {
+const verificationDoc: Artifact = {
   ...specArtifact,
   id: "artifact-3",
   name: "verification.md",
@@ -32,7 +32,7 @@ const olderRoot: IssueDetails = {
 
 const root: IssueDetails = { ...olderRoot, decisions_artifact_id: "artifact-2" };
 
-const ungated: ProjectV2 = {
+const ungated: Project = {
   key: "CORE",
   name: "Core",
   created_at: "2026-09-09T00:00:00Z",
@@ -40,7 +40,7 @@ const ungated: ProjectV2 = {
   gated_steps: [],
 };
 
-function gating(...gated_steps: GatedStep[]): ProjectV2 {
+function gating(...gated_steps: GatedStep[]): Project {
   return { ...ungated, gated_steps };
 }
 
@@ -94,10 +94,9 @@ test("a step an older server answers no id for at all is drawn with no document"
 
 test("a step word this build has no name for is left out and the rest keep their order", () => {
   // A Dispatch newer than this build may gate a fourth step; the header draws what it knows.
-  const newer: ProjectV2 = {
+  const newer: Project = {
     ...ungated,
-    // The project read names its steps as plain words, a word this build has no name for among them.
-    gated_steps: ["spec", "thresholds", "decisions"],
+    gated_steps: ["spec", "thresholds", "decisions"] as unknown as GatedStep[],
   };
 
   expect(gatedStepEntries(newer, root)).toEqual([

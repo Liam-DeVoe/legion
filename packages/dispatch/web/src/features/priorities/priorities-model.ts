@@ -58,8 +58,8 @@ export function buildPriorityItems(rows: readonly PriorityRow[]): PriorityItem[]
 }
 
 /** What a drop writes: the priority the dragged one lands above (`before`), or the one it lands
- *  below (`after`), which is the `rank` that `PATCH /api/v2/priorities/{id}` takes. A drop on
- *  the dragged row itself, or on a row that is not in the order, moves nothing. */
+ *  below (`after`), which is the shape `PATCH /api/v1/priorities/{id}` takes. A drop on the
+ *  dragged row itself, or on a row that is not in the order, moves nothing. */
 export function rankMove(
   order: readonly string[],
   moved: string,

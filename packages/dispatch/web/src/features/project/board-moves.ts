@@ -3,7 +3,7 @@ import { useCallback, useState } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
-import type { IssueSummary, PatchIssueV2Input } from "../../api/types";
+import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
@@ -16,7 +16,7 @@ const everyIssue = () => true;
 
 /** What one board move sends: the issue (`key`) and its change (`input`). */
 export interface BoardMoveVariables {
-  readonly input: PatchIssueV2Input;
+  readonly input: UpdateIssueInput;
   readonly key: string;
 }
 
@@ -89,7 +89,7 @@ export function useBoardMoves(
   const commit = useCallback(
     async (
       key: string,
-      moved: { issues: IssueSummary[]; input: PatchIssueV2Input } | undefined,
+      moved: { issues: IssueSummary[]; input: UpdateIssueInput } | undefined,
       previous: IssueSummary[]
     ) => {
       if (moved === undefined) {

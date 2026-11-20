@@ -6,12 +6,12 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { type AnswerAskInput, ApiError, api } from "../api/client";
+import { ApiError, api } from "../api/client";
 import type {
+  AnswerAskInput,
+  Ask,
   AskEdit,
-  AskThread,
-  AskV2,
-  AskWithThread,
+  AskRead,
   Comment,
   CreateCommentInput,
   InboxRow,
@@ -27,11 +27,8 @@ import { keyedAttempt } from "./keyed-attempt";
 import { userOnFakeClock } from "./user";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-  items: [],
-  limit: 50,
+  edges: [],
   node: graphNode({ id: "ask-1", kind: "ask" }),
-  offset: 0,
-  total: 0,
 });
 
 afterAll(() => {
@@ -49,19 +46,14 @@ function ask(overrides: Partial<OwnedAsk> = {}): OwnedAsk {
     author: { kind: "session", id: "session-1" },
     block_id: null,
     created_at: "2026-09-09T00:00:00Z",
-    document: null,
     edited_at: null,
     id: "ask-1",
-    issue: null,
     issue_key: "CORE-1",
     kind: "question",
-    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
-    priority: null,
     question: "Which option should ship?",
-    ref: "dispatch://CORE-1/ask/ask-1",
     state: "open",
     waiting_on: "human",
     urgency: "med",
@@ -106,9 +98,12 @@ function reply(
   };
 }
 
-/** An ask's thread with nothing in it but `fields`. */
-function threadOf(fields: Partial<AskThread> = {}): AskThread {
-  return {
+// Every test provides an explicit (usually empty) thread so mounting AskCard
+// never falls through to the default getAskThread, which would issue a real
+// fetch in this test environment.
+function emptyThread(input: Ask): () => Promise<AskRead> {
+  return async () => ({
+    ask: input,
     answers: [],
     claimant: null,
     edits: [],
@@ -118,16 +113,7 @@ function threadOf(fields: Partial<AskThread> = {}): AskThread {
     route_status: null,
     route_holder: null,
     route_status_reason: null,
-    ...fields,
-  };
-}
-
-// Every test provides an explicit (usually empty) thread so mounting AskCard
-// never falls through to the default getAskThread, which would issue a real
-// fetch in this test environment. The thread read answers the ask itself, flat, with its thread
-// under `thread` (`GET /api/v2/asks/{id}?include=thread`).
-function emptyThread(input: AskV2): () => Promise<AskWithThread> {
-  return async () => ({ ...input, thread: threadOf() });
+  });
 }
 
 function renderCard(node: ReactNode) {
@@ -303,7 +289,7 @@ test("AskCard omits a fragment for a legacy quote anchor without a block ID", as
       project: "CORE",
       slug: "spec",
     },
-  } as unknown as AskV2;
+  } as unknown as Ask;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
@@ -547,7 +533,21 @@ test("AskCard shows every previous version of an edited question, oldest first",
     },
   ];
   const { view } = renderCard(
-    <AskCard ask={input} getAskThread={async () => ({ ...input, thread: threadOf({ edits }) })} />
+    <AskCard
+      ask={input}
+      getAskThread={async () => ({
+        ask: input,
+        answers: [],
+        claimant: null,
+        edits,
+        followers: [],
+        replies: [],
+        route: null,
+        route_status: null,
+        route_holder: null,
+        route_status_reason: null,
+      })}
+    />
   );
 
   try {
@@ -695,14 +695,6 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
     await landed;
     return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
   });
-  // The picture's markdown names a document of CORE-1, which the reference in the answer draws
-  // from the issue's own read (`issueSummaryQuery`, `GET /api/v2/issues/{key}`).
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
-    artifacts: [{ id: "artifact-shot", kind: "image", name: "shot.png", slug: "shot-png" }],
-    key: "CORE-1",
-    status: "todo",
-    title: "Fix the thing",
-  } as never);
   const input = ask();
   const { queryClient, view } = renderCard(
     <AskCard
@@ -754,7 +746,6 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
   } finally {
     realClock();
     view.unmount();
-    getIssueSummary.mockRestore();
     uploadArtifact.mockRestore();
   }
 });
@@ -1384,7 +1375,7 @@ test("AskCard submits a selected single option with added context", async () => 
 test("AskCard restores its inbox entry if an optimistic answer fails", async () => {
   const user = userEvent.setup();
   let rejectAnswer: (reason?: unknown) => void = () => {};
-  const pendingAnswer = new Promise<AskV2>((_resolve, reject) => {
+  const pendingAnswer = new Promise<Ask>((_resolve, reject) => {
     rejectAnswer = reject;
   });
   const input = ask({ options: [{ label: "Ship" }] });
@@ -1393,8 +1384,20 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
   );
   const inboxInput: InboxRow = {
     ...input,
-    mark: { id: input.id, kind: "ask", snoozed_until: null },
-    thread: threadOf(),
+    last_reply: null,
+    priority: null,
+    snoozed_until: null,
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    },
   };
   queryClient.setQueryData<InboxRow[]>(["inbox"], [inboxInput]);
 
@@ -1431,7 +1434,18 @@ test("AskCard reloads a changed question, requires the human to reconfirm, and a
         }
         return answered(current, submission.selected);
       }}
-      getAskThread={async () => ({ ...current, thread: threadOf() })}
+      getAskThread={async () => ({
+        ask: current,
+        answers: [],
+        edits: [],
+        claimant: null,
+        followers: [],
+        route: null,
+        route_status: null,
+        route_holder: null,
+        route_status_reason: null,
+        replies: [],
+      })}
     />
   );
 
@@ -1603,8 +1617,16 @@ test("AskCard renders replies under the question without an open-ask thread comp
     <AskCard
       ask={input}
       getAskThread={async () => ({
-        ...input,
-        thread: threadOf({ replies: [reply({ id: "comment-1", body: "Any update?" })] }),
+        ask: input,
+        answers: [],
+        edits: [],
+        claimant: null,
+        followers: [],
+        route: null,
+        route_status: null,
+        route_holder: null,
+        route_status_reason: null,
+        replies: [reply({ id: "comment-1", body: "Any update?" })],
       })}
     />
   );
@@ -1775,7 +1797,7 @@ test("a resolved ask keeps its question and options, carries a resolution badge,
       reason: "Superseded.",
     },
     state: "resolved",
-  } as unknown as AskV2;
+  } as unknown as Ask;
   // The resolution names its actor with a link to that agent's live conversation; `renderCard`
   // renders inside a router, as the app always does.
   const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
@@ -1806,7 +1828,18 @@ test("AskCard shows the newest two replies, expands the earlier ones, and puts a
     reply({ body: "Newer reply", created_at: "2026-09-09T00:04:00Z", id: "comment-4" }),
     reply({ body: "Newest reply", created_at: "2026-09-09T00:05:00Z", id: "comment-5" }),
   ];
-  const thread = async () => ({ ...input, thread: threadOf({ replies }) });
+  const thread = async () => ({
+    ask: input,
+    answers: [],
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies,
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+  });
   const { view } = renderCard(
     <AskCard
       ask={input}
@@ -1875,8 +1908,16 @@ test("a compact answered ask's Write a reply reveals its composer as the next ke
     <AskCard
       ask={input}
       getAskThread={async () => ({
-        ...input,
-        thread: threadOf({ replies: [reply({ body: "Earlier reply" })] }),
+        ask: input,
+        answers: [],
+        edits: [],
+        claimant: null,
+        followers: [],
+        route: null,
+        route_status: null,
+        route_holder: null,
+        route_status_reason: null,
+        replies: [reply({ body: "Earlier reply" })],
       })}
       thread="collapsed"
     />
@@ -1913,7 +1954,18 @@ test("a reply arriving while the earlier replies are shown lands last and keeps 
   const { queryClient, view } = renderCard(
     <AskCard
       ask={input}
-      getAskThread={async () => ({ ...input, thread: threadOf({ replies }) })}
+      getAskThread={async () => ({
+        ask: input,
+        answers: [],
+        claimant: null,
+        edits: [],
+        followers: [],
+        replies,
+        route: null,
+        route_status: null,
+        route_holder: null,
+        route_status_reason: null,
+      })}
       thread="collapsed"
     />
   );
@@ -1965,7 +2017,18 @@ test("a link to a folded reply opens the fold and still lets the reader collapse
     <AskCard
       ask={input}
       currentReplyId="comment-1"
-      getAskThread={async () => ({ ...input, thread: threadOf({ replies }) })}
+      getAskThread={async () => ({
+        ask: input,
+        answers: [],
+        claimant: null,
+        edits: [],
+        followers: [],
+        replies,
+        route: null,
+        route_status: null,
+        route_holder: null,
+        route_status_reason: null,
+      })}
       thread="collapsed"
     />
   );
@@ -2033,7 +2096,18 @@ test("AskCard with no replies offers Write a reply only once the ask is not open
       getAskThread={async () => {
         attempts += 1;
         if (attempts === 1) throw new Error("boom");
-        return { ...failedInput, thread: threadOf() };
+        return {
+          ask: failedInput,
+          answers: [],
+          claimant: null,
+          edits: [],
+          followers: [],
+          replies: [],
+          route: null,
+          route_status: null,
+          route_holder: null,
+          route_status_reason: null,
+        };
       }}
       thread="collapsed"
     />
@@ -2211,8 +2285,20 @@ test("a document ask links its project and document page", async () => {
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([
     {
       ...input,
-      mark: { id: input.id, kind: "ask", snoozed_until: null },
-      thread: threadOf(),
+      last_reply: null,
+      priority: null,
+      snoozed_until: null,
+      thread: {
+        answers: [],
+        claimant: null,
+        edits: [],
+        followers: [],
+        replies: [],
+        route: null,
+        route_status: null,
+        route_holder: null,
+        route_status_reason: null,
+      },
     },
   ]);
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
@@ -2464,12 +2550,12 @@ test("AskCard compact variant keeps an open note visible when a real option is p
 test("AskCard compact variant hands focus to the row when Answer disables under it", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  let release: (value: AskV2) => void = () => {};
+  let release: (value: Ask) => void = () => {};
   const { view } = renderCard(
     <div data-testid="row" tabIndex={-1}>
       <AskCard
         answerAsk={() =>
-          new Promise<AskV2>((resolve) => {
+          new Promise<Ask>((resolve) => {
             release = resolve;
           })
         }

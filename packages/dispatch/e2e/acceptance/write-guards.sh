@@ -281,19 +281,12 @@ refusal() {
   pass "$1" "$2 names $3"
 }
 
-# artifact_id SECTION ISSUE NAME: sets $artifact to the id of ISSUE's document NAME, read from the
-# issue's document list narrowed to NAME (the slug filter keeps the document whose file name it is).
+# artifact_id SECTION ISSUE NAME: sets $artifact to the id of ISSUE's document NAME.
 artifact_id() {
-  get "/api/v2/issues/$2/artifacts?slug=$(q "$3")"
+  get "/api/v1/issues/$2/artifacts"
   want_status 200 "$1" "read $2's documents"
-  artifact="$(jq -er --arg n "$3" '.items | map(select(.name == $n)) | .[0].id' "$work/body")" ||
+  artifact="$(jq -er --arg n "$3" 'map(select(.name == $n)) | .[0].id' "$work/body")" ||
     fail "$1" "find $2's $3" "$(body)"
-}
-
-# document_text ISSUE SLUG: reads ISSUE's document SLUG with its text, the one row of the issue's
-# document list that slug narrows it to, into $work/body.
-document_text() {
-  get "/api/v2/issues/$1/artifacts?slug=$(q "$2")&include=text"
 }
 
 # --- setup: the person this run signs in ---------------------------------------------------------
@@ -321,7 +314,7 @@ reviewed="$key"
 readonly reviewed
 
 artifact_id review "$reviewed" spec.md
-person_send POST "/api/v2/artifacts/$artifact/reviews" \
+person_send POST "/api/v1/artifacts/$artifact/reviews" \
   "$(jq -cn --arg r "$review_reason" '{state: "approved", reason: $r}')"
 want_status 201 review "$dev_login approves $reviewed's specification"
 review_at="$(jq -er '.created_at' "$work/body")" ||
@@ -342,18 +335,18 @@ pass review "the question's answer asks the sender to say what changed since tha
 
 # ask_settled ISSUE: the settlement has made the document's question an ask row of ISSUE.
 ask_settled() {
-  get "/api/v2/issues/$1/asks"
+  get "/api/v1/issues/$1/asks"
   [[ "$status" == 200 ]] || return 1
-  [[ "$(jq -c '[.items[] | select(.block_id == "transport")] | length' "$work/body")" == 1 ]]
+  [[ "$(jq -c '[.[] | select(.block_id == "transport")] | length' "$work/body")" == 1 ]]
 }
 
 # block_answered ISSUE: the settlement has written the person's answer onto the document's block,
 # under the id the document gave it.
 block_answered() {
-  document_text "$1" design-md
+  get "/api/v1/issues/$1/artifacts/design-md/text"
   [[ "$status" == 200 ]] || return 1
   jq -e --arg who "$dev_login" \
-    '.items[0].markdown | test(":::ask\\{#transport .*state=\"answered\" answered_by=\"\($who)\"")' \
+    '.markdown | test(":::ask\\{#transport .*state=\"answered\" answered_by=\"\($who)\"")' \
     "$work/body" >/dev/null
 }
 
@@ -364,9 +357,9 @@ block_answered() {
 # the carry alone would make a question that split read as a wait that timed out.
 carry_decided() {
   block_answered "$1" && return 0
-  get "/api/v2/issues/$1/asks"
+  get "/api/v1/issues/$1/asks"
   [[ "$status" == 200 ]] || return 1
-  [[ "$(jq -c '.items | length' "$work/body")" != 1 ]]
+  [[ "$(jq -c 'length' "$work/body")" != 1 ]]
 }
 
 cat >"$work/identity-spec.md" <<'SPEC'
@@ -390,15 +383,15 @@ Which transport should the gateway expose to the ledger service?
 DOCUMENT
 upload identity "$carry" design.md "$work/identity-document.md"
 wait_until identity "the document's question becomes an ask" ask_settled "$carry"
-answered_ask="$(jq -er '.items[] | select(.block_id == "transport") | .id' "$work/body")" ||
+answered_ask="$(jq -er '.[] | select(.block_id == "transport") | .id' "$work/body")" ||
   fail identity "read the ask the document's question opened" "$(body)"
 readonly answered_ask
-edited_at="$(jq -c --arg id "$answered_ask" '.items | map(select(.id == $id)) | .[0].edited_at' "$work/body")"
+edited_at="$(jq -c --arg id "$answered_ask" 'map(select(.id == $id)) | .[0].edited_at' "$work/body")"
 pass identity "the document's question opened ask $answered_ask on block transport"
 
-person_send PUT "/api/v2/asks/$answered_ask/state" \
+person_send POST "/api/v1/asks/$answered_ask/answer" \
   "$(jq -cn --argjson e "$edited_at" \
-    '{state: "answered", selected: ["REST"], text: "REST, to match the platform.", expected_edited_at: $e}')"
+    '{selected: ["REST"], text: "REST, to match the platform.", expected_edited_at: $e}')"
 want_status 200 identity "$dev_login answers the document's question"
 pass identity "$dev_login answered ask $answered_ask with REST"
 wait_until identity "the answer is written onto the block" block_answered "$carry"
@@ -420,23 +413,22 @@ read_token identity "$carry" design.md
 upload identity "$carry" design.md "$work/identity-composed.md" "$doc_token"
 wait_until identity "the upload's question block is decided" carry_decided "$carry"
 
-get "/api/v2/issues/$carry/asks"
+get "/api/v1/issues/$carry/asks"
 want_status 200 identity "the issue's asks after the upload answer"
 
-expect identity "the issue still holds one ask" 1 '.items | length'
-expect identity "that ask is the row the person answered" "\"$answered_ask\"" '.items[0].id'
-expect identity "the row is still on the block it was answered on" '"transport"' '.items[0].block_id'
+expect identity "the issue still holds one ask" 1 'length'
+expect identity "that ask is the row the person answered" "\"$answered_ask\"" '.[0].id'
+expect identity "the row is still on the block it was answered on" '"transport"' '.[0].block_id'
 expect identity "the row still asks the question the agent composed again" \
-  '"Which transport should the gateway expose to the ledger service?"' '.items[0].question'
+  '"Which transport should the gateway expose to the ledger service?"' '.[0].question'
 expect identity "the row still carries the person's answer" \
-  "[\"answered\",\"$dev_login\",[\"REST\"]]" \
-  '.items[0] | [.state, .answer.user, .answer.selected]'
+  "[\"answered\",\"$dev_login\",[\"REST\"]]" '[.[0].state, .[0].answer.user, .[0].answer.selected]'
 
-document_text "$carry" design-md
+get "/api/v1/issues/$carry/artifacts/design-md/text"
 want_status 200 identity "the document after the upload answers"
 expect identity "the uploaded block took the id the live block had, and the settlement wrote the person's answer onto it again" \
   true \
-  '.items[0].markdown | test(":::ask\\{#transport .*state=\"answered\" answered_by=\"'"$dev_login"'\"")'
+  '.markdown | test(":::ask\\{#transport .*state=\"answered\" answered_by=\"'"$dev_login"'\"")'
 
 # --- base: the base an upload names, and the two refusals ----------------------------------------
 
@@ -459,10 +451,10 @@ readonly stale_base
 upload base "$guard" guard.md "$work/base-two.md" "$stale_base"
 
 # Where the document stands now, which the refusal below must name and must leave alone.
-document_text "$guard" guard-md
+get "/api/v1/issues/$guard/artifacts/guard-md/text"
 want_status 200 base "the guarded document answers"
-live_token="$(jq -er '.items[0].token' "$work/body")" || fail base "read the live token" "$(body)"
-live_version="$(jq -er '.items[0].version' "$work/body")" || fail base "read the live version" "$(body)"
+live_token="$(jq -er '.token' "$work/body")" || fail base "read the live token" "$(body)"
+live_version="$(jq -er '.version' "$work/body")" || fail base "read the live version" "$(body)"
 readonly live_token live_version
 [[ "$live_token" != "$stale_base" ]] ||
   fail base "the second upload moved the document past the base the first read" "$live_token"
@@ -485,15 +477,14 @@ grep -qF 'dispatch doc-read' "$work/out" ||
   fail base "the refusal says where a base that is not behind comes from" "$(<"$work/out")"
 pass base "the refusal tells the reader to read the document with dispatch doc-read"
 
-document_text "$guard" guard-md
+get "/api/v1/issues/$guard/artifacts/guard-md/text"
 want_status 200 base "the guarded document answers after the refusal"
-expect base "the refused upload wrote no version" "$live_version" '.items[0].version'
-expect base "the refused upload left the document's text as it was" "\"$live_token\"" '.items[0].token'
+expect base "the refused upload wrote no version" "$live_version" '.version'
+expect base "the refused upload left the document's text as it was" "\"$live_token\"" '.token'
 
-# The same upload over the issue's /api/v2 artifacts route, which stores an upload as the
-# command's route does, for the status and the fields the answer carries, which the command's
-# reader never sees.
-send POST "/api/v2/issues/$guard/artifacts" \
+# The same upload over the route the command sends it on, for the status and the fields the
+# answer carries, which the command's reader never sees.
+send POST "/api/v1/issues/$guard/artifacts" \
   "$(document_body "$guard" guard.md "$work/base-three.md" "$stale_base")"
 want_status 409 base "the same upload over the artifacts route"
 expect base "it is refused PRECONDITION_FAILED" '"PRECONDITION_FAILED"' '.code'
@@ -541,7 +532,7 @@ grep -qF 'dispatch doc-read' "$work/out" ||
   fail base "the refusal says where the token comes from" "$(<"$work/out")"
 pass base "the refusal says where the token comes from"
 
-send POST "/api/v2/issues/$guard/artifacts" \
+send POST "/api/v1/issues/$guard/artifacts" \
   "$(document_body "$guard" guard.md "$work/base-four.md")"
 want_status 400 base "the same replacement over the artifacts route"
 expect base "it is refused PRECONDITION_REQUIRED" '"PRECONDITION_REQUIRED"' '.code'
@@ -569,11 +560,11 @@ pass base "the refusal is the blank write's own, which names its remedies"
   fail base "the blank write's refusal names no token" "$(<"$work/out")"
 pass base "the blank write's refusal names no token"
 
-send POST "/api/v2/issues/$guard/artifacts" \
+send POST "/api/v1/issues/$guard/artifacts" \
   "$(jq -cn --arg a "$session" '{actor: {kind: "session", id: $a}, name: "guard.md"}')"
 want_status 400 base "the same blank write over the artifacts route"
 expect base "it is refused ARTIFACT_INPUT, not PRECONDITION_REQUIRED" '"ARTIFACT_INPUT"' '.code'
-send POST "/api/v2/issues/$guard/artifacts" \
+send POST "/api/v1/issues/$guard/artifacts" \
   "$(jq -cn --arg a "$session" --arg t "$before_refusal" \
     '{actor: {kind: "session", id: $a}, name: "guard.md", content: "", precondition: {document: $t}}')"
 want_status 400 base "a blank write naming the live token over the artifacts route"

@@ -31,7 +31,7 @@ project_status="$(
   curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
     --request POST "${headers[@]}" \
     --data "$(jq --null-input --arg key "$project" --arg name "$project documents" '{key: $key, name: $name}')" \
-    "$DISPATCH_URL/api/v2/projects"
+    "$DISPATCH_URL/api/v1/projects"
 )"
 case "$project_status" in
   201 | 409) ;;
@@ -47,25 +47,32 @@ trap 'rm -rf "$work"' EXIT
 
 # A run after the first finds the project and the document its last run left, and Dispatch refuses
 # a replacement that names no token, so the upload names the token of the version it replaces where
-# the project holds that document; a first run finds none and sends none. The read names the
-# document as the list's `slug` filter, which keeps the project's own document whose slug or file
-# name it is: $name is the caller's to set and may carry a space or a `#`, so it goes URL-encoded,
-# and an unencoded name would be read as a document the project does not hold, letting the upload
-# report the 400 PRECONDITION_REQUIRED that follows as the cause. A list with no such row is that
+# the project holds that document; a first run finds none and sends none. Every read of a document
+# goes by its slug: $name is the caller's to set and may carry a space or a `#`, which a path would
+# have to encode and a slug never carries, and an unencoded name would be read as a document the
+# project does not hold, letting the upload report the 400 PRECONDITION_REQUIRED that follows as
+# the cause. The listing says which documents the project holds, so a name it does not list is that
 # first run, and any other answer stops the script where it came.
-curl --fail-with-body --silent --show-error --output "$work/documents" "${headers[@]}" --get \
-  --data-urlencode "slug=$name" --data 'issue=none' --data 'include=text' \
-  "$DISPATCH_URL/api/v2/projects/$project/artifacts"
-base="$(jq --raw-output --arg name "$name" \
-  '.items | map(select(.name == $name or .slug == $name)) | .[0].token // empty' \
+curl --fail-with-body --silent --show-error --output "$work/documents" "${headers[@]}" \
+  "$DISPATCH_URL/api/v1/projects/$project/artifacts"
+held_slug="$(jq --raw-output --arg name "$name" \
+  'map(select(.issue_key == null and (.name == $name or .slug == $name))) | .[0].slug // empty' \
   <"$work/documents")"
+readonly held_slug
+if [[ -n "$held_slug" ]]; then
+  curl --fail-with-body --silent --show-error --output "$work/text" "${headers[@]}" \
+    "$DISPATCH_URL/api/v1/projects/$project/artifacts/$held_slug/text"
+  base="$(jq --exit-status --raw-output '.token' <"$work/text")"
+else
+  base=""
+fi
 readonly base
 artifact="$(
   curl --fail-with-body --silent --show-error \
     --request POST "${headers[@]}" \
     --data "$(jq --null-input --arg name "$name" --arg content $'# Runbook\n\nStep one.\n' --arg base "$base" \
       'if $base == "" then {name: $name, content: $content} else {name: $name, content: $content, precondition: {document: $base}} end')" \
-    "$DISPATCH_URL/api/v2/projects/$project/artifacts"
+    "$DISPATCH_URL/api/v1/projects/$project/artifacts"
 )"
 readonly artifact
 readonly artifact_id="$(jq --exit-status --raw-output '.artifact.id' <<<"$artifact")"
@@ -75,19 +82,18 @@ comment="$(
   curl --fail-with-body --silent --show-error \
     --request POST "${headers[@]}" \
     --data "$(jq --null-input --arg body "Review dispatch://$project/artifact/$slug" '{body: $body}')" \
-    "$DISPATCH_URL/api/v2/artifacts/$artifact_id/comments"
+    "$DISPATCH_URL/api/v1/artifacts/$artifact_id/comments"
 )"
 readonly comment
 readonly comment_id="$(jq --exit-status --raw-output '.id' <<<"$comment")"
 
-# The items that cite the document (direction=in, the route's default), one row per citing item.
 references="$(
   curl --fail-with-body --silent --show-error "${headers[@]}" \
-    "$DISPATCH_URL/api/v2/artifacts/$artifact_id/references?limit=200"
+    "$DISPATCH_URL/api/v1/artifacts/$artifact_id/references"
 )"
 readonly references
 jq --exit-status --arg comment_id "$comment_id" \
-  '.items[] | select(.kind == "comment" and .id == $comment_id)' \
+  '.referenced_by[] | select(.kind == "comment" and .id == $comment_id)' \
   <<<"$references" >/dev/null
 
 printf 'document roundtrip passed: %s/%s created; comment %s appears in references\n' \

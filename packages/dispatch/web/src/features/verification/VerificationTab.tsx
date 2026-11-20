@@ -3,10 +3,10 @@ import type { ReactNode } from "react";
 
 import { issueResultsQuery } from "../../api/queries";
 import type {
-  ArtifactV2,
+  Artifact,
   CheckBasis,
+  CheckBlock,
   CheckResult,
-  CheckV2,
   ResultCommitStands,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -33,7 +33,7 @@ import { Timestamp } from "../refs/Timestamp";
  * check, so no word here comes from the newest result alone: a pass recorded before a fail
  * still stands, and a fail recorded after a pass takes nothing away from it.
  */
-const PASS_STANDS_LABELS: Record<CheckV2["pass_stands"]["answer"], string> = {
+const PASS_STANDS_LABELS: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: "No pass stands",
   unknown: "Dispatch cannot say whether a pass stands",
   yes: "A pass stands",
@@ -42,18 +42,17 @@ const PASS_STANDS_LABELS: Record<CheckV2["pass_stands"]["answer"], string> = {
 /** The pill sits on `surfaceMutedBg`, so its muted answer takes the token written for that
  *  background: `textMutedOnSurface` is slate-500, which is 4.34:1 on slate-100 and under
  *  WCAG AA's 4.5:1 for text this size (axe's `color-contrast`, serious). */
-const PASS_STANDS_TEXT: Record<CheckV2["pass_stands"]["answer"], string> = {
+const PASS_STANDS_TEXT: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: dangerText,
   unknown: textMutedOnSurfaceMuted,
   yes: successText,
 };
 
 /** Why a check compared its results with nothing at all, and why one result's commit could not
- *  be placed. A check takes all four and a result the last two, so the check's set types this
- *  map and answers both. */
-const REASON_WORDS: Record<NonNullable<CheckV2["compared_nothing"]>, string> = {
-  no_pull_request: "This issue holds no pull request.",
-  no_repository: "This issue maps to no repository.",
+ *  be placed. A check takes all three and a result all but no_pull_request_or_branch, so the
+ *  check's set types this map and answers both. */
+const REASON_WORDS: Record<NonNullable<CheckBlock["compared_nothing"]>, string> = {
+  no_pull_request_or_branch: "This issue holds no pull request and no branch.",
   read_failed: "A read Dispatch made did not answer.",
   repository_unreadable: "Dispatch cannot read the repository.",
 };
@@ -247,7 +246,7 @@ function Result({
 
 /** What the server compared this check's results with, in the order it asked about them, or
  *  the reason it compared them with nothing. */
-function ComparedWith({ check }: { check: CheckV2 }): ReactNode {
+function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
   const bases = check.compared_with ?? [];
   if (bases.length === 0) {
     // compared_nothing is the server's to give: where it holds none, the fact shows its dash.
@@ -261,7 +260,7 @@ function ComparedWith({ check }: { check: CheckV2 }): ReactNode {
   ));
 }
 
-function Check({ check }: { check: CheckV2 }): ReactNode {
+function Check({ check }: { check: CheckBlock }): ReactNode {
   const stands = check.pass_stands.answer;
   const roles = check.pass_stands.roles ?? [];
   const results = check.results ?? [];
@@ -326,7 +325,7 @@ function CheckResults({
   check,
   results,
 }: {
-  check: CheckV2;
+  check: CheckBlock;
   results: readonly CheckResult[];
 }): ReactNode {
   if (results.length === 0) {
@@ -370,7 +369,7 @@ function Checks({ issueKey }: { issueKey: string }): ReactNode {
       </p>
     );
   }
-  if (results.data.items.length === 0) {
+  if ((results.data.checks ?? []).length === 0) {
     return (
       <div data-testid="verification-no-checks">
         <EmptyState
@@ -383,7 +382,7 @@ function Checks({ issueKey }: { issueKey: string }): ReactNode {
 
   return (
     <ul aria-label="Checks" className="space-y-3" data-testid="verification-checks">
-      {results.data.items.map((check) => (
+      {(results.data.checks ?? []).map((check) => (
         <Check check={check} key={check.block_id} />
       ))}
     </ul>
@@ -401,7 +400,7 @@ export function VerificationTab({
   children,
   issueKey,
 }: {
-  artifact: ArtifactV2 | undefined;
+  artifact: Artifact | undefined;
   children?: ReactNode;
   issueKey: string;
 }): ReactNode {

@@ -316,9 +316,7 @@ for (const pageProcess of dispatchProcesses) {
         card.getByRole("list", { name: "Options" }).locator('li[data-selected="true"]')
       ).toContainText("Ship");
       await expect
-        .poll(
-          async () => ((await getAsk(ask.id, { process: pageProcess })).thread.answers ?? []).length
-        )
+        .poll(async () => ((await getAsk(ask.id, { process: pageProcess })).answers ?? []).length)
         .toBe(1);
 
       // The issue's document. Where the other build's server admits this page writable
@@ -441,13 +439,13 @@ test("a document holding newer content shows that state and no replace drop zone
   );
   // A /_test/ route goes to both processes (e2e/round-robin-proxy.ts).
   const injected = await fetch(
-    new URL(`/api/v2/_test/artifacts/${issue.primary_artifact_id}/newer-content`, baseUrl),
+    new URL(`/api/v1/artifacts/${issue.primary_artifact_id}/_test/newer-content`, baseUrl),
     { headers: { Authorization: `Bearer ${e2eAgentToken}` }, method: "POST" }
   );
   expect(injected.status, await injected.text()).toBe(204);
   for (const target of dispatchProcesses) {
     const text = await fetch(
-      new URL(`/api/v2/artifacts/${issue.primary_artifact_id}?include=text`, baseUrl),
+      new URL(`/api/v1/artifacts/${issue.primary_artifact_id}/text`, baseUrl),
       { headers: { Authorization: `Bearer ${e2eAgentToken}`, ...pinnedTo(target) } }
     );
     expect(text.status).toBe(409);

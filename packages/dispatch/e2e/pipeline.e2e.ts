@@ -113,7 +113,7 @@ test("the pipeline API gives an agent the same numbers", async ({ browser }) => 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const token = await mintAgentToken("pipeline-e2e", "alice");
-  const response = await page.request.get(`/api/v2/delivery/pipeline?at=${PIPELINE_AT}`, {
+  const response = await page.request.get(`/api/v1/delivery/pipeline?at=${PIPELINE_AT}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   expect(response.status()).toBe(200);

@@ -5,8 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { Agent, Marks, TmuxPlace } from "../../api/types";
-import { marksOf } from "../agents/marks-fixture";
+import type { Agent, TmuxPlace, UserAgentStates } from "../../api/types";
 import { MachinePage } from "./MachinePage";
 
 const HOST = "sand-devbox";
@@ -50,7 +49,7 @@ function id(letter: string): string {
   return letter.repeat(16);
 }
 
-function renderMachine(agents: readonly Agent[], host = HOST, agentState: Marks = {}) {
+function renderMachine(agents: readonly Agent[], host = HOST, agentState: UserAgentStates = {}) {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([...agents]);
   // The two reads the page takes its `Needs you` count from, which the shell already makes.
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
@@ -354,11 +353,9 @@ test("a machine name several directories share is said to be a deployment's name
 });
 
 test("a pane whose session the viewer has unread replies from reads Needs you", async () => {
-  const machine = renderMachine(
-    [session(id("a"), PLACE)],
-    HOST,
-    marksOf("agent", { [id("a")]: { unread_replies: 1 } })
-  );
+  const machine = renderMachine([session(id("a"), PLACE)], HOST, {
+    [id("a")]: { unread_replies: 1 },
+  });
   try {
     const state = await screen.findByTestId("window-pane-state");
 

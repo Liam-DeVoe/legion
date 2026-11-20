@@ -27,16 +27,14 @@ export function installInboxApiMocks(): InboxApiMocks {
       kind: "user",
       login: "alice",
     });
-    // No request waits on the reader; a deployment with no broker answers `null` instead.
-    mocks.getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue([]);
+    mocks.getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+      pending: [],
+    });
     mocks.getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
     mocks.getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
     mocks.getReferences = spyOn(api, "getReferences").mockResolvedValue({
-      items: [],
-      limit: 50,
+      edges: [],
       node: graphNode({ id: "", kind: "ask" }),
-      offset: 0,
-      total: 0,
     });
   });
   afterEach(() => {
@@ -80,13 +78,11 @@ export function withWaitingOnPerson(
  *  as the server resolves it (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), so an
  *  override that moves the issue's assignee, or hands the ask to somebody, moves that person
  *  with it, and an issue nobody holds falls to `projectDefault` as the server's third step does;
- *  an override naming `waiting_on_person` itself wins. The reader's own mark on the row is
- *  theirs on whatever ask the overrides name, with no snooze (`withSnooze` sets one). */
+ *  an override naming `waiting_on_person` itself wins. */
 export function issueAsk(
   overrides: Partial<InboxRow> = {},
   projectDefault: string | null = FIXTURE_PROJECT_DEFAULT
 ): InboxRow {
-  const id = overrides.id ?? "ask-a";
   const row: InboxRow = {
     anchor: null,
     answer: null,
@@ -97,14 +93,12 @@ export function issueAsk(
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-09-11T00:00:00Z",
-    document: null,
     edited_at: null,
-    id,
+    id: "ask-a",
     issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
     last_reply: null,
-    mark: { id, kind: "ask", snoozed_until: null },
     multiple: false,
     opened_event_id: 1,
     options: [],
@@ -120,28 +114,32 @@ export function issueAsk(
       route_status_reason: null,
     },
     question: "Which approach?",
-    ref: `dispatch://CORE-1/ask/${id}`,
     state: "open",
     waiting_on: "human",
     priority: null,
+    snoozed_until: null,
     urgency: "med",
     ...overrides,
   };
   return withWaitingOnPerson(row, projectDefault);
 }
 
-/** `row` as the reader's snooze until `until` leaves it, and as an un-snooze leaves it for
- *  `null`: the snooze is the reader's own mark on the ask. */
-export function withSnooze(row: InboxRow, until: string | null): InboxRow {
-  return { ...row, mark: { ...row.mark, snoozed_until: until } };
-}
-
-/** Resolves `getAsk` for each row with the same fixture `getInbox` already seeded: an Inbox row
- *  is the ask read with its thread, which is what `getAsk` answers. */
+/** Resolves `getAsk` for each row's full thread from the same fixtures `getInbox` already seeded. */
 export function mockAskReads(rows: readonly InboxRow[]) {
   return spyOn(api, "getAsk").mockImplementation(async (id: string) => {
     const ask = rows.find((row) => row.id === id);
     if (ask === undefined) throw new Error(`no fixture for ${id}`);
-    return ask;
+    return {
+      ask,
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    };
   });
 }

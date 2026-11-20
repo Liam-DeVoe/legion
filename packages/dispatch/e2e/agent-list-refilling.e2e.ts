@@ -108,13 +108,13 @@ async function expectPlannerFacts(page: Page): Promise<void> {
   await expect(footer.getByTestId("agent-footer-dir")).toHaveText("/srv/refill-planner");
 }
 
-/** What the server answers `GET /api/v2/agents`: its status, its `Retry-After` and its code. */
+/** What the server answers `GET /api/v1/agents`: its status, its `Retry-After` and its code. */
 async function agentsAnswer(): Promise<{
   code: unknown;
   retryAfter: string | null;
   status: number;
 }> {
-  const response = await fetch(new URL("/api/v2/agents", baseUrl), {
+  const response = await fetch(new URL("/api/v1/agents", baseUrl), {
     headers: await userHeaders(),
   });
   const body = (await response.json()) as { code?: unknown };
@@ -400,7 +400,8 @@ test("a listener refilling from the first read shows every view refilling", asyn
   // What every view below reads: Dispatch's own refilling answer, not an unreachable listener.
   expect(await agentsAnswer()).toEqual({ code: "ENVOY_REFILLING", retryAfter: "5", status: 503 });
   expect(await getIssue(fixture.issueKey)).toMatchObject({
-    reach: { route_status: "unknown", route_status_reason: "refilling" },
+    route_status: "unknown",
+    route_status_reason: "refilling",
   });
   const alice = await asUser(browser, "alice");
   try {
@@ -445,7 +446,8 @@ test("a listener that cannot answer reads as unreachable on every view, never as
       status: 503,
     });
     expect(await getIssue(fixture.issueKey)).toMatchObject({
-      reach: { route_status: "unknown", route_status_reason: "unreachable" },
+      route_status: "unknown",
+      route_status_reason: "unreachable",
     });
 
     const page = await alice.newPage();

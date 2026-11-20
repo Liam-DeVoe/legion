@@ -21,24 +21,23 @@ import { ApiError, api } from "../../api/client";
 import type {
   Actor,
   Agent,
-  ArtifactV2,
-  AskV2,
-  AskWithThread,
+  Artifact,
+  Ask,
   Comment,
   CommentDelivery,
   DispatchEvent,
   Handoff,
-  Marks,
-  MarkV2,
+  IssueAskRow,
+  IssueAskThreadRow,
   Message,
   MessageDelivery,
-  MessageThreadV2,
+  MessageRead,
+  UserIssueState,
+  UserState,
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
-import { markOf } from "../agents/marks-fixture";
 import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { issueSummary, questionsRead } from "../refs/reference-fixture";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -53,14 +52,8 @@ const alice: Actor = { id: "alice", kind: "user" };
 // fixture frozen at an absolute date would age out of every retry assertion.
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
-/** CORE-1's mark: the pinned items' markers (`pinned_items`) and the last event read. */
-function issueState(pinnedItems: string[] = [], lastReadSeq = 0): MarkV2 {
-  return markOf("issue", "CORE-1", {
-    last_read_seq: lastReadSeq,
-    pinned: false,
-    pinned_items: pinnedItems,
-    seq: 0,
-  });
+function issueState(dismissed: string[] = [], lastReadSeq = 0): UserIssueState {
+  return { dismissed, last_read_seq: lastReadSeq, pinned: false, seq: 0 };
 }
 
 function comment(id: string, overrides: Partial<Comment> = {}): Comment {
@@ -100,9 +93,8 @@ function message(id: string, overrides: Partial<Message> = {}): Message {
   };
 }
 
-/** One conversation as the issue's list holds it: the message, flat, with its replies. */
-function thread(root: Message, replies: Message[] = []): MessageThreadV2 {
-  return { ...root, replies };
+function thread(root: Message, replies: Message[] = []): MessageRead {
+  return { message: root, replies };
 }
 
 function attempt(overrides: Partial<MessageDelivery> = {}): MessageDelivery {
@@ -139,7 +131,7 @@ function mentionAttempt(overrides: Partial<CommentDelivery> = {}): CommentDelive
   };
 }
 
-const baseAsk: AskV2 = {
+const baseAsk: Ask = {
   anchor: null,
   artifact_id: null,
   asked_of: null,
@@ -149,24 +141,19 @@ const baseAsk: AskV2 = {
   answer: null,
   author: { id: "s1", kind: "session" },
   created_at: "2026-09-10T09:00:00Z",
-  document: null,
   edited_at: null,
   id: "ask-1",
-  issue: null,
   issue_key: "CORE-1",
   kind: "question",
-  last_reply: null,
   multiple: false,
   opened_event_id: 4,
   options: [{ label: "Ship" }, { label: "Hold" }],
-  priority: null,
   question: "Ship it?",
-  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "med",
 };
 
-function askRow(overrides: Partial<AskV2> = {}, replies: Comment[] = []): AskWithThread {
+function askRow(overrides: Partial<Ask> = {}, replies: Comment[] = []): IssueAskThreadRow {
   return {
     ...baseAsk,
     ...overrides,
@@ -214,26 +201,22 @@ function agent(sessionId: string, title: string, capabilities: string[] = []): A
   };
 }
 
-const primaryDocument: ArtifactV2 = {
+const primaryDocument: Artifact = {
   created_at: "2026-09-09T00:00:00Z",
   created_by: alice,
   id: "artifact-primary",
   issue_key: "CORE-1",
   kind: "doc",
-  latest_version: null,
-  latest_version_at: null,
-  latest_version_size: null,
   name: "spec.md",
   primary: true,
   project: "CORE",
   ref_key: "CORE-1/spec",
   session_id: null,
   slug: "spec",
-  unsettled: null,
-  version_count: 0,
+  versions: [],
 };
 
-const secondaryDocument: ArtifactV2 = {
+const secondaryDocument: Artifact = {
   ...primaryDocument,
   id: "artifact-secondary",
   name: "supporting-document.md",
@@ -438,7 +421,7 @@ test("each refused pin is retried on its own, over the state Dispatch holds", as
         failures -= 1;
         throw new ApiError(409, { code: "PIN_REFUSED", error: "refused" });
       }
-      saved = input.pinned_items ?? [];
+      saved = input.dismissed ?? [];
       return issueState(saved);
     };
 
@@ -500,7 +483,7 @@ test("a scroll event measures the reader position in O(1) rect reads", async () 
     document.querySelector("[data-turn]")
   );
   const queryClient = newQueryClient();
-  queryClient.setQueryData<Marks>(["user-state"], { "CORE-1": issueState() });
+  queryClient.setQueryData<UserState>(["user-state"], { "CORE-1": issueState() });
   let unmount: (() => void) | undefined;
 
   try {
@@ -2590,7 +2573,7 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     const [first, second] = putIssueState.mock.calls;
     expect(second?.[2]?.key).toBe(first?.[2]?.key);
     await waitFor(() =>
-      expect(queryClient.getQueryData<Marks>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(7)
+      expect(queryClient.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(7)
     );
   } finally {
     view.unmount();
@@ -2642,9 +2625,13 @@ for (const order of ["oldest", "newest"] as const) {
 // INFRA-869: a message that is nothing but a reference shows the reference's card under it, as
 // the margin's comments do.
 test("a message that is nothing but a reference shows its card", async () => {
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
-    issueSummary({ key: "CORE-2", status: "in_progress", title: "The other issue" })
-  );
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "The other issue",
+  });
   const stub = stubLists({
     messages: [thread(message("message-1", { body: "dispatch://CORE-2" }))],
   });
@@ -2673,7 +2660,7 @@ test("a message that is nothing but a reference shows its card", async () => {
 // server answers for that message (its issue's spec) - the one map the reference graph stores
 // its edges from.
 test("a Conversation turn links the `#q2` the question map of its message names", async () => {
-  const question: AskV2 = {
+  const question: IssueAskRow = {
     ...baseAsk,
     block_artifact: { id: "spec-1", primary: true, slug: "spec" },
     block_id: "q2",
@@ -2681,25 +2668,22 @@ test("a Conversation turn links the `#q2` the question map of its message names"
     last_reply: null,
     options: [],
     question: "Which region?",
-    question_block_id: "q2",
-    ref: "dispatch://CORE-1/ask/ask-2",
   };
-  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue(
-    questionsRead([question], "spec-1")
-  );
+  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
+    document: "spec-1",
+    questions: [{ ask: "ask-2", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-2" }],
+  });
   const getAsk = spyOn(api, "getAsk").mockResolvedValue({
-    ...question,
-    thread: {
-      answers: [],
-      claimant: null,
-      edits: [],
-      followers: [],
-      replies: [],
-      route: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-    },
+    answers: [],
+    ask: question,
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
   });
   const stub = stubLists({
     messages: [thread(message("message-1", { body: "See #q2 for the rollout." }))],

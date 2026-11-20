@@ -120,7 +120,7 @@ function ThreadDocumentBody({
 function AskThreadPane({ thread }: { thread: MyReplyThreadRow }): ReactNode {
   // The card's own key, so the card below reads no second copy of the same thread.
   const read = useQuery(askThreadQuery(thread.thread_id));
-  const ask = read.data;
+  const ask = read.data?.ask;
   if (ask !== undefined && isDecisionAsk(ask)) {
     return (
       <ThreadDocumentBody

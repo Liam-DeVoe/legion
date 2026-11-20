@@ -8,10 +8,10 @@ import { MemoryRouter } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
-  AgentMessageV2,
   Comment,
   IssueDetails,
   Message,
+  MessageRead,
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
@@ -62,12 +62,6 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     target: "session:planner",
     ...overrides,
   };
-}
-
-/** One message the reader sent the session, with every message under it, as
- *  `api.listAgentMessages` answers each: the root's own fields with its replies beside them. */
-function conversation(root: Message, replies: Message[] = []): AgentMessageV2 {
-  return { ...root, replies, unread: false };
 }
 
 function commentRow(overrides: Partial<MyReplyThreadRow> = {}): MyReplyThreadRow {
@@ -134,13 +128,16 @@ function renderCard(thread: MyReplyRow): QueryClient {
 test("an Agent row's card draws the message, the session's reply and the composer", async () => {
   spy("listAgents", [session]);
   spy("listAgentMessages", [
-    conversation(message("message-1", "Have a look at the build"), [
-      message("reply-1", "Looked at it.", {
-        author: { id: "planner", kind: "session" },
-        created_at: "2026-10-12T01:00:00Z",
-        in_reply_to: "message-1",
-      }),
-    ]),
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [
+        message("reply-1", "Looked at it.", {
+          author: { id: "planner", kind: "session" },
+          created_at: "2026-10-12T01:00:00Z",
+          in_reply_to: "message-1",
+        }),
+      ],
+    } satisfies MessageRead,
   ]);
   renderCard(plannerAgentRow());
 
@@ -163,29 +160,32 @@ test("an Agent row's card draws the message, the session's reply and the compose
 test("a reply the session took as a user turn says so and links the live view", async () => {
   spy("listAgents", [session]);
   spy("listAgentMessages", [
-    conversation(message("message-1", "Have a look at the build"), [
-      message("reply-1", "Running it now.", {
-        created_at: "2026-10-12T01:00:00Z",
-        deliveries: [
-          {
-            accepted_as: "user_turn",
-            accepted_at: "2026-10-12T01:00:05Z",
-            attempt: 1,
-            created_at: "2026-10-12T01:00:01Z",
-            delivery: "steer",
-            duplicate: false,
-            envelope_id: "envelope-1",
-            error: null,
-            message_id: "reply-1",
-            reply_id: null,
-            requested_by: null,
-            session_id: "planner",
-            state: "sent",
-          },
-        ],
-        in_reply_to: "message-1",
-      }),
-    ]),
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [
+        message("reply-1", "Running it now.", {
+          created_at: "2026-10-12T01:00:00Z",
+          deliveries: [
+            {
+              accepted_as: "user_turn",
+              accepted_at: "2026-10-12T01:00:05Z",
+              attempt: 1,
+              created_at: "2026-10-12T01:00:01Z",
+              delivery: "steer",
+              duplicate: false,
+              envelope_id: "envelope-1",
+              error: null,
+              message_id: "reply-1",
+              reply_id: null,
+              requested_by: null,
+              session_id: "planner",
+              state: "sent",
+            },
+          ],
+          in_reply_to: "message-1",
+        }),
+      ],
+    } satisfies MessageRead,
   ]);
   renderCard(plannerAgentRow({ unread_reply_ids: [] }));
 
@@ -201,12 +201,15 @@ test("a session the live list no longer holds says so and offers no composer", a
   await warmMarkdownRenderer();
   spy("listAgents", []);
   spy("listAgentMessages", [
-    conversation(message("message-1", "Have a look at the build"), [
-      message("reply-1", "Looked at it.", {
-        author: { id: "planner", kind: "session" },
-        in_reply_to: "message-1",
-      }),
-    ]),
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [
+        message("reply-1", "Looked at it.", {
+          author: { id: "planner", kind: "session" },
+          in_reply_to: "message-1",
+        }),
+      ],
+    } satisfies MessageRead,
   ]);
   renderCard(plannerAgentRow());
 
@@ -219,7 +222,9 @@ test("a session the live list no longer holds says so and offers no composer", a
 
 test("a listed session that advertises no delivery mode warns above its composer", async () => {
   spy("listAgents", [{ ...session, capabilities: [] }]);
-  spy("listAgentMessages", [conversation(message("message-1", "Have a look"))]);
+  spy("listAgentMessages", [
+    { message: message("message-1", "Have a look"), replies: [] } satisfies MessageRead,
+  ]);
   renderCard(plannerAgentRow({ unread_reply_ids: [] }));
 
   await screen.findByTestId("inbox-thread-agent");
@@ -233,7 +238,9 @@ test("a listed session that advertises no delivery mode warns above its composer
 // warning says that is why, not that the plugin cannot reach the conversation.
 test("a listed session whose capabilities hold no delivery mode warns the same way", async () => {
   spy("listAgents", [{ ...session, capabilities: ["future-capability"] }]);
-  spy("listAgentMessages", [conversation(message("message-1", "Have a look"))]);
+  spy("listAgentMessages", [
+    { message: message("message-1", "Have a look"), replies: [] } satisfies MessageRead,
+  ]);
   renderCard(plannerAgentRow({ unread_reply_ids: [] }));
 
   await screen.findByTestId("inbox-thread-agent");
@@ -294,7 +301,12 @@ test("an Inbox thread box, comment or Agent, draws no Cancel reply", async () =>
   cleanup();
 
   spy("listAgents", [session]);
-  spy("listAgentMessages", [conversation(message("message-1", "Have a look at the build"))]);
+  spy("listAgentMessages", [
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [],
+    } satisfies MessageRead,
+  ]);
   renderCard(plannerAgentRow());
   const agent = await screen.findByTestId("inbox-thread-agent");
   await waitFor(() => expect(agent.querySelector("[data-inbox-agent-composer]")).not.toBeNull());
@@ -336,14 +348,18 @@ test("an Agent card shows nothing of a reply refused in another card of its sess
   spy("listAgents", [session]);
   spy(
     "listAgentMessages",
-    ["1", "2"].map((n) =>
-      conversation(message(`message-${n}`, `Question ${n}`), [
-        message(`reply-${n}`, `Answer ${n}`, {
-          author: { id: "planner", kind: "session" },
-          created_at: "2026-10-12T01:00:00Z",
-          in_reply_to: `message-${n}`,
-        }),
-      ])
+    ["1", "2"].map(
+      (n) =>
+        ({
+          message: message(`message-${n}`, `Question ${n}`),
+          replies: [
+            message(`reply-${n}`, `Answer ${n}`, {
+              author: { id: "planner", kind: "session" },
+              created_at: "2026-10-12T01:00:00Z",
+              in_reply_to: `message-${n}`,
+            }),
+          ],
+        }) satisfies MessageRead
     )
   );
   const createAgentMessage = spyOn(api, "createAgentMessage")
@@ -397,8 +413,8 @@ test("an Agent card whose thread moves on under a refused reply says what its bo
       created_at: at,
       in_reply_to: "message-1",
     });
-  const thread = (replies: Message[]): AgentMessageV2[] => [
-    conversation(message("message-1", "Have a look at the build"), replies),
+  const thread = (replies: Message[]): MessageRead[] => [
+    { message: message("message-1", "Have a look at the build"), replies },
   ];
   const first = answer("reply-1", "Looked at it.", "2026-10-12T01:00:00Z");
   const list = spyOn(api, "listAgentMessages").mockResolvedValue(thread([first]));

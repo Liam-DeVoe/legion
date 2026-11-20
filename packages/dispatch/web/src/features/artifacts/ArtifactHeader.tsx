@@ -1,11 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { artifactVersionPath } from "../../api/client";
-import { artifactVersionsQuery } from "../../api/queries";
-import type { ArtifactV2, Version } from "../../api/types";
+import type { Artifact, Version } from "../../api/types";
 import {
   borderDefault,
   card,
@@ -43,6 +40,17 @@ import {
   removalIsOffered,
 } from "./DocumentWayBack";
 
+export function artifactVersionUrl(
+  artifactID: string,
+  version: number,
+  // Links only: the server answers no-cache there, and a document as its Markdown file;
+  // pictures keep the year-long cache.
+  options: { download?: boolean } = {}
+): string {
+  const url = `/api/v1/artifacts/${encodeURIComponent(artifactID)}/versions/${version}`;
+  return options.download === true ? `${url}?download=true` : url;
+}
+
 export function formatArtifactBytes(bytes: number | undefined): string {
   if (bytes === undefined) {
     return "Size unavailable";
@@ -76,7 +84,7 @@ export function ArtifactHeader({
   toolbar,
   version,
 }: {
-  artifact: ArtifactV2;
+  artifact: Artifact;
   children: ReactNode;
   highlight: boolean;
   isClosed?: boolean;
@@ -88,17 +96,7 @@ export function ArtifactHeader({
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
   const navigate = useNavigate();
-  // A document's own read carries no versions: the picker reads its list, unless the live
-  // document's toolbar already holds it.
-  const versionList = useQuery({
-    ...artifactVersionsQuery(artifact.id),
-    enabled: showVersionPicker && toolbar === undefined,
-  });
-  const versions = versionsNewestFirst(toolbar?.versions ?? versionList.data ?? null);
-  // A version that carries a SHA-256 is stored as a file: the bytes a plan, a Verification
-  // document or a decisions document was uploaded as before a Markdown upload made it a document.
-  // It holds no text to diff against the current one, so it is offered no diff.
-  const versionIsFile = versions.find((item) => item.number === version)?.sha256 !== undefined;
+  const versions = versionsNewestFirst(toolbar?.versions ?? artifact.versions);
   // An artifact of an agent's conversation (a picture sent in a direct message) belongs to no
   // issue or project; its page is under the agent's session.
   const agentRoute = documentRoute(artifact);
@@ -130,8 +128,8 @@ export function ArtifactHeader({
     return () => window.clearTimeout(timeout);
   }, [highlight]);
 
-  // One button, placed by the branch below: it leads the row's non-wrapping box where no version
-  // is shown, and sits before that box where one is.
+  // One button, placed by the branch below: it leads the row's non-wrapping box where there is
+  // no version to diff, and sits before that box where there is one.
   const nameVersion =
     toolbar === undefined ? null : (
       <button
@@ -282,7 +280,7 @@ export function ArtifactHeader({
                 <div className="flex items-center gap-3">
                   {version === undefined ? (
                     nameVersion
-                  ) : versionIsFile ? null : (
+                  ) : (
                     <button
                       className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
                       onClick={() => onShowDiffChange?.(!showDiff)}
@@ -307,22 +305,15 @@ export function ArtifactBlobView({
   artifact,
   version,
 }: {
-  artifact: ArtifactV2;
+  artifact: Artifact;
   version: number | undefined;
 }): ReactNode {
-  const versionList = useQuery(artifactVersionsQuery(artifact.id));
-  const latest = versionsNewestFirst(versionList.data ?? null)[0];
+  const latest = versionsNewestFirst(artifact.versions)[0];
   const selected =
     version === undefined
       ? latest
-      : (versionList.data ?? []).find((item) => item.number === version);
+      : (artifact.versions ?? []).find((item) => item.number === version);
 
-  if (versionList.isPending) {
-    return <p className={`text-sm ${textMutedOnCanvas}`}>Loading versions…</p>;
-  }
-  if (versionList.isError) {
-    return <p className={`text-sm ${dangerText}`}>Could not load this file's versions.</p>;
-  }
   if (selected === undefined) {
     return version === undefined ? (
       <p className={`text-sm ${textMutedOnCanvas}`}>No versions have been uploaded.</p>
@@ -339,7 +330,7 @@ export function ArtifactBlobView({
         <img
           alt={`${artifact.name} version ${selected.number}`}
           className={`h-auto w-full rounded-lg border ${borderDefault}`}
-          src={artifactVersionPath(artifact.id, selected.number)}
+          src={artifactVersionUrl(artifact.id, selected.number)}
         />
       ) : null}
       <dl className="grid grid-cols-2 gap-3 text-sm">
@@ -360,7 +351,7 @@ export function ArtifactBlobView({
       <a
         className={`inline-flex min-h-11 items-center font-medium underline ${linkText} ${linkHoverText}`}
         download=""
-        href={artifactVersionPath(artifact.id, selected.number, { download: true })}
+        href={artifactVersionUrl(artifact.id, selected.number, { download: true })}
       >
         Download version {selected.number}
       </a>

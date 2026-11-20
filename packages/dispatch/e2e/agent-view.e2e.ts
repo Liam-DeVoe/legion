@@ -1241,7 +1241,7 @@ async function attemptOf(
   body: string
 ): Promise<{ error: string | null; state: string } | undefined> {
   const sent = (await listAgentMessages(sessionID))
-    .flatMap((read) => [read, ...(read.replies ?? [])])
+    .flatMap((read) => [read.message, ...(read.replies ?? [])])
     .find((message) => message.body === body);
   const attempt = newestDeliveryOf(sent === undefined ? [] : [sent]);
   return attempt === undefined ? undefined : { error: attempt.error, state: attempt.state };
@@ -1770,7 +1770,7 @@ test("sending a message from the live view while scrolled back takes the reader 
     await scrollThreadTo(page, 1_200);
     const refuse = await refusePosts(
       page,
-      `**/api/v2/agents/${sender.session_id}/messages`,
+      `**/api/v1/agents/${sender.session_id}/messages`,
       MESSAGE_REFUSED
     );
     await input.fill("and this one is refused");

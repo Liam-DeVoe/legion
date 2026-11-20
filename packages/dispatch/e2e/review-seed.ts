@@ -12,10 +12,10 @@ import {
   createIssueArtifact,
   createPlanReview,
   createPriority,
+  getArtifact,
   getBroadcast,
   getIssue,
   getProjectArtifact,
-  listArtifactVersions,
   patchIssue,
   putAgentState,
   putDocumentRead,
@@ -127,10 +127,10 @@ async function markWhatTheShotPagesRead(
   if (specId === "") {
     throw new Error(`seedReviewRoutes: ${issue} has no spec for its Spec tab to read`);
   }
-  // The server lists a document's versions oldest first (`listArtifactVersions`), and the Spec tab
-  // shows the spec's latest (`useSpecMarks`): so the mark is the highest number, read from every
-  // version, and never the list's first, which is the newest only for a one-version spec.
-  const numbers = (await listArtifactVersions(specId)).map((version) => version.number);
+  // The server lists a document's versions oldest first, and the Spec tab shows the one with the
+  // highest number (`versionsNewestFirst`, then the first): so the mark is the highest number, read
+  // from every version, and never the list's first, which is the newest only for a one-version spec.
+  const numbers = ((await getArtifact(specId)).versions ?? []).map((version) => version.number);
   if (numbers.length === 0) {
     throw new Error(`seedReviewRoutes: ${issue}'s spec has no version for its Spec tab to read`);
   }

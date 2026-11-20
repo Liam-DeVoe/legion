@@ -50,7 +50,7 @@ import {
   newQueryClient,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
-import type { AskV2 } from "../../api/types";
+import type { Ask } from "../../api/types";
 import { AskCard } from "./AskCard";
 import { answeredAsk, installAskCardApiMocks, thread } from "./ask-card-fixture";
 
@@ -83,20 +83,20 @@ const otherSettledAsk = answeredAsk({ id: "ask-2", question: "Which rollout wind
 interface Page {
   /** The same card drawn for `ask` where it was, as a host that draws one card for one ask after
    *  another does. */
-  readonly move: (ask: AskV2) => void;
+  readonly move: (ask: Ask) => void;
   /** The card ended, and a card drawn for `ask` in its place over the same page. */
-  readonly again: (ask: AskV2) => void;
+  readonly again: (ask: Ask) => void;
   /** Ends the page as a reload does and loads it again over the same tab on `ask`, signed in as
    *  the same reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
-  readonly reload: (ask: AskV2) => void;
+  readonly reload: (ask: Ask) => void;
   readonly unmount: () => void;
   readonly user: UserEvent;
 }
 
-function drawPage(ask: AskV2, form: ThreadForm): Page {
+function drawPage(ask: Ask, form: ThreadForm): Page {
   const user = userEvent.setup();
   let client = signedInAsReader(newQueryClient());
-  const tree = (shown: AskV2) => (
+  const tree = (shown: Ask) => (
     <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <QueryClientProvider client={client}>
         <AskCard

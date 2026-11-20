@@ -154,7 +154,7 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 
 // deliveryNotConfigured is the refusal of a delivery read made before its settings are written,
 // naming the write of the version that answers: PUT <version>/settings/delivery. The live socket,
-// which no version serves, names /api/v2's, the version the web app reads it beside.
+// which no version serves, names /api/v2's, the version that outlives /api/v1.
 func deliveryNotConfigured(version apiVersion) string {
 	return "delivery is not configured; set delivery_settings through PUT " + versionPrefix(version) + "/settings/delivery"
 }

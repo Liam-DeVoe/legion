@@ -21,14 +21,14 @@ import { ApiError, api } from "../api/client";
 import type {
   Actor,
   Agent,
-  ArtifactV2,
-  AskWithThread,
+  Artifact,
   Comment,
   DispatchEvent,
   Handoff,
-  Marks,
-  MessageThreadV2,
+  IssueAskThreadRow,
+  MessageRead,
   MyReplyRow,
+  UserState,
 } from "../api/types";
 import { ConversationTab } from "../features/conversation/ConversationTab";
 import { draftStoresReloaded, draftStoresSignedIn } from "../features/conversation/unsent-drafts";
@@ -207,14 +207,14 @@ export function listTurn(id: string): HTMLElement {
 
 export interface Lists {
   agents?: Agent[];
-  asks?: AskWithThread[];
+  asks?: IssueAskThreadRow[];
   comments?: Comment[];
   /** The issue's handoffs with their bodies: the list answers them as they are (a body is extra
    *  to a summary), and `getHandoff` answers one by id. */
   handoffs?: Handoff[];
   /** The issue's newest event, which a dwell on the newest card marks read through. */
   head?: DispatchEvent[];
-  messages?: MessageThreadV2[];
+  messages?: MessageRead[];
   /** The first event the reader has not read: its moment is the unread boundary. */
   unread?: DispatchEvent[];
 }
@@ -242,7 +242,7 @@ export function stubLists(initial: Lists = {}): { lists: Lists; restore: () => v
       item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
     })),
     spyOn(api, "getIssueEvents").mockImplementation(async (_key, options = {}) =>
-      options.sort === "-seq" ? (lists.head ?? []) : (lists.unread ?? [])
+      options.order === "desc" ? (lists.head ?? []) : (lists.unread ?? [])
     ),
   ];
   return {
@@ -302,25 +302,18 @@ export function endAsAReload(end: () => void): void {
   for (const [name, value] of left) sessionStorage.setItem(name, value);
 }
 
-/** The reader's mark of CORE-1 with nothing read, dismissed or pinned. */
-export const NOTHING_READ: Marks = {
-  "CORE-1": {
-    id: "CORE-1",
-    kind: "issue",
-    last_read_seq: 0,
-    pinned: false,
-    pinned_items: [],
-    seq: 0,
-  },
+/** The reader's state of CORE-1 with nothing read, dismissed or pinned. */
+export const NOTHING_READ: UserState = {
+  "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
 };
 
 /** CORE-1's Conversation tab as the issue page draws it, over `queryClient`. */
 export function tab(
-  state: Marks,
+  state: UserState,
   visible: boolean,
   queryClient: QueryClient,
   isClosed = false,
-  issueArtifacts: ReadonlyMap<string, ArtifactV2> = new Map(),
+  issueArtifacts: ReadonlyMap<string, Artifact> = new Map(),
   focusItemId?: string
 ): ReactNode {
   return (

@@ -3,13 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
-import type {
-  AskV2,
-  AskWithThread,
-  Comment,
-  CommentWithTrees,
-  CreateCommentInput,
-} from "../../api/types";
+import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -91,7 +85,7 @@ interface ReplyPress extends AskPress {
 
 /** AskCard owns the `["ask-thread", ask.id]` query, initializing it from an Inbox row when
  *  available; every card renders the shared thread without a duplicate read. */
-export type AskThreadQuery = UseQueryResult<AskWithThread, Error>;
+export type AskThreadQuery = UseQueryResult<AskRead, Error>;
 
 /**
  * Whether an ask's thread takes a reply through the reply composer: every ask that is no longer
@@ -99,7 +93,7 @@ export type AskThreadQuery = UseQueryResult<AskWithThread, Error>;
  * since the conversation under a question goes on after the question is settled. An open ask has
  * no reply composer: its card's one composer answers it or asks back.
  */
-export function takesReply(ask: Pick<AskV2, "state">): boolean {
+export function takesReply(ask: Pick<Ask, "state">): boolean {
   return ask.state !== "open";
 }
 
@@ -112,7 +106,7 @@ export function takesReply(ask: Pick<AskV2, "state">): boolean {
  * under it (`unsentAnswer` in `useAskAnswerForm.ts`). The draft stays the ask's, so the composer
  * picks it up again if the ask is settled once more.
  */
-export function useUnsentReply(ask: Pick<AskV2, "id" | "state">): string {
+export function useUnsentReply(ask: Pick<Ask, "id" | "state">): string {
   const [draft] = useReplyDraft(ask.id);
   return takesReply(ask) || draft.trim() === "" ? "" : draft;
 }
@@ -190,7 +184,7 @@ export function AskReplyComposer({
   createReply: reply = createReply,
   uploadOwner,
 }: {
-  ask: AskV2;
+  ask: Ask;
   createReply?: CreateReply;
   /** Where a file pasted or dropped into the reply goes: the ask's issue, or its document's
    *  project. Without one the field takes a paste as text. */
@@ -289,7 +283,7 @@ export function AskReplyComposer({
 }
 
 export interface AskThreadProps {
-  ask: AskV2;
+  ask: Ask;
   /** The shared ask-thread query AskCard owns; this component never requests thread data itself. */
   thread: AskThreadQuery;
   createReply?: CreateReply;
@@ -336,7 +330,7 @@ export function AskThread({
   order,
   unread,
 }: AskThreadProps): ReactNode {
-  const replies = thread.data?.thread.replies ?? [];
+  const replies = thread.data?.replies ?? [];
   const [showAllReplies, setShowAllReplies] = useState<boolean>();
   const { composerFirst, folded, shown } = threadLayout({
     collapse: true,

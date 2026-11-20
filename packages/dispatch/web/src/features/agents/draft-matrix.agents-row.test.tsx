@@ -91,7 +91,6 @@ import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { markOf } from "./marks-fixture";
 
 // The composer draws the quote of the message it answers through the Markdown engine, a module
 // loaded on first use (`markdown-engine.ts`). A cell reads what the composer quotes in the commit
@@ -214,8 +213,8 @@ async function openAgents(): Promise<Page> {
   let queryClient = newClient();
   // Newest first, as Dispatch answers: the row folds every exchange but the newest.
   const messages = spyOn(api, "listAgentMessages").mockResolvedValue([
-    { ...messageB, replies: [], unread: false },
-    { ...messageA, replies: [], unread: false },
+    { message: messageB, replies: [] },
+    { message: messageA, replies: [] },
   ]);
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
@@ -226,9 +225,7 @@ async function openAgents(): Promise<Page> {
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyAgentState").mockResolvedValue({}),
   ];
-  answerAgentStates().mockImplementation(async (session) =>
-    markOf("agent", session, { unread_replies: 0 })
-  );
+  answerAgentStates().mockImplementation(async () => ({ unread_replies: 0 }));
   const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(REFUSAL);
   const createComment = spyOn(api, "createComment").mockRejectedValue(REFUSAL);
   let unmount = () => {};
@@ -247,7 +244,7 @@ async function openAgents(): Promise<Page> {
   return {
     createAgentMessage,
     dropMessageA: async () => {
-      messages.mockResolvedValue([{ ...messageB, replies: [], unread: false }]);
+      messages.mockResolvedValue([{ message: messageB, replies: [] }]);
       await act(() =>
         queryClient.invalidateQueries({ queryKey: ["agents", "planner-session", "messages"] })
       );

@@ -167,18 +167,13 @@ test("an item in a thread no person wrote in is the history's, and every other t
     { ask_id: null, author: person, id: "mixed-reply", reply_to: "mixed-root" },
     { ask_id: "ask-1", author: agent, id: "under-ask", reply_to: null },
   ];
-  // A thread is its root message's own fields with the replies under it.
   const messages = [
     {
-      ...messageFixture,
-      author: agent,
-      id: "agents-message",
+      message: { ...messageFixture, author: agent, id: "agents-message" },
       replies: [{ ...messageFixture, author: agent, id: "agents-message-reply" }],
     },
     {
-      ...messageFixture,
-      author: agent,
-      id: "asked-message",
+      message: { ...messageFixture, author: agent, id: "asked-message" },
       replies: [{ ...messageFixture, author: person, id: "answered-message" }],
     },
   ];

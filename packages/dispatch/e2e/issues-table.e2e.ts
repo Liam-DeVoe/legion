@@ -221,7 +221,7 @@ test("merging an epic moves open descendants through closed intermediates and pr
     const closedAfter = await getIssue(closed.key);
     expect(closedAfter.parent).toBe(source.key);
     expect(closedAfter.closed_at).toBe(closedBefore.closed_at);
-    expect((await listIssueMessages(source.key)).map((read) => read.body)).toContain(
+    expect((await listIssueMessages(source.key)).map((read) => read.message.body)).toContain(
       `Merged into ${target.key} (“${target.title}”) from the issues table.`
     );
   } finally {
@@ -318,8 +318,7 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     const original = await scroller.elementHandle();
     const ancestorRequested = Promise.withResolvers<void>();
     const ancestorReady = Promise.withResolvers<void>();
-    // The ancestor's read is the issue's own, under the page's `include` list.
-    await page.route(`**/api/v2/issues/${parent.key}?**`, async (route) => {
+    await page.route(`**/api/v1/issues/${parent.key}`, async (route) => {
       ancestorRequested.resolve();
       await ancestorReady.promise;
       await route.continue();
@@ -376,7 +375,7 @@ test("a refused bulk write retries after reload while the other operations have 
     const second = rows[1];
     const third = rows[2];
     if (!second || !third) throw new Error("Missing bulk fixtures");
-    await page.route(`**/api/v2/issues/${second.key}`, async (route) => {
+    await page.route(`**/api/v1/issues/${second.key}`, async (route) => {
       if (route.request().method() === "PATCH")
         await route.fulfill({
           status: 403,
@@ -417,7 +416,7 @@ test("a refused bulk write retries after reload while the other operations have 
       `Update ${second.key}`
     );
     expect((await getIssue(third.key)).parent).toBeNull();
-    await page.unroute(`**/api/v2/issues/${second.key}`);
+    await page.unroute(`**/api/v1/issues/${second.key}`);
     await page
       .getByRole("region", { name: "Pending changes" })
       .getByRole("button", { name: "Retry", exact: true })
@@ -853,8 +852,7 @@ test("an unavailable ancestor uses one retry policy per attempt @phone", async (
     const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 844 });
     let attempts = 0;
-    // The ancestor's read is the issue's own, under the page's `include` list.
-    await page.route(`**/api/v2/issues/${parent.key}?**`, async (route) => {
+    await page.route(`**/api/v1/issues/${parent.key}`, async (route) => {
       attempts++;
       await route.fulfill({ status: 503, json: { error: "Ancestor unavailable" } });
     });
@@ -885,7 +883,7 @@ test("a refused merge move leaves the source open without a close reason", async
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.route(`**/api/v2/issues/${bad.key}`, async (route) => {
+    await page.route(`**/api/v1/issues/${bad.key}`, async (route) => {
       if (route.request().method() === "PATCH")
         await route.fulfill({ status: 403, json: { error: "Move refused" } });
       else await route.continue();
@@ -920,8 +918,8 @@ test("a stopped committed epic retries one key and reload finishes only its rema
   const held = Promise.withResolvers<void>();
   try {
     const page = await context.newPage();
-    const posts = watchWrites(page, "POST", "/api/v2/issues");
-    const committed = dropFirstAnswer(page, "**/api/v2/issues", "POST", held.promise);
+    const posts = watchWrites(page, "POST", "/api/v1/issues");
+    const committed = dropFirstAnswer(page, "**/api/v1/issues", "POST", held.promise);
     await page.clock.install();
     await page.goto("/projects/CORE/issues");
     await page.getByRole("checkbox", { name: `Select ${first.key}`, exact: true }).check();
@@ -994,10 +992,10 @@ test("reload mid Start next finishes the recorded order without repeating its co
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const completed = watchWrites(page, "PATCH", `/api/v2/issues/${last.key}`);
+    const completed = watchWrites(page, "PATCH", `/api/v1/issues/${last.key}`);
     let mode: "hold" | "refuse" | "through" = "hold";
     let held = false;
-    await page.route(`**/api/v2/issues/${middle.key}`, async (route) => {
+    await page.route(`**/api/v1/issues/${middle.key}`, async (route) => {
       if (route.request().method() !== "PATCH" || mode === "through") return route.fallback();
       if (mode === "hold") {
         held = true;
@@ -1064,9 +1062,9 @@ test("reload mid merge moves current open descendants then records one reason an
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const completed = watchWrites(page, "PATCH", `/api/v2/issues/${completedChild.key}`);
+    const completed = watchWrites(page, "PATCH", `/api/v1/issues/${completedChild.key}`);
     let mode: "hold" | "refuse" | "through" = "hold";
-    await page.route(`**/api/v2/issues/${pendingChild.key}`, async (route) => {
+    await page.route(`**/api/v1/issues/${pendingChild.key}`, async (route) => {
       if (route.request().method() !== "PATCH" || mode === "through") return route.fallback();
       if (mode === "hold") return;
       await route.fulfill({ status: 403, json: { error: "Move refused during reload" } });
@@ -1103,7 +1101,7 @@ test("reload mid merge moves current open descendants then records one reason an
     for (const child of [pendingChild, completedChild, added])
       expect((await getIssue(child.key)).parent).toBe(target.key);
     expect((await getIssue(bridge.key)).parent).toBe(source.key);
-    expect((await listIssueMessages(source.key)).map((read) => read.body)).toEqual([
+    expect((await listIssueMessages(source.key)).map(({ message }) => message.body)).toEqual([
       expect.stringContaining(`Merged into ${target.key}`),
     ]);
     expect(completed).toHaveLength(1);

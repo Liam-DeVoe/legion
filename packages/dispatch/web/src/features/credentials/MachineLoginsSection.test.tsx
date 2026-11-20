@@ -7,7 +7,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
-import type { ApproverGrantResp, LauncherCredentialResp, RecordResponse } from "../../api/types";
+import type { ApproverGrantResp, LauncherCredentialResp } from "../../api/types";
 import { GrantsSection } from "./GrantsSection";
 import { MachineLoginPage } from "./MachineLoginPage";
 import { MachineLoginsSection } from "./MachineLoginsSection";
@@ -89,7 +89,9 @@ function renderPage() {
 test("an expired login whose sessions still run is listed and marked so, and Revoke ends it", async () => {
   const user = userEvent.setup();
   let live = [devbox, stale];
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => live);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
+    credentials: live,
+  }));
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockImplementation(async (id) => {
     live = live.filter((login) => login.credential_id !== id);
   });
@@ -136,10 +138,12 @@ test("revoking a machine login refreshes Live grants", async () => {
     record_id: null,
   };
   let grants = [grant];
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => logins);
-  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockImplementation(
-    async () => grants
-  );
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
+    credentials: logins,
+  }));
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockImplementation(async () => ({
+    grants,
+  }));
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockImplementation(async () => {
     logins = [];
     grants = [];
@@ -177,7 +181,9 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   let live = [devbox, laptop];
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => live);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
+    credentials: live,
+  }));
   // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
   // unit test") says.
   const revokeAnswer = Promise.withResolvers<void>();
@@ -227,7 +233,9 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
 test("a service's login someone else approved is listed by its service and its approver, and its Revoke says its pods end", async () => {
   const user = userEvent.setup();
   let live = [daemon, devbox];
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => live);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
+    credentials: live,
+  }));
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockImplementation(async (id) => {
     live = live.filter((login) => login.credential_id !== id);
   });
@@ -276,7 +284,9 @@ test("a service's login from a broker that sends no subject is shown as one a pe
   const fromOlderBroker: LauncherCredentialResp = { ...daemon };
   Reflect.deleteProperty(fromOlderBroker, "subject");
   Reflect.deleteProperty(fromOlderBroker, "person");
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([fromOlderBroker]);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: [fromOlderBroker],
+  });
   const confirm = spyOn(window, "confirm").mockReturnValue(false);
 
   try {
@@ -307,7 +317,9 @@ test("a service's token login names its ServiceAccount, and its Revoke says what
     host: "legion-system/legion-daemon-legion",
     subject: "system:serviceaccount:legion-system:legion-daemon-legion",
   };
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([tokenLogin]);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: [tokenLogin],
+  });
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockResolvedValue(undefined);
   const confirm = spyOn(window, "confirm").mockReturnValue(false);
 
@@ -350,7 +362,9 @@ test("a person's pod login reads as the viewer's own pod, and its Revoke says th
     host: "legion-system/legion-daemon-legion",
     subject: "system:serviceaccount:legion-system:legion-daemon-legion",
   };
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([adaPod, serviceToken]);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: [adaPod, serviceToken],
+  });
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockResolvedValue(undefined);
   const confirm = spyOn(window, "confirm").mockReturnValue(false);
 
@@ -400,7 +414,9 @@ test("two logins of one service on one host are told apart by their credential i
     issued_at: "2026-10-03T10:00:00Z",
   };
   let live = [daemon, copy];
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => live);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
+    credentials: live,
+  }));
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockImplementation(async (id) => {
     live = live.filter((login) => login.credential_id !== id);
   });
@@ -431,8 +447,10 @@ test("two logins of one service on one host are told apart by their credential i
 test("a machine login approved on the page joins the list", async () => {
   const user = userEvent.setup();
   let live: LauncherCredentialResp[] = [];
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => live);
-  const pending: RecordResponse = {
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
+    credentials: live,
+  }));
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue({
     approver: "ada@example.com",
     decided: null,
     enrollment: null,
@@ -447,17 +465,11 @@ test("a machine login approved on the page joins the list", async () => {
     service: null,
     session: { enrollment: null, request: null },
     state: "pending",
-  };
-  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(pending);
-  // The decision answers the record as it left it: approved, with the login it minted.
+  });
   const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockImplementation(
     async () => {
       live = [devbox];
-      return {
-        ...pending,
-        decided: { at: "2026-10-03T12:01:00Z", credential_id: "cred-devbox", event: "approved" },
-        state: "approved",
-      };
+      return { credential_id: "cred-devbox", state: "approved" };
     }
   );
 

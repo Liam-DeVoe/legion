@@ -37,11 +37,11 @@ async function unsubscribePlatformPo(user: UserEvent, held: boolean) {
 }
 
 // An unfollow or an unsubscribe the reader stopped may have been made: the card says so, and
-// that its Retry asks again under the same key, which the `DELETE` goes under as every write does.
+// that its Retry sends the same `DELETE` again, which is the same however often it is made.
 test("AskRecipients says an unfollow the reader stopped may have been made, not that it failed", async () => {
   const page = await renderRecipients({
     removeFollower: () =>
-      Promise.reject(new NetworkError("/api/v2/asks/ask-1", new TypeError("Failed to fetch"))),
+      Promise.reject(new NetworkError("/api/v1/asks/ask-1", new TypeError("Failed to fetch"))),
   });
   try {
     await unfollowFirst(page.user, true);
@@ -62,7 +62,7 @@ test("AskRecipients says an unfollow the reader stopped may have been made, not 
 
 test("AskRecipients says an unsubscribe the reader stopped may have been made, not that it failed", async () => {
   const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-1/subscribers", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/issues/CORE-1/subscribers", new TypeError("Failed to fetch"))
   );
   const page = await renderRecipients({
     subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
@@ -143,7 +143,7 @@ async function retryTheRefusal() {
 // pressed on, not off the one the card shows by then.
 test("AskRecipients retries a stopped unfollow on the ask it was pressed on after the card moves to another ask", async () => {
   const removeFollower = mock((_askId: string, _sessionId: string, _bounds: WriteBounds) =>
-    Promise.reject<void>(new NetworkError("/api/v2/asks/ask-1", new TypeError("Failed to fetch")))
+    Promise.reject<void>(new NetworkError("/api/v1/asks/ask-1", new TypeError("Failed to fetch")))
   );
   const page = await renderRecipients({ removeFollower });
   try {
@@ -172,7 +172,7 @@ test("AskRecipients retries a stopped unfollow on the ask it was pressed on afte
 // pressed on, the first issue's, not off that of the issue whose ask the card shows by then.
 test("AskRecipients retries a stopped unsubscribe on the issue it was pressed on after the card moves to another issue's ask", async () => {
   const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-1/subscribers", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/issues/CORE-1/subscribers", new TypeError("Failed to fetch"))
   );
   const page = await renderRecipients({
     subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],

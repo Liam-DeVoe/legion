@@ -1,6 +1,6 @@
 import { type FocusEvent, type ReactNode, useId, useRef, useState } from "react";
 
-import type { ProjectV2 } from "../../api/types";
+import type { Project } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import {
   borderDefault,
@@ -109,7 +109,7 @@ export function SearchFilterBar({
 }: {
   filters: SearchBarFilters;
   onFilters: (filters: SearchBarFilters) => void;
-  projects: readonly ProjectV2[];
+  projects: readonly Project[];
 }): ReactNode {
   const [author, setAuthor] = useState("");
   const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });

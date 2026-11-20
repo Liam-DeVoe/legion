@@ -1,5 +1,5 @@
 import { displayTree, snippetTree } from "../../__tests__/display-trees";
-import type { SearchResult, SearchResultsV2 } from "../../api/types";
+import type { SearchResponse, SearchResult, SearchResultsPage } from "../../api/types";
 
 /**
  * The server's answer when `hits` are every match: one page holding the whole list, read as a
@@ -13,7 +13,7 @@ import type { SearchResult, SearchResultsV2 } from "../../api/types";
  * of its own keeps it: a snippet holding formatting is read from the Go fixture, which the plain
  * reading here would flatten.
  */
-export function searchAnswer(hits: SearchResult[]): SearchResultsV2 {
+export function searchAnswer(hits: SearchResult[]): SearchResponse & SearchResultsPage {
   const read = hits.map((hit) => ({
     ...hit,
     // A hit's ask states its answer as optional, because the route does: an answered ask
@@ -31,12 +31,12 @@ export function searchAnswer(hits: SearchResult[]): SearchResultsV2 {
     snippet_tree: hit.snippet_tree ?? snippetTree(hit.snippet),
   }));
   return {
-    filters: { project: [] },
+    filters: {},
     limit: 20,
     offset: 0,
     query: { broadened: false, operators: [] },
     reachable: hits.length,
-    items: read,
+    results: read,
     took_ms: 1,
     total: hits.length,
   };

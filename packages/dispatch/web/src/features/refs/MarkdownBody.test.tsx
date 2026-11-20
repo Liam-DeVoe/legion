@@ -10,7 +10,11 @@ import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
-import type { ArtifactText, ArtifactV2, IssueReadV2 } from "../../api/types";
+import type {
+  AskRead,
+  IssueReferenceSummary,
+  IssueReferenceSummaryDocument,
+} from "../../api/types";
 import { TextAskBlockCard } from "../doc/AskBlockCard";
 import { MarkdownBody } from "./MarkdownBody";
 import { TextAskCard } from "./markdown-cards";
@@ -22,12 +26,6 @@ import {
   installFakeParseWorker,
   restoreParseWorker,
 } from "./parse-worker-fixture";
-import {
-  askWithThread,
-  documentRow,
-  issueSummary as issueRead,
-  referencesRead,
-} from "./reference-fixture";
 
 function withQueries(children: ReactNode): ReactNode {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -35,38 +33,19 @@ function withQueries(children: ReactNode): ReactNode {
 }
 
 /** An image document of CORE-1 whose latest version is 2, as the issue summary lists it. */
-const picture = documentRow({
+const picture: IssueReferenceSummaryDocument = {
   id: "artifact-shot",
-  issue_key: "CORE-1",
   kind: "image",
   latest_version: 2,
   name: "shot.png",
+  primary: false,
   slug: "shot-png",
-});
+};
 
 /** CORE-1's summary read, the one read behind a reference to it or to its documents. */
-function issueSummary(documents: ArtifactV2[]): IssueReadV2 {
-  return issueRead({
-    artifacts: documents,
-    key: "CORE-1",
-    status: "in_progress",
-    title: "Core one",
-  });
+function issueSummary(documents: IssueReferenceSummaryDocument[]): IssueReferenceSummary {
+  return { documents, key: "CORE-1", project: "CORE", status: "in_progress", title: "Core one" };
 }
-
-/** A document's live text as its own read answers it (`include=text`), at version 1. */
-function liveText(document: ArtifactV2, markdown: string): ArtifactText {
-  return { ...document, markdown, token: "sha256:design", unsettled: false, version: 1 };
-}
-
-/** CORE-1's question `ask-1`, "Ship it?", read with its thread. */
-const shipIt = askWithThread({
-  author: { id: "alice", kind: "user" },
-  created_at: "2026-09-09T00:00:00Z",
-  id: "ask-1",
-  question: "Ship it?",
-  question_tree: displayTree("Ship it?"),
-});
 
 // The dashboard is served from an origin, where a picture's same-origin bytes route resolves.
 // happy-dom's page starts at `about:blank`, where no relative `src` resolves and every picture
@@ -95,29 +74,6 @@ describe("Dispatch pictures", () => {
   });
 
   test("a Dispatch picture at a version shows inline from its version's bytes, linked to its page", async () => {
-    // `/api/v2` serves a version's bytes by the document's id, which each owner's read names.
-    const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
-      issueSummary([picture])
-    );
-    const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(
-      documentRow({
-        id: "artifact-plan",
-        kind: "image",
-        latest_version: 3,
-        name: "plan.png",
-        slug: "plan-png",
-      })
-    );
-    const getAgentArtifact = spyOn(api, "getAgentArtifact").mockResolvedValue(
-      documentRow({
-        id: "artifact-face",
-        kind: "image",
-        latest_version: 2,
-        name: "face.png",
-        session_id: "ses-1",
-        slug: "face-png",
-      })
-    );
     const view = render(
       withQueries(
         <MarkdownBody
@@ -130,7 +86,7 @@ describe("Dispatch pictures", () => {
 
     try {
       const shot = await within(view.container).findByRole("img", { name: "shot.png" });
-      expect(shot).toHaveAttribute("src", "/api/v2/artifacts/artifact-shot/versions/1");
+      expect(shot).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1");
       expect(shot).toHaveAttribute("loading", "lazy");
       // At its own size scaled down to the column, with no cap on its height.
       const classes = shot.className.split(" ");
@@ -140,20 +96,15 @@ describe("Dispatch pictures", () => {
       expect(classes.some((name) => name.startsWith("max-h-"))).toBe(false);
       expect(shot.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png?v=1");
       // A picture with no caption is named by its slug.
-      const plan = await within(view.container).findByRole("img", { name: "plan-png" });
-      expect(plan).toHaveAttribute("src", "/api/v2/artifacts/artifact-plan/versions/3");
+      const plan = within(view.container).getByRole("img", { name: "plan-png" });
+      expect(plan).toHaveAttribute("src", "/api/v1/projects/CORE/artifacts/plan-png/versions/3");
       expect(plan.closest("a")?.getAttribute("href")).toBe(
         "/projects/CORE/documents/plan-png?version=3"
       );
-      const face = await within(view.container).findByRole("img", { name: "face.png" });
-      expect(face).toHaveAttribute("src", "/api/v2/artifacts/artifact-face/versions/2");
+      const face = within(view.container).getByRole("img", { name: "face.png" });
+      expect(face).toHaveAttribute("src", "/api/v1/agents/ses-1/artifacts/face-png/versions/2");
       expect(face.closest("a")?.getAttribute("href")).toBe("/agents/ses-1/artifacts/face-png?v=2");
-      expect(getProjectArtifact).toHaveBeenCalledWith("CORE", "plan-png");
-      expect(getAgentArtifact).toHaveBeenCalledWith("ses-1", "face-png");
     } finally {
-      getAgentArtifact.mockRestore();
-      getProjectArtifact.mockRestore();
-      getIssueSummary.mockRestore();
       view.unmount();
     }
   });
@@ -161,15 +112,6 @@ describe("Dispatch pictures", () => {
   // The composer escapes a file name's brackets and backslashes so the caption stays one; a reader
   // and a screen reader still get the file's own name.
   test("an escaped caption names the picture by its file name", async () => {
-    const getAgentArtifact = spyOn(api, "getAgentArtifact").mockResolvedValue(
-      documentRow({
-        id: "artifact-face",
-        kind: "image",
-        name: "face.png",
-        session_id: "ses-1",
-        slug: "face-png",
-      })
-    );
     const view = render(
       withQueries(
         <MarkdownBody
@@ -184,17 +126,13 @@ describe("Dispatch pictures", () => {
       const face = await within(view.container).findByRole("img", {
         name: "face [1] back\\slash.png",
       });
-      expect(face).toHaveAttribute("src", "/api/v2/artifacts/artifact-face/versions/1");
+      expect(face).toHaveAttribute("src", "/api/v1/agents/ses-1/artifacts/face-png/versions/1");
     } finally {
-      getAgentArtifact.mockRestore();
       view.unmount();
     }
   });
 
   test("the inline variant shows a Dispatch picture as a thumbnail beside its caption", async () => {
-    const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
-      issueSummary([picture])
-    );
     const view = render(
       withQueries(
         <MarkdownBody
@@ -206,17 +144,15 @@ describe("Dispatch pictures", () => {
 
     try {
       const link = await within(view.container).findByRole("link", { name: "shot.png" });
-      const thumbnail = await waitFor(() => {
-        const image = link.querySelector("img");
-        expect(image?.getAttribute("src")).toBe("/api/v2/artifacts/artifact-shot/versions/1");
-        return image as HTMLImageElement;
-      });
-      expect(thumbnail.className.split(" ")).toEqual(
+      const thumbnail = link.querySelector("img");
+      expect(thumbnail?.getAttribute("src")).toBe(
+        "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
+      );
+      expect(thumbnail?.className.split(" ")).toEqual(
         expect.arrayContaining(["h-10", "w-10", "object-cover"])
       );
       expect(view.container.querySelector("div")).toBeNull();
     } finally {
-      getIssueSummary.mockRestore();
       view.unmount();
     }
   });
@@ -231,7 +167,7 @@ describe("Dispatch pictures", () => {
 
     try {
       const shot = await within(view.container).findByRole("img", { name: "shot.png" });
-      expect(shot).toHaveAttribute("src", "/api/v2/artifacts/artifact-shot/versions/2");
+      expect(shot).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/2");
       expect(shot.className.split(" ")).toContain("max-w-full");
       expect(shot.className.split(" ")).not.toContain("h-10");
       expect(shot.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png");
@@ -269,7 +205,7 @@ describe("Dispatch pictures", () => {
         );
       });
       const v3 = await within(view.container).findByRole("img", { name: "shot.png" });
-      expect(v3).toHaveAttribute("src", "/api/v2/artifacts/artifact-shot/versions/3");
+      expect(v3).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
     } finally {
       getIssueSummary.mockRestore();
       view.unmount();
@@ -277,13 +213,14 @@ describe("Dispatch pictures", () => {
   });
 
   test("a picture line that pins no version and names a document reads as its reference", async () => {
-    const notes = documentRow({
+    const notes: IssueReferenceSummaryDocument = {
       id: "artifact-notes",
-      issue_key: "CORE-1",
+      kind: "doc",
       latest_version: 4,
       name: "notes.md",
+      primary: false,
       slug: "notes-md",
-    });
+    };
     const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issueSummary([notes]));
     const view = render(
       withQueries(<MarkdownBody markdown="![notes](dispatch://CORE-1/artifact/notes-md)" />)
@@ -300,9 +237,6 @@ describe("Dispatch pictures", () => {
   });
 
   test("a plain click on a picture opens it at full size instead of following its link", async () => {
-    const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
-      issueSummary([picture])
-    );
     const view = render(
       withQueries(<MarkdownBody markdown="![shot.png](dispatch://CORE-1/artifact/shot-png@v1)" />)
     );
@@ -317,7 +251,7 @@ describe("Dispatch pictures", () => {
       );
       expect(lightbox?.open).toBe(true);
       expect(lightbox?.querySelector("img")?.getAttribute("src")).toBe(
-        "/api/v2/artifacts/artifact-shot/versions/1"
+        "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
       );
       lightbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       expect(document.querySelector('[data-testid="picture-lightbox"]')).toBeNull();
@@ -328,7 +262,6 @@ describe("Dispatch pictures", () => {
       view.unmount();
       expect(document.querySelector('[data-testid="picture-lightbox"]')).toBeNull();
     } finally {
-      getIssueSummary.mockRestore();
       view.unmount();
     }
   });
@@ -347,7 +280,9 @@ describe("Dispatch pictures", () => {
       const link = await within(view.container).findByRole("link", { name: "shot.png" });
       const thumbnail = await waitFor(() => {
         const image = link.querySelector("img");
-        expect(image?.getAttribute("src")).toBe("/api/v2/artifacts/artifact-shot/versions/99");
+        expect(image?.getAttribute("src")).toBe(
+          "/api/v1/issues/CORE-1/artifacts/shot-png/versions/99"
+        );
         return image as HTMLImageElement;
       });
       // A picture failing to load is an `error` event, which user-event has no form for.
@@ -378,8 +313,6 @@ describe("Dispatch pictures", () => {
     }
   });
 
-  // A document or another file referenced with the picture syntax is no picture the browser can
-  // draw: once its owner's read names its kind, it reads as the reference's title.
   test("a version that is no picture falls back to the reference's title", async () => {
     const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
       issueSummary([{ ...picture, kind: "file", name: "notes.pdf", slug: "notes-pdf" }])
@@ -389,6 +322,9 @@ describe("Dispatch pictures", () => {
     );
 
     try {
+      const image = await within(view.container).findByRole("img", { name: "notes" });
+      // A picture failing to load is an `error` event, which user-event has no form for.
+      fireEvent.error(image);
       const link = await within(view.container).findByRole("link", { name: "notes.pdf" });
       expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/notes-pdf?v=1");
       expect(within(view.container).queryByRole("img")).not.toBeInTheDocument();
@@ -404,18 +340,19 @@ describe("Dispatch pictures", () => {
   // `dispatch://` source the browser cannot fetch or a dead link.
   test("a long-named picture is drawn and an explicit link to a long-named document opens it", async () => {
     const slug = "a".repeat(2683);
-    const pictureSlug = "p".repeat(2683);
-    const design = { ...picture, id: "artifact-design", kind: "doc", name: "design.md", slug };
     const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
-      issueSummary([{ ...picture, slug: pictureSlug }, design])
+      issueSummary([{ ...picture, kind: "doc", name: "design.md", slug }])
     );
-    const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
-      liveText(design, "The design.")
-    );
+    const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "The design.",
+      token: "sha256:design",
+      version: 1,
+      unsettled: false,
+    });
     const view = render(
       withQueries(
         <MarkdownBody
-          markdown={`![shot](dispatch://CORE-1/artifact/${pictureSlug}@v1)\n\nSee [design](dispatch://CORE-1/artifact/${slug}).`}
+          markdown={`![shot](dispatch://CORE-1/artifact/${slug}@v1)\n\nSee [design](dispatch://CORE-1/artifact/${slug}).`}
         />
       )
     );
@@ -423,10 +360,8 @@ describe("Dispatch pictures", () => {
     try {
       await act(() => worker.answer(0));
       const shot = await within(view.container).findByRole("img", { name: "shot" });
-      expect(shot).toHaveAttribute("src", "/api/v2/artifacts/artifact-shot/versions/1");
-      expect(shot.closest("a")?.getAttribute("href")).toBe(
-        `/issues/CORE-1/artifacts/${pictureSlug}?v=1`
-      );
+      expect(shot).toHaveAttribute("src", `/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
+      expect(shot.closest("a")?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}?v=1`);
       const link = await within(view.container).findByRole("link", { name: "design.md" });
       expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
       expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/artifact/${slug}`);
@@ -443,16 +378,18 @@ describe("Dispatch pictures", () => {
   // same long-named document.
   test("a bare dashboard URL past the bounds stays a plain link; an author's link to it still opens the document", async () => {
     const slug = "a".repeat(2683);
-    const design = { ...picture, kind: "doc", name: "design.md", slug };
     const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
       issueSummary([
-        design,
+        { ...picture, kind: "doc", name: "design.md", slug },
         { ...picture, id: "artifact-plan", kind: "doc", name: "plan.md", slug: "plan-md" },
       ])
     );
-    const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
-      liveText(design, "The design.")
-    );
+    const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "The design.",
+      token: "sha256:design",
+      version: 1,
+      unsettled: false,
+    });
     const page = `https://dispatch.test/issues/CORE-1/artifacts/${slug}`;
     const plan = "https://dispatch.test/issues/CORE-1/artifacts/plan-md";
     const view = render(
@@ -494,16 +431,18 @@ describe("Dispatch pictures", () => {
   // gave words of its own still opens the long-named document.
   test("a dispatch:// URL left as text past the bounds stays plain; an author's dispatch:// link with its own words still opens", async () => {
     const slug = "a".repeat(2683);
-    const design = { ...picture, kind: "doc", name: "design.md", slug };
     const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
       issueSummary([
-        design,
+        { ...picture, kind: "doc", name: "design.md", slug },
         { ...picture, id: "artifact-plan", kind: "doc", name: "plan.md", slug: "plan-md" },
       ])
     );
-    const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
-      liveText(design, "The design.")
-    );
+    const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "The design.",
+      token: "sha256:design",
+      version: 1,
+      unsettled: false,
+    });
     const long = `dispatch://CORE-1/artifact/${slug}`;
     const plan = "dispatch://CORE-1/artifact/plan-md";
     const block = `${plan}#b-${"b".repeat(257)}`;
@@ -964,7 +903,40 @@ test("a clock time such as 16:25Z renders as Markdown, not as the literal-text f
 
 test("a bare dispatch ask reference renders an inline link to the ask route with the resolved question", async () => {
   await warmMarkdownRenderer();
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(shipIt);
+  const askRead: AskRead = {
+    ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      id: "ask-1",
+      issue_key: "CORE-1",
+      kind: "question",
+      author: { id: "alice", kind: "user" },
+      question: "Ship it?",
+      question_tree: displayTree("Ship it?"),
+      options: [],
+      multiple: false,
+      urgency: "med",
+      anchor: null,
+      state: "open",
+      answer: null,
+      opened_event_id: 1,
+      created_at: "2026-09-09T00:00:00Z",
+      edited_at: null,
+    },
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  };
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={queryClient}>
@@ -1014,17 +986,20 @@ test("a block reference reads as the headline of its text: the pinned version's,
   const getReferences = spyOn(api, "getReferences").mockImplementation((reference) =>
     Promise.resolve(
       reference.endsWith("@v2")
-        ? referencesRead({
-            ...node,
-            pin: {
-              ref: reference,
-              state: "changed",
-              text: "Ship it on Friday.",
-              text_tree: displayTree("Ship it on Friday."),
-              version: 2,
+        ? {
+            edges: [],
+            node: {
+              ...node,
+              pin: {
+                ref: reference,
+                state: "changed",
+                text: "Ship it on Friday.",
+                text_tree: displayTree("Ship it on Friday."),
+                version: 2,
+              },
             },
-          })
-        : referencesRead(node)
+          }
+        : { edges: [], node }
     )
   );
   const view = render(
@@ -1080,16 +1055,48 @@ test("an external URL unrelated to the app renders as an ordinary link", async (
 
 test("two references in one body each resolve their own inline link and title, reading only what each shows", async () => {
   await warmMarkdownRenderer();
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(shipIt);
-  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(
-    documentRow({
-      id: "artifact-1",
-      latest_version: 4,
-      name: "Runbook.md",
-      project: "CORE",
-      slug: "runbook-md",
-    })
-  );
+  const askRead: AskRead = {
+    ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      id: "ask-1",
+      issue_key: "CORE-1",
+      kind: "question",
+      author: { id: "alice", kind: "user" },
+      question: "Ship it?",
+      question_tree: displayTree("Ship it?"),
+      options: [],
+      multiple: false,
+      urgency: "med",
+      anchor: null,
+      state: "open",
+      answer: null,
+      opened_event_id: 1,
+      created_at: "2026-09-09T00:00:00Z",
+      edited_at: null,
+    },
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  };
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead);
+  const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
+    id: "artifact-1",
+    kind: "doc",
+    latest_version: 4,
+    name: "Runbook.md",
+    project: "CORE",
+    slug: "runbook-md",
+  });
   const getIssue = spyOn(api, "getIssue");
   const getIssueSummary = spyOn(api, "getIssueSummary");
   const getArtifactText = spyOn(api, "getArtifactText");
@@ -1106,7 +1113,7 @@ test("two references in one body each resolve their own inline link and title, r
     expect(askLink).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
     expect(documentLink).toHaveAttribute("href", "/projects/CORE/documents/runbook-md");
     expect(within(view.container).getAllByRole("link")).toHaveLength(2);
-    expect(getProjectArtifact).toHaveBeenCalledWith("CORE", "runbook-md");
+    expect(getProjectDocumentSummary).toHaveBeenCalledWith("CORE", "runbook-md");
     // An ask link reads its ask alone, and an inline document link shows no text, so reads none.
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();
@@ -1115,7 +1122,7 @@ test("two references in one body each resolve their own inline link and title, r
     getArtifactText.mockRestore();
     getIssueSummary.mockRestore();
     getIssue.mockRestore();
-    getProjectArtifact.mockRestore();
+    getProjectDocumentSummary.mockRestore();
     getAsk.mockRestore();
     view.unmount();
   }
@@ -1140,7 +1147,40 @@ test("the inline variant drops a later paragraph's code span instead of leaking 
 
 test("a hand-authored Markdown link to a dispatch:// target resolves through data-dispatch-href", async () => {
   await warmMarkdownRenderer();
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(shipIt);
+  const askRead: AskRead = {
+    ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      id: "ask-1",
+      issue_key: "CORE-1",
+      kind: "question",
+      author: { id: "alice", kind: "user" },
+      question: "Ship it?",
+      question_tree: displayTree("Ship it?"),
+      options: [],
+      multiple: false,
+      urgency: "med",
+      anchor: null,
+      state: "open",
+      answer: null,
+      opened_event_id: 1,
+      created_at: "2026-09-09T00:00:00Z",
+      edited_at: null,
+    },
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  };
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // @legion/proof-editor's Markdown link serializer sanitizes a dispatch:// href to "" (Milkdown
   // only allows http/https/mailto/tel/ftp) and carries the real target in data-dispatch-href

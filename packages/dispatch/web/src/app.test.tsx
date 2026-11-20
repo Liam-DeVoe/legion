@@ -122,12 +122,12 @@ function aliceWrite(
           bounds.sent?.({
             body: { status: "done" },
             method: "PATCH",
-            path: "/api/v2/issues/CORE-1",
+            path: "/api/v1/issues/CORE-1",
           });
           return Promise.reject(
             refuse
               ? new ApiError(422, { code: "ISSUE_INPUT", error: "refused" })
-              : new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"))
+              : new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
           );
         },
       })
@@ -282,11 +282,11 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
           bounds.sent?.({
             body: { status: "done" },
             method: "PATCH",
-            path: "/api/v2/issues/CORE-1",
+            path: "/api/v1/issues/CORE-1",
           });
           return up
             ? Promise.resolve({ key: "CORE-1" })
-            : Promise.reject(new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed")));
+            : Promise.reject(new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed")));
         },
       });
     });
@@ -466,7 +466,7 @@ test("a sign-out in another tab drops that person's writes here", async () => {
   // above covers: it is answered here as `aliceWrite`'s own attempts answer, failing at the
   // connection, so a resumed attempt reaches no network.
   answerIssuePatches().mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
   );
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
@@ -626,11 +626,7 @@ test("project routes render the project page and a project document route", asyn
     ref_key: "CORE/design-notes",
     session_id: null,
     slug: "design-notes",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
-    unsettled: null,
-    version_count: 0,
+    versions: [],
   });
   // The document route reads the artifact by its id, with its text, blocks, discussion and
   // graph edges: answered with the API's own empty shapes, since this row is about the routing.
@@ -646,30 +642,22 @@ test("project routes render the project page and a project document route", asyn
     ref_key: "CORE/design-notes",
     session_id: null,
     slug: "design-notes",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
-    unsettled: null,
-    version_count: 0,
+    versions: [],
   };
   const documentReads = [
     spyOn(api, "getArtifact").mockResolvedValue(artifact),
     spyOn(api, "getArtifactText").mockResolvedValue({
-      ...artifact,
       markdown: "",
       token: "sha256:design-notes",
+      version: null,
       unsettled: true,
     }),
-    spyOn(api, "listArtifactVersions").mockResolvedValue([]),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "listArtifactComments").mockResolvedValue([]),
     spyOn(api, "listArtifactAsks").mockResolvedValue([]),
     spyOn(api, "getArtifactSubscribers").mockResolvedValue([]),
     spyOn(api, "getReferences").mockResolvedValue({
-      items: [],
-      limit: 50,
-      offset: 0,
-      total: 0,
+      edges: [],
       node: graphNode({ id: "artifact-1", kind: "artifact" }),
     }),
   ];
@@ -741,7 +729,7 @@ test("the Inbox page links to the answers page, which renders at /answers", asyn
   const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue({
     limit: 50,
     offset: 0,
-    items: [],
+    rows: [],
     total: 0,
   });
   const renderRoute = (path: string) =>
@@ -919,7 +907,7 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
   // The issue route reads the issue and its discussion. Nothing here is about the issue, and no
   // Dispatch answers them, so they are answered at the client with the failure the page has
   // always seen rather than reaching the network.
-  const unread = new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"));
+  const unread = new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
   const issueReads = [
     spyOn(api, "getIssue").mockRejectedValue(unread),
     spyOn(api, "listComments").mockRejectedValue(unread),

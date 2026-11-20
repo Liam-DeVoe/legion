@@ -1,17 +1,20 @@
-import { ApiError, WRITE_METHODS, type WriteMethod, type WriteRequest } from "../../api/client";
+import {
+  ApiError,
+  goesUnderKey,
+  WRITE_METHODS,
+  type WriteMethod,
+  type WriteRequest,
+} from "../../api/client";
 import { keySpent, SendExpiredError, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import { entryNames, pageStorage, readEntry, removeEntry, type Shape, shape } from "./tab-storage";
 
 /**
- * Where every write to Dispatch waits out a reload (`write-store.ts`). Every write names itself
- * to Dispatch by a key (`Idempotency-Key`), so making it again is safe - Dispatch answers a
- * repeat of the key with what the first request did - so the page keeps each write in
- * `sessionStorage`, which a reload keeps and closing the tab drops, from its press until Dispatch
- * answers it, and the store resumes it on load under its key, to the path it was kept with. A
- * write a build of the page older than `/api/v2` kept holds an `/api/v1` path, and goes there:
- * Dispatch's record of its key holds that route, so the same key sent to the route's `/api/v2`
- * successor would be refused `422 KEY_REUSED`, and a new key would make a write that landed twice.
- * Each write is one entry, `dispatch.write:<key>`, in one
+ * Where every write to Dispatch waits out a reload (`write-store.ts`). Every `POST` and `PATCH`
+ * names itself to Dispatch by a key (`Idempotency-Key`), so making it again is safe - Dispatch
+ * answers a repeat of the key with what the first request did - and a `PUT` or a `DELETE` is the
+ * same write however often it is made, so the page keeps each write in `sessionStorage`, which a
+ * reload keeps and closing the tab drops, from its press until Dispatch answers it, and the store
+ * resumes it on load under its key. Each write is one entry, `dispatch.write:<key>`, in one
  * versioned format for every kind (`KeptWrite`): its key and whether it goes under it, its kind
  * and how it is shown, the login of the person who pressed it and when, the target its line is
  * ordered on, where it stood and its refusal, the request as it last went out, what its key has
@@ -107,10 +110,9 @@ export interface KeptWrite {
    *  nowhere else is absence a case. */
   readonly carried: WriteMethod | null;
   /** Whether the write goes under its key (`Write.keyed`), as its press registered it, which
-   *  the indicator reads for what its Retry does: every write does, whatever its method, but one
-   *  its spec sends under none (the sign-out, `WriteSpec.keyed`). Every write kept here holds the
-   *  field, which this release is the first to write; `load` is the one place that reads an entry
-   *  an older release wrote, which holds none (`KeptEntry`). */
+   *  the indicator reads for what its Retry does. Every write kept here holds the field, which
+   *  this release is the first to write; `load` is the one place that reads an entry an older
+   *  release wrote, which holds none (`KeptEntry`). */
   readonly keyed: boolean;
   readonly detail: unknown;
 }
@@ -194,8 +196,8 @@ export function keptRefusal(error: Error): KeptRefusal {
  *  with the request it is planned as - and `now` the time it is read back: a write that ended
  *  without Dispatch's verdict under a key Dispatch has forgotten since comes back expired, since
  *  a Retry of it is now a new write rather than the same one asked again. Which writes those are
- *  is `keySpent`'s to say, the same question the retry loop asks before each attempt: a key
- *  nothing went out under has never been seen by Dispatch. */
+ *  is `keySpent`'s to say, the same question the retry loop asks before each attempt: a `PUT` or
+ *  a `DELETE` sends no key, and a key nothing went out under has never been seen by Dispatch. */
 export function refusalFrom(
   kept: KeptRefusal,
   key: string,
@@ -327,13 +329,16 @@ export class WriteStorage {
       // this release wrote is read as written, the `null` of a key nothing went out under too.
       const derived = write.sent && write.request !== null ? write.request.method : null;
       const carried = keptCarried === undefined ? derived : keptCarried;
+      // The method the write makes is its kept request's - the one its press named, or the one
+      // it last went out as - else the one its key carried. With neither, it is a write its kind
+      // makes again from its own record (`WriteKind.resume`) that nothing has gone out under, and
+      // the release that kept it said of every such write that its Retry asks again under its
+      // key, which it is read as here.
+      const method = write.request?.method ?? carried;
       loaded.push({
         ...write,
         carried,
-        // An entry with no `keyed` is one an older build kept, and this build makes it again
-        // under its key, whatever its method, to the path it was kept with (the head of this
-        // file): its Retry asks again under that key.
-        keyed: keyed ?? true,
+        keyed: keyed ?? (method === null || goesUnderKey(method)),
       });
     }
     return loaded.sort((a, b) => a.pressedAt - b.pressedAt);

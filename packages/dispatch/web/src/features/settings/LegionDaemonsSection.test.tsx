@@ -215,12 +215,11 @@ test("a URL with a path is refused by the field, in the words the route uses", a
 });
 
 // A daemon's save the reader stopped may have been made: the section says so, and that its Retry
-// asks again under the same key, which the `PUT` goes under as every write does. The section is
-// drawn on the real clock, so every read it makes has answered before the clock is held for the
-// save.
+// sends the same `PUT` again, which is the same however often it is made. The section is drawn on
+// the real clock, so every read it makes has answered before the clock is held for the save.
 test("a daemon save the reader stopped says Retry sends it again, not that it failed", async () => {
   const putLegionDaemon = spyOn(api, "putLegionDaemon").mockRejectedValue(
-    new NetworkError("/api/v2/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
   );
   spies.push(putLegionDaemon);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -253,7 +252,7 @@ test("a daemon save the reader stopped says Retry sends it again, not that it fa
 // there: the section says what Retry does with it, not that the removal failed.
 test("a daemon removal the reader stopped says Retry makes it again, not that it failed", async () => {
   const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockRejectedValue(
-    new NetworkError("/api/v2/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
   );
   spies.push(deleteLegionDaemon);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

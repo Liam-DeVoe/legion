@@ -6,12 +6,11 @@ import type { ComponentProps, ReactNode } from "react";
 
 import { snippetSource } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
-import type { DisplayTree, IssueReadV2 } from "../../api/types";
+import type { DisplayTree, IssueReferenceSummary } from "../../api/types";
 import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
-import { documentRow, issueSummary } from "./reference-fixture";
 
 /**
  * `MarkdownPreview` on its own: the inputs a real surface hands it that the one-fixture surface
@@ -39,11 +38,13 @@ function stored(name: string): { markdown: string; snippet: DisplayTree } {
 }
 
 /** CORE-1's summary read, which a reference to it shows. */
-const issue: IssueReadV2 = issueSummary({
+const issue: IssueReferenceSummary = {
+  documents: [],
   key: "CORE-1",
+  project: "CORE",
   status: "in_progress",
   title: "Design decision",
-});
+};
 
 type PreviewProps = ComponentProps<typeof MarkdownPreview>;
 
@@ -186,25 +187,14 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
   const testWindow = window as unknown as HappyDOMWindow;
   const pageBefore = window.location.href;
   testWindow.happyDOM.setURL("https://dispatch.test/issues/CORE-1/conversation");
-  // `/api/v2` serves the version's bytes by the document's id, which CORE-1's summary names.
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
-    ...issue,
-    artifacts: [
-      documentRow({
-        id: "artifact-shot",
-        issue_key: "CORE-1",
-        kind: "image",
-        name: "shot.png",
-        slug: "shot-png",
-      }),
-    ],
-  });
   const markdown = "The broken layout: ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
   const { preview, rerender, view } = renderPreview({ lines: 2, markdown });
   try {
     await waitFor(() => expect(preview().querySelector("img")).not.toBeNull());
     const thumbnail = preview().querySelector("img");
-    expect(thumbnail?.getAttribute("src")).toBe("/api/v2/artifacts/artifact-shot/versions/1");
+    expect(thumbnail?.getAttribute("src")).toBe(
+      "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
+    );
     expect(thumbnail?.className.split(" ")).toEqual(
       expect.arrayContaining(["h-10", "w-10", "object-cover"])
     );
@@ -221,7 +211,6 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
     );
   } finally {
     view.unmount();
-    getIssueSummary.mockRestore();
     testWindow.happyDOM.setURL(pageBefore);
   }
 });

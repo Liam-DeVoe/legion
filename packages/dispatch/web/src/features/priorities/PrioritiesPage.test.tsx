@@ -4,12 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { api, type WholeList } from "../../api/client";
-import type { IssueSummary, Priority, PriorityRow } from "../../api/types";
+import { api } from "../../api/client";
+import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { PrioritiesPage } from "./PrioritiesPage";
-
-/** `GET /api/v2/priorities` read whole, as `api.listPriorities` answers it. */
-type PrioritiesRead = WholeList<"/api/v2/priorities">;
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
   return {
@@ -32,17 +29,13 @@ function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow
   };
 }
 
-function body(overrides: Partial<PrioritiesRead> = {}): PrioritiesRead {
-  const read: PrioritiesRead = {
-    items: [],
-    limit: 50,
-    offset: 0,
-    priority_work_parked: { count: 0 },
-    total: 0,
-    work_under_no_priority: { count: 0 },
+function body(overrides: Partial<Priorities> = {}): Priorities {
+  return {
+    priorities: [],
+    work_under_no_priority: { by_project: null, count: 0, issues: null },
+    priority_work_parked: { by_priority: null, count: 0, issues: null },
     ...overrides,
   };
-  return { ...read, total: read.items.length };
 }
 
 /** The deployment's issues as the listing route answers them, standing in whatever status and
@@ -130,7 +123,7 @@ function answerListing(issues: readonly IssueSummary[]) {
 
 /** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
  *  reader who is not a person, and so may not write a priority, where `writer` is false. */
-function page(answer: PrioritiesRead, issues: IssueSummary[] = [], writer = true) {
+function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
@@ -171,7 +164,7 @@ function page(answer: PrioritiesRead, issues: IssueSummary[] = [], writer = true
 }
 
 const FIFTEEN = body({
-  items: [
+  priorities: [
     priority("legion-first", {
       title: "Legion works reliably first",
       description: "The first line.\nThe rest of it, which the row shows when it is open.",
@@ -203,8 +196,8 @@ test("the page draws the priorities table above both fault lists", async () => {
   page(
     body({
       ...FIFTEEN,
-      work_under_no_priority: { by_project: { CORE: 1 }, count: 1 },
-      priority_work_parked: { by_priority: { "linkage-closure": 1 }, count: 1 },
+      work_under_no_priority: { by_project: { CORE: 1 }, count: 1, issues: null },
+      priority_work_parked: { by_priority: { "linkage-closure": 1 }, count: 1, issues: null },
     }),
     [issue("CORE-1"), issue("CORE-9", ["linkage-closure"], { status: "backlog" })]
   );
@@ -570,11 +563,11 @@ test("a grouped table counts each group in the plural its rows are called by", a
   const user = userEvent.setup();
   page(
     body({
-      items: [
+      priorities: [
         priority("legion-first", { title: "Legion works reliably first" }),
         priority("oss-verify", { title: "OSS Verify" }),
       ],
-      work_under_no_priority: { by_project: { CORE: 2 }, count: 2 },
+      work_under_no_priority: { by_project: { CORE: 2 }, count: 2, issues: null },
     }),
     [issue("CORE-1"), issue("CORE-2")]
   );

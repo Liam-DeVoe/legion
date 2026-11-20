@@ -343,7 +343,7 @@ test("a stopped epic creation retries its committed request under the same key",
   let stopped = false;
   const create = spyOn(api, "createIssue").mockImplementation(async (input, bounds) => {
     keys.push(bounds.key);
-    bounds.sent?.({ method: "POST", path: "/api/v2/issues", body: input });
+    bounds.sent?.({ method: "POST", path: "/api/v1/issues", body: input });
     if (!created.has(bounds.key)) {
       const epic = savedIssue("CORE-9");
       created.set(bounds.key, epic);
@@ -663,7 +663,7 @@ test("parent-changing actions skip closed selections and New epic refuses an all
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
   await user.click(screen.getByRole("button", { name: "Take out of epic" }));
   await screen.findByText(/Skipped 1 closed issue/);
-  expect(send.mock.calls.map(([request]) => request.path)).toEqual(["/api/v2/issues/CORE-1"]);
+  expect(send.mock.calls.map(([request]) => request.path)).toEqual(["/api/v1/issues/CORE-1"]);
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   expect((await screen.findByRole("alert")).textContent).toContain(
@@ -801,8 +801,8 @@ test("a refused merge move leaves the source open and does not post the close re
   );
   expect((await screen.findByRole("alert")).textContent).toContain("CORE-3");
   expect(requests.map(({ path }) => path)).toEqual([
-    "/api/v2/issues/CORE-3",
-    "/api/v2/issues/CORE-4",
+    "/api/v1/issues/CORE-3",
+    "/api/v1/issues/CORE-4",
   ]);
   expect(message).not.toHaveBeenCalled();
 });
@@ -841,7 +841,7 @@ test("Start next stops at a refused predecessor and names every issue that did n
   expect((await screen.findByRole("alert")).textContent).toContain(
     "Did not move up: CORE-3, CORE-2"
   );
-  expect(sent).toEqual(["/api/v2/issues/CORE-3"]);
+  expect(sent).toEqual(["/api/v1/issues/CORE-3"]);
   expect(writesOf(client).rows()).toHaveLength(1);
 });
 
@@ -1097,11 +1097,7 @@ test("a bulk action keeps at most eight writes in flight", async () => {
   });
   restores.push(() => send.mockRestore());
   const keys = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`);
-  // No row carries a creation time, so the table draws no `<Timestamp>`: every mounted one
-  // re-renders on a 30 s tick of the real clock that they all share (features/refs/Timestamp.tsx),
-  // and a tick landing while this slow row waits is a React update outside act, which fails the
-  // row whenever the machine is slow enough. The writes the row counts read no time.
-  table(keys.map((key) => issue(key, { created_at: undefined, parent: null })));
+  table(keys.map((key) => issue(key, { parent: null })));
   await screen.findByRole("checkbox", { name: "Select CORE-1" });
   await user.click(screen.getByRole("checkbox", { name: "Select every row on this page" }));
   await user.click(screen.getByRole("button", { name: "Take out of epic" }));
@@ -1392,7 +1388,7 @@ test("Start all its queued issues next moves the epic's queued children and repo
       within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
     ).toContain("now starts next")
   );
-  expect(sent).toEqual([{ path: "/api/v2/issues/CORE-3", body: { rank: { before: "CORE-2" } } }]);
+  expect(sent).toEqual([{ path: "/api/v1/issues/CORE-3", body: { rank: { before: "CORE-2" } } }]);
 });
 
 // Finish sends what a refusal left behind under the same bound a bulk action keeps, so a
@@ -1667,7 +1663,7 @@ test("a resumed merge posts no second reason when the source already holds it", 
     return savedIssue("CORE-1") as never;
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
-    { body: "Merged into CORE-2 (“Target”) from the issues table.", replies: [] },
+    { message: { body: "Merged into CORE-2 (“Target”) from the issues table." } },
   ] as never);
   restores.push(() => {
     send.mockRestore();
@@ -1693,7 +1689,7 @@ test("a resumed merge posts no second reason when the source already holds it", 
   ]);
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
-  await waitFor(() => expect(paths).toEqual(["/api/v2/issues/CORE-1"]));
+  await waitFor(() => expect(paths).toEqual(["/api/v1/issues/CORE-1"]));
   expect(paths.some((path) => path.endsWith("/messages"))).toBe(false);
 });
 
@@ -1752,9 +1748,9 @@ test("a resumed merge whose discarded reason never landed posts it before closin
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() =>
     expect(paths).toEqual([
-      "/api/v2/issues/CORE-1/messages",
-      "/api/v2/issues/CORE-1/messages",
-      "/api/v2/issues/CORE-1",
+      "/api/v1/issues/CORE-1/messages",
+      "/api/v1/issues/CORE-1/messages",
+      "/api/v1/issues/CORE-1",
     ])
   );
 });
@@ -1867,7 +1863,7 @@ test.each([
     return savedIssue("CORE-1") as never;
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
-    { body: "Merged into CORE-2 (“Payments”) from the issues table.", replies: [] },
+    { message: { body: "Merged into CORE-2 (“Payments”) from the issues table." } },
   ] as never);
   restores.push(() => {
     send.mockRestore();
@@ -1894,7 +1890,7 @@ test.each([
   ]);
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
-  await waitFor(() => expect(paths).toEqual(["/api/v2/issues/CORE-1"]));
+  await waitFor(() => expect(paths).toEqual(["/api/v1/issues/CORE-1"]));
   expect(paths.some((path) => path.endsWith("/messages"))).toBe(false);
 });
 

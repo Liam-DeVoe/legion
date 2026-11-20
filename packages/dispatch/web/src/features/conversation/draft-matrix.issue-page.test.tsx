@@ -73,7 +73,6 @@ import { answerRequests } from "../../__tests__/network";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
-import { markOf } from "../agents/marks-fixture";
 import { DocumentRuntime } from "../doc/runtime";
 import { IssuePage } from "../issue-page/IssuePage";
 import { MarginProvider } from "../margin/margin-context";
@@ -155,16 +154,12 @@ async function openIssuePage(
   const user = userEvent.setup();
   const queryClient = newQueryClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  const state = (key: string) =>
-    markOf("issue", key, { last_read_seq: 0, pinned: false, pinned_items: [], seq: 0 });
+  const state = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
   const reads = [
     spyOn(api, "getIssue").mockImplementation(async (key) =>
       key === otherIssue.key ? otherIssue : issue
     ),
-    spyOn(api, "getMyState").mockResolvedValue({
-      "CORE-1": state("CORE-1"),
-      "CORE-2": state("CORE-2"),
-    }),
+    spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": state, "CORE-2": state }),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
@@ -180,12 +175,8 @@ async function openIssuePage(
   ];
   // The header's own reads, each answered with the API's empty shape.
   answerRequests(
-    http.get("/api/v2/repositories", () =>
-      Response.json({ items: [], limit: 50, offset: 0, total: 0 })
-    ),
-    http.get("/api/v2/projects/:project/architecture-sources", () =>
-      Response.json({ items: [], limit: 50, offset: 0, total: 0 })
-    )
+    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
+    http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([]))
   );
   const createComment = spyOn(api, "createComment");
   if (stopped !== undefined) {

@@ -60,7 +60,7 @@ export function renderApp({
   // above covers. It is answered here as alice's own attempts answer: failing at the connection,
   // so a resumed attempt reaches no network and the write stands exactly where it stood.
   answerIssuePatches().mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
   );
   const logoutSpy = spyOn(api, "logout").mockImplementation(logout);
   const view = render(
@@ -110,12 +110,12 @@ export function aliceWrite(
           bounds.sent?.({
             body: { status: "done" },
             method: "PATCH",
-            path: "/api/v2/issues/CORE-1",
+            path: "/api/v1/issues/CORE-1",
           });
           return Promise.reject(
             refuse
               ? new ApiError(422, { code: "ISSUE_INPUT", error: "refused" })
-              : new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"))
+              : new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
           );
         },
       })

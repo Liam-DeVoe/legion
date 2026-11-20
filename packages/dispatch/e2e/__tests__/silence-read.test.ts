@@ -6,7 +6,7 @@ import { readUntilSilent, type SilenceRead } from "../silence-read";
 // so each row moves the deadline with `jest.advanceTimersByTime` and reads where it starts over
 // without spending real time on it.
 
-const route = "/api/v2/delivery/timeline?from=a&to=b";
+const route = "/api/v1/delivery/timeline?from=a&to=b";
 const withinMs = 3_000;
 const silent = `the read of ${route} received nothing for 3 s (--read-within)`;
 

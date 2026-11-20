@@ -6,8 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { type AnswerAskInput, api, NetworkError, type WriteBounds } from "../../api/client";
-import type { AskV2, AskWithThread, Comment } from "../../api/types";
+import { api, NetworkError, type WriteBounds } from "../../api/client";
+import type { AnswerAskInput, Ask, AskRead, Comment } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
@@ -37,7 +37,7 @@ beforeAll(warmMarkdownRenderer);
 test("a hand-on the reader stopped says what Retry does, not a message's words", async () => {
   const open = answeredAsk({ answer: null, state: "open" });
   const handAskTo = spyOn(api, "handAskTo").mockRejectedValue(
-    new NetworkError("/api/v2/asks/ask-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/asks/ask-1/asked-of", new TypeError("Failed to fetch"))
   );
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
@@ -79,7 +79,7 @@ const dropped = (path: string) => new NetworkError(path, new TypeError("Failed t
 /** An open question on its card over the held clock, its answer write `answerAsk`: the reader
  *  picks Ship and presses Answer. */
 async function answerOpenQuestion(
-  answerAsk: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<AskV2>
+  answerAsk: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>
 ) {
   const open = answeredAsk({ answer: null, state: "open" });
   const rendered = renderCard(
@@ -103,7 +103,7 @@ async function answerOpenQuestion(
 // again under the answer's key (`retryLast`), rather than a failure it cannot know of.
 test("an answer the reader stopped says Retry asks again under its key, not that it failed", async () => {
   const { card, queryClient, view } = await answerOpenQuestion(() =>
-    Promise.reject(dropped("/api/v2/asks/ask-1/state"))
+    Promise.reject(dropped("/api/v1/asks/ask-1/answer"))
   );
   try {
     await stopTheLateWrite(queryClient);
@@ -124,12 +124,12 @@ test("an answer the reader stopped says Retry asks again under its key, not that
 // stopped answer says what the card shows instead of promising a Retry it does not offer.
 test("an answer stopped on a question that closed promises no Retry the card does not show", async () => {
   const { card, open, queryClient, view } = await answerOpenQuestion(() =>
-    Promise.reject(dropped("/api/v2/asks/ask-1/state"))
+    Promise.reject(dropped("/api/v1/asks/ask-1/answer"))
   );
   try {
     await stopTheLateWrite(queryClient);
     act(() => {
-      queryClient.setQueryData<AskWithThread>(
+      queryClient.setQueryData<AskRead>(
         ["ask-thread", open.id],
         thread(answeredAsk({ answer: firstAnswer, state: "answered" }))
       );
@@ -152,7 +152,7 @@ test("an answer stopped on a question that closed promises no Retry the card doe
 // asks again under its key, rather than a failure it cannot know of.
 test("a clarification the reader stopped says Retry asks again under its key, not that it failed", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
-    dropped("/api/v2/issues/CORE-1/comments")
+    dropped("/api/v1/issues/CORE-1/comments")
   );
   const open = answeredAsk({ answer: null, state: "open" });
   const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
@@ -182,7 +182,7 @@ test("a clarification the reader stopped says Retry asks again under its key, no
 // and that its Retry asks again under its key, rather than a failure it cannot know of.
 test("a reply the reader stopped says Retry asks again under its key", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
-    dropped("/api/v2/issues/CORE-1/comments")
+    dropped("/api/v1/issues/CORE-1/comments")
   );
   const answered = answeredAsk();
   const { queryClient, view } = renderCard(
@@ -211,7 +211,7 @@ test("a reply the reader stopped says Retry asks again under its key", async () 
 
 /** The question a host draws the same card for next (`ThreadBody` draws one card for one ask
  *  after another): another open ask, on another issue. */
-function nextQuestion(overrides: Partial<AskV2> = {}): AskV2 {
+function nextQuestion(overrides: Partial<Ask> = {}): Ask {
   return answeredAsk({
     answer: null,
     id: "ask-2",
@@ -246,7 +246,9 @@ function answersOnTheClock<T>(answer: T): () => Promise<T> {
 test("a stopped hand-on's Retry after the card moves to another ask hands on the ask it was pressed on", async () => {
   const open = answeredAsk({ answer: null, state: "open" });
   const next = nextQuestion();
-  const handAskTo = spyOn(api, "handAskTo").mockRejectedValue(dropped("/api/v2/asks/ask-1"));
+  const handAskTo = spyOn(api, "handAskTo").mockRejectedValue(
+    dropped("/api/v1/asks/ask-1/asked-of")
+  );
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
     { login: "bob" },
@@ -288,7 +290,7 @@ test("a stopped hand-on's Retry after the card moves to another ask hands on the
 // `422 KEY_REUSED` where the first had reached Dispatch, since the key covers the path.
 test("a stopped answer's Retry after the card moves to another ask answers the ask it was pressed on", async () => {
   const answerAsk = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
-    Promise.reject<AskV2>(dropped("/api/v2/asks/ask-1/state"))
+    Promise.reject<Ask>(dropped("/api/v1/asks/ask-1/answer"))
   );
   const { open, queryClient, rerender, view } = await answerOpenQuestion(answerAsk);
   try {
@@ -321,7 +323,7 @@ test("a stopped answer's Retry after the card moves to another ask answers the a
 test("an answer that lands after the card moves to another ask leaves that ask's form and draft alone", async () => {
   const open = answeredAsk({ answer: null, state: "open" });
   const next = nextQuestion();
-  const lands = answersOnTheClock<AskV2>({ ...open, answer: firstAnswer, state: "answered" });
+  const lands = answersOnTheClock<Ask>({ ...open, answer: firstAnswer, state: "answered" });
   const answerAsk = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) => lands());
   const onAnswered = mock((_id: string) => {});
   const { queryClient, rerender, view } = renderCard(
@@ -370,7 +372,7 @@ test("an answer that lands after the card moves to another ask leaves that ask's
 // landing drops that text from the first ask's draft, where it was written.
 test("a stopped question back's Retry after the card moves to another ask posts on the ask it was pressed on", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
-    dropped("/api/v2/issues/CORE-1/comments")
+    dropped("/api/v1/issues/CORE-1/comments")
   );
   const open = answeredAsk({ answer: null, state: "open" });
   const next = nextQuestion();
@@ -416,7 +418,7 @@ const SHOT_TEXT = "![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
 // shows another ask, it goes into the first ask's answer, not into the answer on screen.
 test("a stopped upload's Retry after the card moves to another ask adds the file to the answer it was pasted into", async () => {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
-    dropped("/api/v2/issues/CORE-1/artifacts")
+    dropped("/api/v1/issues/CORE-1/artifacts")
   );
   const open = answeredAsk({ answer: null, state: "open" });
   const next = nextQuestion();
@@ -456,7 +458,7 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
 // which its composer shows once the card is drawn for that ask again.
 test("a stopped upload's Retry after the card moves to another ask adds the file to the reply it was pasted into", async () => {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
-    dropped("/api/v2/issues/CORE-1/artifacts")
+    dropped("/api/v1/issues/CORE-1/artifacts")
   );
   const answered = answeredAsk();
   const next = nextQuestion({ answer: firstAnswer, state: "answered" });

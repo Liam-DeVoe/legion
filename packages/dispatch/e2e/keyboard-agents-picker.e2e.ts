@@ -124,7 +124,7 @@ test.describe("agents page", () => {
         await expect(picker).toHaveValue(issueKey);
         await expect(toggle).toContainText(issueKey);
 
-        expect(await sendAndCapturePath(page, field)).toBe(`/api/v2/issues/${issueKey}/comments`);
+        expect(await sendAndCapturePath(page, field)).toBe(`/api/v1/issues/${issueKey}/comments`);
       } finally {
         await context.close();
       }
@@ -157,7 +157,7 @@ test.describe("agents page", () => {
       await expect(toggle).toContainText("No issue");
 
       expect(await sendAndCapturePath(page, field)).toBe(
-        `/api/v2/agents/${plannerSession.session_id}/messages`
+        `/api/v1/agents/${plannerSession.session_id}/messages`
       );
     } finally {
       await context.close();
@@ -212,7 +212,7 @@ test.describe("agents page", () => {
       const toggle = row.getByRole("button", { name: "Choose issue" });
       const picker = row.getByRole("combobox", { name: "Issue" });
       const field = row.getByRole("textbox", { name: "Comment" });
-      const send = await holdPosts(page, "**/api/v2/agents/*/messages");
+      const send = await holdPosts(page, "**/api/v1/agents/*/messages");
 
       await page.keyboard.press("j");
       await page.keyboard.press("Enter");
@@ -276,7 +276,7 @@ test.describe("agents page", () => {
       const sent = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
-          new URL(response.url()).pathname === `/api/v2/issues/${issueKey}/messages`
+          new URL(response.url()).pathname === `/api/v1/issues/${issueKey}/messages`
       );
       await field.press("Control+Enter");
       expect((await sent).ok()).toBe(true);
@@ -308,7 +308,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const field = row.getByRole("textbox", { name: "Comment" });
-      const send = await holdPosts(page, "**/api/v2/issues/*/messages");
+      const send = await holdPosts(page, "**/api/v1/issues/*/messages");
 
       await page.keyboard.press("j");
       await page.keyboard.press("Enter");
@@ -350,7 +350,7 @@ test.describe("agents page", () => {
       const field = row.getByRole("textbox", { name: "Comment" });
       const cancelReply = row.getByRole("button", { name: "Cancel reply" });
       const picker = row.getByRole("combobox", { name: "Issue" });
-      const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
+      const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
@@ -375,7 +375,7 @@ test.describe("agents page", () => {
       const retried = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          new URL(request.url()).pathname === `/api/v2/issues/${issueKey}/comments`
+          new URL(request.url()).pathname === `/api/v1/issues/${issueKey}/comments`
       );
       await row.getByRole("button", { name: "Retry" }).click();
       // Planner takes Aside and BTW but not Send, so a plain message to it is an Aside.
@@ -407,11 +407,11 @@ test.describe("agents page", () => {
       const row = shownAgentRows(page).nth(0);
       const field = row.getByRole("textbox", { name: "Comment" });
       const reply = row.getByRole("button", { name: "Reply" }).first();
-      const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
+      const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
       const sent = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          new URL(request.url()).pathname === `/api/v2/agents/${plannerSession.session_id}/messages`
+          new URL(request.url()).pathname === `/api/v1/agents/${plannerSession.session_id}/messages`
       );
 
       await page.keyboard.press("j");
@@ -430,7 +430,7 @@ test.describe("agents page", () => {
       const retried = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          new URL(request.url()).pathname === `/api/v2/agents/${plannerSession.session_id}/messages`
+          new URL(request.url()).pathname === `/api/v1/agents/${plannerSession.session_id}/messages`
       );
       await row.getByRole("button", { name: "Retry" }).click();
       // The same message under a new key: Dispatch keeps the answer it gave a key, so the refused
@@ -463,11 +463,11 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const field = row.getByRole("textbox", { name: "Comment" });
-      const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
+      const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
       const sent = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          /\/api\/v2\/(agents\/[^/]+|issues\/[^/]+)\/messages$/.test(
+          /\/api\/v1\/(agents\/[^/]+|issues\/[^/]+)\/messages$/.test(
             new URL(request.url()).pathname
           )
       );
@@ -484,7 +484,7 @@ test.describe("agents page", () => {
       });
 
       expect(new URL((await sent).url()).pathname).toBe(
-        `/api/v2/agents/${plannerSession.session_id}/messages`
+        `/api/v1/agents/${plannerSession.session_id}/messages`
       );
       refuse();
       await expect(row.getByText(messageRefused)).toBeVisible();
@@ -507,11 +507,11 @@ test.describe("agents page", () => {
       const field = row.getByRole("textbox", { name: "Comment" });
       const toggle = row.getByRole("button", { name: "Choose issue" });
       const picker = row.getByRole("combobox", { name: "Issue" });
-      const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
+      const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
       const sent = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          /\/api\/v2\/(agents\/[^/]+|issues\/[^/]+)\/messages$/.test(
+          /\/api\/v1\/(agents\/[^/]+|issues\/[^/]+)\/messages$/.test(
             new URL(request.url()).pathname
           )
       );
@@ -532,7 +532,7 @@ test.describe("agents page", () => {
       });
 
       expect(new URL((await sent).url()).pathname).toBe(
-        `/api/v2/agents/${plannerSession.session_id}/messages`
+        `/api/v1/agents/${plannerSession.session_id}/messages`
       );
       refuse();
       await expect(row.getByText(messageRefused)).toBeVisible();
@@ -559,7 +559,7 @@ test.describe("agents page", () => {
       const uploaded = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          /\/api\/v2\/issues\/[^/]+\/artifacts$/.test(new URL(request.url()).pathname)
+          /\/api\/v1\/issues\/[^/]+\/artifacts$/.test(new URL(request.url()).pathname)
       );
 
       await page.keyboard.press("j");
@@ -584,7 +584,7 @@ test.describe("agents page", () => {
         select.dispatchEvent(new Event("change", { bubbles: true }));
       });
 
-      expect(new URL((await uploaded).url()).pathname).toBe("/api/v2/issues/CORE-1/artifacts");
+      expect(new URL((await uploaded).url()).pathname).toBe("/api/v1/issues/CORE-1/artifacts");
       await expect(field).toHaveValue("@Planner dispatch://CORE-1/artifact/notes-md");
       await expect(toggle).toContainText("CORE-2");
     } finally {
@@ -606,11 +606,11 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const field = row.getByRole("textbox", { name: "Comment" });
-      const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
+      const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
       const sent = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          new URL(request.url()).pathname === `/api/v2/agents/${plannerSession.session_id}/messages`
+          new URL(request.url()).pathname === `/api/v1/agents/${plannerSession.session_id}/messages`
       );
 
       await page.keyboard.press("j");
@@ -627,7 +627,7 @@ test.describe("agents page", () => {
       });
 
       expect(new URL((await sent).url()).pathname).toBe(
-        `/api/v2/agents/${plannerSession.session_id}/messages`
+        `/api/v1/agents/${plannerSession.session_id}/messages`
       );
       refuse();
       await expect(row.getByText(messageRefused)).toBeVisible();
@@ -658,7 +658,7 @@ test.describe("agents page", () => {
           posts += 1;
         }
       });
-      const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
+      const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
 
       await page.keyboard.press("j");
       await page.keyboard.press("Enter");
@@ -701,7 +701,7 @@ test.describe("agents page", () => {
       const row = shownAgentRows(page).nth(0);
       const field = row.getByRole("textbox", { name: "Comment" });
       const discard = row.getByRole("button", { name: "Discard" });
-      const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
+      const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
 
       await page.keyboard.press("j");
       await page.keyboard.press("Enter");
@@ -772,9 +772,9 @@ test.describe("agents page", () => {
       const posted = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
-          response.url().endsWith(`/api/v2/issues/${issueKey}/comments`)
+          response.url().endsWith(`/api/v1/issues/${issueKey}/comments`)
       );
-      expect(await sendAndCapturePath(page, field)).toBe(`/api/v2/issues/${issueKey}/comments`);
+      expect(await sendAndCapturePath(page, field)).toBe(`/api/v1/issues/${issueKey}/comments`);
       expect((await posted).status()).toBe(201);
       await expect(field).not.toHaveValue(/Status please/);
       expect(
@@ -853,19 +853,19 @@ test.describe("agents page", () => {
           input: { body: "@Planner first", delivery: "aside", mentions },
           key,
           ok: true,
-          path: `/api/v2/issues/${issueKey}/comments`,
+          path: `/api/v1/issues/${issueKey}/comments`,
         },
         {
           input: { body: "@Planner second", delivery: "aside", mentions },
           key,
           ok: true,
-          path: `/api/v2/issues/${issueKey}/comments`,
+          path: `/api/v1/issues/${issueKey}/comments`,
         },
         {
           input: { body: "third", delivery: "aside" },
           key,
           ok: true,
-          path: `/api/v2/agents/${plannerSession.session_id}/messages`,
+          path: `/api/v1/agents/${plannerSession.session_id}/messages`,
         },
       ]);
       expect(new Set(sends.map((send) => send.key)).size).toBe(3);
@@ -934,7 +934,7 @@ test.describe("agents page", () => {
       const field = row.getByRole("textbox", { name: "Comment" });
       const toggle = row.getByRole("button", { name: "Choose issue" });
       const reply = row.getByRole("button", { name: "Reply" }).first();
-      const send = await holdPosts(page, "**/api/v2/agents/*/messages");
+      const send = await holdPosts(page, "**/api/v1/agents/*/messages");
 
       await page.keyboard.press("j");
       await page.keyboard.press("Enter");

@@ -38,7 +38,7 @@ test("a hundred and twenty threads sort by priority, count up, and follow their 
   });
   expect(await unreadThreadRows()).toBe(120);
   const listed = await listMyReplies({ state: "unread" });
-  const oldest = [...(listed.items ?? [])].sort((left, right) =>
+  const oldest = [...(listed.rows ?? [])].sort((left, right) =>
     left.reply.created_at < right.reply.created_at ? -1 : 1
   )[0];
   expect(oldest?.subject).toBe("Ledger root 1");

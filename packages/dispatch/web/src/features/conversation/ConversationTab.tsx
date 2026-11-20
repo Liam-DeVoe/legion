@@ -6,12 +6,12 @@ import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type {
   Agent,
-  ArtifactV2,
+  Artifact,
   Comment,
-  Marks,
   MessageDelivery,
   MessageDeliveryMode,
   MessageWithTrees,
+  UserState,
 } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { useSending } from "../../hooks/useSending";
@@ -106,14 +106,14 @@ import { threadRepliesSendKey, threadReplySendKey, usePhoneThread } from "./useP
 interface ConversationTabProps {
   /** Every artifact on the issue by id - uploads and images as well as documents, which is
    *  what `IssuePage` has. A comment's anchor names one of them, and its link is built from it. */
-  issueArtifacts: ReadonlyMap<string, ArtifactV2>;
+  issueArtifacts: ReadonlyMap<string, Artifact>;
   focusItemId?: string;
   isClosed: boolean;
   issueKey: string;
   /** Called once, when the tab first places the reader at the newest card (`useFollowLatest`'s
    *  `onFirstPlacement`), before the parent's layout effects of that commit run. */
   onFirstPlacement?: () => void;
-  state: Marks | undefined;
+  state: UserState | undefined;
   visible: boolean;
 }
 
@@ -974,12 +974,12 @@ export function ConversationTab({
   // ordered by activity, not by sequence, so the log is read for this and for the head alone.
   const unreadBoundary = useQuery({
     queryKey: ["events", issueKey, "unread-boundary", lastReadSeq],
-    queryFn: () => api.getIssueEvents(issueKey, { after: String(lastReadSeq), limit: 1 }),
+    queryFn: () => api.getIssueEvents(issueKey, { after: lastReadSeq, limit: 1 }),
   });
   // The issue's head: what a dwell on the newest conversation marks read.
   const head = useQuery({
     queryKey: ["events", issueKey, "head"],
-    queryFn: () => api.getIssueEvents(issueKey, { limit: 1, sort: "-seq" }),
+    queryFn: () => api.getIssueEvents(issueKey, { limit: 1, order: "desc" }),
   });
   const unreadFrom = unreadBoundary.data?.[0]?.created_at;
   const headSeq = head.data?.[0]?.seq ?? 0;
@@ -1256,7 +1256,7 @@ export function ConversationTab({
   useSendMarkOnce({
     mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
     onSuccess: (next, mark) =>
-      queryClient.setQueryData<Marks>(["user-state"], (current) => ({
+      queryClient.setQueryData<UserState>(["user-state"], (current) => ({
         ...current,
         [mark.issueKey]: next,
       })),
@@ -1375,7 +1375,7 @@ export function ConversationTab({
         {shown.map((item) => {
           const current = item.id === focus?.id;
           const currentReplyId = current ? focus?.replyId : undefined;
-          const pinned = isPinnedConversation(issueState.pinned_items, item.id);
+          const pinned = isPinnedConversation(issueState.dismissed ?? [], item.id);
           // A thread covering the list hides its copy of the newest card, so that copy gives
           // up the mark's ref while one is open; the thread's own card carries it below.
           const register =
@@ -1484,7 +1484,7 @@ export function ConversationTab({
                 <AskCard
                   ask={item.ask}
                   currentReplyId={currentReplyId}
-                  initialThread={item.ask}
+                  initialThread={{ ask: item.ask, ...item.ask.thread }}
                   initialThreadUpdatedAt={asks.dataUpdatedAt}
                   markRead
                   thread="collapsed"
@@ -1553,7 +1553,7 @@ export function ConversationTab({
                 pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
                 onPin={() => pinConversation(phoneThread.id)}
                 onReply={phone.beginReply}
-                pinned={isPinnedConversation(issueState.pinned_items, phoneThread.id)}
+                pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
                 register={phoneThreadIsNewest ? registerNewest : undefined}
                 replyDisabled={composerSending}
                 sendKey={sendKey}

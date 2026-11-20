@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
-import type { AskAnswer, AskV2, AskWithThread, Comment } from "../../api/types";
+import type { Ask, AskAnswer, AskRead } from "../../api/types";
 
 // The card `AskCard.test.tsx` and `AskCard.stopped-writes.test.tsx` both render, and the reads
 // every render of it answers.
@@ -24,11 +24,8 @@ export function installAskCardApiMocks() {
       login: "alice",
     });
     getReferences = spyOn(api, "getReferences").mockResolvedValue({
-      items: [],
-      limit: 50,
+      edges: [],
       node: graphNode({ id: "ask-1", kind: "ask" }),
-      offset: 0,
-      total: 0,
     });
     // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
     // nobody is subscribed here, so the card lists its followers alone.
@@ -50,7 +47,7 @@ export const firstAnswer: AskAnswer = {
   user: "alice",
 };
 
-export function answeredAsk(overrides: Partial<AskV2> = {}): AskV2 {
+export function answeredAsk(overrides: Partial<Ask> = {}): Ask {
   return {
     anchor: null,
     answer: firstAnswer,
@@ -61,19 +58,14 @@ export function answeredAsk(overrides: Partial<AskV2> = {}): AskV2 {
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-10-08T00:00:00Z",
-    document: null,
     edited_at: null,
     id: "ask-1",
-    issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
-    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [{ label: "Ship" }, { label: "Hold" }],
-    priority: null,
     question: "Which release path?",
-    ref: "dispatch://CORE-1/ask/ask-1",
     state: "answered",
     urgency: "med",
     waiting_on: "human",
@@ -81,26 +73,21 @@ export function answeredAsk(overrides: Partial<AskV2> = {}): AskV2 {
   };
 }
 
-/** The ask read with its thread, as `getAsk` answers it and the card holds it: its answers
- *  (the recorded one alone, unless given) and its replies. */
 export function thread(
-  ask: AskV2,
-  answers: AskAnswer[] = ask.answer === null ? [] : [ask.answer],
-  replies: Comment[] = []
-): AskWithThread {
+  ask: Ask,
+  answers: AskAnswer[] = ask.answer === null ? [] : [ask.answer]
+): AskRead {
   return {
-    ...ask,
-    thread: {
-      answers,
-      claimant: null,
-      edits: [],
-      followers: [],
-      replies,
-      route: null,
-      route_status: null,
-      route_holder: null,
-      route_status_reason: null,
-    },
+    answers,
+    ask,
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
   };
 }
 

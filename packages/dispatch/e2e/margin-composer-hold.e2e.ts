@@ -40,7 +40,7 @@ async function sendFromBar(page: Page, quote: string, body: string): Promise<voi
 }
 
 function refusal(page: Page, issueKey: string, status: number) {
-  return answeredPost(page, `/api/v2/issues/${issueKey}/comments`, status);
+  return answeredPost(page, `/api/v1/issues/${issueKey}/comments`, status);
 }
 
 // A newer selection-bar action while a send is out would move the open composer to the newer mark:
@@ -58,7 +58,7 @@ test("a newer bar Comment while a margin send is out leaves the composer on the 
   try {
     const page = await alice.newPage();
     await openSpec(page, issue.key, spec);
-    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "quick", "About quick");
 
     await setSheet(page, "chromium", false);
@@ -100,7 +100,7 @@ test("a bar Comment on another document while a margin send is out opens its own
   try {
     const page = await alice.newPage();
     await openSpec(page, first.key, spec);
-    const send = await holdPosts(page, `**/api/v2/issues/${first.key}/comments`);
+    const send = await holdPosts(page, `**/api/v1/issues/${first.key}/comments`);
     await sendFromBar(page, "quick", "Left behind");
 
     await navigateInApp(page, `/issues/${second.key}/spec`);
@@ -118,7 +118,7 @@ test("a bar Comment on another document while a margin send is out opens its own
     const landed = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith(`/api/v2/issues/${first.key}/comments`) &&
+        response.url().endsWith(`/api/v1/issues/${first.key}/comments`) &&
         response.ok()
     );
     send.release();
@@ -145,7 +145,7 @@ test("leaving a document while a margin send is out keeps its draft and refusal 
   try {
     const page = await alice.newPage();
     await openSpec(page, issue.key, spec);
-    const comments = `**/api/v2/issues/${issue.key}/comments`;
+    const comments = `**/api/v1/issues/${issue.key}/comments`;
     const refuse = await refusePosts(page, comments);
     await sendFromBar(page, "quick", "Kept for the return");
 
@@ -192,7 +192,7 @@ test("the Pinned tab while a margin send is out keeps the composer, its draft an
   try {
     const page = await alice.newPage();
     await openSpec(page, issue.key, spec);
-    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "brown", "About brown");
 
     const margin = page.getByTestId("margin-sheet");
@@ -224,7 +224,7 @@ test("collapsing the margin while its send is out keeps the composer, its draft 
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     await openSpec(page, issue.key, spec);
-    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "brown", "Through the rail");
 
     await page.getByRole("button", { name: "Hide margin" }).click();
@@ -255,7 +255,7 @@ test("a bar Comment while the collapsed margin's send is out shows the margin an
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     await openSpec(page, issue.key, spec);
-    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "brown", "Through the rail");
 
     await page.getByRole("button", { name: "Hide margin" }).click();
@@ -290,7 +290,7 @@ test("on a phone, a margin thread opened while the margin's send is out keeps th
     const page = await alice.newPage();
     await page.setViewportSize({ height: 844, width: 390 });
     await openSpec(page, issue.key, spec);
-    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "quick", "About quick");
 
     const margin = page.getByTestId("margin-sheet");
@@ -326,7 +326,7 @@ test("a margin comment out when its issue closes posts", async ({ browser }) => 
   try {
     const page = await alice.newPage();
     await openSpec(page, issue.key, spec);
-    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "brown", "Before the close");
 
     await patchIssue(issue.key, { status: "done" }, { login: "bob" });
@@ -334,7 +334,7 @@ test("a margin comment out when its issue closes posts", async ({ browser }) => 
     const form = composer(page);
     await expect(form.getByLabel("Comment")).toHaveValue("Before the close");
 
-    const posted = answeredPost(page, `/api/v2/issues/${issue.key}/comments`, 201);
+    const posted = answeredPost(page, `/api/v1/issues/${issue.key}/comments`, 201);
     send.release();
     await posted;
     await expect(composer(page)).toHaveCount(0);
@@ -360,7 +360,7 @@ test("a margin suggestion out when its issue closes keeps the draft and shows th
   try {
     const page = await alice.newPage();
     await openSpec(page, issue.key, spec);
-    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await selectEditorText(page, "brown");
     await barAction(page, "Suggest");
     const form = composer(page);

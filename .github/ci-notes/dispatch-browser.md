@@ -673,8 +673,8 @@ legs run is a clock spec, and no clock spec uploads or downloads anything.
 chromium-alone runs both wall-clock specs (`clockSpecNames` in e2e/configurations.ts:
 heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
 that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
-And e2e/harness-pool.ts's `stackBucket` (:195) makes no bucket at one stack: it
-answers `undefined` on `count === 1` (:202). A store serving nothing would be charged
+And e2e/harness-pool.ts's `stackBucket` (:183) makes no bucket at one stack: it
+answers `undefined` on `count === 1` (:190). A store serving nothing would be charged
 to the very reading these rows exist for, which is why the `weed` the image carries is
 started on the shard job's machines and not on these. A clock spec that later uploads
 fails here by name rather than quietly.
@@ -705,10 +705,8 @@ the shard job's upload of this name is and for the reason it gives.
 
 What the run left behind: the stack's own server logs, in the job's own log and collected
 into the one directory the `dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
-the browser step already wrote there. The teardown keeps a leg's log files unless the leg
-passed (e2e/run-outcome.ts), and a green leg's servers' output is in the browser step's
-own log all the same, since a run of one stack copies it to stderr (e2e/harness-pool.ts).
-No file store runs on this machine, so there is no store log to collect.
+the browser step already wrote there. No file store runs on this machine, so there is no
+store log to collect.
 
 Always, not `if: failure()`: a green leg's logs are worth as much as a red one's here,
 since they say what the stack's servers did while the clock was read, and the memory and
@@ -1084,18 +1082,17 @@ which is how that file reaches the pull request from a machine with no container
 holds both runs: the normal run's results under test-results, the reverse run's under
 test-results-reverse.
 
-## What the visual upload's last pattern takes, and what it fixes
+## Why the visual upload keeps a pattern that matches no file
 
-The last pattern takes each run's stack's own logs: e2e/visual-run.sh stops its stack
-with a SIGTERM, on which e2e/harness-pool.ts keeps each `worker-*/log/*.log` (the
-servers' output, which the two steps above printed as well, since a run of one stack
-copies it to stderr). It is also what fixes the archive's layout, matched or not:
-upload-artifact takes the archive root from the least common ancestor of its
-patterns' search paths, so this `${{ runner.temp }}` pattern is what keeps that root
-at the runner's work directory and the repository path inside the archive. That path
-is the one e2e/visual-run.sh prints on a failed run, and the one its header sends a
-reader to who takes a baseline from this artifact. Delete it and `test-results` moves
-to the top of the archive, off that path.
+The last pattern matches no file in THIS job and is not dead: it is what fixes the
+archive's layout. This job runs one stack, and for one stack e2e/harness-pool.ts
+leaves `logDir` unset, so the harness writes to stderr and no `worker-*/log/*.log`
+is ever created. upload-artifact takes the archive root from the least common
+ancestor of its patterns' search paths, so this `${{ runner.temp }}` pattern is what
+keeps that root at the runner's work directory and the repository path inside the
+archive. That path is the one e2e/visual-run.sh prints on a failed run, and the one
+its header sends a reader to who takes a baseline from this artifact.
+Delete it as unused and `test-results` moves to the top of the archive, off that path.
 
 ## What the merge job reports, and why it is never skipped
 

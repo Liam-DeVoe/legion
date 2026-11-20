@@ -26,7 +26,6 @@ import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
 import { defineNetwork, InterceptorSource } from "msw/experimental";
-import type { Result } from "../api/paths";
 import { TEST_ORIGIN } from "./register-dom";
 
 /** Every request a test let reach the network since the last report, each `<METHOD> <path>`. */
@@ -40,10 +39,6 @@ const reached: string[] = [];
 export function requestsThatReachedNetwork(): string[] {
   return reached.splice(0);
 }
-
-/** A list route's page holding no row, as `/api/v2` answers one: its envelope at the route's
- *  default limit. */
-const emptyPage = { items: [], limit: 50, offset: 0, total: 0 };
 
 /**
  * The routes the application shell reads on every rendered page, answered with the API's empty
@@ -59,9 +54,7 @@ const shellHandlers: RequestHandler[] = [
   http.get("/auth/whoami", () =>
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
   ),
-  http.get("/api/v2/agents", () =>
-    Response.json(emptyPage satisfies Result<"/api/v2/agents", "get">)
-  ),
+  http.get("/api/v1/agents", () => Response.json([])),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
   // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`). The issue header reads the same
@@ -73,43 +66,28 @@ const shellHandlers: RequestHandler[] = [
   // `ProjectsSection.tsx:42`, `SettingsPage.tsx:75`) read it too. An empty list is a project with
   // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
   // asserts on project content spies that method above MSW.
-  http.get("/api/v2/projects", () =>
-    Response.json(emptyPage satisfies Result<"/api/v2/projects", "get">)
-  ),
+  http.get("/api/v1/projects", () => Response.json([])),
   // The Settings page's daemon section reads every project's Legion daemon with no `enabled` guard
   // beyond the project being known (`useLegionDaemons`), so the read happens wherever that section
   // is drawn. `null` is a project that names no daemon, not a failure (`legionDaemonQuery`'s own
   // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
   // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
-  http.get("/api/v2/projects/:key/legion/daemon", () =>
-    Response.json(null satisfies Result<"/api/v2/projects/{key}/legion/daemon", "get">)
-  ),
-  http.get("/api/v2/me/threads", () =>
-    Response.json({
-      ...emptyPage,
-      as_of: "2026-09-01T00:00:00Z",
-    } satisfies Result<"/api/v2/me/threads", "get">)
-  ),
-  http.get("/api/v2/credential-requests", () =>
-    Response.json(emptyPage satisfies Result<"/api/v2/credential-requests", "get">)
-  ),
-  // The person's marks, of every kind the page reads them by (`?kind=agent`, `?kind=issue`).
-  http.get("/api/v2/me/marks", () =>
-    Response.json(emptyPage satisfies Result<"/api/v2/me/marks", "get">)
-  ),
+  http.get("/api/v1/projects/:key/legion/daemon", () => Response.json(null)),
+  http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
+  http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
+  http.get("/api/v1/me/agents/state", () => Response.json({})),
   // The base an upload names: before it posts a markdown file, the Upload control reads the
-  // token of the document the owner already holds under that name, the owner's list at that slug
-  // with its text (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`,
-  // `api.ownerArtifactText`), so every page that can take a dropped or pasted `.md` reads it. The
-  // owner holds no such document in a unit test's world, which is an empty page and what
-  // `captureUploadBase` takes as no base, so the upload it sends is the one those pages asserted
-  // before this read existed. A list read with no `slug` is no base read and is left to the file
-  // that answers it. A test about the base spies `api.ownerArtifactText` and never reaches this.
-  http.get("/api/v2/issues/:key/artifacts", ({ request }) =>
-    new URL(request.url).searchParams.has("slug") ? Response.json(emptyPage) : undefined
+  // token of the document the owner already holds under that name
+  // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can
+  // take a dropped or pasted `.md` reads this route. The owner holds no such document in a unit
+  // test's world, which is Dispatch's own `404` and what `captureUploadBase` takes as no base,
+  // so the upload it sends is the one those pages asserted before this read existed. A test
+  // about the base spies `api.ownerArtifactText` and never reaches this handler.
+  http.get("/api/v1/issues/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
   ),
-  http.get("/api/v2/projects/:key/artifacts", ({ request }) =>
-    new URL(request.url).searchParams.has("slug") ? Response.json(emptyPage) : undefined
+  http.get("/api/v1/projects/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
   ),
   // The navigation rail reads the two fault counts on every page it is drawn on
   // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
@@ -117,14 +95,14 @@ const shellHandlers: RequestHandler[] = [
   // the server's own for a deployment that has written no priority: both counts zero and the
   // sentence that says why, which is the case where the rail draws no number at all. A test
   // that asserts on a count spies `api.listPriorities` above MSW.
-  http.get("/api/v2/priorities", () =>
+  http.get("/api/v1/priorities", () =>
     Response.json({
-      ...emptyPage,
       empty:
         "No priority is live now, so the list is empty. Write one, then say which work advances it.",
+      priorities: [],
       priority_work_parked: { by_priority: {}, count: 0, issues: [] },
       work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-    } satisfies Result<"/api/v2/priorities", "get">)
+    })
   ),
 ];
 

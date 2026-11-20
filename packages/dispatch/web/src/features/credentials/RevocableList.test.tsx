@@ -42,27 +42,29 @@ const sections: Section[] = [
     rowId: "grant-1",
     section: () => <GrantsSection />,
     stub: (revoke) => {
-      const list = spyOn(api, "getCredentialGrants").mockResolvedValue([
-        {
-          approver: null,
-          created_at: "2026-10-03T12:05:00Z",
-          decided_by: null,
-          enrollment: {
-            kind: "session",
-            operator: "ada@example.com",
-            runtime_id: "box-1",
-            slot: null,
+      const list = spyOn(api, "getCredentialGrants").mockResolvedValue({
+        grants: [
+          {
+            approver: null,
+            created_at: "2026-10-03T12:05:00Z",
+            decided_by: null,
+            enrollment: {
+              kind: "session",
+              operator: "ada@example.com",
+              runtime_id: "box-1",
+              slot: null,
+            },
+            expires_at: "2026-10-03T13:05:00Z",
+            grant_id: "grant-1",
+            granted: "automatic",
+            names: ["WORKER_TOKEN"],
+            record_id: null,
           },
-          expires_at: "2026-10-03T13:05:00Z",
-          grant_id: "grant-1",
-          granted: "automatic",
-          names: ["WORKER_TOKEN"],
-          record_id: null,
-        },
-      ]);
+        ],
+      });
       const spy = spyOn(api, "revokeCredentialGrant").mockImplementation(revoke);
       return {
-        clearList: () => list.mockResolvedValue([]),
+        clearList: () => list.mockResolvedValue({ grants: [] }),
         restore: () => {
           list.mockRestore();
           spy.mockRestore();
@@ -79,22 +81,24 @@ const sections: Section[] = [
     rowId: "cred-devbox",
     section: () => <MachineLoginsSection />,
     stub: (revoke) => {
-      const list = spyOn(api, "getMachineLogins").mockResolvedValue([
-        {
-          approved_by: "ada@example.com",
-          credential_id: "cred-devbox",
-          expired: false,
-          expires_at: "2026-10-10T12:00:00Z",
-          host: "devbox.example.com",
-          issued_at: "2026-10-03T12:00:00Z",
-          person: null,
-          service: null,
-          subject: null,
-        },
-      ]);
+      const list = spyOn(api, "getMachineLogins").mockResolvedValue({
+        credentials: [
+          {
+            approved_by: "ada@example.com",
+            credential_id: "cred-devbox",
+            expired: false,
+            expires_at: "2026-10-10T12:00:00Z",
+            host: "devbox.example.com",
+            issued_at: "2026-10-03T12:00:00Z",
+            person: null,
+            service: null,
+            subject: null,
+          },
+        ],
+      });
       const spy = spyOn(api, "revokeMachineLogin").mockImplementation(revoke);
       return {
-        clearList: () => list.mockResolvedValue([]),
+        clearList: () => list.mockResolvedValue({ credentials: [] }),
         restore: () => {
           list.mockRestore();
           spy.mockRestore();
@@ -111,18 +115,20 @@ const sections: Section[] = [
     rowId: "signin-1",
     section: () => <SignInsSection />,
     stub: (revoke) => {
-      const list = spyOn(api, "getSignIns").mockResolvedValue([
-        {
-          created_at: "2026-10-03T12:00:00Z",
-          last_used_at: "2026-10-03T12:30:00Z",
-          machine: "devbox.example.com",
-          signin_id: "signin-1",
-          thumbprint: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
-        },
-      ]);
+      const list = spyOn(api, "getSignIns").mockResolvedValue({
+        signins: [
+          {
+            created_at: "2026-10-03T12:00:00Z",
+            last_used_at: "2026-10-03T12:30:00Z",
+            machine: "devbox.example.com",
+            signin_id: "signin-1",
+            thumbprint: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+          },
+        ],
+      });
       const spy = spyOn(api, "revokeSignIn").mockImplementation(revoke);
       return {
-        clearList: () => list.mockResolvedValue([]),
+        clearList: () => list.mockResolvedValue({ signins: [] }),
         restore: () => {
           list.mockRestore();
           spy.mockRestore();
@@ -265,7 +271,7 @@ for (const section of sections) {
     jest.useFakeTimers();
     const user = userOnFakeClock();
     const stubs = section.stub(async () => {
-      throw new NetworkError("/api/v2/credential-grants/grant-1", new TypeError("Failed to fetch"));
+      throw new NetworkError("/api/v1/revoke", new TypeError("Failed to fetch"));
     });
     const confirm = spyOn(window, "confirm").mockReturnValue(true);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

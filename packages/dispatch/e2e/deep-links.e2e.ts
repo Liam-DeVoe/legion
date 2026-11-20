@@ -10,8 +10,8 @@ import {
   editArtifact,
   getIssue,
   putIssueState,
+  resolveAsk,
   resolveComment,
-  retractAsk,
   search,
 } from "./api";
 import {
@@ -417,7 +417,7 @@ test("a linked card the margin's later cards push down is scrolled back into vie
     // Hold the asks until the comment card has landed, then release them: this is the render
     // order CI produces, made deterministic.
     const asksHeld = Promise.withResolvers<void>();
-    await page.route(/\/api\/v2\/(asks\?|issues\/[^/]+\/asks)/, async (route) => {
+    await page.route(/\/api\/v1\/(inbox|issues\/[^/]+\/asks)/, async (route) => {
       await asksHeld.promise;
       await route.continue();
     });
@@ -544,7 +544,7 @@ test("a press in the document while a comment link is still landing does not end
     // "Needs you" group that relays out the margin until after the press.
     const transport = await documentTransport(page, { holding: true });
     const asksHeld = Promise.withResolvers<void>();
-    await page.route(/\/api\/v2\/(asks\?|issues\/[^/]+\/asks)/, async (route) => {
+    await page.route(/\/api\/v1\/(inbox|issues\/[^/]+\/asks)/, async (route) => {
       await asksHeld.promise;
       await route.continue();
     });
@@ -835,8 +835,7 @@ test("a resolving reference above a linked card does not end the hold", async ({
 
   try {
     const page = await context.newPage();
-    // The summary is the issue's own read with nothing included, so no query follows its key.
-    await page.route(new RegExp(`/api/v2/issues/${target.key}$`), async (route) => {
+    await page.route(new RegExp(`/api/v1/issues/${target.key}/summary$`), async (route) => {
       await referenceHeld.promise;
       await route.continue();
     });
@@ -1207,7 +1206,7 @@ test("every item link lands on exactly one marked card, and a reply link marks i
     agentSession
   );
   const retracted = await createAsk(issue.key, { question: "Withdrawn sextant?" }, agentSession);
-  await retractAsk(retracted.id, { reason: "Superseded." }, agentSession);
+  await resolveAsk(retracted.id, { kind: "retracted", reason: "Superseded." }, agentSession);
   const resolvedRoot = await createComment(issue.key, { body: "A resolved thread." }, agentSession);
   const resolvedReply = await createComment(
     issue.key,
@@ -1259,7 +1258,7 @@ test("every item link lands on exactly one marked card, and a reply link marks i
 
     // A search hit opens the very path the palette's row carries.
     const hits = await search("quadrant");
-    const hit = (hits.items ?? []).find((result) => result.id === found.id);
+    const hit = (hits.results ?? []).find((result) => result.id === found.id);
     expect(hit?.href).toBe(`/issues/${issue.key}/comments/${found.id}`);
     await navigateInApp(page, hit?.href ?? "");
     if (isPhone) {

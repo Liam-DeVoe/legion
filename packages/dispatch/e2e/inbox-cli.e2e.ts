@@ -182,18 +182,13 @@ function badgeNumber(text: string): number {
 
 /** One write an agent makes for its person: the person's own token as the bearer, and `session=`
  *  naming the agent, which the server records as the act beside them (`actingPerson`). */
-function withToken(
-  method: "POST" | "PUT",
-  path: string,
-  token: string,
-  body: object
-): Promise<Response> {
+function withToken(path: string, token: string, body: object): Promise<Response> {
   const url = new URL(path, baseUrl);
   url.searchParams.set("session", cliSession);
   return fetch(url, {
     body: JSON.stringify(body),
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    method,
+    method: "POST",
   });
 }
 
@@ -456,10 +451,9 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     // elsewhere (`features/inbox/pane-selection.ts`), which is where the Inbox shows this one.
     const card = await askCard(page, seeded.ordinaryAsk);
     await card.getByLabel("Your answer").fill("Drafting my own words here");
-    const answered = await withToken("PUT", `/api/v2/asks/${seeded.ordinaryAsk}/state`, token, {
+    const answered = await withToken(`/api/v1/asks/${seeded.ordinaryAsk}/answer`, token, {
       expected_edited_at: null,
       selected: [],
-      state: "answered",
       text: "Read DISPATCH_INBOX_FLAG.",
     });
     expect(answered.status, await answered.text()).toBe(200);
@@ -481,8 +475,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 
     // 4. A review made with the token is the person's review, with the agent beside it.
     const reviewed = await withToken(
-      "POST",
-      `/api/v2/artifacts/${seeded.reviewedArtifact}/reviews`,
+      `/api/v1/artifacts/${seeded.reviewedArtifact}/reviews`,
       token,
       { state: "approved" }
     );
@@ -495,7 +488,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 
     // 5. A message sent with the token reaches the session, and the Agents page shows it as a
     // card naming the agent that sent it for her.
-    const sent = await withToken("POST", `/api/v2/agents/${worker.session_id}/messages`, token, {
+    const sent = await withToken(`/api/v1/agents/${worker.session_id}/messages`, token, {
       body: "Pause the backfill until the flag lands.",
       delivery: "aside",
     });
@@ -527,10 +520,9 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     await expect(tokenApprove).not.toBeChecked();
     await expect(page.getByLabel("Act as you (Inbox reader)")).toBeChecked();
 
-    const approvalBody = { expected_edited_at: null, selected: ["Approve"], state: "answered" };
+    const approvalBody = { expected_edited_at: null, selected: ["Approve"] };
     const refused = await withToken(
-      "PUT",
-      `/api/v2/asks/${seeded.approvalAsk}/state`,
+      `/api/v1/asks/${seeded.approvalAsk}/answer`,
       token,
       approvalBody
     );
@@ -541,7 +533,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     );
     // The refusal left the request open: nothing was approved on the strength of a credential
     // the person had just narrowed.
-    expect((await getAsk(seeded.approvalAsk, { login: "alice" })).state).toBe("open");
+    expect((await getAsk(seeded.approvalAsk, { login: "alice" })).ask.state).toBe("open");
 
     await page.reload();
     const tokenApproveAgain = page.getByLabel("Approve and control credentials (Inbox reader)");
@@ -549,8 +541,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     await tokenApproveAgain.click();
     await expect(tokenApproveAgain).toBeChecked();
     const approvedNow = await withToken(
-      "PUT",
-      `/api/v2/asks/${seeded.approvalAsk}/state`,
+      `/api/v1/asks/${seeded.approvalAsk}/answer`,
       token,
       approvalBody
     );
@@ -589,7 +580,7 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
     // The threads the server answers this reader, and no others: the comment thread of hers an
     // agent has written in, and the message she sent a session that it answered.
     const listed = await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" });
-    const listedRowsRead = listed.items ?? [];
+    const listedRowsRead = listed.rows ?? [];
     expect(listed.total).toBe(2);
     expect(printedThreads(printed)).toEqual(listedRowsRead.map((row) => row.ref).sort());
 

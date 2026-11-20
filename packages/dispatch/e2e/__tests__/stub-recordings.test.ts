@@ -8,12 +8,12 @@
  *  commit that causes it rather than hours later.
  *
  *  What it refuses, per entry: a path that matches no route of
- *  `packages/contracts/schemas/dispatch-openapi-v2.json`, a method that route does not take, a
+ *  `packages/contracts/schemas/dispatch-openapi.json`, a method that route does not take, a
  *  status that operation does not declare, a JSON body that fails that status's schema, and a
  *  200 that answers a stored text without the display tree the contract declares beside it, or
  *  with a tree that holds nothing to draw. An event carries its trees in a map of its own, keyed
  *  by the path of the text each was read from rather than in a property beside that text, so a
- *  200 that answers a page of events is read a second way: every text an event's payload holds
+ *  200 that answers a list of events is read a second way: every text an event's payload holds
  *  is demanded under the path that map keys it by.
  *
  *  Those last ones are what keep the stubbed rows reading Go's tree. The dashboard asks for the
@@ -48,7 +48,7 @@ interface OpenApiOperation {
 }
 
 const documentPath = fileURLToPath(
-  new URL("../../../contracts/schemas/dispatch-openapi-v2.json", import.meta.url)
+  new URL("../../../contracts/schemas/dispatch-openapi.json", import.meta.url)
 );
 const document = JSON.parse(readFileSync(documentPath, "utf8")) as OpenApiDocument;
 
@@ -214,23 +214,12 @@ const eventRefs = new Set(
     .map(([name]) => `#/components/schemas/${name}`)
 );
 
-/** Whether this response schema answers a page of events. The three routes that answer one - an
- *  issue's feed, an artifact's and the project log - each declare it as a `$ref` to a page schema
- *  of `components` whose `items` is an array of `$ref`s to the event, which is how the generator
- *  writes a page of a named type. */
+/** Whether this response schema answers a list of events. The three routes that answer one - an
+ *  issue's feed, an artifact's and the project log - each declare it as an array of `$ref`s into
+ *  `components`, which is how the generator writes a slice of a named type. */
 function isEventList(schema: unknown): boolean {
-  if (schema === null || typeof schema !== "object" || !("$ref" in schema)) return false;
-  const ref = schema.$ref;
-  if (typeof ref !== "string" || !ref.startsWith("#/components/schemas/")) return false;
-  const page = document.components?.schemas?.[ref.slice("#/components/schemas/".length)];
-  if (page === null || typeof page !== "object" || !("properties" in page)) return false;
-  const properties = page.properties;
-  if (properties === null || typeof properties !== "object" || !("items" in properties)) {
-    return false;
-  }
-  const list = properties.items;
-  if (list === null || typeof list !== "object" || !("items" in list)) return false;
-  const items = list.items;
+  if (schema === null || typeof schema !== "object" || !("items" in schema)) return false;
+  const items = schema.items;
   if (items === null || typeof items !== "object" || !("$ref" in items)) return false;
   return typeof items.$ref === "string" && eventRefs.has(items.$ref);
 }
@@ -306,10 +295,9 @@ function checkTrees(file: string): number {
         `that reads it reads the browser's own parse - ${withTrees.errorsText(validate.errors)}`
     ).toBe(true);
     if (!isEventList(schema)) continue;
-    // The page answered the schema above, so each of its rows holds the members an event
+    // The list answered the schema above, so each of its entries holds the members an event
     // declares; what it answers beside them is whatever the recorded server sent.
-    const page = answered as { items: RecordedEvent[] | null };
-    for (const event of page.items ?? []) {
+    for (const event of answered as RecordedEvent[]) {
       events += 1;
       for (const at of eventTextPaths(event.payload, "payload", [])) {
         expect(
@@ -339,10 +327,10 @@ describe("every committed recording answers what the generated contract declares
         expect(url.origin, `${where}: a committed recording names the placeholder origin`).toBe(
           recordedOrigin
         );
-        // The generator covers the `/api/v2` route table and nothing else, so the sign-in
+        // The generator covers the `/api/v1` route table and nothing else, so the sign-in
         // route it leaves out is named here rather than passed over: a recording that reached
         // some other unguarded route would otherwise be checked by nothing at all.
-        if (!url.pathname.startsWith("/api/v2/")) {
+        if (!url.pathname.startsWith("/api/v1/")) {
           expect(url.pathname, `${where}: no contract covers this route`).toBe("/auth/whoami");
           continue;
         }
@@ -392,36 +380,32 @@ describe("every committed recording answers the display tree of every stored tex
   test("the contract declares which stored texts carry a tree", () => {
     expect(demandedPairs.map(({ schema, field }) => `${schema}.${field}`).sort()).toEqual([
       "AcceptSuggestionResponse.body",
-      "AgentMessageV2.body",
       "ArchitectureComponentRead.prose",
       "ArtifactApprovalWithTrees.reason",
       "ArtifactReviewRead.reason",
-      "ArtifactV2.markdown",
+      "ArtifactText.markdown",
       "ArtifactVersionText.markdown",
       "AskAnswerWithTrees.text",
       "AskEditPreviousWithTrees.question",
       "AskOptionWithTrees.description",
       "AskOptionWithTrees.label",
       "AskResolutionWithTrees.reason",
-      "AskV2.question",
-      "AskV2WithWriteAdviceOrSuggestionsOnlyAdvice.question",
+      "AskWithTrees.question",
       "BlockPinRead.text",
       "BroadcastCreated.body",
       "BroadcastRead.body",
       "BroadcastSummary.body",
+      "CheckBlock.text",
       "CheckResult.observed",
-      "CheckV2.text",
-      "CommentReadV2.body",
       "CommentWithTrees.body",
       "CommentWriteResponse.body",
-      "CommentWriteResponseWithWriteAdvice.body",
       "Decision.text",
       "GraphNodeRead.text",
-      "MessageReadV2.body",
+      "InboxRow.question",
+      "IssueAskRow.question",
+      "IssueOpenAsk.question",
       "MessageReplyResult.body",
-      "MessageThreadV2.body",
       "MessageWithTrees.body",
-      "MessageWithTreesWithWriteAdvice.body",
       "MyAnswerReply.body",
       "MyAnswerRow.question",
       "ReplyBlockWithTrees.text",
@@ -432,10 +416,10 @@ describe("every committed recording answers the display tree of every stored tex
 
   // The event branch of `checkTrees` is reached through `isEventList`, and that is derived from the
   // document too: `eventRefs` is every schema declaring a `payload` beside the `trees` map, and
-  // a page of events is a schema whose `items` is an array whose items `$ref` one of them. A
-  // generator that renamed the map, or answered the events in another envelope, would leave the
-  // branch matching nothing and every recording would pass it in silence - the drift the row
-  // above refuses for the demand. So the ref it keys on is named here, as the pairs are.
+  // a list of events is an array whose items `$ref` one of them. A generator that renamed the
+  // map, or wrapped the list in an envelope of its own, would leave the branch matching nothing
+  // and every recording would pass it in silence - the drift the row above refuses for the
+  // demand. So the ref it keys on is named here, as the pairs are.
   test("the contract declares which schema an event is", () => {
     expect([...eventRefs].sort()).toEqual(["#/components/schemas/Event"]);
   });

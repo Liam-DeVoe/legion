@@ -73,7 +73,7 @@ export function AskOwnerLink({
 export function InboxOwnerLink({ ask, rowOwner }: { ask: InboxRow; rowOwner: boolean }): ReactNode {
   const key = askIssueKey(ask);
   const owner: OpenAskOwner | null =
-    ask.document !== null
+    ask.document !== undefined
       ? { document: ask.document }
       : key === null
         ? null

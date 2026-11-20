@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { IssueReadV2, IssueSummary } from "../../api/types";
+import type { IssueDetails } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
   calloutWarningBg,
@@ -20,23 +20,10 @@ import { sessionOfAddress } from "../refs/routes";
 // anywhere rather than ellipsize behind a tooltip that page does not draw; everywhere else it
 // ellipsizes, as on `main`.
 
-/** Where an issue's route reaches, as the markers read it: a list row carries it beside the
- *  route (`IssueSummary`), and the issue's own read under `reach` (`routedIssue`). */
 type RoutedIssue = Pick<
-  IssueSummary,
+  IssueDetails,
   "route" | "route_status" | "route_holder" | "route_status_reason"
 >;
-
-/** The issue's own read as the markers read it: its route beside the reach its `include=reach`
- *  answered, none where the read asked for none. */
-export function routedIssue(issue: Pick<IssueReadV2, "reach" | "route">): RoutedIssue {
-  return {
-    route: issue.route,
-    route_holder: issue.reach?.route_holder ?? null,
-    route_status: issue.reach?.route_status ?? null,
-    route_status_reason: issue.reach?.route_status_reason ?? null,
-  };
-}
 
 /** The `Route reach unknown` marker for a route the Envoy listener could not judge
  *  (`route_status: unknown`), shown in the issue header and on an ask's route row

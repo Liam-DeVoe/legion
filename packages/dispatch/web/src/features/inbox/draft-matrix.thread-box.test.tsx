@@ -77,10 +77,10 @@ import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type {
   Agent,
-  AgentMessageV2,
   Comment,
   IssueDetails,
   Message,
+  MessageRead,
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
@@ -186,10 +186,10 @@ function plannerMessage(id: string, body: string, overrides: Partial<Message> = 
 }
 
 /** The Planner's answers to the reader's message-1, newest last. */
-function plannerThread(replies: readonly string[]): AgentMessageV2[] {
+function plannerThread(replies: readonly string[]): MessageRead[] {
   return [
     {
-      ...plannerMessage("message-1", "Have a look at the build"),
+      message: plannerMessage("message-1", "Have a look at the build"),
       replies: replies.map((id, index) =>
         plannerMessage(id, `Answer ${id}`, {
           author: { id: "planner", kind: "session" },
@@ -197,7 +197,6 @@ function plannerThread(replies: readonly string[]): AgentMessageV2[] {
           in_reply_to: "message-1",
         })
       ),
-      unread: false,
     },
   ];
 }
@@ -257,8 +256,12 @@ async function openColumn(
   const client = commentsClient();
   const reads = [
     spyOn(api, "getArtifact").mockRejectedValue(new Error("no document seeded")),
-    // The document's text, as its own read with `include=text` answers an empty one.
-    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "" } as never),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "",
+      token: "",
+      version: null,
+      unsettled: true,
+    }),
     // The column reads one field of the issue: whether it is closed.
     spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails),
     // A newer answer is fetched by invalidating every read, the comments too, which a box drawn

@@ -1,10 +1,10 @@
 import type {
   Actor,
-  ArtifactV2,
+  Artifact,
   AskResolution,
   Decision,
   DecisionLink,
-  IssueDecisionsV2,
+  IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
@@ -39,28 +39,24 @@ export const AGENT: Actor = {
 };
 
 /** One document of the issue. */
-export function artifact(id: string, slug: string, primary = false): ArtifactV2 {
+export function artifact(id: string, slug: string, primary = false): Artifact {
   return {
     created_at: "2026-11-05T00:00:00Z",
     created_by: READER_ACTOR,
     id,
     issue_key: KEY,
     kind: "doc",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
     name: slug,
     primary,
     project: "CORE",
     ref_key: `artifact:${id}`,
     session_id: null,
     slug,
-    unsettled: null,
-    version_count: 0,
+    versions: [],
   };
 }
 
-/** The issue's decisions document, which a Change is anchored to. */
+/** The issue's decisions document, which a Keep is written against. */
 export const DECISIONS_DOCUMENT = artifact("artifact-decisions", DECISIONS_SLUG);
 
 /** The issue, with its spec and its decisions document, which is all the addressing rule reads
@@ -81,8 +77,10 @@ export function issueDetails(): IssueDetails {
     decisions_artifact_id: DECISIONS_DOCUMENT.id,
     design_gates: [],
     external_links: [],
+    holder_state: null,
     key: KEY,
     labels: [],
+    last_seen: null,
     last_seq: 1,
     number: 1,
     open_asks: [],
@@ -93,19 +91,15 @@ export function issueDetails(): IssueDetails {
     progress: { children: null, tasks: null },
     project: "CORE",
     rank: "U",
-    reach: {
-      holder_state: null,
-      last_seen: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-      takeable_at: null,
-    },
     referenced_by_count: 0,
     repo: null,
     resolved_repo: null,
     route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
     status: "todo",
+    takeable_at: null,
     title: "The issue page draws one ordered body",
     updated_at: "2026-11-05T00:00:00Z",
     verification_artifact_id: "",
@@ -256,13 +250,10 @@ export function decision(block: string, partial: Partial<Decision> = {}): Decisi
  *  `dispatch://` address, as the server's read does (`api/decisions.go`); a Change's anchor names
  *  the same document by its id, which the issue's documents tie to the address
  *  (`decisionsDocumentId`). */
-export function decisionsRead(made: readonly Decision[]): IssueDecisionsV2 {
+export function decisionsRead(made: readonly Decision[]): IssueDecisions {
   return {
+    decisions: [...made],
     document: `dispatch://${KEY}/artifact/${DECISIONS_SLUG}`,
-    items: [...made],
-    limit: 50,
-    offset: 0,
     open_questions: [],
-    total: made.length,
   };
 }

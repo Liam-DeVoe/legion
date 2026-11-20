@@ -2,11 +2,9 @@ import { expect, test } from "bun:test";
 
 import { askIssueKey, askOrdinals, askOwner, controlName, type NamedAsk } from "./ask-name";
 
-/** A row as the Inbox read carries it: the issue object the row renders, plus its flat key, and
- *  no document. */
+/** A row as the Inbox read carries it: the issue object the row renders, plus its flat key. */
 function onIssue(key: string, rest: Partial<NamedAsk> = {}): NamedAsk {
   return {
-    document: null,
     id: "a",
     issue: { assignee: "alice", key, title: "Ship the migration" },
     issue_key: key,
@@ -19,16 +17,13 @@ const issueAsk = onIssue("CORE-12");
 const documentAsk: NamedAsk = {
   document: { name: "Rollout plan", project: "CORE", slug: "rollout" },
   id: "b",
-  issue: null,
   issue_key: null,
   question: "Sign this off?",
 };
 
 test("an ask belongs to its issue, its document, or neither", () => {
   expect(askOwner(issueAsk)).toEqual({ key: "issue:CORE-12", label: "CORE-12" });
-  expect(
-    askOwner({ document: null, id: "c", issue: null, issue_key: "CORE-3", question: "?" })
-  ).toEqual({
+  expect(askOwner({ id: "c", issue_key: "CORE-3", question: "?" })).toEqual({
     key: "issue:CORE-3",
     label: "CORE-3",
   });
@@ -36,9 +31,7 @@ test("an ask belongs to its issue, its document, or neither", () => {
     key: "document:CORE/rollout",
     label: "Rollout plan",
   });
-  expect(
-    askOwner({ document: null, id: "d", issue: null, issue_key: null, question: "?" })
-  ).toEqual({
+  expect(askOwner({ id: "d", issue_key: null, question: "?" })).toEqual({
     key: "none",
     label: "Document ask",
   });

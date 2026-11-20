@@ -1,4 +1,4 @@
-import type { AskV2, Comment, MessageThreadV2 } from "../../api/types";
+import type { Ask, Comment, MessageRead } from "../../api/types";
 
 /** What the rule reads of a comment. */
 type CommentTurn = Pick<Comment, "ask_id" | "author" | "id" | "reply_to">;
@@ -26,8 +26,8 @@ type CommentTurn = Pick<Comment, "ask_id" | "author" | "id" | "reply_to">;
  */
 export function agentsOnlyIds(
   comments: readonly CommentTurn[] | undefined,
-  messages: readonly MessageThreadV2[] | undefined,
-  asks: readonly Pick<AskV2, "id" | "kind">[] | undefined
+  messages: readonly MessageRead[] | undefined,
+  asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): ReadonlySet<string> {
   const questions =
     asks === undefined
@@ -55,8 +55,7 @@ export function agentsOnlyIds(
     }
   }
   for (const thread of messages ?? []) {
-    // A thread is its root message's own fields with the replies under it.
-    const turns = [thread, ...(thread.replies ?? [])];
+    const turns = [thread.message, ...(thread.replies ?? [])];
     if (turns.every((one) => one.author.kind !== "user")) {
       for (const one of turns) ids.add(one.id);
     }

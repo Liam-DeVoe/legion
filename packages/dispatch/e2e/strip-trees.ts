@@ -1,6 +1,6 @@
 import type { BrowserContext, Page } from "@playwright/test";
 
-/** Serves every `/api/v2/` answer of `target` with its display trees taken out, which is what a
+/** Serves every `/api/v1/` answer of `target` with its display trees taken out, which is what a
  *  pod of the build before this one answers while a deploy rolls: the page then holds each
  *  stored text's markdown alone and parses it itself (`MarkdownBody`'s fallback). The rename
  *  keeps each member rather than deleting it, so an answer's shape is otherwise untouched and
@@ -12,7 +12,7 @@ import type { BrowserContext, Page } from "@playwright/test";
  *
  *  `target` is a context, where every page of the run reads the stripped answers, or one page. */
 export async function serveWithoutDisplayTrees(target: BrowserContext | Page): Promise<void> {
-  await target.route(/\/api\/v2\//, async (route) => {
+  await target.route(/\/api\/v1\//, async (route) => {
     const response = await route.fetch();
     const body = (await response.text()).replaceAll(/"[a-z_]+_tree":/g, '"dropped_tree":');
     const headers = { ...response.headers() };

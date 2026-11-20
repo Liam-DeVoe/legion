@@ -13,10 +13,11 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   Actor,
-  ArtifactApprovalWithTrees,
+  Artifact,
+  ArtifactApproval,
   ArtifactReview,
-  ArtifactV2,
-  AskV2,
+  Ask,
+  Priorities,
   Subscriber,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
@@ -205,7 +206,6 @@ interface Stubs {
   readonly githubRest: Mock<typeof api.githubRest>;
   readonly listAgents: Mock<typeof api.listAgents>;
   readonly listArtifactReviews: Mock<typeof api.listArtifactReviews>;
-  readonly listArtifactVersions: Mock<typeof api.listArtifactVersions>;
   readonly listIssueAsks: Mock<typeof api.listIssueAsks>;
   readonly listIssues: Mock<typeof api.listIssues>;
   readonly listPriorities: Mock<typeof api.listPriorities>;
@@ -231,7 +231,6 @@ beforeEach(() => {
     githubRest: spyOn(api, "githubRest"),
     listAgents: spyOn(api, "listAgents"),
     listArtifactReviews: spyOn(api, "listArtifactReviews"),
-    listArtifactVersions: spyOn(api, "listArtifactVersions"),
     listIssueAsks: spyOn(api, "listIssueAsks"),
     listIssues: spyOn(api, "listIssues"),
     listPriorities: spyOn(api, "listPriorities"),
@@ -255,8 +254,6 @@ const originalClipboard = navigator.clipboard;
  *  answer sets it in its own `node` or `settle`, and the next mount starts from these again. */
 function answerDefaults(): void {
   stubs.getArchitecture.mockResolvedValue(architecture);
-  // The documents are their live text alone, with no stored version.
-  stubs.listArtifactVersions.mockResolvedValue([]);
   stubs.getArtifact.mockImplementation(async (id) =>
     id === specDocument.id ? specDocument : notes
   );
@@ -271,27 +268,21 @@ function answerDefaults(): void {
     },
   ]);
   stubs.getArtifactText.mockResolvedValue({
-    ...specDocument,
     markdown: "The live document",
     token: "sha256:spec-text",
+    version: null,
     unsettled: true,
   });
-  stubs.getDocumentRead.mockImplementation(async (id) => ({ id, kind: "document" }));
-  stubs.getIssueDecisions.mockResolvedValue({
-    document: null,
-    items: [],
-    limit: 50,
-    offset: 0,
-    open_questions: [],
-    total: 0,
-  });
+  stubs.getDocumentRead.mockImplementation(async (id) => ({
+    artifact_id: id,
+    read_at: null,
+    version: null,
+  }));
+  stubs.getIssueDecisions.mockResolvedValue({ decisions: [], document: null, open_questions: [] });
   stubs.getIssueSubscribers.mockResolvedValue([]);
   stubs.getReferences.mockResolvedValue({
-    items: [],
-    limit: 50,
+    edges: [],
     node: graphNode({ id: "ask-1", kind: "ask" }),
-    offset: 0,
-    total: 0,
   });
   stubs.githubRest.mockImplementation(async (path) => {
     if (path === "repos/owner/repository/pulls/7") {
@@ -326,10 +317,9 @@ function answerDefaults(): void {
   stubs.listRepoProjects.mockResolvedValue([]);
   stubs.listUsers.mockResolvedValue([]);
   stubs.putDocumentRead.mockImplementation(async (id, version) => ({
-    id,
-    kind: "document",
+    artifact_id: id,
     read_at: "2026-09-09T00:00:00Z",
-    read_version: version,
+    version,
   }));
   stubs.whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login: "alice" });
 }
@@ -341,7 +331,7 @@ function answerDefaults(): void {
 /** The document the approval chips speak for. */
 const notes = doc("artifact-notes", "notes.md");
 
-function notesWith(approval: ArtifactApprovalWithTrees): ArtifactV2 {
+function notesWith(approval: ArtifactApproval): Artifact {
   return { ...notes, approval };
 }
 
@@ -381,7 +371,7 @@ function stepEntries(
 }
 
 /** An open approval request (`AskCard.test.tsx`'s `approvalAsk`, as `ask-2` at high urgency). */
-function openApprovalAsk(): AskV2 {
+function openApprovalAsk(): Ask {
   return openAsk({
     approval: {
       artifact_id: "artifact-1",
@@ -400,7 +390,7 @@ function openApprovalAsk(): AskV2 {
 }
 
 /** Two open decisions in the spec, each its own block, which the page's navigator counts. */
-function blockAsk(id: string, blockId: string, question: string): AskV2 {
+function blockAsk(id: string, blockId: string, question: string): Ask {
   return openAsk({
     author: { id: LIVE_SESSION, kind: "session", origin: { session_title: "Architect" } },
     block_artifact: { id: specDocument.id, primary: true, slug: "spec" },
@@ -1072,7 +1062,7 @@ const pinWithTitle: Mount = {
 const personAsksForApproval: Mount = {
   name: "AskCard, an approval a person asked for, with Request changes picked",
   node: () => {
-    const ask: AskV2 = { ...openApprovalAsk(), author: { id: "alice", kind: "user" } };
+    const ask: Ask = { ...openApprovalAsk(), author: { id: "alice", kind: "user" } };
     return (
       <AskCard ask={ask} getAskThread={async () => threadOf(ask)} initialThread={threadOf(ask)} />
     );
@@ -1198,7 +1188,7 @@ const priorityLineAtCap: Mount = {
 const priorityLineLoading: Mount = {
   name: "IssuePriorityLine, adding while its priorities are still read",
   node: () => {
-    stubs.listPriorities.mockReturnValue(new Promise<typeof priorities>(() => undefined));
+    stubs.listPriorities.mockReturnValue(new Promise<Priorities>(() => undefined));
     return (
       <IssuePriorityLine
         disabled={false}
@@ -1709,11 +1699,11 @@ function withLongReads(mount: Mount): Mount {
         listed(LIVE_SESSION, LONG.liveTitle),
         listed(STALLED_SESSION, LONG.stalledTitle, "unresponsive"),
       ]);
-      const rows = priorities.items;
+      const rows = priorities.priorities;
       if (rows === null) throw new Error("the fixture lists no priorities to lengthen");
       stubs.listPriorities.mockResolvedValue({
         ...priorities,
-        items: rows.map((row) => ({
+        priorities: rows.map((row) => ({
           ...row,
           title: `${row.title}-under-a-title-that-runs-on-past-its-row`,
         })),

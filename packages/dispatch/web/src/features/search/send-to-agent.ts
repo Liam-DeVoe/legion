@@ -6,7 +6,7 @@ import { press } from "./offer";
 
 /**
  * The words one send carries. The route the send goes through
- * (`POST /api/v2/agents/{session_id}/messages`) belongs to no issue, so the issue the person was
+ * (`POST /api/v1/agents/{session_id}/messages`) belongs to no issue, so the issue the person was
  * looking at is named in the text or the agent cannot tell which work this is about. Where the
  * bar's chip names a block of that issue (`Tab`), the block is named after the issue, in the
  * chip's own words, so the words the agent is handed are about the part the person was reading.

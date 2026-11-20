@@ -185,7 +185,7 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
     );
   }
   const listed = await listMyReplies({ state: "unread" });
-  const row = (listed.items ?? []).find((candidate) => candidate.thread_id === root.id);
+  const row = (listed.rows ?? []).find((candidate) => candidate.thread_id === root.id);
   expect(row?.unread).toBe(true);
   // Every reply read: the thread leaves the unread list and stays in the Inbox, drawn as read.
   await markThreadRead(root.id, row?.reply.created_at ?? "");
@@ -268,10 +268,12 @@ async function seedThreeShapes(): Promise<{
     .filter((candidate) => candidate.reply_to === comment.id)
     .sort((left, right) => (left.created_at < right.created_at ? -1 : 1));
   await markThreadRead(comment.id, comments[2]?.created_at ?? "");
-  const messages = (await listIssueMessages(issue.key)).find((read) => read.id === message.id);
+  const messages = (await listIssueMessages(issue.key)).find(
+    (read) => read.message.id === message.id
+  );
   await markThreadRead(message.id, (messages?.replies ?? [])[2]?.created_at ?? "");
   const exchange = (await listAgentMessages(THREAD_SESSION.session_id)).find(
-    (read) => read.id === agent
+    (read) => read.message.id === agent
   );
   await putAgentState(THREAD_SESSION.session_id, {
     read_replies: (exchange?.replies ?? []).slice(0, 3).map((reply) => reply.id),
@@ -279,7 +281,7 @@ async function seedThreeShapes(): Promise<{
 
   const listed = await listMyReplies({ kind: ["reply", "agent"], state: "unread" });
   expect(
-    (listed.items ?? []).map((row) => row.unread_count).sort((left, right) => left - right)
+    (listed.rows ?? []).map((row) => row.unread_count).sort((left, right) => left - right)
   ).toEqual([2, 2, 2]);
   return { agent, comment: comment.id, message: message.id };
 }
@@ -336,7 +338,7 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
     replies: ["Green."],
   });
   const before = (await listAgentMessages(THREAD_SESSION.session_id)).find(
-    (read) => read.id === agent
+    (read) => read.message.id === agent
   );
   const live = (await listAgents()).find(
     (candidate) => candidate.session_id === THREAD_SESSION.session_id
@@ -384,7 +386,7 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
     await expect
       .poll(async () => {
         const read = (await listAgentMessages(THREAD_SESSION.session_id)).find(
-          (candidate) => candidate.id === agent
+          (candidate) => candidate.message.id === agent
         );
         const sent = (read?.replies ?? []).find(
           (reply) => reply.body === "Hold the mirror for an hour."

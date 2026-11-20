@@ -89,7 +89,7 @@ interface Attempt {
 
 async function anchoredComment(issueKey: string, body: string, quote: string): Promise<Attempt> {
   const started = Date.now();
-  const response = await fetch(`${baseUrl}/api/v2/issues/${issueKey}/comments`, {
+  const response = await fetch(`${baseUrl}/api/v1/issues/${issueKey}/comments`, {
     body: JSON.stringify({ anchor: { artifact: "spec", quote }, body }),
     headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
     method: "POST",

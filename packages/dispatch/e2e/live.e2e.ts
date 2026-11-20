@@ -12,7 +12,7 @@ import {
   patchIssue,
   putArchitectureSource,
   putIssueState,
-  retractAsk,
+  resolveAsk,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
@@ -29,15 +29,11 @@ let renames = 0;
 // `web/src/features/shell/useDwell.ts`, which exports nothing a spec can import.
 const DWELL_MS = 1_000;
 
-/** The Inbox's own read (`getInbox`): the open asks with each one's thread and the reader's
- *  mark, every page of them. */
-const INBOX_READ = /\/api\/v2\/asks\?(.*&)?include=thread(&|$)/;
-
 /**
  * bob renames the open issue, again every 2 s, until its header shows the new name from a read
- * of `GET /api/v2/issues/<key>?include=...` the page sent after the write (`reads` counts them).
- * Only the page's event feed can bring either, so past this the feed is subscribed and every
- * event written before the rename has been handled.
+ * of `GET /api/v1/issues/<key>` the page sent after the write (`reads` counts them). Only the
+ * page's event feed can bring either, so past this the feed is subscribed and every event
+ * written before the rename has been handled.
  */
 async function renameUntilShown(
   header: Locator,
@@ -172,14 +168,11 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
   page.on("request", (request) => {
     if (request.method() !== "GET") return;
     const url = new URL(request.url());
-    if (INBOX_READ.test(request.url())) inboxReads += 1;
-    if (url.pathname === "/api/v2/issues" && url.searchParams.get("pinned") === "true") {
+    if (url.pathname === "/api/v1/inbox") inboxReads += 1;
+    if (url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true") {
       pinnedReads += 1;
     }
-    // The issue's own read, under the page's `include` list.
-    if (url.pathname === `/api/v2/issues/${viewedIssue.key}` && url.searchParams.has("include")) {
-      viewedReads += 1;
-    }
+    if (url.pathname === `/api/v1/issues/${viewedIssue.key}`) viewedReads += 1;
   });
 
   try {
@@ -283,7 +276,7 @@ test("live: resolving an ask updates its pinned issue's open-ask count", async (
     const url = new URL(request.url());
     if (
       request.method() === "GET" &&
-      url.pathname === "/api/v2/issues" &&
+      url.pathname === "/api/v1/issues" &&
       url.search === "?pinned=true"
     ) {
       pinnedReads += 1;
@@ -300,7 +293,7 @@ test("live: resolving an ask updates its pinned issue's open-ask count", async (
     await expect(pinned).toContainText("1");
     pinnedReads = 0;
 
-    await retractAsk(ask.id, { reason: "No longer needed" }, bob);
+    await resolveAsk(ask.id, { kind: "retracted", reason: "No longer needed" }, bob);
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
 
     await expect.poll(() => pinnedReads).toBe(1);
@@ -356,11 +349,9 @@ test("live: new events on the open issue appear in Conversation and mark it read
       async () => {
         await page.clock.runFor(DWELL_MS);
         return page.evaluate(async (key) => {
-          const response = await fetch("/api/v2/me/marks?kind=issue");
-          const marks = (await response.json()) as {
-            items: { id: string; last_read_seq?: number }[] | null;
-          };
-          return marks.items?.find((mark) => mark.id === key)?.last_read_seq ?? 0;
+          const response = await fetch("/api/v1/me/state");
+          const state = (await response.json()) as Record<string, { last_read_seq: number }>;
+          return state[key]?.last_read_seq ?? 0;
         }, issue.key);
       },
       { intervals: [50, 50, 100, 100, 250] }
@@ -603,11 +594,11 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   const apiRequestPaths: string[] = [];
   page.on("request", (request) => {
     // Called for every request of a cold load this row measures, so the cheap string test comes
-    // first: a path under /api/v2/ or /auth/ always shows in the raw URL.
+    // first: a path under /api/v1/ or /auth/ always shows in the raw URL.
     const raw = request.url();
-    if (!(raw.includes("/api/v2/") || raw.includes("/auth/"))) return;
+    if (!(raw.includes("/api/v1/") || raw.includes("/auth/"))) return;
     const url = new URL(raw);
-    if (url.pathname.startsWith("/api/v2/") || url.pathname.startsWith("/auth/")) {
+    if (url.pathname.startsWith("/api/v1/") || url.pathname.startsWith("/auth/")) {
       apiRequestPaths.push(url.pathname + url.search);
     }
   });
@@ -621,7 +612,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   await socketOpened;
 
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
-  expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v2/events")).toEqual([]);
+  expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
   // Exactly these on a fresh load, and nothing else. A set rather than a count, and waited for
   // rather than read at an instant: the page issues the last requests of its first load within
@@ -636,57 +627,56 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   const firstLoad = [
     "/auth/whoami",
     // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
-    // fetching again: the open asks with each one's thread and the reader's mark.
-    "/api/v2/asks?include=thread&include=mark",
+    // fetching again.
+    "/api/v1/inbox",
     // The project sidebar's Pinned and Projects queries. This row runs on chromium alone, so
     // there is no drawer-closed phone case to leave them out for.
-    "/api/v2/issues?pinned=true",
-    "/api/v2/projects",
-    // The reader's marks of every issue: each one's pin, read mark and pinned items.
-    "/api/v2/me/marks?kind=issue",
-    // The issue's detail, with what the page draws beside its own fields.
-    `/api/v2/issues/${issue.key}?include=open_asks&include=children&include=progress&include=design_gates&include=reach&include=referenced_by_count`,
+    "/api/v1/issues?pinned=true",
+    "/api/v1/projects",
+    "/api/v1/me/state",
+    // The issue's detail.
+    `/api/v1/issues/${issue.key}`,
     // The active-sessions read.
-    "/api/v2/agents",
+    "/api/v1/agents",
     // The primary artifact's comments, which the Conversation's own list shares rather than
     // fetching again.
-    `/api/v2/issues/${issue.key}/comments`,
+    `/api/v1/issues/${issue.key}/comments`,
     // The margin's own list of the issue's asks, and the Conversation's, which asks the same
-    // route for each ask's thread (`include=thread`) and so is a request of its own, not the
+    // route for each ask's thread (`?thread=1`) and so is a request of its own, not the
     // margin's shared.
-    `/api/v2/issues/${issue.key}/asks?state=all`,
-    `/api/v2/issues/${issue.key}/asks?include=thread&state=all`,
+    `/api/v1/issues/${issue.key}/asks?state=all`,
+    `/api/v1/issues/${issue.key}/asks?state=all&thread=1`,
     // The issue's message threads.
-    `/api/v2/issues/${issue.key}/messages`,
+    `/api/v1/issues/${issue.key}/messages`,
     // The two one-row event reads the unread mark needs: the first event past the watermark,
     // and the issue's head.
-    `/api/v2/issues/${issue.key}/events?after=0&limit=1`,
-    `/api/v2/issues/${issue.key}/events?limit=1&sort=-seq`,
+    `/api/v1/issues/${issue.key}/events?after=0&limit=1`,
+    `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
     // The Conversation's live-agent query.
-    `/api/v2/issues/${issue.key}/subscribers`,
+    `/api/v1/issues/${issue.key}/subscribers`,
     // The header's read of the project's architecture sources: the `Components:` line offers
     // its picker only when the project has one. The component tree itself,
-    // `/api/v2/projects/CORE/architecture`, is fetched only once the picker opens, never on
+    // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
     // load, which is why it is absent from this set.
-    "/api/v2/projects/CORE/architecture-sources",
+    "/api/v1/projects/CORE/architecture-sources",
     // The header's read of the repository mappings: an issue that resolves to no repository,
     // as this one does, shows the `Repository:` item only when its project maps one.
-    "/api/v2/repositories",
-    // The reader's marks of every session, whose unread replies the Agents badge counts on
-    // every page (the sidebar's on desktop, the compact header's on phone).
-    "/api/v2/me/marks?kind=agent",
+    "/api/v1/settings/repo-projects",
+    // me/agents/state, whose unread replies the Agents badge counts on every page (the
+    // sidebar's on desktop, the compact header's on phone).
+    "/api/v1/me/agents/state",
     // The credential requests waiting on the viewer, which the Inbox count adds up on every
     // page.
-    "/api/v2/credential-requests",
-    // `me/threads` of both Inbox kinds, one row, whose total is the other half of that one Inbox
+    "/api/v1/credential-requests?approver=me",
+    // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
     // number (the sidebar's on desktop, the compact header's on phone).
-    "/api/v2/me/threads?kind=reply&kind=agent&limit=1",
+    "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
     // The navigation rail's Priorities entry, whose badge is the two fault counts added
-    // (`limit=0` answers those two numbers and no row of either list).
-    "/api/v2/priorities?limit=0",
+    // (`?summary=true` answers those two numbers and neither fault list).
+    "/api/v1/priorities?summary=true",
     // The Conversation's list of the issue's phase handoffs, which it shows beside the
     // messages.
-    `/api/v2/issues/${issue.key}/handoffs`,
+    `/api/v1/issues/${issue.key}/handoffs`,
   ].sort();
   await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
 
@@ -750,7 +740,7 @@ test("live: an event during a project list's first load fetches it again once th
   try {
     const page = await alice.newPage();
     const { promise: inFlight, resolve: reachedServer } = Promise.withResolvers<void>();
-    const listUrl = /\/api\/v2\/issues\?project=CORE/;
+    const listUrl = /\/api\/v1\/issues\?project=CORE/;
     let listRequests = 0;
     let listsInFlight = 0;
     let mostInFlight = 0;

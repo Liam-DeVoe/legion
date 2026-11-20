@@ -19,8 +19,8 @@ import {
 const PRESSED_AT = 1_700_000_000_000;
 const KEY = keyMinted(PRESSED_AT);
 
-/** What a kept write's key carried, where it carried anything: the method of the write, which
- *  goes under the write's key whatever it is. */
+/** What a kept write's key carried, where it carried anything: a `PATCH` goes under the write's
+ *  key, and a `PUT` or a `DELETE` sends none. */
 const KEYED_METHOD: WriteMethod = "PATCH";
 
 /** One write as the store keeps it, with every field an entry carries. */
@@ -34,7 +34,7 @@ const kept = (key: string, fields: Partial<KeptWrite> = {}): KeptWrite => ({
   login: "alice",
   presentation: "indicator",
   pressedAt: 1_700_000_000_000,
-  request: { body: { status: "done" }, method: "PATCH", path: "/api/v2/issues/CORE-1" },
+  request: { body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" },
   state: { status: "sending" },
   sent: true,
   target: null,
@@ -129,12 +129,11 @@ test("a missing carried is read as what the entry sent, and one that is written 
 });
 
 // Whether a write goes under its key is kept with it (`KeptWrite.keyed`); an entry of an older
-// shape holds no such field, and `load` reads it as keyed whatever the entry holds, a kept PUT or
-// a key that carried a DELETE among them: this build sends every write under its key but the one
-// its spec sends under none (`WriteSpec.keyed`), so it makes an older entry's write again under
-// that key, to the path it was kept with, and its Retry asks again under the key. A field that
-// is there is read as written.
-test("a missing keyed is read as keyed whatever the entry's method, and one written as written", () => {
+// shape holds no such field, and `load` reads one from what the entry holds: the method of its
+// kept request, else what its key carried. One with neither - a write its kind makes from its
+// own record, kept before anything went out - is read as the release that kept it read every
+// write, as one whose Retry asks again under its key. A field that is there is read as written.
+test("a missing keyed is read from the entry's request or carried method, and one written as written", () => {
   const tab = keptTab();
   const entry = (key: string, fields: Record<string, unknown>) =>
     tab.storage.setItem(
@@ -153,10 +152,10 @@ test("a missing keyed is read as keyed whatever the entry's method, and one writ
     const loaded = tab.page().load("alice");
     expect(Object.fromEntries(loaded.map((write) => [write.key, write.keyed]))).toEqual({
       "kept-unkeyed": false,
-      "older-carried-delete": true,
+      "older-carried-delete": false,
       "older-nothing": true,
       "older-patch": true,
-      "older-put": true,
+      "older-put": false,
     });
   } finally {
     tab.close();
@@ -170,14 +169,14 @@ test("an upload's request is kept by its fields and made whole with its file", (
   const body = new FormData();
   body.set("name", "spec.md");
   body.set("file", file);
-  const request = keptRequest({ body, method: "POST", path: "/api/v2/issues/CORE-1/artifacts" });
+  const request = keptRequest({ body, method: "POST", path: "/api/v1/issues/CORE-1/artifacts" });
   expect(request).toEqual({
     form: [
       { name: "name", value: "spec.md" },
       { file: true, name: "file" },
     ],
     method: "POST",
-    path: "/api/v2/issues/CORE-1/artifacts",
+    path: "/api/v1/issues/CORE-1/artifacts",
   });
   expect(requestFrom(request)).toBeUndefined();
   const whole = requestFrom(request, file)?.body as FormData;
@@ -221,37 +220,36 @@ test("a kept refusal is rebuilt as the error it was", () => {
 // the kind kept is still `stopped` or `interrupted`, so an older release reads every entry this
 // one writes - it is read from the key.
 test("a write kept without a verdict comes back expired once its key has run out", () => {
-  // Every write goes under its key, a `PUT` and a `DELETE` as well as a `POST` and a `PATCH`, so
-  // each is a new write once Dispatch has forgotten the key.
-  const methods: WriteMethod[] = ["POST", "PATCH", "PUT", "DELETE"];
-  for (const carried of methods) {
-    for (const kept of [
-      keptRefusal(new SendStoppedError()),
-      keptRefusal(new SendInterruptedError()),
-    ]) {
-      const spent = refusalFrom(kept, KEY, carried, PRESSED_AT + IDEMPOTENCY_KEY_TTL_MS);
-      expect(spent).toBeInstanceOf(SendExpiredError);
-      expect(spent.message).toBe(
-        "Dispatch has not confirmed this message. Its key is 24 hours old or more, so Dispatch no longer holds it: a Retry is a new write, which can be delivered a second time if the first one was."
-      );
-      expect(
-        refusalFrom(kept, KEY, carried, PRESSED_AT + IDEMPOTENCY_KEY_TTL_MS - 1)
-      ).not.toBeInstanceOf(SendExpiredError);
-    }
+  for (const kept of [
+    keptRefusal(new SendStoppedError()),
+    keptRefusal(new SendInterruptedError()),
+  ]) {
+    const spent = refusalFrom(kept, KEY, KEYED_METHOD, PRESSED_AT + IDEMPOTENCY_KEY_TTL_MS);
+    expect(spent).toBeInstanceOf(SendExpiredError);
+    expect(spent.message).toBe(
+      "Dispatch has not confirmed this message. Its key is 24 hours old or more, so Dispatch no longer holds it: a Retry is a new write, which can be delivered a second time if the first one was."
+    );
+    expect(
+      refusalFrom(kept, KEY, KEYED_METHOD, PRESSED_AT + IDEMPOTENCY_KEY_TTL_MS - 1)
+    ).not.toBeInstanceOf(SendExpiredError);
   }
 });
 
-// A write whose key carried nothing at all - one pressed and never sent, or one re-pressed under a
-// key of its own - never reached Dispatch under that key, so its kept refusal comes back as it
-// ended, however old the key is.
-test("a kept refusal of a write whose key carried nothing never comes back expired", () => {
+// A `PUT` or a `DELETE` sends no key, so Dispatch keeps nothing under one for it and making it
+// again is the same change: its kept refusal comes back as it ended, however old the key is. So
+// does one whose key carried nothing at all - a write pressed and never sent, or one re-pressed
+// under a key of its own - since nothing of it ever reached Dispatch under that key.
+test("a kept refusal of a write that sends no key never comes back expired", () => {
   const spent = PRESSED_AT + IDEMPOTENCY_KEY_TTL_MS;
-  expect(refusalFrom(keptRefusal(new SendStoppedError()), KEY, null, spent).name).toBe(
-    "SendStoppedError"
-  );
-  expect(refusalFrom(keptRefusal(new SendInterruptedError()), KEY, null, spent).name).toBe(
-    "SendInterruptedError"
-  );
+  const unkeyed: (WriteMethod | null)[] = ["PUT", "DELETE", null];
+  for (const carried of unkeyed) {
+    expect(refusalFrom(keptRefusal(new SendStoppedError()), KEY, carried, spent).name).toBe(
+      "SendStoppedError"
+    );
+    expect(refusalFrom(keptRefusal(new SendInterruptedError()), KEY, carried, spent).name).toBe(
+      "SendInterruptedError"
+    );
+  }
 });
 
 // W7. A write kept for longer than five minutes is not made again on its own: the reader who made

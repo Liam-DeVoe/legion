@@ -1,12 +1,12 @@
 // Every request the dashboard makes is named by the route pattern the Dispatch route table holds
-// it under (`/api/v2/issues/{key}/events`), and its path parameters, its query parameters, its
-// request body and its response are read from `paths` in `@legion/contracts/dispatch-api-v2` -
-// the module generated from that table's `/api/v2` document. Nothing here restates a wire shape:
-// a route the table no longer holds, a path parameter it renamed, a query parameter it dropped
-// and a response field it changed each stop the type checker at the call site that asks for them.
+// it under (`/api/v1/issues/{key}/events`), and its path parameters, its query parameters, its
+// request body and its response are read from `paths` in `@legion/contracts` - the module
+// generated from that table. Nothing here restates a wire shape: a route the table no longer
+// holds, a path parameter it renamed, a query parameter it dropped and a response field it
+// changed each stop the type checker at the call site that asks for them.
 //
 // `e2e/api.ts` reads the same helpers, so the two clients cannot drift apart.
-import type { paths } from "@legion/contracts/dispatch-api-v2";
+import type { paths } from "@legion/contracts";
 
 /** Every route pattern the document holds an `M` operation for ("get", "post", …). A pattern the
  *  document does not hold, or holds no `M` for, is no member, so naming one is an error. */

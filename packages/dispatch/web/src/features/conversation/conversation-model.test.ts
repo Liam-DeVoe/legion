@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import type {
   Actor,
-  AskV2,
-  AskWithThread,
+  Ask,
   Comment,
   DispatchEvent,
   HandoffSummary,
+  IssueAskThreadRow,
   Message,
-  MessageThreadV2,
+  MessageRead,
 } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
@@ -24,7 +24,7 @@ import {
 const session = { id: "session-1", kind: "session" } as const satisfies Actor;
 const bob: Actor = { id: "bob", kind: "user" };
 
-const baseAsk: AskV2 = {
+const baseAsk: Ask = {
   anchor: null,
   answer: null,
   artifact_id: null,
@@ -34,24 +34,19 @@ const baseAsk: AskV2 = {
   block_id: null,
   author: session,
   created_at: "2026-09-10T09:00:00Z",
-  document: null,
   edited_at: null,
   id: "ask-1",
-  issue: null,
   issue_key: "CORE-1",
   kind: "question",
-  last_reply: null,
   opened_event_id: 2,
   multiple: false,
   options: [{ label: "Ship" }, { label: "Hold" }],
-  priority: null,
   question: "Ship it?",
-  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "med",
 };
 
-function askRow(ask: Partial<AskV2> = {}, replies: Comment[] = []): AskWithThread {
+function askRow(ask: Partial<Ask> = {}, replies: Comment[] = []): IssueAskThreadRow {
   return {
     ...baseAsk,
     ...ask,
@@ -110,8 +105,8 @@ function message(overrides: Partial<Message> & Pick<Message, "id" | "created_at"
   };
 }
 
-function thread(root: Message, replies: Message[] = []): MessageThreadV2 {
-  return { ...root, replies };
+function thread(root: Message, replies: Message[] = []): MessageRead {
+  return { message: root, replies };
 }
 
 function handoff(
@@ -127,9 +122,9 @@ function handoff(
 }
 
 const build = (input: {
-  asks?: AskWithThread[];
+  asks?: IssueAskThreadRow[];
   comments?: Comment[];
-  messages?: MessageThreadV2[];
+  messages?: MessageRead[];
   handoffs?: HandoffSummary[];
   unreadFrom?: string;
 }) =>

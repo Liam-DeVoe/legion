@@ -5,7 +5,6 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "../../api/client";
-import type { DashboardBuildV2 } from "../../api/types";
 import * as markdownEngine from "../refs/markdown-engine";
 import {
   DeploymentResilience,
@@ -295,7 +294,7 @@ test("a page shown after a download marks a later navigation to that URL as leav
   const navigation = new EventTarget();
   Object.defineProperty(window, "navigation", { configurable: true, value: navigation });
   const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
-  const url = "http://localhost/api/v2/artifacts/spec/versions/1";
+  const url = "http://localhost/api/v1/artifacts/spec/versions/1";
 
   try {
     installChunkFailureRecoveryForTest();
@@ -322,7 +321,7 @@ test("the second navigate Firefox fires for one Download click does not mark the
   const navigation = new EventTarget();
   Object.defineProperty(window, "navigation", { configurable: true, value: navigation });
   const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
-  const file = "http://localhost/api/v2/artifacts/spec/versions/1";
+  const file = "http://localhost/api/v1/artifacts/spec/versions/1";
   const navigate = (downloadRequest: string | null, url: string) =>
     navigation.dispatchEvent(navigateEvent(false, downloadRequest, url));
   const reloadsAfter = (...steps: (() => void)[]) => {
@@ -465,7 +464,7 @@ function runningPage(entry: string): HTMLScriptElement {
   return script;
 }
 
-/** Answers GET /api/v2/dashboard-builds with `builds` (a status and a body, or a network failure),
+/** Answers GET /api/v1/dashboard/builds with `builds` (a status and a body, or a network failure),
  *  `/healthz` with 200, and `/` with a page naming `pageEntry`, so a check that still read `/`
  *  would see another build there. */
 function serverAnswering(
@@ -473,7 +472,7 @@ function serverAnswering(
   pageEntry = "/assets/index-new.js"
 ) {
   function respond(input: RequestInfo | URL): Promise<Response> {
-    if (input === "/api/v2/dashboard-builds") {
+    if (input === "/api/v1/dashboard/builds") {
       if (builds === "network failure") {
         return Promise.reject(new TypeError("Failed to fetch"));
       }
@@ -490,12 +489,6 @@ function serverAnswering(
   return respond;
 }
 
-/** The live builds as `GET /api/v2/dashboard-builds` lists them: each build's entry chunk, and
- *  whether the answering process serves it. */
-function liveBuilds(...builds: DashboardBuildV2[]) {
-  return { items: builds, limit: 50, offset: 0, total: builds.length };
-}
-
 /** Lets the check a focus started run to its end: its request, its body and its state update.
  *  Each round is a task of the fake clock the test installed. */
 async function settleCheck(): Promise<void> {
@@ -508,7 +501,7 @@ test("shows a reloadable update notice when one build other than the tab's is li
   const fetch = spyOn(globalThis, "fetch").mockImplementation(
     serverAnswering({
       status: 200,
-      body: liveBuilds({ entry: "/assets/index-new.js", serving: true }),
+      body: { serving: "/assets/index-new.js", live: ["/assets/index-new.js"] },
     })
   );
   const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
@@ -521,7 +514,7 @@ test("shows a reloadable update notice when one build other than the tab's is li
     const notice = await screen.findByRole("status", { name: "A new version is available" });
     expect(notice).toHaveTextContent("A new version is available - Reload");
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith("/api/v2/dashboard-builds", {
+    expect(fetch).toHaveBeenCalledWith("/api/v1/dashboard/builds", {
       cache: "no-store",
       signal: expect.any(AbortSignal),
     });
@@ -541,17 +534,17 @@ const noNotice: [string, { status: number; body: unknown } | "network failure"][
     "two builds are live, one newer, while / names the newer one",
     {
       status: 200,
-      body: liveBuilds(
-        { entry: "/assets/index-current.js", serving: false },
-        { entry: "/assets/index-new.js", serving: true }
-      ),
+      body: {
+        serving: "/assets/index-new.js",
+        live: ["/assets/index-current.js", "/assets/index-new.js"],
+      },
     },
   ],
   [
     "the one live build is the tab's own",
     {
       status: 200,
-      body: liveBuilds({ entry: "/assets/index-current.js", serving: true }),
+      body: { serving: "/assets/index-current.js", live: ["/assets/index-current.js"] },
     },
   ],
   [
@@ -580,7 +573,7 @@ for (const [when, builds] of noNotice) {
         screen.queryByRole("status", { name: "A new version is available" })
       ).not.toBeInTheDocument();
       expect(fetch).toHaveBeenCalledTimes(1);
-      expect(fetch).toHaveBeenCalledWith("/api/v2/dashboard-builds", {
+      expect(fetch).toHaveBeenCalledWith("/api/v1/dashboard/builds", {
         cache: "no-store",
         signal: expect.any(AbortSignal),
       });
@@ -602,7 +595,7 @@ test("shows no update notice on a page that names no entry chunk, as Vite's dev 
   const fetch = spyOn(globalThis, "fetch").mockImplementation(
     serverAnswering({
       status: 200,
-      body: liveBuilds({ entry: "/assets/index-new.js", serving: true }),
+      body: { serving: "/assets/index-new.js", live: ["/assets/index-new.js"] },
     })
   );
   const view = render(<DeploymentResilience />);
@@ -616,7 +609,7 @@ test("shows no update notice on a page that names no entry chunk, as Vite's dev 
     expect(
       screen.queryByRole("status", { name: "A new version is available" })
     ).not.toBeInTheDocument();
-    expect(fetch).toHaveBeenCalledWith("/api/v2/dashboard-builds", {
+    expect(fetch).toHaveBeenCalledWith("/api/v1/dashboard/builds", {
       cache: "no-store",
       signal: expect.any(AbortSignal),
     });

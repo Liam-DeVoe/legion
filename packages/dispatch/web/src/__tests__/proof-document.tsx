@@ -4,8 +4,14 @@ import { act, render, waitFor } from "@testing-library/react";
 import { http, type RequestHandler } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { api, type WholeList } from "../api/client";
-import type { ArtifactText, ArtifactV2, AskV2, IssueDecisionsV2, MarkV2 } from "../api/types";
+import { api } from "../api/client";
+import type {
+  Artifact,
+  ArtifactText,
+  DocumentRead,
+  IssueAskRow,
+  IssueDecisions,
+} from "../api/types";
 import type { ComposerAnchor } from "../features/conversation/composer-model";
 import { type DocumentToolbar, ProofDocument } from "../features/doc/ProofDocument";
 import { DocumentRuntime } from "../features/doc/runtime";
@@ -17,23 +23,19 @@ import { type FakeDocumentRuntime, fakeDocumentRuntime } from "./document-runtim
 /** The ProofDocument suites' shared page: an issue's spec, rendered with a fake document runtime,
  * the margin, and the reference preview host, as the issue page renders it. */
 
-export const artifact: ArtifactV2 = {
+export const artifact: Artifact = {
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
   issue_key: "CORE-1",
   project: "CORE",
   kind: "doc",
-  latest_version: null,
-  latest_version_at: null,
-  latest_version_size: null,
   name: "spec.md",
   primary: true,
   ref_key: "CORE-1/spec",
   session_id: null,
   slug: "spec",
-  unsettled: null,
-  version_count: 0,
+  versions: [],
 };
 
 export function createQueryClient(): QueryClient {
@@ -52,64 +54,56 @@ export function createQueryClient(): QueryClient {
  */
 export function decisionsAndReadMarkHandlers(): RequestHandler[] {
   return [
-    http.get("/api/v2/issues/:key/decisions", () =>
+    http.get("/api/v1/issues/:key/decisions", () =>
       Response.json({
+        decisions: [],
         document: null,
-        items: [],
-        limit: 50,
-        offset: 0,
         open_questions: [],
-        total: 0,
-      } satisfies IssueDecisionsV2)
+      } satisfies IssueDecisions)
     ),
-    // A document the viewer has never read: its mark names no version.
-    http.get("/api/v2/me/marks/document/:id", ({ params }) =>
-      Response.json({ id: String(params.id), kind: "document" } satisfies MarkV2)
+    http.get("/api/v1/me/documents/:id/read", ({ params }) =>
+      Response.json({
+        artifact_id: String(params.id),
+        read_at: null,
+        version: null,
+      } satisfies DocumentRead)
     ),
     // Opening a document the viewer has never read records the version they are looking at: the
-    // page's own write of the mark above.
-    http.patch("/api/v2/me/marks/document/:id", async ({ params, request }) => {
-      const { read_version } = (await request.json()) as { read_version: number };
+    // page's own write of the route above.
+    http.put("/api/v1/me/documents/:id/read", async ({ params, request }) => {
+      const { version } = (await request.json()) as { version: number };
       return Response.json({
-        id: String(params.id),
-        kind: "document",
+        artifact_id: String(params.id),
         read_at: "2026-09-09T00:00:00Z",
-        read_version,
-      } satisfies MarkV2);
+        version,
+      } satisfies DocumentRead);
     }),
   ];
 }
 
 /**
- * `GET /api/v2/artifacts/:id` answered from `recordOf`, with the API's own answer for an artifact
- * nobody has where that finds none. A read that asks for the document's blocks
- * (`include=blocks`) is answered with none. Each file keeps its own lookup - this module's one
- * artifact, or the set a stubbed issue carries - and the not-found answer stays in one place.
+ * `GET /api/v1/artifacts/:id` answered from `recordOf`, with the API's own answer for an artifact
+ * nobody has where that finds none. Each file keeps its own lookup - this module's one artifact,
+ * or the set a stubbed issue carries - and the not-found answer stays in one place.
  */
 export function artifactRecordHandler(
-  recordOf: (id: string) => ArtifactV2 | undefined
+  recordOf: (id: string) => Artifact | undefined
 ): RequestHandler {
-  return http.get("/api/v2/artifacts/:id", ({ params, request }) => {
+  return http.get("/api/v1/artifacts/:id", ({ params }) => {
     const record = recordOf(String(params.id));
-    if (record === undefined) {
-      return Response.json(
-        { code: "ARTIFACT_NOT_FOUND", error: `no artifact ${String(params.id)}` },
-        { status: 404 }
-      );
-    }
-    const include = new URL(request.url).searchParams
-      .getAll("include")
-      .flatMap((value) => value.split(","));
-    return Response.json(include.includes("blocks") ? { ...record, blocks: [] } : record);
+    return record === undefined
+      ? Response.json(
+          { code: "ARTIFACT_NOT_FOUND", error: `no artifact ${String(params.id)}` },
+          { status: 404 }
+        )
+      : Response.json(record);
   });
 }
 
 /**
- * The reads the document surface makes of its own record, blocks, versions and read mark, and of
- * the issue's asks and decisions: the record handler and the read-mark and decision handlers
- * above, with the versions and the asks beside them. An id this module's artifact does not carry
- * is answered as the API answers an artifact nobody has, and a document's versions as a document
- * that holds none.
+ * The reads the document surface makes of its own record, blocks and read mark, and of the
+ * issue's asks and decisions: the three handlers above, and the three this adds to them. An id
+ * this module's artifact does not carry is answered as the API answers an artifact nobody has.
  *
  * `asks` is read on each request, so a file that reassigns the rows it seeds between tests is
  * answered the rows it holds then. A caller that answers one of these routes itself passes its
@@ -119,22 +113,12 @@ export function artifactRecordHandler(
 export function documentSurfaceHandlers({
   asks = () => [],
 }: {
-  asks?: () => AskV2[];
+  asks?: () => IssueAskRow[];
 } = {}): RequestHandler[] {
   return [
     artifactRecordHandler((id) => (id === artifact.id ? artifact : undefined)),
-    http.get("/api/v2/artifacts/:id/versions", () =>
-      Response.json({
-        items: [],
-        limit: 50,
-        offset: 0,
-        total: 0,
-      } satisfies WholeList<"/api/v2/artifacts/{id}/versions">)
-    ),
-    http.get("/api/v2/issues/:key/asks", () => {
-      const rows = asks();
-      return Response.json({ items: rows, limit: 50, offset: 0, total: rows.length });
-    }),
+    http.get("/api/v1/artifacts/:id/blocks", () => Response.json([])),
+    http.get("/api/v1/issues/:key/asks", () => Response.json(asks())),
     ...decisionsAndReadMarkHandlers(),
   ];
 }
@@ -148,9 +132,9 @@ export function answerTextReadsWithTheSeededText(): void {
   let restore: (() => void) | undefined;
   beforeEach(() => {
     const getArtifactText = spyOn(api, "getArtifactText").mockImplementation(async () => ({
-      ...artifact,
       markdown: defaultText,
       token: "sha256:spec-text",
+      version: null,
       unsettled: true,
     }));
     restore = () => getArtifactText.mockRestore();
@@ -175,7 +159,7 @@ export function renderProofDocument({
   surface,
   version,
 }: {
-  document?: ArtifactV2;
+  document?: Artifact;
   fake?: FakeDocumentRuntime;
   highlightTerm?: string;
   isClosed?: boolean;

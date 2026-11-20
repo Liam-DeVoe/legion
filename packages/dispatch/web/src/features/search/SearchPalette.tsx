@@ -13,7 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
-import type { ProjectV2, SearchResult, SearchResultKind } from "../../api/types";
+import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
@@ -66,7 +66,7 @@ import { useBarScope } from "./useBarScope";
 import { useTieredSearch } from "./useTieredSearch";
 
 const emptyResults: SearchResult[] = [];
-const emptyProjects: ProjectV2[] = [];
+const emptyProjects: Project[] = [];
 const ACTIONS_GROUP_ID = "search-group-actions";
 const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
@@ -81,7 +81,7 @@ interface ActionRow {
 interface ProjectRow {
   id: string;
   kind: "project";
-  project: ProjectV2;
+  project: Project;
 }
 
 interface ResultRow {
@@ -463,7 +463,7 @@ function PaletteDialog({
   // The project chip's own list, which every open of the bar offers, and the rows a query that
   // names a project leads to.
   const projects = useQuery(projectsQuery());
-  const results = search.data?.items ?? emptyResults;
+  const results = search.data?.results ?? emptyResults;
   // What search made of the words, read from its own answer rather than parsed a second time
   // here, and whether meaning search ran at all. A Dispatch that predates either field answers
   // neither, so the bar marks no operator and says nothing about meaning search.

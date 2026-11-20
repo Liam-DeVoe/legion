@@ -45,7 +45,7 @@ test("a reconnect admitted read-only before the issue read names the reload @web
     // raises the creatable version one above the version the page reads, which is this server's
     // own. Raising the version alone leaves the page writable, since the fleet still reads what it
     // creates (TestSchemaAdmissionFollowsTheLiveFleet, "a page one version newer that creates only
-    // what every live process reads"). Rewriting the server's block schema read, which is how this
+    // what every live process reads"). Rewriting `GET /api/v1/schema/blocks`, which is how this
     // row made the page read-only while the page read its schema from the server, changes nothing
     // now: the page reads no schema from the server (web/src/features/doc/schema.ts), so the route
     // is gone from here. The raise is made where the page builds the socket URL, since Playwright
@@ -67,12 +67,11 @@ test("a reconnect admitted read-only before the issue read names the reload @web
     // The page's first read of the issue that would tell it the issue is open again, held in the
     // handler: while it is held the page still holds the issue closed, which is the state the
     // reopen's reconnect is admitted under. Any read before the reopen lands goes through, so the
-    // hold is spent on the one read that matters. The page reads the issue with its `include`
-    // list, so the glob takes the query string.
+    // hold is spent on the one read that matters.
     const reading = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     let hold = false;
-    await page.route(`**/api/v2/issues/${issue.key}?**`, async (route) => {
+    await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
       if (route.request().method() !== "GET" || !hold) return route.fallback();
       const response = await route.fetch();
       const read = (await response.json()) as { closed_at: string | null };

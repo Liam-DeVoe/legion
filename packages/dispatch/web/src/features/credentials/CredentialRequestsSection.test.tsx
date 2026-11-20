@@ -18,7 +18,7 @@ import type { CredentialRequests } from "./pending";
 afterEach(cleanup);
 
 /** Whether this deployment serves the machine-code page, which every pending row reads
- *  (`useMachineCodePage`, GET /api/v2/settings/credential-broker): it serves none unless the test
+ *  (`useMachineCodePage`, GET /api/v1/credentials/capabilities): it serves none unless the test
  *  under way says it does. */
 let capabilities: Mock<typeof api.getCredentialCapabilities>;
 
@@ -68,7 +68,7 @@ function renderSection(
 
 // The machine row links to `/credentials/machine` only where this deployment serves that page,
 // which the credential capabilities say (`useMachineCodePage`, GET
-// /api/v2/settings/credential-broker), so the row's link is there once that answer is in.
+// /api/v1/credentials/capabilities), so the row's link is there once that answer is in.
 test("renders every pending credential request, linking a secret row to its broker page and a machine row to /credentials/machine", async () => {
   const machineRow: CredentialPendingRow = {
     identifiers: ["worker-7.example.com"],
@@ -242,7 +242,7 @@ test("a refused dismissal shows the broker's message and reads the list again", 
 // of its own, rather than that the dismissal failed.
 test("a dismissal the reader stopped says it may have been made, not that it failed", async () => {
   const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
-    new NetworkError("/api/v2/credential-requests/req-9/state", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/credentials/requests/req-9/dismiss", new TypeError("Failed to fetch"))
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   jest.useFakeTimers();

@@ -183,8 +183,8 @@ async function openDocked(stopped?: SentRequest, phone = false, signedIn = false
   const reads = stubLists({
     comments: phone ? [commentA] : [],
     messages: [
-      { ...messageA, replies: [] },
-      { ...messageB, replies: [] },
+      { message: messageA, replies: [] },
+      { message: messageB, replies: [] },
     ],
   });
   const createComment = spyOn(api, "createComment");
@@ -207,7 +207,7 @@ async function openDocked(stopped?: SentRequest, phone = false, signedIn = false
     createComment,
     createMessage,
     dropMessageA: async () => {
-      reads.lists.messages = [{ ...messageB, replies: [] }];
+      reads.lists.messages = [{ message: messageB, replies: [] }];
       await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
       await waitFor(() =>
         expect(document.querySelector('[data-turn="message:message-1"]')).toBe(null)

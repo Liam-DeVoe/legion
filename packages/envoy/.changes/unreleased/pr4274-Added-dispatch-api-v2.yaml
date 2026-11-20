@@ -18,5 +18,4 @@ body: |-
   `envoy-dispatch openapi` writes the committed `/api/v2` OpenAPI document beside the `/api/v1`
   one, and `--check` checks both. `--version 1` or `--version 2` takes one document alone, and
   `--out <path>` needs it: it writes that document to the path, or with `--check` names the file
-  compared. The dashboard calls `/api/v2` alone, and the test hooks, which keep their `/api/v1`
-  rules, answer at `/api/v2/_test/…` too.
+  compared. The test hooks, which keep their `/api/v1` rules, answer at `/api/v2/_test/…` too.

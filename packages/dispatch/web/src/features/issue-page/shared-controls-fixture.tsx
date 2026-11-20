@@ -5,14 +5,14 @@ import { MemoryRouter } from "react-router-dom";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { artifact as specDocument } from "../../__tests__/proof-document";
 import { renderWithQueries } from "../../__tests__/query-provider";
-import type { WholeList } from "../../api/client";
 import type {
   Agent,
   ArchitectureTree,
-  ArtifactApprovalWithTrees,
-  ArtifactV2,
-  AskV2,
-  AskWithThread,
+  Artifact,
+  ArtifactApproval,
+  Ask,
+  AskRead,
+  Priorities,
   PriorityRow,
 } from "../../api/types";
 import { PAGE_COLORS } from "../../theme/classes";
@@ -244,15 +244,12 @@ function priority(id: string, title: string): PriorityRow {
   };
 }
 
-export const priorities: WholeList<"/api/v2/priorities"> = {
-  items: [
+export const priorities: Priorities = {
+  priorities: [
     priority("evals-now", "Evals collecting data now"),
     priority("rocq-lean", "Rocq and Lean speed work restarted"),
   ],
-  limit: 50,
-  offset: 0,
   priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-  total: 2,
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
 
@@ -295,31 +292,27 @@ export const DECISIONS_ID = "artifact-decisions";
 export const VERIFICATION_ID = "artifact-verification";
 
 /** A document of the issue (`ApprovalSteps.test.tsx`'s `doc`). */
-export function doc(id: string, name: string, approval?: ArtifactApprovalWithTrees): ArtifactV2 {
+export function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
   return {
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id,
     issue_key: "CORE-1",
     kind: "doc",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
     name,
     primary: id === SPEC_ID,
     project: "CORE",
     ref_key: `CORE-1/${name}`,
     session_id: null,
     slug: name.replace(".", "-"),
-    unsettled: null,
-    version_count: 0,
+    versions: [],
     ...(approval === undefined ? {} : { approval }),
   };
 }
 
 /** An open blocking question the live session asked, as the Inbox hands it (`AskCard.test.tsx`'s
  *  `answeredAsk`, still open). */
-export function openAsk(overrides: Partial<AskV2> = {}): AskV2 {
+export function openAsk(overrides: Partial<Ask> = {}): Ask {
   return {
     anchor: null,
     answer: null,
@@ -334,19 +327,14 @@ export function openAsk(overrides: Partial<AskV2> = {}): AskV2 {
     },
     block_id: null,
     created_at: "2026-10-08T00:00:00Z",
-    document: null,
     edited_at: null,
     id: "ask-1",
-    issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
-    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [{ label: "Ship" }, { label: "Hold" }],
-    priority: null,
     question: "Which release path?",
-    ref: "dispatch://CORE-1/ask/ask-1",
     state: "open",
     urgency: "blocking",
     waiting_on: "human",
@@ -355,7 +343,7 @@ export function openAsk(overrides: Partial<AskV2> = {}): AskV2 {
 }
 
 /** The open request for the spec's version 1, which an approval entry's version link reads. */
-export const specRequest: AskV2 = openAsk({
+export const specRequest: Ask = openAsk({
   approval: {
     artifact_id: SPEC_ID,
     documents: null,
@@ -367,22 +355,20 @@ export const specRequest: AskV2 = openAsk({
   kind: "approval",
 });
 
-/** The ask read with its thread, as `GET /api/v2/asks/{id}?include=thread` answers it before
- *  anyone answers (`AskCard.test.tsx`'s `thread`). */
-export function threadOf(ask: AskV2): AskWithThread {
+/** The ask's read, as `GET /api/v1/asks/{id}` answers it before anyone answers
+ *  (`AskCard.test.tsx`'s `thread`). */
+export function threadOf(ask: Ask): AskRead {
   return {
-    ...ask,
-    thread: {
-      answers: [],
-      claimant: null,
-      edits: [],
-      followers: [],
-      replies: [],
-      route: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-    },
+    answers: [],
+    ask,
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
   };
 }
 

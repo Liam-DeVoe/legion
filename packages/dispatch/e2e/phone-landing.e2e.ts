@@ -28,12 +28,10 @@ async function seedConversation(title: string) {
   return { issue, newest };
 }
 
-/** Matches the Conversation's asks read for `issueKey`: the asks endpoint with
- *  `include=thread`. */
+/** Matches the Conversation's asks read for `issueKey`: the asks endpoint with `thread=1`. */
 function asksThreadRead(issueKey: string): (url: URL) => boolean {
   return (url) =>
-    url.pathname === `/api/v2/issues/${issueKey}/asks` &&
-    url.searchParams.getAll("include").includes("thread");
+    url.pathname === `/api/v1/issues/${issueKey}/asks` && url.searchParams.get("thread") === "1";
 }
 
 /** The newest message's turn in the Conversation's list. */
@@ -123,7 +121,7 @@ const READS = ["asks", "comments", "messages"] as const;
 function conversationRead(issueKey: string, read: (typeof READS)[number]): (url: URL) => boolean {
   return read === "asks"
     ? asksThreadRead(issueKey)
-    : (url) => url.pathname === `/api/v2/issues/${issueKey}/${read}`;
+    : (url) => url.pathname === `/api/v1/issues/${issueKey}/${read}`;
 }
 
 /** Opens the Conversation on a fresh page with `last` held until the other two reads have

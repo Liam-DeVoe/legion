@@ -7,9 +7,14 @@ import type { Window as HappyDOMWindow } from "happy-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
-import type { AskV2, CommentReadV2, IssueReadV2 } from "../../api/types";
+import type {
+  AskRead,
+  CommentRead,
+  IssueAskRow,
+  IssueReferenceSummary,
+  ReferenceQuestions,
+} from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
-import { askWithThread, documentRow, issueSummary, questionsRead } from "./reference-fixture";
 import { Unfurl } from "./Unfurl";
 
 /** The test DOM is happy-dom's window (`__tests__/setup.ts` registers it), which TypeScript
@@ -52,26 +57,27 @@ test("Unfurl trims terminal punctuation before resolving a GitHub reference", as
 });
 
 /** CORE-1's summary read, with its spec `design`. */
-const coreSummary: IssueReadV2 = issueSummary({
-  artifacts: [
-    documentRow({
+const coreSummary: IssueReferenceSummary = {
+  documents: [
+    {
       id: "artifact-1",
-      issue_key: "CORE-1",
+      kind: "doc",
       latest_version: 3,
       name: "design.md",
       primary: true,
       slug: "design",
-    }),
+    },
   ],
   key: "CORE-1",
+  project: "CORE",
   status: "testing",
   title: "Design decision",
-});
+};
 
 test("Unfurl shows an issue's title and status from its summary, without the full issue read", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
     ...coreSummary,
-    artifacts: [],
+    documents: [],
   });
   const getIssue = spyOn(api, "getIssue");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -98,8 +104,8 @@ test("Unfurl reads the immutable document version named by a reference", async (
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(coreSummary);
   const getIssue = spyOn(api, "getIssue");
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    ...documentRow({ id: "artifact-1", latest_version: null, name: "design.md", slug: "design" }),
     markdown: "Live document",
+    version: null,
     unsettled: true,
     token: "sha256:live-document",
   });
@@ -137,15 +143,15 @@ test("Unfurl reads the immutable document version named by a reference", async (
 });
 
 test("Unfurl unfurls a dispatch project document reference with its name and document link", async () => {
-  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(
-    documentRow({
-      id: "artifact-1",
-      latest_version: 3,
-      name: "Design notes",
-      project: "CORE",
-      slug: "design-notes",
-    })
-  );
+  const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
+    id: "artifact-1",
+    kind: "doc",
+    latest_version: 3,
+    name: "Design notes",
+    project: "CORE",
+    slug: "design-notes",
+  });
+  const getProjectArtifact = spyOn(api, "getProjectArtifact");
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
     authors: [],
     created_at: "2026-09-10T00:00:00Z",
@@ -168,7 +174,8 @@ test("Unfurl unfurls a dispatch project document reference with its name and doc
     );
 
     await screen.findByText("Project version three");
-    expect(getProjectArtifact).toHaveBeenCalledWith("CORE", "design-notes");
+    expect(getProjectDocumentSummary).toHaveBeenCalledWith("CORE", "design-notes");
+    expect(getProjectArtifact).not.toHaveBeenCalled();
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();
     expect(screen.getByRole("link", { name: /Design notes/ }).getAttribute("href")).toBe(
@@ -180,20 +187,47 @@ test("Unfurl unfurls a dispatch project document reference with its name and doc
     getIssue.mockRestore();
     getArtifactVersion.mockRestore();
     getProjectArtifact.mockRestore();
+    getProjectDocumentSummary.mockRestore();
   }
 });
 
 test("Unfurl unfurls a dispatch ask reference with the question, reading no issue", async () => {
   await warmMarkdownRenderer();
-  const askRead = askWithThread({
-    author: { id: "alice", kind: "user" },
-    created_at: "2026-09-09T00:00:00Z",
-    id: "ask-1",
-    question: "Should we ship this on Friday or wait for the review to land first?",
-    question_tree: displayTree(
-      "Should we ship this on Friday or wait for the review to land first?"
-    ),
-  });
+  const askRead: AskRead = {
+    ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      id: "ask-1",
+      issue_key: "CORE-1",
+      kind: "question",
+      author: { id: "alice", kind: "user" },
+      question: "Should we ship this on Friday or wait for the review to land first?",
+      question_tree: displayTree(
+        "Should we ship this on Friday or wait for the review to land first?"
+      ),
+      options: [],
+      multiple: false,
+      urgency: "med",
+      anchor: null,
+      state: "open",
+      answer: null,
+      opened_event_id: 1,
+      created_at: "2026-09-09T00:00:00Z",
+      edited_at: null,
+    },
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  };
   const getIssue = spyOn(api, "getIssue");
   const getIssueSummary = spyOn(api, "getIssueSummary");
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead);
@@ -222,23 +256,25 @@ test("Unfurl unfurls a dispatch ask reference with the question, reading no issu
 
 test("Unfurl unfurls a dispatch comment reference with its own words, reading no issue", async () => {
   await warmMarkdownRenderer();
-  const commentRead: CommentReadV2 = {
-    id: "comment-1",
-    issue_key: "CORE-1",
-    author: { id: "alice", kind: "user" },
-    body: "**Looks** good overall.\nOne nit below.",
-    body_tree: displayTree("**Looks** good overall.\nOne nit below."),
-    anchor: null,
-    reply_to: null,
-    ask_id: null,
-    turn: null,
-    resolved: false,
-    resolved_by: null,
-    resolved_at: null,
-    edited_at: null,
-    suggestion: null,
-    created_at: "2026-09-09T00:00:00Z",
-    ...commentDeliveryFields(),
+  const commentRead: CommentRead = {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "**Looks** good overall.\nOne nit below.",
+      body_tree: displayTree("**Looks** good overall.\nOne nit below."),
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+    },
     replies: [],
   };
   const getIssue = spyOn(api, "getIssue");
@@ -267,8 +303,15 @@ test("Unfurl unfurls a dispatch comment reference with its own words, reading no
   }
 });
 
+/** The question map the route answers for the body's source: `#q1` is the question block of
+ *  CORE-1's spec, settled into `ask-1`. */
+const specQuestions: ReferenceQuestions = {
+  document: "artifact-1",
+  questions: [{ ask: "ask-1", block_id: "q1", reference: "dispatch://CORE-1/ask/ask-1" }],
+};
+
 /** The ask `#q1` names, as its own read carries it. */
-const blockAsk: AskV2 = {
+const blockAsk: IssueAskRow = {
   anchor: null,
   answer: null,
   artifact_id: null,
@@ -279,30 +322,32 @@ const blockAsk: AskV2 = {
   block_artifact: { id: "artifact-1", primary: true, slug: "design" },
   block_id: "q1",
   created_at: "2026-09-09T00:00:00Z",
-  document: null,
   edited_at: null,
   id: "ask-1",
-  issue: null,
   issue_key: "CORE-1",
   kind: "question",
   last_reply: null,
   multiple: false,
   opened_event_id: 1,
   options: [],
-  priority: null,
   question: "Which region do we deploy to?",
-  question_block_id: "q1",
-  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "med",
 };
 
-/** The question map the route answers for the body's source: `#q1` is the question block of
- *  CORE-1's spec, settled into `ask-1`. */
-const specQuestions = questionsRead([blockAsk], "artifact-1");
-
 /** `blockAsk`'s own read, which the card behind `#q1` shows the question from. */
-const blockAskRead = askWithThread(blockAsk);
+const blockAskRead: AskRead = {
+  answers: [],
+  ask: blockAsk,
+  claimant: null,
+  edits: [],
+  followers: [],
+  replies: [],
+  route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+};
 
 test("Unfurl cards an issue key written bare, once its issue exists", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(coreSummary);

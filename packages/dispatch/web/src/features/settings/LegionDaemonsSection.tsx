@@ -2,12 +2,12 @@
 // reads from which daemon. Naming a project's daemon here is what makes Dispatch's sampler read
 // that daemon's `GET /legion/v1/state` once a minute and record what changed, and removing one
 // stops the reading while everything already read stays. No page draws what the sampler records:
-// nothing in the dashboard reads the board it feeds (`GET /api/v2/projects/{key}/legion/board`).
+// nothing in the dashboard reads the board it feeds (`GET /api/v1/projects/{key}/legion/board`).
 //
 // No route lists every project's daemon, so the section reads each project's
-// `GET /api/v2/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
+// `GET /api/v1/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
 // entry of the project it names. The two writes are `PUT` and
-// `DELETE /api/v2/projects/{key}/legion/daemon`, classed `scopeDeployment` beside the repository
+// `DELETE /api/v1/projects/{key}/legion/daemon`, classed `scopeDeployment` beside the repository
 // mappings and the Delivery settings: pointing Dispatch at a host is the deployment's business,
 // not one project's. A credential naming one project is refused by the server, which is the only
 // role Dispatch has, so the controls are offered to any signed-in person (`useIsHuman`) and the

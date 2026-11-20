@@ -1,5 +1,4 @@
-import { INBOX_DISMISSED_PAGE, inboxThreadRow } from "@legion/contracts";
-import type { MarkItemV2 } from "../web/src/api/types";
+import { INBOX_DISMISSED_PAGE, type InboxDismissSeen, inboxThreadRow } from "@legion/contracts";
 import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
 
 import { setLiveSessions } from "./agents";
@@ -40,19 +39,17 @@ import { asUser } from "./users";
  * out and **Move to Inbox** puts it back; a reply somebody else writes brings a dismissed thread
  * back unread, and the reader's own reply leaves it where it is.
  *
- * A press that names its rows carries, in each row's item, what the page drew in it - a Reply
- * row's own version, an Agent row's newest session reply and the ids it drew as unread - so the
- * server writes no mark over a write the page never drew; a **Move to Inbox** carries none,
- * which is what the route takes a restore as.
+ * A press that names its rows carries what the page drew in each of them (`seen_replies`) - a
+ * Reply row's own version, an Agent row's newest session reply and the ids it drew as unread -
+ * so the server writes no mark over a write the page never drew; a **Move to Inbox** carries
+ * none, which is what the route takes a restore as.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
 
-/** The route one press of **Dismiss** or of **Move to Inbox** patches: the person's marks, named
- *  as `items` (`marksRequest`). Nothing on these pages presses **Mark all read**, the one other
- *  write of that route. */
-const DISMISS_PATH = "/api/v2/me/marks";
+/** The route one press of **Dismiss** or of **Move to Inbox** posts to. */
+const DISMISS_PATH = "/api/v1/me/inbox/dismiss";
 const DISMISS_ROUTE = `**${DISMISS_PATH}`;
 
 /** The root of the comment thread this file dismisses, as its row and its control name it. */
@@ -109,80 +106,62 @@ async function bandHeadings(page: Page): Promise<string[]> {
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
 }
 
-/** Every `PATCH` to the dismiss route this page has made, in order, so a press that must be one
+/** Every `POST` to the dismiss route this page has made, in order, so a press that must be one
  *  request can be held to it. */
 function watchDismisses(page: Page): Request[] {
   const posted: Request[] = [];
   page.on("request", (request) => {
-    if (request.method() === "PATCH" && new URL(request.url()).pathname === DISMISS_PATH) {
+    if (request.method() === "POST" && new URL(request.url()).pathname === DISMISS_PATH) {
       posted.push(request);
     }
   });
   return posted;
 }
 
-/** The next `PATCH` to the dismiss route, as a promise to await before pressing. */
+/** The next `POST` to the dismiss route, as a promise to await before pressing. */
 function nextDismiss(page: Page): Promise<Request> {
   return page.waitForRequest(
-    (request) => request.method() === "PATCH" && new URL(request.url()).pathname === DISMISS_PATH
+    (request) => request.method() === "POST" && new URL(request.url()).pathname === DISMISS_PATH
   );
 }
 
-/** What a press that names its rows sends: each row as its own mark's item. */
-interface DismissBody {
-  readonly items?: MarkItemV2[];
-}
-
-/** A press's items by the Inbox row each names: a Reply row is its thread's mark, an Agent row
- *  the mark on its root message. */
-function itemsByRow(body: DismissBody): Record<string, MarkItemV2> {
-  return Object.fromEntries(
-    (body.items ?? []).map((item) => [
-      item.kind === "message" ? agentRowId(item.id) : replyRowId(item.id),
-      item,
-    ])
-  );
-}
-
-/** What the reader has dismissed out of their Inbox, counted row by row from the whole list
- *  (`listMyReplies` reads it a page at a time until a page comes back short): the route answers
- *  the dismissed threads with no `total`. */
+/** What the reader has dismissed out of their Inbox, read back from the route a page at a time.
+ *  Under `state=dismissed` the answer's `total` is the page it holds rather than the whole pile -
+ *  nothing counts that view, and counting it is the most expensive read the Inbox has (a14) - so
+ *  the count is the rows, followed through `next_cursor` to the last page. */
 async function dismissedThreads(): Promise<number> {
-  return ((await listMyReplies({ kind: ["reply", "agent"], state: "dismissed" })).items ?? [])
-    .length;
+  let counted = 0;
+  let cursor: string | undefined;
+  do {
+    const page = await listMyReplies({ cursor, kind: ["reply", "agent"], state: "dismissed" });
+    counted += (page.rows ?? []).length;
+    cursor =
+      page.next_cursor === undefined || page.next_cursor === "" ? undefined : page.next_cursor;
+  } while (cursor !== undefined);
+  return counted;
 }
 
-/** What the reader's Inbox holds, read or not, counted row by row from the whole list as the
- *  dismissed threads are: the route's `total` is a number only for some of its states. */
+/** What the reader's Inbox holds, read or not, read back from the route. */
 async function inboxThreads(): Promise<number> {
-  return ((await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).items ?? []).length;
+  return (await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).total;
 }
 
 /** What the page drew in each Inbox row, read out of the same list route the page reads and
- *  keyed by that row's own id, as the item a dismissal of it carries: a Reply row's thread mark
- *  with its own `version`, and an Agent row's root-message mark with its newest session reply and
- *  the ids it answered as unread. Read before the press, since the rows it takes out are gone
- *  from this state afterwards. */
-async function seenReplies(): Promise<Record<string, MarkItemV2>> {
-  const { items } = await listMyReplies({ kind: ["reply", "agent"], state: "inbox" });
+ *  keyed by that row's own id, which is exactly what a dismissal of it carries in
+ *  `seen_replies`: a Reply row's own `version`, and an Agent row's newest session reply with the
+ *  ids it answered as unread. Read before the press, since the rows it takes out are gone from
+ *  this state afterwards. */
+async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
+  const { rows } = await listMyReplies({ kind: ["reply", "agent"], state: "inbox" });
   return Object.fromEntries(
-    (items ?? []).map(inboxThreadRow).map((row): [string, MarkItemV2] =>
-      row.kind === "agent"
-        ? [
-            agentRowId(row.thread_id),
-            {
-              dismissed: true,
-              id: row.thread_id,
-              kind: "message",
-              newest_reply: row.reply.id,
-              unread_replies: row.unread_reply_ids,
-            },
-          ]
-        : [
-            replyRowId(row.thread_id),
-            { dismissed: true, id: row.thread_id, kind: "thread", version: row.version },
-          ]
-    )
+    (rows ?? [])
+      .map(inboxThreadRow)
+      .map((row) => [
+        row.kind === "agent" ? agentRowId(row.thread_id) : replyRowId(row.thread_id),
+        row.kind === "agent"
+          ? { newest_reply: row.reply.id, unread_replies: row.unread_reply_ids }
+          : { version: row.version },
+      ])
   );
 }
 
@@ -279,7 +258,10 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
     const seen = await seenReplies();
     const sent = nextDismiss(page);
     await control.first().click();
-    expect((await sent).postDataJSON()).toEqual({ items: [seen[replyRowId(seeded.reply)]] });
+    expect((await sent).postDataJSON()).toEqual({
+      seen_replies: { [replyRowId(seeded.reply)]: seen[replyRowId(seeded.reply)] },
+      threads: [replyRowId(seeded.reply)],
+    });
     await expect(replyRow).toHaveCount(0);
     await expect(rows).toHaveCount(2);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seeded.ask);
@@ -407,9 +389,12 @@ test("three thread rows picked with x go out together in one bulk Dismiss", asyn
     const seen = await seenReplies();
     const sent = nextDismiss(page);
     await dismiss.click();
-    const body = (await sent).postDataJSON() as DismissBody;
-    expect(body.items).toHaveLength(picked.length);
-    expect(itemsByRow(body)).toEqual(Object.fromEntries(picked.map((id) => [id, seen[id]])));
+    const body = (await sent).postDataJSON() as {
+      seen_replies?: Record<string, InboxDismissSeen>;
+      threads?: string[];
+    };
+    expect(new Set(body.threads)).toEqual(new Set(picked));
+    expect(body.seen_replies).toEqual(Object.fromEntries(picked.map((id) => [id, seen[id]])));
     for (const id of picked) {
       await expect(page.locator(`[data-inbox-row="${id}"]`)).toHaveCount(0);
     }
@@ -463,14 +448,19 @@ test("Select all dismisses every row of the group in one request that names each
     const seen = await seenReplies();
     const sent = nextDismiss(page);
     await bar.getByRole("button", { name: "Dismiss selected threads" }).click();
-    const body = (await sent).postDataJSON() as DismissBody;
-    expect(Object.keys(body)).toEqual(["items"]);
-    const named = itemsByRow(body);
-    expect(body.items).toHaveLength(THREADS);
-    expect(Object.keys(named).every((id) => id.startsWith("reply:"))).toBe(true);
-    for (const id of drawn) expect(named[id]).toBeDefined();
-    // One item per row it names, each what the list answered for that row.
-    expect(named).toEqual(seen);
+    const body = (await sent).postDataJSON() as {
+      dismiss_through?: string;
+      kind?: string[];
+      seen_replies?: Record<string, InboxDismissSeen>;
+      threads?: string[];
+    };
+    expect(Object.keys(body).sort()).toEqual(["seen_replies", "threads"]);
+    const named = new Set(body.threads);
+    expect(named.size).toBe(THREADS);
+    expect([...named].every((id) => id.startsWith("reply:"))).toBe(true);
+    for (const id of drawn) expect(named.has(id)).toBe(true);
+    // One entry per row it names, each what the list answered for that row.
+    expect(body.seen_replies).toEqual(seen);
 
     // Every row of the band goes, the ones behind **Show more** with them.
     await expect(rows).toHaveCount(0);
@@ -538,13 +528,16 @@ test("Select all under a search dismisses every matching row of a band wider tha
     const seen = await seenReplies();
     const sent = nextDismiss(page);
     await bar.getByRole("button", { name: "Dismiss selected threads" }).click();
-    const body = (await sent).postDataJSON() as DismissBody;
-    expect(Object.keys(body)).toEqual(["items"]);
-    // One item per row it named, and each is the version the list answered for that row.
-    const named = itemsByRow(body);
-    expect(body.items).toHaveLength(MATCHING);
-    expect(Object.keys(named)).toHaveLength(MATCHING);
-    for (const [id, drawn] of Object.entries(named)) {
+    const body = (await sent).postDataJSON() as {
+      dismiss_through?: string;
+      seen_replies?: Record<string, InboxDismissSeen>;
+      threads?: string[];
+    };
+    expect(Object.keys(body).sort()).toEqual(["seen_replies", "threads"]);
+    expect(new Set(body.threads).size).toBe(MATCHING);
+    // One entry per row it named, and each is the version the list answered for that row.
+    expect(new Set(Object.keys(body.seen_replies ?? {}))).toEqual(new Set(body.threads));
+    for (const [id, drawn] of Object.entries(body.seen_replies ?? {})) {
       expect(drawn).toEqual(seen[id]);
     }
 
@@ -716,7 +709,7 @@ test("a refused dismiss puts the row back where it stood and says so", async ({ 
       nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
     );
 
-    const refuse = await refusePosts(page, DISMISS_ROUTE, WRITE_REFUSED, "PATCH");
+    const refuse = await refusePosts(page, DISMISS_ROUTE);
     await selectRow(page, replyId);
     await page.locator(`[data-inbox-dismiss="${replyId}"]`).first().click();
     await expect(replyRow).toHaveCount(0);

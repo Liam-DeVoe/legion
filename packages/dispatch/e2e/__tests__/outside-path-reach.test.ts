@@ -51,7 +51,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(run.code).toBe(0);
         expect(await origin.seen()).toEqual([
           { method: "GET", path: "/healthz", credential: null },
-          { method: "GET", path: "/api/v2/projects", credential: null },
+          { method: "GET", path: "/api/v1/projects", credential: null },
         ]);
       } finally {
         await origin.stop();
@@ -234,7 +234,7 @@ describe.concurrent("outside-path-reach.sh", () => {
                 "esac\n" +
                 'case "$*" in\n' +
                 `  *http://${origin}/healthz) printf 200; exit 0 ;;\n` +
-                `  *http://${origin}/api/v2/projects) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
+                `  *http://${origin}/api/v1/projects) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
                 `  *telnet://${origin}) printf '0.000010 0.000100'; exit 28 ;;\n` +
                 "esac"
             ),
@@ -261,7 +261,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       expect(unset).toEqual({
         reads: [
           { path: "/healthz", connect: "3", read: "10" },
-          { path: "/api/v2/projects", connect: "3", read: "10" },
+          { path: "/api/v1/projects", connect: "3", read: "10" },
         ],
         verdict: `PASS: every target is unreachable from this device, and http://${origin} answered as Dispatch`,
         code: 0,
@@ -269,7 +269,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       expect(empty).toEqual(unset);
       expect(given.reads).toEqual([
         { path: "/healthz", connect: "7", read: "2" },
-        { path: "/api/v2/projects", connect: "7", read: "2" },
+        { path: "/api/v1/projects", connect: "7", read: "2" },
       ]);
       expect(given.code).toBe(0);
     }
@@ -772,7 +772,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       const path = pathWithCurl(
         'case "$*" in\n' +
           "  */healthz*) printf 200; exit 0 ;;\n" +
-          `  */api/v2/projects*) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
+          `  */api/v1/projects*) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
           "  *'telnet://dispatch-outside.example:443'* | *'telnet://[fd00::1]:443'* | *'telnet://[fd00::1]:8443'*)\n" +
           "    printf '0.000010 0.000100'; exit 28 ;;\n" +
           "  *'telnet://[::1]:4222'*) printf '0.000010 0.000000'; exit 7 ;;\n" +

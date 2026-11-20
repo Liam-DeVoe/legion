@@ -1,11 +1,11 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import type { ArtifactV2, DocumentRole, Issue, IssueDetails } from "./types";
+import type { Artifact, DocumentRole, Issue, IssueDetails } from "./types";
 
 /** The issue's primary document (its spec), or undefined until the details have loaded. */
 export function primarySpec(
   issue: Pick<IssueDetails, "artifacts" | "primary_artifact_id"> | undefined
-): ArtifactV2 | undefined {
+): Artifact | undefined {
   return issue?.artifacts?.find((artifact) => artifact.id === issue.primary_artifact_id);
 }
 
@@ -22,7 +22,7 @@ export function roleDocument(
       >
     | undefined,
   role: DocumentRole
-): ArtifactV2 | undefined {
+): Artifact | undefined {
   const ids: Record<DocumentRole, string | undefined> = {
     plan: issue?.plan_artifact_id,
     verification: issue?.verification_artifact_id,
@@ -37,8 +37,8 @@ export function roleDocument(
 /**
  * Applies a PATCH response to the cached `IssueDetails` for its key. The response carries only
  * the `Issue` fields, so they are merged over the details-only fields until the next full fetch.
- * `reach` is one of those, judged for the route the details were read with: a new route clears
- * its status, its holder and its reason rather than wear the old route's, and the issue's own
+ * `route_status` is one of those, judged for the route the details were read with: a new route
+ * clears it, its holder and its reason rather than wear the old route's, and the issue's own
  * event refetches them.
  */
 export function mergeIssue(queryClient: QueryClient, next: Issue): void {
@@ -48,9 +48,9 @@ export function mergeIssue(queryClient: QueryClient, next: Issue): void {
     }
     const reach =
       current.route === next.route
-        ? current.reach
-        : { ...current.reach, route_holder: null, route_status: null, route_status_reason: null };
-    return { ...current, ...next, reach };
+        ? {}
+        : { route_status: null, route_holder: null, route_status_reason: null };
+    return { ...current, ...next, ...reach };
   });
 }
 

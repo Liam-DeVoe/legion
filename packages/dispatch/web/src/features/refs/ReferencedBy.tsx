@@ -255,7 +255,7 @@ export function ReferencedBy({
   // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
   // end, that this page does not know; the page leaves such an edge out rather than draw it under
   // another edge's label.
-  const edges = query.data?.items.filter(
+  const edges = query.data?.edges?.filter(
     (edge) =>
       (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
       Object.hasOwn(NODE_LABELS, edge.node.kind)

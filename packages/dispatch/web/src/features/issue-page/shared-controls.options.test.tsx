@@ -18,21 +18,23 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { artifact as specDocument } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { type AnswerAskInput, ApiError, api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type {
   Actor,
+  AnswerAskInput,
   ArchitectureSource,
-  ArtifactApprovalWithTrees,
+  Artifact,
+  ArtifactApproval,
   ArtifactReview,
-  ArtifactV2,
-  AskV2,
-  AskWithThread,
+  Ask,
+  AskRead,
   ClaimHolderLiveness,
   Comment,
   Issue,
   IssueClaim,
   IssueComponents,
   IssueDetails,
+  UserIssueState,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -69,7 +71,6 @@ import type { StepEntry } from "../issue/gated-steps";
 import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { PriorityControl, PriorityEditor } from "../issue/PriorityControl";
-import type { IssueState } from "../issue/pins";
 import { RepoControl } from "../issue/RepoControl";
 import {
   RouteReachUnknownMarker,
@@ -133,11 +134,11 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 // pace with, so the engine is loaded before the rows begin.
 beforeAll(warmMarkdownRenderer);
 
-function specEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
+function specEntry(approval?: ArtifactApproval): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
 }
 
-function decisionsEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
+function decisionsEntry(approval?: ArtifactApproval): StepEntry {
   return {
     document: doc(DECISIONS_ID, "decisions.md", approval),
     label: "Decisions",
@@ -145,7 +146,7 @@ function decisionsEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
   };
 }
 
-function verificationEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
+function verificationEntry(approval?: ArtifactApproval): StepEntry {
   return {
     document: doc(VERIFICATION_ID, "verification.md", approval),
     label: "Verification",
@@ -189,7 +190,6 @@ interface Stubs {
   readonly getReferences: Mock<typeof api.getReferences>;
   readonly githubRest: Mock<typeof api.githubRest>;
   readonly listAgents: Mock<typeof api.listAgents>;
-  readonly listArtifactVersions: Mock<typeof api.listArtifactVersions>;
   readonly listIssueAsks: Mock<typeof api.listIssueAsks>;
   readonly listPriorities: Mock<typeof api.listPriorities>;
   readonly listProjectArchitectureSources: Mock<typeof api.listProjectArchitectureSources>;
@@ -217,30 +217,25 @@ beforeEach(() => {
       },
     ]),
     getArtifactText: spyOn(api, "getArtifactText").mockResolvedValue({
-      ...specDocument,
       markdown: "The live document",
       token: "sha256:spec-text",
+      version: null,
       unsettled: true,
     }),
     getDocumentRead: spyOn(api, "getDocumentRead").mockImplementation(async (id) => ({
-      id,
-      kind: "document",
+      artifact_id: id,
+      read_at: null,
+      version: null,
     })),
     getIssueDecisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
+      decisions: [],
       document: null,
-      items: [],
-      limit: 50,
-      offset: 0,
       open_questions: [],
-      total: 0,
     }),
     getIssueSubscribers: spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
     getReferences: spyOn(api, "getReferences").mockResolvedValue({
-      items: [],
-      limit: 50,
+      edges: [],
       node: graphNode({ id: "ask-1", kind: "ask" }),
-      offset: 0,
-      total: 0,
     }),
     githubRest: spyOn(api, "githubRest").mockImplementation(async (path) => {
       const answer = (body: unknown) =>
@@ -276,8 +271,6 @@ beforeEach(() => {
       listed(LIVE_SESSION, "Implementer"),
       listed(STALLED_SESSION, "Reviewer", "unresponsive"),
     ]),
-    // The spec is the live text alone, with no stored version (`specDocument`).
-    listArtifactVersions: spyOn(api, "listArtifactVersions").mockResolvedValue([]),
     listIssueAsks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
     listPriorities: spyOn(api, "listPriorities").mockResolvedValue(priorities),
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
@@ -289,10 +282,9 @@ beforeEach(() => {
       { login: "bob@example.com" },
     ]),
     putDocumentRead: spyOn(api, "putDocumentRead").mockImplementation(async (id, version) => ({
-      id,
-      kind: "document",
+      artifact_id: id,
       read_at: "2026-09-09T00:00:00Z",
-      read_version: version,
+      version,
     })),
     whoAmI: spyOn(api, "whoAmI").mockResolvedValue({
       event_head: "0",
@@ -2980,15 +2972,14 @@ test("the default shapes keep main's class strings", async () => {
     blockAsk("ask-b2", "b-2", "Which region?"),
   ]);
   stubs.getDocumentRead.mockImplementation(async (id) => ({
-    id,
-    kind: "document",
+    artifact_id: id,
     read_at: "2026-09-09T00:00:00Z",
-    read_version: 1,
+    version: 1,
   }));
   stubs.getReferences.mockImplementation(async (_reference, options) =>
     options?.kind === "part_of"
       ? {
-          items: [
+          edges: [
             {
               created_at: "2026-09-10T00:00:00Z",
               direction: "in",
@@ -3003,12 +2994,9 @@ test("the default shapes keep main's class strings", async () => {
               source_seq: null,
             },
           ],
-          limit: 50,
           node: graphNode({ id: specDocument.id, kind: "artifact" }),
-          offset: 0,
-          total: 1,
         }
-      : { items: [], limit: 50, node: graphNode({ id: "ask-1", kind: "ask" }), offset: 0, total: 0 }
+      : { edges: [], node: graphNode({ id: "ask-1", kind: "ask" }) }
   );
   const decisions = draw(proofDocument(), "outside");
   try {
@@ -3033,13 +3021,14 @@ test("the default shapes keep main's class strings", async () => {
     undraw(decisions);
   }
   stubs.listIssueAsks.mockResolvedValue([]);
-  stubs.getDocumentRead.mockImplementation(async (id) => ({ id, kind: "document" }));
+  stubs.getDocumentRead.mockImplementation(async (id) => ({
+    artifact_id: id,
+    read_at: null,
+    version: null,
+  }));
   stubs.getReferences.mockResolvedValue({
-    items: [],
-    limit: 50,
+    edges: [],
     node: graphNode({ id: "ask-1", kind: "ask" }),
-    offset: 0,
-    total: 0,
   });
   // Every read of the document's text is refused, not the first alone: a load that reads the
   // text more than once, as one that reads it before it connects and again when it admits the
@@ -4410,7 +4399,7 @@ function ReadApprovalChip({ id }: { id: string }): ReactNode {
 }
 
 /** The spec as the chip's read answers it before the reader reviews it: awaiting their approval. */
-function awaitingSpec(): ArtifactV2 {
+function awaitingSpec(): Artifact {
   return doc(SPEC_ID, "spec.md", { latest_version: 2, state: "awaiting", waiting_on: "human" });
 }
 
@@ -5480,12 +5469,12 @@ function issueReads(advances: readonly string[]): IssueReads {
 /** Has the priorities read name a third priority, `P3 Lean proofs checked`, after the
  *  fixture's two. */
 function listThreePriorities(): void {
-  const rows = priorities.items ?? [];
+  const rows = priorities.priorities ?? [];
   const first = rows[0];
   if (first === undefined) throw new Error("the fixture lists no priority");
   stubs.listPriorities.mockResolvedValue({
     ...priorities,
-    items: [
+    priorities: [
       ...rows,
       { ...first, id: "lean-proofs", rank: "lean-proofs", title: "Lean proofs checked" },
     ],
@@ -5823,9 +5812,9 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
           }
 
           answerReread({
-            ...specDocument,
             markdown: "The live document",
             token: "sha256:spec-text",
+            version: null,
             unsettled: true,
           });
           await waitFor(() => expect(rebuild.isConnected).toBe(false));
@@ -5861,7 +5850,7 @@ const fieldIssue: IssueDetails = {
   status: "todo",
 };
 
-const fieldState: IssueState = { last_read_seq: 0, pinned: false, pinned_items: [], seq: 0 };
+const fieldState: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 
 /** The identity block's editor of `field`, open as the page opens it: on the drafts of the
  *  page's `useIssueHeaderWrites`, and closed by its `onClose`, which `onClose` here is told of. */
@@ -6324,7 +6313,7 @@ test("the route and parent editors name their box without drawing the row's labe
 type CardScope = BoundFunctions<typeof queries>;
 
 /** The reader's answer to `ask`, as Dispatch answers the write that `sent` it. */
-function answeredWith(ask: AskV2, sent: AnswerAskInput | undefined): AskV2 {
+function answeredWith(ask: Ask, sent: AnswerAskInput | undefined): Ask {
   return {
     ...ask,
     answer: {
@@ -6339,7 +6328,7 @@ function answeredWith(ask: AskV2, sent: AnswerAskInput | undefined): AskV2 {
 
 /** The reader's answer to the case's question, recorded, which a card drawn to change it seeds
  *  its form with. */
-const RECORDED_ANSWER: Partial<AskV2> = {
+const RECORDED_ANSWER: Partial<Ask> = {
   answer: { at: "2026-10-08T01:00:00Z", selected: ["Ship"], text: "First note", user: "alice" },
   state: "answered",
 };
@@ -6350,7 +6339,7 @@ interface AskCardControl {
   /** The control, as its case names it. */
   readonly name: string;
   /** What the card's question holds besides `openAsk`'s. */
-  readonly ask?: Partial<AskV2>;
+  readonly ask?: Partial<Ask>;
   /** Whether the card is drawn changing the reader's recorded answer (`mode="change"`). */
   readonly changing?: boolean;
   /** The write the press sends. */
@@ -6566,9 +6555,9 @@ function AskRow({
   changing = false,
   getAskThread = async () => threadOf(ask),
 }: {
-  ask: AskV2;
+  ask: Ask;
   changing?: boolean;
-  getAskThread?: (id: string) => Promise<AskWithThread>;
+  getAskThread?: (id: string) => Promise<AskRead>;
 }): ReactNode {
   return (
     <div data-testid="ask-row" tabIndex={-1}>
@@ -6600,7 +6589,7 @@ for (const control of ASK_CARD_CONTROLS) {
       for (const write of ["lands", "fails"] as const) {
         const unemulate = emulateChromiumFocusFixup();
         const ask = openAsk({ ...control.ask, id: `ask-${surface}-${write}` });
-        const answered = Promise.withResolvers<AskV2>();
+        const answered = Promise.withResolvers<Ask>();
         const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => answered.promise);
         const said = Promise.withResolvers<Comment>();
         const createComment = spyOn(api, "createComment").mockImplementation(() => said.promise);
@@ -6665,7 +6654,7 @@ test("inside NoTooltips AskCard's Answer leaves a focus the reader moved elsewhe
   for (const surface of ["inside", "outside"] as const) {
     const unemulate = emulateChromiumFocusFixup();
     const ask = openAsk({ id: `ask-${surface}` });
-    const answered = Promise.withResolvers<AskV2>();
+    const answered = Promise.withResolvers<Ask>();
     const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => answered.promise);
     const view = draw(
       <>
@@ -6702,10 +6691,10 @@ test("inside NoTooltips AskCard's Answer leaves a focus the reader moved elsewhe
 /** The reads of an ask's thread a case answers itself (`read`): until `landHeld` holds `read`,
  *  each answers the open ask's read at once. */
 interface AskReads {
-  readonly read: Mock<() => Promise<AskWithThread>>;
+  readonly read: Mock<() => Promise<AskRead>>;
 }
 
-function askReads(ask: AskV2): AskReads {
+function askReads(ask: Ask): AskReads {
   return { read: mock(async () => threadOf(ask)) };
 }
 
@@ -6759,7 +6748,7 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
     const focus = recordFocusMoves();
     const ask = openAsk({ id: `ask-${surface}` });
     const reads = askReads(ask);
-    const answered = Promise.withResolvers<AskV2>();
+    const answered = Promise.withResolvers<Ask>();
     const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => answered.promise);
     const view = draw(<AskRow ask={ask} getAskThread={reads.read} />, surface);
     try {
@@ -6963,7 +6952,7 @@ test("outside NoTooltips AskCard sends an answer pressed while the ask is read a
     const reads = askReads(ask);
     const said = Promise.withResolvers<Comment>();
     const createComment = spyOn(api, "createComment").mockImplementation(() => said.promise);
-    const answered = Promise.withResolvers<AskV2>();
+    const answered = Promise.withResolvers<Ask>();
     const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => answered.promise);
     const view = draw(<AskRow ask={ask} getAskThread={reads.read} />, surface);
     try {

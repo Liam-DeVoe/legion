@@ -15,7 +15,7 @@ export interface InboxThreadRows {
   readonly asOf: string | undefined;
   readonly rows: readonly InboxListRow[];
   /** Reads the next page of the Dismissed view, or undefined where there is none to read: the
-   *  Inbox's own list is unpaged, and a dismissed page shorter than its limit is the last. */
+   *  Inbox's own list is unpaged, and the last dismissed page names no next cursor. */
   readonly showMore: (() => void) | undefined;
   /** Whether the page **Show more** asks for is already on its way. */
   readonly showingMore: boolean;
@@ -27,8 +27,7 @@ export interface InboxThreadRows {
  *
  * A thread stays in the Inbox, read or not, until it is dismissed, so the Inbox read answers for
  * every row the list draws and reading one takes nothing away. The Dismissed read answers newest
- * dismissal first, `INBOX_DISMISSED_PAGE` rows at a time, and **Show more** reads the rows
- * dismissed before the last one it holds.
+ * dismissal first, `INBOX_DISMISSED_PAGE` rows at a time, and **Show more** follows its cursor.
  */
 export function useInboxThreadRows({
   asksOnly,
@@ -58,16 +57,16 @@ export function useInboxThreadRows({
   const pages = dismissed.data?.pages;
   // One array per set of pages, and the same array until they change: the motion hold adopts what
   // it is given by identity (`motion-hold.ts`), so a fresh `flatMap` on every render would have it
-  // adopt - and so re-render - for ever. The Inbox read above hands over its own `items`, which
-  // the query cache keeps for it.
-  const paged = useMemo(() => pages?.flatMap((page) => page.items ?? []), [pages]);
-  const read = show === "dismissed" ? paged : threads.data?.items;
+  // adopt - and so re-render - for ever. The Inbox read above hands over its own `rows`, which the
+  // query cache keeps for it.
+  const paged = useMemo(() => pages?.flatMap((page) => page.rows ?? []), [pages]);
+  const read = show === "dismissed" ? paged : (threads.data?.rows ?? undefined);
   // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
   const adopted = useMotionHold(read, listRef);
   const listed = asksOnly ? [] : (adopted ?? []);
   return {
     // The mark of the read these rows came from: the Dismissed view's is its first page's, the
-    // one snapshot its later pages walk on from.
+    // one snapshot its cursor walks on from.
     asOf: show === "dismissed" ? pages?.[0]?.as_of : threads.data?.as_of,
     rows: listed.map((thread): InboxListRow => ({ kind: "thread", thread })),
     showMore:

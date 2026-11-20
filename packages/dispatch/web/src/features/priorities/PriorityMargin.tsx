@@ -52,7 +52,7 @@ function actWords(act: PriorityAct): string {
 }
 
 /** Everything that happened to the priority, newest first, as the server answers it
- *  (`GET /api/v2/priorities/{id}/acts`): each write of its title, description, owner and
+ *  (`GET /api/v1/priorities/{id}/history`): each write of its title, description, owner and
  *  order, and each `advances` relation an issue asserted or retracted on it, each naming who
  *  stated it and when, under the day it happened on. It is mounted only while Everything is the
  *  chosen state, so no other state reads the history. */

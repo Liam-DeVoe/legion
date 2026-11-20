@@ -53,7 +53,7 @@ test("a text upload carries the token of the version it replaces in its JSON bod
     bounds
   );
   const { body, path } = sent();
-  expect(path).toEndWith("/api/v2/issues/CORE-1/artifacts");
+  expect(path).toEndWith("/api/v1/issues/CORE-1/artifacts");
   expect(typeof body).toBe("string");
   expect(JSON.parse(body as string).precondition).toEqual({ document: TOKEN });
 });
@@ -66,7 +66,7 @@ test("a file upload carries the token as the form's precondition field", async (
     bounds
   );
   const { body, path } = sent();
-  expect(path).toEndWith("/api/v2/projects/CORE/artifacts");
+  expect(path).toEndWith("/api/v1/projects/CORE/artifacts");
   expect(body).toBeInstanceOf(FormData);
   expect((body as FormData).get("precondition")).toBe(JSON.stringify({ document: TOKEN }));
 });

@@ -281,7 +281,7 @@ test("components the reader stopped say they may have been saved, not a message'
   );
   try {
     view.patchIssue.mockRejectedValue(
-      new NetworkError("/api/v2/issues/CORE-7", new TypeError("Failed to fetch"))
+      new NetworkError("/api/v1/issues/CORE-7", new TypeError("Failed to fetch"))
     );
     await userEvent
       .setup()

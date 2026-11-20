@@ -4,16 +4,9 @@ import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from
 import type { Doc } from "yjs";
 
 import { isText } from "../../api/artifact-version";
-import { api, artifactVersionPath } from "../../api/client";
-import { artifactVersionsQuery, whoAmIQuery } from "../../api/queries";
-import type { AskV2 } from "../../api/types";
-import {
-  linkHoverText,
-  linkText,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-} from "../../theme/classes";
-import { formatArtifactBytes } from "../artifacts/ArtifactHeader";
+import { api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
+import type { Ask } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
@@ -33,7 +26,7 @@ import type { AskBlockHost } from "./typed-block-drawing";
 export interface VersionViewProps {
   artifactId: string;
   /** The document's block-indexed asks, so a historical decision block still names its asker. */
-  asks: readonly AskV2[];
+  asks: readonly Ask[];
   /** The version this one is marked against - the last approved one - with which the view draws
    *  what changed since it: the words each changed block gained, and each block removed since
    *  then where it stood. It carries the reading Go made of that version, in its version mode,
@@ -70,16 +63,6 @@ export function VersionView({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
   });
-  // A version stored as a file - the bytes a plan, a Verification document or a decisions
-  // document was uploaded as before a Markdown upload made it a document - answers those bytes
-  // and no text. It is shown as a file is, with the SHA-256 its entry in the version list
-  // carries; the list is read for such a version alone.
-  const file =
-    versionQuery.data === undefined || isText(versionQuery.data) ? undefined : versionQuery.data;
-  const fileEntry = useQuery({
-    ...artifactVersionsQuery(artifactId),
-    enabled: file !== undefined,
-  }).data?.find((entry) => entry.number === version);
   // The signed-in person reaches the editor as their login alone, and the effect below depends
   // on that string rather than on the whoami answer: the answer carries `event_head`, so it is
   // a new object after every committed event, and keyed on it the editor is destroyed and
@@ -234,60 +217,24 @@ export function VersionView({
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;
   }
-  // The message is for a read that failed. An answer that carried its markdown and no reading is
-  // not one, and is drawn above by parsing it.
-  if (versionQuery.isError) {
+  // The message is for a version there is no text of: a read that failed, or an answer that is
+  // no text at all (a file version). An answer that carried its markdown and no reading is not
+  // one of those, and is drawn above by parsing it.
+  if (versionQuery.isError || markdown === undefined) {
     return <p>Could not load this document version.</p>;
-  }
-
-  const heading = (
-    <h2>
-      Version {version}
-      {createdAt === undefined ? null : (
-        <span>
-          {" · "}
-          <Timestamp at={createdAt} />
-        </span>
-      )}
-    </h2>
-  );
-  if (file !== undefined) {
-    return (
-      <section aria-label={`Document version ${version}`} className="space-y-3">
-        {heading}
-        <p>This version is a file, not document text.</p>
-        <dl className="grid grid-cols-2 gap-3 text-sm">
-          <div>
-            <dt className={textMutedOnCanvas}>Type</dt>
-            <dd className={`font-medium ${textPrimaryOnCanvas}`}>{file.mime}</dd>
-          </div>
-          <div>
-            <dt className={textMutedOnCanvas}>Size</dt>
-            <dd className={`font-medium ${textPrimaryOnCanvas}`}>
-              {formatArtifactBytes(file.blob.size)}
-            </dd>
-          </div>
-          {fileEntry?.sha256 === undefined ? null : (
-            <div className="col-span-2">
-              <dt className={textMutedOnCanvas}>SHA-256</dt>
-              <dd className={`break-all font-medium ${textPrimaryOnCanvas}`}>{fileEntry.sha256}</dd>
-            </div>
-          )}
-        </dl>
-        <a
-          className={`inline-flex min-h-11 items-center font-medium underline ${linkText} ${linkHoverText}`}
-          download=""
-          href={artifactVersionPath(artifactId, version, { download: true })}
-        >
-          Download version {version}
-        </a>
-      </section>
-    );
   }
 
   return (
     <section aria-label={`Document version ${version}`} className="space-y-3">
-      {heading}
+      <h2>
+        Version {version}
+        {createdAt === undefined ? null : (
+          <span>
+            {" · "}
+            <Timestamp at={createdAt} />
+          </span>
+        )}
+      </h2>
       {highlightMissing ? (
         <p role="status">Text changed. The selected range no longer exists in this document.</p>
       ) : null}

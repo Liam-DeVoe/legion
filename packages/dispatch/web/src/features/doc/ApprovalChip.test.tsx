@@ -9,35 +9,31 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { ArtifactApprovalWithTrees, ArtifactReview, ArtifactV2 } from "../../api/types";
+import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { ApprovalChip } from "./ApprovalChip";
 
-function artifact(approval: ArtifactApprovalWithTrees | undefined): ArtifactV2 {
+function artifact(approval: ArtifactApproval | undefined): Artifact {
   return {
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id: "artifact-1",
     issue_key: "CORE-1",
     kind: "doc",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
     name: "Design notes",
     primary: false,
     project: "CORE",
     ref_key: "CORE-1/design-notes",
     session_id: null,
     slug: "design-notes",
-    unsettled: null,
-    version_count: 0,
+    versions: [],
     ...(approval === undefined ? {} : { approval }),
   };
 }
 
-function renderChip(target: ArtifactV2, variant?: "header" | "list", onReviewed?: () => void) {
+function renderChip(target: Artifact, variant?: "header" | "list", onReviewed?: () => void) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -69,7 +65,7 @@ test("renders nothing for a draft document in every variant", () => {
 });
 
 test("renders each approval state's label", () => {
-  const cases: Array<[ArtifactApprovalWithTrees, string]> = [
+  const cases: Array<[ArtifactApproval, string]> = [
     [{ latest_version: 3, state: "awaiting" }, "Awaiting approval"],
     [{ latest_version: 3, state: "approved", version: 3 }, "Approved v3"],
     [{ latest_version: 3, state: "changes_requested", version: 2 }, "Changes requested"],
@@ -201,7 +197,7 @@ test("approving again after a stopped approval and a change request goes under i
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
-    new NetworkError("/api/v2/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -276,7 +272,7 @@ test("a change request the reader stopped says it may have been made, not that i
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
-    new NetworkError("/api/v2/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -495,7 +491,7 @@ test("a review the server records tells the host, once, that the document was re
 });
 
 /** The address of `target`'s own page on its issue. */
-function pathOf(target: ArtifactV2): string {
+function pathOf(target: Artifact): string {
   return buildIssuePath({ key: "CORE-1", kind: "artifact", slug: target.slug });
 }
 
@@ -511,7 +507,7 @@ function GoBack(): ReactNode {
 
 /** The header of whichever of `documents` the route names: as on an issue's page, one header is
  *  drawn for one document after another as the route moves. */
-function HeaderOfRoute({ documents }: { readonly documents: readonly ArtifactV2[] }): ReactNode {
+function HeaderOfRoute({ documents }: { readonly documents: readonly Artifact[] }): ReactNode {
   const route = parseIssuePath(useLocation().pathname);
   const shown =
     route?.kind === "artifact" ? documents.find(({ slug }) => slug === route.slug) : undefined;
@@ -535,7 +531,7 @@ function HeaderOfRoute({ documents }: { readonly documents: readonly ArtifactV2[
 test("a change request refused on one document posts none of its reason on the document the reader goes back to", async () => {
   const user = userEvent.setup();
   const designNotes = artifact({ latest_version: 3, state: "awaiting" });
-  const releaseNotes: ArtifactV2 = {
+  const releaseNotes: Artifact = {
     ...designNotes,
     id: "artifact-2",
     name: "Release notes",

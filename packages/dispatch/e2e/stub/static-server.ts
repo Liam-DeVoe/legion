@@ -11,7 +11,7 @@
  *  keeps the entry chunk's hash distinct for every build, so a recording that answered `/assets`
  *  would serve for ever the build it was recorded from, and a pull request's own front-end change
  *  would never be loaded. The layer would then prove nothing about the code under test. The
- *  recordings answer `/api/v2/**` and `/auth/whoami` and nothing else (e2e/stub/stub-test.ts).
+ *  recordings answer `/api/v1/**` and `/auth/whoami` and nothing else (e2e/stub/stub-test.ts).
  *
  *  It serves no API route at all: a stub row's API answers come from its recording, and a request
  *  the recording has none of is aborted by the fixture rather than answered here. */
@@ -81,7 +81,7 @@ function takesTheDocument(path: string): boolean {
  *  request made before it is, would otherwise be given `index.html` with a 200 and parse an
  *  HTML document as JSON somewhere far from this cause.
  *
- *  Every path under `/api` and `/auth` and the two bare names themselves, not `/api/v2` alone:
+ *  Every path under `/api` and `/auth` and the two bare names themselves, not `/api/v1` alone:
  *  the SPA also asks `/api/github/rest/...` (`web/src/api/client.ts`), and a server that
  *  answered one of those with the document would hide the same fault in a new place. */
 const recordedRoutes = /^\/(api|auth)(\/|$)/;
@@ -94,7 +94,7 @@ const server = Bun.serve({
     if (recordedRoutes.test(path)) {
       return new Response(
         `${path} is the server's to answer and this one answers no API route. A row's own ` +
-          "recording answers `/api/v2/**` and `/auth/whoami` through `routeFromHAR`, so a " +
+          "recording answers `/api/v1/**` and `/auth/whoami` through `routeFromHAR`, so a " +
           "request for one of those that reaches here is one no fixture caught: the row's " +
           "fixture was not installed, or it was installed after the request was made. Every " +
           "other path under `/api` or `/auth` - `/api/github/rest/...` among them - no " +

@@ -418,7 +418,7 @@ test("a lost mint with several tokens made since the press lists them and revoke
 test("a mint the reader stopped says Retry asks again under its key", async () => {
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const createAgentToken = spyOn(api, "createAgentToken").mockRejectedValue(
-    new NetworkError("/api/v2/me/agent-tokens", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/me/agent-tokens", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {

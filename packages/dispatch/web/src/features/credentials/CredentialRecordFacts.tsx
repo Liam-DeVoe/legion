@@ -54,7 +54,7 @@ function Fact({ children, label }: { children: ReactNode; label: string }): Reac
  * which no person approves, so a pending service login a broker opened before that is one the
  * broker refuses to approve, and the sentence says so. `MachineLoginPage` is the one page that
  * renders this layout, above its decision controls, and the only records it holds are the machine
- * logins its code lookup returns (`POST /api/v2/machine-login-lookups`): the kind is
+ * logins its code lookup returns (`POST /api/v1/credential-requests/machine-lookup`): the kind is
  * always `launcher_credential`, and the broker leaves such a record's enrollment and both of its
  * session ids empty, so neither has a fact of its own here.
  */

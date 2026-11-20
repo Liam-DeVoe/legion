@@ -17,7 +17,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type { DispatchQueryClient } from "../../api/query-client";
-import type { Issue, IssueDetails, PatchIssueV2Input, RepoProject } from "../../api/types";
+import type { Issue, IssueDetails, RepoProject, UpdateIssueInput } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { AssigneeControl } from "./AssigneeControl";
 import { RepoControl } from "./RepoControl";
@@ -50,7 +50,7 @@ const mappings: RepoProject[] = ["acme/widgets", "acme/gadgets", "acme/tools"].m
 function dispatch() {
   const held = Promise.withResolvers<void>();
   let stored = issue;
-  const store = (input: PatchIssueV2Input): Issue => {
+  const store = (input: UpdateIssueInput): Issue => {
     const repo = input.repo === undefined ? {} : { resolved_repo: input.repo ?? "acme/widgets" };
     stored = { ...stored, ...input, ...repo, last_seq: stored.last_seq + 1 } as Issue;
     return stored;

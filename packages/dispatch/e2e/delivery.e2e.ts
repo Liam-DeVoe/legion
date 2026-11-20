@@ -547,7 +547,7 @@ test("an unconfigured Delivery page sets itself up from its form and then shows 
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v2/settings/delivery") &&
+        response.url().endsWith("/api/v1/settings/delivery") &&
         response.ok()
     );
     await page.getByRole("button", { name: "Save delivery settings" }).click();
@@ -622,7 +622,7 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const token = await mintAgentToken("measures-e2e", "alice");
-  const response = await page.request.get(`/api/v2/delivery/measures?${MEASURES_QUERY}`, {
+  const response = await page.request.get(`/api/v1/delivery/measures?${MEASURES_QUERY}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   expect(response.status()).toBe(200);

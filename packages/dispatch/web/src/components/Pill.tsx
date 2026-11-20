@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { ArtifactApprovalWithTrees } from "../api/types";
+import type { ArtifactApproval } from "../api/types";
 import {
   approvalPill,
   pageFailedText,
@@ -148,7 +148,7 @@ const pageApprovalPill: Record<keyof typeof approvalPill, string> = {
  * `default` is every other host's. `onPage` is a host's inside `NoTooltips`, which draws the
  * outline in that page's colours (`pageApprovalPill`). */
 export function approvalPillClassName(
-  state: ArtifactApprovalWithTrees["state"],
+  state: ArtifactApproval["state"],
   size: "compact" | "default" = "default",
   onPage = false
 ): string {

@@ -8,10 +8,10 @@ import { requestsThatReachedNetwork } from "./network";
 // from the same recorder, on the same path.
 
 test("a read no handler answers is reported with its method and path", async () => {
-  const response = await fetch("/api/v2/issues/NO-HANDLER");
+  const response = await fetch("/api/v1/issues/NO-HANDLER");
   // The frame is errored rather than performed: nothing leaves the process for `dispatch.test`.
   expect(response.ok).toBe(false);
-  expect(requestsThatReachedNetwork()).toEqual(["GET /api/v2/issues/NO-HANDLER"]);
+  expect(requestsThatReachedNetwork()).toEqual(["GET /api/v1/issues/NO-HANDLER"]);
 });
 
 test("an upload no handler answers is reported with its method and path", async () => {
@@ -19,16 +19,16 @@ test("an upload no handler answers is reported with its method and path", async 
   const upload = new XMLHttpRequest();
   upload.onload = () => resolve();
   upload.onerror = () => resolve();
-  upload.open("POST", "/api/v2/issues/NO-HANDLER/artifacts");
+  upload.open("POST", "/api/v1/issues/NO-HANDLER/artifacts");
   upload.send(new FormData());
   await promise;
-  expect(requestsThatReachedNetwork()).toEqual(["POST /api/v2/issues/NO-HANDLER/artifacts"]);
+  expect(requestsThatReachedNetwork()).toEqual(["POST /api/v1/issues/NO-HANDLER/artifacts"]);
 });
 
 test("a request a handler answers is not reported", async () => {
   // One of the shell's own routes, which `network.ts` answers for every page.
-  const response = await fetch("/api/v2/agents");
+  const response = await fetch("/api/v1/agents");
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ items: [], limit: 50, offset: 0, total: 0 });
+  expect(await response.json()).toEqual([]);
   expect(requestsThatReachedNetwork()).toEqual([]);
 });

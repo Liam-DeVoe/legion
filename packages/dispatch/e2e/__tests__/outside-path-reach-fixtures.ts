@@ -213,7 +213,7 @@ async function control(path: string, init?: RequestInit): Promise<Response> {
  *  interval timer in that file measured the test process's longest stall at 5,850, 12,681, 6,080
  *  and 1,557 ms, and its longest stall during that row's run of the script at 1,517, 12,631, 6,030
  *  and 757 ms: under that default, a stall past 10 s leaves the script's read of
- *  `/api/v2/projects` unanswered. The runs here give each read `originSeconds` instead. */
+ *  `/api/v1/projects` unanswered. The runs here give each read `originSeconds` instead. */
 export async function fakeDispatch(
   health = 200,
   projects = 401,

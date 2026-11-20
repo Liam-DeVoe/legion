@@ -1,4 +1,4 @@
-import type { StepRecord } from "../../api/types";
+import type { IssueSteps, StepRecord } from "../../api/types";
 
 /** Where a run stands, with only what that can hold: running until the daemon writes its end,
  *  then the result it ended with. Only a failed or a stopped run sent its task back, so only it
@@ -85,14 +85,11 @@ function stepRow(record: StepRecord): StepRow {
 }
 
 /** The issue's tasks in the server's order (the order of each task's first step), each with its
- *  runs in the order of the read: by generation, then start, a run with no start first. The read
- *  lists the runs task by task, so a task is the runs that name it, in the order they came. */
-export function stepTasks(records: readonly StepRecord[]): StepTaskRows[] {
-  const tasks = new Map<string, StepRow[]>();
-  for (const record of records) {
-    const rows = tasks.get(record.task);
-    if (rows === undefined) tasks.set(record.task, [stepRow(record)]);
-    else rows.push(stepRow(record));
-  }
-  return Array.from(tasks, ([task, rows]) => ({ rows, task }));
+ *  runs in the order of the read: by generation, then start, a run with no start first. The
+ *  generated shape lets either list be null, which reads as empty. */
+export function stepTasks(steps: IssueSteps): StepTaskRows[] {
+  return (steps.tasks ?? []).map((task) => ({
+    rows: (task.steps ?? []).map(stepRow),
+    task: task.task,
+  }));
 }

@@ -339,30 +339,22 @@ document_body() {
     '{actor: {kind: "session", id: $a}, name: "verification.md", content: $c, precondition: {document: $t}}'
 }
 
-# one_document SECTION WHAT ISSUE QUERY: reads ISSUE's document list narrowed by QUERY (a slug or a
-# file name, and what to include) into $work/body. The slug filter also keeps the document whose
-# file name it is, so the read fails unless exactly one row answers.
-one_document() {
-  get "/api/v2/issues/$3/artifacts?$4"
-  want_status 200 "$1" "$2"
-  jq -e '.total == 1' "$work/body" >/dev/null ||
-    fail "$1" "$2" "$4 names no single document: $(body)"
-}
-
 # artifact_id SECTION ISSUE: sets $artifact to the id of ISSUE's verification.md.
 artifact_id() {
-  one_document "$1" "read $2's verification.md" "$2" "slug=verification.md"
-  artifact="$(jq -er '.items[0].id' "$work/body")" ||
+  get "/api/v1/issues/$2/artifacts"
+  want_status 200 "$1" "read $2's documents"
+  artifact="$(jq -er 'map(select(.name == "verification.md")) | .[0].id' "$work/body")" ||
     fail "$1" "find $2's verification.md" "$(body)"
 }
 
 # text_of SECTION ISSUE: sets $version to the current version of ISSUE's verification.md and
 # $doc_token to its document token, the base a write replacing that version names.
 text_of() {
-  one_document "$1" "read $2's verification.md" "$2" "slug=verification-md&include=text"
-  version="$(jq -er '.items[0].version' "$work/body")" ||
+  get "/api/v1/issues/$2/artifacts/verification-md/text"
+  want_status 200 "$1" "read $2's verification.md"
+  version="$(jq -er '.version' "$work/body")" ||
     fail "$1" "read $2's verification.md version" "$(body)"
-  doc_token="$(jq -er '.items[0].token' "$work/body")" ||
+  doc_token="$(jq -er '.token' "$work/body")" ||
     fail "$1" "read $2's verification.md token" "$(body)"
 }
 
@@ -441,10 +433,10 @@ SQL
 # PROJECT's default repository, under the name it is called today, where it maps one: every issue
 # of the project resolves to it, so a recorded result's commit must be one it holds, and the fake
 # serves it. Where PROJECT maps none, the run drives a repository of its own, which nothing maps.
-get "/api/v2/repositories?project=$(q "$project")&limit=200"
+get "/api/v1/settings/repo-projects"
 want_status 200 setup "the repository mappings answer"
 default_repo="$(jq -r --arg p "$project" \
-  'first(.items[] | select(.project == $p and .default) | (.renamed_to // .repo)) // ""' "$work/body")" ||
+  'first(.[] | select(.project == $p and .default) | (.renamed_to // .repo)) // ""' "$work/body")" ||
   fail setup "read the repository mappings" "$(body)"
 driven_repo="${default_repo:-acme/ci-check-$run_tag}"
 readonly driven_repo
@@ -503,7 +495,7 @@ readonly k1_version="$version"
 # write stores nothing, so the token one read names serves every refusal until a write lands.
 refused_write() {
   local message
-  send POST "/api/v2/issues/$k1/artifacts" "$(document_body "$2" "$doc_token")"
+  send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$2" "$doc_token")"
   want_status 400 k1 "$1"
   expect k1 "$1 is refused INVALID_CI_CHECK" '"INVALID_CI_CHECK"' '.code'
   message="$(jq -er '.error' "$work/body")" || fail k1 "$1 names $3" "no error in: $(body)"
@@ -538,7 +530,7 @@ text_of k1 "$k1"
 pass k1 "the four refused writes store nothing: verification.md is still at version $k1_version"
 
 k1_document "$work/k1-fresh.md" "$k1_held" "$k1_fresh"
-send POST "/api/v2/issues/$k1/artifacts" "$(document_body "$work/k1-fresh.md" "$doc_token")"
+send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$work/k1-fresh.md" "$doc_token")"
 [[ "$status" == 2?? ]] || fail k1 "ci_check on the fresh id c-fresh is accepted" "HTTP $status: $(body)"
 pass k1 "ci_check on the fresh id c-fresh is accepted, HTTP $status"
 run k1 "read verification.md back" doc-read --issue "$k1" --artifact verification.md
@@ -553,7 +545,7 @@ refused_write "a new block under the old id c-held, carrying ci_check" "$work/k1
   "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
 
 # The sockets: the scope Hocuspocus's authentication answers, as the browser's provider reads it.
-get "/api/v2/block-schema"
+get "/api/v1/schema/blocks"
 want_status 200 k1 "the block schema answers"
 expect k1 "the block schema is version 4" 4 '.version'
 curl -sS -o /dev/null -D "$work/signin" "$base/auth/_dev/signin?login=$(q "$dev_login")" \
@@ -593,11 +585,11 @@ line k2 "the result's reading opens with the run's conclusion" "  Reading: concl
 line k2 "the reading carries the run's output title" "contracts success"
 line k2 "the reading carries the run's output summary" "The contracts job concluded success."
 line k2 "the reading carries the run's URL" "https://github.com/$driven_repo/actions/runs/40/job/9001"
-get "/api/v2/issues/$k2_open/checks"
-want_status 200 k2 "GET /checks answers"
+get "/api/v1/issues/$k2_open/results"
+want_status 200 k2 "GET /results answers"
 expect k2 "the one result is the derived one: its id, role, producer, run and commit" \
   "$(jq -cn --arg sha "$open_sha" '[["ci-run:9001","ci","github_app","github-actions","contracts",$sha]]')" \
-  '[.items[] | select(.block_id == "c-ci") | .results[] | [.id, .role, .actor.kind, .actor.id, .run, .commit_sha]]'
+  '[.checks[] | select(.block_id == "c-ci") | .results[] | [.id, .role, .actor.kind, .actor.id, .run, .commit_sha]]'
 no_rows k2 "check_results holds no row for $k2_open's c-ci" "$k2_open_artifact" c-ci
 
 ci_issue k2 "a check CI proves, whose run failed"
@@ -672,11 +664,11 @@ stage_head k2 "$k2_long" 106 "$long_sha" open
 results k2 "$k2_long"
 derived k2 "a run with a long summary still answers its pass" c-ci pass "$long_sha" success 106 \
   "$ci_words"
-get "/api/v2/issues/$k2_long/checks"
-want_status 200 k2 "GET /checks answers with the long summary"
+get "/api/v1/issues/$k2_long/results"
+want_status 200 k2 "GET /results answers with the long summary"
 expect k2 "the reading holds the run's summary cut to 2,000 runes, between its conclusion and its URL" \
   "$(jq -cn --arg url "https://github.com/$driven_repo/actions/runs/40/job/9006" '["conclusion: success",2000,$url]')" \
-  '[.items[] | select(.block_id == "c-ci") | .results[0].observed | split("\n") | .[0], (.[1] | length), .[2]]'
+  '[.checks[] | select(.block_id == "c-ci") | .results[0].observed | split("\n") | .[0], (.[1] | length), .[2]]'
 
 # --- k3: every outcome of the named run ----------------------------------------------------------
 

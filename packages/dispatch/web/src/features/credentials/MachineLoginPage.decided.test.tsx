@@ -56,15 +56,12 @@ for (const [button, word] of [
     const user = userEvent.setup();
     const lookup = spyOn(api, "lookupMachineCredential").mockResolvedValue(machineRecord());
     // The page lists the viewer's machine logins beside the code form; no test here reads them.
-    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
-    // Each decision answers the record as it left it: decided, an approval with the launcher
-    // credential it minted and a denial with none.
-    const approve = spyOn(api, "approveCredentialRecord").mockResolvedValue(
-      machineRecord({ at: "2026-09-27T00:05:00Z", credential_id: "cred-9", event: "approved" })
-    );
-    const deny = spyOn(api, "denyCredentialRecord").mockResolvedValue(
-      machineRecord({ at: "2026-09-27T00:05:00Z", credential_id: null, event: "denied" })
-    );
+    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+    const approve = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+      credential_id: "cred-9",
+      state: "approved",
+    });
+    const deny = spyOn(api, "denyCredentialRecord").mockResolvedValue({ state: "denied" });
     try {
       await lookUp();
       await user.click(screen.getByRole("button", { name: button }));
@@ -97,7 +94,7 @@ for (const [decided, word] of [
     const lookup = spyOn(api, "lookupMachineCredential").mockResolvedValue(
       machineRecord({ ...decided })
     );
-    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
     try {
       await lookUp();
       expect(screen.getByText(word)).toBeDefined();
@@ -130,7 +127,7 @@ for (const [when, decided] of [
       ...machineRecord(decided === null ? null : { ...decided }),
       state: "expired",
     });
-    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+    const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
     try {
       await lookUp();
       expect(screen.getByText("This login expired before anyone decided it.")).toBeDefined();
@@ -153,7 +150,7 @@ test("a looked-up approved service's login says it starts worker pods as the ser
     ...machineRecord({ at: "2026-09-27T00:05:00Z", credential_id: "cred-9", event: "approved" }),
     service: "legion-daemon",
   });
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   try {
     await lookUp();
     expect(

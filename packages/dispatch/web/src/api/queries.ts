@@ -1,4 +1,4 @@
-import { INBOX_DISMISSED_PAGE, INBOX_THREAD_KINDS } from "@legion/contracts";
+import { INBOX_THREAD_KINDS } from "@legion/contracts";
 
 import {
   infiniteQueryOptions,
@@ -22,7 +22,7 @@ import type {
   DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
-  MyThreadsV2,
+  MyRepliesResponse,
 } from "./types";
 
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
@@ -76,8 +76,7 @@ function olderIssue(next: unknown, cached: unknown): boolean {
 }
 
 /**
- * One issue with its details (`GET /api/v2/issues/{key}` with every `include` it draws), the one
- * query every view of an issue
+ * One issue with its details (`GET /api/v1/issues/{key}`), the one query every view of an issue
  * reads. Dispatch answers a read with the issue as it was when the read reached it, so a read
  * already out when a write changed the issue - a slow GET started before a PATCH - can be answered
  * after the write's own answer was put in its place (`mergeIssue`). Such an answer is older than
@@ -97,7 +96,7 @@ export const issueQuery = (key: string | undefined) =>
       olderIssue(next, cached) ? cached : replaceEqualDeep(cached, next),
   });
 
-/** What each requirement of the issue's spec lacks (`GET /api/v2/issues/{key}/coverage`), which
+/** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
  *  the Spec tab draws beside the requirement. It hangs under the issue's own key for the
  *  reader's sake, not for its invalidation: every issue target in `event-refresh` is `exact`,
  *  so the events that move it — a document version, a recorded result — name this key
@@ -109,7 +108,7 @@ export const issueCoverageQuery = (key: string) =>
   });
 
 /** The checks of the issue's Verification document and the results recorded against them
- *  (`GET /api/v2/issues/{key}/checks`), which the Verification tab draws. Under the issue's key
+ *  (`GET /api/v1/issues/{key}/results`), which the Verification tab draws. Under the issue's key
  *  for the same reason as the coverage. */
 export const issueResultsQuery = (key: string) =>
   queryOptions({
@@ -117,7 +116,7 @@ export const issueResultsQuery = (key: string) =>
     queryFn: () => api.getIssueResults(key),
   });
 
-/** Everyone who worked one issue, running or not (`GET /api/v2/issues/{key}/collaborators`).
+/** Everyone who worked one issue, running or not (`GET /api/v1/issues/{key}/collaborators`).
  *  The Collaborators tab and the composer's "Not running" options read this one entry, so a tab
  *  read within the shell's `staleTime` opens the picker with no request of its own, and what
  *  refreshes one refreshes both. The event feed refreshes `["issue", key]` exactly, not as a
@@ -134,11 +133,11 @@ export const issueCollaboratorsQuery = (key: string | undefined) =>
     },
   });
 
-/** The step records Legion wrote of one issue (`GET /api/v2/issues/{key}/steps`, every page),
- *  which the Steps tab draws. A step write appends no event of its own, so the event feed
- *  refreshes this key on the issue's events that come with a phase moving (`changesSteps` in
- *  `event-refresh.ts`), each naming it exactly as it names every issue target. The tab reads it
- *  through its catch-up, which every refresh that reaches the key starts, and through Retry
+/** The step records Legion wrote of one issue (`GET /api/v1/issues/{key}/steps`), which the Steps
+ *  tab draws. A step write appends no event of its own, so the event feed refreshes this key on
+ *  the issue's events that come with a phase moving (`changesSteps` in `event-refresh.ts`), each
+ *  naming it exactly as it names every issue target. The tab reads it through its catch-up,
+ *  which every refresh that reaches the key starts, and through Retry
  *  (`features/steps/StepsTab.tsx`). */
 export const issueStepsQuery = (key: string) =>
   queryOptions({
@@ -146,23 +145,13 @@ export const issueStepsQuery = (key: string) =>
     queryFn: () => api.listSteps(key),
   });
 
-/** The live blocks of one document (`GET /api/v2/artifacts/{id}?include=blocks`): the document's
- *  own reference panel and the Plan tab's task list read the same key, so a tab opened after the
+/** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
+ *  reference panel and the Plan tab's task list read the same key, so a tab opened after the
  *  document finds it answered. */
 export const artifactBlocksQuery = (id: string) =>
   queryOptions({
     queryKey: ["artifact", id, "blocks"],
     queryFn: () => api.getArtifactBlocks(id),
-  });
-
-/** Every version of one document, oldest first (`GET /api/v2/artifacts/{id}/versions`): a
- *  document's own read carries only its `latest_version`, so every surface that lists or picks a
- *  version, or draws when the newest was made, reads this one key. It sits under the document's
- *  own key, which every event that names the document refreshes, a new version among them. */
-export const artifactVersionsQuery = (id: string) =>
-  queryOptions({
-    queryKey: ["artifact", id, "versions"],
-    queryFn: () => api.listArtifactVersions(id),
   });
 
 /** The batches `referenceTargetsQuery` reads `named` in, in its order: each at most
@@ -196,7 +185,7 @@ function referenceTargetBatches(named: readonly string[]): string[][] {
   return batches;
 }
 
-/** What the `dispatch://` references a page names point at (`GET /api/v2/reference-targets`): a
+/** What the `dispatch://` references a page names point at (`GET /api/v1/reference-targets`): a
  *  page that names many references reads their names with this query, in as few requests as
  *  both bounds of one request allow. The key holds the references themselves, sorted, so two
  *  surfaces naming the same set share one answer and a set that grows by one is a read of its
@@ -220,7 +209,7 @@ export const referenceTargetsQuery = (refs: readonly string[]) => {
       const answers = await Promise.all(
         referenceTargetBatches(named).map((batch) => api.getReferenceTargets(batch))
       );
-      return { targets: answers.flatMap((answer) => answer.items) };
+      return { targets: answers.flatMap((answer) => answer.targets ?? []) };
     },
   });
 };
@@ -253,13 +242,11 @@ export const askThreadQuery = (threadId: string) =>
 
 /** The viewer's count of unread threads, from the one-row page's `total`: the sidebar's and the
  *  compact header's one Inbox number counts it beside the work waiting on them. One request per
- *  page load, never the whole read below. The Inbox state always answers its total (only
- *  `state=dismissed` answers `total: null`), so a null is read as no thread. */
+ *  page load, never the unpaged read below. */
 export const myRepliesCountQuery = () =>
   queryOptions({
     queryKey: [...myRepliesKey, "count"],
-    queryFn: async () =>
-      (await api.listMyThreads({ kind: [...INBOX_THREAD_KINDS], limit: 1 })).total ?? 0,
+    queryFn: async () => (await api.listMyReplies({ kind: INBOX_THREAD_KINDS, limit: 1 })).total,
   });
 
 /** The prefix both of the Inbox's thread reads share - its own list and what the reader has
@@ -267,39 +254,31 @@ export const myRepliesCountQuery = () =>
  *  is on (`api/event-refresh.ts`). */
 export const inboxThreadsKey = [...myRepliesKey, "inbox"] as const;
 
-/** Every thread row in the reader's Inbox, every page of them: the Reply and Agent rows of the
- *  list, read or not, less what they have dismissed, as of the first page's `as_of`. A thread
- *  stays here until it is dismissed, so reading one leaves its row where it is. The Inbox page
- *  and its drawer read this and nothing else does - a surface that wants one owner's unread set
- *  reads `myRepliesOwnerQuery` below. */
+/** Every thread row in the reader's Inbox, in one unpaged read: the Reply and Agent rows of the
+ *  list, read or not, less what they have dismissed. A thread stays here until it is dismissed,
+ *  so reading one leaves its row where it is. The Inbox page and its drawer read this and
+ *  nothing else does - a surface that wants one owner's unread set reads `myRepliesOwnerQuery`
+ *  below. */
 export const inboxThreadsQuery = () =>
   queryOptions({
     queryKey: [...inboxThreadsKey, "inbox"],
-    queryFn: () => api.listEveryMyThread({ kind: [...INBOX_THREAD_KINDS], state: "inbox" }),
+    queryFn: () => api.listMyReplies({ kind: INBOX_THREAD_KINDS, state: "inbox" }),
   });
 
 /** What the reader has dismissed out of their Inbox, newest dismissal first, which the View
- *  menu's **Dismissed** draws: `INBOX_DISMISSED_PAGE` rows a page, each next page the rows
- *  dismissed `before` the last row of the one before it (`dismissed_at,thread_id`), read by the
- *  list's own **Show more**. A page shorter than its limit is the last. */
+ *  menu's **Dismissed** draws: `INBOX_DISMISSED_PAGE` rows a page, each next page read from the
+ *  last one's `next_cursor` by the list's own **Show more**. */
 export const dismissedThreadsQuery = () =>
   infiniteQueryOptions({
     queryKey: [...inboxThreadsKey, "dismissed"],
     queryFn: ({ pageParam }) =>
-      api.listMyThreads({
-        kind: [...INBOX_THREAD_KINDS],
-        limit: INBOX_DISMISSED_PAGE,
+      api.listMyReplies({
+        kind: INBOX_THREAD_KINDS,
         state: "dismissed",
-        ...(pageParam === undefined ? {} : { before: pageParam }),
+        ...(pageParam === undefined ? {} : { cursor: pageParam }),
       }),
     initialPageParam: undefined as string | undefined,
-    getNextPageParam: (last: MyThreadsV2) => {
-      const rows = last.items ?? [];
-      const oldest = rows.at(-1);
-      return rows.length < last.limit || oldest?.dismissed_at === undefined
-        ? undefined
-        : `${oldest.dismissed_at},${oldest.thread_id}`;
-    },
+    getNextPageParam: (last: MyRepliesResponse) => last.next_cursor,
   });
 
 /** One owner's unread threads, which every thread mounted on that owner's page reads to learn
@@ -309,7 +288,7 @@ export const myRepliesOwnerQuery = (
 ) =>
   queryOptions({
     queryKey: [...myRepliesKey, owner],
-    queryFn: () => api.listMyThreads({ ...owner, limit: 200 }),
+    queryFn: () => api.listMyReplies({ ...owner, limit: 200 }),
   });
 
 /** One session's stored conversations: the direct messages and issue messages sent to it, with
@@ -336,10 +315,10 @@ export const newIssueSettingsQuery = () =>
     queryFn: () => api.getNewIssueSettings(),
   });
 
-/** Everyone who has signed in (`GET /api/v2/users`), sorted by email and kept for the session:
+/** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:
  *  the issue header's assignee picker and the Inbox's assignee filter choose from this one list.
  *  Each call site keeps its own `enabled` - the list is read only once a reader reaches for a
- *  control that needs it - so no page fetches `/api/v2/users` just by rendering. */
+ *  control that needs it - so no page fetches `/api/v1/users` just by rendering. */
 export const usersQuery = () =>
   queryOptions({
     queryKey: ["users"],
@@ -392,7 +371,7 @@ export const projectIssuesQuery = (project: string, labels: readonly string[], o
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
       return api.listIssues({
-        project: [project],
+        project,
         ...(labels.length ? { label: [...labels] } : {}),
         ...(open ? { open: true } : {}),
       });
@@ -428,7 +407,7 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   return settled.promise;
 }
 
-/** What `GET /api/v2/issues` is asked for one advances listing: the issues advancing it, in the
+/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
  *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
  *  leaves the closed issues out, as the project listing's own flag does. */
 export const advancesIssuesParams = (listing: AdvancesListing, open = false) => ({
@@ -439,7 +418,7 @@ export const advancesIssuesParams = (listing: AdvancesListing, open = false) => 
 });
 
 /** Every issue an advances listing holds, as the server narrows the listing itself
- *  (`GET /api/v2/issues?advances=<id>`, `none` or `any`). A priority belongs to no project, so
+ *  (`GET /api/v1/issues?advances=<id>`, `none` or `any`). A priority belongs to no project, so
  *  the read names none: the work under it is the whole deployment's. No board move gates it - a
  *  move is one project's, and this listing is of no project. Every key sits under
  *  `["issues", "advances"]`, the prefix the event feed refreshes when an `advances`, a status
@@ -461,25 +440,26 @@ export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
   });
 
 /** Every live priority with the work under each and the two faults beside them
- *  (`GET /api/v2/priorities`), in rank order. `projects` narrows the counts to the work of those
+ *  (`GET /api/v1/priorities`), in rank order. `projects` narrows the counts to the work of those
  *  projects and nothing else: the rows are the deployment's whichever projects are named. Its
  *  key sits under the summary's prefix, so one refresh moves both reads (`api/event-refresh.ts`). */
 export const prioritiesQuery = (projects: readonly string[] = []) =>
   queryOptions({
     queryKey: ["priorities", "full", ...projects],
-    queryFn: () => api.listPriorities(projects),
+    queryFn: () => api.listPriorities(projects.length ? { project: [...projects] } : {}),
   });
 
-/** The two fault counts alone (`GET /api/v2/priorities?limit=0`): the work under no priority and
- *  the work parked under one, which the navigation rail shows without reading a row or an issue
- *  of either list. */
+/** The two fault counts alone (`GET /api/v1/priorities?summary=true`): the work under no
+ *  priority and the work parked under one, which the navigation rail shows without reading a
+ *  row or an issue of either list. */
 export const prioritySummaryQuery = (projects: readonly string[] = []) =>
   queryOptions({
     queryKey: ["priorities", "summary", ...projects],
-    queryFn: () => api.getPrioritySummary(projects),
+    queryFn: () =>
+      api.listPriorities({ summary: true, ...(projects.length ? { project: [...projects] } : {}) }),
   });
 
-/** One priority's own history, newest first (`GET /api/v2/priorities/{id}/acts`): each write
+/** One priority's own history, newest first (`GET /api/v1/priorities/{id}/history`): each write
  *  of its title, description, owner and order, and each `advances` relation an issue asserted or
  *  retracted on it, which the priority page's margin lists. Its key sits under the same
  *  `priorities` prefix as the rows, so the one refresh rule for `advances`, `status` and

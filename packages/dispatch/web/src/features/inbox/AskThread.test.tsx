@@ -6,16 +6,41 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
-import type { AskV2, AskWithThread, Comment, CreateCommentInput } from "../../api/types";
+import type { Ask, AskRead, Comment, CreateCommentInput, IssueAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { questionsRead } from "../refs/reference-fixture";
 import { AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-const answeredAsk: AskV2 = {
+/** The question block of CORE-1's spec, as the issue's ask list carries it: what a map built
+ *  from that list would have named `#q2`, and what the reply below does not mean. */
+const specQuestionAsk: IssueAskRow = {
+  anchor: null,
+  answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  author: { id: "planner", kind: "session" },
+  block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+  block_id: "q2",
+  created_at: "2026-09-09T00:00:00Z",
+  edited_at: null,
+  id: "ask-2",
+  issue_key: "CORE-1",
+  kind: "question",
+  last_reply: null,
+  multiple: false,
+  opened_event_id: 1,
+  options: [],
+  question: "Which way round?",
+  state: "open",
+  urgency: "med",
+};
+
+const answeredAsk: Ask = {
   anchor: null,
   answer: { at: "2026-09-09T01:00:00Z", selected: [], text: "Done.", user: "alice" },
   artifact_id: null,
@@ -25,35 +50,16 @@ const answeredAsk: AskV2 = {
   author: { id: "session-1", kind: "session" },
   block_id: null,
   created_at: "2026-09-09T00:00:00Z",
-  document: null,
   edited_at: null,
   id: "ask-1",
-  issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
   issue_key: "CORE-1",
   kind: "question",
-  last_reply: null,
   multiple: false,
   opened_event_id: 1,
   options: [],
-  priority: null,
   question: "Should this ship?",
-  ref: "dispatch://CORE-1/ask/ask-1",
   state: "answered",
   urgency: "med",
-};
-
-/** The question block of CORE-1's spec, as the issue's ask list carries it: what a map built
- *  from that list would have named `#q2`, and what the reply below does not mean. */
-const specQuestionAsk: AskV2 = {
-  ...answeredAsk,
-  answer: null,
-  author: { id: "planner", kind: "session" },
-  block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
-  block_id: "q2",
-  id: "ask-2",
-  question: "Which way round?",
-  ref: "dispatch://CORE-1/ask/ask-2",
-  state: "open",
 };
 
 const reply: Comment = {
@@ -74,28 +80,25 @@ const reply: Comment = {
   ...commentDeliveryFields(),
 };
 
-const read: AskWithThread = {
-  ...answeredAsk,
-  thread: {
-    answers: [],
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [reply],
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-  },
+const read: AskRead = {
+  answers: [],
+  ask: answeredAsk,
+  claimant: null,
+  edits: [],
+  followers: [],
+  replies: [reply],
+  route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
 };
 
 /** The ask `#q2` names in the reply, read by the reference the reply draws to title it. */
-const designAsk: AskV2 = {
+const designAsk: Ask = {
   ...answeredAsk,
   answer: null,
   id: "ask-design",
   question: "Which way round?",
-  ref: "dispatch://CORE-1/ask/ask-design",
   state: "open",
 };
 
@@ -104,13 +107,13 @@ test("an Inbox reply's `#q2` names the question of the document its comment is a
   // scopes the comment's text to that document (`refs.ScopeOf`), so `#q2` is that document's
   // question. A map built from the issue's ask list would have chosen the spec's `q2` instead.
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([specQuestionAsk]);
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
-    ...designAsk,
-    thread: { ...read.thread, replies: [] },
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({ ...read, ask: designAsk, replies: [] });
+  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
+    document: "artifact-design",
+    questions: [
+      { ask: "ask-design", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-design" },
+    ],
   });
-  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue(
-    questionsRead([{ ...designAsk, question_block_id: "q2" }], "artifact-design")
-  );
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -145,7 +148,7 @@ test("an Inbox reply's `#q2` names the question of the document its comment is a
 test("a resolved ask's thread takes a reply on that ask, whichever way it was resolved", async () => {
   const user = userEvent.setup();
   for (const kind of ["resolved", "retracted", "declined", "withdrawn"]) {
-    const resolved: AskV2 = {
+    const resolved: Ask = {
       ...answeredAsk,
       answer: null,
       resolution: {
@@ -164,9 +167,7 @@ test("a resolved ask's thread takes a reply on that ask, whichever way it was re
     const queryClient = new QueryClient({
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
     });
-    const thread = {
-      data: { ...read, ...resolved, thread: { ...read.thread, replies: [] } },
-    } as unknown as AskThreadQuery;
+    const thread = { data: { ...read, ask: resolved, replies: [] } } as unknown as AskThreadQuery;
     const view = render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>

@@ -89,7 +89,7 @@ async function outage(page: Page, pattern: string, method: string): Promise<{ en
  *  and lets every other request through; then picks `backlog` and adds `label` behind it, which
  *  waits its turn on the issue's line, never sent. */
 async function queueBehindAHeldStatus(page: Page, issue: string, label: string): Promise<void> {
-  await page.route(`**/api/v2/issues/${issue}`, (route) => {
+  await page.route(`**/api/v1/issues/${issue}`, (route) => {
     const request = route.request();
     if (request.method() === "PATCH" && request.postData()?.includes('"status"')) return;
     return route.fallback();
@@ -115,7 +115,7 @@ test("a comment whose answer is lost lands once, under one key @webkit @firefox 
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A comment once" });
-  const path = `/api/v2/issues/${issue.key}/comments`;
+  const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -167,7 +167,7 @@ test("a comment whose answer the browser cannot read is written once @webkit @fi
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A comment the browser cannot read" });
-  const path = `/api/v2/issues/${issue.key}/comments`;
+  const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -225,7 +225,7 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A key that runs out" });
   const before = (await getIssue(issue.key)).status;
-  const path = `/api/v2/issues/${issue.key}`;
+  const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -292,7 +292,7 @@ test("a status change whose answer is lost survives a reload, lands once, and th
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A status once" });
-  const path = `/api/v2/issues/${issue.key}`;
+  const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -347,13 +347,13 @@ test("an ask answer whose answer is lost lands once, under one key @webkit", asy
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
     agent
   );
-  const path = `/api/v2/asks/${ask.id}/state`;
+  const path = `/api/v1/asks/${ask.id}/answer`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    const posts = watchWrites(page, "PUT", path);
-    const first = dropFirstAnswer(page, `**${path}`, "PUT");
-    const landed = replayed(page, "PUT", path);
+    const posts = watchWrites(page, "POST", path);
+    const first = dropFirstAnswer(page, `**${path}`, "POST");
+    const landed = replayed(page, "POST", path);
     // The replay waits `FIRST_BACKOFF_MS` after the lost answer; the page's own clock runs that
     // wait out, so nothing here is spent on it.
     await page.clock.install();
@@ -366,12 +366,12 @@ test("an ask answer whose answer is lost lands once, under one key @webkit", asy
     expect((await runClockUntil(page, landed)).status()).toBe(200);
     expect(posts).toHaveLength(2);
     expect(posts[0]).toEqual({
-      input: expect.objectContaining({ selected: ["Ship"], state: "answered" }),
+      input: expect.objectContaining({ selected: ["Ship"] }),
       key: expect.any(String),
     });
     expect(posts[1]).toEqual(posts[0]);
     await expect(card).toContainText(/Answered by alice/);
-    expect(await getAsk(ask.id)).toMatchObject({ state: "answered" });
+    expect(await getAsk(ask.id)).toMatchObject({ ask: { state: "answered" } });
     expect(await eventsOf(issue.key, "ask.answered")).toHaveLength(1);
   } finally {
     await alice.close();
@@ -392,7 +392,7 @@ test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, a
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "In flight" });
-  const path = `/api/v2/issues/${issue.key}/comments`;
+  const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -471,7 +471,7 @@ test("a comment Dispatch takes 20 s to make lands once from the page, every repe
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A slow comment" });
-  const path = `/api/v2/issues/${issue.key}/comments`;
+  const path = `/api/v1/issues/${issue.key}/comments`;
   await slowWrites("POST", path, 4_000);
   const alice = await asUser(browser, "alice");
   try {
@@ -543,7 +543,7 @@ test("an upload throttled to take 30 s is one attempt and lands once @pr", async
   test.skip(browserName !== "chromium", "only Chromium's DevTools protocol paces a page's upload");
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A slow upload" });
-  const path = `/api/v2/issues/${issue.key}/artifacts`;
+  const path = `/api/v1/issues/${issue.key}/artifacts`;
   const bytes = 1024 * 1024;
   const alice = await asUser(browser, "alice");
   try {
@@ -632,7 +632,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
   test.setTimeout(60_000);
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A repeated upload" });
-  const path = `/api/v2/issues/${issue.key}/artifacts`;
+  const path = `/api/v1/issues/${issue.key}/artifacts`;
   const bytes = 20 * 1024 * 1024;
   await slowWrites("POST", path, 5_000);
   const alice = await asUser(browser, "alice");
@@ -727,7 +727,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
 test("a retried upload survives a reload with its file @webkit @firefox", async ({ browser }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A retried upload" });
-  const path = `/api/v2/issues/${issue.key}/artifacts`;
+  const path = `/api/v1/issues/${issue.key}/artifacts`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -905,7 +905,7 @@ test("a sign-out confirmed with a write queued behind a held one sends nothing a
     const tabs: Page[] = [];
     for (const issue of issues) {
       const page = await alice.newPage();
-      const path = `/api/v2/issues/${issue.key}`;
+      const path = `/api/v1/issues/${issue.key}`;
       page.on("dialog", (dialog) => {
         if (dialog.type() === "confirm") confirmedAt ??= Date.now();
         void dialog.accept();
@@ -976,7 +976,7 @@ for (const landed of [false, true]) {
     await createProject({ key: "KW", name: "Keyed writes" });
     const issue = await createIssue({ project: "KW", title: "Held for a sign-out" });
     const before = await getIssue(issue.key);
-    const path = `/api/v2/issues/${issue.key}`;
+    const path = `/api/v1/issues/${issue.key}`;
     const alice = testInfo.project.name.startsWith("chromium-plain-http")
       ? await asPlainHttpUser(browser, "alice")
       : await asUser(browser, "alice");
@@ -1081,7 +1081,7 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "Alice's line" });
   const before = await getIssue(issue.key);
-  const path = `/api/v2/issues/${issue.key}`;
+  const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -1131,7 +1131,7 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
 // A pin is a write like any other: pressed while the network is down, it is kept in the tab, the
 // shell's pending-writes indicator names it, and the reloaded page sends it again once the network
 // is back. The Conversation's pin on a turn goes through the pin queue; the issue header's pin is
-// a `PATCH` of the reader's own mark of the issue, which a reload resumes as it resumes a `POST`.
+// a `PUT` of the issue's own state, which a reload resumes as it resumes a `POST` or a `PATCH`.
 test("a pin on a turn pressed during an outage survives a reload and lands once the network is back", async ({
   browser,
 }) => {
@@ -1142,7 +1142,7 @@ test("a pin on a turn pressed during an outage survives a reload and lands once 
   try {
     const page = await alice.newPage();
     page.on("dialog", (dialog) => void dialog.accept());
-    const network = await outage(page, "**/api/v2/me/marks/issue/*", "PATCH");
+    const network = await outage(page, "**/api/v1/me/issues/*/state", "PUT");
     await page.goto(`/issues/${issue.key}/conversation`);
     await page
       .getByRole("list", { name: "Conversation turns" })
@@ -1152,12 +1152,12 @@ test("a pin on a turn pressed during an outage survives a reload and lands once 
       .click();
     await expect(pendingWrites(page)).toBeVisible();
     await expect.poll(() => keptWrites(page)).toBe(1);
-    expect((await getMyState())[issue.key]?.pinned_items ?? []).toEqual([]);
+    expect((await getMyState())[issue.key]?.dismissed ?? []).toEqual([]);
 
     await page.reload();
     network.end();
     await expect
-      .poll(async () => (await getMyState())[issue.key]?.pinned_items ?? [], { timeout: 30_000 })
+      .poll(async () => (await getMyState())[issue.key]?.dismissed ?? [], { timeout: 30_000 })
       .toHaveLength(1);
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
@@ -1181,8 +1181,8 @@ test("the issue header's pin pressed during an outage survives a reload and land
   try {
     const page = await alice.newPage();
     page.on("dialog", (dialog) => void dialog.accept());
-    const pins = watchWrites(page, "PATCH", `/api/v2/me/marks/issue/${issue.key}`);
-    const network = await outage(page, "**/api/v2/me/marks/issue/*", "PATCH");
+    const puts = watchWrites(page, "PUT", `/api/v1/me/issues/${issue.key}/state`);
+    const network = await outage(page, "**/api/v1/me/issues/*/state", "PUT");
     await page.goto(`/issues/${issue.key}`);
     await page.getByRole("button", { name: "Pin issue" }).click();
     await expect(pendingWrites(page)).toBeVisible();
@@ -1198,8 +1198,8 @@ test("the issue header's pin pressed during an outage survives a reload and land
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
     // The same press before and after the reload: one body, the header's own write.
-    expect(pins.length).toBeGreaterThanOrEqual(2);
-    for (const pin of pins) expect(pin.input).toEqual({ pinned: true });
+    expect(puts.length).toBeGreaterThanOrEqual(2);
+    for (const put of puts) expect(put.input).toEqual({ pinned: true });
   } finally {
     await alice.close();
   }
@@ -1217,7 +1217,7 @@ test("a write pending for alice is dropped when bob signs in from another tab, a
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "Alice's change" });
   const before = (await getIssue(issue.key)).status;
-  const path = `/api/v2/issues/${issue.key}`;
+  const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();

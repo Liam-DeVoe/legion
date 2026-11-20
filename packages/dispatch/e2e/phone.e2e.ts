@@ -127,7 +127,9 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await askCard.getByRole("button", { exact: true, name: "Answer" }).click();
       await expect
         .poll(() => getAsk(openAsk.id))
-        .toMatchObject({ answer: { text: "Yes.", user: "alice" }, state: "answered" });
+        .toMatchObject({
+          ask: { answer: { text: "Yes.", user: "alice" }, state: "answered" },
+        });
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
       ).toBe(true);
@@ -224,7 +226,7 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
     const sheet = page.getByTestId("margin-sheet");
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, "**/api/v2/issues/*/comments");
+    const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();
@@ -285,7 +287,7 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
     const sheet = page.getByTestId("margin-sheet");
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, "**/api/v2/issues/*/comments");
+    const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();

@@ -30,8 +30,7 @@ const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as con
 interface Traffic {
   /** Path and query of each GET under `/api/` since the last `reset`. */
   readonly gets: string[];
-  /** How many times `GET /api/v2/issues/<key>?include=…` (the full issue, not its summary, which
-   *  includes nothing) was sent. */
+  /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
   issueReads(key: string): number;
   /** Whether no request has been in flight for `ms`. */
   quietFor(ms: number): boolean;
@@ -48,8 +47,8 @@ function watchTraffic(page: Page): Traffic {
     const url = new URL(request.url());
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
     gets.push(`${url.pathname}${url.search}`);
-    const issue = /^\/api\/v2\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
-    if (issue !== undefined && url.searchParams.has("include")) {
+    const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
+    if (issue !== undefined) {
       const key = decodeURIComponent(issue);
       issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
     }
@@ -99,7 +98,7 @@ async function drainRefreshWindow(page: Page, traffic: Traffic): Promise<void> {
 /**
  * The event barrier, which needs nothing but the page and the API at either commit. Once the
  * header shows the open issue's current `title` (its first load landed), bob writes a new title,
- * again every 2 s, until the page has read `GET /api/v2/issues/<key>` once more than its loads so
+ * again every 2 s, until the page has read `GET /api/v1/issues/<key>` once more than its loads so
  * far and the header shows the new title. Both can only happen after the page's event feed
  * delivered the write and the page handled it, so past this the feed is subscribed and every
  * event written before the barrier's has been handled. Returns the title it left.
@@ -228,7 +227,7 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     const window = [...traffic.gets];
     await writeFile(testInfo.outputPath("budget-window-gets.txt"), `${window.join("\n")}\n`);
     const untouched = window.filter((get) => {
-      const key = /^\/api\/v2\/issues\/([^/?]+)(\?|$)/.exec(get)?.[1];
+      const key = /^\/api\/v1\/issues\/([^/?]+)(\/summary)?(\?|$)/.exec(get)?.[1];
       return key !== undefined && !written.has(decodeURIComponent(key));
     });
     console.log(
@@ -271,11 +270,10 @@ test("sidebar: an issue event while the sidebar's first reads are in flight disc
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
     const reads = {
-      inbox: (url: URL) =>
-        url.pathname === "/api/v2/asks" && url.searchParams.getAll("include").includes("thread"),
+      inbox: (url: URL) => url.pathname === "/api/v1/inbox",
       pinned: (url: URL) =>
-        url.pathname === "/api/v2/issues" && url.searchParams.get("pinned") === "true",
-      projects: (url: URL) => url.pathname === "/api/v2/projects",
+        url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true",
+      projects: (url: URL) => url.pathname === "/api/v1/projects",
     };
     type Read = keyof typeof reads;
     const sent: Record<Read, number> = { inbox: 0, pinned: 0, projects: 0 };
@@ -351,7 +349,7 @@ test("pin: a pin from another tab shows in this tab's sidebar within 2 s with on
       const url = new URL(request.url());
       if (
         request.method() === "GET" &&
-        url.pathname === "/api/v2/issues" &&
+        url.pathname === "/api/v1/issues" &&
         url.searchParams.get("pinned") === "true"
       ) {
         pinnedReads += 1;
@@ -396,7 +394,7 @@ test("replies: a reply in a thread alice wrote in moves her Inbox count, and one
     const traffic = watchTraffic(page);
     let repliesReads = 0;
     page.on("request", (request) => {
-      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v2/me/threads") {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/me/replies") {
         repliesReads += 1;
       }
     });
@@ -471,12 +469,7 @@ test("assignee write: an assignee moved between two other people sends no read f
     const traffic = watchTraffic(page);
     let inboxReads = 0;
     page.on("request", (request) => {
-      const url = new URL(request.url());
-      if (
-        request.method() === "GET" &&
-        url.pathname === "/api/v2/asks" &&
-        url.searchParams.getAll("include").includes("thread")
-      ) {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
         inboxReads += 1;
       }
     });
@@ -501,7 +494,7 @@ test("assignee write: an assignee moved between two other people sends no read f
     const window = [...traffic.gets];
     const written = new Set([theirs.key, open.key]);
     const untouched = window.filter((get) => {
-      const key = /^\/api\/v2\/issues\/([^/?]+)(\?|$)/.exec(get)?.[1];
+      const key = /^\/api\/v1\/issues\/([^/?]+)(\/summary)?(\?|$)/.exec(get)?.[1];
       return key !== undefined && !written.has(decodeURIComponent(key));
     });
     console.log(
@@ -541,12 +534,7 @@ test("project default: a project's default moved between two other people reads 
     const traffic = watchTraffic(page);
     let inboxReads = 0;
     page.on("request", (request) => {
-      const url = new URL(request.url());
-      if (
-        request.method() === "GET" &&
-        url.pathname === "/api/v2/asks" &&
-        url.searchParams.getAll("include").includes("thread")
-      ) {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
         inboxReads += 1;
       }
     });
@@ -567,7 +555,7 @@ test("project default: a project's default moved between two other people reads 
       await drainRefreshWindow(page, traffic);
       const window = [...traffic.gets];
       const untouched = window.filter((get) => {
-        const key = /^\/api\/v2\/issues\/([^/?]+)(\?|$)/.exec(get)?.[1];
+        const key = /^\/api\/v1\/issues\/([^/?]+)(\/summary)?(\?|$)/.exec(get)?.[1];
         return key !== undefined && decodeURIComponent(key) !== open.key;
       });
       console.log(
@@ -580,7 +568,7 @@ test("project default: a project's default moved between two other people reads 
     // 1. Her list holds the question on CORE's issue nobody holds, whose person moves from bob
     // to carol: one read of it, and no more.
     const core = await counted(
-      () => putProjectDefaultAssignee("CORE", "carol", { as: "user", login: "bob" }),
+      () => putProjectDefaultAssignee("CORE", { assignee: "carol" }, { as: "user", login: "bob" }),
       "CORE"
     );
     expect(
@@ -594,7 +582,7 @@ test("project default: a project's default moved between two other people reads 
 
     // 2. Her list holds no question of OPS: nothing in it moves, and she reads nothing.
     const ops = await counted(
-      () => putProjectDefaultAssignee("OPS", "bob", { as: "user", login: "carol" }),
+      () => putProjectDefaultAssignee("OPS", { assignee: "bob" }, { as: "user", login: "carol" }),
       "OPS"
     );
     expect(
@@ -630,7 +618,7 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
       const url = new URL(request.url());
       if (
         request.method() === "GET" &&
-        url.pathname === "/api/v2/issues" &&
+        url.pathname === "/api/v1/issues" &&
         url.searchParams.get("project") === "CORE"
       ) {
         listReads += 1;
@@ -719,9 +707,9 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (request.method() !== "GET") return;
-      if (url.pathname === "/api/v2/issues" && url.searchParams.get("project") === "CORE")
+      if (url.pathname === "/api/v1/issues" && url.searchParams.get("project") === "CORE")
         projectReads += 1;
-      if (/^\/api\/v2\/issues\/CORE-\d+$/.test(url.pathname)) projectReads += 1;
+      if (/^\/api\/v1\/issues\/CORE-\d+$/.test(url.pathname)) projectReads += 1;
     });
     await page.clock.install();
     await page.goto("/projects/CORE");

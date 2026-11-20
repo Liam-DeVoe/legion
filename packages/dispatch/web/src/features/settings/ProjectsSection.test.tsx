@@ -7,11 +7,11 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { ProjectV2 } from "../../api/types";
+import type { Project } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ProjectsSection } from "./ProjectsSection";
 
-const core: ProjectV2 = {
+const core: Project = {
   created_at: "2026-09-01T00:00:00Z",
   key: "CORE",
   name: "Core",
@@ -88,11 +88,11 @@ test("Retry after two stopped saves of the same default assignee makes the newer
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
   // Every project names a person (#3707), so the control is read from a stored default.
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([
-    { ...core, default_assignee: "bob@example.com" },
+    { assignee: "bob@example.com", project: "CORE" },
   ]);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
   const putDefault = spyOn(api, "putProjectDefaultAssignee").mockRejectedValue(
-    new NetworkError("/api/v2/projects/CORE", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/projects/CORE/default-assignee", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
@@ -126,7 +126,7 @@ test("Retry after two stopped saves of the same default assignee makes the newer
     // The Retry is a write of its own: the last call is otherwise the stopped save's own attempt,
     // which carries the newer key too, so a Retry that sent nothing would read as one that did.
     const sentBeforeRetry = putDefault.mock.calls.length;
-    putDefault.mockResolvedValueOnce({ ...core, default_assignee: "alice@example.com" });
+    putDefault.mockResolvedValueOnce({ assignee: "alice@example.com", project: "CORE" });
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(0);
     expect(putDefault).toHaveBeenCalledTimes(sentBeforeRetry + 1);
@@ -151,7 +151,7 @@ test("a new project the reader stopped says Retry makes it again, not that it fa
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const createProject = spyOn(api, "createProject").mockRejectedValue(
-    new NetworkError("/api/v2/projects", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/projects", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
@@ -196,11 +196,11 @@ test("a default assignee save the reader stopped says Retry makes it again, not 
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
   // Every project names a person (#3707), so the control is read from a stored default.
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([
-    { ...core, default_assignee: "bob@example.com" },
+    { assignee: "bob@example.com", project: "CORE" },
   ]);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
   const putDefault = spyOn(api, "putProjectDefaultAssignee").mockRejectedValue(
-    new NetworkError("/api/v2/projects/CORE", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/projects/CORE/default-assignee", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });

@@ -171,7 +171,11 @@ test("an ask hit says whether it is answered, and an answered one shows its late
     selected: [],
     text: longAnswer,
   });
-  await resolveAsk(resolved.id, { reason: "Settled in the spec." }, searchSession);
+  await resolveAsk(
+    resolved.id,
+    { kind: "resolved", reason: "Settled in the spec." },
+    searchSession
+  );
   const context = await asUser(browser, "alice");
 
   try {

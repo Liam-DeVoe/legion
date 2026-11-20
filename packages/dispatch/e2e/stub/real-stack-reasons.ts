@@ -245,7 +245,7 @@ export const realStackReasons: Record<string, string> = {
   "plain-http-origin.e2e.ts": "types into the live document over the plain-HTTP origin",
   "plain-http-proxy.e2e.ts": "counts the live socket upstream of a real proxy",
   "popover-escape.e2e.ts":
-    "the command bar's own search reads `/api/v2/search-results`, and the inbox peek lists the asks the server holds for the reader",
+    "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "priorities.e2e.ts":
@@ -287,8 +287,6 @@ export const realStackReasons: Record<string, string> = {
     "opens the document's live room; where a result's commit stands is the server's comparison with the PR head",
   "visual.e2e.ts":
     "it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects",
-  "whole-lists.e2e.ts":
-    "it reads the server's own access log for the requests the page sent, which a recording has no server to write",
   "workspace.e2e.ts": "it asserts the counts and the titles the server groups a workspace into",
   "writer-spelling.e2e.ts": "asserts the readings inside the live document editor",
   "writes.e2e.ts":

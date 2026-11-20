@@ -12,20 +12,20 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
-  AgentMessageV2,
   Anchor,
+  Artifact,
   ArtifactVersionText,
+  AskSnooze,
   Comment,
   DisplayTree,
   InboxRow,
   IssueDetails,
-  MarkV2,
   Message,
+  MessageRead,
   MyReplyRow,
   MyReplyThreadRow,
   Version,
 } from "../../api/types";
-import { type DocumentFixture, documentRead } from "../artifacts/artifact-fixture";
 import { CHANGED_BLOCK_CLASS, type ChangeBaseline, changeMarksAgainst } from "../doc/change-marks";
 import type { CreateEditor, EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
@@ -45,19 +45,15 @@ const SETTLE_MS = 200;
 let getArtifact: Mock<typeof api.getArtifact>;
 let getArtifactText: Mock<typeof api.getArtifactText>;
 let getIssue: Mock<typeof api.getIssue>;
-let listArtifactVersions: Mock<typeof api.listArtifactVersions>;
 
 beforeEach(() => {
   getArtifact = spyOn(api, "getArtifact").mockRejectedValue(new Error("no document seeded"));
   getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    ...documentRead(document()),
     markdown: "",
     token: "",
+    version: null,
     unsettled: true,
   });
-  // A document's versions, which the column reads for when the version it draws was made: a
-  // document a test seeds carries its own (`seedDocument`), and every other holds none.
-  listArtifactVersions = spyOn(api, "listArtifactVersions").mockResolvedValue([]);
   // The pane reads one field of the issue: whether it is closed, which it hands the document.
   getIssue = spyOn(api, "getIssue").mockResolvedValue({
     closed_at: null,
@@ -68,7 +64,6 @@ afterEach(() => {
   getArtifact.mockRestore();
   getArtifactText.mockRestore();
   getIssue.mockRestore();
-  listArtifactVersions.mockRestore();
 });
 
 function version(number: number): Version {
@@ -81,7 +76,7 @@ function version(number: number): Version {
   };
 }
 
-function document(overrides: Partial<DocumentFixture> = {}): DocumentFixture {
+function document(overrides: Partial<Artifact> = {}): Artifact {
   return {
     created_at: "2026-10-01T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
@@ -94,7 +89,6 @@ function document(overrides: Partial<DocumentFixture> = {}): DocumentFixture {
     ref_key: "CORE-1/spec",
     session_id: null,
     slug: "spec",
-    unsettled: null,
     versions: [],
     ...overrides,
   };
@@ -107,15 +101,13 @@ function createQueryClient(): QueryClient {
 }
 
 /** Every read the pane and the document make of one artifact, answered from the cache under the
- *  document page's own keys - its own read, its versions, its text, its blocks and its asks - so
- *  a test's render reaches the network for nothing. */
+ *  document page's own keys, so a test's render reaches the network for nothing. */
 function seedDocument(
   client: QueryClient,
-  artifact: DocumentFixture,
+  artifact: Artifact,
   versions: Readonly<Record<number, string>> = {}
 ): void {
-  client.setQueryData(["artifact", artifact.id], documentRead(artifact));
-  client.setQueryData(["artifact", artifact.id, "versions"], artifact.versions);
+  client.setQueryData(["artifact", artifact.id], artifact);
   client.setQueryData(["artifact", artifact.id, "text"], { markdown: "", version: null });
   client.setQueryData(["artifact", artifact.id, "blocks"], []);
   client.setQueryData(["artifact", artifact.id, "asks"], []);
@@ -768,12 +760,13 @@ test("a later version of the document under approval leaves the column where the
     // written when the request changes and not when the version does (R2), so it is written
     // once and the reader keeps the text they were on.
     act(() => {
-      const newer = document({
-        approval: { latest_version: 5, state: "awaiting" },
-        versions: [version(4), version(5)],
-      });
-      client.setQueryData(["artifact", "artifact-1", "versions"], newer.versions);
-      client.setQueryData(["artifact", "artifact-1"], documentRead(newer));
+      client.setQueryData(
+        ["artifact", "artifact-1"],
+        document({
+          approval: { latest_version: 5, state: "awaiting" },
+          versions: [version(4), version(5)],
+        })
+      );
     });
     landing.resolve();
 
@@ -1015,7 +1008,7 @@ test("a question in no document is today's card", async () => {
 
 test("the head's Snooze registers its write, so the list keeps the row the column is on", async () => {
   const user = userEvent.setup();
-  const held = Promise.withResolvers<MarkV2>();
+  const held = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
   const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
 
@@ -1028,7 +1021,7 @@ test("the head's Snooze registers its write, so the list keeps the row the colum
     // head that kept its write to itself would be unmounted with the row it wrote about.
     await waitFor(() => expect(snoozeLiveness).toEqual([["ask-a", true]]));
   } finally {
-    held.resolve({ id: "ask-a", kind: "ask", snoozed_until: "2026-10-31T09:00:00Z" });
+    held.resolve({ snoozed_until: "2026-10-31T09:00:00Z" });
     view.unmount();
     snoozeAsk.mockRestore();
   }
@@ -1417,7 +1410,7 @@ test("the next ask's card shows no answer refused on the ask before it, and its 
     }),
     // The second ask's thread is read already, as it is once the reader has been on its row, so
     // the column draws its card at once, with no skeleton between the two.
-    (client) => client.setQueryData(["ask-thread", next.id], next)
+    (client) => client.setQueryData(["ask-thread", next.id], { ask: next, ...next.thread })
   );
   try {
     const card = await screen.findByTestId("ask-ask-x");
@@ -1592,9 +1585,8 @@ const planner: Agent = {
   title: "Planner",
 };
 
-/** A message `id` the reader sent the Planner, answered by the session's `reply`, as
- *  `api.listAgentMessages` answers each: the root's own fields with its replies beside them. */
-function plannerExchange(id: string, reply: string): AgentMessageV2 {
+/** A message `id` the reader sent the Planner, answered by the session's `reply`. */
+function plannerExchange(id: string, reply: string): MessageRead {
   const sent: Message = {
     author: { id: "alice", kind: "user" },
     body: `Question ${id}`,
@@ -1608,7 +1600,7 @@ function plannerExchange(id: string, reply: string): AgentMessageV2 {
     target: "session:planner",
   };
   return {
-    ...sent,
+    message: sent,
     replies: [
       {
         ...sent,
@@ -1619,7 +1611,6 @@ function plannerExchange(id: string, reply: string): AgentMessageV2 {
         in_reply_to: id,
       },
     ],
-    unread: false,
   };
 }
 

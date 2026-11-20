@@ -1,4 +1,4 @@
-import type { ArtifactV2, Comment, Decision, DisplayTree, IssueDecisionsV2 } from "../../api/types";
+import type { Artifact, Comment, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
@@ -71,14 +71,14 @@ export function inReviewList(
 }
 
 /**
- * The id of the document the decisions read names (`IssueDecisionsV2.document`), among the
+ * The id of the document the decisions read names (`IssueDecisions.document`), among the
  * issue's documents: the read names it by its `dispatch://` address, and a Change's anchor names
  * the document it is anchored in by its id (`Anchor.artifact_id`). Undefined for an issue with
  * no decisions document, and while the issue read carries none of that address.
  */
 export function decisionsDocumentId(
-  artifacts: readonly Pick<ArtifactV2, "id" | "slug">[] | null | undefined,
-  decisions: Pick<IssueDecisionsV2, "document"> | undefined
+  artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined,
+  decisions: Pick<IssueDecisions, "document"> | undefined
 ): string | undefined {
   const route = decisions?.document == null ? undefined : parseNodeReference(decisions.document);
   if (route?.kind !== "artifact") return undefined;
@@ -103,19 +103,19 @@ export function decisionsDocumentId(
  * the decision's words is no change and is not held.
  */
 export function decisionChangeComments(
-  decisions: Pick<IssueDecisionsV2, "document" | "items"> | undefined,
+  decisions: Pick<IssueDecisions, "decisions" | "document"> | undefined,
   comments: readonly ChangeComment[] | undefined,
-  artifacts: readonly Pick<ArtifactV2, "id" | "slug">[] | null | undefined,
+  artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined,
   documents: readonly DocumentBlocks[] | undefined
 ): ReadonlyMap<string, string> {
   const changes = new Map<string, string>();
-  const rows = (decisions?.items ?? []).filter((row) => !row.replaced);
+  const rows = (decisions?.decisions ?? []).filter((row) => !row.replaced);
   const document = decisionsDocumentId(artifacts, decisions);
   if (rows.length === 0 || document === undefined) return changes;
   // A decision's whole words as a quote is matched against them (`decisionWords`).
   const words = new Map(rows.map((row) => [row.ref, flat(decisionWords(row))]));
   const sections = sectionsOf(
-    decisions?.items ?? [],
+    decisions?.decisions ?? [],
     documents?.find((one) => one.artifactId === document)?.blocks
   );
   for (const comment of comments ?? []) {
@@ -163,9 +163,9 @@ function sectionsOf(
  * read, `undefined` where it has read none. A decision with none is not held.
  */
 export function decisionChanges(
-  decisions: Pick<IssueDecisionsV2, "document" | "items"> | undefined,
+  decisions: Pick<IssueDecisions, "decisions" | "document"> | undefined,
   comments: readonly ChangeComment[] | undefined,
-  artifacts: readonly Pick<ArtifactV2, "id" | "slug">[] | null | undefined,
+  artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined,
   documents: readonly DocumentBlocks[] | undefined,
   placed: ReadonlyMap<string, string> = decisionChangeComments(
     decisions,

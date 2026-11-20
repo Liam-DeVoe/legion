@@ -299,8 +299,7 @@ test("Refresh with a broken model keeps the last model up behind an error banner
     const synced = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        new URL(response.url()).pathname === "/api/v2/projects/CORE/architecture-syncs" &&
-        response.request().postData() === JSON.stringify({ repos: ["legion/arch"] }) &&
+        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/legion/arch/sync") &&
         response.ok()
     );
     await page
@@ -367,9 +366,9 @@ test("a project with no architecture source answers the read, so its pages make 
     });
 
     // The read itself: having no source is an answer, not a refusal.
-    const read = await page.request.get("/api/v2/projects/CORE/architecture-sources");
+    const read = await page.request.get("/api/v1/projects/CORE/architecture-sources");
     expect(read.status()).toBe(200);
-    expect(await read.json()).toMatchObject({ items: [], total: 0 });
+    expect(await read.json()).toEqual([]);
 
     // Both surfaces that ask the question on every visit.
     await page.goto(`/issues/${issue.key}`);

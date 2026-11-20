@@ -8,14 +8,12 @@ import type { IssueDetails } from "../../api/types";
 import { ChildrenTab } from "./ChildrenTab";
 
 const issue: IssueDetails = {
-  reach: {
-    holder_state: null,
-    last_seen: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-    takeable_at: null,
-  },
+  route_status: null,
+  route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   advances: [],
   advances_revision: 0,
   artifacts: [],

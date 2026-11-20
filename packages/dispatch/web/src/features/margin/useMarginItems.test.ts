@@ -11,8 +11,15 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError, type WholeList } from "../../api/client";
-import type { ArtifactV2, Comment, Decision, DecisionLink, DispatchEvent } from "../../api/types";
+import { ApiError, api, NetworkError } from "../../api/client";
+import type {
+  Artifact,
+  Comment,
+  Decision,
+  DecisionLink,
+  DispatchEvent,
+  IssueDecisions,
+} from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
   anchoredThreadComments,
@@ -46,23 +53,19 @@ function event(id: string): DispatchEvent {
   };
 }
 
-const artifact: ArtifactV2 = {
+const artifact: Artifact = {
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
   issue_key: "CORE-1",
   project: "CORE",
   kind: "doc",
-  latest_version: null,
-  latest_version_at: null,
-  latest_version_size: null,
   name: "spec.md",
   primary: true,
   ref_key: "CORE-1/spec",
   session_id: null,
   slug: "spec",
-  unsettled: null,
-  version_count: 0,
+  versions: [],
 };
 
 function anchorOn(artifactId: string, quote = "anchored", orphaned = false) {
@@ -112,8 +115,8 @@ test("pinned lookup chunks 51 ids and combines results by sequence", async () =>
 
   const events = await fetchPinnedEvents(
     async (_issueKey, options) => {
-      // The route takes at most 50 event ids in one read, which the batching holds it to.
-      const requestedIds = options.ids.map(String);
+      // The route takes the ids as one comma-joined value, which the batching splits back.
+      const requestedIds = (options.ids ?? "").split(",");
       requests.push(requestedIds);
       return requestedIds.map(event);
     },
@@ -409,7 +412,6 @@ test("a document owner loads asks and comments from the artifact routes, hides p
         version: 1,
       },
       answer: null,
-      document: null,
       artifact_id: "artifact-1",
       asked_of: null,
       asked_of_at: null,
@@ -419,16 +421,12 @@ test("a document owner loads asks and comments from the artifact routes, hides p
       created_at: "2026-09-09T00:00:00Z",
       edited_at: null,
       id: "ask-1",
-      issue: null,
       issue_key: null,
       kind: "question",
-      last_reply: null,
       multiple: false,
       opened_event_id: 1,
       options: [],
-      priority: null,
       question: "Should this ship?",
-      ref: "CORE/artifact/design-notes#ask-1",
       state: "open" as const,
       urgency: "med" as const,
     },
@@ -747,7 +745,7 @@ test("an action the reader stopped says Retry makes it again, not that it failed
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const acceptComment = spyOn(api, "acceptComment").mockRejectedValue(
-    new NetworkError("/api/v2/comments/A/state", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/comments/A/accept", new TypeError("Failed to fetch"))
   );
   const { listComments, queryClient, unmount } = renderActionButtons();
   try {
@@ -802,9 +800,8 @@ function decisionOf(
   };
 }
 
-const issueDecisions: WholeList<"/api/v2/issues/{key}/decisions"> = {
-  document: "dispatch://CORE-1/artifact/decisions-md",
-  items: [
+const issueDecisions: IssueDecisions = {
+  decisions: [
     // One decision that links two spec blocks, one of them from two of its own blocks.
     decisionOf("d-1", [
       decisionLink("d-1", "p-a"),
@@ -817,13 +814,11 @@ const issueDecisions: WholeList<"/api/v2/issues/{key}/decisions"> = {
     // A spec block the document has not placed yet: after every placed one.
     decisionOf("d-4", [decisionLink("d-4", "p-c")]),
   ],
-  limit: 50,
-  offset: 0,
+  document: "dispatch://CORE-1/artifact/decisions-md",
   open_questions: [],
-  total: 4,
 };
 
-function DecisionItems({ document }: { document: ArtifactV2 }) {
+function DecisionItems({ document }: { document: Artifact }) {
   const { decisions, items } = useMarginItems(
     { key: "CORE-1", kind: "issue" },
     "comments",
@@ -850,7 +845,7 @@ function DecisionItems({ document }: { document: ArtifactV2 }) {
   );
 }
 
-function renderDecisionItems(document: ArtifactV2) {
+function renderDecisionItems(document: Artifact) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });

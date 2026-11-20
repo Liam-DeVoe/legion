@@ -123,14 +123,14 @@ test.describe("inbox selection", () => {
     const first = await askIdOf(page, 0);
     const second = await askIdOf(page, 1);
 
-    await page.route(`**/api/v2/me/marks/ask/${first}`, (route) =>
+    await page.route(`**/api/v1/me/asks/${first}/snooze`, (route) =>
       route.fulfill({
         body: JSON.stringify({ code: "INVALID_SNOOZE", error: "snoozed_until must be a moment" }),
         contentType: "application/json",
         status: 400,
       })
     );
-    await page.route(`**/api/v2/me/marks/ask/${second}`, (route) =>
+    await page.route(`**/api/v1/me/asks/${second}/snooze`, (route) =>
       route.fulfill({
         body: JSON.stringify({ code: "UNAUTHENTICATED", error: "sign in again" }),
         contentType: "application/json",
@@ -315,7 +315,7 @@ test.describe("inbox selection", () => {
       await expect(bar).toContainText("1 selected");
 
       let wrote = false;
-      await page.route(`**/api/v2/me/marks/ask/${scene.hiddenAskId}`, (route) => {
+      await page.route(`**/api/v1/me/asks/${scene.hiddenAskId}/snooze`, (route) => {
         wrote = true;
         return route.fallback();
       });
@@ -380,7 +380,7 @@ test.describe("inbox selection", () => {
     scene,
   }) => {
     await openInbox(page, scene.rows);
-    await page.route("**/api/v2/me/marks/ask/*", (route) =>
+    await page.route("**/api/v1/me/asks/*/snooze", (route) =>
       route.fulfill({
         body: JSON.stringify({ code: "INVALID_SNOOZE", error: "snoozed_until must be a moment" }),
         contentType: "application/json",

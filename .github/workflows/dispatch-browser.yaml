@@ -494,7 +494,7 @@ jobs:
         if: always()
         with:
           name: dispatch-browser-visual-${{ github.run_attempt }}
-          # why: .github/ci-notes/dispatch-browser.md#what-the-visual-uploads-last-pattern-takes-and-what-it-fixes
+          # why: .github/ci-notes/dispatch-browser.md#why-the-visual-upload-keeps-a-pattern-that-matches-no-file
           path: |
             packages/dispatch/e2e/test-results
             packages/dispatch/e2e/test-results-reverse

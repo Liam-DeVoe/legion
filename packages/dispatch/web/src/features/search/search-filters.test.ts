@@ -41,14 +41,14 @@ test("the request carries each chosen filter under the route's own name", () => 
     searchRequest({ author: "alice", project: "INFRA", status: "needs_review" })
   ).toMatchObject({
     author: "alice",
-    project: ["INFRA"],
+    project: "INFRA",
     status: "needs_review",
   });
   expect(searchRequest({})).toEqual({});
 });
 
 test("the day is sent as the instant its midnight began where the reader is", () => {
-  const { from: since } = searchRequest({ updatedSince: "2026-11-01" });
+  const { updated_since: since } = searchRequest({ updatedSince: "2026-11-01" });
   const sent = new Date(since ?? "");
 
   expect(since).toEndWith("Z");
@@ -65,6 +65,6 @@ test("the page's project rides as context and narrows nothing", () => {
   expect(searchRequest({}, undefined)).toEqual({});
   expect(searchRequest({ project: "LINUX" }, "INFRA")).toEqual({
     number_project: "INFRA",
-    project: ["LINUX"],
+    project: "LINUX",
   });
 });

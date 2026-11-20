@@ -3,13 +3,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-import { api, REFERENCE_TARGETS_MAX } from "../../api/client";
+import { api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { referenceTargetsQuery } from "../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../api/query-refresh";
 import type {
+  Artifact,
   ArtifactBlock,
-  ArtifactV2,
   Comment,
   DispatchEvent,
   DisplayTree,
@@ -42,15 +42,12 @@ const PLAN = "plan-md";
 const TASK_REF = `dispatch://${KEY}/artifact/${PLAN}#b-t1`;
 const TASK_WORDS = "Draw the tree's names from one read.";
 
-const plan: ArtifactV2 = {
+const plan: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-plan",
   issue_key: KEY,
   kind: "doc",
-  latest_version: null,
-  latest_version_at: null,
-  latest_version_size: null,
   name: "Plan",
   primary: false,
   project: "CORE",
@@ -58,8 +55,7 @@ const plan: ArtifactV2 = {
   role: "plan",
   session_id: null,
   slug: PLAN,
-  unsettled: null,
-  version_count: 0,
+  versions: [],
 };
 
 const task: ArtifactBlock = {
@@ -87,8 +83,10 @@ const issue: IssueDetails = {
   decisions_artifact_id: "",
   design_gates: [],
   external_links: [],
+  holder_state: null,
   key: KEY,
   labels: [],
+  last_seen: null,
   last_seq: 1,
   number: 1,
   open_asks: [],
@@ -99,19 +97,15 @@ const issue: IssueDetails = {
   progress: { children: null, tasks: null },
   project: "CORE",
   rank: "U",
-  reach: {
-    holder_state: null,
-    last_seen: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-    takeable_at: null,
-  },
   referenced_by_count: 0,
   repo: null,
   resolved_repo: null,
   route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
   status: "todo",
+  takeable_at: null,
   title: "The issue page draws one ordered body",
   updated_at: "2026-11-05T00:00:00Z",
   verification_artifact_id: "",
@@ -151,9 +145,8 @@ type TreeRead =
   | "results";
 
 /** Every read the hook makes, answered empty but for the plan's one task block, the reader's
- *  login and `comments`. `answerNames` answers the targets one names read asks for, which the
- *  route answers as one page of its envelope. The `held` read stays out until its `until`
- *  settles, and then answers as it would have. */
+ *  login and `comments`. The `held` read stays out until its `until` settles, and then answers
+ *  as it would have. */
 function stubTreeReads(
   answerNames: (refs: readonly string[]) => Promise<{
     targets: ReferenceTarget[];
@@ -175,26 +168,13 @@ function stubTreeReads(
     }),
     spyOn(api, "getIssueDecisions").mockImplementation(async () => {
       await answered("decisions");
-      return { document: null, items: [], limit: 50, offset: 0, open_questions: [], total: 0 };
+      return { decisions: [], document: null, open_questions: [] };
     }),
     spyOn(api, "getIssueResults").mockImplementation(async () => {
       await answered("results");
-      return {
-        issue: KEY,
-        items: [],
-        limit: 50,
-        offset: 0,
-        total: 0,
-        verification_artifact_id: "",
-      };
+      return { checks: [], issue: KEY, verification_artifact_id: "" };
     }),
-    spyOn(api, "getIssueReferences").mockResolvedValue({
-      items: [],
-      limit: 50,
-      offset: 0,
-      total: 0,
-      truncated: false,
-    }),
+    spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
     spyOn(api, "listIssueAsks").mockImplementation(async () => {
       await answered("asks");
       return [];
@@ -215,10 +195,7 @@ function stubTreeReads(
       await answered("login");
       return { event_head: "0", kind: "user", login: "alice" };
     }),
-    spyOn(api, "getReferenceTargets").mockImplementation(async (refs) => {
-      const { targets } = await answerNames(refs);
-      return { items: targets, limit: REFERENCE_TARGETS_MAX, offset: 0, total: targets.length };
-    }),
+    spyOn(api, "getReferenceTargets").mockImplementation(answerNames),
   ];
 }
 
@@ -362,24 +339,20 @@ function namedTargets(refs: readonly string[]): { targets: ReferenceTarget[] } {
 }
 
 /** One document of the issue, with whatever the case gives it: a role, or being the spec. */
-function issueDocument(id: string, slug: string, extra: Partial<ArtifactV2> = {}): ArtifactV2 {
+function issueDocument(id: string, slug: string, extra: Partial<Artifact> = {}): Artifact {
   return {
     created_at: "2026-11-05T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id,
     issue_key: KEY,
     kind: "doc",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
     name: slug,
     primary: false,
     project: "CORE",
     ref_key: `artifact:${id}`,
     session_id: null,
     slug,
-    unsettled: null,
-    version_count: 0,
+    versions: [],
     ...extra,
   };
 }

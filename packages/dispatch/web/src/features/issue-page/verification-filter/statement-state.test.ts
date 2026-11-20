@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { ArtifactBlock, ArtifactV2, CheckV2, IssueDetails } from "../../../api/types";
+import type { Artifact, ArtifactBlock, CheckBlock, IssueDetails } from "../../../api/types";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
@@ -41,7 +41,7 @@ import {
 /** The reading over the statements given, as the body is handed it. */
 function reading(
   statements: readonly TreeNode[],
-  checks: readonly CheckV2[],
+  checks: readonly CheckBlock[],
   ...loose: readonly TreeNode[]
 ): VerificationReading {
   return verificationReading({ checks, view: verificationView([...statements, ...loose]) });
@@ -49,7 +49,7 @@ function reading(
 
 /** A check that passed at the commit the page names, which is the basis it compares with, so
  *  the server reads its pass there (`at_basis`). */
-function passing(blockId: string): CheckV2 {
+function passing(blockId: string): CheckBlock {
   return check({
     block_id: blockId,
     pass_stands: { answer: "yes" },
@@ -387,24 +387,20 @@ test("a fail at the commit the page names reads Failed whatever older pass still
 
 /** The issue's tree as `buildIssueTree` draws it from its reads: one statement of the spec,
  *  which every check of `checks` serves, and the results read answering `checks`. */
-function issueTree(checks: readonly CheckV2[]): TreeNode {
-  const document = (id: string, slug: string, name: string, primary: boolean): ArtifactV2 => ({
+function issueTree(checks: readonly CheckBlock[]): TreeNode {
+  const document = (id: string, slug: string, name: string, primary: boolean): Artifact => ({
     created_at: "2026-11-05T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id,
     issue_key: ISSUE_KEY,
     kind: "doc",
-    latest_version: null,
-    latest_version_at: null,
-    latest_version_size: null,
     name,
     primary,
     project: "CORE",
     ref_key: `artifact:${id}`,
     session_id: null,
     slug,
-    unsettled: null,
-    version_count: 0,
+    versions: [],
   });
   const spec = document("artifact-spec", SPEC_SLUG, "spec.md", true);
   const verification = document(
@@ -438,8 +434,10 @@ function issueTree(checks: readonly CheckV2[]): TreeNode {
     decisions_artifact_id: "",
     design_gates: [],
     external_links: [],
+    holder_state: null,
     key: ISSUE_KEY,
     labels: [],
+    last_seen: null,
     last_seq: 1,
     number: 1,
     open_asks: [],
@@ -450,19 +448,15 @@ function issueTree(checks: readonly CheckV2[]): TreeNode {
     progress: { children: null, tasks: null },
     project: "CORE",
     rank: "U",
-    reach: {
-      holder_state: null,
-      last_seen: null,
-      route_holder: null,
-      route_status: null,
-      route_status_reason: null,
-      takeable_at: null,
-    },
     referenced_by_count: 0,
     repo: null,
     resolved_repo: null,
     route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
     status: "todo",
+    takeable_at: null,
     title: "The issue page draws one ordered body",
     updated_at: "2026-11-05T00:00:00Z",
     verification_artifact_id: verification.id,
@@ -492,14 +486,7 @@ function issueTree(checks: readonly CheckV2[]): TreeNode {
       },
     ],
     issue,
-    results: {
-      issue: ISSUE_KEY,
-      items: [...checks],
-      limit: 50,
-      offset: 0,
-      total: checks.length,
-      verification_artifact_id: verification.id,
-    },
+    results: { checks: [...checks], issue: ISSUE_KEY, verification_artifact_id: verification.id },
   });
 }
 
@@ -516,7 +503,7 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
     root.children
       .find((child) => child.id === statement)
       ?.children.find((child) => child.id === checkId(blockId));
-  const bodyStates = (root: TreeNode, checks: readonly CheckV2[]) =>
+  const bodyStates = (root: TreeNode, checks: readonly CheckBlock[]) =>
     verificationReading({
       checks,
       view: presetView(root, "verification", "").root,

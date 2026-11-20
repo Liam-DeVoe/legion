@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { apiErrorMessage, isApiV1Ended } from "../../api/client";
+import { apiErrorMessage } from "../../api/client";
 import {
   borderDefault,
   calloutWarningBorder,
@@ -13,18 +13,12 @@ import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write
 import { StopTrying } from "./StopTrying";
 import { useWriteSelection, useWrites, type Write } from "./write-store";
 
-/** What the indicator says of a write a build older than `/api/v2` kept, which the deployment
- *  refused because it has ended `/api/v1`: nothing of it was saved, and nothing can send it now. */
-export const API_V1_ENDED_REASON =
-  "this change was kept from before Dispatch was updated, and Dispatch no longer accepts it. Make it again.";
-
 /** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
  *  verdict - stopped, its key run out, or interrupted by a reload - may have landed, and what its
- *  Retry does is `retryNote`'s, by whether the write goes under its key (`keyed`, `Write.keyed`).
- *  A kept write the end of `/api/v1` refused can be sent nowhere (`API_V1_ENDED_REASON`). */
+ *  Retry does is `retryNote`'s, by whether the write goes under its key (`keyed`, `Write.keyed`):
+ *  a `PUT` or a `DELETE` sends none, so no Retry of one asks under a key. */
 function refusalReason(keyed: boolean, refusal: Error): string {
   if (!(refusal instanceof SendStoppedError)) {
-    if (isApiV1Ended(refusal)) return API_V1_ENDED_REASON;
     return apiErrorMessage(refusal, "Dispatch could not be reached");
   }
   const retry = retryNote(keyed, refusal, "saved");
@@ -117,15 +111,13 @@ export function PendingWritesIndicator(): ReactNode {
                     <span className={`min-w-0 flex-1 ${dangerText}`}>
                       Not saved: {row.label} — {refusalReason(row.keyed, row.refusal)}
                     </span>
-                    {isApiV1Ended(row.refusal) ? null : (
-                      <button
-                        className={secondaryButtonCompact}
-                        onClick={() => writes.retry(row.id)}
-                        type="button"
-                      >
-                        Retry
-                      </button>
-                    )}
+                    <button
+                      className={secondaryButtonCompact}
+                      onClick={() => writes.retry(row.id)}
+                      type="button"
+                    >
+                      Retry
+                    </button>
                     <button
                       className={secondaryButtonCompact}
                       onClick={() => writes.discard(row.id)}

@@ -66,7 +66,6 @@ import {
   commentB,
   endAsAReload,
   listTurn,
-  NOTHING_READ,
   planner,
   replyField,
 } from "./__tests__/draft-matrix-fixture";
@@ -77,7 +76,6 @@ import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { otherTab, renderApp } from "./app-sign-out-fixture";
-import { markOf } from "./features/agents/marks-fixture";
 import { composerNameOf } from "./features/conversation/useKeptDrafts";
 import { threadReplySendKey } from "./features/conversation/usePhoneThread";
 import { issue } from "./features/margin/margin-fixture";
@@ -106,9 +104,7 @@ function answerAgentReads(): () => void {
     spyOn(api, "listAgentMessages").mockResolvedValue([]),
     spyOn(api, "getMyAgentState").mockResolvedValue({}),
   ];
-  answerAgentStates().mockImplementation(async (session) =>
-    markOf("agent", session, { unread_replies: 0 })
-  );
+  answerAgentStates().mockImplementation(async () => ({ unread_replies: 0 }));
   return () => {
     for (const read of reads) read.mockRestore();
   };
@@ -289,9 +285,10 @@ test("the same person's sign-in from another tab keeps the shell and the words t
 /** The reads of CORE-1's issue page over Comment A and Comment B, each answered as an issue with
  *  nothing else on it answers. Returns what puts the reads back. */
 function answerIssueReads(): () => void {
+  const state = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(issue),
-    spyOn(api, "getMyState").mockResolvedValue(NOTHING_READ),
+    spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": state }),
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
@@ -302,12 +299,8 @@ function answerIssueReads(): () => void {
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
   ];
   answerRequests(
-    http.get("/api/v2/repositories", () =>
-      Response.json({ items: [], limit: 50, offset: 0, total: 0 })
-    ),
-    http.get("/api/v2/projects/:project/architecture-sources", () =>
-      Response.json({ items: [], limit: 50, offset: 0, total: 0 })
-    )
+    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
+    http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([]))
   );
   return () => {
     for (const read of reads) read.mockRestore();

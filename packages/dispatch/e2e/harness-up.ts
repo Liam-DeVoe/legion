@@ -56,8 +56,6 @@ console.log("export DISPATCH_E2E_REUSE_SERVERS=1");
 const interrupted = Promise.withResolvers<void>();
 process.once("SIGINT", () => interrupted.resolve());
 await interrupted.promise;
-// A run of one stack copies its servers' output to this process's stderr as well as to its log
-// directory (`e2e/harness-pool.ts`), so whoever started it has all of it there already, and a
-// Ctrl-C removes the run directory, logs and all. A SIGTERM, which is how e2e/visual-run.sh stops
-// it, goes to the pool's own listener instead, which keeps the logs and prints where they are.
+// The stack wrote its output to this process's stderr rather than to a log directory, which is
+// what a run of one stack does, so there are no logs to keep.
 await stopStacks(false);

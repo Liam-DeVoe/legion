@@ -6,14 +6,10 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api, type WholeList } from "../../api/client";
-import type { ArtifactV2 } from "../../api/types";
+import { ApiError, api } from "../../api/client";
+import type { Artifact, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
-import { type DocumentFixture, documentRead } from "./artifact-fixture";
-
-/** The issue's reference closure as the tab reads it, every page. */
-type References = WholeList<"/api/v2/issues/{key}/references">;
 
 const artifact = {
   created_at: "2026-09-09T00:00:00Z",
@@ -27,7 +23,6 @@ const artifact = {
   ref_key: "CORE-1/diagram-png",
   session_id: null,
   slug: "diagram-png",
-  unsettled: null,
   versions: [
     {
       authors: [{ id: "alice", kind: "user" }],
@@ -52,20 +47,20 @@ const artifact = {
   ],
   // `satisfies`, not an annotation: the tests below slice `artifact.versions`, which the route
   // table's `Version[] | null` would not let them.
-} satisfies DocumentFixture;
+} satisfies Artifact;
 
-const noReferences: References = { items: [], limit: 50, offset: 0, total: 0, truncated: false };
+const noReferences: IssueReferences = { members: [], truncated: false };
 
 function Location() {
   return <output data-testid="location">{useLocation().pathname}</output>;
 }
 
 function renderTab(
-  artifacts: DocumentFixture[],
-  references: References | Error = noReferences,
+  artifacts: Artifact[],
+  references: IssueReferences | Error = noReferences,
   isClosed = false
 ) {
-  const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts.map(documentRead));
+  const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
   const getIssueReferences = spyOn(api, "getIssueReferences");
   if (references instanceof Error) {
     getIssueReferences.mockRejectedValue(references);
@@ -87,7 +82,7 @@ function renderTab(
 }
 
 test("renders one row per artifact with no compare controls", async () => {
-  const notes: DocumentFixture = {
+  const notes: Artifact = {
     ...artifact,
     id: "artifact-notes",
     kind: "doc",
@@ -161,14 +156,14 @@ const madeDocument = {
   ref_key: "CORE-1/design-notes",
   slug: "design-notes",
   versions: artifact.versions.slice(0, 1),
-} satisfies DocumentFixture;
+} satisfies Artifact;
 
 function madeResponse() {
   const [version] = madeDocument.versions;
   if (version === undefined) {
     throw new Error("the made document fixture requires a version");
   }
-  return { artifact: documentRead(madeDocument), version };
+  return { artifact: madeDocument, version };
 }
 
 // The control sends the title alone, so the new document holds nothing, and the person is taken
@@ -233,7 +228,7 @@ test("New document on an issue refuses a title the issue already holds", async (
 // A row names how big its latest version is stored, a document's markdown as a file's bytes, so a
 // person finds a document near the size cap from the list without opening it.
 test("a row names its latest version's stored size", async () => {
-  const spec: DocumentFixture = {
+  const spec: Artifact = {
     ...artifact,
     id: "artifact-spec",
     kind: "doc",
@@ -254,7 +249,6 @@ test("a row names its latest version's stored size", async () => {
 
   try {
     const document = await screen.findByTestId("artifact-near-cap-md");
-    // The count and the size are the row's own: its newest version's, and how many it holds.
     expect(document.querySelector("p")?.textContent).toContain("doc · 1 version · 1023.9 KB ·");
     expect(screen.getByTestId("artifact-diagram-png").querySelector("p")?.textContent).toContain(
       "image · 2 versions · 20 B ·"
@@ -267,7 +261,7 @@ test("a row names its latest version's stored size", async () => {
 });
 
 test("artifacts tab renders no make-primary control", async () => {
-  const artifacts: DocumentFixture[] = [
+  const artifacts: Artifact[] = [
     {
       ...artifact,
       id: "artifact-spec",
@@ -303,13 +297,13 @@ test("artifacts tab renders no make-primary control", async () => {
 });
 
 test("a primary artifact sorts first regardless of upload order", async () => {
-  const older: DocumentFixture = {
+  const older: Artifact = {
     ...artifact,
     id: "artifact-older",
     name: "older.png",
     slug: "older-png",
   };
-  const primary: DocumentFixture = {
+  const primary: Artifact = {
     ...artifact,
     id: "artifact-primary",
     name: "primary.png",
@@ -332,7 +326,7 @@ test("a primary artifact sorts first regardless of upload order", async () => {
 
 test("artifacts saved in the same second list newest first by time, not by the timestamp strings", async () => {
   // As text `…00.12Z` sorts after `…00.123456Z`, the later time.
-  const savedAt = (id: string, createdAt: string): DocumentFixture => ({
+  const savedAt = (id: string, createdAt: string): Artifact => ({
     ...artifact,
     id: `artifact-${id}`,
     name: `${id}.png`,
@@ -361,7 +355,7 @@ test("artifacts saved in the same second list newest first by time, not by the t
 
 test("the filter input narrows rows by name and kind", async () => {
   const user = userEvent.setup();
-  const notes: DocumentFixture = {
+  const notes: Artifact = {
     ...artifact,
     id: "artifact-notes",
     kind: "doc",
@@ -391,9 +385,8 @@ test("the filter input narrows rows by name and kind", async () => {
 });
 
 test("References lists closure members with chip, via, and depth, names truncation, and renders an artifact source without an issue key, collapsed by default", async () => {
-  // A member of the closure is the document as every read of it answers it.
-  const referencedDocument: ArtifactV2 = {
-    ...documentRead(artifact),
+  const referencedDocument: Artifact = {
+    ...artifact,
     id: "artifact-notes",
     issue_key: null,
     kind: "doc",
@@ -402,16 +395,13 @@ test("References lists closure members with chip, via, and depth, names truncati
     slug: "design-notes",
   };
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
-    items: [
+    members: [
       {
         artifact: referencedDocument,
         depth: 1,
         via: { id: "comment-1", kind: "comment" },
       },
     ],
-    limit: 50,
-    offset: 0,
-    total: 1,
     truncated: true,
   });
 
@@ -479,8 +469,8 @@ test("References names the agent that owns a conversation's artifact", async () 
       title: "Planner",
     },
   ]);
-  const picture: ArtifactV2 = {
-    ...documentRead(artifact),
+  const picture: Artifact = {
+    ...artifact,
     id: "artifact-shot",
     issue_key: null,
     name: "shot.png",
@@ -489,10 +479,7 @@ test("References names the agent that owns a conversation's artifact", async () 
     slug: "shot-png",
   };
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
-    items: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
-    limit: 50,
-    offset: 0,
-    total: 1,
+    members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
     truncated: false,
   });
 
@@ -513,7 +500,7 @@ test("References names the agent that owns a conversation's artifact", async () 
 // the press goes straight out and the row the person pressed on goes with it.
 test("Remove on a document's row sends the delete and the row goes", async () => {
   const user = userEvent.setup();
-  const notes: DocumentFixture = {
+  const notes: Artifact = {
     ...madeDocument,
     versions: artifact.versions.slice(0, 1),
   };
@@ -544,7 +531,7 @@ test("Remove on a document's row sends the delete and the row goes", async () =>
 // document stays.
 test("a refused removal shows the server's sentence on the row", async () => {
   const user = userEvent.setup();
-  const notes: DocumentFixture = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
   const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
   const refusal =
     "Design notes is not untouched: it holds writing; a document is removed only while it holds nothing";
@@ -569,7 +556,7 @@ test("a refused removal shows the server's sentence on the row", async () => {
 // A file artifact is refused by the same test a document that holds writing is refused by, so
 // its row offers no press that is always refused; a closed issue says why before the press.
 test("a file's row offers no removal, and a closed issue refuses the document's", async () => {
-  const notes: DocumentFixture = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
   const { getIssueReferences, listArtifacts, view } = renderTab(
     [artifact, notes],
     noReferences,

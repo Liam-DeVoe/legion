@@ -27,7 +27,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { stackLogDir, stackLogDirVariable } from "./harness-logs";
+
 import {
   pgBinVariable,
   pgImageVariable,
@@ -41,8 +41,7 @@ import { Interrupted } from "./local-instance-support";
 const named = "e2e/harness-pool.ts";
 
 /** One started stack as its callers read it: the index a worker selects it by, and every variable
- *  it carries - its ports, its `DATABASE_URL`, its file-store bucket, its log directory
- *  (`stackLogDirVariable`) and how many stacks share the machine. */
+ *  it carries - its ports, its `DATABASE_URL`, its file-store bucket. */
 export interface Stack {
   readonly index: number;
   readonly env: Readonly<Record<string, string>>;
@@ -61,11 +60,9 @@ export interface StackPoolOptions {
 interface Running extends Stack {
   readonly database: StackDatabase | undefined;
   readonly harness: Harness;
-  /** Where its processes write their output (`e2e/harness-logs.ts`), which is where a row reads
-   *  its own server's access log. A run of one stack copies the same output to this process's
-   *  stderr, where its reader - a person's terminal, a CI job's log - looks for it; a run of more
-   *  leaves stderr to the stack lines below rather than mixing every stack's servers there. */
-  readonly logDir: string;
+  /** Where its processes write their output, unset for a run of one stack, which writes to this
+   *  process's stderr as it always has. */
+  readonly logDir: string | undefined;
 }
 
 const stacks: Running[] = [];
@@ -219,7 +216,7 @@ function clearRunDir(keepLogs: boolean): void {
   if (runDir === "") return;
   const root = runDir;
   runDir = "";
-  const keep = keepLogs && stacks.length > 0;
+  const keep = keepLogs && stacks.some((stack) => stack.logDir !== undefined);
   // Every data directory under the run's own, named from that directory rather than from the
   // stacks that started: a stack that failed to start left a copy of the template there and no
   // entry among them, and those copies are the bulk this branch is here to lose.
@@ -279,7 +276,7 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
       );
     }
     const startStack = async (index: number): Promise<void> => {
-      const logDir = stackLogDir(runDir, index);
+      const logDir = count === 1 ? undefined : join(runDir, `worker-${index}`, "log");
       const database =
         postgres === undefined ? undefined : await postgres.start(index, stopping.signal);
       // Everything from here on runs with a server of this stack's own up, so each of them — the
@@ -295,19 +292,8 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         if (url !== "") own.DATABASE_URL = url;
         const bucket = await stackBucket(index, count, env);
         if (bucket !== undefined) own.DISPATCH_E2E_FILE_STORE_BUCKET = bucket;
-        const harness = await startHarness({
-          env: own,
-          logDir,
-          signal: stopping.signal,
-          stderrToo: count === 1,
-        });
-        stacks.push({
-          database,
-          env: { ...own, ...harness.env, [stackLogDirVariable]: logDir },
-          harness,
-          index,
-          logDir,
-        });
+        const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
+        stacks.push({ database, env: { ...own, ...harness.env }, harness, index, logDir });
       } catch (error) {
         await database?.stop(true);
         throw error;
@@ -329,7 +315,8 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         .join(" ");
       const postgresPort =
         stack.database === undefined ? "" : `POSTGRES_PORT=${stack.database.port} `;
-      console.error(`${named}: stack ${stack.index}: ${postgresPort}${ports} (${stack.logDir})`);
+      const output = stack.logDir ?? "its output is on this process's stderr";
+      console.error(`${named}: stack ${stack.index}: ${postgresPort}${ports} (${output})`);
     }
     // The two numbers a reader of a CI log reads this line for. One stack per worker is the
     // invariant: a start that could not give a worker its own stack throws above rather than

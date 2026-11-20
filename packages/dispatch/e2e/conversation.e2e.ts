@@ -27,8 +27,8 @@ import {
   replyToCommentBlock,
   replyToMessageBlock,
   replyToMessageDelivery,
+  resolveAsk,
   resolveComment,
-  retractAsk,
 } from "./api";
 import { conversationFilter } from "./editor";
 import { navigateInApp } from "./sends";
@@ -349,7 +349,7 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     const response = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
-        candidate.url().endsWith(`/api/v2/issues/${issue.key}/comments`)
+        candidate.url().endsWith(`/api/v1/issues/${issue.key}/comments`)
     );
     await composer.getByRole("button", { name: "Send" }).click();
     expect((await response).request().postDataJSON()).toEqual({
@@ -403,8 +403,8 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
     await expect(card).toContainText("Answered by planner");
     await expect(threadReply(page, card, "Loud and clear.")).toBeVisible();
     await expect(card.getByRole("button", { name: "Use BTW instead" })).toHaveCount(0);
-    const stored = await getMessage(message.id);
-    expect(stored.deliveries).toMatchObject([
+    const stored = await getMessage(issue.key, message.id);
+    expect(stored.message.deliveries).toMatchObject([
       { attempt: 1, error: null, reply_id: answer.id, state: "sent" },
     ]);
   } finally {
@@ -475,7 +475,11 @@ test("a retracted ask takes a reply in its thread, drawn under the ask", async (
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Reply after a retraction" });
   const ask = await createAsk(issue.key, { question: "Ship the retracted ask?" }, agent);
-  await retractAsk(ask.id, { reason: "A newer question supersedes this one." }, agent);
+  await resolveAsk(
+    ask.id,
+    { kind: "retracted", reason: "A newer question supersedes this one." },
+    agent
+  );
 
   const alice = await asUser(browser, "alice");
   try {
@@ -499,9 +503,8 @@ test("a retracted ask takes a reply in its thread, drawn under the ask", async (
     await expect
       .poll(() => getAsk(ask.id))
       .toMatchObject({
-        resolution: { kind: "retracted" },
-        state: "resolved",
-        thread: { replies: [expect.objectContaining({ body: "Noted. What replaced it?" })] },
+        ask: { resolution: { kind: "retracted" }, state: "resolved" },
+        replies: [expect.objectContaining({ body: "Noted. What replaced it?" })],
       });
     await expect(askTurn.getByTestId("ask-resolution-badge")).toHaveText("Retracted");
   } finally {
@@ -567,7 +570,7 @@ test("Conversation answers an ask in place, draws no event row, and keeps its ca
     await expect
       .poll(() => getAsk(ask.id))
       .toMatchObject({
-        thread: { replies: [expect.objectContaining({ body: "Thanks" })] },
+        replies: [expect.objectContaining({ body: "Thanks" })],
       });
 
     // The issue rename and the child's status move are the issue's events: the Conversation
@@ -648,7 +651,7 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
     page.on("request", (request) => {
       if (
         request.method() === "POST" &&
-        request.url().endsWith(`/api/v2/issues/${issue.key}/comments`)
+        request.url().endsWith(`/api/v1/issues/${issue.key}/comments`)
       ) {
         sentRequests += 1;
       }
@@ -660,7 +663,7 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
     const request = page.waitForRequest(
       (candidate) =>
         candidate.method() === "POST" &&
-        candidate.url().endsWith(`/api/v2/issues/${issue.key}/comments`)
+        candidate.url().endsWith(`/api/v1/issues/${issue.key}/comments`)
     );
     await message.press("Control+Enter");
     await request;
@@ -859,7 +862,11 @@ test("the filter opens on All in a fresh context and ignores the settings an old
   );
   await answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, { login: "bob" });
   const retracted = await createAsk(issue.key, { question: "Ship the retracted ask?" }, agent);
-  await retractAsk(retracted.id, { reason: "A newer question supersedes this one." }, agent);
+  await resolveAsk(
+    retracted.id,
+    { kind: "retracted", reason: "A newer question supersedes this one." },
+    agent
+  );
   const resolved = await createComment(issue.key, { body: "A resolved thread." }, agent);
   await resolveComment(resolved.id);
   await createComment(issue.key, { body: "An open thread." }, agent);
@@ -954,7 +961,7 @@ test("the Conversation draws one card per conversation and no event row", async 
   );
   await answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, { login: "bob" });
   const retracted = await createAsk(issue.key, { question: "Withdrawn question?" }, agent);
-  await retractAsk(retracted.id, { reason: "Superseded." }, agent);
+  await resolveAsk(retracted.id, { kind: "retracted", reason: "Superseded." }, agent);
   const resolved = await createComment(issue.key, { body: "A resolved thread." }, agent);
   await resolveComment(resolved.id);
   const open = await createComment(issue.key, { body: "An open thread." }, agent);
@@ -1034,7 +1041,7 @@ test("a reply quotes the passage it names", async ({ browser }) => {
     { body: "On the message's second paragraph." },
     bob
   );
-  const thread = await getMessage(message.id);
+  const thread = await getMessage(issue.key, message.id);
   expect(
     (thread.replies ?? []).find((reply) => reply.id === messageReply.id)?.reply_block
   ).toMatchObject({
@@ -1043,16 +1050,16 @@ test("a reply quotes the passage it names", async ({ browser }) => {
     removed: false,
     text: "Delta second.",
   });
-  // The blocks the replies name, as the blocks reads list them.
-  const messageBlocks = (await getMessageBlocks(message.id)).blocks;
-  expect(messageBlocks?.indexed).toBe(true);
-  expect((messageBlocks?.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
+  // The blocks the replies name, as the blocks routes list them.
+  const messageBlocks = await getMessageBlocks(message.id);
+  expect(messageBlocks.indexed).toBe(true);
+  expect((messageBlocks.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
     { id: "b1", text: "Gamma first." },
     { id: "b2", text: "Delta second." },
   ]);
-  const commentBlocks = (await getCommentBlocks(comment.id)).blocks;
-  expect(commentBlocks?.indexed).toBe(true);
-  expect((commentBlocks?.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
+  const commentBlocks = await getCommentBlocks(comment.id);
+  expect(commentBlocks.indexed).toBe(true);
+  expect((commentBlocks.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
     { id: "b1", text: "Alpha first." },
     { id: "b2", text: "Beta second." },
   ]);
@@ -1128,14 +1135,13 @@ test("the editor keeps a cited passage's id through move, reword, split, delete 
         [start, end] as const
       );
 
-    /** Opens the editor on the comment once its `?include=blocks` read has answered (the ids it
-     *  carries), makes `change`, checks the field holds `edited`, saves, and answers the `blocks`
-     *  Save sent. */
+    /** Opens the editor on the comment once the blocks route has answered (the ids it carries),
+     *  makes `change`, checks the field holds `edited`, saves, and answers the `blocks` Save sent. */
     const saveEdit = async (change: () => Promise<void>, edited: string) => {
       const blocksRead = page.waitForResponse(
         (response) =>
           response.request().method() === "GET" &&
-          response.url().endsWith(`/api/v2/comments/${comment.id}?include=blocks`)
+          response.url().endsWith(`/api/v1/comments/${comment.id}/blocks`)
       );
       await card.getByRole("button", { exact: true, name: "Edit" }).click();
       expect((await blocksRead).ok()).toBe(true);
@@ -1144,7 +1150,7 @@ test("the editor keeps a cited passage's id through move, reword, split, delete 
       const saved = page.waitForResponse(
         (response) =>
           response.request().method() === "PATCH" &&
-          response.url().endsWith(`/api/v2/comments/${comment.id}`)
+          response.url().endsWith(`/api/v1/comments/${comment.id}`)
       );
       await card.getByRole("button", { name: "Save" }).click();
       const response = await saved;
@@ -1157,14 +1163,13 @@ test("the editor keeps a cited passage's id through move, reword, split, delete 
       expect(sent.body).toBe(edited);
       return sent.blocks;
     };
-    /** The comment's blocks as its `?include=blocks` read lists them, and the reply's cited
-     *  block. */
+    /** The comment's blocks as the blocks route lists them, and the reply's cited block. */
     const expectBlocks = async (
       blocks: readonly { id: string; text: string }[],
       cited: { removed: boolean; text: string }
     ) => {
-      const read = (await getCommentBlocks(comment.id)).blocks;
-      expect((read?.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual(blocks);
+      const read = await getCommentBlocks(comment.id);
+      expect((read.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual(blocks);
       expect(await commentReplyBlock(comment.id, reply.id)).toMatchObject({
         block_id: "b2",
         node: `comment/${comment.id}#b2`,
@@ -1297,7 +1302,7 @@ test("the editor keeps a cited passage's id when its whole text is typed over", 
     const blocksRead = page.waitForResponse(
       (response) =>
         response.request().method() === "GET" &&
-        response.url().endsWith(`/api/v2/comments/${comment.id}?include=blocks`)
+        response.url().endsWith(`/api/v1/comments/${comment.id}/blocks`)
     );
     await card.getByRole("button", { exact: true, name: "Edit" }).click();
     expect((await blocksRead).ok()).toBe(true);
@@ -1316,13 +1321,13 @@ test("the editor keeps a cited passage's id when its whole text is typed over", 
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PATCH" &&
-        response.url().endsWith(`/api/v2/comments/${comment.id}`)
+        response.url().endsWith(`/api/v1/comments/${comment.id}`)
     );
     await card.getByRole("button", { name: "Save" }).click();
     expect((await saved).ok()).toBe(true);
 
-    const read = (await getCommentBlocks(comment.id)).blocks;
-    expect((read?.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
+    const read = await getCommentBlocks(comment.id);
+    expect((read.blocks ?? []).map(({ id, text }) => ({ id, text }))).toEqual([
       { id: "b1", text: "Alpha first." },
       { id: "b2", text: "Other words entirely." },
       { id: "b3", text: "Gamma third." },

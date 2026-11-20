@@ -5,9 +5,9 @@ import {
   createComment,
   createIssue,
   createProject,
+  getArtifact,
   getArtifactText,
   getAsk,
-  listArtifactVersions,
   listComments,
 } from "./api";
 import {
@@ -154,13 +154,13 @@ test("the selection bar comments, suggests, and asks on marks that both users se
       throw new Error("The selection-bar ask has no margin id.");
     }
     const ask = await getAsk(askId);
-    if (ask.anchor === null) {
+    if (ask.ask.anchor === null) {
       throw new Error("The selection-bar ask has no anchor.");
     }
-    expect(ask.anchor.quote).toBe("fox");
+    expect(ask.ask.anchor.quote).toBe("fox");
     await Promise.all([
-      expectMark(alicePage, ask.anchor.mark_id, "fox"),
-      expectMark(bobPage, ask.anchor.mark_id, "fox"),
+      expectMark(alicePage, ask.ask.anchor.mark_id, "fox"),
+      expectMark(bobPage, ask.ask.anchor.mark_id, "fox"),
     ]);
   } finally {
     await bob.close();
@@ -404,8 +404,8 @@ test("accepting a suggestion changes the text in both browsers and names a versi
     ]);
     await expect
       .poll(() =>
-        listArtifactVersions(artifactId).then((versions) =>
-          versions.some((version) => version.named)
+        getArtifact(artifactId).then(({ versions }) =>
+          (versions ?? []).some((version) => version.named)
         )
       )
       .toBe(true);
@@ -440,9 +440,8 @@ test("accepting a suggestion changes the text in both browsers and names a versi
     const [response] = await Promise.all([
       alicePage.waitForResponse(
         (response) =>
-          new URL(response.url()).pathname === `/api/v2/comments/${rejected.id}/state` &&
-          response.request().method() === "PUT" &&
-          response.request().postDataJSON()?.state === "rejected"
+          response.url().endsWith(`/comments/${rejected.id}/reject`) &&
+          response.request().method() === "POST"
       ),
       rejectButton.click(),
     ]);
@@ -669,9 +668,11 @@ test("margin ask composer sends option choices that the inbox records as a selec
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({
-        multiple: true,
-        options: [{ description: "Proceed this week", label: "Ship" }, { label: "Hold" }],
-        urgency: "high",
+        ask: {
+          multiple: true,
+          options: [{ description: "Proceed this week", label: "Ship" }, { label: "Hold" }],
+          urgency: "high",
+        },
       });
 
     // The Inbox as the reader reaches it, by the navigation rather than a reload: this row is
@@ -682,7 +683,9 @@ test("margin ask composer sends option choices that the inbox records as a selec
     await inboxCard.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(askId))
-      .toMatchObject({ answer: { selected: ["Ship"], user: "alice" }, state: "answered" });
+      .toMatchObject({
+        ask: { answer: { selected: ["Ship"], user: "alice" }, state: "answered" },
+      });
   } finally {
     await alice.close();
   }
@@ -717,7 +720,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
     await aliceCard.getByLabel("Your answer").fill("Because it is precise.");
     await aliceCard.getByRole("button", { exact: true, name: "Answer" }).click();
-    await expect.poll(() => getAsk(ask.id)).toMatchObject({ state: "answered" });
+    await expect.poll(() => getAsk(ask.id)).toMatchObject({ ask: { state: "answered" } });
 
     // Bob's browser context has never had this issue open: no inbox history, no prior query
     // cache. He still sees the answered anchored ask in the margin.
@@ -830,7 +833,9 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(ask.id))
-      .toMatchObject({ answer: { selected: [perResult], user: "alice" }, state: "answered" });
+      .toMatchObject({
+        ask: { answer: { selected: [perResult], user: "alice" }, state: "answered" },
+      });
   } finally {
     await alice.close();
   }

@@ -111,7 +111,7 @@ function inboxLook(rows: readonly InboxRow[]): Look | undefined {
   if (row === undefined) return undefined;
   const { issue, priority } = row;
   return {
-    fields: issue === null ? { priority } : { assignee: issue.assignee, priority },
+    fields: issue === undefined ? { priority } : { assignee: issue.assignee, priority },
     waiting: waitingOf(rows),
   };
 }
@@ -229,7 +229,7 @@ function showOnInboxRow(row: InboxRow, showing: Showing, fallback: string | unde
     return priority === undefined || row.priority === priority ? row : { ...row, priority };
   }
   const { assignee } = fields;
-  if (showing.field !== "assignee" || assignee === undefined || row.issue === null) return row;
+  if (showing.field !== "assignee" || assignee === undefined || row.issue === undefined) return row;
   const moved =
     row.issue.assignee === assignee ? row : { ...row, issue: { ...row.issue, assignee } };
   if (row.asked_of !== null && row.asked_of !== undefined) return moved;
@@ -256,7 +256,7 @@ function defaultAssignee(client: QueryClient, issueKey: string): string | undefi
   const project = issueProject(issueKey);
   return client
     .getQueryData(projectDefaultAssigneesQuery().queryKey)
-    ?.find((entry) => entry.key === project)?.default_assignee;
+    ?.find((entry) => entry.project === project)?.assignee;
 }
 
 /** Which of the caches a pick shows on the query under `queryKey` is: an issue's detail, a list

@@ -34,7 +34,7 @@ import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
-import { type BrowserContext, expect, type Locator, test } from "./test";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -45,18 +45,6 @@ const session = {
   },
   as: "agent" as const,
 };
-
-/** The Inbox's own read (`getInbox`): the open asks with each one's thread and the reader's
- *  mark, every page of them. */
-const INBOX_READ = /\/api\/v2\/asks\?(.*&)?include=thread(&|$)/;
-
-/** What the Inbox's read answers `context`'s reader now, whole as the server sends it: the body
- *  a held read answers in place of the server's once the server has moved past it. */
-async function inboxSnapshot(context: BrowserContext): Promise<unknown> {
-  const response = await context.request.get("/api/v2/asks?include=thread&include=mark");
-  expect(response.ok(), await response.text()).toBe(true);
-  return response.json();
-}
 
 test("ask cards show urgency accents and copy their session ID, title, and tmux target", async ({
   browser,
@@ -153,7 +141,7 @@ test("an ask thread shows its newest two replies, expands the earlier ones, and 
       setCreatedAt("comments", reply.id, `2026-10-03T00:00:0${index + 1}Z`)
     )
   );
-  expect(((await getAsk(ask.id)).thread.replies ?? []).map((reply) => reply.body)).toEqual([
+  expect(((await getAsk(ask.id)).replies ?? []).map((reply) => reply.body)).toEqual([
     "Oldest reply",
     "Older reply",
     "Middle reply",
@@ -217,7 +205,7 @@ test("a reply on the live event feed refreshes a thread hydrated by the Inbox re
   page.on("request", (request) => {
     if (
       request.method() === "GET" &&
-      new URL(request.url()).pathname === `/api/v2/asks/${ask.id}`
+      new URL(request.url()).pathname === `/api/v1/asks/${ask.id}`
     ) {
       askReads += 1;
     }
@@ -252,8 +240,8 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
     { question: "Which delayed thread should refresh?" },
     session
   );
+  const snapshot = await getInbox();
   const alice = await asUser(browser, "alice");
-  const snapshot = await inboxSnapshot(alice);
   const page = await alice.newPage();
   const listRequested = Promise.withResolvers<void>();
   const releaseList = Promise.withResolvers<void>();
@@ -264,7 +252,7 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
   // Only the first response is held on the pre-event snapshot; a refresh the client issues
   // after the event reaches the real server, exactly as a browser's would.
   let heldFirstInbox = false;
-  await page.route(INBOX_READ, async (route) => {
+  await page.route("**/api/v1/inbox", async (route) => {
     if (heldFirstInbox) {
       await route.continue();
       return;
@@ -306,8 +294,8 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
   await patchIssue(hiddenIssue.key, { assignee: "bob" });
   const visibleAsk = await createAsk(visibleIssue.key, { question: "Visible question" }, session);
   const hiddenAsk = await createAsk(hiddenIssue.key, { question: "Hidden question" }, session);
+  const snapshot = await getInbox();
   const alice = await asUser(browser, "alice");
-  const snapshot = await inboxSnapshot(alice);
   const page = await alice.newPage();
   let inboxReads = 0;
   let hiddenAskReads = 0;
@@ -316,13 +304,14 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
   const releaseList = Promise.withResolvers<void>();
   page.on("request", (request) => {
     if (request.method() !== "GET") return;
-    if (INBOX_READ.test(request.url())) inboxReads += 1;
-    if (new URL(request.url()).pathname === `/api/v2/asks/${hiddenAsk.id}`) hiddenAskReads += 1;
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/inbox") inboxReads += 1;
+    if (path === `/api/v1/asks/${hiddenAsk.id}`) hiddenAskReads += 1;
   });
   await page.goto("/");
   await expect(page.getByTestId(`ask-${visibleAsk.id}`)).toBeVisible();
   inboxReads = 0;
-  await page.route(INBOX_READ, async (route) => {
+  await page.route("**/api/v1/inbox", async (route) => {
     if (!holdInbox) {
       await route.fallback();
       return;
@@ -348,7 +337,7 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
     });
     const pinnedRead = (request: { method(): string; url(): string }) =>
       request.method() === "GET" &&
-      new URL(request.url()).pathname === "/api/v2/issues" &&
+      new URL(request.url()).pathname === "/api/v1/issues" &&
       new URL(request.url()).searchParams.get("pinned") === "true";
     // The desktop sidebar reads pins during load. Start watching before reload so it cannot be
     // mistaken for the post-reply pin refresh below.
@@ -396,7 +385,7 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
     // marks a read that never happens. A round trip the page issues after the card arrived is
     // the barrier: its answer comes back only once the reads the card's arrival scheduled had
     // left the page.
-    await page.evaluate(() => fetch("/api/v2/me").then(({ status }) => status));
+    await page.evaluate(() => fetch("/api/v1/auth/whoami").then(({ status }) => status));
     await expect(hiddenCard.getByText("Fresh hidden reply.")).toBeVisible();
     // The marker was cleared by the later Inbox response, so no targeted read followed: the
     // marker and item 1 never both fire.
@@ -513,7 +502,9 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
   await expect(newestAskCard).toHaveCount(0);
   await expect
     .poll(() => getAsk(newestAsk.id), { intervals: [50, 50, 100, 200, 500] })
-    .toMatchObject({ answer: { selected: ["Ship"], user: "alice" }, state: "answered" });
+    .toMatchObject({
+      ask: { answer: { selected: ["Ship"], user: "alice" }, state: "answered" },
+    });
   await navigateInApp(alicePage, "/");
   await expect(inboxRows).toHaveCount(2);
   const navigation = alicePage.getByRole("navigation", { name: "Navigation" });
@@ -537,12 +528,14 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
   await expect
     .poll(() => getAsk(textOnlyAsk.id), { intervals: [50, 50, 100, 200, 500] })
     .toMatchObject({
-      answer: {
-        selected: [],
-        text: "Neither option fits; going with a third path.",
-        user: "alice",
+      ask: {
+        answer: {
+          selected: [],
+          text: "Neither option fits; going with a third path.",
+          user: "alice",
+        },
+        state: "answered",
       },
-      state: "answered",
     });
 
   const document = await createProjectDocument("CORE", {
@@ -626,7 +619,7 @@ test("a clarification moves an ask under Waiting on agents until the asker hands
     );
     await expect
       .poll(() => getAsk(clarifying.id), { intervals: [50, 50, 100, 200, 500] })
-      .toMatchObject({ thread: { replies: [{}, { turn: "agent" }] }, waiting_on: "agent" });
+      .toMatchObject({ ask: { waiting_on: "agent" }, replies: [{}, { turn: "agent" }] });
     await page.reload();
     const waitingOnAgents = page.locator('[data-inbox-section="agent"]');
     await expect(page.getByRole("heading", { name: "Waiting on agents" })).toBeVisible();
@@ -648,7 +641,7 @@ test("a clarification moves an ask under Waiting on agents until the asker hands
     );
     await expect
       .poll(() => getAsk(clarifying.id), { intervals: [50, 50, 100, 200, 500] })
-      .toMatchObject({ waiting_on: "human" });
+      .toMatchObject({ ask: { waiting_on: "human" } });
     await page.reload();
     await expect(page.getByRole("heading", { name: "Waiting on agents" })).toHaveCount(0);
     await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", clarifying.id);
@@ -676,9 +669,8 @@ test("a clarification moves an ask under Waiting on agents until the asker hands
     await expect
       .poll(() => getAsk(questionShaped.id), { intervals: [50, 50, 100, 200, 500] })
       .toMatchObject({
-        answer: null,
-        state: "open",
-        thread: { replies: [{ body: "How does this fit our release plan?" }] },
+        ask: { answer: null, state: "open" },
+        replies: [{ body: "How does this fit our release plan?" }],
       });
   } finally {
     await alice.close();
@@ -744,7 +736,7 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
+        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
     await control.selectOption("0");
     expect((await patch).postDataJSON()).toEqual({ priority: 0 });
@@ -790,15 +782,15 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     await expect(banner).toBeVisible();
     await expectInboxCount(page, 1);
 
-    const snooze = page.waitForRequest(
+    const put = page.waitForRequest(
       (request) =>
-        request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v2/me/marks/ask/${ask.id}`
+        request.method() === "PUT" &&
+        new URL(request.url()).pathname === `/api/v1/me/asks/${ask.id}/snooze`
     );
     await (await askControls(page, ask.id))
       .getByLabel(`Snooze ${issue.key}`)
       .selectOption("tomorrow");
-    expect(Date.parse((await snooze).postDataJSON().snoozed_until)).toBeGreaterThan(Date.now());
+    expect(Date.parse((await put).postDataJSON().snoozed_until)).toBeGreaterThan(Date.now());
 
     // Folded away, and off both counts: the viewer is not asked about it again until it
     // returns. This is the point of the feature, not a side effect of the band.
@@ -808,7 +800,7 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     await expect(banner).toBeHidden();
     await expectInboxCount(page, 0);
     await expect
-      .poll(async () => (await getInbox({ login: "alice" })).at(0)?.mark.snoozed_until)
+      .poll(async () => (await getInbox({ login: "alice" })).at(0)?.snoozed_until)
       .not.toBeNull();
 
     // The agent answers, handing the turn back: the row stays deferred and stays off both
@@ -832,12 +824,10 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
       path: shot,
     });
 
-    // The un-snooze is the same mark's write, clearing the time.
     const remove = page.waitForRequest(
       (request) =>
-        request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v2/me/marks/ask/${ask.id}` &&
-        request.postDataJSON()?.snoozed_until === null
+        request.method() === "DELETE" &&
+        new URL(request.url()).pathname === `/api/v1/me/asks/${ask.id}/snooze`
     );
     await (await askControls(page, ask.id))
       .getByRole("button", { name: `Un-snooze ${issue.key}` })
@@ -848,9 +838,9 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     // The row's link was not followed by any of it.
     expect(new URL(page.url()).pathname).toBe("/");
     // What the page shows so far is the optimistic write; the reload reads the server, and a
-    // reload while the PATCH is unanswered aborts it, so the un-snooze must be recorded first.
+    // reload while the DELETE is unanswered aborts it, so the un-snooze must be recorded first.
     await expect
-      .poll(async () => (await getInbox({ login: "alice" })).at(0)?.mark.snoozed_until)
+      .poll(async () => (await getInbox({ login: "alice" })).at(0)?.snoozed_until)
       .toBeNull();
 
     await page.reload();
@@ -1128,7 +1118,7 @@ test("Nothing needs you stays on screen through a focus and a return to the Inbo
       }
     });
     let credentialCalls = 0;
-    await page.route("**/api/v2/credential-requests", async (route) => {
+    await page.route("**/api/v1/credential-requests?approver=me", async (route) => {
       credentialCalls += 1;
       if (credentialCalls > 1) await held.promise;
       await route.continue();
@@ -1194,7 +1184,9 @@ test("Nothing needs you stays on screen through a focus and a return to the Inbo
     );
     // The gap's whole-cache refresh refetches the inbox list; once that has answered, and the held
     // credential list has been asked again, every refetch the gap started is on the wire.
-    const refreshed = page.waitForResponse((response) => INBOX_READ.test(response.url()));
+    const refreshed = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/v1/inbox"
+    );
     forceGap = true;
     await disconnectLiveSockets();
     // The jump repeats because the 1012 close may not have reached the page when the first one
@@ -1355,8 +1347,8 @@ test("an agent's issue reaches the Inbox of the person its own project names, an
   // project whose issue reaches nobody and the other project's person is the control.
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
-  await putProjectDefaultAssignee("CORE", "alice", { as: "user", login: "alice" });
-  await putProjectDefaultAssignee("OPS", "bob", { as: "user", login: "bob" });
+  await putProjectDefaultAssignee("CORE", { assignee: "alice" }, { as: "user", login: "alice" });
+  await putProjectDefaultAssignee("OPS", { assignee: "bob" }, { as: "user", login: "bob" });
 
   // The shared token holds nothing and names nobody: only each project's default can assign
   // these, and the two defaults are two different people.
@@ -1648,15 +1640,15 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
   await patchIssue(hiddenIssue.key, { assignee: "bob" });
   const visibleAsk = await createAsk(visibleIssue.key, { question: "Visible question" }, session);
   const hiddenAsk = await createAsk(hiddenIssue.key, { question: "Hidden question" }, session);
+  const snapshot = await getInbox();
 
   const alice = await asUser(browser, "alice");
-  const snapshot = await inboxSnapshot(alice);
   const page = await alice.newPage();
   let askReads = 0;
   page.on("request", (request) => {
     if (
       request.method() === "GET" &&
-      new URL(request.url()).pathname === `/api/v2/asks/${hiddenAsk.id}`
+      new URL(request.url()).pathname === `/api/v1/asks/${hiddenAsk.id}`
     ) {
       askReads += 1;
     }
@@ -1668,7 +1660,7 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
   const secondRequested = Promise.withResolvers<void>();
   const releaseSecond = Promise.withResolvers<void>();
   const releaseRest = Promise.withResolvers<void>();
-  await page.route(INBOX_READ, async (route) => {
+  await page.route("**/api/v1/inbox", async (route) => {
     inboxLoads += 1;
     if (inboxLoads === 1) {
       secondRequested.resolve();
@@ -1742,7 +1734,7 @@ for (const refusal of [
       const page = await alice.newPage();
       const viewport = page.viewportSize()?.width ?? 0;
       expect(viewport).toBeGreaterThan(0);
-      await page.route(`**/api/v2/me/marks/ask/${ask.id}`, (route) =>
+      await page.route(`**/api/v1/me/asks/${ask.id}/snooze`, (route) =>
         route.fulfill({
           body: JSON.stringify({ code: "INVALID_SNOOZE", error: refusal.reason }),
           contentType: "application/json",

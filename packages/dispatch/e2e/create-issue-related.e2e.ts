@@ -2,17 +2,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RELATED_DEBOUNCE_MS } from "../web/src/features/issue/related-timing";
 import { createIssue, createProject } from "./api";
-import { expect, type Locator, type Page, type Request, test } from "./test";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-/** The no-write check the dialog asks, for any project: a `POST` with the title in its body and
- *  no query, so the path ends the URL. */
-const relatedRoute = /\/api\/v2\/projects\/[^/]+\/related-searches$/u;
-
-/** The title a related-items check asks about: the body of `POST .../related-searches`. */
-function checkedTitle(request: Request): string {
-  return (request.postDataJSON() as { title?: string } | null)?.title ?? "";
-}
+/** The no-write check the dialog asks, for any project. A glob would read `?` as a wildcard. */
+const relatedRoute = /\/api\/v1\/projects\/[^/]+\/related(\?|$)/u;
 
 const astrolabeTitle = "Astrolabe drift spoils the mooring calibration";
 const zeppelinTitle = "Zeppelin ballast valve sticks in the cold";
@@ -22,7 +16,8 @@ const zeppelinTitle = "Zeppelin ballast valve sticks in the cold";
 function checkFor(page: Page, word: string): Promise<unknown> {
   return page.waitForResponse(
     (response) =>
-      relatedRoute.test(response.url()) && checkedTitle(response.request()).includes(word)
+      relatedRoute.test(response.url()) &&
+      (new URL(response.url()).searchParams.get("title") ?? "").includes(word)
   );
 }
 
@@ -259,7 +254,7 @@ test("an answer that arrives after the title changed is not shown for the new ti
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const { promise: firstAsked, resolve: asked } = Promise.withResolvers<string>();
     await page.route(relatedRoute, async (route) => {
-      const title = checkedTitle(route.request());
+      const title = new URL(route.request().url()).searchParams.get("title") ?? "";
       if (title.toLowerCase().includes("astrolabe")) {
         asked(title);
         await held;

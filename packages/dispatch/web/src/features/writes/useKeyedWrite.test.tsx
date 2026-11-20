@@ -282,7 +282,7 @@ test("a write pressed offline is attempted and goes late", async () => {
   jest.useFakeTimers();
   const online = onlineManager.isOnline();
   const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(
-    new NetworkError("/api/v2/asks/ask-1/state", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/asks/ask-1/answer", new TypeError("Failed to fetch"))
   );
   const { client, hook } = renderAnswerWrite();
   try {

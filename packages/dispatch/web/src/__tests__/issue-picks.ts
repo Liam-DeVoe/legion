@@ -42,15 +42,13 @@ export const issue: Issue = {
 
 /** CORE-1 as Dispatch answers a read of its detail. */
 export const details: IssueDetails = {
+  holder_state: null,
+  last_seen: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+  takeable_at: null,
   ...issue,
-  reach: {
-    holder_state: null,
-    last_seen: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-    takeable_at: null,
-  },
   artifacts: [],
   children: [],
   design_gates: [],

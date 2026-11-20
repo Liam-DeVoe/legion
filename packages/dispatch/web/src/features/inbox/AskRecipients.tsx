@@ -8,7 +8,7 @@ import {
   removedEvenIfGone,
   type WriteBounds,
 } from "../../api/client";
-import type { AskFollower, AskThread, AskV2, Subscriber } from "../../api/types";
+import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
@@ -27,7 +27,7 @@ const EMPTY_SUBSCRIBERS: readonly Subscriber[] = [];
 /** The ask's owner, whose topic subscribers also hear every event on the ask. An ask on an
  *  issue (including one in an issue-linked document) routes through the issue's topics; an
  *  ask on a project document routes through the document's. */
-type AskOwner = Pick<AskV2, "artifact_id" | "issue_key">;
+type AskOwner = Pick<Ask, "artifact_id" | "issue_key">;
 
 /** The topic family an ask's owner routes through: the issue's or the document's, as a press of
  *  the card's Unsubscribe carries it. */
@@ -70,7 +70,7 @@ export interface AskRecipientsProps {
   askId: string;
   /** The session holding the claim on the ask's issue, from the same thread read. */
   claimant: string | null;
-  /** Oldest first, as `GET /api/v2/asks/{id}?include=thread` returns them. */
+  /** Oldest first, as `GET /api/v1/asks/{id}` returns them. */
   followers: readonly AskFollower[];
   owner: AskOwner;
   /** Write seam for tests; defaults to the real API. */
@@ -82,7 +82,7 @@ export interface AskRecipientsProps {
   routeHolder: string | null;
   /** Whether the route reaches anyone, from the same thread read: `unknown` when the Envoy
    *  listener did not answer, so a null `routeHolder` says nothing about who receives it. */
-  routeStatus: AskThread["route_status"];
+  routeStatus: IssueDetails["route_status"];
 }
 
 /** A row the ask reaches through its issue rather than through a follow or a subscription: the
@@ -152,7 +152,7 @@ export function reachRows({
   followers: readonly AskFollower[];
   route: string | null;
   routeHolder: string | null;
-  routeStatus: AskThread["route_status"];
+  routeStatus: IssueDetails["route_status"];
   subscribers: readonly Subscriber[];
 }): Reach {
   const listed = new Set(followers.map((follower) => follower.session_id));

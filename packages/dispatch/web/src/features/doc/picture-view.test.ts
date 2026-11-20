@@ -27,20 +27,10 @@ function picture(src: string, alt = "") {
 }
 
 const noCaret = () => {};
-/** A watcher for a source that names no artifact: the view watches none. */
+/** A watcher for tests whose source pins a version or names no artifact: it is never called. */
 const noWatch = () => {
-  throw new Error("watchPicture called for a source naming no artifact");
+  throw new Error("watchPicture called for a pinned source");
 };
-
-/** The same-origin bytes of one version, which `/api/v2` addresses by the document's id: what
- *  `watchPicturePath` reports for a picture, pinned to a version or at its latest. */
-function bytes(id: string, version: number): string {
-  return `/api/v2/artifacts/${id}/versions/${version}`;
-}
-
-/** The bytes of the pinned version every source below names, which the watcher reports once the
- *  document the reference names has been read. */
-const SHOT_V1 = bytes("artifact-shot", 1);
 
 /** A watcher the test drives: `report` sends the latest picture to the view, and `stopped`
  *  counts the view's unsubscribes. */
@@ -61,10 +51,8 @@ function fakeWatch(initial?: string) {
   return fake;
 }
 
-/** The wrapper of a picture whose watcher reports `reported` at once: a version's bytes, or
- *  nothing for a reference whose document is unread or is no picture. */
-function wrapper(src: string, alt = "", reported: string | undefined = SHOT_V1): HTMLElement {
-  const { dom } = pictureView(picture(src, alt), document, noCaret, fakeWatch(reported).watch);
+function wrapper(src: string, alt = ""): HTMLElement {
+  const { dom } = pictureView(picture(src, alt), document, noCaret, noWatch);
   if (!(dom instanceof HTMLElement) || dom.tagName !== "SPAN") {
     throw new Error(`the view's dom is not a wrapper span: ${(dom as Element).outerHTML}`);
   }
@@ -106,7 +94,7 @@ test("an issue's picture at a version draws from the version's bytes route, capt
     "dispatch://CORE-1/artifact/shot-png@v1"
   );
   const img = pictureOf(dom);
-  expect(img.getAttribute("src")).toBe(SHOT_V1);
+  expect(img.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/1");
   expect(img.getAttribute("alt")).toBe("shot.png");
   expect(img.getAttribute("loading")).toBe("lazy");
   expect(img.className).toBe(pictureClassName);
@@ -122,7 +110,7 @@ test("a leaf view: no contentDOM, no update, events on the picture kept", () => 
     () => {
       caretPlaced += 1;
     },
-    fakeWatch(SHOT_V1).watch
+    noWatch
   );
 
   expect(view.contentDOM).toBeUndefined();
@@ -141,11 +129,9 @@ test("an empty caption falls back to the artifact's slug", () => {
 });
 
 test("a project document's picture draws from the project's bytes route", () => {
-  const img = pictureOf(
-    wrapper("dispatch://CORE/artifact/design@v2", "design", bytes("artifact-design", 2))
-  );
+  const img = pictureOf(wrapper("dispatch://CORE/artifact/design@v2", "design"));
 
-  expect(img.getAttribute("src")).toBe(bytes("artifact-design", 2));
+  expect(img.getAttribute("src")).toBe("/api/v1/projects/CORE/artifacts/design/versions/2");
 });
 
 test("a version the browser cannot draw becomes a link to the artifact's page", () => {
@@ -156,7 +142,7 @@ test("a version the browser cannot draw becomes a link to the artifact's page", 
     () => {
       caretPlaced += 1;
     },
-    fakeWatch(bytes("artifact-notes", 1)).watch
+    noWatch
   );
   const dom = view.dom as HTMLElement;
 
@@ -215,9 +201,9 @@ test("a source that pins no version is its link until the latest version is know
   expect(latest.asked).toEqual(["CORE-1/shot-png"]);
   expect(linkOf(dom).getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png");
 
-  latest.report(bytes("artifact-shot", 3));
+  latest.report("/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
   const img = pictureOf(dom);
-  expect(img.getAttribute("src")).toBe(bytes("artifact-shot", 3));
+  expect(img.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
   expect(img.getAttribute("alt")).toBe("shot.png");
   expect(dom.querySelector("a")).toBeNull();
   // The picture's events are the editor's again, as a pinned picture's are.
@@ -226,8 +212,10 @@ test("a source that pins no version is its link until the latest version is know
   expect(view.stopEvent?.(press)).toBe(false);
 
   // A new version uploaded while the document is open replaces the picture.
-  latest.report(bytes("artifact-shot", 4));
-  expect(pictureOf(dom).getAttribute("src")).toBe(bytes("artifact-shot", 4));
+  latest.report("/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
+  expect(pictureOf(dom).getAttribute("src")).toBe(
+    "/api/v1/issues/CORE-1/artifacts/shot-png/versions/4"
+  );
   // A target that stops being a picture reads as its link again.
   latest.report(undefined);
   expect(dom.querySelector("img")).toBeNull();
@@ -240,7 +228,7 @@ test("a source that pins no version is its link until the latest version is know
 });
 
 test("a source that pins no version draws at once when its latest version is already known", () => {
-  const latest = fakeWatch(bytes("artifact-shot", 2));
+  const latest = fakeWatch("/api/v1/issues/CORE-1/artifacts/shot-png/versions/2");
   const view = pictureView(
     picture("dispatch://CORE-1/artifact/shot-png", "shot.png"),
     document,
@@ -248,7 +236,9 @@ test("a source that pins no version draws at once when its latest version is alr
     latest.watch
   );
 
-  expect(pictureOf(view.dom as HTMLElement).getAttribute("src")).toBe(bytes("artifact-shot", 2));
+  expect(pictureOf(view.dom as HTMLElement).getAttribute("src")).toBe(
+    "/api/v1/issues/CORE-1/artifacts/shot-png/versions/2"
+  );
 });
 
 test("destroying the view closes the full-size layer its picture opened", () => {
@@ -256,7 +246,7 @@ test("destroying the view closes the full-size layer its picture opened", () => 
     picture("dispatch://CORE-1/artifact/shot-png@v1", "shot.png"),
     document,
     noCaret,
-    fakeWatch(SHOT_V1).watch
+    noWatch
   );
   pictureOf(view.dom as HTMLElement).dispatchEvent(
     new MouseEvent("click", { bubbles: true, button: 0, cancelable: true })
@@ -268,8 +258,7 @@ test("destroying the view closes the full-size layer its picture opened", () => 
 });
 
 test("only the picture that opened the full-size layer closes it", () => {
-  const view = (src: string) =>
-    pictureView(picture(src, "shot.png"), document, noCaret, fakeWatch(SHOT_V1).watch);
+  const view = (src: string) => pictureView(picture(src, "shot.png"), document, noCaret, noWatch);
   const first = view("dispatch://CORE-1/artifact/shot-png@v1");
   const second = view("dispatch://CORE-1/artifact/shot-png@v2");
   const click = () => new MouseEvent("click", { bubbles: true, button: 0, cancelable: true });
@@ -285,7 +274,7 @@ test("only the picture that opened the full-size layer closes it", () => {
 });
 
 test("a replaced version's late load error leaves the newer picture, and a failed load draws again on its next report", () => {
-  const latest = fakeWatch(bytes("artifact-shot", 3));
+  const latest = fakeWatch("/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
   const view = pictureView(
     picture("dispatch://CORE-1/artifact/shot-png", "shot.png"),
     document,
@@ -295,15 +284,17 @@ test("a replaced version's late load error leaves the newer picture, and a faile
   const dom = view.dom as HTMLElement;
   const v3 = pictureOf(dom);
 
-  latest.report(bytes("artifact-shot", 4));
+  latest.report("/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
   v3.dispatchEvent(new Event("error"));
   const v4 = pictureOf(dom);
-  expect(v4.getAttribute("src")).toBe(bytes("artifact-shot", 4));
+  expect(v4.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
 
   v4.dispatchEvent(new Event("error"));
   expect(dom.querySelector("img")).toBeNull();
-  latest.report(bytes("artifact-shot", 4));
-  expect(pictureOf(dom).getAttribute("src")).toBe(bytes("artifact-shot", 4));
+  latest.report("/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
+  expect(pictureOf(dom).getAttribute("src")).toBe(
+    "/api/v1/issues/CORE-1/artifacts/shot-png/versions/4"
+  );
 });
 
 test("a plain click on a picture opens it at full size; a modified click does not", () => {
@@ -318,7 +309,9 @@ test("a plain click on a picture opens it at full size; a modified click does no
   const lightbox = document.querySelector<HTMLDialogElement>('[data-testid="picture-lightbox"]');
   expect(lightbox?.open).toBe(true);
   expect(lightbox?.getAttribute("aria-label")).toBe("shot.png");
-  expect(lightbox?.querySelector("img")?.getAttribute("src")).toBe(SHOT_V1);
+  expect(lightbox?.querySelector("img")?.getAttribute("src")).toBe(
+    "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
+  );
   // A second click that reaches the picture while it is open opens no second layer.
   img.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0, cancelable: true }));
   expect(document.querySelectorAll('[data-testid="picture-lightbox"]')).toHaveLength(1);

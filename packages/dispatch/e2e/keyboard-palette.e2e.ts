@@ -195,7 +195,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     page.on("request", (request) => {
       if (
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
+        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
       ) {
         statusWrites.push(request.postData() ?? "");
       }
@@ -320,7 +320,7 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
     const page = await context.newPage();
     // Hold the PATCH so the header's write stays in flight for the whole assertion.
     const release = Promise.withResolvers<void>();
-    await page.route(`**/api/v2/issues/${issue.key}`, async (route) => {
+    await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
       if (route.request().method() === "PATCH") {
         await release.promise;
       }
@@ -358,7 +358,7 @@ test("a Set priority row the server refuses is reported by the header, in the di
     const page = await context.newPage();
     await openIssue(page, issue.key, "Refused palette priority");
     let patches = 0;
-    await page.route(`**/api/v2/issues/${issue.key}`, async (route) => {
+    await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
       if (route.request().method() !== "PATCH") {
         await route.continue();
         return;
@@ -525,7 +525,7 @@ test("an arrow pressed before the search answers reaches no action the query fin
     page.on("request", (request) => {
       if (
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
+        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
       ) {
         statusWrites.push(request.postData() ?? "");
       }
@@ -583,7 +583,7 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     page.on("request", (request) => {
       if (
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
+        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
       ) {
         statusWrites.push(request.postData() ?? "");
       }
@@ -641,7 +641,7 @@ test("a row whose control has gone since the palette opened does nothing", async
     const page = await context.newPage();
     let patches = 0;
     page.on("request", (request) => {
-      if (request.method() === "PATCH" && request.url().endsWith(`/api/v2/issues/${issue.key}`)) {
+      if (request.method() === "PATCH" && request.url().endsWith(`/api/v1/issues/${issue.key}`)) {
         patches += 1;
       }
     });

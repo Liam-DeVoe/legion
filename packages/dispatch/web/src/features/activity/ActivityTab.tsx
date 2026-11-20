@@ -3,7 +3,7 @@ import { type ReactNode, useMemo } from "react";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
-import type { Marks } from "../../api/types";
+import type { UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import {
   dangerText,
@@ -24,7 +24,7 @@ import { buildActivityItems, dateKey } from "./activity-model";
 
 interface ActivityTabProps {
   issueKey: string;
-  state: Marks | undefined;
+  state: UserState | undefined;
 }
 
 /**
@@ -41,9 +41,7 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
     queryFn: ({ pageParam }) =>
       api.getIssueEvents(
         issueKey,
-        pageParam === null
-          ? { limit: 200, sort: "-seq" }
-          : { before: String(pageParam), limit: 200 }
+        pageParam === null ? { limit: 200, order: "desc" } : { before: pageParam, limit: 200 }
       ),
     // A page can hold more than the server's 200 once streamed events sit above a full response
     // (mergeEventPages, prependEventToLog); it is still a full page with older events beneath it.
@@ -122,7 +120,7 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
           }
 
           const author = agentText.label(item.author);
-          const pinned = isPinnedEvent(issueState.pinned_items, item.event.id);
+          const pinned = isPinnedEvent(issueState.dismissed ?? [], item.event.id);
           return (
             <li
               className={`flex flex-wrap items-baseline gap-x-2 px-2 text-xs ${textMutedOnCanvas}`}

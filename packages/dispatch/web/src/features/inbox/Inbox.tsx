@@ -482,13 +482,13 @@ function InboxCardRow({
             askId={ask.id}
             label={name}
             onLive={onSnoozeLive}
-            snoozedUntil={section === "later" ? ask.mark.snoozed_until : null}
+            snoozedUntil={section === "later" ? ask.snoozed_until : null}
           />
         </div>
       </div>
       <AskCard
         ask={ask}
-        initialThread={ask}
+        initialThread={{ ask, ...ask.thread }}
         initialThreadUpdatedAt={threadUpdatedAt}
         onAnswered={onAnswered}
       />

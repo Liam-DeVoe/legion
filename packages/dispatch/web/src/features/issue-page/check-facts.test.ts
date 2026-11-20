@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { CheckResult, CheckV2 } from "../../api/types";
+import type { CheckBlock, CheckResult } from "../../api/types";
 import { checkFacts, resultFacts } from "./check-facts";
 import { nodeFactLabel, RESULT_STANDS_WORDS } from "./page-words";
 
@@ -74,7 +74,7 @@ test("a result whose commit Dispatch could not place draws no word for where it 
 
 /** A check of the Verification document as the results read answers one, with whatever the case
  *  changes about it. */
-function check(extra: Partial<CheckV2> = {}): CheckV2 {
+function check(extra: Partial<CheckBlock> = {}): CheckBlock {
   return {
     artifact_id: "artifact-verification",
     block_id: "c-ci",
@@ -94,8 +94,8 @@ function check(extra: Partial<CheckV2> = {}): CheckV2 {
   };
 }
 
-/** What the server read of a CI run at the issue's pull request head (`CheckV2.ci`). */
-function ciRead(extra: Partial<NonNullable<CheckV2["ci"]>> = {}): NonNullable<CheckV2["ci"]> {
+/** What the server read of a CI run at the issue's pull request head (`CheckBlock.ci`). */
+function ciRead(extra: Partial<NonNullable<CheckBlock["ci"]>> = {}): NonNullable<CheckBlock["ci"]> {
   return {
     case: "success",
     detail: `CI run contracts concluded success at ${RESULT_COMMIT}, the head of acme/widgets#7.`,
@@ -107,7 +107,7 @@ function ciRead(extra: Partial<NonNullable<CheckV2["ci"]>> = {}): NonNullable<Ch
 }
 
 /** The facts of `block`, by name, and the value each draws. */
-function factsByName(block: CheckV2): Record<string, string> {
+function factsByName(block: CheckBlock): Record<string, string> {
   return Object.fromEntries(checkFacts(block).map((fact) => [fact.name, fact.value]));
 }
 

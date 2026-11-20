@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
-import type { ArtifactApprovalWithTrees, ArtifactV2 } from "../../api/types";
+import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -76,14 +76,14 @@ const ON_PAGE = {
 
 /** The version an approval speaks for: `version` when the review named one, else the document's
  *  latest. */
-export function approvalVersion(approval: ArtifactApprovalWithTrees): number {
+export function approvalVersion(approval: ArtifactApproval): number {
   return approval.version ?? approval.latest_version;
 }
 
 /** The chip's words. `latest` is the issue page's word for the latest version, given inside
  *  `NoTooltips` alone: there a stale chip draws the latest version, which its `title` says
  *  everywhere else. */
-function approvalLabel(approval: ArtifactApprovalWithTrees, latest?: string): string {
+function approvalLabel(approval: ArtifactApproval, latest?: string): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
   const approved = approval.kind === "plan_review" ? "Approved by plan review" : "Approved";
   const version = approvalVersion(approval);
@@ -109,7 +109,7 @@ function approvalLabel(approval: ArtifactApprovalWithTrees, latest?: string): st
 }
 
 /** The documents an open request covers, when it covers more than the one being read. */
-function approvalScope(approval: ArtifactApprovalWithTrees): string {
+function approvalScope(approval: ArtifactApproval): string {
   const documents = approval.documents ?? [];
   if (documents.length < 2) {
     return "";
@@ -346,7 +346,7 @@ export interface ApprovalChipProps {
    *  everywhere outside `NoTooltips`, where no caller passes it today and the words to join them
    *  are not loaded, each action is named by its words alone, as on `main`. */
   actionsDocument?: string;
-  artifact: ArtifactV2;
+  artifact: Artifact;
   /** `header`: shown on the document header, with an approval-state chip.
    * `list` (default): shown in a compact list row. */
   variant?: "header" | "list";
@@ -371,7 +371,7 @@ export interface ApprovalChipProps {
 
 /** A review the chip makes: the document it is of, and what it says of that document. */
 interface DocumentReview {
-  readonly artifact: ArtifactV2;
+  readonly artifact: Artifact;
   readonly input: CreateArtifactReviewInput;
 }
 

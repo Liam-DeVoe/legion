@@ -15,10 +15,10 @@ import type {
   BroadcastRead,
   Message,
   MessageDelivery,
+  UserAgentStates,
 } from "../../api/types";
 import { BroadcastPage } from "./BroadcastPage";
 import { messageDeliveryFields } from "./delivery-fixture";
-import { type MarkFields, markOf, marksOf } from "./marks-fixture";
 
 const agents: Agent[] = [
   {
@@ -83,7 +83,7 @@ function broadcast(deliveries: MessageDelivery[]): BroadcastRead {
 function renderBroadcast(
   read: BroadcastRead,
   state?: { excluded: readonly BroadcastExclusion[] },
-  agentState: Readonly<Record<string, MarkFields>> = {},
+  agentState: UserAgentStates = {},
   markRefused = false
 ) {
   const getBroadcast = spyOn(api, "getBroadcast").mockResolvedValue(read);
@@ -91,16 +91,12 @@ function renderBroadcast(
   const createMessageDelivery = spyOn(api, "createMessageDelivery").mockResolvedValue(
     attempt({ attempt: 2, state: "sent" })
   );
-  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(
-    marksOf("agent", agentState)
-  );
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(agentState);
   const putAgentState = markRefused
     ? answerAgentStates().mockRejectedValue(
         new ApiError(400, { code: "STATE_INPUT", error: "an old server's refusal" })
       )
-    : answerAgentStates().mockResolvedValue(
-        markOf("agent", "planner-session", { unread_replies: 0 })
-      );
+    : answerAgentStates().mockResolvedValue({ unread_replies: 0 });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={[{ pathname: "/agents/broadcasts/broadcast-1", state }]}>

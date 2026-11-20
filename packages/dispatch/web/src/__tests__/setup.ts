@@ -176,8 +176,8 @@ afterEach(resetOutstandingAnswers);
 // take it up again (`Writes.resume`): each test's are let go, their trying stopped first, since a
 // store outlives its test and would go on retrying into the tests and files after it
 // (`watchWriteStores`). Without this, one process running every file leaves writes retrying into
-// later files - sends to an agent session (`POST /api/v2/agents/<session>/messages`) and asks'
-// answers (`PUT /api/v2/asks/<id>/state`), in numbers that vary from run to run - and each is
+// later files - sends to an agent session (`POST /api/v1/agents/<session>/messages`) and asks'
+// answers (`POST /api/v1/asks/<id>/answer`), in numbers that vary from run to run - and each is
 // a request no handler answers (`network.ts`), which fails whichever test is running then. So is
 // the issue state the last pin answered let go, which the next pin would otherwise write over.
 const madeStores = new Set<Writes>();

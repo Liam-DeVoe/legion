@@ -160,16 +160,6 @@ want_json() {
   [[ "$got" == "$want" ]] || fail "$section" "$what" "got $got, want $want"
 }
 
-# read_document SECTION WHAT SLUG: reads $key's document at SLUG with its text into $work/body.
-# The list's slug filter also keeps a document whose file name is SLUG, so the read fails unless
-# exactly one row answers.
-read_document() {
-  get "/api/v2/issues/$key/artifacts?slug=$(q "$3")&include=text"
-  want_status 200 "$1" "$2"
-  jq -e '.total == 1' "$work/body" >/dev/null ||
-    fail "$1" "$2" "slug $3 names no single document: $(body)"
-}
-
 # document_listed LINE: whether the last `dispatch read` listed LINE under `Documents:`. The
 # section runs from that heading to the first line that is not one of its items.
 document_listed() {
@@ -188,7 +178,7 @@ document_listed() {
 
 # Setup: this driver's project, which a server that already holds it keeps, and one issue in it.
 # The bearer acts for nobody, so the create names the person the project's unowned work lands on.
-send POST "/api/v2/projects" "$(jq -cn --arg k "$project" --arg s "$session" \
+send POST "/api/v1/projects" "$(jq -cn --arg k "$project" --arg s "$session" \
   --arg a "$DISPATCH_DEFAULT_ASSIGNEE" \
   '{key: $k, name: "Documents made from a name", default_assignee: $a, actor: {kind: "session", id: $s}}')"
 case "$status" in
@@ -223,14 +213,14 @@ fi
 pass 2 "the line says Launch notes was made as an empty document, naming $made_ref"
 
 # 3: the reference reads back one version, and that version's markdown is empty.
-get "/api/v2/references?to=$(q "$made_ref")"
+get "/api/v1/references?to=$(q "$made_ref")"
 want_status 200 3 "read $made_ref"
 doc_id="$(jq -er '.node.id' "$work/body")" || fail 3 "read $made_ref" "no node id: $(body)"
-get "/api/v2/artifacts/$doc_id"
+get "/api/v1/artifacts/$doc_id"
 want_status 200 3 "read the document"
 want_json 3 "the document is a doc holding one version" '["Launch notes","doc",1]' \
-  '[.name, .kind, .version_count]'
-get "/api/v2/artifacts/$doc_id?include=text"
+  '[.name, .kind, (.versions | length)]'
+get "/api/v1/artifacts/$doc_id/text"
 want_status 200 3 "read the document's text"
 want_json 3 "the document's markdown is empty" '""' '.markdown'
 pass 3 "$made_ref reads back one version whose markdown is empty"
@@ -250,9 +240,9 @@ written_version="${BASH_REMATCH[1]}"
 pass 5 "dispatch doc-edit wrote a line into launch-notes (version $written_version)"
 
 # 6: the line reads back.
-read_document 6 "read launch-notes after the edit" launch-notes
-want_json 6 "the edited document holds the line" '"The first line."' \
-  '.items[0].markdown | rtrimstr("\n")'
+get "/api/v1/issues/$key/artifacts/launch-notes/text"
+want_status 200 6 "read launch-notes after the edit"
+want_json 6 "the edited document holds the line" '"The first line."' '.markdown | rtrimstr("\n")'
 pass 6 "the line written into launch-notes reads back"
 
 # 7: the same name with no content a second time is refused, naming the document that holds the
@@ -263,9 +253,9 @@ pass 6 "the line written into launch-notes reads back"
 refused 7 "a second create under the name Launch notes" artifact --issue "$key" --name "Launch notes"
 grep -qF 'names artifact launch-notes (Launch notes), which exists' "$work/out" ||
   fail 7 "the refusal names the document holding the title" "$(<"$work/out")"
-read_document 7 "read launch-notes after the refusal" launch-notes
-want_json 7 "the refused create wrote nothing" '"The first line."' \
-  '.items[0].markdown | rtrimstr("\n")'
+get "/api/v1/issues/$key/artifacts/launch-notes/text"
+want_status 200 7 "read launch-notes after the refusal"
+want_json 7 "the refused create wrote nothing" '"The first line."' '.markdown | rtrimstr("\n")'
 pass 7 "a second create under Launch notes is refused, naming the document that holds the title"
 
 # 7b: force is what asks for a document's next version, and a create with no content has no
@@ -275,9 +265,9 @@ pass 7 "a second create under Launch notes is refused, naming the document that 
 refused 7b "a forced second create under the name Launch notes" artifact --issue "$key" --name "Launch notes" --force
 grep -qF 'a write with no content makes no document and writes no version' "$work/out" ||
   fail 7b "the forced refusal names the create's own rule" "$(<"$work/out")"
-read_document 7b "read launch-notes after the forced refusal" launch-notes
-want_json 7b "the forced create wrote nothing" '"The first line."' \
-  '.items[0].markdown | rtrimstr("\n")'
+get "/api/v1/issues/$key/artifacts/launch-notes/text"
+want_status 200 7b "read launch-notes after the forced refusal"
+want_json 7b "the forced create wrote nothing" '"The first line."' '.markdown | rtrimstr("\n")'
 pass 7b "force does not empty a document: a content-free create under a held name is refused with it too"
 
 # 8: a name that says anything other than Markdown is refused by the Markdown-name rule, here,
@@ -285,9 +275,8 @@ pass 7b "force does not empty a document: a content-free create under a held nam
 refused 8 "a create named rows.jsonl with no content" artifact --issue "$key" --name rows.jsonl
 grep -qF '"rows.jsonl" is not a Markdown name' "$work/out" ||
   fail 8 "the refusal names the Markdown-name rule" "$(<"$work/out")"
-get "/api/v2/issues/$key/artifacts?slug=rows-jsonl"
-want_status 200 8 "read rows.jsonl after the refusal"
-want_json 8 "the issue holds no rows.jsonl" '0' '.total'
+get "/api/v1/issues/$key/artifacts/rows-jsonl"
+want_status 404 8 "read rows.jsonl after the refusal"
 pass 8 "--name rows.jsonl with no content is refused by the Markdown-name rule, sending nothing"
 
 # 9: the two creates that carry a source still make a document, each at version 1.
@@ -296,9 +285,10 @@ run 9 "dispatch artifact --path" artifact --issue "$key" --name "from-file.md" \
   --path "$work/from-file.md"
 grep -qF 'Uploaded from-file.md as version 1, a document (kind doc; artifact slug from-file-md;' "$work/out" ||
   fail 9 "the file create reports its version" "$(<"$work/out")"
-read_document 9 "read from-file.md" from-file-md
+get "/api/v1/issues/$key/artifacts/from-file-md/text"
+want_status 200 9 "read from-file.md"
 want_json 9 "the file's text is stored" '"# From a file\n\nA line stored from a file."' \
-  '.items[0].markdown | rtrimstr("\n")'
+  '.markdown | rtrimstr("\n")'
 run 9 "dispatch artifact --content" artifact --issue "$key" --name "inline.md" \
   --content '# Inline
 
@@ -306,9 +296,10 @@ A line stored from the command line.
 '
 grep -qF 'Uploaded inline.md as version 1, a document (kind doc; artifact slug inline-md;' "$work/out" ||
   fail 9 "the content create reports its version" "$(<"$work/out")"
-read_document 9 "read inline.md" inline-md
+get "/api/v1/issues/$key/artifacts/inline-md/text"
+want_status 200 9 "read inline.md"
 want_json 9 "the inline content is stored" '"# Inline\n\nA line stored from the command line."' \
-  '.items[0].markdown | rtrimstr("\n")'
+  '.markdown | rtrimstr("\n")'
 pass 9 "--path and --content each still make a document"
 
 run close "close $key" issue-update --issue "$key" --status "done" \

@@ -94,7 +94,7 @@ async function seedPriorities(): Promise<Seeded> {
   ]);
 
   // Created one after another, because a priority takes the last place of the one order as it
-  // is written (`POST /api/v2/priorities`), and these three are read as P1, P2 and P3.
+  // is written (`POST /api/v1/priorities`), and these three are read as P1, P2 and P3.
   const first = await createPriority({
     description: FIRST_DESCRIPTION,
     owner: "alice",
@@ -386,7 +386,7 @@ test("with no priority the page reads the server's sentence, and writes the firs
 
     // The store's, not the page's: read back from the server, and from a page loaded again.
     await expect
-      .poll(async () => (await listPriorities()).items.map((row) => row.title))
+      .poll(async () => (await listPriorities()).priorities?.map((row) => row.title))
       .toEqual([added]);
     await page.reload();
     await expectRowOrder(section(page, "Priorities"), [`P1 ${added}`]);
@@ -464,7 +464,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
     // Every one of the four is the store's now, not the page's: read back from the server, and
     // then from a page that was loaded again.
     await expect
-      .poll(async () => (await listPriorities()).items.map((row) => row.title))
+      .poll(async () => (await listPriorities()).priorities?.map((row) => row.title))
       .toEqual([seed.titles[0], seed.titles[2], renamed, added]);
     await page.reload();
     await expectRowOrder(section(page, "Priorities"), [
@@ -679,7 +679,7 @@ test("a priority's own page writes its title and description and lists only its 
     // The store holds both, and the page that is loaded again reads them from it.
     await expect
       .poll(async () => {
-        const stored = (await listPriorities()).items.find((row) => row.id === seed.ids[0]);
+        const stored = (await listPriorities()).priorities?.find((row) => row.id === seed.ids[0]);
         return [stored?.title, stored?.description];
       })
       .toEqual([retitled, described]);

@@ -2,7 +2,13 @@ import { actorActText } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { AskAnswerWithTrees, AskEditWithTrees, AskResolution, AskV2 } from "../../api/types";
+import type {
+  Ask,
+  AskAnswerWithTrees,
+  AskEditWithTrees,
+  AskResolution,
+  AskWithTrees,
+} from "../../api/types";
 import {
   badgeLow,
   calloutSuccessBg,
@@ -28,13 +34,7 @@ import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
 
-export function AskEditHistory({
-  ask,
-  edits,
-}: {
-  ask: AskV2;
-  edits: AskEditWithTrees[];
-}): ReactNode {
+export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTrees[] }): ReactNode {
   if (ask.edited_at === null) {
     return null;
   }
@@ -116,7 +116,7 @@ export function OrphanedAnchorNotice({
   ask,
 }: {
   artifactSlug: string | undefined;
-  ask: AskV2;
+  ask: Ask;
 }): ReactNode {
   const anchor = ask.anchor;
   if (anchor === null || !anchor.orphaned || artifactSlug === undefined) {
@@ -154,7 +154,7 @@ function AnsweredAsk({
 }: {
   answers: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
-  ask: AskV2;
+  ask: AskWithTrees;
   documentLink: boolean;
   edits: AskEditWithTrees[];
   frame: AskFrame;
@@ -248,7 +248,7 @@ function ResolvedAsk({
   edits,
   frame,
 }: {
-  ask: AskV2 & { resolution: AskResolution };
+  ask: AskWithTrees & { resolution: AskResolution };
   documentLink: boolean;
   edits: AskEditWithTrees[];
   frame: AskFrame;
@@ -312,7 +312,7 @@ interface AskCompletionCardProps {
   /** Every real answer, oldest first, from the ask's thread read. */
   answers?: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
-  ask: AskV2;
+  ask: AskWithTrees;
   /** Whether an approval ask's completed record also links its document and version; mirrors
    *  `AskCardProps.documentLink`. */
   documentLink?: boolean;

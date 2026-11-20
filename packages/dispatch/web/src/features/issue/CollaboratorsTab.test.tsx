@@ -4,8 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import { api, type WholeList } from "../../api/client";
-import type { Agent, CollaboratorV2 } from "../../api/types";
+import { api } from "../../api/client";
+import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
 import { CollaboratorsTab, collaboratorSections } from "./CollaboratorsTab";
 
 function legionAgent(
@@ -13,7 +13,7 @@ function legionAgent(
   role: "implementer" | "planner" | "reviewer" | "tester",
   startedAt: string,
   replacedBy: string | null = null
-): CollaboratorV2 {
+): IssueCollaboratorAgent {
   return {
     kind: "session",
     last_at: null,
@@ -30,31 +30,14 @@ function legionAgent(
   };
 }
 
-function otherAgent(sessionId: string, lastAt: string | null): CollaboratorV2 {
+function otherAgent(sessionId: string, lastAt: string | null): IssueCollaboratorAgent {
   return {
     kind: "session",
     last_at: lastAt,
+    legion: null,
     reasons: ["posted"],
     session_id: sessionId,
     title: sessionId,
-  };
-}
-
-type CollaboratorsRead = WholeList<"/api/v2/issues/{key}/collaborators">;
-
-/** The issue's collaborators as the route answers them, every page: agents and people in one
- *  list, in the server's order, each naming its `kind`, with whether Legion's registry answered. */
-function collaboratorsRead(
-  items: CollaboratorV2[],
-  legionRegistry: CollaboratorsRead["legion_registry"] = "ok"
-): CollaboratorsRead {
-  return {
-    issue_key: "CORE-1",
-    items,
-    legion_registry: legionRegistry,
-    limit: 50,
-    offset: 0,
-    total: items.length,
   };
 }
 
@@ -74,7 +57,7 @@ function live(sessionId: string): Agent {
   };
 }
 
-function renderTab(collaborators: CollaboratorsRead, agents: readonly Agent[] = []) {
+function renderTab(collaborators: IssueCollaborators, agents: readonly Agent[] = []) {
   const read = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaborators);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([...agents]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -110,17 +93,23 @@ function sessionsIn(container: HTMLElement): string[] {
 // other agent; then people with their reasons.
 test("the Collaborators tab splits Legion agents into role sections and keeps the server's order", async () => {
   const tab = renderTab(
-    collaboratorsRead([
-      legionAgent("planner", "planner", "2026-10-26T00:00:00Z"),
-      legionAgent("tester", "tester", "2026-10-26T03:00:00Z"),
-      legionAgent("new-reviewer", "reviewer", "2026-10-26T05:00:00Z"),
-      legionAgent("old-reviewer", "reviewer", "2026-10-26T01:00:00Z", "new-reviewer"),
-      otherAgent("newer", "2026-10-26T02:00:00Z"),
-      otherAgent("older", "2026-10-26T01:00:00Z"),
-      otherAgent("quiet", null),
-      { kind: "user", last_at: "2026-10-26T02:00:00Z", login: "bob", reasons: ["posted"] },
-      { kind: "user", last_at: null, login: "alice", reasons: ["assignee", "claimed"] },
-    ]),
+    {
+      agents: [
+        legionAgent("planner", "planner", "2026-10-26T00:00:00Z"),
+        legionAgent("tester", "tester", "2026-10-26T03:00:00Z"),
+        legionAgent("new-reviewer", "reviewer", "2026-10-26T05:00:00Z"),
+        legionAgent("old-reviewer", "reviewer", "2026-10-26T01:00:00Z", "new-reviewer"),
+        otherAgent("newer", "2026-10-26T02:00:00Z"),
+        otherAgent("older", "2026-10-26T01:00:00Z"),
+        otherAgent("quiet", null),
+      ],
+      issue_key: "CORE-1",
+      legion_registry: "ok",
+      people: [
+        { kind: "user", last_at: "2026-10-26T02:00:00Z", login: "bob", reasons: ["posted"] },
+        { kind: "user", last_at: null, login: "alice", reasons: ["assignee", "claimed"] },
+      ],
+    },
     [live("tester")]
   );
 
@@ -169,9 +158,12 @@ test("the Collaborators tab splits Legion agents into role sections and keeps th
 });
 
 test("the Collaborators tab says when Legion's record could not be read, and when nobody worked the issue", async () => {
-  const unavailable = renderTab(
-    collaboratorsRead([otherAgent("writer", "2026-10-26T01:00:00Z")], "unavailable")
-  );
+  const unavailable = renderTab({
+    agents: [otherAgent("writer", "2026-10-26T01:00:00Z")],
+    issue_key: "CORE-1",
+    legion_registry: "unavailable",
+    people: [],
+  });
   try {
     await screen.findByText("Legion's record of this issue's agents could not be read.");
     expect(screen.queryByRole("region", { name: "Legion agents" })).toBeNull();
@@ -180,7 +172,7 @@ test("the Collaborators tab says when Legion's record could not be read, and whe
     unavailable.restore();
   }
 
-  const empty = renderTab(collaboratorsRead([]));
+  const empty = renderTab({ agents: [], issue_key: "CORE-1", legion_registry: "ok", people: [] });
   try {
     await screen.findByText("No one has worked this issue yet.");
     expect(
@@ -195,16 +187,18 @@ test("the Collaborators tab says when Legion's record could not be read, and whe
 // The grouping itself, without a DOM: each section holds the server's list in the order it sent
 // it, and a role nobody worked has no section at all.
 test("collaboratorSections groups the server's list into the three sections the tab draws", () => {
-  const sections = collaboratorSections(
-    collaboratorsRead([
+  const sections = collaboratorSections({
+    agents: [
       legionAgent("new-planner", "planner", "2026-10-26T02:00:00Z"),
       legionAgent("old-planner", "planner", "2026-10-26T00:00:00Z", "new-planner"),
       legionAgent("tester", "tester", "2026-10-26T03:00:00Z"),
       otherAgent("loud", "2026-10-26T04:00:00Z"),
       otherAgent("quiet", null),
-      { kind: "user", last_at: null, login: "alice", reasons: ["assignee"] },
-    ])
-  );
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [{ kind: "user", last_at: null, login: "alice", reasons: ["assignee"] }],
+  });
 
   expect(
     sections.legion.map(({ agents, role }) => [role, agents.map((agent) => agent.session_id)])
@@ -230,13 +224,16 @@ test("collaboratorSections keeps an agent whose role or timestamps it cannot rea
       started_at: "2026-10-26T00:00:00Z",
     },
   };
-  const sections = collaboratorSections(
-    collaboratorsRead([
+  const sections = collaboratorSections({
+    agents: [
       skewed,
       legionAgent("early", "tester", "2026-10-26T01:00:00Z"),
       { ...legionAgent("unreadable", "tester", "yesterday"), last_at: null },
-    ])
-  );
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
 
   // The unknown role is listed rather than dropped, and the session whose start this build
   // cannot read keeps the place the server gave it.

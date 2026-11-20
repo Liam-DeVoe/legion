@@ -8,17 +8,12 @@ import {
   useState,
 } from "react";
 
-import {
-  type AnswerAskInput,
-  type ArtifactOwner,
-  api,
-  type DeclineAskInput,
-  type WriteBounds,
-} from "../../api/client";
+import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type {
+  AnswerAskInput,
+  Ask,
+  AskRead,
   AskUrgency,
-  AskV2,
-  AskWithThread,
   Comment,
   CreateCommentInput,
 } from "../../api/types";
@@ -95,11 +90,11 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 
-const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<AskV2> =>
+const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
-const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<AskV2> =>
+const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.declineAsk(id, input, bounds);
-const getAskThread = (id: string): Promise<AskWithThread> => api.getAsk(id);
+const getAskThread = (id: string): Promise<AskRead> => api.getAsk(id);
 const createReply = (
   issueKey: string,
   input: CreateCommentInput,
@@ -126,12 +121,12 @@ export interface AskCardProps {
    *  editor shows the question, and the block is the link's target, so the card renders only
    *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
   frame?: AskFrame;
-  answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<AskV2>;
-  declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<AskV2>;
+  answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
+  declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Reply-thread fetch/write seams for tests; default to the real API. */
-  getAskThread?: (id: string) => Promise<AskWithThread>;
+  getAskThread?: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for the first card render. */
-  initialThread?: AskWithThread;
+  initialThread?: AskRead;
   /** Timestamp of the Inbox snapshot that supplied initialThread. */
   initialThreadUpdatedAt?: number;
   createReply?: (
@@ -517,11 +512,11 @@ export function AskCard({
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
-  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.thread.replies ?? []).at(-1));
+  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.replies ?? []).at(-1));
   // The thread's newest write the card shows, which the shared thread read mark watches and
   // reads through: the newest reply, unless the record's answer came after it (an answer is a
   // write like a reply).
-  const newestReply = (threadQuery.data?.thread.replies ?? []).at(-1);
+  const newestReply = (threadQuery.data?.replies ?? []).at(-1);
   const recordedAnswer = completed?.state === "answered" ? completed.answer : null;
   const answerIsNewest =
     recordedAnswer !== null &&
@@ -534,7 +529,7 @@ export function AskCard({
     newestShownAt: answerIsNewest ? recordedAnswer?.at : newestReply?.created_at,
     owner: askRepliesOwner(displayedAsk),
     threadId: displayedAsk.id,
-    writes: threadQuery.data?.thread.replies ?? undefined,
+    writes: threadQuery.data?.replies ?? undefined,
   });
   const markNewest = threadRead.ref;
   const unreadReplies = unread ?? threadRead.unread;
@@ -1067,12 +1062,12 @@ export function AskCard({
       {answerFirst ? threadNode : null}
       <AskRecipients
         askId={displayedAsk.id}
-        claimant={threadQuery.data?.thread.claimant ?? null}
-        followers={threadQuery.data?.thread.followers ?? []}
+        claimant={threadQuery.data?.claimant ?? null}
+        followers={threadQuery.data?.followers ?? []}
         owner={displayedAsk}
-        route={threadQuery.data?.thread.route ?? null}
-        routeHolder={threadQuery.data?.thread.route_holder ?? null}
-        routeStatus={threadQuery.data?.thread.route_status ?? null}
+        route={threadQuery.data?.route ?? null}
+        routeHolder={threadQuery.data?.route_holder ?? null}
+        routeStatus={threadQuery.data?.route_status ?? null}
       />
     </article>
   );

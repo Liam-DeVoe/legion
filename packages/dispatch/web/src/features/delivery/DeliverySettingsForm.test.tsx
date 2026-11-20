@@ -313,7 +313,7 @@ test("a save the reader stopped says it may have been made, not that it failed",
   const user = userOnFakeClock();
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
   const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
-    new NetworkError("/api/v2/settings/delivery", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/settings/delivery", new TypeError("Failed to fetch"))
   );
   const queryClient = renderForm();
   try {

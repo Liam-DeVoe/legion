@@ -16,15 +16,13 @@ import { asUser } from "./users";
 
 /**
  * The reset every row starts with (e2e/seed.ts) empties `user_document_reads`, and waits at most
- * 5 s for the table. A page that opens a document marks it read (PATCH
- * /api/v2/me/marks/document/{id}), and a row that ends right after closes that page while the
- * write is in flight. When the database's disk stops answering at that moment, the write's commit
- * waits for it: Postgres flushes a commit record with its interrupts held, so the cancel the
- * server sends when the page goes (pgx's CancelRequest) does not end it, and the backend holds its
- * lock on the table for as long as the disk is silent. Merge-group run 44456291758 failed so, its
- * next row's reset naming `insert into user_document_reads ... (RowExclusiveLock, active)`: the
- * page's write then was one statement, and a mark's write is now a transaction, whose backend
- * names its `commit` while it waits, holding the same lock.
+ * 5 s for the table. A page that opens a document marks it read (PUT /api/v1/me/documents/{id}/
+ * read), and a row that ends right after closes that page while the write is in flight. When the
+ * database's disk stops answering at that moment, the write's commit waits for it: Postgres
+ * flushes a commit record with its interrupts held, so the cancel the server sends when the page
+ * goes (pgx's CancelRequest) does not end it, and the backend holds its lock on the table for as
+ * long as the disk is silent. Merge-group run 44456291758 failed so, its next row's reset naming
+ * `insert into user_document_reads ... (RowExclusiveLock, active)`.
  *
  * This row stalls the disk as the page sends that write, and keeps it stalled until the row ends:
  * only the cleanup lets it go, so a reset that waits for the disk to answer waits out the row's
@@ -43,7 +41,7 @@ import { asUser } from "./users";
 
 const stallDir = diskStallDir();
 
-const readMarkPath = /\/api\/v2\/me\/marks\/document\/[^/]+$/u;
+const readMarkPath = /\/api\/v1\/me\/documents\/[^/]+\/read$/u;
 
 /** How many of the run's sessions other than this one are in a statement or a transaction. */
 async function statementsInFlight(): Promise<number> {
@@ -58,19 +56,15 @@ async function statementsInFlight(): Promise<number> {
 /** How many backends are committing a read mark and waiting for the disk to take it: the one
  *  flushing the WAL waits in `IO:WalSync`, and a commit behind it waits for its turn in
  *  `LWLock:WALWrite`, as a read mark that reaches the server after another write began its flush
- *  does. A commit in either wait takes no cancel. A mark's write is a transaction, whose statement
- *  while it commits is its `commit`, so a read mark's is the one that holds the lock its insert
- *  took on `user_document_reads`, read as the reset reads what holds a table (e2e/seed.ts). */
+ *  does. A commit in either wait takes no cancel. */
 async function readMarksWaitingOnTheDisk(): Promise<number> {
   return Number(
     await sql(
-      `SELECT count(DISTINCT a.pid) FROM pg_stat_activity a JOIN pg_locks l ON l.pid = a.pid
-         WHERE a.datname = current_database()
-         AND a.state = 'active'
-         AND ((a.wait_event_type = 'IO' AND a.wait_event = 'WalSync')
-           OR (a.wait_event_type = 'LWLock' AND a.wait_event = 'WALWrite'))
-         AND l.granted AND l.mode = 'RowExclusiveLock'
-         AND l.relation = 'user_document_reads'::regclass`
+      `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
+         AND state = 'active'
+         AND ((wait_event_type = 'IO' AND wait_event = 'WalSync')
+           OR (wait_event_type = 'LWLock' AND wait_event = 'WALWrite'))
+         AND position('insert into user_document_reads' in query) > 0`
     )
   );
 }
@@ -108,7 +102,7 @@ test("a read marker whose page closed while the database's disk did not answer h
   try {
     const page = await context.newPage();
     const isReadMark = (method: string, url: string): boolean =>
-      method === "PATCH" && readMarkPath.test(new URL(url).pathname);
+      method === "PUT" && readMarkPath.test(new URL(url).pathname);
     // The first open marks the document read, as the earlier opens of run 44456291758's row did.
     const firstMark = page.waitForResponse((response) =>
       isReadMark(response.request().method(), response.url())
@@ -122,7 +116,7 @@ test("a read marker whose page closed while the database's disk did not answer h
     // one write in flight when the disk stops answering. It moves the row the first one wrote,
     // which is the write that run's reset found holding `user_document_reads`. The page's GET of
     // the same path, its read of the mark, is not held.
-    const mark = await holdFirstRequest(page, readMarkPath, { method: "PATCH" });
+    const mark = await holdFirstRequest(page, readMarkPath, { method: "PUT" });
     let arrived = false;
     void mark.held.then(() => {
       arrived = true;
@@ -139,7 +133,7 @@ test("a read marker whose page closed while the database's disk did not answer h
     await expect(connectedDot(page)).toHaveText("connected");
     await expect.poll(() => arrived, { message: "the page sent its second read mark" }).toBe(true);
     const held = await mark.held;
-    expect(held.request().method(), "the request held is the read mark").toBe("PATCH");
+    expect(held.request().method(), "the request held is the read mark").toBe("PUT");
     let quiet = 0;
     await expect
       .poll(

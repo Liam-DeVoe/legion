@@ -10,7 +10,7 @@ import { keptTab, keyMinted, memoryFiles } from "../../__tests__/kept-sends-harn
 import { ApiError, api } from "../../api/client";
 import type {
   BroadcastCreated,
-  CreateBroadcastV2Input,
+  CreateBroadcastInput,
   Message,
   MessageDelivery,
 } from "../../api/types";
@@ -30,7 +30,7 @@ function press(body: string, key: string): BroadcastSend {
 }
 
 /** One recipient of `input`, its message's one attempt in `state`. */
-function recipient(input: CreateBroadcastV2Input, state: MessageDelivery["state"]) {
+function recipient(input: CreateBroadcastInput, state: MessageDelivery["state"]) {
   return {
     message: {
       author: { id: "alice", kind: "user" },
@@ -61,7 +61,7 @@ function recipient(input: CreateBroadcastV2Input, state: MessageDelivery["state"
 
 /** Dispatch's answer to `input`: the broadcast it made, its one recipient's attempt `state`. */
 function created(
-  input: CreateBroadcastV2Input,
+  input: CreateBroadcastInput,
   state: MessageDelivery["state"] = "sent"
 ): BroadcastCreated {
   return {
@@ -90,7 +90,7 @@ test("broadcasts go in press order, survive a reload, and a made one is kept no 
   const first = Promise.withResolvers<BroadcastCreated>();
   const createBroadcast = spyOn(api, "createBroadcast").mockReturnValueOnce(first.promise);
   const send = spyOn(api, "send").mockImplementation(async (request) => {
-    const input = request.body as CreateBroadcastV2Input;
+    const input = request.body as CreateBroadcastInput;
     return created(input) as never;
   });
   const before = new Writes(signedIn(), tab.page(), memoryFiles());
@@ -294,7 +294,7 @@ test("a broadcast whose key has run out says so, with Retry and Discard", async 
   await onFakeClock(async () => {
     const client = signedIn();
     const createBroadcast = spyOn(api, "createBroadcast").mockImplementation((input, bounds) => {
-      bounds.sent?.({ body: input, method: "POST", path: "/api/v2/broadcasts" });
+      bounds.sent?.({ body: input, method: "POST", path: "/api/v1/broadcasts" });
       return Promise.reject(
         new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
       );

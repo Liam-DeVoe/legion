@@ -11,10 +11,10 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
-import { answerAskSnoozes, answerMarksPatches } from "../../__tests__/send-answers";
+import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError, type WholeList } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import {
   dismissedThreadsQuery,
   inboxQuery,
@@ -22,7 +22,7 @@ import {
   myRepliesCountQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { InboxRow, IssueDetails, MarkItemV2, MyReplyRow } from "../../api/types";
+import type { InboxRow, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -35,11 +35,9 @@ import {
   inboxDismissBody,
 } from "./useInboxDismiss";
 
-/** What a press carries for one of this file's Reply rows: its thread's mark, dismissed, under
- *  the version the fixture draws them at, which every row of it shares. */
-function dismissal(threadId: string): MarkItemV2 {
-  return { dismissed: true, id: threadId, kind: "thread", version: replyRow(threadId).version };
-}
+/** What a press carries for one of this file's Reply rows: the version the fixture draws them
+ *  at, which every row of it shares. */
+const SEEN = { version: replyRow("c1").version };
 
 const AS_OF = "2026-10-12T02:00:00Z";
 
@@ -51,15 +49,15 @@ afterEach(() => {
   for (const mock of restores.splice(0)) mock.mockRestore();
 });
 
-function threadsRead(rows: readonly MyReplyRow[]): WholeList<"/api/v2/me/threads"> {
-  return { as_of: AS_OF, items: [...rows], limit: 0, offset: 0, total: rows.length };
+function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
+  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
 }
 
 /** A client holding everything the Inbox reads, with `asks` open and `rows` in the Inbox's own
  *  thread read. The refetch a landed press triggers is answered from the same rows. */
 function seeded(rows: readonly MyReplyRow[], asks: readonly InboxRow[] = []): QueryClient {
-  restores.push(spyOn(api, "getCredentialPending").mockResolvedValue([]));
-  restores.push(spyOn(api, "listEveryMyThread").mockResolvedValue(threadsRead(rows)));
+  restores.push(spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }));
+  restores.push(spyOn(api, "listMyReplies").mockResolvedValue(threadsRead(rows)));
   restores.push(spyOn(api, "getMyAgentState").mockResolvedValue({}));
   // The reading column reads the issue behind the thread row it is on, with that issue's
   // comments and subscribers: answered here, since no test of this file asserts them.
@@ -100,34 +98,30 @@ function rowIds(): string[] {
 }
 
 test("the body names either the rows with what the page drew in each or the list's narrowing with its read mark", () => {
-  // A dismissal names every row it changes by its mark, with what the page drew in it, per kind:
-  // a Reply row's thread under its own version, and an Agent row's root message under its newest
-  // session reply and the ids it drew as unread, which is what keeps the press from burying a
-  // write the page never drew.
+  // A dismissal names every row it changes with what the page drew in it, per kind: a Reply
+  // row's own version, and an Agent row's newest session reply with the ids it drew as unread,
+  // which is what keeps the press from burying a write the page never drew.
   const reply = replyRow("c1");
   const agent = plannerAgentRow();
   expect(inboxDismissBody({ rows: [dismissThreadRow(reply), dismissThreadRow(agent)] })).toEqual({
-    items: [
-      { dismissed: true, id: "c1", kind: "thread", version: reply.version },
-      {
-        dismissed: true,
-        id: "message-1",
-        kind: "message",
-        newest_reply: "reply-1",
-        unread_replies: ["reply-1"],
-      },
-    ],
+    seen_replies: {
+      "agent:message-1": { newest_reply: "reply-1", unread_replies: ["reply-1"] },
+      "reply:c1": { version: reply.version },
+    },
+    threads: ["reply:c1", "agent:message-1"],
   });
-  // A restore draws the rows back rather than burying anything, so it carries nothing drawn.
+  // A restore draws the rows back rather than burying anything, so it carries nothing: the
+  // route refuses a restore that names any.
   expect(inboxDismissBody({ restore: true, rows: [dismissThreadRow(reply)] })).toEqual({
-    items: [{ dismissed: false, id: "c1", kind: "thread" }],
+    restore: true,
+    threads: ["reply:c1"],
   });
   // **Select all** of the paged view: the ids are not all loaded, so the narrowing and the list's
   // own `as_of` go instead - never both, which the route refuses - and it carries nothing drawn
   // either, the server drawing the rows itself there.
   expect(inboxDismissBody({ filters: { type: ["reply"] }, through: AS_OF })).toEqual({
-    filter: { kind: ["reply"] },
-    set: { dismissed_through: AS_OF },
+    dismiss_through: AS_OF,
+    kind: ["reply"],
   });
 });
 
@@ -148,8 +142,8 @@ test("a press under the narrowing changes the threads the list answers at or bef
 
 test("the row's Dismiss sends the row's own id and drawn version and takes it out of the list at once", async () => {
   const user = userEvent.setup();
-  const dismissed = answerMarksPatches();
-  const settle = Promise.withResolvers<{ updated: number }>();
+  const dismissed = answerInboxDismisses();
+  const settle = Promise.withResolvers<{ dismissed: number }>();
   dismissed.mockReturnValue(settle.promise);
   renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
 
@@ -160,14 +154,17 @@ test("the row's Dismiss sends the row's own id and drawn version and takes it ou
   // At once, with the request still out: the row is gone and the shared unread count has dropped
   // by the one unread row it took.
   await waitFor(() => expect(rowIds()).toEqual(["reply:c9"]));
-  expect(dismissed.mock.calls[0]?.[0]).toEqual({ items: [dismissal("c1")] });
-  settle.resolve({ updated: 1 });
+  expect(dismissed.mock.calls[0]?.[0]).toEqual({
+    seen_replies: { "reply:c1": SEEN },
+    threads: ["reply:c1"],
+  });
+  settle.resolve({ dismissed: 1 });
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
 });
 
 test("a refused dismiss puts the row back where it stood and says so", async () => {
   const user = userEvent.setup();
-  const dismissed = answerMarksPatches();
+  const dismissed = answerInboxDismisses();
   dismissed.mockRejectedValue(new ApiError(404, { error: "not found" }));
   renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
 
@@ -183,7 +180,7 @@ test("a refused dismiss puts the row back where it stood and says so", async () 
 
 test("a row a refused dismiss put back is the reader's hand's again, held under the next read", async () => {
   const user = userEvent.setup();
-  const dismissed = answerMarksPatches();
+  const dismissed = answerInboxDismisses();
   dismissed.mockRejectedValue(new ApiError(404, { error: "not found" }));
   const client = seeded([replyRow("c1"), replyRow("c9")]);
   renderInbox(client);
@@ -205,10 +202,10 @@ test("a row a refused dismiss put back is the reader's hand's again, held under 
 
 test("`e` dismisses the thread row in hand and does nothing on an ask", async () => {
   const user = userEvent.setup();
-  const dismissed = answerMarksPatches();
+  const dismissed = answerInboxDismisses();
   // Held open, so the list under test is the one the key leaves behind rather than the read the
   // landed press asks for.
-  const settle = Promise.withResolvers<{ updated: number }>();
+  const settle = Promise.withResolvers<{ dismissed: number }>();
   dismissed.mockReturnValue(settle.promise);
   const ask = issueAsk({ id: "ask-1", question: "Which approach?" });
   renderInbox(seeded([replyRow("c1")], [ask]));
@@ -224,19 +221,22 @@ test("`e` dismisses the thread row in hand and does nothing on an ask", async ()
   act(() => threadRow?.focus());
   await user.keyboard("e");
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
-  expect(dismissed.mock.calls[0]?.[0]).toEqual({ items: [dismissal("c1")] });
+  expect(dismissed.mock.calls[0]?.[0]).toEqual({
+    seen_replies: { "reply:c1": SEEN },
+    threads: ["reply:c1"],
+  });
   expect(rowIds()).not.toContain("reply:c1");
   await act(async () => {
-    settle.resolve({ updated: 1 });
+    settle.resolve({ dismissed: 1 });
   });
 });
 
 test("the bulk bar offers Snooze for the asks among the selection and Dismiss for the threads", async () => {
   const user = userEvent.setup();
-  const dismissed = answerMarksPatches();
+  const dismissed = answerInboxDismisses();
   // Held open, as the row's own press above is: this file's read answers the same rows, so a
   // landed press would draw the dismissed row again before the press is read here.
-  const settle = Promise.withResolvers<{ updated: number }>();
+  const settle = Promise.withResolvers<{ dismissed: number }>();
   dismissed.mockReturnValue(settle.promise);
   const ask = issueAsk({ id: "ask-1", question: "Which approach?" });
   renderInbox(seeded([replyRow("c1")], [ask]));
@@ -257,16 +257,19 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
 
   await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
   await waitFor(() => expect(rowIds()).not.toContain("reply:c1"));
-  expect(dismissed.mock.calls[0]?.[0]).toEqual({ items: [dismissal("c1")] });
+  expect(dismissed.mock.calls[0]?.[0]).toEqual({
+    seen_replies: { "reply:c1": SEEN },
+    threads: ["reply:c1"],
+  });
   await act(async () => {
-    settle.resolve({ updated: 1 });
+    settle.resolve({ dismissed: 1 });
   });
 });
 
 test("Select all over the Inbox's own read names every row of the group by id and drawn version", async () => {
   const user = userEvent.setup();
-  const dismissed = answerMarksPatches();
-  dismissed.mockResolvedValue({ updated: 2 });
+  const dismissed = answerInboxDismisses();
+  dismissed.mockResolvedValue({ dismissed: 2 });
   renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
 
   await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
@@ -280,13 +283,16 @@ test("Select all over the Inbox's own read names every row of the group by id an
   // under the version its own row is showing.
   await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
-  expect(dismissed.mock.calls[0]?.[0]).toEqual({ items: [dismissal("c1"), dismissal("c9")] });
+  expect(dismissed.mock.calls[0]?.[0]).toEqual({
+    seen_replies: { "reply:c1": SEEN, "reply:c9": SEEN },
+    threads: ["reply:c1", "reply:c9"],
+  });
 });
 
 test("Select all in the paged Dismissed view sends the narrowing with that list's read mark", async () => {
   const user = userEvent.setup();
-  const dismissed = answerMarksPatches();
-  dismissed.mockResolvedValue({ updated: 2 });
+  const dismissed = answerInboxDismisses();
+  dismissed.mockResolvedValue({ dismissed: 2 });
   const client = seeded([]);
   client.setQueryData(dismissedThreadsQuery().queryKey, {
     pageParams: [undefined],
@@ -305,8 +311,9 @@ test("Select all in the paged Dismissed view sends the narrowing with that list'
   await user.click(screen.getByRole("button", { name: "Move to Inbox selected threads" }));
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
   expect(dismissed.mock.calls[0]?.[0]).toEqual({
-    filter: { kind: ["reply", "agent"] },
-    set: { dismissed: false, dismissed_through: AS_OF },
+    dismiss_through: AS_OF,
+    kind: ["reply", "agent"],
+    restore: true,
   });
 });
 
@@ -316,9 +323,9 @@ test("Select all in the paged Dismissed view sends the narrowing with that list'
 test("a dismissal the reader stopped says it may have been made, not that it was refused", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  const dismissed = answerMarksPatches();
+  const dismissed = answerInboxDismisses();
   dismissed.mockRejectedValue(
-    new NetworkError("/api/v2/me/marks", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
   );
   const client = seeded([replyRow("c1"), replyRow("c9")]);
   renderInbox(client);
@@ -342,9 +349,9 @@ test("a dismissal the reader stopped says it may have been made, not that it was
 test("a move back to the Inbox the reader stopped says it may have been made", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  const dismissed = answerMarksPatches();
+  const dismissed = answerInboxDismisses();
   dismissed.mockRejectedValue(
-    new NetworkError("/api/v2/me/marks", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
   );
   const client = seeded([]);
   client.setQueryData(dismissedThreadsQuery().queryKey, {
@@ -372,7 +379,7 @@ test("a move back to the Inbox the reader stopped says it may have been made", a
 // write's own words, which are a composer's.
 test("a bulk snooze the reader stopped says it may have been saved, not that it was refused", async () => {
   const snoozes = answerAskSnoozes().mockRejectedValue(
-    new NetworkError("/api/v2/me/marks/ask/ask-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/me/asks/ask-1/snooze", new TypeError("Failed to fetch"))
   );
   restores.push(snoozes);
   const ask = issueAsk({ id: "ask-1", question: "Which approach?" });

@@ -254,10 +254,8 @@ test("a reader asks back from a decision block: the question threads under the b
     await expect
       .poll(() => getAsk(blockAsk.id))
       .toMatchObject({
-        answer: null,
-        state: "open",
-        thread: { replies: [{ body: question }] },
-        waiting_on: "agent",
+        ask: { answer: null, state: "open", waiting_on: "agent" },
+        replies: [{ body: question }],
       });
     await block.scrollIntoViewIfNeeded();
     await block.screenshot({
@@ -293,7 +291,11 @@ test("a resolved decision block is read-only", async ({ browser }) => {
     { as: "agent" }
   );
   const blockAsk = await indexedBlockAsk(issue.key, "resolved-decision");
-  await resolveAsk(blockAsk.id, { reason: "The decision is no longer needed." }, { as: "agent" });
+  await resolveAsk(
+    blockAsk.id,
+    { kind: "resolved", reason: "The decision is no longer needed." },
+    { as: "agent" }
+  );
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -332,7 +334,7 @@ test("a failed in-document decision answer reports inside the failed block and c
   try {
     const page = await alice.newPage();
     // Dispatch's verdict: a 5xx would be tried again under the answer's key, not refused.
-    await page.route("**/api/v2/asks/*/state", async (route) => {
+    await page.route("**/api/v1/asks/*/answer", async (route) => {
       await route.fulfill({
         body: JSON.stringify({ code: "ASK_INPUT", error: "Dispatch refused the answer" }),
         contentType: "application/json",
@@ -702,9 +704,11 @@ test("a pasted rendered callout and decision keep attributes, content, and the o
     await expect
       .poll(async () => getAsk(originalAsk.id))
       .toMatchObject({
-        answer: { selected: ["A"], text: "Go A." },
-        block_id: "decision",
-        state: "answered",
+        ask: {
+          answer: { selected: ["A"], text: "Go A." },
+          block_id: "decision",
+          state: "answered",
+        },
       });
     await page.close();
   } finally {
@@ -735,7 +739,7 @@ test("a copy of an answered decision pasted above it leaves the answer on the or
       copy?.block_id,
       "decision",
     ]);
-    const held = await getAsk(blockAsk.id);
+    const held = (await getAsk(blockAsk.id)).ask;
     expect({ block: held.block_id, question: held.question, state: held.state }).toEqual({
       block: "decision",
       question: "Which one?",

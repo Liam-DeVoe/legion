@@ -35,8 +35,8 @@ import type {
   IssueDetails,
   IssuePriority,
   IssueSummary,
-  PatchIssueV2Input,
   RepoProject,
+  UpdateIssueInput,
 } from "../../api/types";
 import { useBoardMoves } from "../project/board-moves";
 import { MAX_BACKOFF_MS, SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
@@ -92,20 +92,18 @@ const inboxRow: InboxRow = {
   author: { id: "session-1", kind: "session" },
   block_id: null,
   created_at: "2026-09-09T00:00:00Z",
-  document: null,
   edited_at: null,
   id: "ask-1",
   issue: { assignee: issue.assignee, key: issue.key, title: issue.title },
   issue_key: issue.key,
   kind: "question",
   last_reply: null,
-  mark: { id: "ask-1", kind: "ask", snoozed_until: null },
   multiple: false,
   opened_event_id: 1,
   options: [],
   priority: issue.priority,
   question: "Which layout?",
-  ref: "dispatch://CORE-1/ask/ask-1",
+  snoozed_until: null,
   state: "open",
   thread: {
     answers: [],
@@ -245,7 +243,7 @@ function prioritySelects(): HTMLSelectElement[] {
 }
 
 /** A save Dispatch answers by storing the change: its answer is the issue with it. */
-const stores = (_key: string, input: PatchIssueV2Input): Promise<Issue> =>
+const stores = (_key: string, input: UpdateIssueInput): Promise<Issue> =>
   Promise.resolve({ ...issue, ...input } as Issue);
 
 test("each pick joins the issue's line in the write store when it is made", async () => {
@@ -382,7 +380,7 @@ test("a pick takes out no waiting write of the issue but a pick of its own field
   const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
     wrapper,
   });
-  const plain = (label: string, input: PatchIssueV2Input) =>
+  const plain = (label: string, input: UpdateIssueInput) =>
     act(() => {
       void writesOf(client)
         .run({
@@ -2752,7 +2750,7 @@ test("a board move to another priority lane made over a live pick is the priorit
     });
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(shownPriorities()).toEqual({ detail: "P3", inbox: "P3", list: "P3" });
-    expect(bodies(patchIssue).map((body) => (body as PatchIssueV2Input).priority)).toEqual([1, 3]);
+    expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([1, 3]);
   } finally {
     board.unmount();
     view.unmount();
@@ -2765,10 +2763,8 @@ test("a board move to another priority lane made over a live pick is the priorit
 function storedPriority(patchIssue: { mock: { calls: unknown[][] } }): IssuePriority | null {
   let stored = issuePriority(issue.priority);
   for (const [key, input] of patchIssue.mock.calls) {
-    const { priority } = input as PatchIssueV2Input;
-    // A priority PATCH sends a number, or null to clear it.
-    if (key === issue.key && priority !== undefined)
-      stored = issuePriority(priority as number | null);
+    const { priority } = input as UpdateIssueInput;
+    if (key === issue.key && priority !== undefined) stored = issuePriority(priority);
   }
   return stored;
 }
@@ -2923,7 +2919,7 @@ test("two drags of a card over its live pick show the card in the newest drag's 
       "drag 1 lands, drag 2 out: P0",
       "drag 2 lands: P0",
     ]);
-    expect(bodies(patchIssue).map((body) => (body as PatchIssueV2Input).priority)).toEqual([
+    expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([
       2, 3, 0,
     ]);
   } finally {
@@ -2986,7 +2982,7 @@ test("a read composed before a drag of the card landed as the last write of its 
       "drag lands: detail P0 board P0",
       "the read composed before the drag landed answers: detail P0 board P0",
     ]);
-    expect(bodies(patchIssue).map((body) => (body as PatchIssueV2Input).priority)).toEqual([2, 0]);
+    expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([2, 0]);
   } finally {
     board.unmount();
     patchIssue.mockRestore();
@@ -3231,7 +3227,7 @@ test("a pick refused while a later drag of its card still waits behind another c
     });
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-    expect(bodies(patchIssue).map((body) => (body as PatchIssueV2Input).priority)).toEqual([
+    expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([
       0, 2, 3,
     ]);
   } finally {
@@ -3305,7 +3301,7 @@ for (const first of ["the pick", "the other card's move"] as const) {
       await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
       await waitFor(() => expect(client.isFetching()).toBe(0));
 
-      expect(bodies(patchIssue).map((body) => (body as PatchIssueV2Input).priority)).toEqual([
+      expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([
         2, 2, 3,
       ]);
       expect(board.shown()).toBe("P3");
@@ -3400,7 +3396,7 @@ test("two drags of a card that wait behind another card's move, made over its li
       "drag 1 lands, drag 2 out: detail P0 board P0",
       "drag 2 lands: detail P0 board P0",
     ]);
-    expect(bodies(patchIssue).map((body) => (body as PatchIssueV2Input).priority)).toEqual([
+    expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([
       2, 2, 3, 0,
     ]);
   } finally {
@@ -4068,7 +4064,7 @@ test("Stop trying on a late pick with a newer pick live behind it keeps the newe
     // Dispatch holds P2, picked after the stopped pick: the report has nothing left to say.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(shownPriorities()).toEqual({ detail: "P2", inbox: "P2", list: "P2" });
-    const sent = bodies(patchIssue).map((body) => (body as PatchIssueV2Input).priority);
+    const sent = bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority);
     expect(sent.filter((priority) => priority !== 0)).toEqual([2]);
   } finally {
     view.unmount();

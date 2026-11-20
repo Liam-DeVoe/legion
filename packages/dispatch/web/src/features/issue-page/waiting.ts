@@ -1,4 +1,4 @@
-import type { IssueDecisionsV2, IssueDetails } from "../../api/types";
+import type { IssueDecisions, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { type ChangeComment, decisionChanges, inReviewList } from "./decision-review";
 import type { DocumentBlocks } from "./issue-tree";
@@ -43,7 +43,7 @@ export interface WaitingOnReader {
 export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
-  decisions: IssueDecisionsV2 | undefined,
+  decisions: IssueDecisions | undefined,
   isCoverageStatement: (reference: string) => boolean,
   comments: readonly ChangeComment[] | undefined,
   documents: readonly DocumentBlocks[] | undefined
@@ -67,7 +67,7 @@ export function waitingOnReader(
   const reviewing =
     viewer === undefined
       ? 0
-      : (decisions?.items ?? []).filter((decision) =>
+      : (decisions?.decisions ?? []).filter((decision) =>
           inReviewList(decision, isCoverageStatement, changes.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };

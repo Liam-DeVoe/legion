@@ -1,7 +1,7 @@
 /** The `test` a stubbed row takes, and the two modes it runs in.
  *
  *  A stubbed row runs in a real browser against a recording: the page and its assets come from
- *  the build under test over e2e/stub/static-server.ts, every `/api/v2/**` and `/auth/whoami`
+ *  the build under test over e2e/stub/static-server.ts, every `/api/v1/**` and `/auth/whoami`
  *  answer comes from a committed HAR, `/ws/live` answers from the contract fixtures
  *  (e2e/stub/live-frames.ts), and there is no Go server, no Postgres, no fake listener, no
  *  sign-in and no database reset in the run at all.
@@ -47,9 +47,9 @@ import { stubRecording } from "./selection";
 
 /** Everything a recording answers and nothing else. The document and its assets are the static
  *  server's, so that a pull request's own front-end change is the one under test. */
-const replayedRoutes = /\/(api\/v2\/|auth\/whoami)/;
+const replayedRoutes = /\/(api\/v1\/|auth\/whoami)/;
 
-/** Answers `GET /api/v2/dashboard-builds` from the build under test rather than from the
+/** Answers `GET /api/v1/dashboard/builds` from the build under test rather than from the
  *  recording.
  *
  *  `web/src/features/shell/DeploymentResilience.tsx` polls that route and compares the entry
@@ -59,14 +59,14 @@ const replayedRoutes = /\/(api\/v2\/|auth\/whoami)/;
  *  which is every pull request that touches `web/src`. The entry this answers with is the one
  *  the page itself loaded, so the comparison finds no change and no notice is offered. */
 async function answerTheBuildPoll(page: Page): Promise<void> {
-  await page.route("**/api/v2/dashboard-builds", async (route) => {
+  await page.route("**/api/v1/dashboard/builds", async (route) => {
     const entry = await page.evaluate(() => {
       const script = document.querySelector<HTMLScriptElement>('script[src^="/assets/"]');
       return script === null ? "" : new URL(script.src).pathname;
     });
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ items: [{ entry, serving: true }], limit: 50, offset: 0, total: 1 }),
+      body: JSON.stringify({ live: [entry], serving: entry }),
     });
   });
 }

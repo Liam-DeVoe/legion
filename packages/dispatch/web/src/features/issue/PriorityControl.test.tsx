@@ -55,14 +55,12 @@ const issue: Issue = {
   updated_at: "2026-09-09T00:00:00Z",
 };
 const details: IssueDetails = {
-  reach: {
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    holder_state: null,
-    last_seen: null,
-    takeable_at: null,
-  },
+  route_status: null,
+  route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   ...issue,
   artifacts: [],
   children: [],
@@ -112,13 +110,10 @@ const inboxRow: InboxRow = {
   block_id: null,
   last_reply: null,
   created_at: "2026-09-09T00:00:00Z",
-  document: null,
   edited_at: null,
   id: "ask-1",
-  issue: null,
   issue_key: issue.key,
   kind: "question",
-  mark: { id: "ask-1", kind: "ask", snoozed_until: null },
   multiple: false,
   opened_event_id: 1,
   options: [],
@@ -134,8 +129,8 @@ const inboxRow: InboxRow = {
     route_status_reason: null,
   },
   priority: issue.priority,
+  snoozed_until: null,
   question: "Which layout?",
-  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "med",
 };
@@ -489,7 +484,7 @@ test("PriorityControl keeps mouse, pointer and touch presses on the select out o
 // again under the save's key (`retryLast`), rather than a failure it cannot know of.
 test("a priority the reader stopped says Retry asks again under its key, not that it failed", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
   );
   const { queryClient, unmount } = renderControl();
   try {

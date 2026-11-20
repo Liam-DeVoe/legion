@@ -13,17 +13,16 @@ import {
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import { api } from "../../api/client";
-import type { AskV2 } from "../../api/types";
-import { withEmptyThread } from "../margin/margin-fixture";
+import type { Ask, IssueAskRow } from "../../api/types";
 
 answerTextReadsWithTheSeededText();
 
 /**
- * What `GET /api/v2/issues/CORE-1/asks` answers for the rest of the test: the rows the test
+ * What `GET /api/v1/issues/CORE-1/asks` answers for the rest of the test: the rows the test
  * seeded into the asks cache, so the refetch a write sets off hands the block back the same ask
  * rather than dropping it. A test that spies `api.listIssueAsks` never reaches the handler.
  */
-let issueAskRows: AskV2[] = [];
+let issueAskRows: IssueAskRow[] = [];
 
 beforeEach(() => {
   issueAskRows = [];
@@ -74,7 +73,7 @@ function askNode(attrs: Record<string, unknown>): ProseMirrorNode {
   ]);
 }
 
-const blockAsk: AskV2 = {
+const blockAsk: Ask = {
   anchor: null,
   answer: null,
   author: { id: "01a086ad", kind: "session", origin: { session_title: "Architect for CORE-1" } },
@@ -85,19 +84,14 @@ const blockAsk: AskV2 = {
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "b-1",
   created_at: new Date(Date.now() - 3 * 60_000).toISOString(),
-  document: null,
   edited_at: null,
   id: "ask-1",
-  issue: null,
   issue_key: "CORE-1",
   kind: "question",
-  last_reply: null,
   multiple: false,
   opened_event_id: 1,
   options: [{ description: "Release it", label: "Ship" }, { label: "Hold" }],
-  priority: null,
   question: "Should we ship?",
-  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "high",
 };
@@ -106,9 +100,20 @@ test("ProofDocument hands its decision blocks the indexed ask; the hosted card a
   const user = userEvent.setup();
   const queryClient = createQueryClient();
   queryClient.setQueryData(["asks", "CORE-1"], [blockAsk]);
-  issueAskRows = [blockAsk];
+  issueAskRows = [{ ...blockAsk, last_reply: null }];
   queryClient.setQueryData(["artifact", "artifact-1", "text"], { markdown: "stale" });
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(withEmptyThread(blockAsk));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ask: blockAsk,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
   const answerAsk = spyOn(api, "answerAsk").mockResolvedValue({
     ...blockAsk,
     answer: { at: new Date().toISOString(), selected: ["Ship"], text: "Go.", user: "alice" },
@@ -171,15 +176,30 @@ test("ProofDocument hands its decision blocks the indexed ask; the hosted card a
 
 test("after Ask back on a decision block, the hosted card's turn label follows the refetched issue asks to the agent's turn", async () => {
   const user = userEvent.setup();
-  const openAsk: AskV2 = { ...blockAsk, waiting_on: "human" };
+  const openAsk: Ask = { ...blockAsk, waiting_on: "human" };
   // The list route answers rows: the ask plus its newest reply, and no thread unasked.
-  const handedOver: AskV2 = { ...blockAsk, waiting_on: "agent" };
+  const handedOver: IssueAskRow = {
+    ...blockAsk,
+    last_reply: null,
+    waiting_on: "agent",
+  };
   const queryClient = createQueryClient();
   queryClient.setQueryData(["asks", "CORE-1"], [openAsk]);
   // The owner's list is what the block reads; after the clarification the server says the
   // asker holds the turn.
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([handedOver]);
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(withEmptyThread(openAsk));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ask: openAsk,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
   const createComment = spyOn(api, "createComment").mockResolvedValue({
     anchor: null,
     ask_id: "ask-1",
@@ -237,7 +257,7 @@ test("after Ask back on a decision block, the hosted card's turn label follows t
 });
 
 test("a closed issue's current document shows a withdrawn block's record from its ask row; a saved version reads only its own attributes", async () => {
-  const withdrawn: AskV2 = {
+  const withdrawn: Ask = {
     ...blockAsk,
     resolution: {
       actor: { id: "alice", kind: "user" },
@@ -249,7 +269,7 @@ test("a closed issue's current document shows a withdrawn block's record from it
   };
   const queryClient = createQueryClient();
   queryClient.setQueryData(["asks", "CORE-1"], [withdrawn]);
-  issueAskRows = [withdrawn];
+  issueAskRows = [{ ...withdrawn, last_reply: null }];
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
     authors: [{ id: "alice", kind: "user" }],
@@ -308,10 +328,12 @@ test("a closed issue's current document shows a withdrawn block's record from it
 
 test("the open-decision link names its block as encodeBlockId writes it, in its href and in the hash it sets", async () => {
   const user = userEvent.setup();
-  const decision: AskV2 = { ...blockAsk, block_id: "ship_it" };
+  const decision: Ask = { ...blockAsk, block_id: "ship_it" };
   const queryClient = createQueryClient();
   queryClient.setQueryData(["asks", "CORE-1"], [decision]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([decision]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+    { ...decision, last_reply: null },
+  ]);
   const originalHash = window.location.hash;
   const { editors, sync, view } = renderProofDocument({ queryClient });
 
@@ -337,8 +359,19 @@ test("a pane's decision block hosts its answer form and tells its host which que
   const user = userEvent.setup();
   const queryClient = createQueryClient();
   queryClient.setQueryData(["asks", "CORE-1"], [blockAsk]);
-  issueAskRows = [blockAsk];
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(withEmptyThread(blockAsk));
+  issueAskRows = [{ ...blockAsk, last_reply: null }];
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ask: blockAsk,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
   const answerAsk = spyOn(api, "answerAsk").mockResolvedValue({
     ...blockAsk,
     answer: { at: new Date().toISOString(), selected: ["Ship"], text: null, user: "alice" },

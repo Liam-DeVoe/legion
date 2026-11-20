@@ -10,9 +10,9 @@ import {
   createNamedVersion,
   createProject,
   editArtifact,
+  getArtifact,
   getArtifactText,
   getArtifactVersion,
-  listArtifactVersions,
   patchIssue,
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
@@ -181,7 +181,9 @@ test("reading a document gives its headings ids without versioning it or crediti
       session
     );
     await expect
-      .poll(async () => (await listArtifactVersions(artifactId)).map(({ number }) => number))
+      .poll(async () =>
+        ((await getArtifact(artifactId)).versions ?? []).map(({ number }) => number)
+      )
       .toEqual([1, 2, 3]);
     await readAs(alice, "One region first.");
     expect(await nameVersion("after the agent's heading")).toBe(4);
@@ -232,8 +234,8 @@ test("two users edit the same spec, see each other's text and cursor, and settle
 
     await expect
       .poll(() =>
-        listArtifactVersions(artifactId).then((versions) =>
-          versions
+        getArtifact(artifactId).then((artifact) =>
+          (artifact.versions ?? [])
             .find(({ number }) => number === 2)
             ?.authors?.map(({ id }) => id)
             .sort()
@@ -242,8 +244,8 @@ test("two users edit the same spec, see each other's text and cursor, and settle
       .toEqual(["alice", "bob"]);
     await expect
       .poll(() =>
-        listArtifactVersions(artifactId).then((versions) =>
-          versions.find(({ number }) => number === 2)
+        getArtifact(artifactId).then((artifact) =>
+          (artifact.versions ?? []).find(({ number }) => number === 2)
         )
       )
       .toMatchObject({ named: false, number: 2, summary: null });
@@ -284,8 +286,8 @@ test("named versions, the version picker, and the diff stay current across users
     await expect(editor).toContainText("Use Postgres");
     await expect
       .poll(() =>
-        listArtifactVersions(artifactId).then((versions) =>
-          versions.find(({ number }) => number === 2)
+        getArtifact(artifactId).then((artifact) =>
+          (artifact.versions ?? []).find(({ number }) => number === 2)
         )
       )
       .toMatchObject({ named: false, number: 2, summary: null });
@@ -297,8 +299,8 @@ test("named versions, the version picker, and the diff stay current across users
     await expect(nameDialog).toHaveCount(0);
     await expect
       .poll(() =>
-        listArtifactVersions(artifactId).then((versions) =>
-          versions.find(({ number }) => number === 3)
+        getArtifact(artifactId).then((artifact) =>
+          (artifact.versions ?? []).find(({ number }) => number === 3)
         )
       )
       .toMatchObject({ named: true, number: 3, summary: "Decided Postgres" });

@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, useRef } from "react";
 
-import type { ArtifactV2, AskV2, DispatchEvent } from "../../api/types";
+import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   activeTabIndicatorBorder,
@@ -75,7 +75,7 @@ export interface MarginSheetModel {
     /** The decisions beside the spec's blocks, in the spec's order; none beside any other
      *  document. */
     decisions: readonly DecisionMarginItem[];
-    historicalAsks: AskV2[];
+    historicalAsks: Ask[];
     marginRef: RefObject<HTMLElement | null>;
     isClosed: boolean;
     issueError: boolean;
@@ -84,7 +84,7 @@ export interface MarginSheetModel {
     /** What the margin's compose kept for words of the open document (`AwayDraft.anchor`), which
      *  the margin draws while no compose is open there. */
     keptDrafts: readonly AwayDraft[];
-    needsYou: AskV2[];
+    needsYou: Ask[];
     onSelectCard: (id: string, blockID?: string) => void;
     openAskCount: number;
     pendingActionIds: ReadonlySet<string>;
@@ -96,7 +96,7 @@ export interface MarginSheetModel {
     foldedAskCount: number;
     threads: Thread[];
     viewerLogin: string;
-    visibleArtifact: ArtifactV2 | undefined;
+    visibleArtifact: Artifact | undefined;
   };
   placement: {
     blockPlacements: ReadonlyMap<string, MarkPlacement>;

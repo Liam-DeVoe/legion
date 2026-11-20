@@ -32,14 +32,10 @@ function longAddresses(count: number): string[] {
   );
 }
 
-/** The route's own answer (`GET /api/v2/reference-targets`): one member per reference, in the
- *  request's order, in one page of the envelope. */
+/** The route's own answer: one member per reference, in the request's order. */
 function answerFor(refs: readonly string[]) {
   return {
-    items: refs.map((ref) => ({ gone: false, kind: "block", name: `words of ${ref}`, ref })),
-    limit: REFERENCE_TARGETS_MAX,
-    offset: 0,
-    total: refs.length,
+    targets: refs.map((ref) => ({ gone: false, kind: "block", name: `words of ${ref}`, ref })),
   };
 }
 

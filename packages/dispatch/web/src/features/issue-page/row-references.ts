@@ -18,7 +18,7 @@ const TITLE_MAX = 60;
  * What a node's words cite, and how a row of the issue page draws it.
  *
  * A row names every reference in its words from the page's one batched read of what the tree's
- * references point at (`GET /api/v2/reference-targets`, `useIssueTree.ts`), which it reads
+ * references point at (`GET /api/v1/reference-targets`, `useIssueTree.ts`), which it reads
  * through `useKnownReferenceNames`: an issue by its key and its title, anything else by its
  * target's own words, as every other surface of Dispatch draws a reference. It asks the server
  * nothing of its own. The link pass every other body runs reads one issue summary for each key

@@ -97,7 +97,7 @@ var legionPhaseColumns = map[string]string{
 // legionNotConfigured is the refusal of a Legion board read for a project that names no daemon,
 // whichever route or live view asked (getLegionBoard, the live hub's worker), naming the write
 // of the version that answers: PUT <version>/projects/{key}/legion/daemon. The live socket,
-// which no version serves, names /api/v2's, the version the web app reads it beside, as
+// which no version serves, names /api/v2's, the version that outlives /api/v1, as
 // deliveryNotConfigured does.
 func legionNotConfigured(version apiVersion) string {
 	return "this project has no Legion daemon; set one through PUT " + versionPrefix(version) + "/projects/{key}/legion/daemon"

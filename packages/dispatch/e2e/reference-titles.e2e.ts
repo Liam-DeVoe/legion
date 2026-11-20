@@ -103,12 +103,12 @@ async function seedTitles(): Promise<Seeded> {
     {
       address: `dispatch://${world.host.project}-999999`,
       label: "Missing issue",
-      path: `/api/v2/issues/${world.host.project}-999999`,
+      path: `/api/v1/issues/${world.host.project}-999999/summary`,
     },
     {
       address: `dispatch://${world.target.key}/ask/${MISSING_ASK}`,
       label: "Missing question",
-      path: `/api/v2/asks/${MISSING_ASK}`,
+      path: `/api/v1/asks/${MISSING_ASK}`,
     },
   ];
   // The host's spec already opens with the anchor a margin thread quotes, so these lines are
@@ -129,7 +129,7 @@ async function seedTitles(): Promise<Seeded> {
     referenceAgent
   );
   await expect
-    .poll(async () => (await getArtifact(world.host.primary_artifact_id)).version_count)
+    .poll(async () => ((await getArtifact(world.host.primary_artifact_id)).versions ?? []).length)
     .toBeGreaterThan(2);
 
   const body = [
@@ -173,7 +173,7 @@ async function seedTitles(): Promise<Seeded> {
   }
   // Each answered ask is one row of alice's Answers page, under the question the session wrote.
   const answers = await listMyAnswers({ limit: 50 });
-  expect(new Map((answers.items ?? []).map((row) => [row.ask_id, row.question]))).toEqual(
+  expect(new Map((answers.rows ?? []).map((row) => [row.ask_id, row.question]))).toEqual(
     new Map([...written].map(([text, where]) => [where.ask, text]))
   );
   return { comment: anchored.id, missing, world, written };

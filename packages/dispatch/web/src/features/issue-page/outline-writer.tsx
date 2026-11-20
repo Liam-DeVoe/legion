@@ -2,7 +2,7 @@ import { type MutationKey, useQuery } from "@tanstack/react-query";
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
-import type { Actor, Comment, MessageDelivery, MessageThreadV2 } from "../../api/types";
+import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
@@ -359,7 +359,7 @@ function replyTargetOf(
   item: ReplyItem,
   issueKey: string,
   comments: readonly Comment[] | undefined,
-  messages: readonly MessageThreadV2[] | undefined,
+  messages: readonly MessageRead[] | undefined,
   text: Pick<AgentText, "author">
 ): ReplyTarget {
   const base = {
@@ -371,7 +371,8 @@ function replyTargetOf(
   if (item.kind === "ask") return { ...base, parentKind: "ask" };
   if (item.kind === "message") {
     const thread = (messages ?? []).find(
-      (one) => one.id === item.id || (one.replies ?? []).some((reply) => reply.id === item.id)
+      (one) =>
+        one.message.id === item.id || (one.replies ?? []).some((reply) => reply.id === item.id)
     );
     const delivery = thread === undefined ? undefined : threadDelivery(thread);
     return {
@@ -402,11 +403,11 @@ function replyTargetOf(
 
 /** The delivery a reply into a message thread inherits: the root's target, in the mode of the
  *  thread's most recent attempt, root or reply. A thread aimed at no session has none. */
-function threadDelivery(thread: MessageThreadV2): ReplyTarget["thread"] | undefined {
-  if (thread.target === null) return undefined;
+function threadDelivery(thread: MessageRead): ReplyTarget["thread"] | undefined {
+  if (thread.message.target === null) return undefined;
   let last: MessageDelivery | undefined;
   for (const attempt of [
-    ...(thread.deliveries ?? []),
+    ...(thread.message.deliveries ?? []),
     ...(thread.replies ?? []).flatMap((reply) => reply.deliveries ?? []),
   ]) {
     if (last === undefined || compareTimestamps(attempt.created_at, last.created_at) >= 0) {
@@ -414,5 +415,5 @@ function threadDelivery(thread: MessageThreadV2): ReplyTarget["thread"] | undefi
     }
   }
   const mode = last === undefined ? undefined : deliveryMode(last.delivery);
-  return { delivery: mode ?? "steer", target: thread.target };
+  return { delivery: mode ?? "steer", target: thread.message.target };
 }

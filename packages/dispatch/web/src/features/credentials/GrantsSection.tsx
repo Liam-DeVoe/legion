@@ -91,7 +91,7 @@ const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
  */
 export function GrantsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const grants = useQuery(credentialGrantsQuery());
+  const grants = useQuery({ ...credentialGrantsQuery(), select: (data) => data.grants ?? [] });
 
   return (
     <RevocableList

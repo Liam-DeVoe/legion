@@ -1,22 +1,16 @@
-// The broker's own answers, in the shapes `@legion/contracts` declares for them, and the rule it
-// reads a row's state by; the rows inside them are the shapes `/api/v2` answers too.
-import {
-  type ApproverGrantsResponse,
-  awaitsDecision,
-  type CredentialPendingResponse,
-  type DecisionResponse,
-  type DismissResponse,
-  type LauncherCredentialsResponse,
-  type PersonSignInsResponse,
-  type StateResponse,
-} from "@legion/contracts";
-
+import { awaitsDecision, type DismissResponse } from "@legion/contracts";
 import type {
   ApproverGrantResp,
+  ApproverGrantsResponse,
+  CredentialPendingResponse,
   CredentialPendingRow,
+  DecisionResponse,
   LauncherCredentialResp,
+  LauncherCredentialsResponse,
   PersonSignInResp,
+  PersonSignInsResponse,
   RecordResponse,
+  StateResponse,
 } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 

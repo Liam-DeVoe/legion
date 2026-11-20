@@ -9,7 +9,7 @@ import {
 } from "react";
 import { Link } from "react-router-dom";
 
-import type { ArtifactV2 } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   pageFailedText,
@@ -147,9 +147,9 @@ export function NodeRow({
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
   /** The document this row's node is a block of, which its body writes against: a decision's
-   *  Change is anchored to the decisions document, and its Keep is written on that document's
-   *  issue (R7). Undefined for a node that is no block of a document of this issue. */
-  document?: ArtifactV2;
+   *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
+   *  no block of a document of this issue. */
+  document?: Artifact;
   /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
    *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
    *  cue that the row takes typing (decision 323); nothing in part G reads it. False unless the
@@ -1172,7 +1172,7 @@ function NodeBody({
   tabStops,
 }: {
   author: { readonly kind: AuthorKind; readonly name: string };
-  document?: ArtifactV2;
+  document?: Artifact;
   isClosed: boolean;
   node: TreeNode;
   onPin: () => void;

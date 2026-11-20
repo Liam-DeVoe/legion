@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import type { ArtifactUploadV2 } from "../web/src/api/types";
+import type { ArtifactUploadResponse } from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
 import {
   createIssue,
@@ -16,7 +16,7 @@ import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 
 // Every "Download version N" link goes to the download address,
-// `/api/v2/artifacts/<id>/versions/<n>?download=true`, where the server names the file in
+// `/api/v1/artifacts/<id>/versions/<n>?download=true`, where the server names the file in
 // `Content-Disposition` (its own name, `-v<n>` before the extension of an older version, and
 // `.md` added to a document's name that ends in neither `.md` nor `.markdown`, whatever their
 // case) and answers `Cache-Control: private, no-cache`. These rows read the name the browser
@@ -44,13 +44,13 @@ async function upload(
   page: Page,
   path: string,
   file: UploadFile
-): Promise<ArtifactUploadV2["artifact"]> {
+): Promise<ArtifactUploadResponse["artifact"]> {
   const answer = await page.request.post(path, {
     headers: { Origin: dashboardOrigin },
     multipart: { file, name: file.name },
   });
   expect(answer.status(), await answer.text()).toBeLessThan(300);
-  return ((await answer.json()) as ArtifactUploadV2).artifact;
+  return ((await answer.json()) as ArtifactUploadResponse).artifact;
 }
 
 /** Picks `file` in the Artifacts tab's own upload control and confirms it, as a person does:
@@ -71,7 +71,7 @@ async function saveFrom(page: Page, link: Locator) {
 /** The path a link or a picture names for version `number`: the download address with
  *  `download`, the version address a picture is drawn from without it. */
 function versionAddress(id: string, number: number, download = false): string {
-  return `/api/v2/artifacts/${id}/versions/${number}${download ? "?download=true" : ""}`;
+  return `/api/v1/artifacts/${id}/versions/${number}${download ? "?download=true" : ""}`;
 }
 
 async function openArtifactsTab(page: Page, issueKey: string): Promise<void> {
@@ -93,8 +93,8 @@ test("each Download version link names the download address and each picture the
     mimeType: "image/png",
     name: "diagram.png",
   };
-  const diagram = await upload(page, `/api/v2/issues/${issue.key}/artifacts`, picture);
-  await upload(page, `/api/v2/issues/${issue.key}/artifacts`, picture);
+  const diagram = await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
+  await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
 
   await openArtifactsTab(page, issue.key);
   const row = page.getByTestId("artifact-diagram-png");
@@ -264,14 +264,14 @@ test("a project's file and a conversation's file save under their own names, an 
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const brief = await upload(page, "/api/v2/projects/CORE/artifacts", pdf("brief.pdf", "brief"));
+  const brief = await upload(page, "/api/v1/projects/CORE/artifacts", pdf("brief.pdf", "brief"));
   await page.goto(`/projects/CORE/documents/${brief.slug}`);
   const projectFile = await saveFrom(page, page.getByRole("link", { name: "Download version 1" }));
   expect(projectFile.suggestedFilename()).toBe("brief.pdf");
 
   const planner = { session_id: sessionIds.planner, title: "Planner" };
   await setLiveSessions([planner]);
-  const conversation = `/api/v2/agents/${planner.session_id}/artifacts`;
+  const conversation = `/api/v1/agents/${planner.session_id}/artifacts`;
   const trace = await upload(page, conversation, pdf("trace.pdf", "first run"));
   await upload(page, conversation, pdf("trace.pdf", "second run"));
   await page.goto(`/agents/${planner.session_id}/artifacts/${trace.slug}`);

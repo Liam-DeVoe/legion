@@ -17,7 +17,7 @@ export function AskBlockLink({ ask }: { ask: OwnedAsk }): ReactNode {
       : buildIssuePath({ key: ask.issue_key, kind: "artifact", slug: ask.block_artifact.slug });
     return <Link to={`${route}${fragment}`}>Open in document</Link>;
   }
-  if (ask.document !== null) {
+  if (ask.document !== undefined) {
     return (
       <Link
         to={`${buildProjectPath({ kind: "document", project: ask.document.project, slug: ask.document.slug })}${fragment}`}

@@ -302,13 +302,11 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
   const newPage = page.locator("[data-issue-page]");
   const heading = newPageHeading(page);
 
-  // The issue's own read - its path with the `include` list the page reads it under - and no
-  // other read under its path, is held until released, then passed on, or refused while
-  // `failing` is set.
+  // The issue's own read, and no other read under its path, is held until released, then passed
+  // on, or refused while `failing` is set.
   let failing = false;
   const held = Promise.withResolvers<void>();
-  const issueRead = (url: URL) =>
-    url.pathname === `/api/v2/issues/${issue.key}` && url.searchParams.has("include");
+  const issueRead = (url: URL) => url.pathname === `/api/v1/issues/${issue.key}`;
   await page.route(issueRead, async (route) => {
     if (failing) return route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
     await held.promise;

@@ -1,4 +1,4 @@
-import type { CheckResult, CheckV2 } from "../../api/types";
+import type { CheckBlock, CheckResult } from "../../api/types";
 import type { NodeFact } from "./issue-tree";
 import {
   CHECK_WHEN_WORDS,
@@ -32,7 +32,7 @@ import {
  *  result at all, so its body says why in the server's own words (`ci.detail`). A block that
  *  carries `ci_check` and holds a recorded result is no check CI proves, and the server gives
  *  it no `ci`: it reads as the ordinary check it is. */
-export function checkFacts(check: CheckV2): NodeFact[] {
+export function checkFacts(check: CheckBlock): NodeFact[] {
   const when: Readonly<Record<string, string>> = CHECK_WHEN_WORDS;
   const facts: NodeFact[] = [
     { draw: "word", name: "when", value: when[check.when] ?? "" },

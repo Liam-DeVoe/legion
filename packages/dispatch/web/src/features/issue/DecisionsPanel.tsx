@@ -4,12 +4,12 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type {
-  ArtifactV2,
-  AskV2,
+  Artifact,
   Decision,
   DecisionLink,
   DisplayTree,
-  IssueDecisionsV2,
+  IssueAskRow,
+  IssueDecisions,
 } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
@@ -154,7 +154,7 @@ function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
 
 /** The path that opens the issue's spec at `blockId`: through the spec's own document route when
  *  the issue's artifacts are loaded, as every in-app block link is built. */
-function specBlockPath(issueKey: string, spec: ArtifactV2 | undefined, blockId: string): string {
+function specBlockPath(issueKey: string, spec: Artifact | undefined, blockId: string): string {
   return spec === undefined
     ? `${buildIssuePath({ key: issueKey, kind: "spec" })}${blockFragment(blockId)}`
     : documentItemPath(spec, { blockID: blockId, id: blockId, kind: "comment" });
@@ -191,7 +191,7 @@ function ShapedLinks({
 }: {
   issueKey: string;
   links: readonly DecisionLink[] | null;
-  spec: ArtifactV2 | undefined;
+  spec: Artifact | undefined;
 }): ReactNode {
   const shaped = (links ?? []).filter((link) => link.to.block_id !== undefined);
   if (shaped.length === 0) {
@@ -326,7 +326,7 @@ function DecisionCard({
    *  question block of; undefined until the issue's documents are read. */
   documentId: string | undefined;
   issueKey: string;
-  spec: ArtifactV2 | undefined;
+  spec: Artifact | undefined;
 }): ReactNode {
   const source = textSourceOf("artifact", documentId);
   return (
@@ -386,7 +386,7 @@ function WaitingDecision({
   documentId: string | undefined;
   isClosed: boolean;
   issueKey: string;
-  spec: ArtifactV2 | undefined;
+  spec: Artifact | undefined;
 }): ReactNode {
   const queryClient = useQueryClient();
   const [changing, setChanging] = useState(false);
@@ -400,16 +400,14 @@ function WaitingDecision({
     method: "POST",
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
-    // The keep is the issue's (`PUT /api/v2/issues/{key}/decisions/{block_id}/state`): the route
-    // names the issue, never the decisions.md that holds the decision.
-    write: (key: string, bounds) =>
-      api.keepDecision(key, decision.block_id, decision.text_sha256, bounds),
+    write: (id: string, bounds) =>
+      api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     onSuccess: (kept) => {
       if (kept === null) {
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
         return;
       }
-      queryClient.setQueryData<IssueDecisionsV2>(["decisions", issueKey], (view) =>
+      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
         view === undefined
           ? view
           : {
@@ -418,7 +416,7 @@ function WaitingDecision({
               // to the row that still holds that text. A decision's changed version is the
               // greatest of the blocks it holds now and does not move when a block leaves it, so
               // a row whose text changed since can carry the version the Keep was taken at.
-              items: (view.items ?? []).map((row) =>
+              decisions: (view.decisions ?? []).map((row) =>
                 row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
                   ? { ...row, kept, waiting_review: false }
                   : row
@@ -437,7 +435,7 @@ function WaitingDecision({
               <button
                 className={secondaryButtonCompact}
                 disabled={keep.isPending}
-                onClick={() => keep.mutate(issueKey)}
+                onClick={() => keep.mutate(documentId)}
                 type="button"
               >
                 Keep
@@ -490,9 +488,9 @@ function OpenQuestion({
   issueKey,
   spec,
 }: {
-  ask: AskV2;
+  ask: IssueAskRow;
   issueKey: string;
-  spec: ArtifactV2 | undefined;
+  spec: Artifact | undefined;
 }): ReactNode {
   const path =
     ask.block_id === undefined || ask.block_id === null
@@ -509,13 +507,13 @@ function OpenQuestion({
 
 /** The issue's Decisions tab: its open questions, the agent's decisions waiting for a person's
  *  review (with Keep and Change), the person's own decisions, and the replaced ones, read from
- *  `GET /api/v2/issues/{key}/decisions`. Each decision links the spec blocks it shaped. */
+ *  `GET /api/v1/issues/{key}/decisions`. Each decision links the spec blocks it shaped. */
 export function DecisionsPanel({
   artifacts,
   isClosed,
   issueKey,
 }: {
-  artifacts: readonly ArtifactV2[];
+  artifacts: readonly Artifact[];
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
@@ -529,11 +527,11 @@ export function DecisionsPanel({
   // three lists below are this one reading filtered, never three readings of it.
   const rows = useMemo(
     () =>
-      (view.data?.items ?? []).map((decision) => ({
+      (view.data?.decisions ?? []).map((decision) => ({
         blocks: readDecisionBlocks(decision),
         decision,
       })),
-    [view.data?.items]
+    [view.data?.decisions]
   );
   if (view.isPending) {
     return <LoadingSkeleton label="Decisions loading" />;

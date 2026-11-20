@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import type { WriteAdvice } from "@legion/contracts";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
-import type { ArtifactV2 } from "../web/src/api/types";
+import type { Artifact } from "../web/src/api/types";
 
 import {
   answerAsk,
@@ -110,7 +110,7 @@ test("a spec's approval is a human review pinned to its version: requested by th
       session
     );
     await expect
-      .poll(async () => (await getArtifact(artifactID, { login: "alice" })).version_count)
+      .poll(async () => ((await getArtifact(artifactID, { login: "alice" })).versions ?? []).length)
       .toBeGreaterThan(1);
     await createNamedVersion(artifactID, "revised", { login: "alice" });
     await page.reload();
@@ -409,15 +409,17 @@ test("an approval request stays in one Inbox card while its document version mov
       { ops: [{ op: "replace", find: "The plan.", with: "The revised plan." }] },
       session
     );
-    let movedArtifact: ArtifactV2 | undefined;
+    let movedArtifact: Artifact | undefined;
     await expect
       .poll(async () => {
         movedArtifact = await getArtifact(artifactID, { login: "alice" });
-        return movedArtifact.version_count;
+        return (movedArtifact.versions ?? []).length;
       })
       .toBeGreaterThan(1);
     if (movedArtifact === undefined) throw new Error("the moved artifact was not read");
-    const movedVersion = movedArtifact.latest_version ?? 0;
+    const movedVersion = Math.max(
+      ...(movedArtifact.versions ?? []).map((version) => version.number)
+    );
 
     await page.reload();
     await expect(row).toHaveAttribute("data-inbox-section", "agent");
@@ -789,7 +791,7 @@ test("reading an approved spec and moving the caret through its numbered list le
     // pinned to an older one. A second of real time is four of those windows.
     await sleep(SETTLED_MS);
     const artifact = await getArtifact(artifactID, { login: "alice" });
-    expect(artifact.version_count).toBe(1);
+    expect(artifact.versions).toHaveLength(1);
     expect(artifact.approval).toMatchObject({ latest_version: 1, state: "approved", version: 1 });
   } finally {
     await bob.close();
@@ -831,7 +833,7 @@ test("an agent's comment on part of an identifier in an approved spec leaves its
     // one. A second of real time is four of those windows.
     await sleep(SETTLED_MS);
     const artifact = await getArtifact(artifactID, { login: "alice" });
-    expect(artifact.version_count).toBe(1);
+    expect(artifact.versions).toHaveLength(1);
     expect(artifact.approval).toMatchObject({ latest_version: 1, state: "approved", version: 1 });
   } finally {
     await alice.close();
@@ -1120,7 +1122,8 @@ test("an approval ask keeps its document link and the version it asked about onc
   );
   await expect
     .poll(
-      async () => (await getArtifact(issue.primary_artifact_id, { login: "alice" })).version_count
+      async () =>
+        ((await getArtifact(issue.primary_artifact_id, { login: "alice" })).versions ?? []).length
     )
     .toBeGreaterThan(1);
 

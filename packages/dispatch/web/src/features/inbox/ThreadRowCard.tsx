@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
-import type { MarkV2, MyReplyRow } from "../../api/types";
+import type { MyReplyRow, UserAgentState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -41,7 +41,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   // The press carries the row as it stood when Mark read was pressed: its newest reply and its
   // unread ids move as replies arrive, and the Retry of a press the reader stopped marks what
   // that press marked.
-  const markRead = useKeyedWrite<MarkV2 | undefined, MyReplyRow>({
+  const markRead = useKeyedWrite<UserAgentState | undefined, MyReplyRow>({
     label: () => "Thread marked read",
     // Either mark is a `PUT`.
     method: "PUT",

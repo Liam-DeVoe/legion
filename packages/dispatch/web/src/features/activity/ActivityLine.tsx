@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { issueQuery } from "../../api/queries";
-import type { ArtifactV2, DispatchEvent } from "../../api/types";
+import type { Artifact, DispatchEvent } from "../../api/types";
 import { linkText } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
@@ -61,7 +61,7 @@ function SavedVersionLine({
   issueKey: string;
 }): ReactNode {
   const issue = useQuery(issueQuery(issueKey));
-  const artifact: ArtifactV2 | undefined = issue.data?.artifacts?.find(
+  const artifact: Artifact | undefined = issue.data?.artifacts?.find(
     ({ id }) => id === event.payload.artifact_id
   );
   if (artifact === undefined) {

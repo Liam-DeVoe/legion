@@ -10,7 +10,7 @@ import { realClock } from "../../__tests__/fake-clock";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { ArtifactUploadV2, Issue, Message } from "../../api/types";
+import type { ArtifactUploadResponse, Issue, Message } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { firstCriterion } from "./new-issue";
@@ -74,7 +74,9 @@ function openBar(settings: { label: string; session: string }): Stubs {
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const newIssueSettings = spyOn(api, "getNewIssueSettings").mockResolvedValue(settings);
   const createIssue = spyOn(api, "createIssue").mockResolvedValue(issue("CORE-7"));
-  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({} as ArtifactUploadV2);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(
+    {} as ArtifactUploadResponse
+  );
   const patchIssue = spyOn(api, "patchIssue").mockResolvedValue(issue("CORE-7"));
   const createMessage = spyOn(api, "createMessage").mockResolvedValue({} as Message);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -260,7 +262,7 @@ test("a create the person stopped says it may have been made, not that it could 
   const bar = openBar({ label: "from-the-bar", session: "sess-1" });
   try {
     bar.createIssue.mockRejectedValue(
-      new NetworkError("/api/v2/issues", new TypeError("Failed to fetch"))
+      new NetworkError("/api/v1/issues", new TypeError("Failed to fetch"))
     );
     const row = await offerFor(user);
     jest.useFakeTimers();
@@ -285,7 +287,7 @@ test("a write onto the issue the person stopped says it may have landed, not tha
   const bar = openBar({ label: "from-the-bar", session: "sess-1" });
   try {
     bar.uploadArtifact.mockRejectedValue(
-      new NetworkError("/api/v2/issues/CORE-7/artifacts", new TypeError("Failed to fetch"))
+      new NetworkError("/api/v1/issues/CORE-7/artifacts", new TypeError("Failed to fetch"))
     );
     const row = await offerFor(user);
     jest.useFakeTimers();

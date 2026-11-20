@@ -46,7 +46,6 @@ function GoBack(): ReactNode {
  *  an override that moves the issue's assignee, or hands the ask to somebody, moves that person
  *  with it. */
 function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
-  const id = overrides.id ?? "ask-1";
   const row: InboxRow = {
     anchor: null,
     answer: null,
@@ -57,15 +56,13 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-09-11T00:00:00Z",
-    document: null,
     edited_at: null,
-    id,
+    id: "ask-1",
     // The pill counts the reader's own: `renderPage` signs in as `alice`.
     issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     last_reply: null,
     kind: "question",
-    mark: { id, kind: "ask", snoozed_until: null },
     multiple: false,
     opened_event_id: 1,
     options: [],
@@ -81,8 +78,8 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
       route_status_reason: null,
     },
     priority: null,
+    snoozed_until: null,
     question: "Which approach?",
-    ref: `dispatch://CORE-1/ask/${id}`,
     state: "open",
     waiting_on: "human",
     urgency: "med",
@@ -116,9 +113,7 @@ function renderPage(
   // except for a fetch the last assertion of a test starts: its query function awaits the
   // board-move gate first, so the call lands a microtask later, after this render's spies are
   // restored. That one reaches the client, and this answers it with the same empty list.
-  answerRequests(
-    http.get("/api/v2/issues", () => Response.json({ items: [], limit: 50, offset: 0, total: 0 }))
-  );
+  answerRequests(http.get("/api/v1/issues", () => Response.json([])));
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(inboxRows);
   const whoAmI = spyOn(api, "whoAmI");
   if (login === null) {
@@ -621,7 +616,7 @@ test("a move refused on one project's board leaves no refusal above the board th
     ]
   );
   page.listIssues.mockImplementation(async (options = {}) =>
-    options.project?.includes("OTHER") ? [todo("OTHER-1", "Bravo")] : [todo("CORE-1", "Alpha")]
+    options.project === "OTHER" ? [todo("OTHER-1", "Bravo")] : [todo("CORE-1", "Alpha")]
   );
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(409, { code: "CONFLICT", error: "CORE-1 is blocked by CORE-2" })

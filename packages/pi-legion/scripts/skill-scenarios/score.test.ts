@@ -127,7 +127,7 @@ const seeded = JSON.stringify([
   { type: "issue.created", actor: { kind: "session", id: "dispatch-owner" } },
   { type: "message.created", actor: { kind: "session", id: "dispatch-owner" } },
 ]);
-const message = JSON.stringify({ body: "Plan: re-check the attachment table." });
+const message = JSON.stringify({ message: { body: "Plan: re-check the attachment table." } });
 const capture = { "asks.json": "[]", "events.json": seeded, "message.json": message };
 run("ask-on-message-head-1", { ...capture, "out.txt": noKey }, header);
 run("ask-on-message-head-2", { ...capture, "out.txt": "exit=0\n" }, [...header, ...turn]);

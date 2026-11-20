@@ -68,10 +68,10 @@ test("Next week on a Monday is the Monday after, never later the same day", () =
 
 test("a snooze counts only while its moment is ahead", () => {
   const now = Date.parse("2026-09-25T12:00:00Z");
-  expect(isSnoozed({ mark: { snoozed_until: "2026-09-25T18:00:00Z" } }, now)).toBe(true);
-  expect(isSnoozed({ mark: { snoozed_until: "2026-09-25T06:00:00Z" } }, now)).toBe(false);
-  expect(isSnoozed({ mark: { snoozed_until: null } }, now)).toBe(false);
-  // An issue header's open ask carries no mark at all.
+  expect(isSnoozed({ snoozed_until: "2026-09-25T18:00:00Z" }, now)).toBe(true);
+  expect(isSnoozed({ snoozed_until: "2026-09-25T06:00:00Z" }, now)).toBe(false);
+  expect(isSnoozed({ snoozed_until: null }, now)).toBe(false);
+  // An issue header's open ask carries no snooze at all.
   expect(isSnoozed({}, now)).toBe(false);
 });
 

@@ -1,6 +1,6 @@
 import { type ReactNode, useMemo } from "react";
 
-import type { AskV2 } from "../../api/types";
+import type { Ask } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { useSending } from "../../hooks/useSending";
@@ -59,14 +59,14 @@ interface CommentsTabProps {
   editingCommentId: string | undefined;
   savingCommentEditId: string | undefined;
   onEditingChange(id: string | undefined): void;
-  historicalAsks: AskV2[];
+  historicalAsks: Ask[];
   hoveredItemId: string | undefined;
   hoveredMarkId: string | undefined;
   isClosed: boolean;
   owner: MarginOwner;
   blockPlacements: ReadonlyMap<string, MarkPlacement>;
   markPlacements: ReadonlyMap<string, MarkPlacement>;
-  needsYou: AskV2[];
+  needsYou: Ask[];
   onAction: (id: string, action: MarginItemAction) => void;
   onEdit: SaveCommentEdit;
   onRetryAction: () => void;
@@ -209,7 +209,7 @@ export function MarginAskCard({
   selected,
 }: {
   artifactSlug: string;
-  ask: AskV2;
+  ask: Ask;
   owner: MarginOwner;
   /** Which group the card is listed under: an open ask waiting on the reader, or a decided one. */
   section: "needs-you" | "decided";

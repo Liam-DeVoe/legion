@@ -256,7 +256,7 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
 test("a create the reader stopped says Retry asks again under its key, not that it failed", async () => {
   jest.useFakeTimers();
   const view = renderDialog(userOnFakeClock(), () =>
-    Promise.reject(new NetworkError("/api/v2/issues", new TypeError("Failed to fetch")))
+    Promise.reject(new NetworkError("/api/v1/issues", new TypeError("Failed to fetch")))
   );
   try {
     await projectPicked();

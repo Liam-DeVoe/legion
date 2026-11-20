@@ -20,7 +20,7 @@ import {
   type WriteBounds,
   type WriteMethod,
 } from "../../api/client";
-import type { ArtifactUploadV2 } from "../../api/types";
+import type { Artifact, Version } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -45,6 +45,11 @@ import { endedStopped, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrit
 /** Why a closed issue's Artifacts tab, or its document's repair, takes no upload: Dispatch refuses
  *  one until the issue is reopened. */
 export const CLOSED_ISSUE_UPLOAD_REFUSAL = "This issue is closed. Reopen it to upload.";
+
+export interface UploadResult {
+  artifact: Artifact;
+  version: Version;
+}
 
 /** The media type of `file` as Dispatch reads it: the server parses what the browser declared
  *  with `mime.ParseMediaType` (`artifactKind` in the server's `api/artifacts.go`), which drops
@@ -75,8 +80,8 @@ export type UploadBase = { readonly token: string | undefined } | { readonly unr
 
 /**
  * Reads the base for `file`'s upload to `owner`: the token of the live document the owner
- * already holds under the name this upload is stored as, through the owner's list read by that
- * slug or filename (`api.ownerArtifactText`).
+ * already holds under the name this upload is stored as, through the route that resolves a slug
+ * or a filename.
  *
  * Two answers mean there is no base to name, and no others: `404 ARTIFACT_NOT_FOUND`, where the
  * owner holds no document under that name and this upload is its first; and `409 DOC_SCHEMA`,
@@ -124,15 +129,14 @@ export class UploadBaseUnreadableError extends Error {
 }
 
 /** One attempt of `file`'s upload to `owner`, under the write's key (`bounds`), naming the base
- *  read for this press (`options.base`, from `captureUploadBase`): the document it made or added
- *  to, and the version it stored. The base is read before the write rather than here, so every
- *  attempt under one key sends the same bytes. */
+ *  read for this press (`options.base`, from `captureUploadBase`). The base is read before the
+ *  write rather than here, so every attempt under one key sends the same bytes. */
 export async function uploadFile(
   owner: ArtifactOwner,
   file: File,
   options: { base: UploadBase; name?: string; summary?: string },
   bounds: WriteBounds
-): Promise<ArtifactUploadV2> {
+): Promise<UploadResult> {
   if ("unreadable" in options.base) {
     throw new UploadBaseUnreadableError(options.base.unreadable);
   }
@@ -246,7 +250,7 @@ export function appendToDraft(draft: string, text: string): string {
 export function uploadedFileText(
   owner: ArtifactOwner,
   file: File,
-  { artifact, version }: ArtifactUploadV2
+  { artifact, version }: UploadResult
 ): string {
   const pinned = isPictureType(file.type) ? version.number : undefined;
   const route: DispatchReferenceRoute =
@@ -321,7 +325,7 @@ export function useDraftUpload<Draft = void>(
   // Each file is one write under a key of its own, its refusal shown here beside the draft, and
   // its file kept across a reload with it.
   const upload = useKeyedWrite<
-    { file: File; owner: ArtifactOwner; result: ArtifactUploadV2 },
+    { file: File; owner: ArtifactOwner; result: UploadResult },
     { base: UploadBase; draft: Draft; file: File; owner: ArtifactOwner }
   >({
     method: "POST",
@@ -530,7 +534,7 @@ export function useArtifactUpload(
   // One press per answer: `confirm` reads the base before it mutates, so a second click within
   // that read would be a second upload, which `isPending` is too late to hold.
   const pressGuard = useSubmitGuard();
-  const upload = useKeyedWrite<ArtifactUploadV2, UploadPress>({
+  const upload = useKeyedWrite<UploadResult, UploadPress>({
     method: "POST",
     write: ({ base, file, name, summary }, bounds) =>
       uploadFile(owner, file, { base, name, summary }, bounds),

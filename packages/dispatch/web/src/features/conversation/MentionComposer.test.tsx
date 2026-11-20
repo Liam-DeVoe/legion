@@ -10,8 +10,15 @@ import { MemoryRouter } from "react-router-dom";
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
-import { AGENT_LIST_REFILLING, ApiError, api, type WholeList } from "../../api/client";
-import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
+import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import type {
+  Agent,
+  Comment,
+  IssueCollaborators,
+  ItemBlock,
+  ItemBlocks,
+  Message,
+} from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -143,17 +150,6 @@ function renderComposer(options: ComposerOptions = {}) {
   return { queryClient, rerender: (next: ComposerOptions) => view.rerender(composer(next)), view };
 }
 
-/** Answers, with no agent, the live agents read (`useAgents`) that an issue composer given no
- *  `agents` makes as it mounts, for a row on the fake clock. Left to the shell's handler
- *  (`network.ts`), the read is answered through MSW on promise turns alone, and a row on the fake
- *  clock moves on promise turns alone too, so where the answer lands is a count of turns: one
- *  that falls between two of the row's steps updates the composer outside `act`. The spy's
- *  answer lands within the row's first user-event step, which Testing Library runs with the act
- *  environment off. */
-function answerLiveAgents(): Mock<typeof api.listAgents> {
-  return spyOn(api, "listAgents").mockResolvedValue([]);
-}
-
 function holdControls(): HTMLFieldSetElement {
   const controls = screen.getByRole("form", { name: "Comment composer" }).querySelector("fieldset");
   if (!(controls instanceof HTMLFieldSetElement))
@@ -168,12 +164,10 @@ function holdControls(): HTMLFieldSetElement {
 let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
 beforeEach(() => {
   collaboratorsRead = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
     issue_key: "CORE-1",
-    items: [],
     legion_registry: "ok",
-    limit: 50,
-    offset: 0,
-    total: 0,
+    people: [],
   });
 });
 afterEach(() => {
@@ -674,7 +668,6 @@ test("a token-only targeted legacy reply cannot submit, and Send says why", asyn
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const createMessage = spyOn(api, "createMessage").mockResolvedValue({} as never);
-  const listAgents = answerLiveAgents();
   const { view } = renderComposer({
     replyTo: {
       actor: plannerAuthor,
@@ -699,7 +692,6 @@ test("a token-only targeted legacy reply cannot submit, and Send says why", asyn
     realClock();
     view.unmount();
     createMessage.mockRestore();
-    listAgents.mockRestore();
   }
 });
 
@@ -970,9 +962,8 @@ test("the mention picker draws each agent with its state and no link", async () 
  *  agents by role in workflow order and then newest first, then the rest newest first) - the
  *  planner, the reviewer role's newest session and the one it replaced, then a session with no
  *  registry entry. */
-const collaboratorsAnswer: WholeList<"/api/v2/issues/{key}/collaborators"> = {
-  issue_key: "CORE-1",
-  items: [
+const collaboratorsAnswer: IssueCollaborators = {
+  agents: [
     {
       kind: "session",
       last_at: null,
@@ -1018,15 +1009,15 @@ const collaboratorsAnswer: WholeList<"/api/v2/issues/{key}/collaborators"> = {
     {
       kind: "session",
       last_at: "2026-10-26T03:00:00Z",
+      legion: null,
       reasons: ["posted"],
       session_id: "helper",
       title: "Helper",
     },
   ],
+  issue_key: "CORE-1",
   legion_registry: "ok",
-  limit: 50,
-  offset: 0,
-  total: 4,
+  people: [],
 };
 
 /** The naming the picker does outside React: no stopped session is in the registry cache, so each
@@ -1109,7 +1100,7 @@ test("a picker holding only stopped roles does not say no agent matches", async 
 // (never offered twice), and a role is offered once by its newest session whatever replaced it.
 // A live list whose state is unknown is the caller's case, which the picker test below proves.
 test("stopped role options leave out held roles and name each role once", () => {
-  const answerAgents = collaboratorsAnswer.items;
+  const answerAgents = collaboratorsAnswer.agents ?? [];
   const reviewerOnly = stoppedRoleOptions([planner], answerAgents, storedNames);
   expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
     ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running"],
@@ -2582,7 +2573,6 @@ const stillSending = KEYED_SEND_LATE_TEXT;
 test("a send the server answers at 35 s posts once: the deadline offers no Retry, and the answer lands", async () => {
   const answer = Promise.withResolvers<Comment>();
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
-  const listAgents = answerLiveAgents();
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { invalidated, view } = renderHostedComposer();
@@ -2623,7 +2613,6 @@ test("a send the server answers at 35 s posts once: the deadline offers no Retry
     realClock();
     view.unmount();
     createComment.mockRestore();
-    listAgents.mockRestore();
   }
 });
 
@@ -2632,7 +2621,6 @@ test("a send the server answers at 35 s posts once: the deadline offers no Retry
 test("a refusal after the deadline hands the draft back with Retry", async () => {
   const answer = Promise.withResolvers<Comment>();
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
-  const listAgents = answerLiveAgents();
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { view } = renderHostedComposer();
@@ -2661,7 +2649,6 @@ test("a refusal after the deadline hands the draft back with Retry", async () =>
     realClock();
     view.unmount();
     createComment.mockRestore();
-    listAgents.mockRestore();
   }
 });
 
@@ -2923,7 +2910,7 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
 test("a stopped send the reader comes back to a day later says its key has run out", async () => {
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     (sessionID, input, bounds) => {
-      bounds.sent?.({ body: input, method: "POST", path: `/api/v2/agents/${sessionID}/messages` });
+      bounds.sent?.({ body: input, method: "POST", path: `/api/v1/agents/${sessionID}/messages` });
       return Promise.reject(
         new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
       );
@@ -3341,7 +3328,6 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
-  const listAgents = answerLiveAgents();
   const user = userOnFakeClock();
   const { view } = renderComposer();
 
@@ -3366,7 +3352,6 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
     realClock();
     view.unmount();
     uploadArtifact.mockRestore();
-    listAgents.mockRestore();
   }
 });
 
@@ -3418,7 +3403,6 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     return uploaded("shot-png", "shot.png", 1);
   });
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const listAgents = answerLiveAgents();
   const user = userOnFakeClock();
   const { view } = renderComposer();
 
@@ -3453,7 +3437,6 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     view.unmount();
     uploadArtifact.mockRestore();
     createComment.mockRestore();
-    listAgents.mockRestore();
   }
 });
 

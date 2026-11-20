@@ -1,4 +1,4 @@
-import type { CheckV2 } from "../../../api/types";
+import type { CheckBlock } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
 import type { CheckState, StatementState } from "../page-words";
 import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../tree-drafts";
@@ -122,7 +122,7 @@ export function shortCommit(sha: string): string {
  * statement's state at it: each check is read at the commit the server names for that check
  * (`tree-drafts.ts`'s `checkStanding`).
  */
-export function namedCommit(checks: readonly CheckV2[]): string | undefined {
+export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
   const named = checks.flatMap((check) =>
     standingResults(check).filter(
       (result) => result.commit_sha !== "" && result.check_words_moved !== true
@@ -146,7 +146,7 @@ export function verificationReading({
   checks,
   view,
 }: {
-  readonly checks: readonly CheckV2[];
+  readonly checks: readonly CheckBlock[];
   readonly view: TreeNode;
 }): VerificationReading {
   const read = checkReader(checks);
@@ -190,7 +190,7 @@ export interface StatementStanding {
  */
 export function statementStandings(
   root: TreeNode,
-  checks: readonly CheckV2[]
+  checks: readonly CheckBlock[]
 ): ReadonlyMap<string, StatementStanding> {
   const read = checkReader(checks);
   const standings = new Map<string, StatementStanding>();
@@ -233,7 +233,7 @@ export function statementCounts(
 /** How one check node of the tree reads (`checkReading`): the node is tied to its block by its
  *  own address, which the tree carries (`tree-drafts.ts` writes `check.ref` into the node's
  *  `reference`). */
-function checkReader(checks: readonly CheckV2[]): (node: TreeNode) => CheckReading {
+function checkReader(checks: readonly CheckBlock[]): (node: TreeNode) => CheckReading {
   const blocks = new Map(
     checks.filter((check) => check.ref !== "").map((check) => [check.ref, check])
   );
@@ -249,7 +249,7 @@ function checkReader(checks: readonly CheckV2[]): (node: TreeNode) => CheckReadi
  * check's basis, the latest result the body draws under the check, and every other result,
  * which the body folds under it.
  */
-function checkReading(node: TreeNode, block: CheckV2 | undefined): CheckReading {
+function checkReading(node: TreeNode, block: CheckBlock | undefined): CheckReading {
   if (block === undefined) return { atBasis: false, earlier: [], node };
   const { state, stands } = checkStanding(block);
   const results = newestFirst(block.results ?? []);

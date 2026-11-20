@@ -7,24 +7,24 @@
  * archived: reading it, and **Mark all read**, leave it where it is. **Dismiss** is the one thing
  * that takes it out, and in the Dismissed view the same write with `restore` puts it back.
  *
- * One press is one `PATCH /api/v2/me/marks` (`marksRequest`), naming either the rows it changes
- * as `items`, each with what the page drew in it - which is every press made over a list the
- * reader has whole, a **Select all** of the unpaged Inbox read included - or, where the list
- * pages at the server and the ids are not all loaded, the narrowing it is under as `filter`
- * with `set.dismissed_through`, that list read's own `as_of`, where the server draws the rows
- * itself. The press is applied here first, because the reader pressed it: the rows leave the
- * view they were in and the unread count every badge shares drops by the unread ones among
- * them. A refused press puts each row back where it stood and the page says so
- * (`dismissRefusalText`), which an old server with no such route is one way of causing. A row
- * somebody wrote in since the page drew it is no refusal: the server leaves that one row where
- * it is, and the read the answer triggers draws it again, unread.
+ * One press is one `POST /api/v1/me/inbox/dismiss` (`inboxDismissRequest`), naming either the row
+ * ids it changes with what the page drew in each of them - which is every press made over a
+ * list the reader has whole, a **Select all** of the unpaged Inbox read included - or, where the
+ * list pages at the server and the ids are not all loaded, the narrowing it is under with
+ * `dismiss_through`, that list read's own `as_of`, where the server draws the rows itself. The
+ * press is applied here first, because the reader pressed it: the rows leave the view
+ * they were in and the unread count every badge shares drops by the unread ones among them. A
+ * refused press puts each row back where it stood and the page says so (`dismissRefusalText`),
+ * which an old server with no such route is one way of causing. A row somebody wrote in since
+ * the page drew it is no refusal: the server leaves that one row where it is, and the read the
+ * answer triggers draws it again, unread.
  */
 
-import { inboxThreadRow } from "@legion/contracts";
+import { INBOX_DISMISS_ROW_PREFIXES, inboxThreadRow } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { marksRequest } from "../../api/client";
+import { inboxDismissRequest } from "../../api/client";
 import {
   dismissedThreadsQuery,
   inboxThreadsQuery,
@@ -32,52 +32,56 @@ import {
   myRepliesKey,
   userAgentStateQuery,
 } from "../../api/queries";
-import type { MarkItemV2, MarkUpdatesV2, MyReplyRow, MyThreadsV2 } from "../../api/types";
+import type {
+  InboxDismissRequest,
+  InboxDismissResponse,
+  InboxDismissSeen,
+  MyRepliesResponse,
+  MyReplyRow,
+} from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
-import { type InboxWriteScope, inboxWriteScope, inWriteScope } from "./write-scope";
+import { inboxWriteScope, inWriteScope } from "./write-scope";
 
 /** One row a press names, and what the page drew in it. The server writes a row's mark only
  *  while the row still holds what the page drew, so a press buries no write this page never
  *  drew; why no comparison of times can stand in for that check is written once, on the
  *  increment in `20261105093501_user_threads_record_dismissed.up.sql`. */
 export interface InboxDismissRow {
-  /** The row's own id in the list (`rowId`), which the page follows the press by. */
+  /** The id `POST /api/v1/me/inbox/dismiss` names the row by. */
   readonly id: string;
-  /** The row's dismissal as one item of the body carries it: the mark it names the row by,
-   *  with what the page drew in the row. */
-  readonly item: MarkItemV2;
+  /** What the page drew in the row, as the body carries it (`seen_replies`). */
+  readonly seen: InboxDismissSeen;
 }
 
 /** What a press names `thread` as, read off the row the page is drawing: a press carries what
  *  the reader was shown, never anything looked up again when the request is built. A Reply row
- *  is its thread's mark, held to the row's own version; an Agent row has no thread mark of its
- *  own, so it is the mark on its root message, held to the newest session reply it showed and
- *  the ids it drew as unread. */
+ *  carries its own version; an Agent row has none of its own, so it carries the newest session
+ *  reply it showed and the ids it drew as unread. */
 export function dismissThreadRow(thread: MyReplyRow): InboxDismissRow {
   const row = inboxThreadRow(thread);
   return {
     id: rowId({ kind: "thread", thread }),
-    item:
+    seen:
       row.kind === "agent"
-        ? {
-            dismissed: true,
-            id: row.thread_id,
-            kind: "message",
-            newest_reply: row.reply.id,
-            unread_replies: row.unread_reply_ids,
-          }
-        : { dismissed: true, id: row.thread_id, kind: "thread", version: row.version },
+        ? { newest_reply: row.reply.id, unread_replies: row.unread_reply_ids }
+        : { version: row.version },
   };
 }
 
-/** The row a press names `row` as, or undefined for a row it cannot name: an Ask row has no
- *  Dismiss at all - its mark holds a snooze, never a dismissal. */
+/** The row `POST /api/v1/me/inbox/dismiss` names `row` as, or undefined for a row it cannot name:
+ *  an Ask row has no Dismiss at all, and naming `ask:<id>` is refused. A thread row's own `rowId`
+ *  is already that id - a Reply row is `reply:<thread id>` and an Agent row
+ *  `agent:<root message id>` - and this is the one place the list's two spellings are held to the
+ *  contract's (`INBOX_DISMISS_ROW_PREFIXES`). */
 export function dismissRow(row: InboxListRow): InboxDismissRow | undefined {
-  return row.kind === "thread" ? dismissThreadRow(row.thread) : undefined;
+  if (row.kind !== "thread") return undefined;
+  const named = dismissThreadRow(row.thread);
+  const prefixes = Object.values(INBOX_DISMISS_ROW_PREFIXES);
+  return prefixes.some((prefix) => named.id.startsWith(prefix)) ? named : undefined;
 }
 
 /** What one press changes: the rows it names, each with what the page drew in it - a
@@ -90,52 +94,41 @@ export type InboxDismissInput =
   | { readonly restore?: boolean; readonly rows: readonly InboxDismissRow[] }
   | { readonly filters: InboxFilters; readonly restore?: boolean; readonly through: string };
 
-/** The body one press sends: the rows it names, each as its own mark's item, or the list's
- *  narrowing with the mark it sets on every thread under it - a dismissal through that mark, or
- *  with `dismissed: false` a restore of what was dismissed through it. */
-export type InboxDismissBody =
-  | { readonly items: MarkItemV2[] }
-  | {
-      readonly filter: InboxWriteScope;
-      readonly set: { readonly dismissed?: false; readonly dismissed_through: string };
-    };
-
-/** The body one press sends. A dismissal that names its rows carries in each item what the page
- *  drew in that row; a restore carries none, because it draws the rows back rather than burying
- *  anything, and the server takes no such hold on it. */
-export function inboxDismissBody(input: InboxDismissInput): InboxDismissBody {
-  const restore = input.restore === true;
+/** The body one press sends. A dismissal that names its rows carries one entry per row with
+ *  them; the two forms that carry none are the ones the route refuses it on - a restore, which
+ *  draws the rows back rather than burying anything, and the narrowing, where the server draws
+ *  the rows itself. */
+export function inboxDismissBody(input: InboxDismissInput): InboxDismissRequest {
   if (!("rows" in input)) {
-    return {
-      filter: inboxWriteScope(input.filters),
-      set: restore
-        ? { dismissed: false, dismissed_through: input.through }
-        : { dismissed_through: input.through },
-    };
+    const restore = input.restore === true ? { restore: true } : {};
+    return { ...inboxWriteScope(input.filters), dismiss_through: input.through, ...restore };
   }
+  const threads = input.rows.map(({ id }) => id);
+  if (input.restore === true) return { restore: true, threads };
   return {
-    items: input.rows.map(({ item }) =>
-      restore ? { dismissed: false, id: item.id, kind: item.kind } : item
-    ),
+    seen_replies: Object.fromEntries(input.rows.map(({ id, seen }) => [id, seen])),
+    threads,
   };
 }
 
 /**
- * Whether one press changes `thread`: the rows it names, or - under the narrowing - the
+ * Whether one press changes `thread`: the row ids it names, or - under the narrowing - the
  * server's own rule, which is every thread the list answers under it whose newest reply, or whose
  * dismissal, is at or before the mark (`inWriteScope`).
  */
-export function dismissesThread(thread: MyReplyRow, body: InboxDismissBody): boolean {
-  if ("items" in body) {
-    const kind = thread.kind === "agent" ? "message" : "thread";
-    return body.items.some((item) => item.kind === kind && item.id === thread.thread_id);
+export function dismissesThread(thread: MyReplyRow, body: InboxDismissRequest): boolean {
+  const threads = body.threads;
+  if (threads !== undefined && threads !== null) {
+    return threads.includes(rowId({ kind: "thread", thread }));
   }
+  const through = body.dismiss_through;
+  if (through === undefined || through === null) return false;
   const at =
-    body.set.dismissed === false
+    body.restore === true
       ? (thread.dismissed_at ?? thread.reply.created_at)
       : thread.reply.created_at;
-  if (compareTimestamps(at, body.set.dismissed_through) > 0) return false;
-  return inWriteScope(thread, body.filter);
+  if (compareTimestamps(at, through) > 0) return false;
+  return inWriteScope(thread, body);
 }
 
 /** `count` threads, in the words the page says a press over them in. */
@@ -174,28 +167,20 @@ interface DroppedRow {
   readonly row: MyReplyRow;
 }
 
-/** A read of the reader's threads as the cache holds it: the Inbox's whole read, or one page of
- *  the Dismissed read. */
-type ThreadsRead = Pick<MyThreadsV2, "items" | "total">;
-
 /** `answer` without the rows the press takes, and what it took. */
-function withoutRows<T extends ThreadsRead>(
-  answer: T,
-  body: InboxDismissBody
-): { answer: T; dropped: readonly DroppedRow[] } {
+function withoutRows(
+  answer: MyRepliesResponse,
+  body: InboxDismissRequest
+): { answer: MyRepliesResponse; dropped: readonly DroppedRow[] } {
   const dropped: DroppedRow[] = [];
-  const items = (answer.items ?? []).filter((row, at) => {
+  const rows = (answer.rows ?? []).filter((row, at) => {
     if (!dismissesThread(row, body)) return true;
     dropped.push({ at, row });
     return false;
   });
   if (dropped.length === 0) return { answer, dropped };
   return {
-    answer: {
-      ...answer,
-      items,
-      total: answer.total === null ? null : Math.max(0, answer.total - dropped.length),
-    },
+    answer: { ...answer, rows, total: Math.max(0, answer.total - dropped.length) },
     dropped,
   };
 }
@@ -203,22 +188,20 @@ function withoutRows<T extends ThreadsRead>(
 /** `answer` with the rows a refused press took put back where each stood, less any the answer
  *  already holds: a read landing between the press and the refusal brings the rows back on its
  *  own, and splicing them in again would draw each of them twice. */
-function withRows<T extends ThreadsRead>(answer: T, dropped: readonly DroppedRow[]): T {
+function withRows(answer: MyRepliesResponse, dropped: readonly DroppedRow[]): MyRepliesResponse {
   if (dropped.length === 0) return answer;
-  const items = [...(answer.items ?? [])];
-  const here = new Set(items.map((row) => rowId({ kind: "thread", thread: row })));
+  const rows = [...(answer.rows ?? [])];
+  const here = new Set(rows.map((row) => rowId({ kind: "thread", thread: row })));
   let back = 0;
   // Oldest index first, so each row lands at the place it held before any of them left.
   for (const { at, row } of [...dropped].sort((left, right) => left.at - right.at)) {
     const id = rowId({ kind: "thread", thread: row });
     if (here.has(id)) continue;
     here.add(id);
-    items.splice(Math.min(at, items.length), 0, row);
+    rows.splice(Math.min(at, rows.length), 0, row);
     back += 1;
   }
-  return back === 0
-    ? answer
-    : { ...answer, items, total: answer.total === null ? null : answer.total + back };
+  return back === 0 ? answer : { ...answer, rows, total: answer.total + back };
 }
 
 /** What a press rolls back to: the unread count as it stood, and the rows it took out of the view
@@ -243,7 +226,7 @@ function droppedRows(rollback: DismissRollback | undefined): readonly DroppedRow
 /** The pages of the Dismissed read, as the infinite query holds them. */
 interface DismissedPages {
   readonly pageParams: readonly unknown[];
-  readonly pages: readonly MyThreadsV2[];
+  readonly pages: readonly MyRepliesResponse[];
 }
 
 export interface InboxDismiss {
@@ -289,7 +272,7 @@ export function useInboxDismiss({
     });
   };
 
-  const write = useKeyedWrite<MarkUpdatesV2, InboxDismissInput, DismissRollback>({
+  const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, DismissRollback>({
     inline: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, rollback) => {
@@ -303,7 +286,7 @@ export function useInboxDismiss({
           : dismissRefusalText(taken, input.restore === true, error.message)
       );
       if (rollback === undefined) return;
-      queryClient.setQueryData(inboxKey, (current) =>
+      queryClient.setQueryData<MyRepliesResponse>(inboxKey, (current) =>
         current === undefined ? current : withRows(current, rollback.inbox)
       );
       queryClient.setQueryData<DismissedPages>(dismissedKey, (current) =>
@@ -346,7 +329,7 @@ export function useInboxDismiss({
           });
         }
       } else {
-        const answer = queryClient.getQueryData(inboxKey);
+        const answer = queryClient.getQueryData<MyRepliesResponse>(inboxKey);
         if (answer !== undefined) {
           const applied = withoutRows(answer, body);
           inbox = applied.dropped;
@@ -381,7 +364,7 @@ export function useInboxDismiss({
       // optimistic apply took out of the view.
       onSettled?.(droppedRows(context).map(({ row }) => rowId({ kind: "thread", thread: row })));
     },
-    request: (input) => marksRequest(inboxDismissBody(input)),
+    request: (input) => inboxDismissRequest(inboxDismissBody(input)),
     target: () => "inbox:dismiss",
   });
 

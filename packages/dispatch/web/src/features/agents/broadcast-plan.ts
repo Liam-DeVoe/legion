@@ -33,7 +33,7 @@ export interface BroadcastPlan {
   readonly unchecked: readonly BroadcastUncheckedRecipient[];
 }
 
-/** The broadcast this page sends, as `POST /api/v2/broadcasts` takes it: the document leaves the
+/** The broadcast this page sends, as `POST /api/v1/broadcasts` takes it: the document leaves the
  *  mode a string and lets the recipients be `null`, and the composer sends neither - the mode is
  *  one the picker offers, and the recipients are always a list. */
 export interface BroadcastRequest {

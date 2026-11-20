@@ -2,7 +2,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-import type { ArtifactUploadV2 } from "../../api/types";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 
 // The upload row `ArtifactUpload.test.tsx` and `ArtifactUpload.stopped.test.tsx` both render,
@@ -34,29 +33,24 @@ export function renderHarness() {
   return renderWith(<TestHarness />);
 }
 
-/** What Dispatch answers both files' uploads, whose own fields none of them reads: the row the
- *  upload leaves and the version it wrote (`ArtifactUploadV2`). */
-export const UPLOADED: ArtifactUploadV2 = {
+/** What Dispatch answers both files' uploads, whose own fields none of them reads. */
+export const UPLOADED = {
   artifact: {
     created_at: "2026-09-11T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
+    created_by: { id: "alice", kind: "user" as const },
     id: "artifact-1",
     issue_key: "CORE-1",
-    kind: "doc",
-    latest_version: 2,
-    latest_version_at: "2026-09-11T00:00:00Z",
-    latest_version_size: null,
+    kind: "doc" as const,
     name: "notes.md",
     primary: false,
     project: "CORE",
     ref_key: "CORE-1/notes-md",
     session_id: null,
     slug: "notes-md",
-    unsettled: null,
-    version_count: 2,
+    versions: [],
   },
   version: {
-    authors: [{ id: "alice", kind: "user" }],
+    authors: [{ id: "alice", kind: "user" as const }],
     created_at: "2026-09-11T00:00:00Z",
     named: false,
     number: 2,

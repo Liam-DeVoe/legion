@@ -494,7 +494,7 @@ test("an agent message and an answered question are cut at six lines, and the wo
         .evaluate((text) => text.scrollHeight - text.clientHeight),
       "the reader's answer hides a word"
     ).toBeLessThanOrEqual(1);
-    expect((await getAsk(seeded.waitingLong)).waiting_on_person).toBe(READER);
+    expect((await getAsk(seeded.waitingLong)).ask.waiting_on_person).toBe(READER);
     expect(
       layouts.find((row) => row.id === seeded.waitingLong),
       "the waiting question is cut"

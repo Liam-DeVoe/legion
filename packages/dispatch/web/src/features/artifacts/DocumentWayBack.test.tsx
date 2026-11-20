@@ -10,30 +10,34 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { ArtifactV2 } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArtifactHeader } from "./ArtifactHeader";
 
-function document(overrides: Partial<ArtifactV2> = {}): ArtifactV2 {
+function document(overrides: Partial<Artifact> = {}): Artifact {
   return {
     created_at: "2026-11-10T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id: "artifact-1",
     issue_key: "CORE-1",
     kind: "doc",
-    latest_version: 1,
-    latest_version_at: "2026-11-10T00:00:00Z",
-    latest_version_size: null,
     name: "Lauch notes",
     primary: false,
     project: "CORE",
     ref_key: "CORE-1/lauch-notes",
     session_id: null,
     slug: "lauch-notes",
-    unsettled: null,
-    version_count: 1,
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-11-10T00:00:00Z",
+        named: false,
+        number: 1,
+        summary: null,
+      },
+    ],
     ...overrides,
   };
 }
@@ -55,7 +59,7 @@ function Location(): ReactNode {
 }
 
 /** The address of `artifact`'s own page on its issue. */
-function pathOf(artifact: ArtifactV2): string {
+function pathOf(artifact: Artifact): string {
   return buildIssuePath({ key: "CORE-1", kind: "artifact", slug: artifact.slug });
 }
 
@@ -210,7 +214,7 @@ test("correcting the title back to one a stopped correction carried goes under i
   // correction, and each later one under it is answered with that answer, nothing made again.
   // While the line is down no answer comes back, though the correction was made; once it is up,
   // each answer is held for the case to give (`heldAnswers`).
-  const answers = new Map<string, ArtifactV2>();
+  const answers = new Map<string, Artifact>();
   const held = heldAnswers();
   let answering = false;
   const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((_id, input, bounds) => {
@@ -224,7 +228,7 @@ test("correcting the title back to one a stopped correction carried goes under i
     return answering
       ? held.answer(() => answer)
       : Promise.reject(
-          new NetworkError("/api/v2/artifacts/artifact-1", new TypeError("Failed to fetch"))
+          new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
         );
   });
   const view = renderPage(documentPath);
@@ -274,7 +278,7 @@ test("a stopped correction reads the document again, so the heading shows the ti
   const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((_id, input) => {
     stored = { ...stored, name: input.name };
     return Promise.reject(
-      new NetworkError("/api/v2/artifacts/artifact-1", new TypeError("Failed to fetch"))
+      new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
     );
   });
   const view = renderPage(documentPath);
@@ -336,7 +340,7 @@ test("a refused correction shows the server's own sentence", async () => {
 // version the person was reading went with the document.
 test("the removal sends the delete and leaves the person on the gone document's address", async () => {
   const user = userEvent.setup();
-  let stored: ArtifactV2[] = [document()];
+  let stored: Artifact[] = [document()];
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
@@ -399,7 +403,7 @@ test("a refused removal shows the server's own sentence", async () => {
 test("Remove after a stopped removal that landed takes the not-found as done", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  let stored: ArtifactV2[] = [document()];
+  let stored: Artifact[] = [document()];
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
@@ -413,7 +417,7 @@ test("Remove after a stopped removal that landed takes the not-found as done", a
     if (!answering) {
       stored = [];
       return Promise.reject(
-        new NetworkError("/api/v2/artifacts/artifact-1", new TypeError("Failed to fetch"))
+        new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
       );
     }
     if (stored.length === 0) {
@@ -469,7 +473,7 @@ const releaseNotes = document({
 // would ask for it again, refused the same way each time, and this document could not be removed.
 test("after a refused removal, the next document's page shows no refusal and its Remove removes it", async () => {
   const user = userEvent.setup();
-  let stored: ArtifactV2[] = [document(), releaseNotes];
+  let stored: Artifact[] = [document(), releaseNotes];
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
@@ -511,7 +515,7 @@ test("after a refused removal, the next document's page shows no refusal and its
 // who moved on stays on the page they moved to, which is still there.
 test("a removal that lands after the reader moved to another document leaves them on that one", async () => {
   const user = userEvent.setup();
-  let stored: ArtifactV2[] = [document(), releaseNotes];
+  let stored: Artifact[] = [document(), releaseNotes];
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
@@ -548,7 +552,7 @@ test("a removal that lands after the reader moved to another document leaves the
 test("after a stopped correction, the next document's page shows none of it and Save renames that document", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  let stored: ArtifactV2[] = [document(), releaseNotes];
+  let stored: Artifact[] = [document(), releaseNotes];
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
@@ -558,7 +562,7 @@ test("after a stopped correction, the next document's page shows none of it and 
   const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((id, input) => {
     if (!answering) {
       return Promise.reject(
-        new NetworkError(`/api/v2/artifacts/${id}`, new TypeError("Failed to fetch"))
+        new NetworkError(`/api/v1/artifacts/${id}`, new TypeError("Failed to fetch"))
       );
     }
     stored = stored.map((each) => (each.id === id ? { ...each, name: input.name } : each));
@@ -616,7 +620,7 @@ test("a removal the reader stopped says Remove makes it again, not that it faile
   const user = userOnFakeClock();
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
   const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
-    new NetworkError("/api/v2/artifacts/artifact-1", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
   );
   const view = renderPage(documentPath);
   view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });

@@ -9,20 +9,21 @@ import { snippetSource } from "../../__tests__/display-trees";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
-import type { AskWithThread, DisplayTree, IssueReadV2 } from "../../api/types";
+import type { AskRead, DisplayTree, IssueReferenceSummary } from "../../api/types";
 import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { loadedEngine, useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
-import { askWithThread, issueSummary } from "./reference-fixture";
 import { Unfurl } from "./Unfurl";
 
 /** CORE-1's summary read, which a reference to it shows. */
-const issue: IssueReadV2 = issueSummary({
+const issue: IssueReferenceSummary = {
+  documents: [],
   key: "CORE-1",
+  project: "CORE",
   status: "in_progress",
   title: "Design decision",
-});
+};
 
 /** One reading of the display-tree fixture, by name: the trees these rows draw are Go's own,
  *  from the file `pmdoc`'s `TestWebDisplayFixture` writes and CI checks. */
@@ -50,14 +51,40 @@ function stored(name: string): { markdown: string; snippet: DisplayTree } {
 /** An ask read as the server answers one, the question carrying the reading Go made of it: the
  *  card's title is the tree's plain words now, and the page's own engine reads a question into
  *  the same document. `warmMarkdownRenderer` must have resolved before this is called. */
-function askRead(question: string): AskWithThread {
-  return askWithThread({
-    author: { id: "alice", kind: "user" },
-    created_at: "2026-09-09T00:00:00Z",
-    id: "ask-1",
-    question,
-    question_tree: loadedEngine()?.parse(question)?.toJSON() as DisplayTree,
-  });
+function askRead(question: string): AskRead {
+  return {
+    ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      id: "ask-1",
+      issue_key: "CORE-1",
+      kind: "question",
+      author: { id: "alice", kind: "user" },
+      question,
+      question_tree: loadedEngine()?.parse(question)?.toJSON() as DisplayTree,
+      options: [],
+      multiple: false,
+      urgency: "med",
+      anchor: null,
+      state: "open",
+      answer: null,
+      opened_event_id: 1,
+      created_at: "2026-09-09T00:00:00Z",
+      edited_at: null,
+    },
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  };
 }
 
 function Providers({ children }: { children: ReactNode }): ReactNode {
@@ -268,9 +295,7 @@ test("an ask's unfurl card shows its question once, even when the question ends 
 
 test("an ask's unfurl card never borrows its issue's status, and reads no issue, while the ask loads", async () => {
   jest.useFakeTimers();
-  const getAsk = spyOn(api, "getAsk").mockReturnValue(
-    Promise.withResolvers<AskWithThread>().promise
-  );
+  const getAsk = spyOn(api, "getAsk").mockReturnValue(Promise.withResolvers<AskRead>().promise);
   const getIssue = spyOn(api, "getIssue");
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
   const view = render(

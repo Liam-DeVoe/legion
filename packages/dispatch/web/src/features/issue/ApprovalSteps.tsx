@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { ArtifactV2, AskV2 } from "../../api/types";
+import type { Artifact, Ask } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import { type PageWords, usePageWords } from "../../components/tooltips";
 import {
@@ -22,7 +22,7 @@ const VALUE_WRAPS = "max-w-full [overflow-wrap:anywhere]";
 /** What an entry needs to link its document at the version its approval speaks for: the
  *  issue's open asks, whose approval requests name that version, and the issue's key. */
 export interface ApprovalVersions {
-  readonly asks: readonly AskV2[];
+  readonly asks: readonly Ask[];
   readonly issueKey: string;
 }
 
@@ -33,7 +33,7 @@ export interface ApprovalVersions {
  * for a request on it alone - and otherwise the version a review approved or sent back
  * (`approvalVersion`). Undefined for a document nobody has asked to review.
  */
-function approvalLinkVersion(document: ArtifactV2, asks: readonly AskV2[]): number | undefined {
+function approvalLinkVersion(document: Artifact, asks: readonly Ask[]): number | undefined {
   const approval = document.approval;
   if (approval === undefined || approval.state === "draft") return undefined;
   if (approval.state !== "awaiting") return approvalVersion(approval);
@@ -73,7 +73,7 @@ function ApprovalVersionLink({
   version,
   words,
 }: {
-  document: ArtifactV2;
+  document: Artifact;
   issueKey: string;
   version: number;
   words: PageWords;

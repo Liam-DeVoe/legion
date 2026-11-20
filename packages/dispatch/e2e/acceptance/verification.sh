@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drives Dispatch's verification rules end to end against a running server, as an agent sees them:
 # a `plan_task` and a `check` that serve a spec's `requirement`, and the `serves` and `needs` edges
-# `GET /api/v2/references` lists for them; every attribute a `check` carries, read back by
+# `GET /api/v1/references` lists for them; every attribute a `check` carries, read back by
 # `dispatch read --ref`; the refusals a pointer earns — a block no document holds, a block of an
 # issue in another tree, a `needs` naming a block outside its own plan — and a `when` the schema
 # does not know; a requirement's id through a move; `dispatch result` and `dispatch results`, with
@@ -28,7 +28,7 @@
 # request's head to read) and DEV_SIGNIN_LOGIN (a login the server's dev sign-in route,
 # /auth/_dev/signin, signs in: the local harness has it, a deployed server does not). Recording a
 # review is a person's write alone, so the two review sections sign that person in with a cookie
-# jar; with DEV_SIGNIN_LOGIN unset each prints one `SKIP: … POST /api/v2/artifacts/{id}/reviews
+# jar; with DEV_SIGNIN_LOGIN unset each prints one `SKIP: … POST /api/v1/artifacts/{id}/reviews
 # needs a person's credential holding the approve scope …` line and every other section runs.
 #
 # The run reads PROJECT's repository mappings once, in its setup, since every result it records
@@ -136,7 +136,7 @@ cleanup() {
     [[ "${closed[$index]}" == 1 ]] || close_written "$issue"
   done
   if [[ -n "$mapped" ]]; then
-    send DELETE "/api/v2/repositories/$mapped" \
+    send DELETE "/api/v1/settings/repo-projects/$mapped" \
       "$(jq -cn --arg s "$session" '{actor: {kind: "session", id: $s}}')"
     [[ "$status" == 2?? ]] ||
       printf 'verification.sh: could not remove the repository mapping %s: HTTP %s: %s\n' \
@@ -238,8 +238,9 @@ upload() {
 # token_of SECTION ISSUE SLUG: sets $doc_token to the document token of ISSUE's document SLUG,
 # the base an upload replacing it names.
 token_of() {
-  one_document "$1" "read $2's $3 token" "$2" "$3" text
-  doc_token="$(jq -er '.items[0].token' "$work/body")" || fail "$1" "read $2's $3 token" "$(body)"
+  get "/api/v1/issues/$2/artifacts/$3/text"
+  want_status 200 "$1" "read $2's $3 token"
+  doc_token="$(jq -er '.token' "$work/body")" || fail "$1" "read $2's $3 token" "$(body)"
 }
 
 # document_body ISSUE NAME FILE: the JSON an artifact POST takes for FILE under NAME.
@@ -260,32 +261,25 @@ refusal() {
 # refused_document SECTION WHAT ISSUE NAME FILE CODE SUBSTRING: posting FILE as ISSUE's document
 # NAME is refused 400 CODE, and the refusal holds SUBSTRING.
 refused_document() {
-  send POST "/api/v2/issues/$3/artifacts" "$(document_body "$3" "$4" "$5")"
+  send POST "/api/v1/issues/$3/artifacts" "$(document_body "$3" "$4" "$5")"
   want_status 400 "$1" "$2"
   expect "$1" "$2 is refused $6" "\"$6\"" '.code'
   refusal "$1" "$2" "$7"
 }
 
-# one_document SECTION WHAT ISSUE SLUG [INCLUDE]: reads ISSUE's document list narrowed to SLUG (a
-# slug or a file name), with INCLUDE's members, into $work/body. The slug filter also keeps the
-# document whose file name it is, so the read fails unless exactly one row answers.
-one_document() {
-  get "/api/v2/issues/$3/artifacts?slug=$(q "$4")${5:+&include=$5}"
-  want_status 200 "$1" "$2"
-  jq -e '.total == 1' "$work/body" >/dev/null ||
-    fail "$1" "$2" "slug $4 names no single document: $(body)"
-}
-
 # artifact_id SECTION ISSUE NAME: sets $artifact to the id of ISSUE's document NAME.
 artifact_id() {
-  one_document "$1" "read $2's $3" "$2" "$3"
-  artifact="$(jq -er '.items[0].id' "$work/body")" || fail "$1" "find $2's $3" "$(body)"
+  get "/api/v1/issues/$2/artifacts"
+  want_status 200 "$1" "read $2's documents"
+  artifact="$(jq -er --arg n "$3" 'map(select(.name == $n)) | .[0].id' "$work/body")" ||
+    fail "$1" "find $2's $3" "$(body)"
 }
 
 # version_of SECTION ISSUE SLUG: sets $version to the current version of ISSUE's document SLUG.
 version_of() {
-  one_document "$1" "read $2's $3 version" "$2" "$3" text
-  version="$(jq -er '.items[0].version' "$work/body")" || fail "$1" "read $2's $3 version" "$(body)"
+  get "/api/v1/issues/$2/artifacts/$3/text"
+  want_status 200 "$1" "read $2's $3 version"
+  version="$(jq -er '.version' "$work/body")" || fail "$1" "read $2's $3 version" "$(body)"
 }
 
 # edit SECTION WHAT ISSUE ARTIFACT OPS: applies OPS through `dispatch doc-edit`.
@@ -328,7 +322,7 @@ record() {
 # writes and leave every status check comparing a value with itself.
 refused_result() {
   local want_code="$5" want_status_code="$6"
-  send POST "/api/v2/issues/$3/results" "$4"
+  send POST "/api/v1/issues/$3/results" "$4"
   want_status "$want_status_code" "$1" "$2 is refused $want_status_code"
   expect "$1" "$2 is refused $want_code" "\"$want_code\"" '.code'
 }
@@ -360,10 +354,10 @@ readonly commit_unknown=4444444444444444444444444444444444444444
 # ones it does not. This run therefore records every result at that repository's own
 # default-branch head, which gh reads from GitHub below: no check stands down, and a repository
 # gh cannot read fails the run by name rather than skipping it.
-get "/api/v2/repositories?project=$(q "$project")&limit=200"
+get "/api/v1/settings/repo-projects"
 want_status 200 setup "the repository mappings answer"
 default_repo="$(jq -r --arg p "$project" \
-  'first(.items[] | select(.project == $p and .default) | (.renamed_to // .repo)) // ""' "$work/body")" ||
+  'first(.[] | select(.project == $p and .default) | (.renamed_to // .repo)) // ""' "$work/body")" ||
   fail setup "read the repository mappings" "$(body)"
 readonly default_repo
 
@@ -497,16 +491,16 @@ LINES
   fail check "the check's head carries every attribute" "$(sed -n '1,8p' "$work/out")"
 pass check "the check's head carries every attribute, in the order its type declares them"
 
-get "/api/v2/references?to=$(q "$root_spec#b-r1")&limit=200"
+get "/api/v1/references?to=$(q "$root_spec#b-r1")"
 want_status 200 check "?to=r1 answers"
 expect check "?to=r1 lists the serves edge from the check" \
   "$(jq -cn --arg k "$root" '[["serves", "\($k)/verification-md#c1"]]')" \
-  '[.items[] | select(.kind == "serves") | [.kind, .node.id]]'
+  '[.edges[] | select(.kind == "serves") | [.kind, .node.id]]'
 
-get "/api/v2/references?from=$(q "$root_verification#b-cnone")&limit=200"
+get "/api/v1/references?from=$(q "$root_verification#b-cnone")"
 want_status 200 check "?from=the check that serves nothing answers"
 expect check "the check that serves nothing writes no serves edge" 0 \
-  '[.items[] | select(.kind == "serves")] | length'
+  '[.edges[] | select(.kind == "serves")] | length'
 
 printf ':::check{#cwhen when="sometimes"}\nA check whose when the schema does not know.\n:::\n' \
   >"$work/bad-when.md"
@@ -531,15 +525,15 @@ edit pointer "a check serving r2, a requirement of its own issue, saves" "$root"
   "$(jq -cn --arg m ":::check{#c2 serves=\"$root_spec#b-r2\" surface=\"api\" run=\"curl the coverage route\"}
 The second requirement is proved.
 :::" '[{op: "insert", after: "end", markdown: $m}]')"
-get "/api/v2/references?to=$(q "$root_spec#b-r2")&limit=200"
+get "/api/v1/references?to=$(q "$root_spec#b-r2")"
 want_status 200 pointer "?to=r2 answers"
 expect pointer "?to=r2 lists the serves edge from the saved check" \
   "$(jq -cn --arg k "$root" '[["serves", "\($k)/verification-md#c2"]]')" \
-  '[.items[] | select(.kind == "serves") | [.kind, .node.id]]'
+  '[.edges[] | select(.kind == "serves") | [.kind, .node.id]]'
 
 # --- coverage-plan: a requirement with a check and no plan task, before any plan document --------
 
-get "/api/v2/issues/$root/coverage"
+get "/api/v1/issues/$root/coverage"
 want_status 200 coverage-plan "the coverage route answers"
 expect coverage-plan "$root has no plan document yet" false '.has_plan'
 gaps coverage-plan "a requirement with a check and no plan task carries no flag" "$root" \
@@ -564,25 +558,25 @@ A task that serves no requirement.
 PLAN
 upload plan "$root" plan.md "$work/root-plan.md"
 
-get "/api/v2/references?to=$(q "$root_spec#b-r1")&limit=200"
+get "/api/v1/references?to=$(q "$root_spec#b-r1")"
 want_status 200 plan "?to=r1 answers"
 expect plan "?to=r1 lists the serves edge from the plan task beside the check's" \
   "$(jq -cn --arg k "$root" '[["serves", "\($k)/plan-md#t1"], ["serves", "\($k)/verification-md#c1"]] | sort')" \
-  '[.items[] | select(.kind == "serves") | [.kind, .node.id]] | sort'
-get "/api/v2/references?from=$(q "$root_plan#b-t3")&limit=200"
+  '[.edges[] | select(.kind == "serves") | [.kind, .node.id]] | sort'
+get "/api/v1/references?from=$(q "$root_plan#b-t3")"
 want_status 200 plan "?from=the task that serves nothing answers"
 expect plan "the plan task that serves nothing writes no serves edge" 0 \
-  '[.items[] | select(.kind == "serves")] | length'
+  '[.edges[] | select(.kind == "serves")] | length'
 
 run plan "read the waiting task by its reference" read --ref "$root_plan#b-t2"
 grep -qxF "needs: $root_plan#b-t1" "$work/out" ||
   fail plan "the waiting task's head carries its needs" "$(<"$work/out")"
 pass plan "the waiting task's head carries needs: $root_plan#b-t1"
-get "/api/v2/references?to=$(q "$root_plan#b-t1")&limit=200"
+get "/api/v1/references?to=$(q "$root_plan#b-t1")"
 want_status 200 plan "?to=the first task answers"
 expect plan "?to=the first task lists the needs edge from the second" \
   "$(jq -cn --arg k "$root" '[["needs", "\($k)/plan-md#t2"]]')" \
-  '[.items[] | select(.kind == "needs") | [.kind, .node.id]]'
+  '[.edges[] | select(.kind == "needs") | [.kind, .node.id]]'
 
 refused_edit plan "a needs naming a requirement, which is no plan task, is refused" "$root" plan.md \
   "$(jq -cn --arg m ":::plan_task{#t4 needs=\"$root_spec#b-r1\"}
@@ -631,17 +625,17 @@ gaps coverage-child "deleting the child's check brings the root's flag back" "$r
 
 edit move "move the third requirement above the first" "$root" spec \
   '[{"op":"move","block":"r3","before":"block:r1"}]'
-get "/api/v2/issues/$root/coverage"
+get "/api/v1/issues/$root/coverage"
 want_status 200 move "the coverage route answers after the move"
 expect move "the requirements keep their ids in the new order" '["r3","r1","r2"]' \
   '[.requirements[].block_id]'
-get "/api/v2/references?to=$(q "$root_spec#b-r3")&limit=200"
+get "/api/v1/references?to=$(q "$root_spec#b-r3")"
 want_status 200 move "?to=r3 answers after the move"
 expect move "r3 is read by the id it had before the move" '"r3"' '.node.block_id'
-get "/api/v2/references?to=$(q "$root_spec#b-r1")&limit=200"
+get "/api/v1/references?to=$(q "$root_spec#b-r1")"
 want_status 200 move "?to=r1 answers after the move"
 expect move "r1 keeps both edges that serve it through the move" 2 \
-  '[.items[] | select(.kind == "serves")] | length'
+  '[.edges[] | select(.kind == "serves")] | length'
 
 # --- result: recording one, and the two refusals a result's own fields earn ----------------------
 
@@ -682,7 +676,7 @@ refused_result closed "a result for a before-merge check on a closed issue" "$ch
   ISSUE_CLOSED 409
 
 printf 'A note the closed issue must refuse.\n' >"$work/note.md"
-send POST "/api/v2/issues/$child/artifacts" "$(document_body "$child" note.md "$work/note.md")"
+send POST "/api/v1/issues/$child/artifacts" "$(document_body "$child" note.md "$work/note.md")"
 want_status 409 closed "a document write on the closed issue"
 expect closed "a document write on the closed issue is refused ISSUE_CLOSED" '"ISSUE_CLOSED"' '.code'
 
@@ -714,20 +708,20 @@ grep -qF "The plan review approved plan.md" "$work/out" ||
   fail approval "the plan review approves the plan" "$(<"$work/out")"
 pass approval "the plan review approved $root's plan at version $version"
 artifact_id approval "$root" plan.md
-get "/api/v2/artifacts/$artifact/reviews?limit=200"
+get "/api/v1/artifacts/$artifact/reviews"
 want_status 200 approval "the plan's reviews answer"
 expect approval "the plan carries one approved plan review" \
   "$(jq -cn --argjson v "$version" '[["approved", "plan_review", $v]]')" \
-  '[.items[] | [.state, .kind, .version]]'
+  '[.[] | [.state, .kind, .version]]'
 
 artifact_id approval "$root" spec.md
-send POST "/api/v2/artifacts/$artifact/plan-reviews" \
+send POST "/api/v1/artifacts/$artifact/plan-reviews" \
   "$(jq -cn --arg s "$session" '{actor: {kind: "session", id: $s}, version: 1}')"
 want_status 409 approval "a plan review of a spec"
 expect approval "a plan review of a spec is refused NOT_PLAN_DOCUMENT" '"NOT_PLAN_DOCUMENT"' '.code'
 
 artifact_id approval "$root" plan.md
-send POST "/api/v2/artifacts/$artifact/approval-requests" \
+send POST "/api/v1/artifacts/$artifact/approval-requests" \
   "$(jq -cn --arg s "$session" '{actor: {kind: "session", id: $s}, summary: "Approve the plan."}')"
 want_status 409 approval "an approval request on a plan"
 expect approval "an approval request on a plan is refused PLAN_APPROVED_BY_REVIEW" \
@@ -751,7 +745,7 @@ grep -qF 'Approve spec.md (version 1) and verification.md (version 1)?' "$work/o
 pass review "one request's question names spec.md and verification.md at their versions"
 
 if [[ -z "$dev_login" ]]; then
-  skip review "a person's approval records a review on each document: DEV_SIGNIN_LOGIN is unset; POST /api/v2/artifacts/{id}/reviews needs a person's credential holding the approve scope, and only a server with dev sign-in mints that person's cookie"
+  skip review "a person's approval records a review on each document: DEV_SIGNIN_LOGIN is unset; POST /api/v1/artifacts/{id}/reviews needs a person's credential holding the approve scope, and only a server with dev sign-in mints that person's cookie"
   skip review "a request naming the spec alone records nothing on the Verification document: DEV_SIGNIN_LOGIN is unset"
 else
   curl -sS -o /dev/null -c "$work/jar" "$base/auth/_dev/signin?login=$(q "$dev_login")" \
@@ -760,23 +754,23 @@ else
   pass review "signed $dev_login in at the dev sign-in route"
 
   artifact_id review "$both" spec.md
-  person_send POST "/api/v2/artifacts/$artifact/reviews" '{"state":"approved"}'
+  person_send POST "/api/v1/artifacts/$artifact/reviews" '{"state":"approved"}'
   want_status 201 review "$dev_login approves the spec of $both"
   pass review "$dev_login approved $both's spec, answering the request that named both"
   for document in spec.md verification.md; do
     artifact_id review "$both" "$document"
-    get "/api/v2/artifacts/$artifact/versions/1"
+    get "/api/v1/artifacts/$artifact/versions/1"
     want_status 200 review "$both's $document version 1 answers"
     jq -j .markdown "$work/body" >"$work/approved-$document"
     h1="$(sha256sum "$work/approved-$document" | cut -d' ' -f1)"
     expect review "$document version read names its own bytes" "\"$h1\"" '.sha256'
-    person_send GET "/api/v2/artifacts/$artifact/reviews?limit=200"
+    person_send GET "/api/v1/artifacts/$artifact/reviews"
     want_status 200 review "$both's $document reviews answer"
     expect review "$both's $document carries one approved person's review" \
-      '[["approved","person",1]]' '[.items[] | [.state, .kind, .version]]'
+      '[["approved","person",1]]' '[.[] | [.state, .kind, .version]]'
     expect review "$both's $document review names the sha256 of the bytes approved" \
-      "\"$h1\"" '.items[0].content_sha256'
-    expect review "$both's $document review was hashed at approval" '"insert"' '.items[0].content_sha256_source'
+      "\"$h1\"" '.[0].content_sha256'
+    expect review "$both's $document review was hashed at approval" '"insert"' '.[0].content_sha256_source'
   done
 
   artifact_id review "$both" spec.md
@@ -787,15 +781,15 @@ else
   # form `--path` sends.
   token_of review "$both" spec.md
   upload review "$both" spec.md "$work/revised-spec.md" "$doc_token"
-  get "/api/v2/artifacts/$artifact/versions/2"
+  get "/api/v1/artifacts/$artifact/versions/2"
   want_status 200 review "$both's spec version 2 answers"
   h2="$(jq -j .markdown "$work/body" | sha256sum | cut -d' ' -f1)"
   [[ "$h2" != "$h1" ]] || fail review "different version bytes have different hashes" "$h1 = $h2"
   expect review "version 2 read names its own bytes" "\"$h2\"" '.sha256'
-  person_send GET "/api/v2/artifacts/$artifact/reviews?limit=200"
+  person_send GET "/api/v1/artifacts/$artifact/reviews"
   want_status 200 review "the person's review still answers after the edit"
-  expect review "the review does not follow the latest bytes" "\"$h1\"" '.items[0].content_sha256'
-  get "/api/v2/artifacts/$artifact"
+  expect review "the review does not follow the latest bytes" "\"$h1\"" '.[0].content_sha256'
+  get "/api/v1/artifacts/$artifact"
   want_status 200 review "the changed document answers"
   expect review "an unapproved edit leaves the approval stale" '"stale"' '.approval.state'
   expect review "the stale approval still names the approved bytes" "\"$h1\"" '.approval.content_sha256'
@@ -808,18 +802,18 @@ else
   pass review "the CLI's latest-version content differs from its stale approval"
 
   artifact_id review "$other" spec.md
-  person_send POST "/api/v2/artifacts/$artifact/reviews" '{"state":"approved"}'
+  person_send POST "/api/v1/artifacts/$artifact/reviews" '{"state":"approved"}'
   want_status 201 review "$dev_login approves the spec of $other"
   pass review "$dev_login approved $other's spec, answering the request that named it alone"
-  get "/api/v2/artifacts/$artifact/reviews?limit=200"
+  get "/api/v1/artifacts/$artifact/reviews"
   want_status 200 review "$other's spec reviews answer"
   expect review "$other's spec carries the approved review" '[["approved","person",1]]' \
-    '[.items[] | [.state, .kind, .version]]'
+    '[.[] | [.state, .kind, .version]]'
   artifact_id review "$other" verification.md
-  get "/api/v2/artifacts/$artifact/reviews?limit=200"
+  get "/api/v1/artifacts/$artifact/reviews"
   want_status 200 review "$other's verification.md reviews answer"
   expect review "a request naming the spec alone records nothing on the Verification document" \
-    '[]' '[.items[] | [.state, .kind, .version]]'
+    '[]' '[.[] | [.state, .kind, .version]]'
 fi
 
 # --- reading: every result of a check, each commit whole, and one the repository does not hold ---
@@ -832,7 +826,7 @@ else
     # — that repository, the head, the look-alike and pull request 7 — and every issue this run
     # wrote resolves to it from here on. Where PROJECT maps one, it is already this section's, so
     # nothing is mapped here.
-    send PUT "/api/v2/repositories/$driven_repo" \
+    send PUT "/api/v1/settings/repo-projects/$driven_repo" \
       "$(jq -cn --arg s "$session" --arg p "$project" \
         '{actor: {kind: "session", id: $s}, project: $p, default: true}')"
     want_status 200 reading "map $driven_repo as $project's default repository"

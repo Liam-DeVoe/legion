@@ -10,43 +10,37 @@ import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError, type WholeList } from "../../api/client";
-import type { Comment, Decision, DecisionKeep, DisplayTree } from "../../api/types";
+import { api, NetworkError } from "../../api/client";
+import type {
+  Artifact,
+  AskRead,
+  Comment,
+  Decision,
+  DecisionKeep,
+  DisplayTree,
+  IssueAskRow,
+  IssueDecisions,
+} from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import {
-  askRow,
-  askWithThread,
-  documentRow,
-  issueSummary,
-  questionsRead,
-} from "../refs/reference-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DecisionsPanel } from "./DecisionsPanel";
-
-/** The decisions read `getIssueDecisions` answers: every decision, and the open questions. */
-type DecisionsRead = WholeList<"/api/v2/issues/{key}/decisions">;
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const askId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const questionId = "qqqqqqqq-qqqq-4qqq-8qqq-qqqqqqqqqqqq";
 
 const artifacts = [
-  documentRow({
-    id: "spec-id",
-    issue_key: "CORE-1",
-    name: "spec.md",
-    primary: true,
-    project: "",
-    slug: "spec",
-  }),
-  documentRow({
+  { id: "spec-id", issue_key: "CORE-1", kind: "doc", primary: true, project: "", slug: "spec" },
+  {
     id: documentId,
     issue_key: "CORE-1",
+    kind: "doc",
     name: "decisions.md",
+    primary: false,
     project: "",
     slug: "decisions-md",
-  }),
-];
+  },
+] as unknown as Artifact[];
 
 function decision(fields: Partial<Decision> & Pick<Decision, "block_id" | "heading" | "text">) {
   return {
@@ -70,7 +64,7 @@ function decision(fields: Partial<Decision> & Pick<Decision, "block_id" | "headi
   } as Decision;
 }
 
-function issueView(): DecisionsRead {
+function issueView(): IssueDecisions {
   const table = decision({
     block_id: "store",
     heading: "Store notices in a table",
@@ -118,14 +112,15 @@ function issueView(): DecisionsRead {
     text: "### Keep them in a file\n\nA file was simpler.",
   });
   return {
+    decisions: [table, named, file],
     document: "dispatch://CORE-1/artifact/decisions-md",
-    items: [table, named, file],
-    limit: 50,
-    offset: 0,
     open_questions: [
-      askRow({ block_id: "q1", id: questionId, question: "Which index should the table carry?" }),
+      {
+        block_id: "q1",
+        id: questionId,
+        question: "Which index should the table carry?",
+      } as unknown as IssueAskRow,
     ],
-    total: 3,
   };
 }
 
@@ -217,7 +212,7 @@ test("Keep records the decision and moves it from Waiting for your review to You
     await user.click(within(waiting).getByRole("button", { name: "Keep" }));
 
     await waitFor(() => expect(keep).toHaveBeenCalled());
-    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual(["CORE-1", "store", "sum-store"]);
+    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([documentId, "store", "sum-store"]);
     await waitFor(() =>
       expect(
         within(list("Waiting for your review")).queryByText("Store notices in a table")
@@ -267,7 +262,7 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
 test("a Keep the reader stopped says it may have been made, not a message's words", async () => {
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const keep = spyOn(api, "keepDecision").mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-1/decisions", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/decisions/keep", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
@@ -292,7 +287,7 @@ test("a Keep the reader stopped says it may have been made, not a message's word
 test("a change the reader stopped says it may have been posted, not a message's words", async () => {
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const comment = spyOn(api, "createComment").mockRejectedValue(
-    new NetworkError("/api/v2/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
@@ -321,19 +316,16 @@ test("a change the reader stopped says it may have been posted, not a message's 
  *  Change beside the blocks of its text. */
 function waitingView(
   fields: Partial<Decision> & Pick<Decision, "heading" | "text">
-): DecisionsRead {
+): IssueDecisions {
   return {
+    decisions: [decision({ block_id: "only", waiting_review: true, ...fields })],
     document: "dispatch://CORE-1/artifact/decisions-md",
-    items: [decision({ block_id: "only", waiting_review: true, ...fields })],
-    limit: 50,
-    offset: 0,
     open_questions: [],
-    total: 1,
   };
 }
 
 /** The quote the Change composer offers for the one decision `view` holds. */
-async function quoteOf(view: DecisionsRead): Promise<string> {
+async function quoteOf(view: IssueDecisions): Promise<string> {
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
   try {
@@ -385,9 +377,13 @@ test("a decision's references are read from its own markdown, not from the words
       text: `## Read the keys\n\nIt answers [the earlier ask](dispatch://CORE-1/ask/${askId}), and a \`CORE-9\`-style key names the issue it shaped.`,
     })
   );
-  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key) =>
-    issueSummary({ key, project: "CORE", status: "in_progress", title: "The ninth issue" })
-  );
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "in_progress",
+    title: "The ninth issue",
+  }));
   const ask = spyOn(api, "getAsk").mockRejectedValue(new Error("the ask is not read here"));
   try {
     renderPanel();
@@ -449,25 +445,32 @@ test("a block of an answer with no reading cites its own markdown, not the decis
       text_tree: undefined,
     })
   );
-  const questions = spyOn(api, "getReferenceQuestions").mockResolvedValue(
-    questionsRead(
-      [
-        askRow({
-          block_id: "q2",
-          id: askId,
-          question: "Which region?",
-          question_block_id: "q2",
-          ref: `dispatch://CORE-1/ask/${askId}`,
-        }),
-      ],
-      documentId
-    )
-  );
+  const questions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
+    document: documentId,
+    questions: [{ ask: askId, block_id: "q2", reference: `dispatch://CORE-1/ask/${askId}` }],
+  });
   // The link reads the ask it names, so the row answers that read rather than leaving it to
   // reach a network no test serves.
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(
-    askWithThread({ block_id: "q2", id: askId, question: "Which region?" })
-  );
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    answers: [],
+    ask: {
+      block_id: "q2",
+      id: askId,
+      issue_key: "CORE-1",
+      kind: "question",
+      options: [],
+      question: "Which region?",
+      state: "open",
+    } as unknown as IssueAskRow,
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  } as unknown as AskRead);
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });

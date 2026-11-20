@@ -38,7 +38,7 @@ function fixtureDaily(): DeliveryDailyPoint[] {
   return days;
 }
 
-/** GET /api/v2/delivery/measures for the fixture window, as the server answers it with no flags
+/** GET /api/v1/delivery/measures for the fixture window, as the server answers it with no flags
  *  stored (the reference request recorded on the slice 2 pull request). */
 const fixtureMeasures: DeliveryMeasuresResponse = {
   window: { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" },

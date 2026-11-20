@@ -181,7 +181,7 @@ test.describe("agents page", () => {
       const held = new Promise<void>((resolve) => {
         release = resolve;
       });
-      await page.route("**/api/v2/issues?*", async (route) => {
+      await page.route("**/api/v1/issues?*", async (route) => {
         await held;
         return route.fallback();
       });
@@ -259,7 +259,7 @@ test.describe("agents page", () => {
     try {
       const page = await context.newPage();
       await openAgents(page);
-      const upload = await holdPosts(page, "**/api/v2/issues/*/artifacts");
+      const upload = await holdPosts(page, "**/api/v1/issues/*/artifacts");
       const row = agentRow(page, plannerSession.session_id);
       const toggle = row.getByRole("button", { name: "Choose issue" });
       const picker = row.getByRole("combobox", { name: "Issue" });
@@ -300,7 +300,7 @@ test.describe("agents page", () => {
       let uploads = 0;
       // The first upload is refused, so its Retry is on screen when the message goes. A 5xx would
       // be tried again under the upload's key rather than refused.
-      await page.route("**/api/v2/issues/*/artifacts", (route) => {
+      await page.route("**/api/v1/issues/*/artifacts", (route) => {
         if (route.request().method() !== "POST") return route.fallback();
         uploads += 1;
         if (uploads > 1) return route.fallback();
@@ -310,7 +310,7 @@ test.describe("agents page", () => {
           status: 400,
         });
       });
-      const refuse = await refusePosts(page, "**/api/v2/issues/*/comments");
+      const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
       const row = agentRow(page, plannerSession.session_id);
       const field = row.getByRole("textbox", { name: "Comment" });
       const uploadRetry = row
@@ -357,7 +357,7 @@ test.describe("agents page", () => {
       const held = new Promise<void>((resolve) => {
         release = resolve;
       });
-      await page.route("**/api/v2/issues?*", async (route) => {
+      await page.route("**/api/v1/issues?*", async (route) => {
         await held;
         return route.fallback();
       });
@@ -394,7 +394,7 @@ test.describe("agents page", () => {
       const held = new Promise<void>((resolve) => {
         release = resolve;
       });
-      await page.route("**/api/v2/issues?*", async (route) => {
+      await page.route("**/api/v1/issues?*", async (route) => {
         await held;
         return route.fulfill({
           body: JSON.stringify({ code: "INTERNAL", error: "issue store unavailable" }),
@@ -794,7 +794,7 @@ test.describe("agents page", () => {
       const reviewer = rows.nth(1);
 
       // Hold the send open so the reader has a window to click in, as a slow server would.
-      const send = await holdPosts(page, "**/api/v2/agents/*/messages");
+      const send = await holdPosts(page, "**/api/v1/agents/*/messages");
 
       await page.keyboard.press("j");
       await page.keyboard.press("Enter");

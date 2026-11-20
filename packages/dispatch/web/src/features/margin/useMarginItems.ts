@@ -7,8 +7,8 @@ import { inboxQuery, userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Anchor,
-  ArtifactV2,
-  AskV2,
+  Artifact,
+  Ask,
   Comment,
   CommentWithTrees,
   Decision,
@@ -78,7 +78,7 @@ export interface DecisionMarginItem {
   readonly kind: "decision";
 }
 export type MarginItem =
-  | { ask: AskV2; kind: "ask" }
+  | { ask: Ask; kind: "ask" }
   | { comment: ThreadComment; kind: "comment"; threadRootId: string }
   | DecisionMarginItem;
 
@@ -120,12 +120,7 @@ const NO_PINS: string[] = [];
 
 const pinnedEventBatchSize = 50;
 
-/** One read of an issue's events by id (`api.getIssueEvents`): the route takes at most 50 ids
- *  in one read. */
-type IssueEventsFetcher = (
-  issueKey: string,
-  options: { ids: number[] }
-) => Promise<DispatchEvent[]>;
+type IssueEventsFetcher = (issueKey: string, options: { ids: string }) => Promise<DispatchEvent[]>;
 
 export async function fetchPinnedEvents(
   listIssueEvents: IssueEventsFetcher,
@@ -137,7 +132,7 @@ export async function fetchPinnedEvents(
     batches.push(ids.slice(index, index + pinnedEventBatchSize));
   }
   const events = await Promise.all(
-    batches.map((batch) => listIssueEvents(issueKey, { ids: batch.map(Number) }))
+    batches.map((batch) => listIssueEvents(issueKey, { ids: batch.join(",") }))
   );
   return events.flat().sort((left, right) => left.seq - right.seq);
 }
@@ -215,7 +210,7 @@ function commentThreads(comments: Comment[]): Thread[] {
 /** The ask or comment a card shows. */
 export function marginItemRecord(
   item: Exclude<MarginItem, DecisionMarginItem>
-): AskV2 | ThreadComment {
+): Ask | ThreadComment {
   return item.kind === "ask" ? item.ask : item.comment;
 }
 
@@ -265,7 +260,7 @@ interface Placed {
 }
 
 function placedRecord(
-  record: AskV2 | ThreadComment,
+  record: Ask | ThreadComment,
   markPlacements: ReadonlyMap<string, MarkPlacement>,
   blockPlacements: ReadonlyMap<string, MarkPlacement>
 ): Placed {
@@ -308,7 +303,7 @@ const NO_PLACEMENTS: ReadonlyMap<string, boolean> = new Map();
 export function useMarginItems(
   owner: MarginOwner | undefined,
   tab: MarginTab,
-  visibleArtifact: ArtifactV2 | undefined,
+  visibleArtifact: Artifact | undefined,
   markPlacements: ReadonlyMap<string, MarkPlacement>,
   blockPlacements: ReadonlyMap<string, MarkPlacement>,
   blockFilterId: string | undefined,
@@ -362,7 +357,7 @@ export function useMarginItems(
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
-    owner?.kind === "issue" ? (userState.data?.[owner.key]?.pinned_items ?? NO_PINS) : NO_PINS;
+    owner?.kind === "issue" ? (userState.data?.[owner.key]?.dismissed ?? NO_PINS) : NO_PINS;
   const pinnedIds = pinnedEventIds(dismissed);
   const pinned = useQuery({
     enabled: owner?.kind === "issue" && tab === "pinned" && pinnedIds.length > 0,
@@ -386,18 +381,24 @@ export function useMarginItems(
   const pinnedMessages = useQuery({
     enabled: owner?.kind === "issue" && tab === "pinned" && pinnedMessageIds.length > 0,
     queryKey: ["issue-messages", issueKey, "margin-pinned", pinnedMessageIds],
-    queryFn: () => Promise.all(pinnedMessageIds.map((id) => api.getMessage(id))),
+    queryFn: () => {
+      if (owner?.kind !== "issue") {
+        throw new Error("Pinned margin messages require an issue owner.");
+      }
+      return Promise.all(pinnedMessageIds.map((id) => api.getMessage(owner.key, id)));
+    },
   });
   const pinnedCards = useMemo<PinnedConversationCard[]>(() => {
     const asks = new Map(answeredAsks.all.map((ask) => [ask.id, ask]));
     const roots = new Map((comments.data ?? []).map((comment) => [comment.id, comment]));
-    const messages = new Map((pinnedMessages.data ?? []).map((message) => [message.id, message]));
+    const messages = new Map((pinnedMessages.data ?? []).map((read) => [read.message.id, read]));
     return pinnedMarkers.flatMap(({ id, kind }) => {
-      const row =
+      const record =
         kind === "ask" ? asks.get(id) : kind === "comment" ? roots.get(id) : messages.get(id);
-      if (row === undefined) {
+      if (record === undefined) {
         return [];
       }
+      const row = "message" in record ? record.message : record;
       return [
         {
           at: row.created_at,
@@ -411,7 +412,7 @@ export function useMarginItems(
     });
   }, [answeredAsks.all, comments.data, pinnedMarkers, pinnedMessages.data]);
   const needsYou = useMemo(() => {
-    const openAsks = new Map<string, AskV2>(inboxOpenAsks.map((ask) => [ask.id, ask]));
+    const openAsks = new Map<string, Ask>(inboxOpenAsks.map((ask) => [ask.id, ask]));
     for (const ask of answeredAsks.asks) {
       if (ask.state === "open") {
         openAsks.set(ask.id, ask);
@@ -488,7 +489,7 @@ export function useMarginItems(
   const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
-    const decisionItems = (decisionsView.data?.items ?? []).flatMap((decision) => {
+    const decisionItems = (decisionsView.data?.decisions ?? []).flatMap((decision) => {
       if (decision.replaced) return [];
       const blockIds = new Set(
         (decision.links ?? []).flatMap((link) =>

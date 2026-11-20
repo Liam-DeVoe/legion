@@ -135,7 +135,9 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     await expect(control.locator('option[value="bob"]')).toHaveCount(1);
     await control.selectOption("bob");
     await expect(card).toContainText("Asked of bob");
-    await expect.poll(async () => (await getAsk(issueAsk, { login: "bob" })).asked_of).toBe("bob");
+    await expect
+      .poll(async () => (await getAsk(issueAsk, { login: "bob" })).ask.asked_of)
+      .toBe("bob");
 
     // 4. The same author session's listing names him from then on, with nothing else moved.
     const after = await runDispatch(["open-asks"], home);

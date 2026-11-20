@@ -92,7 +92,7 @@ async function waitForReads(pending: Map<Request, number>): Promise<void> {
 
 /** What a recorded read path carries in place of the issue's key, so that two pages, each
  *  reading an issue of its own, compare as lists. */
-const ISSUE_PATH = "/api/v2/issues/<issue>";
+const ISSUE_PATH = "/api/v1/issues/<issue>";
 
 /** The reads an issue's activity tab makes for itself at its first load. A window that counts
  *  what an event costs a page opens only after these have gone out, since they are the page's
@@ -108,7 +108,7 @@ const FIRST_ISSUE_READS = [`${ISSUE_PATH}/comments`, `${ISSUE_PATH}/asks`, `${IS
  *  between two pages by construction and would read as different reads. */
 function trackIssueReads(page: Page, key: string): string[] {
   const reads: string[] = [];
-  const prefix = `/api/v2/issues/${key}`;
+  const prefix = `/api/v1/issues/${key}`;
   page.on("request", (request) => {
     const { pathname } = new URL(request.url());
     if (pathname === prefix || pathname.startsWith(`${prefix}/`)) {

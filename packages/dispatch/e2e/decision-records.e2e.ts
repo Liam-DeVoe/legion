@@ -15,8 +15,8 @@ import { expect, test } from "./test";
 // blocks and on the Decisions tab, answers it with Keep and Change, and sees each block the
 // decision has changed since marked out of date until that block changes too.
 //
-// Every block id comes from `GET /api/v2/artifacts/<id>?include=blocks` (`blockId`), never from a
-// guess, and every seed goes through the API the agent uses.
+// Every block id comes from `GET /api/v1/artifacts/<id>/blocks` (`blockId`), never from a guess,
+// and every seed goes through the API the agent uses.
 
 const STALE_TITLE = "A decision that shaped this block changed after it.";
 const DECISION = "Store notices in a table";
@@ -40,7 +40,7 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   const spec = await getArtifact(issue.primary_artifact_id ?? "");
   const stored = await blockId(spec.id, "Store each notice.");
   const newest = await blockId(spec.id, "Show the newest first.");
-  const specVersions = spec.version_count;
+  const specVersions = (spec.versions ?? []).length;
 
   const reference = `dispatch://${issue.key}/spec`;
   const decisions = await createIssueArtifact(issue.key, {
@@ -50,7 +50,7 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   expect(decisions.artifact.slug).toBe("decisions-md");
 
   // Writing decisions.md writes the spec no version of its own.
-  expect((await getArtifact(spec.id)).version_count).toBe(specVersions);
+  expect((await getArtifact(spec.id)).versions).toHaveLength(specVersions);
 
   // The Spec tab: the decision is a margin card, and no block is out of date yet.
   await page.goto(`/issues/${issue.key}/spec`);

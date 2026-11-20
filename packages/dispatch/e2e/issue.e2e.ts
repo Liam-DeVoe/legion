@@ -48,7 +48,7 @@ test("database reset clears fake Envoy subscribers before the next issue", async
   try {
     const page = await context.newPage();
     const subscribers = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === `/api/v2/issues/${issue.key}/subscribers`
+      (response) => new URL(response.url()).pathname === `/api/v1/issues/${issue.key}/subscribers`
     );
     await page.goto(`/issues/${issue.key}`);
     expect((await subscribers).status()).toBe(200);
@@ -72,7 +72,7 @@ test("issue header closes an issue and reopens it into Backlog @pr", async ({ br
     const closing = page.waitForResponse(
       (response) =>
         response.request().method() === "PATCH" &&
-        new URL(response.url()).pathname === `/api/v2/issues/${issue.key}`
+        new URL(response.url()).pathname === `/api/v1/issues/${issue.key}`
     );
     await close.click();
     expect((await closing).status()).toBe(200);
@@ -100,7 +100,7 @@ test("issue header closes an issue and reopens it into Backlog @pr", async ({ br
     const reopening = page.waitForResponse(
       (response) =>
         response.request().method() === "PATCH" &&
-        new URL(response.url()).pathname === `/api/v2/issues/${issue.key}`
+        new URL(response.url()).pathname === `/api/v1/issues/${issue.key}`
     );
     await reopen.click();
     expect((await reopening).status()).toBe(200);
@@ -194,7 +194,7 @@ test("issue header copies its key and persists its title, status, and route", as
   const copied = await recordClipboard(page);
   const issueWrites: string[] = [];
   page.on("request", (request) => {
-    if (request.method() === "PATCH" && request.url().includes("/api/v2/issues/")) {
+    if (request.method() === "PATCH" && request.url().includes("/api/v1/issues/")) {
       issueWrites.push(`${new Date().toISOString()} PATCH ${request.url()} ${request.postData()}`);
     }
   });
@@ -584,43 +584,40 @@ test("pinning survives an immediate full navigation", async ({ browser }) => {
   await createMessage(issue.key, { body: "Pinned before navigation" });
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  // The reader's issue marks, as the pin reads them before it writes (`getMyState`).
-  const issueMarksRead = (url: URL) =>
-    url.pathname === "/api/v2/me/marks" && url.searchParams.get("kind") === "issue";
   try {
     const initialState = page.waitForResponse(
-      (response) => issueMarksRead(new URL(response.url())) && response.ok()
+      (response) => new URL(response.url()).pathname === "/api/v1/me/state" && response.ok()
     );
     await page.goto(`/issues/${issue.key}/conversation`);
     await initialState;
     const getIntercepted = Promise.withResolvers<void>();
     const releaseGet = Promise.withResolvers<void>();
     const queueState = page.waitForResponse(
-      (response) => issueMarksRead(new URL(response.url())) && response.ok()
+      (response) => new URL(response.url()).pathname === "/api/v1/me/state" && response.ok()
     );
-    const patchIntercepted = Promise.withResolvers<void>();
-    const releasePatch = Promise.withResolvers<void>();
-    let firstPatch = true;
-    await page.route(issueMarksRead, async (route) => {
+    const putIntercepted = Promise.withResolvers<void>();
+    const releasePut = Promise.withResolvers<void>();
+    let firstPut = true;
+    await page.route("**/api/v1/me/state", async (route) => {
       getIntercepted.resolve();
       await releaseGet.promise;
       await route.continue();
     });
-    await page.route("**/api/v2/me/marks/issue/*", async (route) => {
+    await page.route("**/api/v1/me/issues/*/state", async (route) => {
       const body = route.request().postDataJSON();
       if (
-        route.request().method() !== "PATCH" ||
-        !firstPatch ||
+        route.request().method() !== "PUT" ||
+        !firstPut ||
         body === null ||
         typeof body !== "object" ||
-        !("pinned_items" in body)
+        !("dismissed" in body)
       ) {
         await route.continue();
         return;
       }
-      firstPatch = false;
-      patchIntercepted.resolve();
-      await releasePatch.promise;
+      firstPut = false;
+      putIntercepted.resolve();
+      await releasePut.promise;
       await route.continue();
     });
     await page
@@ -632,17 +629,17 @@ test("pinning survives an immediate full navigation", async ({ browser }) => {
     await getIntercepted.promise;
     releaseGet.resolve();
     await queueState;
-    await patchIntercepted.promise;
+    await putIntercepted.promise;
     const navigated = page.waitForEvent(
       "framenavigated",
       (frame) => frame === page.mainFrame() && new URL(frame.url()).pathname === "/"
     );
     const navigation = page.goto("/");
     await navigated;
-    releasePatch.resolve();
+    releasePut.resolve();
     await navigation;
-    await page.unroute(issueMarksRead);
-    await page.unroute("**/api/v2/me/marks/issue/*");
+    await page.unroute("**/api/v1/me/state");
+    await page.unroute("**/api/v1/me/issues/*/state");
     await page.goto(`/issues/${issue.key}`);
     await page.getByRole("tab", { name: "Pinned" }).click();
     await expect(page.getByText("Pinned before navigation", { exact: true })).toBeVisible();
@@ -1037,7 +1034,7 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
+        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
     await control.selectOption("alice");
     expect((await patch).postDataJSON()).toEqual({ assignee: "alice" });
@@ -1135,7 +1132,7 @@ test("issue header picks the issue's repository from its project's mappings, and
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v2/issues/${parent.key}`
+        new URL(request.url()).pathname === `/api/v1/issues/${parent.key}`
     );
     await control.fill("acme/gadgets");
     await control.press("Enter");
@@ -1176,7 +1173,7 @@ test("issue header picks the issue's repository from its project's mappings, and
     const bare = await createIssue({ project: "BARE", title: "No repository mapped" });
     expect(bare.resolved_repo).toBeNull();
     const mappingsRead = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/v2/repositories"
+      (response) => new URL(response.url()).pathname === "/api/v1/settings/repo-projects"
     );
     await page.goto(`/issues/${bare.key}`);
     await mappingsRead;
@@ -1252,7 +1249,7 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
   try {
     let failing = true;
     let refused = 0;
-    await page.route("**/api/v2/repositories", (route) => {
+    await page.route("**/api/v1/settings/repo-projects", (route) => {
       if (!failing) {
         return route.continue();
       }
@@ -1305,7 +1302,7 @@ test("an issue takes a repository its project does not map, and keeps it across 
     const written = page.waitForResponse(
       (response) =>
         response.request().method() === "PATCH" &&
-        new URL(response.url()).pathname === `/api/v2/issues/${issue.key}`
+        new URL(response.url()).pathname === `/api/v1/issues/${issue.key}`
     );
     await control.fill("other/elsewhere");
     await control.press("Enter");

@@ -12,7 +12,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
-import type { AskV2, Comment, IssueDetails } from "../../api/types";
+import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
@@ -35,7 +35,6 @@ import {
   specArtifact,
   stubDocumentBridge,
   stubViewport,
-  withEmptyThread,
 } from "./margin-fixture";
 
 const secondIssue: IssueDetails = {
@@ -60,21 +59,42 @@ const unanchoredRootComment: Comment = {
   id: "comment-unanchored-root",
 };
 
-const unanchoredAsk: AskV2 = {
+const unanchoredAsk: Ask = {
   ...anchoredAsk,
   anchor: null,
   id: "ask-unanchored",
   question: "Approve the release?",
 };
 
-/** The thread each margin ask card reads for its own ask
- *  (`GET /api/v2/asks/{id}?include=thread`): the ask as the test has it, and nothing else on
- *  it. */
-function answerAskThreads(...asks: AskV2[]) {
+/** One row of `listIssueAsks`: the ask plus the list's own `last_reply`. The margin reads the
+ *  ask itself and asks for no thread, so a fixture row carries no reply either. */
+function askRow(ask: Ask): IssueAskRow {
+  return {
+    ...ask,
+    last_reply: null,
+  };
+}
+
+/** An ask's thread with nothing on it: no reply, no rewording, no answer, no follower. */
+const emptyAskThread = {
+  answers: [],
+  claimant: null,
+  edits: [],
+  followers: [],
+  replies: [],
+  route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+} satisfies Omit<AskRead, "ask">;
+
+/** The thread each margin ask card reads for its own ask (`GET /api/v1/asks/{id}`): the ask as
+ *  the test has it, and nothing else on it. */
+function answerAskThreads(...asks: Ask[]) {
   return spyOn(api, "getAsk").mockImplementation(async (id) => {
     const ask = asks.find((candidate) => candidate.id === id);
     if (ask === undefined) throw new Error(`no fixture ask ${id}`);
-    return withEmptyThread(ask);
+    return { ...emptyAskThread, ask };
   });
 }
 
@@ -433,7 +453,7 @@ test("Margin surfaces and retries a failed fetch for the issue's asks", async ()
   const getAsk = answerAskThreads(anchoredAsk);
   const listIssueAsks = spyOn(api, "listIssueAsks")
     .mockRejectedValueOnce(new Error("offline"))
-    .mockResolvedValue([anchoredAsk]);
+    .mockResolvedValue([askRow(anchoredAsk)]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -465,7 +485,7 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  const answeredAsk: AskV2 = {
+  const answeredAsk: Ask = {
     ...unanchoredAsk,
     answer: {
       at: "2026-09-10T00:01:00Z",
@@ -541,7 +561,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  const answeredAsk: AskV2 = {
+  const answeredAsk: Ask = {
     ...anchoredAsk,
     answer: {
       at: "2026-09-10T00:01:00Z",
@@ -557,7 +577,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const answerAsk = spyOn(api, "answerAsk").mockResolvedValue(answeredAsk);
-  const refetched = Promise.withResolvers<AskV2[]>();
+  const refetched = Promise.withResolvers<IssueAskRow[]>();
   const getAsk = answerAskThreads(anchoredAsk);
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   // The inbox lists open asks, and this one has just been answered.
@@ -590,7 +610,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
     await waitFor(() => expect(listIssueAsks).toHaveBeenCalled());
     const answered = await within(needsYou).findByTestId(`ask-${anchoredAsk.id}`);
 
-    await act(async () => refetched.resolve([answeredAsk]));
+    await act(async () => refetched.resolve([askRow(answeredAsk)]));
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Needs you" })).not.toBeInTheDocument()
     );
@@ -616,7 +636,7 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  const answeredAsk: AskV2 = {
+  const answeredAsk: Ask = {
     ...anchoredAsk,
     answer: { at: "2026-09-10T00:01:00Z", selected: ["Ship"], text: null, user: "alice" },
     state: "answered",
@@ -627,11 +647,22 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const answerAsk = spyOn(api, "answerAsk").mockResolvedValue(answeredAsk);
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(withEmptyThread(anchoredAsk));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ask: anchoredAsk,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   // The inbox lists open asks, and this one has just been answered.
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([answeredAsk]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([askRow(answeredAsk)]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -715,7 +746,7 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  const answeredAsk: AskV2 = {
+  const answeredAsk: Ask = {
     anchor: {
       artifact_id: "artifact-1",
       block_id: null,
@@ -737,25 +768,20 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-09-10T00:00:00Z",
-    document: null,
     edited_at: null,
     id: "ask-answered",
-    issue: null,
     issue_key: issue.key,
     kind: "question",
-    last_reply: null,
     opened_event_id: 2,
     multiple: false,
     options: [],
-    priority: null,
     question: "Why brown?",
-    ref: "dispatch://CORE-1/ask/ask-answered",
     state: "answered",
     urgency: "med",
   };
   // Open asks remain in the Needs you group before the historical answered ask, regardless of
   // their document positions.
-  const openAsk: AskV2 = {
+  const openAsk: Ask = {
     anchor: {
       artifact_id: "artifact-1",
       block_id: null,
@@ -772,18 +798,13 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-09-10T00:02:00Z",
-    document: null,
     edited_at: null,
     id: "ask-open",
-    issue: null,
     issue_key: issue.key,
-    last_reply: null,
     opened_event_id: 3,
     multiple: false,
     options: [],
-    priority: null,
     question: "Why the?",
-    ref: "dispatch://CORE-1/ask/ask-open",
     state: "open",
     kind: "question",
     urgency: "med",
@@ -795,7 +816,10 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const getAsk = answerAskThreads(answeredAsk, openAsk);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([answeredAsk, openAsk]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+    askRow(answeredAsk),
+    askRow(openAsk),
+  ]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -855,8 +879,16 @@ test("a reply to an ask renders exactly once in the margin, not also as a standa
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [askReply]);
   const getAsk = spyOn(api, "getAsk").mockResolvedValue({
-    ...anchoredAsk,
-    thread: { ...withEmptyThread(anchoredAsk).thread, replies: [askReply] },
+    ask: anchoredAsk,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [askReply],
   });
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "issue" })]}>
@@ -1984,7 +2016,7 @@ test("Margin links an orphaned ask to its original document version", async () =
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  const orphanedAsk: AskV2 = {
+  const orphanedAsk: Ask = {
     ...anchoredAsk,
     anchor: {
       artifact_id: "artifact-1",

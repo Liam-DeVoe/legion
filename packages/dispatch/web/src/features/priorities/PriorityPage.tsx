@@ -62,7 +62,7 @@ export function PriorityPage(): ReactNode {
   // Each priority's title by its id, which the work table's Advances column names every priority
   // a row advances by. Built once a read, so the table's columns are not rebuilt every render.
   const titles = useMemo(
-    () => new Map((priorities.data?.items ?? []).map((row) => [row.id, row.title])),
+    () => new Map((priorities.data?.priorities ?? []).map((row) => [row.id, row.title])),
     [priorities.data]
   );
 
@@ -76,7 +76,7 @@ export function PriorityPage(): ReactNode {
         retrying={priorities.isFetching}
       />
     );
-  const items = buildPriorityItems(priorities.data.items);
+  const items = buildPriorityItems(priorities.data.priorities ?? []);
   const item = items.find((candidate) => candidate.priority.id === id);
   if (item === undefined)
     return (

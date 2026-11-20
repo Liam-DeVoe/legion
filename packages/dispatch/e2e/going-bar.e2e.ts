@@ -333,7 +333,7 @@ test("the bar opened on a project page that has not settled survives that page's
     // here rather than passing over a page that never redirected.
     const sources = await holdFirstRequest(
       page,
-      /\/api\/v2\/projects\/[^/]+\/architecture-sources(\?|$)/u
+      /\/api\/v1\/projects\/[^/]+\/architecture-sources$/u
     );
 
     await page.goto("/projects/CORE");

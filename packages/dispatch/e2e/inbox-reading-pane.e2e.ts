@@ -6,7 +6,7 @@ import {
   getInbox,
   getIssue,
   patchIssue,
-  retractAsk,
+  resolveAsk,
 } from "./api";
 import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
 import {
@@ -220,9 +220,9 @@ test("a question the server withdraws leaves the list at once and the next row i
 
     // The server takes the selected question away. The reader has typed nothing into it: the
     // Inbox selected its row for them when the page opened.
-    await retractAsk(
+    await resolveAsk(
       seed.decisionAskId,
-      { reason: "A newer question supersedes this one." },
+      { kind: "retracted", reason: "A newer question supersedes this one." },
       session
     );
 
@@ -257,7 +257,11 @@ test("a withdrawn question the reader was answering keeps its text in the column
 
     // The reader is writing an answer to this question when the server takes it away.
     await card.locator("[data-ask-answer]").fill(typed);
-    await retractAsk(seed.anchoredAskId, { reason: "Answered on another issue." }, session);
+    await resolveAsk(
+      seed.anchoredAskId,
+      { kind: "retracted", reason: "Answered on another issue." },
+      session
+    );
 
     // The one exception to the rule above: the column keeps the question, shows its closed state
     // in place of the answer form, and keeps what the reader typed where they can copy it.
@@ -295,8 +299,7 @@ test("an options-only answer the server refuses keeps its question in the column
 
     // The server refuses this one answer, in the words of its own route, and refuses it for a
     // reason the same answer may get past: the card offers Retry rather than closing its form.
-    // An answer is the ask's state write (`PUT /api/v2/asks/{id}/state`).
-    await page.route(`**/api/v2/asks/${seed.decisionAskId}/state`, (route) =>
+    await page.route(`**/api/v1/asks/${seed.decisionAskId}/answer`, (route) =>
       route.fulfill({
         body: JSON.stringify({
           code: "ASK_REVISION_REQUIRED",

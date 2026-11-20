@@ -1,5 +1,4 @@
 import { type LegionRole, roleToken } from "@legion/contracts";
-import type { IssueCollaboratorsV2 } from "@legion/contracts/dispatch-api-v2";
 
 import {
   legionAgentEntry,
@@ -208,16 +207,14 @@ test("the Collaborators tab says so when Legion's record of the issue cannot be 
     const collaborators = page.waitForResponse(
       (response) =>
         response.request().method() === "GET" &&
-        new URL(response.url()).pathname === `/api/v2/issues/${issueKey}/collaborators`
+        new URL(response.url()).pathname === `/api/v1/issues/${issueKey}/collaborators`
     );
     await page.goto(`/issues/${issueKey}/collaborators`);
     // What the tab is showing is the server's answer: the read itself succeeded, and it named the
     // registry unavailable and held no agent, the issue's events naming none of these sessions.
     const answer = await collaborators;
     expect(answer.status()).toBe(200);
-    const read: IssueCollaboratorsV2 = await answer.json();
-    expect(read.legion_registry).toBe("unavailable");
-    expect((read.items ?? []).filter((item) => item.kind === "session")).toEqual([]);
+    expect(await answer.json()).toMatchObject({ agents: [], legion_registry: "unavailable" });
 
     const tab = page.getByRole("tabpanel", { name: "Collaborators" });
     await expect(tab.getByRole("status")).toHaveText(

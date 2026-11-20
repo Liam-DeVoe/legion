@@ -259,10 +259,8 @@ test("a route to an unresponsive session, and to a role it holds, reads holder_u
   try {
     for (const key of [direct.key, byRole.key]) {
       // The server resolves the route against the holder's own record, not list membership.
-      await expect
-        .poll(async () => (await getIssue(key)).reach.route_status)
-        .toBe("holder_unresponsive");
-      expect((await getIssue(key)).reach.route_holder).toBe(holder.session_id);
+      await expect.poll(async () => (await getIssue(key)).route_status).toBe("holder_unresponsive");
+      expect((await getIssue(key)).route_holder).toBe(holder.session_id);
 
       const page = await alice.newPage();
       await page.goto(`/issues/${key}`);

@@ -36,17 +36,13 @@ test("confirming the staged file uploads it with the typed summary", async () =>
       id: "artifact-1",
       issue_key: "CORE-1",
       kind: "doc",
-      latest_version: 1,
-      latest_version_at: "2026-09-11T00:00:00Z",
-      latest_version_size: null,
       name: "notes.md",
       primary: false,
       project: "CORE",
       ref_key: "CORE-1/notes-md",
       session_id: null,
       slug: "notes-md",
-      unsettled: null,
-      version_count: 1,
+      versions: [],
     },
     version: {
       authors: [{ id: "alice", kind: "user" }],
@@ -101,6 +97,7 @@ test("an upload over a document the issue already holds names the base it replac
     markdown: "# Notes\n",
     token: "sha256:live-notes",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
   const view = renderHarness();
@@ -144,8 +141,18 @@ test("the first upload of a name has no base to name, and names none", async () 
 test("the base is read when the file is chosen, and the press sends that one", async () => {
   const user = userEvent.setup();
   const ownerArtifactText = spyOn(api, "ownerArtifactText")
-    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:chosen", version: 1 })
-    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:moved-on", version: 2 });
+    .mockResolvedValueOnce({
+      markdown: "# Notes\n",
+      token: "sha256:chosen",
+      version: 1,
+      unsettled: false,
+    })
+    .mockResolvedValue({
+      markdown: "# Notes\n",
+      token: "sha256:moved-on",
+      version: 2,
+      unsettled: false,
+    });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
   const view = renderHarness();
 
@@ -178,6 +185,7 @@ test("a markdown file whose declared type carries a charset names its base", asy
     markdown: "# Notes\n",
     token: "sha256:live-notes",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
   const view = renderHarness();
@@ -224,7 +232,7 @@ test("only a missing document and a tree outside the Proof schema mean no base t
     expect(await captureUploadBase(owner, file)).toEqual({ token: undefined });
 
     const unreachable = new NetworkError(
-      "/api/v2/issues/CORE-1/artifacts?slug=notes.md&include=text",
+      "/api/v1/issues/CORE-1/artifacts/notes.md/text",
       new TypeError("Failed to fetch")
     );
     text.mockRejectedValueOnce(unreachable);
@@ -281,10 +289,11 @@ test("a refused upload tells the person the document changed, not a command to r
     markdown: "# Notes\n",
     token: "sha256:stale-notes",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     // The sentence the server sends, read from a live Dispatch at this head:
-    // POST /api/v2/issues/CORE-11/artifacts with a base behind the live document.
+    // POST /api/v1/issues/CORE-11/artifacts with a base behind the live document.
     new ApiError(409, {
       code: "PRECONDITION_FAILED",
       error:
