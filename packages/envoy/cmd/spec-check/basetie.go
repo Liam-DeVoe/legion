@@ -137,9 +137,10 @@ type readsAnswer struct {
 }
 
 // newDerivedTies is the derived ties of the repository at root, whose go-test-reads.sh runs in
-// root, where the root go.work takes the import paths of the repository's modules.
-func newDerivedTies(root string) *derivedTies {
-	return &derivedTies{reads: specgraph.ScriptTestReads(root), answers: map[string]readsAnswer{}}
+// root, where the root go.work takes the import paths of the repository's modules, with environ
+// as its whole environment, nil for the process's own (specgraph.ScriptTestReads).
+func newDerivedTies(root string, environ []string) *derivedTies {
+	return &derivedTies{reads: specgraph.ScriptTestReads(root, environ), answers: map[string]readsAnswer{}}
 }
 
 // tie is the tie of c, Known false with the cause when it cannot be derived.
@@ -165,6 +166,13 @@ func (d *derivedTies) once(workdir string, pkgs, env []string) ([]string, error)
 // tie changed either (specgraph.Citations), which asks only for a check whose test did not run and
 // whose tie at the head no changed path reaches: a run where each test ran makes no checkout, and
 // citations makes none for a base that is the head, whose tie is the one at the head.
+//
+// The script lists the repository's files with git ls-files (ci_filter_coverage.py's repo_files,
+// which ci_job_reads.py's tables read too), and the checkout is no git work tree. So the script
+// runs with git's view of the base (gitView): GIT_DIR the git directory of the clone, GIT_WORK_TREE
+// the checkout's tree and GIT_INDEX_FILE the checkout's index of the base's tree, and no other
+// variable GIT_* of the process. Its git ls-files then lists the base's files, and no file of the
+// clone's own index or work tree (TestTheBaseTieReadsGitsListOfTheBase).
 type baseCheckout struct {
 	repo, commit string
 	dir          string // the checkout's directory, once made
@@ -176,13 +184,33 @@ type baseCheckout struct {
 func (b *baseCheckout) tie(c specgraph.Check) specgraph.Tie {
 	if b.dir == "" && b.err == nil {
 		if b.dir, b.err = checkout(b.repo, b.commit); b.err == nil {
-			b.ties = newDerivedTies(filepath.Join(b.dir, "tree"))
+			var environ []string
+			if environ, b.err = gitView(b.repo, b.dir); b.err == nil {
+				b.ties = newDerivedTies(filepath.Join(b.dir, "tree"), environ)
+			}
 		}
 	}
 	if b.err != nil {
 		return specgraph.Tie{Why: b.err.Error()}
 	}
 	return b.ties.tie(c)
+}
+
+// gitView is the environment of the base's go-test-reads.sh in the checkout at dir: the process's
+// own with no variable GIT_*, which would make git read another clone or another index, as in
+// gitCommand, then GIT_DIR the git directory of the clone at repo, GIT_WORK_TREE <dir>/tree and
+// GIT_INDEX_FILE <dir>/index, which checkout filled with the base's tree.
+func gitView(repo, dir string) ([]string, error) {
+	var stderr bytes.Buffer
+	show := gitCommand(repo, "rev-parse", "--absolute-git-dir")
+	show.Stderr = &stderr
+	gitDir, err := show.Output()
+	if err != nil {
+		return nil, fmt.Errorf("no git directory of %s for the checkout of the base: %w: %s", repo, err, oneLine(&stderr))
+	}
+	environ := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+	return append(environ, "GIT_DIR="+strings.TrimSuffix(string(gitDir), "\n"), "GIT_WORK_TREE="+filepath.Join(dir, "tree"),
+		"GIT_INDEX_FILE="+filepath.Join(dir, "index")), nil
 }
 
 // close removes the checkout of the base commit.
@@ -193,15 +221,17 @@ func (b *baseCheckout) close() {
 }
 
 // checkout writes the tree of commit of the clone at repo to <dir>/tree of a new directory, and
-// changes nothing of the clone. It writes the tree as git stores it, whatever the settings of the
-// clone, its .gitattributes or the process say (TestTheGitCallsOfTheBaseAreTheSameUnderEachSetting),
-// since go-test-reads.sh derives the tie at the base from those files: each path of the tree, from
-// the top of the clone, whatever directory of it repo names and whatever sparse checkout; each
-// blob's own bytes, through no filter, end-of-line conversion or ident, in a file that is
-// executable for the mode 100755; a link as a link to its blob's text, whatever core.symlinks; and
-// a gitlink as an empty directory, as git checks out a submodule that it did not clone. So it reads
-// the tree with git ls-tree and the blobs with git cat-file, which give the objects as stored, and
-// writes each file itself.
+// its index to <dir>/index, and changes nothing of the clone. It writes the tree as git stores it,
+// whatever the settings of the clone, its .gitattributes or the process say
+// (TestTheGitCallsOfTheBaseAreTheSameUnderEachSetting), since go-test-reads.sh derives the tie at
+// the base from those files: each path of the tree, from the top of the clone, whatever directory
+// of it repo names and whatever sparse checkout; each blob's own bytes, through no filter,
+// end-of-line conversion or ident, in a file that is executable for the mode 100755; a link as a
+// link to its blob's text, whatever core.symlinks; and a gitlink as an empty directory, as git
+// checks out a submodule that it did not clone. So it reads the tree with git ls-tree and the blobs
+// with git cat-file, which give the objects as stored, and writes each file itself. The index is
+// what git read-tree writes for commit, a full index whatever index.sparse says, so a git ls-files
+// of it lists each path of the tree (gitView).
 func checkout(repo, commit string) (string, error) {
 	dir, err := os.MkdirTemp("", "spec-check-base-")
 	if err != nil {
@@ -210,6 +240,14 @@ func checkout(repo, commit string) (string, error) {
 	if err := writeTree(repo, commit, filepath.Join(dir, "tree")); err != nil {
 		os.RemoveAll(dir)
 		return "", fmt.Errorf("no checkout of the base commit %s: %w", commit, err)
+	}
+	var stderr bytes.Buffer
+	read := gitCommand(repo, "-c", "index.sparse=false", "read-tree", commit)
+	read.Env = append(read.Env, "GIT_INDEX_FILE="+filepath.Join(dir, "index"))
+	read.Stderr = &stderr
+	if err := read.Run(); err != nil {
+		os.RemoveAll(dir)
+		return "", fmt.Errorf("no checkout of the base commit %s: git read-tree: %w: %s", commit, err, oneLine(&stderr))
 	}
 	return dir, nil
 }

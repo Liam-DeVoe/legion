@@ -822,6 +822,10 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
+    f"{ENVOY}/cmd/spec-check/basetie_test.go": reads(*[
+        (f".github/scripts/{name}", "cmd/spec-check/basetie_test.go:411 copies it from ../../../../.github/scripts into the "
+                                    "fixture repository whose base tie TestTheBaseTieReadsGitsListOfTheBase derives with it")
+        for name in ("go-test-reads.sh", "ci_filter_coverage.py", "workflow_paths.py", "go_build_tags.py")]),
     f"{ENVOY}/cmd/spec-check/cifiles_test.go": reads(
         (f"{ENVOY}/.changes/unreleased/pr4183-Added-20261116-091606.yaml",
          "cmd/spec-check/cifiles_test.go:643 reads that one fragment under ../..")),

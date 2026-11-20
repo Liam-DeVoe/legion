@@ -132,7 +132,7 @@ func TestScriptTestReadsReadsTheScript(t *testing.T) {
 			if err := os.WriteFile(script, []byte("#!/bin/sh\n"+row.script+"\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			got, err := ScriptTestReads(root)(".", []string{"example.com/citations/a"}, []string{"GOWORK=off"})
+			got, err := ScriptTestReads(root, nil)(".", []string{"example.com/citations/a"}, []string{"GOWORK=off"})
 			switch {
 			case row.err == "" && (err != nil || !slices.Equal(got, row.want)):
 				t.Errorf("reads = %q, %v; want %q, nil", got, err, row.want)

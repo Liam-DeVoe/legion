@@ -20,8 +20,11 @@ type TestReads func(workdir string, pkgs []string, env []string) ([]string, erro
 // So a tie is what the repository's own filter check says a test reads, and no second reader of
 // it exists. The script prints one JSON object, {"reads": [...], "problems": [...]}. Its exit 1,
 // a problem that leaves the closure unknown, is an error holding the problems; any other exit, an
-// answer that is no such object and an exit 0 with a problem are errors too.
-func ScriptTestReads(repoRoot string) TestReads {
+// answer that is no such object and an exit 0 with a problem are errors too. environ is the
+// script's whole environment, as exec.Cmd.Env takes it, and nil is the process's own: the script
+// lists the repository's files with git ls-files, so a caller that runs it in a tree that is no
+// git work tree, as spec-check's checkout of a base commit, gives it git's view of that tree there.
+func ScriptTestReads(repoRoot string, environ []string) TestReads {
 	script := filepath.Join(repoRoot, ".github", "scripts", "go-test-reads.sh")
 	return func(workdir string, pkgs []string, env []string) ([]string, error) {
 		args := make([]string, 0, 2*len(env)+1+len(pkgs))
@@ -31,6 +34,7 @@ func ScriptTestReads(repoRoot string) TestReads {
 		args = append(append(args, workdir), pkgs...)
 		cmd := exec.Command(script, args...)
 		cmd.Dir = repoRoot
+		cmd.Env = environ
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()

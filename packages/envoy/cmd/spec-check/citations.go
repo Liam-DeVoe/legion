@@ -131,7 +131,7 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 			baseTie = func(c specgraph.Check) specgraph.Tie { return fileTie(files, baseCommit, c.ID) }
 		}
 	} else {
-		tie = newDerivedTies(*repo).tie
+		tie = newDerivedTies(*repo, nil).tie
 		if *changedFile != "" {
 			if head, ok := commitName(*repo, "HEAD"); ok && head == baseCommit {
 				// The base is the commit itself, whose tie is the one at the commit (R8: a result counts
