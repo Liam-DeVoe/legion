@@ -206,6 +206,11 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		}
 	})
 	g.accept()
+	// A line of the test's own once the PID-one launcher is up, so a run's log shows the body ran
+	// where a machine without the namespace would have skipped it.
+	if entries, err := os.ReadFile(g.entries); err == nil {
+		t.Logf("the PID-one launcher connected; %s", strings.TrimSpace(string(entries)))
+	}
 	return g
 }
 
