@@ -14,7 +14,7 @@ first sections below.
 Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-over four shard machines, the three `-alone` projects get a machine each, the two-process job,
+over five shard machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
 rate.
@@ -142,7 +142,7 @@ the artifact this job uploaded on the attempt before.
 
 ## The shard job, its stacks and its container
 
-One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4` over four
+One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/5` over four
 Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
 Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
@@ -314,9 +314,23 @@ wall-clock rows are the alone job's.
 
 ## Why the leg count stands in two places
 
-Four legs. The count is written here and in the `--shard` denominator of the browser step
-(`--shard=$shard/4` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a denominator larger than the leg list
+Five legs. The count is written here and in the `--shard` denominator of the browser step
+(`--shard=$shard/5` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a denominator larger than the leg list
 would leave the rows of the missing legs unrun with nothing red.
+
+Why five, and not four. The full lane's four legs carried about 2,050 s of rows each, and their
+browser steps ran close to the 10 minutes they carry. In run 44786047315 (dispatch://INFRA-2160,
+head b762d647) the four steps took 520, 457, 456 and 571 s. In run 44828129710 (head f89f5c45),
+with the same rows, they took 455, 559, 600 and 600 s: legs 3 and 4 hit the bound with every row
+passed and none failed. Summed over the 426 rows that leg 3 ran in both runs, its rows took
+1,503 s in the first and 2,151 s in the second, so that machine was 43 per cent slower on the
+same work. The rows of the four legs sum to 1,700, 2,110, 2,185 and 2,212 s in the second run, and
+no one file holds that time: the keyboard rows of dispatch://INFRA-2160 sum to 1,178 s over 248
+rows, and the shared controls' rows of dispatch://INFRA-3135 (e2e/table-controls.e2e.ts) to
+933 s over legs 3 and 4, beside the rows that were there before both. A leg on a slow machine
+needs about a tenth less work to fit, so a faster row or two does not hold it. A fifth leg
+gives each about 1,640 s of rows, four fifths of a leg's load before. The step budget stays
+as the rule gives it until a run of five legs is measured.
 
 ## What the shard job downloads in place of a Go build
 
