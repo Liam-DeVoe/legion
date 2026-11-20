@@ -24,7 +24,10 @@ import (
 // Both rounds open at one sweep. A minute later a pause holds the second issue's pod, and the hold
 // stands. A minute after that, the next sweep's walk first writes the ask of the first issue's
 // round, which takes 20 seconds, and then writes the ask of the second: the bound it states counts
-// the hold to that moment, 1m20s, not to the top of the sweep.
+// the hold to that moment, 1m20s, not to the top of the sweep. The first issue's ask, written at
+// the same sweep, counts no hold: the pause holds the second issue's pod alone, and an ask that
+// counted the holds of another issue's pod would state an end later than the one at which the
+// daemon replaces its own.
 func TestPodUpdateAnAskStatesTheBoundAtTheMomentTheWalkWritesIt(t *testing.T) {
 	asked, held := "ACME-1", "ACME-2"
 	rig := newLimitRig(t, asked, held)
@@ -53,6 +56,19 @@ func TestPodUpdateAnAskStatesTheBoundAtTheMomentTheWalkWritesIt(t *testing.T) {
 	if want := supervise.UpdateTask(round, limitDrift, bound); texts[0] != want {
 		t.Errorf("the ask of %s's round states %q, want %q: the walk wrote it %s after the top of its sweep, with the pause's hold standing, so the bound is %s",
 			held, texts[0], want, written.Sub(top), bound.Format(time.RFC3339))
+	}
+
+	a := rig.claimOf(asked, claim.RoleArchitect)
+	if a.UpdateOpenedAt == nil {
+		t.Fatalf("%s's claim records round %q with no opening", asked, a.UpdateRound)
+	}
+	texts = rig.askTexts(asked)
+	if len(texts) != 1 {
+		t.Fatalf("the sweep wrote %d asks of %s's round, want 1", len(texts), asked)
+	}
+	if want := supervise.UpdateTask(a.UpdateRound, limitDrift, a.UpdateOpenedAt.Add(podUpdateGrace)); texts[0] != want {
+		t.Errorf("the ask of %s's round states %q, want %q: no pause holds %s's pod; the hold is %s's",
+			asked, texts[0], want, asked, held)
 	}
 }
 
@@ -146,11 +162,189 @@ func TestPodUpdateAnAskStatesTheBoundAfterItsReadOfTheQueuedAsks(t *testing.T) {
 	}
 }
 
+// The fleet rig's daemon runs the project of its issue keys (fleetProject), as production's daemon
+// runs the project whose keys its outbox writes, so it reads the holds of that project's pauses. A
+// pause of ACME, the keys' project named here and not read from the rig, holds the second issue's
+// pod, and the ask of its round counts the hold. A rig whose daemon ran another project than its
+// outbox would read none of that pause's holds, and every ask test of this file would hold a pod
+// its daemon cannot see.
+func TestPodUpdateTheFleetRigReadsThePauseHoldsOfItsKeysProject(t *testing.T) {
+	asked, held := "ACME-1", "ACME-2"
+	rig := newLimitRig(t, asked, held)
+	rig.tick()
+	rig.awaitRounds("the sweep that opened both rounds", asked, held)
+	c := rig.claimOf(held, claim.RoleArchitect)
+	if c.UpdateOpenedAt == nil {
+		t.Fatalf("%s's claim records round %q with no opening", held, c.UpdateRound)
+	}
+	round, opened := c.UpdateRound, *c.UpdateOpenedAt
+
+	rig.clock.advance(time.Minute)
+	heldAt := rig.clock.Now()
+	holdProjectPod(t, rig.sup.store, openProjectPause(t, rig.pool, "ACME", heldAt), "ACME", held, heldAt)
+
+	rig.clock.advance(time.Minute)
+	top := rig.clock.Now()
+	rig.sweepHeldInAWrite(asked, 20*time.Second)
+	written := top.Add(20 * time.Second)
+
+	texts := rig.askTexts(held)
+	if len(texts) != 1 {
+		t.Fatalf("the sweep wrote %d asks of %s's round, want 1", len(texts), held)
+	}
+	bound := opened.Add(podUpdateGrace + written.Sub(heldAt))
+	if want := supervise.UpdateTask(round, limitDrift, bound); texts[0] != want {
+		t.Errorf("the ask of %s's round under a pause of ACME states %q, want %q, the end %s that counts the hold: the rig's daemon runs project %q",
+			held, texts[0], want, bound.Format(time.RFC3339), rig.s.cfg.Project)
+	}
+}
+
+// The ask reads the clock and then its pod's holds (roundClockNow), and a hold that ends between
+// the two reads counts to its end. A pause holds the round's pod; the hold ends, as a role's ready
+// ends it, just after the ask's read of the clock, and the clock moves 5 seconds before the read
+// of the holds (beforePodHoldsRead). The end the ask states counts the hold to its end. Read the
+// other way round, the holds would show the hold standing and count it on to the later clock read,
+// 5 seconds after the hold ended and after the round's own end.
+func TestPodUpdateAnAskReadsTheClockBeforeItsPodsHolds(t *testing.T) {
+	held := "ACME-1"
+	rig := newLimitRig(t, held)
+	rig.tick()
+	rig.awaitRounds("the sweep that opened the round", held)
+	c := rig.claimOf(held, claim.RoleArchitect)
+	if c.UpdateOpenedAt == nil {
+		t.Fatalf("%s's claim records round %q with no opening", held, c.UpdateRound)
+	}
+	round, opened := c.UpdateRound, *c.UpdateOpenedAt
+
+	rig.clock.advance(time.Minute)
+	heldAt := rig.clock.Now()
+	rig.pauseHolds(held, heldAt)
+
+	rig.clock.advance(time.Minute)
+	var ended time.Time
+	rig.s.beforePodHoldsRead = func(issue string) {
+		if issue != held || !ended.IsZero() {
+			return
+		}
+		ended = rig.clock.Now()
+		if done, err := rig.sup.store.EndPausePodHold(rig.ctx, rig.s.cfg.Project, held, store.PausePodHoldReady, ended); err != nil || !done {
+			t.Errorf("end the pause's hold of %s's pod at %s = %t, %v; want it ended", held, ended.Format(time.RFC3339), done, err)
+		}
+		rig.clock.advance(5 * time.Second)
+	}
+	rig.tick()
+	rig.s.beforePodHoldsRead = nil
+	if ended.IsZero() {
+		t.Fatalf("the sweep read no holds of %s's pod for an act of its round", held)
+	}
+
+	texts := rig.askTexts(held)
+	if len(texts) != 1 {
+		t.Fatalf("the sweep wrote %d asks of %s's round, want 1", len(texts), held)
+	}
+	bound := opened.Add(podUpdateGrace + ended.Sub(heldAt))
+	if want := supervise.UpdateTask(round, limitDrift, bound); texts[0] != want {
+		t.Errorf("the ask of %s's round states %q, want %q: the pause's hold of its pod ended at %s, after the ask read the clock and before it read the holds, so the round ends at %s",
+			held, texts[0], want, ended.Format(time.RFC3339), bound.Format(time.RFC3339))
+	}
+}
+
+// An ask whose read of its pod's holds fails writes nothing: an ask written with no holds would
+// state an end with no hold counted, earlier than the round's. The sweep reads the holds at its
+// top; its walk then writes the ask of the first issue's round, and while it does the holds become
+// unreadable (pauseHoldsRead), so the ask of the second issue, whose pod a pause holds, cannot read
+// them. The next sweep, with the holds readable again, writes the ask, stating the end that counts
+// the hold to that moment.
+func TestPodUpdateAnAskWhoseReadOfItsPodsHoldsFailsWritesNoAsk(t *testing.T) {
+	asked, held := "ACME-1", "ACME-2"
+	rig := newLimitRig(t, asked, held)
+	rig.tick()
+	rig.awaitRounds("the sweep that opened both rounds", asked, held)
+	c := rig.claimOf(held, claim.RoleArchitect)
+	if c.UpdateOpenedAt == nil {
+		t.Fatalf("%s's claim records round %q with no opening", held, c.UpdateRound)
+	}
+	round, opened := c.UpdateRound, *c.UpdateOpenedAt
+
+	rig.clock.advance(time.Minute)
+	heldAt := rig.clock.Now()
+	rig.pauseHolds(held, heldAt)
+
+	rig.clock.advance(time.Minute)
+	if !rig.sweepWaitingInAWrite(asked, 20*time.Second, func() {
+		rig.pauseHoldsRead(false)
+		rig.clock.advance(20 * time.Second)
+	}) {
+		t.Fatalf("the sweep made no write for %s", asked)
+	}
+	if texts := rig.askTexts(held); len(texts) != 0 {
+		t.Fatalf("the sweep whose read of %s's pod holds failed wrote %d asks of its round, want none: %q", held, len(texts), texts)
+	}
+
+	rig.pauseHoldsRead(true)
+	rig.tick()
+	written := rig.clock.Now()
+	texts := rig.askTexts(held)
+	if len(texts) != 1 {
+		t.Fatalf("the sweep after the holds read again wrote %d asks of %s's round, want 1", len(texts), held)
+	}
+	bound := opened.Add(podUpdateGrace + written.Sub(heldAt))
+	if want := supervise.UpdateTask(round, limitDrift, bound); texts[0] != want {
+		t.Errorf("the ask of %s's round states %q, want %q: the hold stands, so it counts to the ask, %s",
+			held, texts[0], want, bound.Format(time.RFC3339))
+	}
+}
+
+// An ask whose read of the round's asks still queued fails writes nothing: it cannot say which
+// roles an ask already waits for, and asking them again would put a second ask of the round in
+// flight for a claim. The read fails here as a read the store ends does: it waits on a lock
+// another session holds on the outbox, and is cancelled there (pg_cancel_backend). The next sweep
+// reads the queued asks and writes the ask.
+func TestPodUpdateAnAskWhoseReadOfTheQueuedAsksFailsWritesNoAsk(t *testing.T) {
+	issue := "ACME-1"
+	rig := newLimitRig(t, issue)
+	rig.tick()
+	rig.awaitRounds("the sweep that opened the round", issue)
+	c := rig.claimOf(issue, claim.RoleArchitect)
+	if c.UpdateOpenedAt == nil {
+		t.Fatalf("%s's claim records round %q with no opening", issue, c.UpdateRound)
+	}
+	round, opened := c.UpdateRound, *c.UpdateOpenedAt
+
+	rig.clock.advance(time.Minute)
+	rig.sweepInTheQueuedAskRead("cancelled", func(pid int32) {
+		var cancelled bool
+		if err := rig.pool.QueryRow(rig.ctx, `select pg_cancel_backend($1)`, pid).Scan(&cancelled); err != nil || !cancelled {
+			t.Fatalf("cancel the sweep's read of the queued asks (backend %d) = %t, %v; want it cancelled", pid, cancelled, err)
+		}
+	})
+	if texts := rig.askTexts(issue); len(texts) != 0 {
+		t.Fatalf("the sweep whose read of %s's queued asks failed wrote %d asks of its round, want none: %q", issue, len(texts), texts)
+	}
+
+	rig.tick()
+	texts := rig.askTexts(issue)
+	if len(texts) != 1 {
+		t.Fatalf("the sweep after the failed read wrote %d asks of %s's round, want 1", len(texts), issue)
+	}
+	if want := supervise.UpdateTask(round, limitDrift, opened.Add(podUpdateGrace)); texts[0] != want {
+		t.Errorf("the ask of %s's round states %q, want %q", issue, texts[0], want)
+	}
+}
+
 // sweepHeldInTheQueuedAskRead is one sweep whose read of an ask's queued rows (store's
 // QueuedUpdateAsks) waits behind a lock that another session holds on the outbox, while the clock
-// moves by hold: the lock is let go once that read is seen waiting on it. A sweep whose read is
-// never seen waiting fails the test.
+// moves by hold.
 func (r *fleetRig) sweepHeldInTheQueuedAskRead(hold time.Duration) {
+	r.t.Helper()
+	r.sweepInTheQueuedAskRead("held", func(int32) { r.clock.advance(hold) })
+}
+
+// sweepInTheQueuedAskRead is one sweep whose read of an ask's queued rows (store's
+// QueuedUpdateAsks) waits behind a lock that another session holds on the outbox: once that read
+// is seen waiting on it, inRead runs with the backend pid of the read, and then the lock is let
+// go. A sweep whose read is never seen waiting fails the test; what names how the read ends.
+func (r *fleetRig) sweepInTheQueuedAskRead(what string, inRead func(pid int32)) {
 	r.t.Helper()
 	claims := r.sweepClaims()
 	tx, err := r.pool.Begin(r.ctx)
@@ -166,20 +360,20 @@ func (r *fleetRig) sweepHeldInTheQueuedAskRead(hold time.Duration) {
 		defer close(swept)
 		r.s.reconcilePodUpdates(r.ctx, claims)
 	}()
+	var pid int32
 	testwait.Eventually(r.t, "the sweep's read of the queued asks to wait on the lock of the outbox", func() bool {
-		var waiting int
-		if err := r.pool.QueryRow(r.ctx, `select count(*) from pg_stat_activity
+		if err := r.pool.QueryRow(r.ctx, `select coalesce(max(pid), 0) from pg_stat_activity
 			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock'
-			and query like 'select payload->>''role'' from outbox%' and query like '%kind = ''update_ask''%'`).Scan(&waiting); err != nil {
+			and query like 'select payload->>''role'' from outbox%' and query like '%kind = ''update_ask''%'`).Scan(&pid); err != nil {
 			r.t.Fatalf("read the sessions that wait on a lock: %v", err)
 		}
-		return waiting > 0
+		return pid != 0
 	})
-	r.clock.advance(hold)
+	inRead(pid)
 	if err := tx.Rollback(r.ctx); err != nil {
 		r.t.Fatalf("let go of the outbox's lock: %v", err)
 	}
-	testwait.Eventually(r.t, "the sweep held in its read of the queued asks to end", func() bool {
+	testwait.Eventually(r.t, "the sweep whose read of the queued asks was "+what+" to end", func() bool {
 		select {
 		case <-swept:
 			return true
