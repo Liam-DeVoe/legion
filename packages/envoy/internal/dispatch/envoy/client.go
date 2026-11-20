@@ -370,13 +370,21 @@ func New(baseURL string, options ...Option) *Client {
 // without it is not copied when the role moves: it ends with the second try's answer, logged at
 // Error, and the delivery records that failure. A 401 is answered before the listener's route runs
 // (cmd/listener, apiAuth), so a try it answered did nothing and the next is no repeat.
+//
+// The fetch of the identity token is bounded by the client's window, measured once from the
+// call's start (window, authorize): http.Client.Timeout bounds each try's exchange with the
+// listener and nothing of the fetch, and a Google identity's mint waits on the metadata server
+// up to googleMintTimeout. So a metadata server that hangs costs the call that window and no
+// more before its tries end as ErrAccountToken, the second try's fetch finding the window spent,
+// rather than a mint's wait on each try.
 func (c *Client) do(route string, marked bool, build func() (*http.Request, error), transport func(error) error) (*http.Response, error) {
+	window := c.window()
 	try := func(shared bool) (*http.Response, error) {
 		request, err := build()
 		if err != nil {
 			return nil, err
 		}
-		if err := c.authorize(request, shared); err != nil {
+		if err := c.authorize(request, shared, window); err != nil {
 			return nil, fmt.Errorf("%s: %w", route, err)
 		}
 		response, err := c.httpClient.Do(request)
@@ -403,6 +411,15 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 	c.logger.Warn("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token",
 		"route", route, "refusal", identityRefusal(response, err))
 	return try(true)
+}
+
+// window is the deadline of the client's window for a call that starts now (defaultTimeout,
+// WithTimeout), and the zero time for a client whose window is none.
+func (c *Client) window() time.Time {
+	if c.httpClient.Timeout <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(c.httpClient.Timeout)
 }
 
 // identityNotTaken reports whether a try on Dispatch's identity ended without the listener taking

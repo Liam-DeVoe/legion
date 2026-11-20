@@ -524,11 +524,14 @@ var mentionDeliveryQuery = `
 
 // mentionFallbackHoldsQuery lists every destination of every comment in ids a fallback row owns,
 // settled or not: a row settled published or skipped that copy once, so the event's own publish
-// skips the destination for good (mentionDeliveries.held). Each row says beside it whether the row
-// is still to be settled, the copy it owns being still to be published or skipped
-// (mentionDeliveries.unsettled).
+// skips the destination for good (mentionDeliveries.held) - a credit's row that published nothing
+// excepted, which gives way to a copy the event gives that session by a rule of its own
+// (mentionDeliveries.creditRows, destinations.creditRowGivesWay). Each row says beside it whether
+// the row is still to be settled, the copy it owns being still to be published or skipped
+// (mentionDeliveries.unsettled), the target it is keyed by, if any, and whether it published its
+// copy, which say whether it is such a credit's row (fallbackCopy.creditOf).
 const mentionFallbackHoldsQuery = `
-	select comment_id::text, destination, settled_at is null
+	select comment_id::text, destination, settled_at is null, target, published
 	from comment_fallback_copies
 	where comment_id = any($1::text[]::uuid[])
 `
@@ -673,12 +676,18 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 		return fmt.Errorf("load the batch's fallback copies: %w", err)
 	}
 	var destination string
-	var unsettled bool
-	if _, err := pgx.ForEachRow(held, []any{&commentID, &destination, &unsettled}, func() error {
+	var rowTarget *string
+	var unsettled, published bool
+	if _, err := pgx.ForEachRow(held, []any{&commentID, &destination, &unsettled, &rowTarget, &published}, func() error {
 		deliveries := of(commentID)
 		deliveries.held[destination] = struct{}{}
 		if unsettled {
 			deliveries.unsettled[destination] = struct{}{}
+		}
+		if rowTarget != nil && !published {
+			if _, credit := (fallbackCopy{destination: destination, key: *rowTarget, kind: targetMentions}).creditOf(); credit {
+				deliveries.creditRows[destination] = struct{}{}
+			}
 		}
 		return nil
 	}); err != nil {

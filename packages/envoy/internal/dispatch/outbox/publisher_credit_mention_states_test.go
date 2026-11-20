@@ -283,24 +283,30 @@ func checkEventHeldForItsMention(t *testing.T, database *store.Store, event mode
 }
 
 // TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy is the other side of
-// TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut, and the arm of
-// mentionHolds.named that the key's own attempts cannot answer: on an issue a session claims, a
-// session a document credits alone keeps its copy when this very read resolved the comment's
-// @role: mention to it (unpinnedRoleMentions.state). The attempt names no session - only a
-// sender's own resolution pins one - so that session's own attempts read mentionFailed, and what
-// names it here is the role's claim, which this batch resolves
-// (resolveUnpinnedRoleMentions).
+// TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut: on an issue a session
+// claims, a session a document credits alone keeps its copy when this very read resolved the
+// comment's @role: mention to it (unpinnedRoleMentions.state). The attempt names no session - only
+// a sender's own resolution pins one - so that session's own attempts read mentionFailed, and what
+// names it here is the role's claim, which this batch resolves (resolveUnpinnedRoleMentions).
 //
-// The mutation it fails on is mentionHolds.named simplified to mentionOutcomes.state: with the
-// key's own attempts alone the credits filter drops this session, no row is held for it, and the
-// comment the mention was on its way to it with reaches it by neither road should that send fail.
-// TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut fails on the other
-// mutation, mentionHolds.state in place of named.
+// The mutations it fails on are two. A role whose claim names a holder read as one naming none
+// (the holder arm of resolveUnpinnedRoleMentions): the attempt then reads as an unnamed one past
+// its lease, the claimant's own copy is held as a row beside the credit's, and the event reaches
+// no session. And a credits filter that leaves out a credit an attempt still owed may yet be
+// pinned to (the unpinnedRoleMentions.owesASend arm of mentionDeliveries.creditCopyOf): no row is
+// held for this session, and the comment the mention was on its way to it with reaches it by
+// neither road should that send fail. It no longer fails on mentionHolds.named simplified to
+// mentionOutcomes.state: past the attempt's lease the copy of a credit only a resolved attempt
+// names is held as a credit's row by that owesASend arm whatever named answers
+// (mentionDeliveries.resolvedAlonePastItsLease).
+// TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut fails on
+// mentionHolds.state in place of named.
 //
 // The attempt is past the lease the outbox waits a send out for, so the copy it decides is a
-// comment_fallback_copies row rather than a wait of the event's: the pass that publishes those
-// rows reads the attempts as they stand then, by when the sender has pinned the session it
-// resolved (destinations.leftTo, publishFallbackCopies).
+// credit's comment_fallback_copies row rather than a wait of the event's: the pass that decides
+// that row reads the attempts as they stand then, by when the sender has pinned the session, and
+// publishes it only where the mention pinned to this session failed (creditCopyOf,
+// decideFallbackCopy).
 func TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy(t *testing.T) {
 	const role = "held-by-the-session-the-document-credits"
 	sami := model.Actor{Kind: "user", ID: "sami"}

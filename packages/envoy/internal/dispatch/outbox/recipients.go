@@ -276,9 +276,9 @@ func threadSessions(event model.Event, routing routing, look lookup) []string {
 // RegistryReader reads one session's record from Envoy's registry, unresponsive sessions
 // included, as envoy.Client.Session does: a record's State is live, unresponsive or gone,
 // envoy.ErrNotFound is a session the registry holds no record of or one that stopped, an error
-// that is envoy.ErrUnreachable or a deadline (registryUnanswered) is the registry not answering,
-// and any other error is the registry's answer that it cannot read that one session's record,
-// such as the 500 the listener gives for an interest record it cannot read.
+// that is envoy.ErrUnreachable, envoy.ErrAccountToken or a deadline (registryUnanswered) is the
+// registry not answering, and any other error is the registry's answer that it cannot read that
+// one session's record, such as the 500 the listener gives for an interest record it cannot read.
 type RegistryReader interface {
 	Session(ctx context.Context, sessionID string) (envoy.Session, error)
 }
@@ -489,11 +489,14 @@ func countedSessions(ctx context.Context, registry RegistryReader, sessionIDs []
 // answering rather than its answer about one session: envoy.ErrUnreachable (no connection, a
 // connection lost, the client's timeout, an answer whose body stopped after its headers or was cut
 // short of its length, or a 502, 503 or 504 from in front of a listener that is gone or starting),
-// or a deadline that ended the read. Any other failure is a status the listener chose for that
-// session's record, or a whole body that does not decode, which says nothing about the other
-// sessions.
+// envoy.ErrAccountToken (a read the client did not make, Dispatch's identity token not to be
+// presented within the client's window - a metadata server that hangs, or a token file that
+// cannot be read - which the read of every other session would repeat), or a deadline that ended
+// the read. Any other failure is a status the listener chose for that session's record, or a
+// whole body that does not decode, which says nothing about the other sessions.
 func registryUnanswered(err error) bool {
-	return errors.Is(err, envoy.ErrUnreachable) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, envoy.ErrUnreachable) || errors.Is(err, envoy.ErrAccountToken) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // creditFilter is the rule a session that only a document credits is asked by, on a person's
@@ -510,13 +513,14 @@ func registryUnanswered(err error) bool {
 // sender may pin it to that session - is neither: where the batch could name no holder for that
 // attempt's role and the attempt is within unnamedForwardBound, its copy waits in the event's
 // list until the sender has pinned the attempt, and is decided then (creditWaits); past that
-// bound, or where the batch resolved the role to another session, the copy is held as a
-// fallback row that the pass publishes only should the attempt be pinned to that session and
-// fail (creditHeldAsARow, mentionDeliveries.creditCopyOf). The comment's edit follows the
-// comment's copy: it reaches such a session where that session's mention failed, and waits while
-// that mention, or the comment's copy that follows it, is still to be decided, within that same
-// bound (mentionDeliveries.editCreditCopyOf). addPrimaryDocumentAuthors and addAuthorRoutes both
-// ask it.
+// bound, or where the batch resolved the role to another session, or to this one with the attempt
+// past its lease, the copy is held as a fallback row that the pass publishes only should the
+// attempt be pinned to that session and fail (creditHeldAsARow, mentionDeliveries.creditCopyOf).
+// The comment's edit follows the comment's copy: it reaches such a session where that session's
+// mention failed, and waits while that mention, or the comment's copy that follows it, is still
+// to be decided - within that same bound, but for a credit's row, which it waits out past the
+// bound too (mentionDeliveries.editCreditCopyOf). addPrimaryDocumentAuthors and addAuthorRoutes
+// both ask it.
 type creditFilter struct {
 	leavesOut bool
 	// mentions is what the comment's mentions did, as the batch read them: the reading the
@@ -542,11 +546,12 @@ const (
 	// event is read again (destinations.waitForCredits, destination.waiting, planChains).
 	creditWaits
 	// creditHeldAsARow: an attempt of the comment that names no session yet still owes a send,
-	// past the bound the copy waits such an attempt out for or with its role resolved to another
-	// session, and its sender may yet pin it to this one. The copy is held as a
-	// comment_fallback_copies row of that session's own topic, which holds nothing of the event
-	// and which the fallback pass publishes under the key of that session's failed mention, or
-	// settles with nothing sent (destinations.holdForCredits, fallbackCopy.creditOf).
+	// past the bound the copy waits such an attempt out for, or with its role resolved to another
+	// session or to this one past the attempt's lease, and its sender may yet pin it to this one
+	// or to another. The copy is held as a comment_fallback_copies row of that session's own
+	// topic, which holds nothing of the event and which the fallback pass publishes under the
+	// key of that session's failed mention, or settles with nothing sent
+	// (destinations.holdForCredits, fallbackCopy.creditOf).
 	creditHeldAsARow
 )
 

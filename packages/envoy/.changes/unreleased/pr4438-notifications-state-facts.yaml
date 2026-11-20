@@ -11,5 +11,9 @@ body: |-
   listener not answering, never as its answer. A session the reply names, whose mention failed,
   still gets the reply and the person's edit of it, also where the mention was a role's that names
   the session only after the batch read it, after the forward's bound, or after the outbox read the
-  role as another session's. An edit reads the reply's mentions from the store, and waits for them
-  no longer than that bound.
+  role as another session's. An edit reads the reply's mentions from the store, and reaches a
+  session that got the reply through a failed mention after the reply does, so that session never
+  holds the reply's old words. A copy kept for a session that only a document credits no longer
+  holds a later reply back from that session once it claims the issue or the issue is routed to it.
+  Dispatch fetches the identity token it presents to the listener within the call's own window, so a
+  metadata server that does not answer no longer holds a registry read past that window.

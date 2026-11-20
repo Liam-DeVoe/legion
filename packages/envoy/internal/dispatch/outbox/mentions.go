@@ -149,6 +149,14 @@ type mentionDeliveries struct {
 	// skipped, so the copy of the comment's edit bound for that session waits for it
 	// (editCreditCopyOf).
 	unsettled map[string]struct{}
+	// creditRows holds each destination of held whose row is a credit's (fallbackCopy.creditOf)
+	// and has published nothing - unsettled, or settled with nothing sent - read with held
+	// (mentionFallbackHoldsQuery) and written beside it when the batch holds such a row
+	// (destinations.holdCreditRow). Such a row stands for the credit rule alone: it gives way where
+	// the event reaches that session by a rule of its own (destinations.leftTo,
+	// mentionComment.dropCreditRow), and the copy of the comment's edit bound for that session
+	// waits while it is unsettled, past unnamedForwardBound as within it (editCreditCopyOf).
+	creditRows map[string]struct{}
 	// unpinned is what the attempts of the comment that name no session yet and whose send is
 	// still coming decide (unpinnedRoleMentions): the roles they target and the state each of
 	// those attempts is in, read here, and the holders those roles resolve to, which the batch
@@ -175,6 +183,7 @@ func newMentionDeliveries() mentionDeliveries {
 		targetFallbackKeys: map[string]string{},
 		held:               map[string]struct{}{},
 		unsettled:          map[string]struct{}{},
+		creditRows:         map[string]struct{}{},
 		unpinned:           newUnpinnedRoleMentions(),
 	}
 }
@@ -291,9 +300,11 @@ func (d mentionDeliveries) liveFor(sessionID string) bool {
 // left out as before (TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone); a
 // session this read resolved the comment's @role: mention to keeps its copy, through
 // unpinnedRoleMentions.state inside named
-// (TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy). A session a mention of the comment
-// delivered to reads mentionSent and is kept, which costs nothing: the mention rule leaves that
-// session's copy to the mention and adds none.
+// (TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy): kept while that attempt is live,
+// the mention rule holding the copy back for it, and held as a credit's row past its lease,
+// which the pass decides by the session the sender pins (creditCopyOf). A session a mention of
+// the comment delivered to reads mentionSent and is kept, which costs nothing: the mention rule
+// leaves that session's copy to the mention and adds none.
 //
 // A reading of no mentions at all - the zero value, which a comment.created that names no mention
 // carries (eventDestinations) - answers mentionFailed for every session, so the filter applies
@@ -307,12 +318,15 @@ func (d mentionDeliveries) decidesCopyFor(sessionID string) bool {
 // where the comment names that session and its mention failed before the batch read it, the copy
 // then going under that mention's key (fallbackKeys, destinations.addSession), and where a
 // mention of the comment still decides the copy (decidesCopyFor), which the mention rule then
-// holds back, keeps as a fallback row or leaves to the mention (destinations.leftTo). Any other
-// such session is left out, unless an attempt of the comment that names no session yet still
-// owes a send (unpinnedRoleMentions.owesASend): its sender may yet pin it to this very session,
-// whose copy that mention then decides. That is R6 of dispatch://INFRA-3686: a session the reply
-// names, whose mention failed, still gets the copy the author route sends under the key of that
-// mention, whether or not the thread's session is live, and whenever the sender pins it.
+// holds back, keeps as a fallback row or leaves to the mention (destinations.leftTo) - but for a
+// copy all that decides is an attempt that names no session yet, past its lease, whose role this
+// read resolved to that session (resolvedAlonePastItsLease), which is held as a credit's row
+// below. Any other such session is left out, unless an attempt of the comment that names no
+// session yet still owes a send (unpinnedRoleMentions.owesASend): its sender may yet pin it to
+// this very session, whose copy that mention then decides. That is R6 of dispatch://INFRA-3686:
+// a session the reply names, whose mention failed, still gets the copy the author route sends
+// under the key of that mention, whether or not the thread's session is live, and whenever the
+// sender pins it.
 //
 // Where this read could name no holder for that attempt's role, and the attempt is within
 // unnamedForwardBound of its creation (unpinnedRoleMentions.owedWithinTheForwardsBound), the copy
@@ -325,24 +339,33 @@ func (d mentionDeliveries) decidesCopyFor(sessionID string) bool {
 // sender that is alive holds its attempt pending for as long as its lane is held, and a copy that
 // waits holds the owner's later events from that session.
 //
-// Past that bound, and where this read resolved the attempt's role to another session - a claim
-// can move between this read and the sender's own, a round trip apart, so the sender can still
-// pin it here (resolveUnpinnedRoleMentions) - the copy is held as a comment_fallback_copies row
-// of that session's own topic instead (creditHeldAsARow, destinations.holdForCredits): the event
-// settles and holds none of the owner's later events back from that session, and the fallback
-// pass decides the row once no attempt of the comment that names no session yet owes a send,
+// Past that bound, and where this read resolved the attempt's role to a session - another one, or
+// this one with the attempt past its lease: a claim can move between this read and the sender's
+// own, a round trip apart, so the sender can still pin it here, or pin it elsewhere
+// (resolveUnpinnedRoleMentions) - the copy is held as a comment_fallback_copies row of that
+// session's own topic instead (creditHeldAsARow, destinations.holdForCredits): the event settles
+// and holds none of the owner's later events back from that session, and the fallback pass
+// decides the row once no attempt of the comment that names no session yet owes a send,
 // publishing it under the key of that session's failed mention, and settling it with nothing
-// sent where no mention of the comment failed to reach that session (fallbackCopy.creditOf,
-// decideFallbackCopy). What the row gives up is the owner's order to that session for that one
-// comment, as the forward's row past the same bound gives it up (holdsTheForwardAsARow): the
-// owner's later events can reach the session before the row, and the earlier ones still come
-// before it (copyHolder).
+// sent where no mention of the comment failed to reach that session - the sender pinned the
+// attempt to another session, or failed it with none (fallbackCopy.creditOf,
+// decideFallbackCopy). A row of that session's own key, which the mention rule holds for every
+// other session the resolution names, would be published once the attempt named another session
+// (TestAReplysRoleMentionTheOutboxResolvedToACreditThatTheSenderPinsElsewhereLeavesTheCreditOut).
+// What the row gives up is the owner's order to that session for that one comment, as the
+// forward's row past the same bound gives it up (holdsTheForwardAsARow): the owner's later events
+// can reach the session before the row, and the earlier ones still come before it (copyHolder).
+// A route that reaches the session by a rule of its own - the issue's claim or route moved to
+// it before the event's retry - takes the copy from such a row (destinations.leftTo).
 //
 // A credit kept for such an attempt would get the copy whichever session the sender pins it to,
 // which is the copy the filter exists to leave out, and one left out would have no copy should
 // the send pinned to it fail.
 func (d mentionDeliveries) creditCopyOf(sessionID string) creditCopy {
-	if _, failed := d.fallbackKeys[sessionID]; failed || d.decidesCopyFor(sessionID) {
+	if _, failed := d.fallbackKeys[sessionID]; failed {
+		return creditKept
+	}
+	if d.decidesCopyFor(sessionID) && !d.resolvedAlonePastItsLease(sessionID) {
 		return creditKept
 	}
 	switch {
@@ -352,6 +375,21 @@ func (d mentionDeliveries) creditCopyOf(sessionID string) creditCopy {
 		return creditHeldAsARow
 	}
 	return creditLeftOut
+}
+
+// resolvedAlonePastItsLease reports whether all that names sessionID among the comment's mentions
+// is an attempt that names no session yet, past the lease the outbox waits a send out for, whose
+// role this read resolved to that session: no mention of that session failed (fallbackKeys), its
+// own attempts decide nothing (mentionDecidesTheCopy of mentionOutcomes.state), and that
+// attempt's state reads mentionResending (unpinnedRoleMentions.state). The resolution is this
+// read's guess at the session the sender pins, so the copy such an attempt decides for a session
+// a document credits alone is a credit's row (creditCopyOf), and the edit's copy follows that row
+// (editCreditCopyOf).
+func (d mentionDeliveries) resolvedAlonePastItsLease(sessionID string) bool {
+	if _, failed := d.fallbackKeys[sessionID]; failed {
+		return false
+	}
+	return !mentionDecidesTheCopy(d.sessions.state(sessionID)) && d.unpinned.state(sessionID) == mentionResending
 }
 
 // editCreditCopyOf is what becomes of the copy of the comment's edit bound for sessionID, a
@@ -374,20 +412,30 @@ func (d mentionDeliveries) creditCopyOf(sessionID string) creditCopy {
 // session whose mention failed is kept, the comment's copy to it going first: in this batch, on
 // the chain the edit's copy is behind (planChains), or already. Any other is left out.
 //
-// The wait for a mention past its lease, and for a row, has the bound the comment's own copy's
-// wait has, unnamedForwardBound, measured from the creation of the comment's attempts
-// (writtenPastTheBound): a sender that is alive holds its attempt pending for as long as its lane
-// is held, and a row waits for that attempt, so neither wait ends by itself, while the copy that
-// waits holds the owner's later events from that session. Past the bound the edit is decided by
-// what the attempts say then. A session the comment names by an attempt still owed is kept, the
-// comment reaching it by that mention or by its row: should the mention land, the session holds
-// the edit beside it, one copy more than the rule gives, and should it fail, the edit can reach
-// the session before the row's copy of the comment. A session whose mention failed is kept, the
-// row's copy of the comment possibly coming after the edit. A session that only an attempt
-// naming no session yet may name, whose copy of the comment is a credit's row
-// (creditHeldAsARow), is left out: should that attempt be pinned to it and fail, it holds the
-// comment's first words. That is the price of the bound, as the owner's order to one session for
-// one comment is the price of the bound on the comment's own copy (creditCopyOf).
+// The wait for a mention of the session's own past its lease, and for a row of its own key, has
+// the bound the comment's own copy's wait has, unnamedForwardBound, measured from the creation of
+// the comment's attempts (writtenPastTheBound): a sender that is alive holds its attempt pending
+// for as long as its lane is held, and a row waits for that attempt, so neither wait ends by
+// itself, while the copy that waits holds the owner's later events from that session. Past the
+// bound the edit is decided by what the attempts say then. A session the comment names by an
+// attempt of its own still owed is kept, the comment reaching it by that mention or by its row:
+// should the mention land, the session holds the edit beside it, one copy more than the rule
+// gives, and should it fail, the edit can reach the session before the row's copy of the
+// comment. A session whose mention failed is kept, the row's copy of the comment possibly coming
+// after the edit.
+//
+// The edit follows the comment past the bound as before it where the comment's copy is a
+// credit's row (creditHeldAsARow): a session that only an attempt naming no session yet may name
+// - one this read could name no holder for, or one it resolved to that session
+// (resolvedAlonePastItsLease) - gets the comment by that row alone, should the sender pin the
+// attempt to it and the send fail. So the edit's copy waits while that row is unsettled
+// (creditRows), which the pass settles only once no such attempt owes a send, and while an
+// attempt this read resolved to that session is owed, however old the comment is; it is then
+// kept where the session's mention failed and left out where it did not. A session that got the
+// comment by the failed-mention rule gets the edit too, after it, and never holds the comment's
+// first words (TestAnEditOfAReplyWhoseLateRoleMentionOfACreditFailsReachesIt). That wait has no
+// bound of its own, as the row's has none: while it holds, the edit holds that session's later
+// events of the owner (planChains), for as long as the sender holds the attempt.
 //
 // Waiting, the copy is in the edit's list as every copy that waits is
 // (destinations.waitForCredits), and the edit owes it (owedKeys): a later comment's mention of that
@@ -398,13 +446,16 @@ func (d mentionDeliveries) editCreditCopyOf(sessionID string) creditCopy {
 	case mentionSending:
 		return creditWaits
 	case mentionResending:
-		if d.writtenPastTheBound {
+		if d.writtenPastTheBound && !d.resolvedAlonePastItsLease(sessionID) {
 			return creditKept
 		}
 		return creditWaits
 	}
-	if _, owned := d.unsettled[contracts.LegacyAgentSubject(sessionID)]; owned && !d.writtenPastTheBound {
-		return creditWaits
+	subject := contracts.LegacyAgentSubject(sessionID)
+	if _, owned := d.unsettled[subject]; owned {
+		if _, credit := d.creditRows[subject]; credit || !d.writtenPastTheBound {
+			return creditWaits
+		}
 	}
 	if _, failed := d.fallbackKeys[sessionID]; failed {
 		return creditKept
@@ -497,12 +548,14 @@ const (
 // input leftTo has ahead of it: a destination a comment_fallback_copies row already owns is that
 // row's, which the read fills from the rows that stand (loadMentionDeliveries,
 // mentionFallbackHoldsQuery), and leftTo answers copyLeftToTheMention for it before it reads any
-// state. So at mentionFailed with such a row the two part - this says no mention decides the
-// copy, where leftTo says the copy is the row's - and nothing is lost by it. The credits filter
-// keeps such a session when its own mention failed (fallbackKeys names it) and otherwise leaves
-// it out or, while an attempt that names no session yet may be pinned to it, holds its copy back
-// (mentionDeliveries.creditCopyOf), and either way leftTo gives this pass no copy of it, the
-// fallback pass being the one that publishes or settles that row.
+// state - a credit's row that published nothing excepted, which gives way to the copy leftTo is
+// asked for (destinations.creditRowGivesWay). So at mentionFailed with such a row the two part -
+// this says no mention decides the copy, where leftTo says the copy is the row's - and nothing is
+// lost by it. The credits filter keeps such a session when its own mention failed (fallbackKeys
+// names it) and otherwise leaves it out or, while an attempt that names no session yet may be
+// pinned to it, holds its copy back (mentionDeliveries.creditCopyOf), and either way leftTo gives
+// this pass no copy of it while a row of its own key owns the destination, the fallback pass
+// being the one that publishes or settles that row.
 func mentionDecidesTheCopy(state mentionState) bool {
 	return state != mentionFailed
 }
@@ -1123,8 +1176,12 @@ func (d *destinations) workingSessionHold(sessionID string) copyHold {
 // (mentionDeliveries.held). mentionDeliveries.decidesCopyFor asks that same predicate of
 // mentionHolds.named rather than of the state read here, the two readings differing by the fold
 // this one keeps (unpinnedRoleMentions.resendingUnnamed).
+//
+// A credit's row that has published nothing is the one row that does not own its destination
+// here (creditRowGivesWay): it stands for the credit rule alone, and a copy asked here is one the
+// event gives that session by a rule of its own.
 func (d *destinations) leftTo(holds mentionHolds, key, destination string, unnamed bool) copyHold {
-	if _, ok := d.mentions.held[destination]; ok {
+	if _, ok := d.mentions.held[destination]; ok && !d.creditRowGivesWay(holds, key, destination) {
 		return copyLeftToTheMention
 	}
 	state := holds.state(key)
@@ -1168,6 +1225,48 @@ func (d *destinations) leftTo(holds mentionHolds, key, destination string, unnam
 		return copyLeftToTheMention
 	}
 	return copyGoes
+}
+
+// creditRowGivesWay reports whether the comment_fallback_copies row that owns destination is a
+// credit's row that gives way to the copy leftTo is asked for, and drops it when it is. A credit's
+// row (fallbackCopy.creditOf, destinations.holdCreditRow) is the copy of a session a document
+// credits alone, held for a mention of the comment that may yet name it, and decided by that
+// rule alone: the pass settles it with nothing sent where no mention of the comment failed to
+// reach that session (decideFallbackCopy). leftTo is asked for a session's own topic by every
+// route that reaches that session for a reason of its own - the session that claims the issue,
+// the session its route names, a member of the thread, a follower - and the credits filter
+// asks it only of a credit it keeps, so such a row would hold back a copy the event gives:
+// a reply backed off while it read that session as a credit, and retried after the session
+// claimed the issue or the issue was routed to it, would reach the claim's holder never
+// (dispatch://INFRA-1368's R1: "A person's comment on an issue that a session claims obliges one
+// session: the holder of the claim", TestACreditRowLeavesTheReplyToTheSessionTheRetryReads).
+//
+// So a credit's row that has published nothing - unsettled, or settled with nothing sent
+// (mentionDeliveries.creditRows) - is deleted (mentionComment.dropCreditRow), and the copy
+// follows the mention rule as any session's copy does: sent in the event's own list, held back
+// or held as a row of that session's own key. A row the pass published meanwhile stays, and owns
+// the copy it gave. A pass deciding the row as it is deleted records nothing, its record finding
+// no row; one that published it then did so under the key of that session's failed mention,
+// which the event's own copy carries too where the batch read that failure
+// (mentionDeliveries.fallbackKeys), so the host shows the comment once. A delete that fails
+// leaves the copy to the row and backs the event off, so it is read again.
+func (d *destinations) creditRowGivesWay(holds mentionHolds, key, destination string) bool {
+	if _, credit := d.mentions.creditRows[destination]; !credit ||
+		holds.outcomes.kind != sessionMentions || destination != contracts.LegacyAgentSubject(key) {
+		return false
+	}
+	dropped, err := d.comment.dropCreditRow(destination)
+	if err != nil {
+		d.failed = append(d.failed, err)
+		return false
+	}
+	if !dropped {
+		return false
+	}
+	delete(d.mentions.held, destination)
+	delete(d.mentions.unsettled, destination)
+	delete(d.mentions.creditRows, destination)
+	return true
 }
 
 // suppressesCurrentRoute applies a create-time suppression to the route that was resolved
@@ -1281,6 +1380,24 @@ func (c mentionComment) holdFallbackCopy(kind mentionKind, key, destination stri
 		return fmt.Errorf("hold the fallback copy of comment %q at %s: %w", c.id, destination, err)
 	}
 	return nil
+}
+
+// dropCreditRow deletes the credit's row (fallbackCopy.creditOf) of the comment that owns
+// destination, where it has published nothing, and reports whether it deleted one: a row the
+// fallback pass published since the batch read it stays (destinations.creditRowGivesWay). It runs
+// inside the statement gate, as holdFallbackCopy does.
+func (c mentionComment) dropCreditRow(destination string) (dropped bool, err error) {
+	if err := c.deps.lanes.statement(func() error {
+		tag, err := c.deps.Store.Pool.Exec(c.ctx, `
+		delete from comment_fallback_copies
+		where comment_id = $1 and destination = $2 and target is not null and not published
+	`, c.id, destination)
+		dropped = tag.RowsAffected() > 0
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("drop the credit's fallback copy of comment %q at %s: %w", c.id, destination, err)
+	}
+	return dropped, nil
 }
 
 // settleAbandoned settles failed, with mentionAbandonedError, every attempt of the comment whose
@@ -1858,13 +1975,19 @@ func (s fallbackSend) send(ctx context.Context, deps Deps, sender bus.Sender, ha
 //
 // A credit's row (fallbackCopy.creditOf) is the copy of a session a document credits alone, which
 // the event left out but for an attempt of the comment that named no session when the batch read
-// it and that its sender may pin to that session (mentionDeliveries.creditCopyOf). It waits while
+// it and that its sender may pin to that session (mentionDeliveries.creditCopyOf) - the batch's
+// read of that attempt's role naming no holder, naming another session, or naming this one with
+// the attempt past its lease (mentionDeliveries.resolvedAlonePastItsLease), since the sender
+// resolves the role itself a round trip later and may pin the attempt elsewhere. It waits while
 // a send of any such attempt is owed (unpinnedRoleMentions.owesASend), and is then decided by the
 // attempts of the session it is bound for, as a row of that session's own key is, with one
 // difference: where no mention of the comment failed to reach that session - the sender pinned
-// the attempt to another session, or no attempt names this one at all - the row settles with
-// nothing sent, since the event leaves that session out. So the session gets the copy, under its
-// failed mention's key, exactly where the comment named it and that mention failed.
+// the attempt to another session, failed it with no session, or no attempt names this one at
+// all - the row settles with nothing sent, since the event leaves that session out. So the
+// session gets the copy, under its failed mention's key, exactly where the comment named it and
+// that mention failed. A batch that reads the event again and reaches that session by a rule of
+// its own deletes such a row while it has published nothing, and gives the copy by that rule
+// instead (destinations.creditRowGivesWay).
 func decideFallbackCopy(
 	ctx context.Context, deps Deps, held fallbackCopy, event fallbackEvent,
 ) (fallbackDecision, fallbackSend, error) {
