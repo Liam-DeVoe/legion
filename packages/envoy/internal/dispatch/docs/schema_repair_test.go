@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -315,5 +316,80 @@ func TestAStoredRefusalOfAnAttributesValueIsLoggedWithoutTheValue(t *testing.T) 
 	}
 	if want := fmt.Sprintf("%s room=%q error=%q", loaded, artifactID, ErrDocSchema.Error()); !strings.Contains(strings.Join(lines, "\n"), want) {
 		t.Errorf("the log holds no line %s:\n%s", want, strings.Join(lines, "\n"))
+	}
+}
+
+// A refusal of an ask or of a check block quotes what it refuses - an ask's question, a check's
+// ci_check - and either can be a person's address. None of these refusals is a sentinel errors.Is
+// can name: each is an error type, made here by the code a write refuses with, which LoggedError
+// names by its type's class (refusalClasses), bare or wrapped with %w as a caller's context wraps
+// it, so the line names the class and carries none of the refusal's text. A refusal a caller
+// formats with %v is in no chain errors.As reads, and no class can name it (LoggedFault).
+func TestARefusalOfAnAskOrACheckIsLoggedByItsClassWithoutItsText(t *testing.T) {
+	const address = "person-7@example.com"
+	question := "Should " + address + " review it?"
+	broken := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{{
+		Type:  "ask",
+		Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: "a1"},
+		Children: []*pmdoc.Node{
+			{Type: "paragraph", Children: []*pmdoc.Node{{Type: "text", Text: question}}},
+			{Type: "code_block", Children: []*pmdoc.Node{{Type: "text", Text: "x"}}},
+		},
+	}}}
+	reason := validateStoredAskBlocks(broken)
+	if reason == nil {
+		t.Fatal("an ask holding a code block after its question breaks no rule, want its content rule's refusal")
+	}
+	// A check proved by CI that carries a run breaks a rule read from its attributes alone, so the
+	// refusal reads no database and needs no transaction.
+	check := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{{
+		Type:  "check",
+		Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: "c1", "ci_check": address, "run": "go test ./..."},
+	}}}
+	refusals := []struct {
+		name  string
+		err   error
+		class string
+	}{
+		{"an ask block breaking its content rule", &ErrInvalidAskBlock{Reason: reason}, "the write would leave an ask block unreadable"},
+		{"an ask block carrying the question otherwise", compareAskBlockText(askBlock{question: question}, AskBlockText{Question: "Should we review it?"}), "the ask block cannot carry the text unchanged"},
+		{"a check block whose ci_check breaks a rule", refuseCICheckBlocks(context.Background(), nil, "c1-document", check, nil), "the write leaves a check block whose ci_check breaks a rule"},
+	}
+	logs := &logtest.Recorder{}
+	logtest.SetDefault(t, logs)
+	want := map[string]string{}
+	for _, refusal := range refusals {
+		if refusal.err == nil || !strings.Contains(refusal.err.Error(), address) {
+			t.Fatalf("%s: %v, want a refusal quoting the address", refusal.name, refusal.err)
+		}
+		for _, wrapped := range []struct {
+			how string
+			err error
+		}{
+			{"bare", refusal.err},
+			{"wrapped with %w", fmt.Errorf("sweep the ask blocks of a closed issue: %w", refusal.err)},
+		} {
+			line := refusal.name + ", " + wrapped.how
+			if got := RefusalClass(wrapped.err); got != refusal.class {
+				t.Errorf("%s: RefusalClass = %q, want %q", line, got, refusal.class)
+			}
+			want[line] = refusal.class
+			slog.Warn(line, "error", LoggedError(wrapped.err))
+		}
+	}
+	got := map[string]string{}
+	for _, record := range logs.Records() {
+		record.Attrs(func(attribute slog.Attr) bool {
+			if strings.Contains(attribute.Value.String(), address) {
+				t.Errorf("the line %q carries the refusal's text in %s: %q", record.Message, attribute.Key, attribute.Value.String())
+			}
+			if attribute.Key == "error" {
+				got[record.Message] = attribute.Value.String()
+			}
+			return true
+		})
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("the lines name their refusals as %v, want %v", got, want)
 	}
 }
