@@ -173,8 +173,10 @@ type Deps struct {
 	Files            files.Store
 	TestHooksEnabled bool
 	// StreamHeartbeat is how often a document socket and a live socket resolve their caller again
-	// (whileCallerResolves), each closing once the caller no longer resolves, and a live socket
-	// pings its page and sends it a heartbeat frame.
+	// (whileCallerResolves), each closing once the caller no longer resolves, how often the document
+	// service re-checks its sockets' access (docs.Service.RunAccessRecheck) and the live socket and
+	// the delivery hub their readers (accessRecheckEvery), and how often a live socket pings its page
+	// and sends it a heartbeat frame.
 	StreamHeartbeat time.Duration
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads and agents
 	// lists (routeRosterTTL, issue_route_status.go). Zero keeps five seconds; only a test process
