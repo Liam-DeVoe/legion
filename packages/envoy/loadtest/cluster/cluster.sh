@@ -320,10 +320,15 @@ PG_DISK_POLL_SECONDS=30
 # the guard's 3 tries, the failure record, the kill in the runner and typing_stop's wait of up
 # to 120 s. Past this bound the watcher is stuck, and no path out of a step may hang on it.
 PG_DISK_STOP_SECONDS=300
+# How long pg_disk_freeze waits for each process it sends SIGSTOP to be seen stopped before it
+# reads that process's children (proc_stopped). One that is not seen stopped by then is named, and
+# killed with the rest all the same.
+PG_DISK_STOPPED_SECONDS=10
 # The last reading of the volume (pg_disk_sample), in bytes, each empty when that read failed,
 # the pid of the step's watcher while one runs, with the step it watches, for the line
 # pg_disk_watch_stop writes when it has to kill it, the watcher that stop is ending while it
-# runs, and the processes it has stopped on their way to its SIGKILL, each as PID:START.
+# runs, and the processes it has stopped on their way to its SIGKILL, each as PID:START, until the
+# wait after that SIGKILL is over (pg_disk_freeze).
 PG_DISK_SIZE="" PG_DISK_USED="" PG_DISK_FREE=""
 PG_DISK_WATCHER="" PG_DISK_WATCH_STEP="" PG_DISK_STOPPING="" PG_DISK_FROZEN=""
 # The LINUX replay: INFRA-639's manifest, the template database replay-prepare makes,
@@ -1550,19 +1555,39 @@ pg_disk_watch() {
   done
 }
 
-# proc_stopped PID: PID sent SIGSTOP and observed stopped before its children are read. A signal
-# reaches a process only when the kernel next runs it, so reading first can miss a child the parent
-# forks before the stop takes effect.
+# proc_stopped PID [SECONDS]: PID sent SIGSTOP and seen stopped, every thread of it, before its
+# children are read. A signal reaches a process only when the kernel next runs it, so a reading made
+# first can miss a child the process forks before the stop takes effect. A thread is stopped when
+# its state reads T or t (stopped, or held by a tracer), or Z or X: it has ended, so it forks
+# nothing. A child that ends after its parent is stopped stays a zombie, since its stopped parent
+# cannot reap it, and a zombie never reads T; a process whose main thread has left reads Z while
+# its other threads still run, which is why each thread is read. It waits SECONDS
+# (PG_DISK_STOPPED_SECONDS by default) on the clock at most. It returns 0 once every thread reads
+# one of those, and 1 when one still runs at that bound, when the STOP could not be sent, or when
+# its entry cannot be read; the caller tells an entry that has gone, which is no process to read on,
+# from a process it could not confirm.
 proc_stopped() {
-  local pid=$1 bound=${2:-10} t0=$EPOCHSECONDS stat
+  local pid=$1 bound=${2:-$PG_DISK_STOPPED_SECONDS} t0=$EPOCHSECONDS task stat running
   kill -STOP -- "$pid" 2>/dev/null || return 1
   while :; do
-    if ! read -r stat 2>/dev/null <"/proc/$pid/stat"; then
-      [ -e "/proc/$pid" ] && return 1
-      return 0
-    fi
-    stat=${stat##*) }
-    [ "${stat%% *}" != T ] || return 0
+    running=unread
+    for task in "/proc/$pid"/task/*; do
+      [ "$task" != "/proc/$pid/task/*" ] || break
+      [ "$running" = yes ] || running=no
+      if ! read -r stat 2>/dev/null <"$task/stat"; then
+        # A thread that has left since the directory was read has ended; one that is there and
+        # cannot be read is not seen stopped.
+        [ ! -e "$task" ] || running=yes
+        continue
+      fi
+      stat=${stat##*) }
+      case ${stat%% *} in
+      T | t | Z | X) ;;
+      *) running=yes ;;
+      esac
+    done
+    [ "$running" != no ] || return 0
+    [ -e "/proc/$pid" ] || return 1
     ((EPOCHSECONDS - t0 <= bound)) || return 1
     sleep 0.05
   done
@@ -1570,41 +1595,78 @@ proc_stopped() {
 
 # pg_disk_freeze PID NAME: the disk watcher PID of step NAME stopped (SIGSTOP) with every process
 # below it, for pg_disk_watch_stop's SIGKILL: the tree read through each thread's children file,
-# each process confirmed stopped before its own children are read, and read again until a reading
-# finds no process it had not read. Each process it found goes, with its start, into the caller's
-# kids and kid_starts, and all of them, the watcher first, into PG_DISK_FROZEN; one whose start
-# cannot be read is named and left out.
+# each process seen stopped (proc_stopped) before its own children are read, and read again until a
+# reading finds no process it had not read. Each process, the watcher first, goes into
+# PG_DISK_FROZEN with its start before its SIGSTOP is sent. That record is the one list of what the
+# stop sent SIGSTOP: its SIGKILL, its wait after the SIGKILL and a stop cut short each read it, and
+# no process leaves it before that wait is over, whatever its stop answered. Every process is
+# walked: one that is not seen stopped within PG_DISK_STOPPED_SECONDS is named and stays in the
+# record, and its children are read all the same, so the SIGKILL still reaches it and what was
+# found below it. A process whose start, or whose children, cannot be read while its /proc entry
+# is there is named; nothing tells the first from another process that took its pid, so it is not
+# killed. The reads are made in this shell (proc_start_into, read), never through a command
+# substitution, whose status says nothing of a read it could not make for want of a file
+# descriptor. It returns 1 when a line names such a process, else 0.
 pg_disk_freeze() {
-  local walked=("$1") seen=" $1 " more=1 at file kid start found=()
-  start=$(proc_start "$1" 2>/dev/null) || start=""
-  PG_DISK_FROZEN=${start:+$1:$start}
-  if ! proc_stopped "$1"; then
-    [ ! -e "/proc/$1" ] || note "step $2: the disk watcher (pid $1) could not be confirmed stopped before its children were read, so nothing shows every process of its act ended"
-    return 1
+  local walked=("$1") seen=" $1 " named=" " more=1 rc=0 at file kid start found=()
+  PG_DISK_FROZEN=""
+  if proc_start_into start "$1"; then
+    PG_DISK_FROZEN=${start:+$1:$start}
+  else
+    note "step $2: the start of the disk watcher (pid $1) could not be read, so a stop cut short from here on would not kill it"
+    rc=1
+  fi
+  if ! proc_stopped "$1" && [ -e "/proc/$1" ]; then
+    note "step $2: the disk watcher (pid $1) was not seen stopped within $PG_DISK_STOPPED_SECONDS s of its SIGSTOP, so a process it started since may be missed; it is sent the SIGKILL with the rest, and its children are read"
+    rc=1
   fi
   while ((more)); do
     more=0
     for at in "${walked[@]}"; do
       for file in "/proc/$at"/task/*/children; do
         found=()
-        read -ra found <"$file" 2>/dev/null || true
+        # The file ends with no newline, so read answers 1 at its end; only the redirection's own
+        # failure makes this group fail. A pattern left unmatched is a task directory that could
+        # not be read, or a process that has gone, which only its own entry tells apart.
+        if ! { read -ra found || :; } 2>/dev/null <"$file"; then
+          if [[ $named != *" $at "* ]] && { [ -e "$file" ] || { [ "$file" = "/proc/$at/task/*/children" ] && [ -e "/proc/$at" ]; }; }; then
+            note "step $2: the children of a process of the disk watcher's act (pid $at) could not be read, so a process below it may not be killed, and nothing shows it ended"
+            named+="$at " rc=1
+          fi
+          continue
+        fi
         for kid in "${found[@]}"; do
           [[ $seen != *" $kid "* ]] || continue
           seen+="$kid " more=1
-          if ! start=$(proc_start "$kid"); then
+          if ! proc_start_into start "$kid"; then
             note "step $2: the start of a process of the disk watcher's act (pid $kid) could not be read, so it is not killed, and nothing shows it ended"
+            rc=1
             continue
           fi
           [ -n "$start" ] || continue
           PG_DISK_FROZEN+=" $kid:$start"
-          if ! proc_stopped "$kid"; then
-            [ ! -e "/proc/$kid" ] || note "step $2: a process of the disk watcher's act (pid $kid) could not be confirmed stopped before its children were read, so nothing shows every process of its act ended"
-            return 1
+          walked+=("$kid")
+          if ! proc_stopped "$kid" && [ -e "/proc/$kid" ]; then
+            note "step $2: a process of the disk watcher's act (pid $kid) was not seen stopped within $PG_DISK_STOPPED_SECONDS s of its SIGSTOP, so a process it started since may be missed; it is sent the SIGKILL with the rest, and its children are read"
+            rc=1
           fi
-          kids+=("$kid") kid_starts+=("$start") walked+=("$kid")
         done
       done
     done
+  done
+  return "$rc"
+}
+
+# pg_disk_kill_frozen: SIGKILL to each process PG_DISK_FROZEN records that is still the process it
+# recorded (its start the same), so that no process the stop sent SIGSTOP is left stopped, and no
+# pid that the machine has given another process since is signalled.
+pg_disk_kill_frozen() {
+  local frozen now
+  for frozen in $PG_DISK_FROZEN; do
+    proc_start_into now "${frozen%:*}" || continue
+    # no-wait: each frozen process is waited for until it has ended, every thread of it, by the
+    # proc_wait_ended loop of pg_disk_watch_stop; a stop cut short names it as not shown gone.
+    [ "$now" != "${frozen#*:}" ] || kill -KILL -- "${frozen%:*}" 2>/dev/null || true
   done
 }
 
@@ -1619,13 +1681,14 @@ pg_disk_freeze() {
 # (kube, kube_for), most inside a command substitution, so the kubectl a stuck watcher waits on
 # is a grandchild or further below it, and a SIGKILL of timeout or of a subshell leaves the
 # process below it running, its bound gone. So the stop reads the watcher's whole tree, every
-# thread's children file, and reads it again until a reading finds no process it had not read.
-# It stops the watcher with SIGSTOP before the first reading, and each process it finds before
-# that process's own children are read, so no process of the tree starts another the reading
-# misses; then one SIGKILL goes to the watcher and to every process it read. PG_DISK_FROZEN holds
-# those processes, each with its start, until that SIGKILL, so a stop cut short in between kills
-# them rather than leave them stopped. They are the watcher's, not this shell's, so no wait here
-# reaps them: each is waited until it has ended (proc_ended, which waits out every thread of a
+# thread's children file, and reads it again until a reading finds no process it had not read
+# (pg_disk_freeze). It stops the watcher with SIGSTOP before the first reading, and each process it
+# finds before that process's own children are read, so no process of the tree starts another the
+# reading misses; then SIGKILL goes to the watcher and to every process it read, whether or not that
+# process was seen stopped. PG_DISK_FROZEN holds those processes, each with its start, from before
+# its SIGSTOP until the wait after the SIGKILL is over, so a stop cut short anywhere in between
+# kills them rather than leave them stopped. They are the watcher's, not this shell's, so no wait
+# here reaps them: each is waited until it has ended (proc_ended, which waits out every thread of a
 # kubectl), for PG_DISK_STOP_SECONDS more, and one that has not, or whose entry could not be read,
 # is named. A process that has left the table before its start is read is no process to kill or
 # wait on, since its pid may name another process by then; one whose start cannot be read for
@@ -1637,15 +1700,10 @@ pg_disk_freeze() {
 # finds that pid gone; it names the watcher as not shown gone, rather than returning as though
 # it had stopped it.
 pg_disk_watch_stop() {
-  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=() kid_starts=() frozen i rc
+  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline frozen below=() rc
   if [ -n "$PG_DISK_STOPPING" ]; then
     note "the stop of $PG_DISK_STOPPING was cut short, so nothing shows it gone"
-    for frozen in $PG_DISK_FROZEN; do
-      # no-wait: the stop that stopped these was cut short, and the line above names it as not
-      # shown gone; each is killed so that none is left stopped, and nothing here waits on a frozen
-      # one.
-      [ "$(proc_start "${frozen%:*}" 2>/dev/null)" != "${frozen#*:}" ] || kill -KILL -- "${frozen%:*}" 2>/dev/null || true
-    done
+    pg_disk_kill_frozen
     PG_DISK_STOPPING="" PG_DISK_FROZEN=""
   fi
   [ -n "$pid" ] || return 0
@@ -1654,13 +1712,15 @@ pg_disk_watch_stop() {
   deadline=$((EPOCHSECONDS + PG_DISK_STOP_SECONDS))
   while kill -0 -- "$pid" 2>/dev/null; do
     if ((EPOCHSECONDS >= deadline)); then
-      pg_disk_freeze "$pid" "$name" || note "step $name: the disk watcher's whole process tree was not confirmed stopped before its SIGKILL, so the lines above name what is not shown ended"
-      # no-wait: the watcher is reaped by the wait on it below, and each of kids[@] is waited for
-      # after that, every thread of it, by proc_wait_ended (common.sh).
-      kill -KILL -- "$pid" "${kids[@]}" 2>/dev/null || true
-      PG_DISK_FROZEN=""
-      if ((${#kids[@]})); then
-        note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed, with the ${#kids[@]} processes of its act below it (pids ${kids[*]})"
+      pg_disk_freeze "$pid" "$name" || note "step $name: not every process of the disk watcher's tree was seen stopped, or read, before its SIGKILL; the lines above name each, and every process the stop read is sent the SIGKILL all the same"
+      # no-wait: the watcher is this shell's child, and the wait on it below reaps it.
+      kill -KILL -- "$pid" 2>/dev/null || true
+      pg_disk_kill_frozen
+      for frozen in $PG_DISK_FROZEN; do
+        [ "${frozen%:*}" = "$pid" ] || below+=("${frozen%:*}")
+      done
+      if ((${#below[@]})); then
+        note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed, with the ${#below[@]} processes of its act below it (pids ${below[*]})"
       else
         note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed"
       fi
@@ -1670,16 +1730,17 @@ pg_disk_watch_stop() {
   done
   wait "$pid" 2>/dev/null || true
   deadline=$((EPOCHSECONDS + PG_DISK_STOP_SECONDS))
-  for i in "${!kids[@]}"; do
+  for frozen in $PG_DISK_FROZEN; do
+    [ "${frozen%:*}" != "$pid" ] || continue
     rc=0
-    proc_wait_ended "${kids[i]}" "${kid_starts[i]}" "$deadline" || rc=$?
+    proc_wait_ended "${frozen%:*}" "${frozen#*:}" "$deadline" || rc=$?
     case $rc in
     0) ;;
-    1) note "step $name: a process of the disk watcher's act (pid ${kids[i]}) has not ended $PG_DISK_STOP_SECONDS s after its SIGKILL" ;;
-    *) note "step $name: the /proc entry of a process of the disk watcher's act (pid ${kids[i]}) is there and could not be read, so nothing shows it ended" ;;
+    1) note "step $name: a process of the disk watcher's act (pid ${frozen%:*}) has not ended $PG_DISK_STOP_SECONDS s after its SIGKILL" ;;
+    *) note "step $name: the /proc entry of a process of the disk watcher's act (pid ${frozen%:*}) is there and could not be read, so nothing shows it ended" ;;
     esac
   done
-  PG_DISK_STOPPING=""
+  PG_DISK_STOPPING="" PG_DISK_FROZEN=""
 }
 
 # nats_box ARGS: the nats CLI in the run's nats-box pod: NATS_BOX_POD when reset_copy has looked it
