@@ -3497,7 +3497,9 @@ GATES = [
         pinned_step("dispatch-memory-group", MEMORY_GROUP_STEP, ENVOY, MEMORY_GROUP_SCRIPT, [
             (ENVOY, ["./cmd/dispatch"], "go test ./cmd/dispatch", {}),
         ]),
-    ], reads=setup_go("dispatch-memory-group", f"{ENVOY}/go.mod")),
+    ], reads=reads(
+        (".github/actions/pull-test-images/**", at("dispatch-memory-group", "Pull the container image the test runs the server in")),
+    ) + setup_go("dispatch-memory-group", f"{ENVOY}/go.mod")),
 
     gate("dispatch_multiprocess", "dispatch-multiprocess", runs=[ceiling_run("dispatch-multiprocess")], exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [

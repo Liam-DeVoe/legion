@@ -1234,9 +1234,9 @@ ENV_ALLOWED = frozenset({
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
     "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL",
-    # ci-job-dispatch-memory-group.yaml's switch and image for the memory-group test: the test
-    # reads both, go reads neither, and neither moves what go compiles.
-    "DISPATCH_TEST_MEMORY_GROUP", "DISPATCH_TEST_MEMORY_GROUP_IMAGE",
+    # ci-job-dispatch-memory-group.yaml's switch for the memory-group test: the test reads it, go
+    # does not, and it moves nothing go compiles.
+    "DISPATCH_TEST_MEMORY_GROUP",
     "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and

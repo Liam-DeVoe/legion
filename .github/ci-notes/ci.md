@@ -1870,8 +1870,9 @@ DISPATCH_TEST_MEMORY_GROUP is set, and this job alone sets it. The runner is ubu
 because the margin the test measures (the agent's fastest growth in 50 ms) is a measurement of
 the architecture production runs on. The job runs on a pull request, as it is a standard runner
 of a public repository, which GitHub does not bill, and its one test takes minutes, not the
-tens of minutes the held-back suites take. The image the server runs in is named by digest from
-.github/ci-images.yaml and pulled in a step of its own, so a failed pull is told apart from a
+tens of minutes the held-back suites take. The image the server runs in is the test's own Go
+constant (`memoryGroupImage`, a digest of .github/ci-images.yaml), which
+.github/actions/pull-test-images pulls in a step of its own, so a failed pull is told apart from a
 failed test.
 
 ## The Dispatch server's two-process tests

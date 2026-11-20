@@ -44,8 +44,6 @@ jobs:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable
       # The test skips with its reason unless this is set, so envoy-go's untagged run leaves it be.
       DISPATCH_TEST_MEMORY_GROUP: "1"
-      # ghcr.io/cybermonklabs/legion/ci, the copy of debian:bookworm-slim (.github/ci-images.yaml)
-      DISPATCH_TEST_MEMORY_GROUP_IMAGE: ghcr.io/cybermonklabs/legion/ci@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,8 +52,13 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # The image the test runs the server in, read from the Go constant that declares it, and
+      # pulled first for the reason the action gives.
       - name: Pull the container image the test runs the server in
-        run: docker pull "$DISPATCH_TEST_MEMORY_GROUP_IMAGE"
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/envoy/cmd/dispatch/agent_memory_group_test.go memoryGroupImage
       - name: The server ends its agent before the kernel
         run: go test -count=1 -timeout 15m -v -run '^TestTheServerEndsTheAgentBeforeTheKernel$' ./cmd/dispatch
         working-directory: packages/envoy

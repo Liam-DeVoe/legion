@@ -1784,6 +1784,7 @@ dispatch_memory_group:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-memory-group.yaml'
+  - '.github/actions/pull-test-images/**'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1801,6 +1802,7 @@ dispatch_memory_group:
   - '!packages/envoy/cmd/dispatch/history_memory_test.go'
   - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/memory_leaks_test.go'
   - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
   - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
   - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
@@ -1842,6 +1844,7 @@ dispatch_multiprocess:
   - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
   - '!packages/envoy/cmd/dispatch/history_memory_test.go'
   - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/memory_leaks_test.go'
   - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
   - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
   - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
@@ -1941,6 +1944,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/cmd/dispatch/history_memory_test.go'
   - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/memory_leaks_test.go'
   - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
   - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
   - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
@@ -2038,6 +2042,7 @@ dispatch_two_builds:
   - '!packages/envoy/cmd/dispatch/history_memory_test.go'
   - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/memory_leaks_test.go'
   - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
   - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
   - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
