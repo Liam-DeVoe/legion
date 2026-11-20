@@ -319,8 +319,7 @@ const objectPassBatches = 4
 
 // orphanedNodesSwept bounds the orphaned document nodes one tick states gone, each in a
 // transaction of its own (graphcensus's StateOrphanedGone); a tick that reads more leaves its debt
-// and is full. It bounds those document nodes alone, and neither the nodes beneath each, which go
-// gone with it, nor the stale lenses the tick states gone after the sweep.
+// and is full. It does not bound the stale lenses the tick states gone after the sweep.
 const orphanedNodesSwept = 20
 
 // objectPassInterval is the longest a process of this build goes without finishing the object
@@ -341,10 +340,10 @@ var rollNow time.Time
 // writeObjectNodesAnotherBuildWrote is the block-index tick's second step: while this build owes
 // the object pass (readEventsAfterCursor's owed), it writes the node of every issue, document, ask
 // and message whose row names none, through the backfill's object pass (graphcensus's
-// WriteOwedObjectNodes), states gone the node of every document a build before this one removed,
-// with every node beneath it (graphcensus's OrphanedDocumentNodes and StateOrphanedGone), and then
-// states every stale lens gone with everything under it (graphcensus's StateStaleLensesGone). It
-// counts each in tick, and answers whether it stopped with work left.
+// WriteOwedObjectNodes), states gone the node of every document a build before this one removed
+// (graphcensus's OrphanedDocumentNodes and StateOrphanedGone), and then states every stale lens
+// gone with everything under it (graphcensus's StateStaleLensesGone). It counts each in tick, and
+// answers whether it stopped with work left.
 //
 // The release before this one writes those four kinds' rows with no node, as it writes a
 // version's block rows with none, and nothing else would give them one until someone ran the
@@ -357,11 +356,11 @@ var rollNow time.Time
 // document node with no row behind it can mean nothing else: every writer of this build writes a
 // node in the transaction that writes its row, and the pass writes one only for a row that stands
 // under the owner locks it takes. The sweep states such a node gone as this build's own removal of
-// the document states it (api's removeArtifact), under the removal's own event, and takes every
-// node beneath it - each lens invoked on the document and all that stands under each - to gone in
-// the same transaction, so the store keeps every statement it held and the history of a removed
-// document is one whichever build served the removal; a node whose row a create of this build
-// commits meanwhile is left, since the sweep reads under its lock of the node whether a row stands.
+// the document states it (api's removeArtifact), under the removal's own event, and nothing beneath
+// it, so the store keeps every statement it held and the history of a removed document is one
+// whichever build served the removal; a node whose row a create of this build commits meanwhile is
+// left, since the sweep reads under its lock of the node whether a row stands. The lenses on such a
+// document are stale, and the stale sweep below takes them gone.
 //
 // Then, in one transaction of its own, it states gone every lens whose recorded row no longer
 // stands at its document's address, each with its whole part_of subtree (graphcensus's
@@ -375,9 +374,8 @@ var rollNow time.Time
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),
 // and each gone statement in its own, owner lock first too, so it holds no lock of the event
 // read's while it takes them. Its pass writes at most objectPassBatches batches and its sweep
-// states at most orphanedNodesSwept orphaned document nodes gone a tick; neither bound covers what
-// stands beneath each orphan, which goes gone in the orphan's transaction whatever its size, nor
-// the stale lenses, each of which goes gone with its whole subtree in the one transaction the stale
+// states at most orphanedNodesSwept orphaned document nodes gone a tick; neither bound covers the
+// stale lenses, each of which goes gone with its whole subtree in the one transaction the stale
 // sweep takes however many there are. A kind that fails holds back neither the other kinds nor the
 // sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass that
 // finishes clears, so no row is left without its node, no node without its row and no stale lens

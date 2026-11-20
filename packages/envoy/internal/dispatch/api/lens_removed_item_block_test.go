@@ -12,12 +12,12 @@ import (
 )
 
 // A lens on a block of a comment or on a part of an ask that a later revision of its item removes
-// stays live, and no read answers it a null `on` or parent (spec v59 R5): the block is history for
-// the lens, as a removed block of a document is. alice writes a comment with two blocks on the
-// spec's issue and invokes a BOTEC on its second block, and an edit of the comment removes that
-// block; she invokes a BOTEC on the second option of an open ask, and an edit of the ask drops that
-// option. Each BOTEC answers in three places the block at N, the revision before the edit, the last
-// one that held it: GET /api/v1/lenses?on= the BOTEC answers its on as
+// stays live, and no read answers it a null `on` or parent (spec requirement r-proposed): the block
+// is history for the lens, as a removed block of a document is. alice writes a comment with two
+// blocks on the spec's issue and invokes a BOTEC on its second block, and an edit of the comment
+// removes that block; she invokes a BOTEC on the second option of an open ask, and an edit of the
+// ask drops that option. Each BOTEC answers in three places the block at N, the revision before the
+// edit, the last one that held it: GET /api/v1/lenses?on= the BOTEC answers its on as
 // `dispatch://KEY/comment/<id>#b-<block>@v<N>` (`.../ask/<id>#b-<part>@v<N>`), GET
 // /api/v1/references?to= the BOTEC answers a node whose parent names that block at that address
 // with parent_version N, and GET /api/v1/lenses?on= that pinned address lists the BOTEC on it.
@@ -60,7 +60,7 @@ func requireLensOnRemovedItemBlock(t *testing.T, rig reasoningRig, lens, block s
 	held := removed - 1
 	pinned := fmt.Sprintf("%s@v%d", block, held)
 
-	state := storedStateOf(t, rig, lens)
+	state := storedNodeOf(t, rig.database, lens).State
 	read := rig.lenses(lens, "alice")
 	on := lensOn(read)
 	response := dispatchReferences(t, rig.handler, lens, "alice")

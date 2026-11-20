@@ -141,10 +141,10 @@ type Node struct {
 // of it (KeepsCause), marked changed, and at the sentinel, so its write states one state tuple at
 // the sentinel signed by who. Every writer that moves a node's state, or takes a node's subtree
 // gone beside a write of its own, sets the nodes it read so: the state route and the settle
-// (writeNodeState, with what NodesBeneath reads beneath a node it takes gone), the orphan sweep of
-// a document node it states gone (graphcensus's StateOrphanedGone), and the statement that takes
-// every stale lens gone with all that stands under it (graphcensus's StateStaleLensesGone), which
-// the sweep and a document's removal (api's removeArtifact) run.
+// (writeNodeState, with what NodesBeneath reads beneath a node it takes gone), and the statement
+// that takes every stale lens gone with all that stands under it (graphcensus's
+// StateStaleLensesGone), which the block-index tick runs after its orphan sweep and a document's
+// removal (api's removeArtifact) runs too.
 func AsStateWrite(nodes []Node, state string, at time.Time, who model.Actor) {
 	for index := range nodes {
 		each := &nodes[index]

@@ -46,14 +46,15 @@
 # triggered as it did before the pre-mortem was written. A third person who has written nothing
 # writes a lens reserved for them, and bob reads their page before and after that write as a login
 # nobody holds, while they find the lens on their own page. The first person then writes, under or
-# on her hidden nodes, a second risk with visibility `project` under the pre-mortem, a second finding
-# with visibility `project` under it (POST /api/v1/issues/{key}/nodes/{id}/findings), a lens with
+# on her hidden nodes, a second risk with visibility `project` under the pre-mortem, a lens with
 # visibility `project` on the pre-mortem and one on its finding: each is refused 400
 # VISIBILITY_WIDER_THAN_PARENT, its words naming the node the write drew and the hidden node, and
 # stores nothing, so no node a reader may see stands under or on one they may not, and no write is
-# narrowed to its parent's visibility in silence. A finding she then adds under the pre-mortem with
-# no visibility reads `author`, its lens's. Last the first person writes `gone` on the hidden
-# pre-mortem, and bob's read of its address is byte for byte the one he read before.
+# narrowed to its parent's visibility in silence. The finding route's two cases, a finding asked
+# for `project` under her pre-mortem and one asked for no visibility, are not this driver's:
+# TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused (packages/envoy/internal/dispatch/api/
+# gone_subtree_test.go) holds them. Last the first person writes `gone` on the hidden pre-mortem,
+# and bob's read of its address is byte for byte the one he read before.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key) and DEV_SIGNIN_LOGIN (the first person,
@@ -751,11 +752,6 @@ wider() {
 wider "$first's second risk, written with visibility project under her pre-mortem $premortem" "/api/v1/issues/$key/risks" \
   "$(jq -cn --arg l "$premortem" '{lens: $l, heading: "A project risk under a hidden lens", early_warning: "A sign of it",
     prevention: "A guard against it", visibility: "project"}')" "dispatch://risk/" "$premortem"
-# The finding route adds a block under the lens its path names, so the node it drew is a finding of
-# the pre-mortem, an address that begins with the pre-mortem's own.
-readonly premortem_findings="/api/v1/issues/$key/nodes/$(q "lens/$premortem_id")/findings"
-wider "$first's second finding, written with visibility project under her pre-mortem $premortem" "$premortem_findings" \
-  "$(jq -cn '{text: "A project finding under a hidden lens", visibility: "project"}')" "$premortem#b-" "$premortem"
 wider "$first's lens written with visibility project on her pre-mortem $premortem" "/api/v1/issues/$key/lenses" \
   "$(jq -cn --arg on "$premortem" '{on: $on, kind: "botec", visibility: "project"}')" "dispatch://lens/" "$premortem"
 wider "$first's lens written with visibility project on $finding, the finding of her pre-mortem" "/api/v1/issues/$key/lenses" \
@@ -763,24 +759,10 @@ wider "$first's lens written with visibility project on $finding, the finding of
 as_first C9 "$first reads the lenses on the spec $spec" "/api/v1/lenses?on=$(q "$spec")"
 expect C9 "the pre-mortem holds her one risk $risk still, so the refused risk was not stored" "[\"$risk\"]" \
   --arg p "$premortem" '[.lenses[] | select(.address == $p) | .risks[].address]'
-expect C9 "the pre-mortem holds its one finding $finding still, so the refused finding was not stored" "[\"$finding\"]" \
-  --arg p "$premortem" '[.lenses[] | select(.address == $p) | .findings[].address]'
 for on in "$premortem" "$finding"; do
   as_first C9 "$first reads the lenses on $on" "/api/v1/lenses?on=$(q "$on")"
   expect C9 "no lens stands on $on, so the refused lens was not stored" '[]' '[.lenses[].address]'
 done
-
-# A finding that names no visibility is no wider than its lens: it takes the pre-mortem's, author,
-# as the answer to its write and her lens read of the spec each say.
-request "cookie:$first" POST "$premortem_findings" '{"text": "A finding she adds with no visibility."}'
-want_status 201 C9 "$first adds a finding with no visibility under her pre-mortem $premortem"
-expect C9 "the finding $first added with no visibility under $premortem answers author, its lens's visibility" \
-  "$(jq -cnS --arg p "$premortem" '{lens: $p, visibility: "author"}')" '{lens, visibility}'
-unasked="$(jq -er '.address' "$work/body")" || fail C9 "read the finding added with no visibility" "no address: $(body)"
-as_first C9 "$first reads the lenses on the spec $spec" "/api/v1/lenses?on=$(q "$spec")"
-expect C9 "$first's lens read of the spec lists the pre-mortem's two findings, $finding and $unasked, each at author" \
-  "$(jq -cnS --arg a "$finding" --arg b "$unasked" '[{address: $a, visibility: "author"}, {address: $b, visibility: "author"}]')" \
-  --arg p "$premortem" '[.lenses[] | select(.address == $p) | .findings[] | {address, visibility}]'
 
 # --- C10: the hidden lens gone ------------------------------------------------------------------
 

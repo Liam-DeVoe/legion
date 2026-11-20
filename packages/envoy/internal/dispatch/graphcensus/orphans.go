@@ -73,27 +73,21 @@ var ErrNotOrphaned = errors.New("the node is not an orphaned document's")
 // its issue naming the address, and at the sentinel where there is none. Only who states it
 // differs, the block-index tick (SweepActor), since the person who removed it is the event's.
 //
-// It takes every node beneath the document's node to gone with it: each lens invoked on the
-// document and all that stands under each, at every depth, its findings, its risks and the lenses
-// on those, whoever may see them (graphstore.NodesBeneath), each written again as the store holds
-// it but for its state, keeping its cause, with one state tuple at the sentinel signed by the
-// block-index tick at the same time (graphstore.AsStateWrite), in the batch that writes the
-// document's node. Each such lens is stale already, since the row it recorded no longer stands at
-// the address (refs.StaleSQL), and so is everything under it, so no read answers one; this takes
-// them gone in the store with the node they stood on, as StateStaleLensesGone, which the tick runs
-// after this, takes every stale lens. No block of the document stands under it: a document any
-// release removes holds one empty version (api's artifactIsUntouched), whose index holds no block.
+// It states nothing beneath the node gone. A document any release removes holds one empty version
+// (api's artifactIsUntouched), whose index holds no block, so what stands under its node is the
+// lenses invoked on it and what stands under each. Each such lens is stale already, since the row
+// it recorded no longer stands at the address (refs.StaleSQL), so no read answers one, and
+// StateStaleLensesGone, which the tick runs after this, takes each one gone with its whole
+// subtree. A node a write moved under the document's node, which is no stale lens and stands under
+// none, belongs to the document its own address names and stays as it is.
 //
 // It takes the store's lock order: the issue's owner lock first (events.LockOwnerRows), as the
 // removal and every create of a document of that issue take it, then the node's row `for
-// update`, and only under that lock reads whether a row stands at the address, and what stands
-// beneath the node, which every writer of a lens, a finding or a risk of the issue writes under
-// that owner lock too (api's lockIssueOwner); then the nodes, then their tuples, the document's
-// under the removal's event. A create of this build writes the node and then the row in one
-// transaction under that owner lock, so a create that got there first has committed its row when
-// the read runs, and the node is left: the answer is ErrNotOrphaned, as it is for every node it
-// leaves. An address that names no issue is no removable document's, which only an issue's are,
-// and is left too.
+// update`, and only under that lock reads whether a row stands at the address. A create of this
+// build writes the node and then the row in one transaction under that owner lock, so a create
+// that got there first has committed its row when the read runs, and the node is left: the answer
+// is ErrNotOrphaned, as it is for every node it leaves. An address that names no issue is no
+// removable document's, which only an issue's are, and is left too.
 func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) error {
 	issue, _, found := strings.Cut(ref, "/")
 	if !found {
@@ -142,20 +136,10 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 		if err != nil {
 			return err
 		}
-		beneath, err := graphstore.NodesBeneath(ctx, tx, graphstore.KindArtifact, ref)
-		if err != nil {
-			return err
-		}
-		graphstore.AsStateWrite(beneath, graphstore.StateGone, removedAt, SweepActor)
 		gone := graphstore.ArtifactNode(ref, node.Project, sessionParty(node.Parties), SweepActor, removedAt)
 		gone.State = graphstore.StateGone
-		uncaused := graphstore.PlanUncaused([]graphstore.Node{gone}, nil)
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			if err := graphstore.QueueNodes(b, uncaused); err != nil || len(beneath) == 0 {
-				return err
-			}
-			return graphstore.QueueWrite(b, beneath, nil)
-		}); err != nil {
+		uncaused, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{gone}, nil)
+		if err != nil {
 			return fmt.Errorf("state the orphaned node of %s gone: %w", ref, err)
 		}
 		return graphstore.Caused(ctx, tx, uncaused, removal)

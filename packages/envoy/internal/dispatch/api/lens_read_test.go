@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -10,13 +9,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -108,8 +104,8 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 // kind's words, its author through authored_by, and the chain from both ends: placement and
 // trigger kept apart.
 //
-// No lens of that read answers on null (spec v59 R5). A lens on what a version or a retirement
-// takes out of an issue is TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent's
+// No lens of that read answers on null (spec requirement r-proposed). A lens on what a version or
+// a retirement takes out of an issue is TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent's
 // (gone_subtree_test.go), and a lens on a block of a comment or a part of an ask that a revision
 // removes TestALensOnARemovedPartOrCommentBlockNamesItsLastRevision's.
 func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
@@ -205,7 +201,7 @@ func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 
 // requireEveryLensOn fails, naming each lens, where read answers a lens with on null: the node
 // itself where it is a lens, each lens on it and each lens of its chains. No read answers a lens
-// with on null (spec v59 R5).
+// with on null (spec requirement r-proposed).
 func requireEveryLensOn(t *testing.T, what string, read nodeLenses) {
 	t.Helper()
 	lenses := slices.Clone(read.Lenses)
@@ -390,10 +386,11 @@ func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
 
 // TestALensOnAFindingGoesGoneWithTheFinding: a lens invoked on a finding hangs under that finding
 // through its part_of, so a person's gone on the finding's lens, which takes the finding to gone,
-// takes the lens on the finding to gone with it in the same write (writeNodeState, spec v59 R5):
-// no read answers it live with an on that names nothing. Its row reads gone; GET /api/v1/lenses
-// and GET /api/v1/references by its address answer what they answer for a lens nobody wrote, 404
-// NOT_FOUND; and gone is final, so the state route's overtaken on it is 409 NODE_GONE naming it.
+// takes the lens on the finding to gone with it in the same write (writeNodeState, spec requirement
+// r-proposed): no read answers it live with an on that names nothing. Its row reads gone; GET
+// /api/v1/lenses and GET /api/v1/references by its address answer what they answer for a lens
+// nobody wrote, 404 NOT_FOUND; and gone is final, so the state route's overtaken on it is 409
+// NODE_GONE naming it.
 func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 	rig := newReasoningRig(t)
 	parent := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"A finding a lens looks at."}})
@@ -404,29 +401,15 @@ func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 	}
 
 	rig.writeState(parent.Address, graphstore.StateGone, "alice")
-	address := graphstore.KindLens + "/" + onFinding.ID
-	if state := lensStateOf(t, rig.database, address); state != graphstore.StateGone {
+	if state := storedNodeOf(t, rig.database, onFinding.Address).State; state != graphstore.StateGone {
 		t.Errorf("the lens on the finding %s is %s once the finding's lens is gone, want gone with the finding", onFinding.Address, state)
 	}
-	// Each read by the lens's address answers what it answers for a lens nobody wrote, byte for
-	// byte once the id is substituted: the reference read names such a lens by its id alone.
-	nobody := uuid.NewString()
-	for _, read := range []struct {
-		route string
-		send  func(address string) *httptest.ResponseRecorder
-	}{
-		{"GET /api/v1/lenses?on=", func(address string) *httptest.ResponseRecorder { return rig.lensesResponse(address, "alice") }},
-		{"GET /api/v1/references?to=", func(address string) *httptest.ResponseRecorder {
-			return dispatchReferences(t, rig.handler, address, "alice")
-		}},
-	} {
-		seen, unwritten := read.send(onFinding.Address), read.send(refs.StoreRef(graphstore.KindLens, nobody))
-		if seen.Code != http.StatusNotFound || unwritten.Code != http.StatusNotFound ||
-			!bytes.Equal(seen.Body.Bytes(), bytes.ReplaceAll(unwritten.Body.Bytes(), []byte(nobody), []byte(onFinding.ID))) {
-			t.Errorf("alice's %s%s once the finding's lens is gone answers %d %s, and of a lens nobody wrote %d %s: want one 404 NOT_FOUND once the id is substituted",
-				read.route, onFinding.Address, seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
-		}
+	asAlice := func(method, path string, body any) *httptest.ResponseRecorder {
+		return dispatchRequest(t, rig.handler, method, path, body, "alice")
 	}
+	requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
+		return fmt.Sprintf("%s's %s once the finding's lens is gone answers %s, want 404 NOT_FOUND as for a lens nobody wrote", login, read, status)
+	}, lensReader{"alice", asAlice, onFinding})
 	requireGoneRefused(t, "overtaken on the lens on the gone finding",
 		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.ID)
 }
@@ -490,22 +473,8 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 		t.Fatalf("A stands on %v, want the spec", place)
 	}
 	spec := strings.TrimPrefix(place[0], graphstore.KindArtifact+"/")
-	move := func(fromKind, fromID, toKind, toID string) {
-		t.Helper()
-		moved := graphstore.Tuple{
-			FromKind: graphstore.KindLens, FromID: a.ID, Kind: graphstore.TuplePartOf, ToKind: fromKind, ToID: fromID,
-			At: time.Now().UTC(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent,
-		}
-		placed := moved
-		placed.ToKind, placed.ToID, placed.Asserted = toKind, toID, true
-		if err := pgx.BeginFunc(ctx, rig.database.Pool, func(tx pgx.Tx) error {
-			return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{moved, placed})
-		}); err != nil {
-			t.Fatalf("move A from %s %s to %s %s: %v", fromKind, fromID, toKind, toID, err)
-		}
-	}
-	move(graphstore.KindArtifact, spec, refs.BlockNodeKind, rig.requirementNode)
-	move(refs.BlockNodeKind, rig.requirementNode, graphstore.KindArtifact, spec)
+	movePartOf(t, rig.database, rig.issue, graphstore.KindLens, a.ID, refs.BlockNodeKind, rig.requirementNode, false)
+	movePartOf(t, rig.database, rig.issue, graphstore.KindLens, a.ID, graphstore.KindArtifact, spec, false)
 	var first, newest, placedC int64
 	if err := rig.database.Pool.QueryRow(ctx, `
 		select (select min(seq) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $4),

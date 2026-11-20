@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,7 +48,8 @@ const (
 )
 
 // A lens is stale once another row stands at its document's address, whatever build removed the
-// document and whatever build made the row that stands there now (spec v70 R5, c-settle).
+// document and whatever build made the row that stands there now (spec requirement r-proposed,
+// c-settle).
 //
 // Two earlier builds and this one serve one database, as a roll and a rollback serve them: main's,
 // the commit MAIN_BASELINE_SHA names, whose removal and create of a document write no node, and
@@ -96,9 +96,10 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	// ───── the first case: main removes A and makes B ─────
 	first := roll.lensedDocument(t, "the first case", "Made again by main.md")
 	free := roll.holdTheLease(t)
-	removeTypedDocument(t, roll.main, first.a)
+	removeTypedDocument(t, roll.main.process, roll.main.name, first.a)
 	roll.makeB(t, first, roll.main)
 	roll.requireDocumentNode(t, first, graphstore.StateLive, "main's removal and create write no node, so A's live node stands behind B's row")
+	roll.requireStatedByBsCreate(t, first, false, "main's create writes no node")
 	written := roll.sendLens(t, dispatchTestLogin, map[string]any{"on": first.address, "kind": staleLensKind})
 	if written.status != http.StatusCreated {
 		t.Fatalf("the person's lens write LB on %s answers %s, want 201", first.address, written)
@@ -108,7 +109,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 		t.Errorf("the lens %s on %s records the row %s, want %s, the row at the address when it was written",
 			lb.address, first.address, staleLensRowWords(got), first.b.id)
 	}
-	roll.requireAnsweredAsGone(t, first, &lb)
+	roll.requireAnsweredAsGone(t, first, http.StatusOK, &lb)
 	roll.stopEarlierBuilds(t)
 	free()
 	event := roll.awaitThisBuildsTick(t, first)
@@ -139,10 +140,11 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	roll.startEarlierBuilds(t)
 	second := roll.lensedDocument(t, "the second case", "Made again by the store's first build.md")
 	free = roll.holdTheLease(t)
-	removeTypedDocument(t, roll.main, second.a)
+	removeTypedDocument(t, roll.main.process, roll.main.name, second.a)
 	roll.makeB(t, second, roll.base)
-	roll.requireDocumentNode(t, second, graphstore.StateLive, "dispatch://INFRA-1150's create writes the document's node for B")
-	roll.requireAnsweredAsGone(t, second, nil)
+	roll.requireDocumentNode(t, second, graphstore.StateLive, "A's node stands live behind B's row")
+	roll.requireStatedByBsCreate(t, second, true, "dispatch://INFRA-1150's create writes the document's node for B, stating it gone and then live")
+	roll.requireAnsweredAsGone(t, second, http.StatusOK, nil)
 	roll.stopEarlierBuilds(t)
 	free()
 	event = roll.awaitThisBuildsTick(t, second)
@@ -152,7 +154,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	roll.startEarlierBuilds(t)
 	third := roll.lensedDocument(t, "the third case", "Made again over a gone node.md")
 	free = roll.holdTheLease(t)
-	removeTypedDocument(t, roll.base, third.a)
+	removeTypedDocument(t, roll.base.process, roll.base.name, third.a)
 	roll.requireDocumentNode(t, third, graphstore.StateGone, "dispatch://INFRA-1150's removal states A's node gone")
 	roll.makeB(t, third, roll.main)
 	roll.requireDocumentNode(t, third, graphstore.StateGone, "main's create writes no node, so B's row stands behind A's gone node")
@@ -160,7 +162,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 		t.Error(third.lensWriteFailure(before, "before", "409 NODE_GONE"))
 		t.Logf("the lens write before the object pass answers %s", before)
 	}
-	roll.requireAnsweredAsGone(t, third, nil)
+	roll.requireAnsweredAsGone(t, third, http.StatusNotFound, nil)
 	roll.stopEarlierBuilds(t)
 	free()
 	event = roll.awaitThisBuildsTick(t, third)
@@ -201,7 +203,7 @@ type staleLensRoll struct {
 // spec's issue.
 func newStaleLensRoll(t *testing.T) *staleLensRoll {
 	t.Helper()
-	mainCommit := testbaseline.CommitOf(t, testbaseline.MainVariable)
+	mainCommit := testbaseline.MainCommit(t)
 	baseCommit := testbaseline.Commit(t)
 	requireTheStoreMigration(t, testbaseline.MainVariable, mainCommit, false)
 	requireTheStoreMigration(t, testbaseline.Variable, baseCommit, true)
@@ -237,8 +239,7 @@ func newStaleLensRoll(t *testing.T) *staleLensRoll {
 // which writes none, or a case would read neither build's writes.
 func requireTheStoreMigration(t *testing.T, variable, commit string, holds bool) {
 	t.Helper()
-	// git reads <commit>:<path> from the repository's root whatever directory it runs in.
-	held := exec.Command("git", "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run() == nil
+	held := holdsTheStore(commit)
 	switch {
 	case holds && !held:
 		t.Fatalf("%s names %s, whose migrations lack 20261109013400 (graph_store, %s), so it is no build of dispatch://INFRA-1150, whose create writes the document's node and whose removal states it gone: set %s to `git merge-base origin/legion/INFRA-1150 HEAD`, or once that branch has merged to `git merge-base origin/main HEAD`",
@@ -273,51 +274,16 @@ func (r *staleLensRoll) stopEarlierBuilds(t *testing.T) {
 	}
 }
 
-// holdTheLease takes the block-index lease as costHoldBlockIndex takes it, over the run's database,
-// so no tick of any build runs until the call it answers gives it back. A test that fails while it
-// holds the lease gives it back as it ends, before its connections close.
+// holdTheLease takes the block-index lease over the run's database (holdBlockIndexLease), so no
+// tick of any build runs until the call it answers gives it back. A test that fails while it holds
+// the lease gives it back as it ends, before its connections close.
 func (r *staleLensRoll) holdTheLease(t *testing.T) func() {
 	t.Helper()
-	release := costHoldBlockIndex(t, &costArm{name: "this build", server: r.current, databaseURL: r.databaseURL, pool: r.pool})
+	release := holdBlockIndexLease(t, "this build", r.pool, r.current)
 	var once sync.Once
 	free := func() { once.Do(release) }
 	t.Cleanup(free)
 	return free
-}
-
-// typedDocument is a document made by typing a title and never written in: its id, the ref_key
-// its node is addressed by and its slug.
-type typedDocument struct{ id, ref, slug string }
-
-// makeTypedDocument makes one of issue's documents through p, the build built, by typing its title.
-func makeTypedDocument(t *testing.T, p *dispatchProcess, built, issue, title string) typedDocument {
-	t.Helper()
-	answer := p.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", encodeJSON(t, map[string]string{"name": title}), asUser(dispatchTestLogin))
-	if answer.status != http.StatusCreated {
-		t.Fatalf("%s: POST /api/v1/issues/%s/artifacts of %q answers %s, want 201", built, issue, title, answer)
-	}
-	var made struct {
-		Artifact struct {
-			ID     string `json:"id"`
-			RefKey string `json:"ref_key"`
-			Slug   string `json:"slug"`
-		} `json:"artifact"`
-	}
-	if err := json.Unmarshal(answer.body, &made); err != nil || made.Artifact.ID == "" || made.Artifact.RefKey == "" || made.Artifact.Slug == "" {
-		t.Fatalf("%s: read the document %q made on %s: %v: %s", built, title, issue, err, answer.body)
-	}
-	return typedDocument{id: made.Artifact.ID, ref: made.Artifact.RefKey, slug: made.Artifact.Slug}
-}
-
-// removeTypedDocument removes the document through the earlier build's DELETE
-// /api/v1/artifacts/{id}.
-func removeTypedDocument(t *testing.T, build *earlierBuild, document typedDocument) {
-	t.Helper()
-	answer := build.process.send(t, http.MethodDelete, "/api/v1/artifacts/"+document.id, "", asUser(dispatchTestLogin))
-	if answer.status != http.StatusNoContent {
-		t.Fatalf("%s: DELETE /api/v1/artifacts/%s answers %s, want 204", build.name, document.id, answer)
-	}
-	t.Logf("%s removed %s (%s)", build.name, document.id, document.ref)
 }
 
 // staleLensNode is LO, FO, LP or LB: its address, the kind and the id graph_nodes keys it by, and
@@ -470,6 +436,38 @@ func (r *staleLensRoll) requireDocumentNode(t *testing.T, c *staleLensCase, stat
 	}
 }
 
+// createdEvent is the id of B's artifact.created event, the event the earlier build's create of B
+// appended.
+func (r *staleLensRoll) createdEvent(t *testing.T, c *staleLensCase) int64 {
+	t.Helper()
+	var event int64
+	if err := r.pool.QueryRow(context.Background(), `
+		select coalesce(max(id), 0) from events where type = 'artifact.created' and payload->'artifact'->>'id' = $1
+	`, c.b.id).Scan(&event); err != nil || event == 0 {
+		t.Fatalf("%s: read B's artifact.created event: %d (%v)", c.name, event, err)
+	}
+	return event
+}
+
+// requireStatedByBsCreate fails the test unless the store holds a state tuple on B's address
+// caused by B's artifact.created event (createdEvent) where stated is true, and none where it is
+// false: whether the earlier build's create of B wrote B's node, the case's premise premise names.
+// A node at the address reads live either way, so its state alone cannot tell.
+func (r *staleLensRoll) requireStatedByBsCreate(t *testing.T, c *staleLensCase, stated bool, premise string) {
+	t.Helper()
+	event := r.createdEvent(t, c)
+	var tuples int
+	if err := r.pool.QueryRow(context.Background(), `
+		select count(*) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and source_event = $4
+	`, graphstore.KindArtifact, c.b.ref, graphstore.AttributeState, event).Scan(&tuples); err != nil {
+		t.Fatalf("%s: read the state tuples on %s caused by B's artifact.created event %d: %v", c.name, c.address, event, err)
+	}
+	if (tuples > 0) != stated {
+		t.Fatalf("%s: %s holds %d state tuple(s) caused by B's artifact.created event %d: the case's premise is that %s",
+			c.name, c.address, tuples, event, premise)
+	}
+}
+
 // staleLensesRead is what GET /api/v1/lenses answers of a node: the node itself where it is a lens,
 // the lenses on it, and the chains they stand in.
 type staleLensesRead struct {
@@ -511,10 +509,11 @@ func (l staleLensesRead) listed() []string {
 // requireAnsweredAsGone holds this build's reads of LO, FO and LP, with the lease held, to what they
 // answer of gone nodes. GET /api/v1/references?to= and GET /api/v1/lenses?on= of each answer 404
 // NOT_FOUND, byte for byte as an address nobody wrote answers once the id is substituted, to the
-// person, and for LP to the second person too; GET /api/v1/lenses?on= B's address lists none of
-// them in its lenses or its chains, and where lb is not nil answers it alone in its lenses; and the
-// person page of each author lists none of them.
-func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, lb *staleLensNode) {
+// person, and for LP to the second person too; GET /api/v1/lenses?on= B's address answers want,
+// 200 where B's node is live and 404 where it is gone, and an answer of 200 lists none of them in
+// its lenses or its chains, and where lb is not nil answers it alone in its lenses; and the person
+// page of each author lists none of them.
+func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, want int, lb *staleLensNode) {
 	t.Helper()
 	for _, read := range []struct {
 		login string
@@ -524,10 +523,10 @@ func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, lb
 			nobody := uuid.NewString()
 			own := r.current.send(t, http.MethodGet, route+url.QueryEscape(read.node.address), "", asUser(read.login))
 			nobodys := r.current.send(t, http.MethodGet, route+url.QueryEscape(strings.ReplaceAll(read.node.address, read.node.lens, nobody)), "", asUser(read.login))
-			want := bytes.ReplaceAll(nobodys.body, []byte(nobody), []byte(read.node.lens))
-			if own.status != http.StatusNotFound || nobodys.status != http.StatusNotFound || !bytes.Equal(own.body, want) {
+			nobodysAsOwn := bytes.ReplaceAll(nobodys.body, []byte(nobody), []byte(read.node.lens))
+			if own.status != http.StatusNotFound || nobodys.status != http.StatusNotFound || !bytes.Equal(own.body, nobodysAsOwn) {
 				t.Error(c.readFailure(read.node, "GET "+route+read.node.address, own.String(), read.login))
-				t.Logf("an address nobody wrote answers %s to %s, %s once the id is substituted", nobodys, read.login, want)
+				t.Logf("an address nobody wrote answers %s to %s, %s once the id is substituted", nobodys, read.login, nobodysAsOwn)
 			}
 		}
 	}
@@ -535,7 +534,9 @@ func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, lb
 	read := "GET /api/v1/lenses?on=" + c.address
 	answer := r.current.send(t, http.MethodGet, "/api/v1/lenses?on="+url.QueryEscape(c.address), "", asUser(dispatchTestLogin))
 	switch {
-	case answer.status == http.StatusOK:
+	case answer.status != want:
+		t.Errorf("%s answers %s to %s, want %d", read, answer, dispatchTestLogin, want)
+	case want == http.StatusOK:
 		var lenses staleLensesRead
 		if err := json.Unmarshal(answer.body, &lenses); err != nil {
 			t.Fatalf("decode %s: %v: %s", read, err, answer.body)
@@ -555,10 +556,6 @@ func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, lb
 				t.Errorf("%s answers the lenses %q to %s, want LB, %s, alone", read, addresses, dispatchTestLogin, lb.address)
 			}
 		}
-	case lb != nil:
-		t.Errorf("%s answers %s to %s, want 200 listing LB, %s, alone", read, answer, dispatchTestLogin, lb.address)
-	case answer.status != http.StatusNotFound:
-		t.Errorf("%s answers %s to %s, want 200 listing none of LO, FO and LP, or 404 for B's node", read, answer, dispatchTestLogin)
 	}
 
 	for _, login := range []string{dispatchTestLogin, staleLensSecond} {
@@ -596,12 +593,7 @@ func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, lb
 func (r *staleLensRoll) awaitThisBuildsTick(t *testing.T, c *staleLensCase) string {
 	t.Helper()
 	ctx := context.Background()
-	var event int64
-	if err := r.pool.QueryRow(ctx, `
-		select coalesce(max(id), 0) from events where type = 'artifact.created' and payload->'artifact'->>'id' = $1
-	`, c.b.id).Scan(&event); err != nil || event == 0 {
-		t.Fatalf("%s: read B's artifact.created event: %d (%v)", c.name, event, err)
-	}
+	event := r.createdEvent(t, c)
 	words := fmt.Sprintf("B's artifact.created event %d", event)
 	within := 3*docs.BlockIndexReconcileInterval + 30*time.Second
 	deadline := time.Now().Add(within)

@@ -723,11 +723,10 @@ var indexPasses = map[string]string{
 	// gone at an issue's address that no artifacts row stands behind (graphcensus'
 	// OrphanedDocumentNodes), which it locks and reads again to find it still so under that lock.
 	// The artifact.removed event naming the address is only the cause it states the node gone
-	// under, and the sentinel where there is none, as this build's removal does, and every node
-	// beneath the node goes gone with it from its own row, which the sweep reads through the
-	// current part_of tuples (graphstore.NodesBeneath). It reads no projected table, and the store
-	// only to state the store's own next fact, so it is no repair.
-	"graphcensus/orphans.go#StateOrphanedGone": "each document node not gone at an issue's address that no artifacts row stands behind, the store's row of that node, the rows of every node beneath it, and the artifact.removed event naming the address as its cause",
+	// under, and the sentinel where there is none, as this build's removal does. It states nothing
+	// beneath the node gone: the stale lenses on the document are StateStaleLensesGone's. It reads
+	// no projected table, and the store only to state the store's own next fact, so it is no repair.
+	"graphcensus/orphans.go#StateOrphanedGone": "each document node not gone at an issue's address that no artifacts row stands behind, the store's row of that node, and the artifact.removed event naming the address as its cause",
 	// The statement that states every stale lens gone, which the block-index tick runs after its
 	// sweep and a document's removal runs for the removed document's address: what decides is the
 	// lens's own recorded row (graphstore.AttributeArtifactID) against the artifacts row at its

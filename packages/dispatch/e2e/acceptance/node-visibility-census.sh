@@ -462,6 +462,9 @@ readonly -a decision_kinds=(shaped from_ask decided_by followed_by reading_paren
 # writes such an ask, and every census that reads the eight reads these six through census_zero
 # too, each named where it checked no row.
 readonly -a edge_kinds=(shaped_edge from_ask_edge decided_by_edge followed_by_edge ask_parent_edge ask_anchor_edge)
+# The fourteen kinds H2 gives a row each, decision_kinds and edge_kinds, which every census of the
+# store as its writers left it reads through census_zero.
+readonly -a populated_kinds=("${decision_kinds[@]}" "${edge_kinds[@]}")
 
 # wait_settled SECTION WHAT: waits, 120 s at most, until no document owes a settlement
 # (doc_settlements_pending) or its block index (a document_block_versions row with a null version),
@@ -1062,7 +1065,7 @@ census_zero H2 h2 person
 census_zero H2 h2 session
 census_zero H2 h2 role
 census_zero H2 h2 page
-for kind in "${decision_kinds[@]}" "${edge_kinds[@]}"; do
+for kind in "${populated_kinds[@]}"; do
   census_zero H2 h2 "$kind"
 done
 census_differences H2 h2
@@ -1325,7 +1328,7 @@ census_zero C h3 person
 census_zero C h3 session
 census_zero C h3 role
 census_zero C h3 page
-for kind in "${decision_kinds[@]}" "${edge_kinds[@]}"; do
+for kind in "${populated_kinds[@]}"; do
   census_zero C h3 "$kind"
 done
 for kind in interaction lens finding risk constraint lens_kind; do
@@ -1697,7 +1700,7 @@ census_zero E erased person
 census_zero E erased session
 census_zero E erased role
 census_zero E erased page
-for kind in "${decision_kinds[@]}" "${edge_kinds[@]}"; do
+for kind in "${populated_kinds[@]}"; do
   census_zero E erased "$kind"
 done
 for kind in interaction lens finding risk constraint lens_kind; do

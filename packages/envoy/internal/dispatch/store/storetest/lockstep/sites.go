@@ -211,8 +211,7 @@ var storeWriteCallSites = map[string]string{
 	"graphcensus/projects_backfill.go#writeScopeBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The block-index tick's sweep of the documents a build before this one removed, which states
 	// each orphaned node gone as this build's removal does: the issue's owner lock, then the
-	// node's row, then the nodes - the document's and every node beneath it - and then the state
-	// tuples, the document's under the removal's own event.
+	// node's row, then the state tuple, under the removal's own event.
 	"graphcensus/orphans.go#StateOrphanedGone": "graphcensus#TestTheOrphanSweepTakesTheStoreLockOrder",
 	// The statement that states every stale lens gone with all that stands under it, in its
 	// caller's transaction (the block-index tick's own, a document's removal's): the owner lock of
