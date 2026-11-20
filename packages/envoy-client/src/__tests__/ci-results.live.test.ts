@@ -19,7 +19,7 @@ import {
   writeProbeSpec,
 } from "../../test/ci-results-stack";
 import { dispatchStackEnabled } from "../../test/dispatch-stack";
-import { ownIdentityDispatch } from "../dispatch-config";
+import { brokerCredential } from "../broker-credential";
 
 // The v-recorder path over its whole length: a CI job's own GitHub token, traded at the real
 // secrets broker (./cmd/broker) under a real result entry for a token that writes results only,
@@ -357,22 +357,24 @@ describe.skipIf(!dispatchStackEnabled)(
       const project = running().project;
 
       // The command presents a results token on the one route it writes, and its session path
-      // takes no session the result entry fixes. So this row resolves the command's own credential
-      // (ownIdentityDispatch: the job's identity traded at the broker) and presents it elsewhere.
-      const resolution = ownIdentityDispatch(running().jobEnv(runAt(at, 106)));
-      if (!resolution.enabled) throw new Error(`the job's credential: ${resolution.error}`);
+      // takes no session the result entry fixes. Trade the job's own identity and present that
+      // credential on the routes it may not reach.
+      const environment = running().jobEnv(runAt(at, 106));
+      const dispatchUrl = environment.DISPATCH_URL;
+      if (dispatchUrl === undefined) throw new Error("the job's Dispatch URL is missing");
+      const credential = brokerCredential(environment);
       const answers: string[] = [];
       for (const [method, route, body] of [
         ["GET", `/api/v1/issues?project=${project}`, undefined],
         ["POST", "/api/v1/issues", { project, title: "An issue a CI job writes" }],
         ["GET", `/api/v1/projects/${project}/results?commit=${at}`, undefined],
       ] as const) {
-        const url = `${resolution.url}${route}`;
+        const url = `${dispatchUrl}${route}`;
         const response = await fetch(url, {
           method,
           headers: {
             ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-            ...(await resolution.credential.headers(method, url)),
+            ...(await credential.headers(method, url)),
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });

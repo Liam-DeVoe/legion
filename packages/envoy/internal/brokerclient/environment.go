@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The variables every program that holds one of these identities reads, so `agent-secrets`, its
@@ -18,18 +20,15 @@ import (
 const (
 	// BrokerURLVar names the secrets broker, as it does for every other form of agent-secrets.
 	BrokerURLVar = "AGENT_SECRETS_URL"
-	// IdentityVar says which identity this machine proves: kubernetes, metadata, pool or
-	// github-actions. Unset, this machine has none and nothing trades — which is every
-	// deployment that has not turned the exchange on, and is why no program here fails for want
-	// of it.
+	// IdentityVar says which identity this machine proves: kubernetes, metadata or pool. Unset,
+	// this machine has none and nothing trades — which is every deployment that has not turned
+	// the exchange on, and is why no program here fails for want of it.
 	IdentityVar = "AGENT_SECRETS_MACHINE_IDENTITY"
 	// MachineTokenFileVar is the projected Kubernetes service-account token file, which
-	// IdentityKubernetes reads and IdentityPool federates, and the file an
-	// IdentityGitHubActions job with no runner endpoint reads its run's token from.
+	// IdentityKubernetes reads and IdentityPool federates.
 	MachineTokenFileVar = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
 	// MachineAudienceVar is the audience of this machine's Google identity token: the metadata
-	// server mints it for that audience, and a pool mint names it as the minted token's own. A
-	// GitHub Actions job's runner mints its OIDC token for it too.
+	// server mints it for that audience, and a pool mint names it as the minted token's own.
 	MachineAudienceVar = "AGENT_SECRETS_MACHINE_AUDIENCE"
 	// PoolAudienceVar is the workload identity pool provider an external credential is traded
 	// at, the full //iam.googleapis.com/projects/… resource name.
@@ -37,8 +36,7 @@ const (
 	// PoolAccountVar is the managed identity generateIdToken is called on.
 	PoolAccountVar = "AGENT_SECRETS_POOL_ACCOUNT"
 	// ActionsTokenURLVar is the runner's OIDC token endpoint, which GitHub sets in a job granted
-	// id-token: write, and ActionsTokenVar the bearer that endpoint takes, which GitHub sets
-	// beside it. IdentityGitHubActions asks the one with the other.
+	// id-token: write, and ActionsTokenVar the bearer that endpoint takes.
 	ActionsTokenURLVar = "ACTIONS_ID_TOKEN_REQUEST_URL"
 	ActionsTokenVar    = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 	// SessionVar is the session a trade writes under for a caller that acts as no session of
@@ -97,14 +95,17 @@ func TradeSession(getenv func(string) string, own string) string {
 
 // TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, in the
 // grammar the broker reads (oauthwire.ParseProjects), sorted and each once; nil when it is blank.
-// A value that is no list is an error naming the variable, never a list quietly cut short. It is
-// the declaration a Go trade naming its projects reads them through; no Go trade of this release
-// calls it. The TypeScript client reads the same variable the same way
-// (packages/broker-client/src/environment.ts, tradeProjects).
+// A value that is no list is an error naming the variable and the rule, never a list quietly cut
+// short, and never the value: a value the variable cannot hold is where a credential pasted into
+// the wrong variable shows up, and ParseProjects quotes the key it refuses. It is the declaration
+// a Go trade naming its projects reads them through; no Go trade of this release calls it. The
+// TypeScript client reads the same variable the same way (packages/broker-client/src/
+// environment.ts, tradeProjects).
 func TradeProjects(getenv func(string) string) ([]string, error) {
 	projects, err := oauthwire.ParseProjects(getenv(ProjectsVar))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ProjectsVar, err)
+		return nil, fmt.Errorf("%s is not a list of project keys: at most %d keys, separated by white space, each named once and each %s",
+			ProjectsVar, oauthwire.MaxProjects, contracts.ProjectKeyRule)
 	}
 	return projects, nil
 }
@@ -112,7 +113,8 @@ func TradeProjects(getenv func(string) string) ([]string, error) {
 // MachineIdentity is the identity IdentityVar names, or nil when it names none, which is a
 // machine that trades nothing and is no error. A named identity whose own variables are missing
 // is an error naming each of them, since a deployment that asked for one and gave it nothing has
-// a mistake in it.
+// a mistake in it. A kind it does not know is an error naming the variable and the kinds it
+// takes, and not the value, which is where a credential pasted into the wrong variable shows up.
 func MachineIdentity(getenv func(string) string) (Source, error) {
 	kind := strings.TrimSpace(getenv(IdentityVar))
 	switch kind {
@@ -172,14 +174,16 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 			RequestURL: requestURL, RequestToken: requestToken, Audience: audience, HTTP: HTTPClient(),
 		}, nil
 	default:
-		return nil, fmt.Errorf("%s=%q names no identity this machine can prove; it takes %s, %s, %s or %s",
-			IdentityVar, kind, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s, %s or %s",
+			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
 	}
 }
 
 // SignInFlow is the device-flow client a person signs in with, or nil when the deployment
 // configures none. The client secret is read from its file here, so a refusal names the file
-// rather than failing at the first sign-in.
+// rather than failing at the first sign-in; it names the file by its variable, with the system's
+// reason alone (redact.File), and never its path, which for a person who pasted the secret itself
+// into the variable is the secret.
 func SignInFlow(getenv func(string) string) (*DeviceFlow, error) {
 	clientID := strings.TrimSpace(getenv(SignInClientIDVar))
 	secretFile := strings.TrimSpace(getenv(SignInClientSecretFileVar))
@@ -192,7 +196,7 @@ func SignInFlow(getenv func(string) string) (*DeviceFlow, error) {
 	}
 	secret, err := os.ReadFile(secretFile)
 	if err != nil {
-		return nil, fmt.Errorf("read the sign-in client's secret (%s): %w", SignInClientSecretFileVar, err)
+		return nil, fmt.Errorf("read the sign-in client's secret from the file %s names: %w", SignInClientSecretFileVar, redact.File(err))
 	}
 	issuer := strings.TrimSpace(getenv(SignInIssuerVar))
 	if issuer == "" {

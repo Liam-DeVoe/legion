@@ -2,8 +2,9 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
-  tradeWaitEnded,
-} from "@legion/broker-client/token-client";
+  TradeRetryingError,
+  TradeUnansweredError,
+} from "@legion/broker-client/token-errors";
 import { sleep } from "@legion/contracts";
 import {
   askgateState,
@@ -22,19 +23,23 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { specCheckResultCommand } from "./dispatch-commands/check-results";
 import { defined } from "./dispatch-commands/context";
-import { specCheckResultCommand } from "./dispatch-commands/issues";
 import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
-import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
+import {
+  checkDispatchCall,
+  dispatchServerUrls,
+  dryRunAsksDispatch,
+  executeDispatchTool,
+} from "./dispatch-execute";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
+  DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
-  tokenNotChecked,
-  writeOutcomeUnknown,
 } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
@@ -49,6 +54,7 @@ import {
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
+import { nearestAncestorNamed } from "./process-ancestry";
 import { printable, printableJson, printableLine } from "./runner-log";
 import {
   handedConfigFile,
@@ -68,9 +74,10 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
-  /** The one bound of a CI job's `dispatch result --project` (`RESULT_BOUND` by default), which a
-   *  test shortens to run it on the real clock. */
   readonly resultBound?: ResultBound;
+  /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
+   *  test of a shell that carries two hosts' variables. */
+  readonly nearestAncestorNamed?: (names: readonly string[]) => string | undefined;
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -81,101 +88,119 @@ const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
 
-/**
- * The one bound of a CI job's `dispatch result --project` (`ownIdentityResult`). The whole call
- * ends `totalMs` after it starts: one timeout, made where the call starts, is the signal every
- * await of it runs under — its wait on the broker's trade and on the runner's token request the
- * trade makes, each write with the asks the write client makes again under its key, and each wait
- * after an answer that says "not now" (`notNow`) — since the write client takes that signal as
- * its deadline and hands it to the credential. The trade itself runs under its own bound, which a
- * second caller of the credential may share (`BrokerTokenClient.token`), so the signal ends the
- * call's wait on it and not the trade. No round starts, and the write client asks nothing again,
- * in its last `reserveMs`, the time a last attempt has to be answered before the bound ends it. A
- * job's step of many checks still ends, and the wait of one call stays far below a job's timeout.
- */
 export interface ResultBound {
   readonly totalMs: number;
   readonly reserveMs: number;
 }
 
-/** How long Dispatch's check of a broker token waits for the broker before it answers
- *  `503 BROKER_UNAVAILABLE`, with no handler run: `introspectTimeout`,
- *  packages/envoy/internal/brokertoken/introspect.go, which a test holds this copy to. */
 export const DISPATCH_TOKEN_CHECK_WAIT_MS = 5_000;
-
-/** The time a last attempt's answer gets beyond the slowest answer Dispatch gives before a
- *  handler runs: the round trip, and Dispatch's own work before the check. */
-const RESERVE_MARGIN_MS = 2_000;
-
-/**
- * 60 s in all, the write client's own deadline (DISPATCH_TOOL_DEADLINE_MS). The reserve must be
- * greater than the slowest answer Dispatch gives before any handler runs, its check of the token
- * waiting on the broker (`DISPATCH_TOKEN_CHECK_WAIT_MS`): a last ask sent at the edge of a
- * reserve no longer than that wait can be answered "not checked" only after the bound, which then
- * ends it as an attempt that may have reached a handler, though none ran. So it is that wait and
- * a margin, 7 s.
- */
 const RESULT_BOUND: ResultBound = {
   totalMs: DISPATCH_TOOL_DEADLINE_MS,
-  reserveMs: DISPATCH_TOKEN_CHECK_WAIT_MS + RESERVE_MARGIN_MS,
+  reserveMs: DISPATCH_TOKEN_CHECK_WAIT_MS + 2_000,
 };
 
-/** The wait `ownIdentityResult` takes where an answer that says "not now" names none. */
-const NOT_NOW_STEP_MS = 1_000;
-
-/**
- * Why a call of `ownIdentityResult` was turned away before anything was stored, so it may be sent
- * again, and how long to wait first; undefined for every other failure. Three answers say so:
- * the broker's rate limit (its 429), the broker that could not answer the trade (a 5xx, or no
- * answer before the trade's own bound ended it; a trade stores nothing), and Dispatch's check of
- * the job's token, which answered before any handler ran (`tokenNotChecked`: its 429 of a spent
- * bucket, its 503 for a broker that answered nothing). An answer of the write itself is never
- * one: a refusal is final, and a write that may have stored is `writeOutcomeUnknown`'s.
- */
-function notNow(error: unknown): { readonly why: string; readonly waitMs: number } | undefined {
-  if (error instanceof BrokerRefusedError && error.status === 429) {
-    return {
-      why: "the secrets broker's rate limit refused the trade",
-      waitMs: error.retryAfterMs ?? NOT_NOW_STEP_MS,
-    };
-  }
-  if (error instanceof BrokerTradeFailedError && (error.status >= 500 || error.timedOut)) {
-    return { why: "the secrets broker could not answer the trade", waitMs: NOT_NOW_STEP_MS };
-  }
-  if (tokenNotChecked(error)) {
-    return {
-      why: "Dispatch's check of the job's token turned the write away",
-      waitMs: error.retryAfterMs ?? NOT_NOW_STEP_MS,
-    };
-  }
-  return undefined;
+function isJobResult(argv: readonly string[]): boolean {
+  return (
+    argv[0] === "result" &&
+    argv.slice(1).some((word) => word === "--project" || word.startsWith("--project="))
+  );
 }
 
-/**
- * What the call was waiting on when its bound ended it before any write went out, or undefined
- * where that is not so: the trade, which runs under its own bound and goes on, while the bound
- * ends the call's wait on it, marked with the part then under way (`tradeWaitEnded`), the read of
- * the job's own token or the broker's exchange. The credential is asked before each attempt goes
- * out, and the write client gives such an error back as it is only where no attempt of the call
- * may have reached Dispatch (`#ended`, `#settle`), and every earlier round stored nothing, so
- * nothing was written.
- */
-function tradeCut(error: unknown): string | undefined {
-  switch (tradeWaitEnded(error)) {
-    case "identity":
-      return "it read the job's own token for the secrets broker";
-    case "exchange":
-      return "the secrets broker traded the job's token";
-    default:
-      return undefined;
+/** Records a CI result without consulting an agent's host, credentials, state or AskGate. */
+async function ownIdentityResult(
+  parsed: Extract<ParsedCommand, { readonly kind: "call" }>,
+  env: Readonly<Record<string, string>>,
+  io: DispatchCliIo,
+  print: (text: string) => void,
+  refuse: (text: string, code: number, tool?: string) => number
+): Promise<number> {
+  const resolution = ownIdentityDispatch(env);
+  const checked = await checkDispatchCall({
+    tool: parsed.tool,
+    args: parsed.args,
+    cwd: io.cwd,
+    env,
+    serverUrls: resolution.enabled ? dispatchServerUrls(resolution) : [],
+  });
+  if (checked.problems.length > 0) {
+    return refuse(
+      new ToolInputError(parsed.tool, checked.problems.map(printable)).message,
+      USAGE,
+      parsed.tool
+    );
+  }
+  if (parsed.dryRun) {
+    print(printableJson(JSON.stringify(parsed.args, null, 2)));
+    return OK;
+  }
+  if (!resolution.enabled) {
+    return refuse(
+      `dispatch: ${printable(resolution.error ?? resolution.notice)}`,
+      USAGE,
+      parsed.tool
+    );
+  }
+  const bound = io.resultBound ?? RESULT_BOUND;
+  const ended = AbortSignal.timeout(bound.totalMs);
+  const lastRound = performance.now() + bound.totalMs - bound.reserveMs;
+  const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch, {
+    signal: ended,
+    deadlineMs: bound.totalMs,
+    writeRetry: {
+      ...DISPATCH_WRITE_RETRY,
+      withinMs: Math.min(DISPATCH_WRITE_RETRY.withinMs, bound.totalMs - bound.reserveMs),
+      inFlightWithinMs: bound.totalMs - bound.reserveMs,
+    },
+  });
+  for (;;) {
+    try {
+      print(printableJson((await specCheckResultCommand(client, checked.args)).text));
+      return OK;
+    } catch (error) {
+      if (error instanceof DispatchWriteLandedError) {
+        print(JSON.stringify({ landed_without_answer: error.code }));
+        return OK;
+      }
+      if (error instanceof DispatchWriteUnsettledError) {
+        return refuse(
+          printableJson(
+            JSON.stringify({
+              write_outcome_unknown:
+                error.last instanceof DispatchServiceError ? error.last.code : error.last.name,
+            })
+          ),
+          REFUSED,
+          parsed.tool
+        );
+      }
+      const notChecked =
+        error instanceof DispatchServiceError &&
+        error.fromDispatch &&
+        ((error.status === 429 && error.code === "BROKER_TOKEN_RATE_LIMITED") ||
+          (error.status === 503 && error.code === "BROKER_UNAVAILABLE"));
+      const tradeWaiting =
+        error instanceof TradeRetryingError ||
+        error instanceof TradeUnansweredError ||
+        error instanceof BrokerTradeFailedError ||
+        (error instanceof BrokerRefusedError && error.status === 429);
+      if ((notChecked || tradeWaiting) && performance.now() + 1_000 <= lastRound) {
+        const waited = await sleep(1_000, ended).then(
+          () => true,
+          () => false
+        );
+        if (waited) continue;
+      }
+      return refuse(printableLine(messageFor(error)), REFUSED, parsed.tool);
+    }
   }
 }
 
-const HOSTS = ["omp", "claude"] as const satisfies readonly DispatchHost[];
+const HOSTS = ["omp", "claude", "codex"] as const satisfies readonly DispatchHost[];
 
 /** Claude Code reads back at most 30,000 characters of a command's output by default
- *  (`BASH_MAX_OUTPUT_LENGTH`). The whole output stays under this, with room to spare, every line
- *  the CLI adds counted (`fitOutput`). */
+ *  (`BASH_MAX_OUTPUT_LENGTH`), and Codex cuts the middle out of a long command output, so under
+ *  either the whole output stays under this, with room to spare, every line the CLI adds counted
+ *  (`fitOutput`), and the rest goes to a file the output names. */
 const CLAUDE_OUTPUT_MAX = 25_000;
 
 /** Why a file that changed after AskGate read it is refused or posts unreviewed. */
@@ -288,165 +313,6 @@ export function fitOutput(
 }
 
 /**
- * Whether `argv` is a CI job's `dispatch result --project` (`ownIdentityResult`): the command
- * `result` with a `--project` flag, as `--project <KEY>` or `--project=<KEY>`. The parser reads a
- * word that starts with `--` as a flag and never as a value, so this is the call the parser
- * reads, and it is known before the parse, for an argv the parser refuses too.
- */
-function isJobResult(argv: readonly string[]): boolean {
-  const [command, ...words] = argv;
-  return (
-    command === "result" &&
-    words.some((word) => word === "--project" || word.startsWith("--project="))
-  );
-}
-
-/**
- * `dispatch result --project`, a CI job's record of its result of a check of the spec files. The
- * job writes with its own identity alone (`ownIdentityDispatch`): no host, no session, no
- * envoy.json, no AskGate and no listener, since a job has none of them, and no bearer or
- * person's sign-in, since the result must carry the identity the broker authenticated. The
- * call's own argument check runs first, as for every command, so a refused call sends nothing.
- * It prints the stored result as JSON and exits 0, or prints Dispatch's refusal as
- * `<CODE>: <message>` and exits 1. A write that landed with its answer lost prints
- * `{"landed_without_answer": <code>}`, the details the session path records for the same case,
- * and exits 0: the result is stored, and a results token reads nothing back. A write that may
- * have reached Dispatch while no answer says whether it stored the result (`writeOutcomeUnknown`)
- * prints `{"write_outcome_unknown": <code>}` and exits 1, as the write is not confirmed: the
- * result may be stored, and a second run is safe, since Dispatch keeps each result. A call the
- * broker or Dispatch's check of its token turns away before anything is stored (`notNow`) is
- * asked again inside the call's one bound (`ResultBound`), and ends with the last such answer,
- * its code named, and exit 1. No token reaches what it prints: the broker's and Dispatch's words
- * name none, and the runner's endpoint is named by its variable.
- *
- * What it prints goes into a GitHub Actions runner's log, which reads workflow commands from it,
- * so each text it did not write (an argument, a variable, an answer of the broker or of Dispatch)
- * is printed by runnerlog.Printable's rule (runner-log.ts): a problem of its arguments and the
- * refusal of its identity as `printable` text, Dispatch's refusal as a `printableLine`, and the
- * dry run, the stored result and the outcome line as `printableJson`. No value starts a line of
- * its own, and no line is a workflow command. The landed line holds no such text: its code is one
- * of the client's three constants.
- */
-async function ownIdentityResult(
-  parsed: Extract<ParsedCommand, { readonly kind: "call" }>,
-  env: Readonly<Record<string, string>>,
-  io: DispatchCliIo,
-  print: (text: string) => void,
-  refuse: (text: string, code: number, tool?: string) => number
-): Promise<number> {
-  const resolution = ownIdentityDispatch(env);
-  const checked = await checkDispatchCall({
-    tool: parsed.tool,
-    args: parsed.args,
-    cwd: io.cwd,
-    env,
-    serverUrls: resolution.enabled ? dispatchServerUrls(resolution) : [],
-  });
-  if (checked.problems.length > 0) {
-    return refuse(
-      new ToolInputError(parsed.tool, checked.problems.map(printable)).message,
-      USAGE,
-      parsed.tool
-    );
-  }
-  if (parsed.dryRun) {
-    print(printableJson(JSON.stringify(parsed.args, null, 2)));
-    return OK;
-  }
-  if (!resolution.enabled) {
-    return refuse(
-      `dispatch: ${printable(resolution.error ?? resolution.notice)}`,
-      USAGE,
-      parsed.tool
-    );
-  }
-  // One bound, one signal (`ResultBound`): the timeout made here is the write client's deadline,
-  // which it hands to the credential for each request, so the call's wait on the trade ends at it,
-  // and every wait below ends at it too. The client's asks again under the key stop `reserveMs`
-  // before it, and the rounds below are read on the same monotonic clock the client keeps its asks
-  // on.
-  const bound = io.resultBound ?? RESULT_BOUND;
-  const ended = AbortSignal.timeout(bound.totalMs);
-  const lastRound = performance.now() + bound.totalMs - bound.reserveMs;
-  const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch, {
-    deadline: ended,
-    writeRetry: {
-      ...DISPATCH_WRITE_RETRY,
-      withinMs: Math.min(DISPATCH_WRITE_RETRY.withinMs, bound.totalMs - bound.reserveMs),
-      inFlightWithinMs: bound.totalMs - bound.reserveMs,
-    },
-  });
-  for (;;) {
-    try {
-      print(printableJson((await specCheckResultCommand(client, checked.args)).text));
-      return OK;
-    } catch (error) {
-      // A write that landed with its answer lost is done. A program reads the job's output, so it
-      // is the JSON of the session path's ledger entry, with no advice to read the result back.
-      if (error instanceof DispatchWriteLandedError) {
-        print(JSON.stringify({ landed_without_answer: error.code }));
-        return OK;
-      }
-      // Only an attempt that may have reached a handler leaves the outcome unknown; an answer of
-      // Dispatch's token check came before any handler ran (`tokenNotChecked`), and is below.
-      if (writeOutcomeUnknown(error)) {
-        return refuse(
-          printableJson(JSON.stringify({ write_outcome_unknown: outcomeCode(error) })),
-          REFUSED,
-          parsed.tool
-        );
-      }
-      // The bound ended the call in the trade, before any write went out: the line names which
-      // part of the trade, and that nothing was written.
-      const cut = ended.aborted ? tradeCut(error) : undefined;
-      if (cut !== undefined) {
-        return refuse(
-          printableLine(
-            `this command's ${bound.totalMs / 1_000} s ended while ${cut}, and nothing was written: ${messageFor(error)}`
-          ),
-          REFUSED,
-          parsed.tool
-        );
-      }
-      // One job writes a result for each of its checks, so it meets the broker's and Dispatch's
-      // limits of one address with no fault of its own: a call turned away before anything was
-      // stored is sent again after the answer's wait, while the next round starts before the
-      // bound's last `reserveMs`. Past that, it ends with the last answer, which names its code.
-      const turnedAway = notNow(error);
-      if (turnedAway !== undefined) {
-        if (
-          performance.now() + turnedAway.waitMs <= lastRound &&
-          (await sleep(turnedAway.waitMs, ended).then(
-            () => true,
-            () => false
-          ))
-        ) {
-          continue;
-        }
-        return refuse(
-          printableLine(
-            `${turnedAway.why}, and the ${bound.totalMs / 1_000} s this command may take leave no time to ask again: ${messageFor(error)}`
-          ),
-          REFUSED,
-          parsed.tool
-        );
-      }
-      return refuse(printableLine(messageFor(error)), REFUSED, parsed.tool);
-    }
-  }
-}
-
-/** The code `{"write_outcome_unknown": <code>}` names: that of the write's last failure, the last
- *  answer of a DispatchWriteUnsettledError: a transport error's code such as ECONNRESET, or a
- *  refusal's such as HTTP_502, else that error's name, such as TimeoutError. */
-function outcomeCode(error: unknown): string {
-  const last: unknown = error instanceof DispatchWriteUnsettledError ? error.last : error;
-  const code = typeof last === "object" && last !== null ? Reflect.get(last, "code") : undefined;
-  if (typeof code === "string" && code !== "") return code;
-  return last instanceof Error ? last.name : String(last);
-}
-
-/**
  * One `dispatch` command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
  * the host session the environment names, and prints what the model reads. The host plugin sets
  * `DISPATCH_HOST`, `ENVOY_CONFIG_FILE` (the envoy.json it chose) and the session's id in the
@@ -455,7 +321,11 @@ function outcomeCode(error: unknown): string {
  * elsewhere); an empty variable counts as unset. With `DISPATCH_HOST` unset,
  * `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash and hook process it runs, is
  * host `claude`: a Claude Code subagent's Bash can lack what the bridge's `SessionStart` hook
- * writes to `CLAUDE_ENV_FILE` (Claude Code issue 46696).
+ * writes to `CLAUDE_ENV_FILE` (Claude Code issue 46696). Under Codex the session's id is
+ * `CODEX_THREAD_ID`, which Codex sets in every shell command it runs; no Codex hook can export a
+ * variable into those shells, so the Codex plugin's own `dispatch` shim sets `DISPATCH_HOST=codex`,
+ * and with `DISPATCH_HOST` unset a shell that carries `CODEX_THREAD_ID` and not
+ * `CLAUDE_CODE_CHILD_SESSION=1` is host `codex` too (`fallbackHost`).
  *
  * The envoy.json it reads is the one its session's plugin chose: with `DISPATCH_HOST` set, the file
  * `ENVOY_CONFIG_FILE` names (each plugin sets the two together), else its host's own rule
@@ -463,16 +333,40 @@ function outcomeCode(error: unknown): string {
  * Code's rule. Recomputing the file from a shell's other variables would follow ones a launcher or
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
- *
- * The one call that runs as no session is a CI job's `dispatch result --project`
- * (`ownIdentityResult`), which reads none of the above.
  */
+/**
+ * The host this command runs under. `DISPATCH_HOST` names it, else Claude Code's
+ * `CLAUDE_CODE_CHILD_SESSION=1` or the Codex CLI's `CODEX_THREAD_ID`, which each sets in every
+ * shell command it runs. A shell that carries Codex's variable beside another host's (a
+ * `DISPATCH_HOST` of `claude` or `omp` that host's plugin exported, or
+ * `CLAUDE_CODE_CHILD_SESSION=1`) belongs to whichever of `codex`, `claude` and `omp` is the
+ * command's nearest ancestor, since one was started from the other's shell and inherited its
+ * variables: a Codex session started from a Claude Code or Oh My Pi shell must not act as that
+ * session. Where the walk finds none of them, the other host's variables win, as they did before
+ * Codex was a host.
+ */
+function commandHost(
+  env: Readonly<Record<string, string>>,
+  nearest: (names: readonly string[]) => string | undefined
+): string | undefined {
+  const inherited =
+    (env.DISPATCH_HOST !== undefined && env.DISPATCH_HOST !== "codex") ||
+    env.CLAUDE_CODE_CHILD_SESSION === "1";
+  if (env.CODEX_THREAD_ID !== undefined && env.DISPATCH_HOST !== "codex") {
+    if (!inherited) return "codex";
+    if (nearest(["codex", "claude", "omp"]) === "codex") return "codex";
+  }
+  if (env.DISPATCH_HOST !== undefined) return env.DISPATCH_HOST;
+  return env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined;
+}
+
 export async function runDispatchCli(
   argv: readonly string[],
   rawEnv: Readonly<Record<string, string | undefined>>,
   io: DispatchCliIo
 ): Promise<number> {
   const print = (text: string): void => io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+  const job = isJobResult(argv);
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
@@ -486,6 +380,15 @@ export async function runDispatchCli(
   // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
   // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
   const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
+  // The host, worked out once and only when asked: the walk of the parent processes it may take
+  // runs at most once per call, for the refusal ledger and the call alike.
+  let resolvedHost: { readonly name: string | undefined } | undefined;
+  const ledgerHost = (): string | undefined => {
+    resolvedHost ??= {
+      name: commandHost(env, (names) => (io.nearestAncestorNamed ?? nearestAncestorNamed)(names)),
+    };
+    return resolvedHost.name;
+  };
   const refuse = (
     text: string,
     code: number,
@@ -493,7 +396,11 @@ export async function runDispatchCli(
     askgate?: ResultInput["askgate"]
   ): number => {
     print(text);
-    const sessionId = claudeSession ?? env.DISPATCH_SESSION_ID;
+    if (job) return code;
+    const sessionId =
+      ledgerHost() === "codex"
+        ? env.CODEX_THREAD_ID
+        : (claudeSession ?? env.DISPATCH_SESSION_ID ?? env.CODEX_THREAD_ID);
     if (sessionId !== undefined) {
       try {
         appendResult(sessionDirectory(env, sessionId), {
@@ -508,10 +415,6 @@ export async function runDispatchCli(
     return code;
   };
 
-  // A CI job's call prints into its runner's log, a refusal of its argv included: a problem can
-  // repeat a word of the argv, such as an unknown flag or a file it could not read, so each is
-  // printed as `printable` text (`ownIdentityResult`).
-  const job = isJobResult(argv);
   let parsed: ParsedCommand;
   try {
     parsed = parseCommand(argv, io);
@@ -535,14 +438,13 @@ export async function runDispatchCli(
   }
   if (job) return await ownIdentityResult(parsed, env, io, print, refuse);
 
-  const hostName =
-    env.DISPATCH_HOST ?? (env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined);
+  const hostName = ledgerHost();
   const host = HOSTS.find((name) => name === hostName);
   if (host === undefined) {
     return refuse(
       hostName === undefined
         ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
-        : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp or claude.`,
+        : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
       USAGE,
       parsed.tool
     );
@@ -550,7 +452,9 @@ export async function runDispatchCli(
   const [sessionId, sessionVariable] =
     host === "claude"
       ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
-      : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
+      : host === "codex"
+        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
+        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
   if (sessionId === undefined) {
     return refuse(
       `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
@@ -570,11 +474,12 @@ export async function runDispatchCli(
   const file =
     (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
     sessionConfigFile(host, env);
-  if (parsed.dryRun) {
+  if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
     // The call's own argument check, so the call refuses no arguments its dry run passed; what
     // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
     // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
-    // against a server it knows, and its standard output is the JSON alone.
+    // against a server it knows, and its standard output is the JSON alone. A call whose dry run
+    // Dispatch answers goes on below, as the call itself does.
     const settings =
       file.path === null
         ? null
@@ -613,6 +518,36 @@ export async function runDispatchCli(
     );
   }
   const config: ActiveDispatchConfig = resolution;
+
+  // A `dispatch result` record's dry run (`dryRunAsksDispatch`) prints the JSON, then the
+  // pull-request body line the record would print, which Dispatch writes and records nothing
+  // for. It needs what the record needs and is refused as the record is, so it runs here, after
+  // the same configuration, and through the record's own command. Like every dry run that
+  // passed, it leaves no entry in this session's ledger.
+  if (parsed.dryRun) {
+    try {
+      const result = await executeDispatchTool({
+        tool: parsed.tool,
+        args: parsed.args,
+        cwd: io.cwd,
+        host,
+        sessionId,
+        sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
+        config,
+        env,
+        ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+        dryRun: true,
+      });
+      print(`${JSON.stringify(parsed.args, null, 2)}\n\n${result.text}`);
+      return OK;
+    } catch (error) {
+      return refuse(
+        messageFor(error),
+        error instanceof ToolInputError ? USAGE : REFUSED,
+        parsed.tool
+      );
+    }
+  }
 
   // AskGate: a session a live Oh My Pi process records with its gate bound (its AskGate record in
   // this directory) posts a gated write only with one marker the gate minted for this exact argv,
@@ -810,11 +745,9 @@ export async function runDispatchCli(
       // there, an id that matches no ask) is the same usage error as one the parse refuses, and
       // exits 2 alike. `--dry-run` runs the call's own check (checkDispatchCall): the owner,
       // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
-      // so the two stay one answer. A refusal the executor makes during the call, such as an id of
-      // the wrong shape or an ask id prefix matching no ask, only the call reaches. Everything else
-      // here is Dispatch's own refusal or failure. No argument of the command reaches the client's
-      // refusal of a path value that names nothing (`DispatchEmptyPathError`): the parse refuses
-      // each such value of a flag first, naming the flag.
+      // so the two stay one answer. A refusal the executor makes during the call, such as an id
+      // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
+      // Everything else here is Dispatch's own refusal or failure.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }
@@ -836,7 +769,7 @@ export async function runDispatchCli(
       text,
       pictures,
       kept,
-      host === "claude" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
+      host === "claude" || host === "codex" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
       writeFull
     )
   );

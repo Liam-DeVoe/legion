@@ -7,15 +7,15 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
-import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
-import { routeAnswer } from "../../test/route-answers";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
-  DispatchEmptyPathError,
   DispatchGatewayError,
   DispatchNoRouteError,
+  DispatchWriteUnsettledError,
   type SearchOptions,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -32,10 +32,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** A stand-in of Dispatch that gives `responses` in order, behind Dispatch's keyed layer: each 2xx
- *  it gives a write, and each answer `layer` says the layer judged, names the write's key back
- *  (`keyedLayer`), as Dispatch's own answers do. */
-function fakeFetch(responses: readonly Response[], layer: KeyedLayerOptions = {}) {
+function fakeFetch(responses: readonly Response[]) {
   const requests: RecordedRequest[] = [];
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     requests.push({ url: String(input), init: init ?? {} });
@@ -43,7 +40,7 @@ function fakeFetch(responses: readonly Response[], layer: KeyedLayerOptions = {}
     if (!response) throw new Error("unexpected request");
     return response;
   };
-  return { fetchImpl: keyedLayer(fetchImpl, layer) as typeof fetch, requests };
+  return { fetchImpl: fetchImpl as typeof fetch, requests };
 }
 
 function requestBody(request: RecordedRequest): unknown {
@@ -130,8 +127,9 @@ describe("DispatchClient", () => {
   });
 
   // A JSON answer that is not a page is Dispatch's own and comes back the same on a retry; text in
-  // its place is most likely a proxy or gateway page, which a retry can get past. The agent acts on
-  // the advice, so each kind gets its own.
+  // its place is most likely a proxy or gateway page, which a retry can get past, and the read
+  // path refuses it before any listing reads it (`#response`). The agent acts on the advice, so
+  // each kind gets its own.
   test("refuses an issue listing answer that is not a page, naming what arrived and whether a retry can help", async () => {
     const { fetchImpl } = fakeFetch([
       jsonResponse({ issues: "DSP-1", total: 1 }),
@@ -153,14 +151,22 @@ describe("DispatchClient", () => {
       ". Retrying will not help: the same request gets the same answer until that Dispatch is " +
       "upgraded or fixed.";
     const maySucceed =
-      "and got text that is not a JSON page, which looks like a proxy or gateway page rather than " +
-      "Dispatch's own answer, so a retry may succeed.";
+      "which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may " +
+      "succeed.";
 
     expect(await refusal()).toEndWith(
       `and got an object without an issues array or a numeric limit or a numeric offset${sameAgain}`
     );
     expect(await refusal()).toEndWith(`and got null${sameAgain}`);
-    for (const text of [await refusal(), await refusal()]) {
+    const html = await refusal();
+    expect(html).toStartWith(
+      'GET http://dispatch.test/api/v1/issues?project=DSP&limit=50&offset=0 answered 200 with a body that is not JSON ("bad gateway")'
+    );
+    const truncated = await refusal();
+    expect(truncated).toStartWith(
+      'GET http://dispatch.test/api/v1/issues?project=DSP&limit=50&offset=0 answered 200 with a body that is not JSON ("{truncat")'
+    );
+    for (const text of [html, truncated]) {
       expect(text).toEndWith(maySucceed);
       expect(text).not.toContain("Retrying will not help");
     }
@@ -394,35 +400,9 @@ describe("DispatchClient", () => {
   });
 
   test("maps project document and reference routes to authenticated API requests", async () => {
-    const read = () => jsonResponse({ ok: true });
-    const { fetchImpl, requests } = fakeFetch([
-      read(),
-      jsonResponse(
-        routeAnswer("POST /api/v1/projects/{key}/artifacts", {
-          artifact: { project: "CORE", name: "runbook.md", slug: "runbook-md" },
-        })
-      ),
-      read(),
-      read(),
-      jsonResponse(
-        routeAnswer("POST /api/v1/artifacts/{id}/asks", {
-          artifact_id: "artifact-1",
-          question: "The runbook is ready for readers. How should we publish it?",
-          urgency: "med",
-        })
-      ),
-      read(),
-      jsonResponse(
-        routeAnswer("POST /api/v1/artifacts/{id}/comments", {
-          artifact_id: "artifact-1",
-          body: "Looks good.",
-        })
-      ),
-      jsonResponse(
-        routeAnswer("POST /api/v1/artifacts/{id}/comments", { artifact_id: "artifact-1" })
-      ),
-      ...Array.from({ length: 6 }, read),
-    ]);
+    const { fetchImpl, requests } = fakeFetch(
+      Array.from({ length: 14 }, () => jsonResponse({ ok: true }))
+    );
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
@@ -485,39 +465,8 @@ describe("DispatchClient", () => {
     });
   });
   test("maps dispatch operations to authenticated JSON and multipart API requests", async () => {
-    const read = () => jsonResponse({ ok: true });
     const { fetchImpl, requests } = fakeFetch([
-      jsonResponse(routeAnswer("POST /api/v1/issues", { key: "DSP-1", title: "Issue" }, 200)),
-      read(),
-      read(),
-      jsonResponse(
-        routeAnswer("POST /api/v1/issues/{key}/asks", {
-          issue_key: "DSP-1",
-          question: "Choose",
-          urgency: "med",
-        })
-      ),
-      jsonResponse(
-        routeAnswer("POST /api/v1/issues/{key}/comments", { issue_key: "DSP-1", body: "Review" })
-      ),
-      jsonResponse(
-        routeAnswer("POST /api/v1/issues/{key}/comments", { issue_key: "DSP-1", body: "Use this" })
-      ),
-      jsonResponse(
-        routeAnswer("POST /api/v1/issues/{key}/messages", { issue_key: "DSP-1", body: "Update" })
-      ),
-      jsonResponse(
-        routeAnswer("POST /api/v1/issues/{key}/artifacts", {
-          artifact: { issue_key: "DSP-1", name: "spec.md", slug: "spec-md" },
-        })
-      ),
-      read(),
-      read(),
-      read(),
-      jsonResponse(routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: 0 })),
-      jsonResponse(routeAnswer("POST /api/v1/artifacts/{id}/versions", {})),
-      read(),
-      read(),
+      ...Array.from({ length: 15 }, () => jsonResponse({ ok: true })),
       jsonResponse({ last_seq: 4 }),
       jsonResponse([]),
     ]);
@@ -800,6 +749,95 @@ describe("DispatchClient", () => {
     expect(notFound).toEqual(expect.objectContaining({ code: "HTTP_404", transient: false }));
   });
 
+  // F5 (the review of 81d860a8f7): a read behind a redirect is told where the redirect pointed,
+  // by origin alone, which is what tells a Dispatch URL to correct. The redirect is not followed,
+  // and the Location's user info, path and query are never printed.
+  test("a read a redirect answers names the origin the redirect points at, and does not follow it", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      new Response("<html><body>Moved</body></html>", {
+        status: 302,
+        statusText: "Found",
+        headers: {
+          "Content-Type": "text/html",
+          Location: "https://user:secret@elsewhere.test:8443/login?token=abc",
+        },
+      }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    const error = await client.getIssueEvents("DSP-1", 4, 10).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (caught: Error) => caught
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.init.redirect).toBe("manual");
+    expect(error).toBeInstanceOf(DispatchGatewayError);
+    expect(error.message).toStartWith(
+      "GET http://dispatch.test/api/v1/issues/DSP-1/events?after=4&limit=10 answered 302 Found " +
+        "(a redirect to https://elsewhere.test:8443, which this client does not follow) with a body " +
+        `that is not Dispatch's error JSON ("Moved")`
+    );
+    expect(error.message).not.toContain("user:");
+    expect(error.message).not.toContain("token=abc");
+    expect(error.message).not.toContain("/login");
+  });
+
+  // Red team 7 and 4 (the review of 4dad905e68): a read's 2xx that is not JSON is a
+  // DispatchGatewayError, with its status, advice that a retry may succeed, and `transient` saying
+  // so too: a portal or a proxy in the way, which a later request can get past, and which never
+  // reached Dispatch. A JSON answer is read whatever the case of its type, and a `+json` type is
+  // JSON; a bodiless 204 is no answer to refuse.
+  test("a read's 2xx that is not JSON is a gateway error a retry may clear; any JSON type and a 204 are read", async () => {
+    const { fetchImpl } = fakeFetch([
+      new Response("<html><title>Sign in to the network</title></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+      new Response(JSON.stringify([{ id: 5 }]), {
+        status: 200,
+        headers: { "Content-Type": "Application/JSON; charset=utf-8" },
+      }),
+      new Response(JSON.stringify([{ id: 6 }]), {
+        status: 200,
+        headers: { "Content-Type": "application/vnd.dispatch+json" },
+      }),
+      new Response(null, { status: 204 }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    const error = await client.getIssueEvents("DSP-1", 4, 10).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(DispatchGatewayError);
+    const gateway = error as DispatchGatewayError;
+    expect(gateway.status).toBe(200);
+    expect(gateway.advice).toBe("a retry may succeed");
+    expect(gateway.transient).toBe(true);
+    expect(gateway.mayHaveReachedDispatch).toBe(false);
+    expect(gateway.message).toContain(
+      'answered 200 with a body that is not JSON ("Sign in to the network")'
+    );
+
+    const read = async (): Promise<unknown> => await client.getIssueEvents("DSP-1", 4, 10);
+    expect(await read()).toEqual([{ id: 5 }]);
+    expect(await read()).toEqual([{ id: 6 }]);
+    expect(await read()).toBe("");
+  });
+
   // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, so advising
   // a retry there can post a message twice: the write is told to check what took effect. A 408 or
   // 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the
@@ -836,13 +874,18 @@ describe("DispatchClient", () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
     const page404 = `${request}404 Not Found with a body that is not Dispatch's error JSON ("404 Not Found")`;
 
+    // A 502 can come after Dispatch committed the write, so with no ask left the write ends
+    // unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
     const badGateway = await refusal();
+    expect(badGateway).toBeInstanceOf(DispatchWriteUnsettledError);
     expect(badGateway.message).toBe(
       `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
-        `${gateway}, so the write may or may not have reached Dispatch: check whether it took ` +
-        "effect before retrying it."
+        `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
+        "it may or may not have taken effect: check whether it did before retrying it."
     );
-    expect(badGateway).toEqual(expect.objectContaining({ mayHaveReachedDispatch: true }));
+    expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
+      expect.objectContaining({ mayHaveReachedDispatch: true })
+    );
     for (const [status, statusText] of [
       [408, "Request Timeout"],
       [429, "Too Many Requests"],
@@ -868,7 +911,7 @@ describe("DispatchClient", () => {
   // quoted: the client's own bearer wherever it appears (trimmed, as fetch sends it), and the
   // value after `Authorization:` or `Bearer`. The reason phrase is cut to one line like the body.
   test("redacts the bearer and an Authorization or Bearer value from the excerpt and the reason phrase", async () => {
-    const token = "dsp_live_4f9a2c7e";
+    const token = fixtureSecret("dsp");
     const echo =
       `<html><body><h1>401 Unauthorized</h1><pre>token=${token}\r\n` +
       "Authorization: Basic dXNlcjpwYXNz\r\nX-Forwarded: Bearer other.jwt-value</pre></body></html>";
@@ -924,36 +967,71 @@ describe("DispatchClient", () => {
     }
   });
 
+  // M4 (the review of 99b1e438db): a DPoP token after `Authorization: DPoP` or `DPoP` is redacted
+  // as a bearer's is, and so is the token the request was sent with when the credential names
+  // another by the time the answer comes (a renewal between the two): the excerpt redacts every
+  // token this client presented, not only the one `secret()` names now.
+  test("redacts a DPoP value and the token a request was sent with, after the credential renewed", async () => {
+    const sent = fixtureSecret("sent");
+    const renewed = fixtureSecret("renewed");
+    let presentations = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presentations += 1;
+        return { Authorization: `DPoP ${sent}`, DPoP: "proof" };
+      },
+      // The renewal landed while the request was out: the credential names the next token.
+      secret: () => (presentations === 0 ? sent : renewed),
+    };
+    const echo =
+      `<html><body><h1>502 Bad Gateway</h1><pre>Authorization: DPoP ${sent}\r\n` +
+      `X-Echo: DPoP ${sent.slice(2)}\r\nX-Raw: ${sent}</pre></body></html>`;
+    const { fetchImpl } = fakeFetch([
+      new Response(echo, {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      }),
+    ]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+      retryNoRoute: false,
+    });
+
+    const message = await client.getIssue("DSP-1").then(
+      () => "",
+      (error: Error) => error.message
+    );
+
+    expect(message).toContain(
+      '("502 Bad Gateway Authorization: DPoP [redacted] X-Echo: DPoP [redacted] X-Raw: [redacted]")'
+    );
+    expect(message).not.toContain(sent.slice(-12));
+  });
+
   // A Dispatch URL may carry a user and a password: the config accepts such a URL, and the
   // requests go to it as configured. Every message that names the request or the Dispatch names
-  // the URL without them: a gateway's answer, a refused listing, a write whose answer was lost, a
+  // no part of the URL, only its fixed phrase, since the URL parser can split such a URL otherwise
+  // than its writer meant: a gateway's answer, a refused listing, a write whose answer was lost, a
   // review route the build lacks, and a write whose attempt heard nothing.
-  test("names the Dispatch URL without its user and password in every refusal that names it", async () => {
+  test("names a Dispatch URL with user info by its fixed phrase in every refusal that names it", async () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const configured = `https://${user}:${secret}@host.example`;
-    // Dispatch's keyed layer names the write's key back on its KEY_COMMITTED, as on every answer
-    // it gives a keyed write, and a landing needs it.
-    const { fetchImpl, requests } = fakeFetch(
-      [
-        new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
-          status: 502,
-          statusText: "Bad Gateway",
-          headers: { "Content-Type": "text/html" },
-        }),
-        jsonResponse([]),
-        jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
-        jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
-        jsonResponse(
-          {
-            code: "NOT_FOUND",
-            error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews",
-          },
-          404
-        ),
-      ],
-      { judged: (response) => response.ok || response.status === 409 }
-    );
+    const { fetchImpl, requests } = fakeFetch([
+      new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      }),
+      jsonResponse([]),
+      jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
+      jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
+      jsonResponse(
+        { code: "NOT_FOUND", error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews" },
+        404
+      ),
+    ]);
     const client = new DispatchClient(configured, bearerCredential("bearer-1"), fetchImpl, {
       writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [], withinMs: 0 },
       retryNoRoute: false,
@@ -997,26 +1075,21 @@ describe("DispatchClient", () => {
       `${configured}/api/v1/issues/DSP-1/messages`,
       `${configured}/api/v1/artifacts/a-1/versions/2/reviews`,
     ]);
-    expect(messages[0]).toStartWith(
-      "GET https://host.example/api/v1/issues/DSP-1 answered 502 Bad Gateway with a body"
-    );
-    expect(messages[1]).toStartWith(
-      "GET https://host.example/api/v1/issues?limit=2&offset=0 asked for a page"
-    );
+    const shown = `the configured Dispatch URL ${URL_NOT_PRINTED}`;
+    expect(messages[0]).toStartWith(`GET ${shown} answered 502 Bad Gateway with a body`);
+    expect(messages[1]).toStartWith(`GET ${shown} asked for a page`);
     expect(messages[2]).toBe(
-      "GET https://host.example/api/v1/issues asked for the unpaged listing and got a page, so " +
+      `GET ${shown} asked for the unpaged listing and got a page, so ` +
         "this Dispatch pages a request that carries no limit and no offset."
     );
-    expect(messages[3]).toStartWith(
-      "POST https://host.example/api/v1/issues/DSP-1/messages was made, but its answer was lost"
-    );
+    expect(messages[3]).toStartWith(`POST ${shown} was made, but its answer was lost`);
     expect(messages[4]).toStartWith(
-      "Dispatch at https://host.example answered no route for " +
+      `Dispatch at ${shown} answered no route for ` +
         "POST /api/v1/artifacts/a-1/versions/2/reviews each time the review was sent"
     );
-    expect(messages[4]).toContain("GET https://host.example/healthz names the commit");
+    expect(messages[4]).toContain("GET /healthz on that server names the commit");
     expect(messages[5]).toBe(
-      "POST https://host.example/api/v1/issues/DSP-1/messages made no progress for 0.02 s, so it " +
+      `POST ${shown} made no progress for 0.02 s, so it ` +
         "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
         "so it may or may not have taken effect: check whether it did before retrying it."
     );
@@ -1439,7 +1512,7 @@ test("createProject posts the key, name and actor and answers the created projec
     key: "CORE",
     name: "Core",
     open_asks: 0,
-    default_assignee: "alice@theorem.dev",
+    default_assignee: "alice@example.com",
     created_at: "2026-10-11T00:00:00Z",
     gated_steps: [],
   };
@@ -1757,7 +1830,7 @@ describe("a request a Dispatch process answers with no route", () => {
   test("sends a POST again with the same body", async () => {
     const { fetchImpl, requests } = fakeFetch([
       noRoute("POST", "/api/v1/projects"),
-      jsonResponse(routeAnswer("POST /api/v1/projects", { key: "CORE", name: "Core" }), 201),
+      jsonResponse({ key: "CORE", name: "Core" }, 201),
     ]);
     const client = new DispatchClient(
       "http://dispatch.test",
@@ -1814,23 +1887,30 @@ describe("a broker token Dispatch says is not live", () => {
 
   /**
    * A credential like the broker's: each presentation carries the token it holds now, and
-   * `stale`, which records what it was told, moves it to the next of `tokens`. `refusal`, where
-   * given, is what a presentation after `stale` throws, as a trade the broker refuses does.
+   * `stale`, which records what it was told (the session and the presentation it names), moves it
+   * to the next of `tokens`. `refusal`, where given, is what a presentation after `stale` throws,
+   * as a trade the broker refuses does. `headers` keeps every object it answered, so a row can
+   * check that `stale` names the very presentation the dead token went out in.
    */
   function brokered(tokens: readonly string[], refusal?: Error) {
     const stales: (string | undefined)[] = [];
+    const told: (Readonly<Record<string, string>> | undefined)[] = [];
+    const answered: Readonly<Record<string, string>>[] = [];
     const credential: RequestCredential = {
       scheme: "DPoP",
       headers: () => {
         if (refusal !== undefined && stales.length > 0) throw refusal;
-        return { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+        const headers = { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+        answered.push(headers);
+        return headers;
       },
-      stale: (session) => {
+      stale: (session, presented) => {
         stales.push(session);
+        told.push(presented);
       },
       secret: () => tokens[stales.length] ?? "",
     };
-    return { credential, stales };
+    return { credential, stales, told, answered };
   }
 
   /** What each request presented, in order. */
@@ -1840,21 +1920,26 @@ describe("a broker token Dispatch says is not live", () => {
   test("a read is sent once more with a fresh token", async () => {
     const listed = [{ key: "DSP-1", title: "DSP-1", status: "todo" }];
     const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse(listed)]);
-    const { credential, stales } = brokered(["dead", "fresh"]);
+    const { credential, stales, told, answered } = brokered(["dead", "fresh"]);
     const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
 
     expect(await client.listAllIssues({})).toEqual(listed as unknown as IssueSummary[]);
     expect(stales).toEqual([undefined]);
+    // The credential is told which presentation was dead: the first `headers` answer itself.
+    expect(told).toHaveLength(1);
+    expect(told[0]).toBe(answered[0] as Readonly<Record<string, string>>);
     expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
   });
 
   test("a write is sent once more with a fresh token, under the same Idempotency-Key", async () => {
     const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse({ id: "message-1" }, 201)]);
-    const { credential, stales } = brokered(["dead", "fresh"]);
+    const { credential, stales, told, answered } = brokered(["dead", "fresh"]);
     const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
 
     await client.message("DSP-1", { body: "Shipped.", actor });
     expect(stales).toEqual([undefined]);
+    expect(told).toHaveLength(1);
+    expect(told[0]).toBe(answered[0] as Readonly<Record<string, string>>);
     expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
     const keys = requests.map(
       (request) => (request.init.headers as Record<string, string>)["Idempotency-Key"]
@@ -1939,291 +2024,6 @@ describe("a broker token Dispatch says is not live", () => {
       await expect(call(client)).rejects.toThrow(refusal.message);
       expect(stales).toHaveLength(1);
       expect(requests).toHaveLength(1);
-    }
-  });
-});
-
-// Every URL of the client is built in one place, which refuses a path value that is empty: sent,
-// `POST /api/v1/comments//resolve` is answered by Dispatch's router with a 307 to another path.
-describe("a path value that is empty", () => {
-  test("is refused before any request, naming its place in the route", async () => {
-    const asked: string[] = [];
-    const fetchImpl = (async (input: RequestInfo | URL) => {
-      asked.push(String(input));
-      return jsonResponse({});
-    }) as typeof fetch;
-    const client = new DispatchClient(
-      "http://dispatch.test",
-      bearerCredential("secret"),
-      fetchImpl
-    );
-    for (const [call, place] of [
-      [() => client.resolveComment("", actor), "/api/v1/comments/{empty}/resolve"],
-      [
-        () => client.retractResult("", { actor, reason: "Wrong commit." }),
-        "/api/v1/results/{empty}/retract",
-      ],
-    ] as const) {
-      const refusal = await call().then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      expect(refusal, place).toBeInstanceOf(DispatchEmptyPathError);
-      expect((refusal as Error).message, place).toContain(place);
-    }
-    expect(asked).toEqual([]);
-  });
-
-  // A value of only white space names nothing either, and `.` or `..` is a step of the path, which
-  // the URL parser drops: sent, `POST /api/v1/comments/./resolve` asks `POST
-  // /api/v1/comments/resolve` and `GET /api/v1/agents/../answers` asks `GET /api/v1/answers`.
-  test("a value of only white space, . or .. is refused the same way", async () => {
-    const asked: string[] = [];
-    const fetchImpl = (async (input: RequestInfo | URL) => {
-      asked.push(String(input));
-      return jsonResponse({});
-    }) as typeof fetch;
-    const client = new DispatchClient(
-      "http://dispatch.test",
-      bearerCredential("secret"),
-      fetchImpl
-    );
-    for (const [call, place] of [
-      [() => client.resolveComment(".", actor), '/api/v1/comments/{"."}/resolve'],
-      [
-        () => client.retractResult("..", { actor, reason: "Wrong commit." }),
-        '/api/v1/results/{".."}/retract',
-      ],
-      [() => client.sessionAnswers(" \t"), '/api/v1/agents/{" \\t"}/answers'],
-    ] as const) {
-      const refusal = await call().then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      expect(refusal, place).toBeInstanceOf(DispatchEmptyPathError);
-      expect((refusal as Error).message, place).toContain(place);
-    }
-    expect(asked).toEqual([]);
-  });
-});
-
-// fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
-// and Dispatch answers no API route with a redirect, so no request of the client follows one: the
-// 302 is the answer, a refusal naming it, and the origin it names is asked nothing.
-describe("a redirect to another origin", () => {
-  test("a read is not followed there, so its credential's proof never leaves", async () => {
-    const elsewhere: string[] = [];
-    const other = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
-        return jsonResponse({ key: "DSP-1", title: "Elsewhere", status: "todo" });
-      },
-    });
-    const dispatch = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch: () =>
-        new Response(null, {
-          status: 302,
-          headers: { Location: `http://127.0.0.1:${other.port}/api/v1/issues/DSP-1` },
-        }),
-    });
-    const credential: RequestCredential = {
-      ...bearerCredential("secret"),
-      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
-    };
-    try {
-      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch);
-      const refusal = await client.getIssue("DSP-1").then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      expect(refusal).toBeInstanceOf(DispatchGatewayError);
-      expect((refusal as DispatchGatewayError).status).toBe(302);
-      expect(elsewhere).toEqual([]);
-    } finally {
-      dispatch.stop(true);
-      other.stop(true);
-    }
-  });
-
-  // The refusal says where the redirect points, so an operator who wrote `http://` for an
-  // `https://` Dispatch fixes the URL from the line: the scheme and the host, never a path, a
-  // query or a user, any of which can carry a secret.
-  test("a refused redirect names the origin it points at, and nothing else of it", async () => {
-    // A target that carries a user and a secret, built from its parts; the secret is made for
-    // this run, so no line of the test holds a credential.
-    const hidden = crypto.randomUUID();
-    const withUser = new URL("https://dispatch.example.com/api/v1/issues/DSP-1");
-    withUser.username = "user";
-    withUser.password = hidden;
-    for (const [location, origin] of [
-      [
-        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
-        "https://sso.example.com:8443",
-      ],
-      [withUser.href, "https://dispatch.example.com"],
-      ["/login?next=%2Fapi", "http://dispatch.test"],
-    ] as const) {
-      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch;
-      const client = new DispatchClient(
-        "http://dispatch.test",
-        bearerCredential("secret"),
-        fetchImpl,
-        {
-          sleep: async () => undefined,
-        }
-      );
-      for (const call of [
-        () => client.getIssue("DSP-1"),
-        () => client.comment("DSP-1", { body: "Review", actor }),
-      ]) {
-        const refusal = await call().then(
-          () => undefined,
-          (error: unknown) => error
-        );
-        const message = refusal instanceof Error ? refusal.message : String(refusal);
-        expect(message, location).toContain(`answered 302, redirecting to ${origin}, `);
-        for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
-          expect(message, location).not.toContain(part);
-        }
-      }
-    }
-  });
-
-  // A redirector writes its target into the body as well (Express's `Found. Redirecting to <url>`,
-  // as text or as a link's text), so the line quotes nothing of a redirect's body: the status and
-  // the origin say all an operator needs.
-  test("a refused redirect quotes nothing of its body, where a redirector writes its target", async () => {
-    // The path and the query of the target are made for this run.
-    const path = `login-${crypto.randomUUID()}`;
-    const state = crypto.randomUUID();
-    const target = `https://sso.example.com/${path}?state=${state}&next=%2Fapi`;
-    for (const [type, body] of [
-      ["text/plain", `Found. Redirecting to ${target}`],
-      ["text/html", `<p>Found. Redirecting to <a href="${target}">${target}</a></p>`],
-      ["application/json", JSON.stringify({ code: "MOVED", error: `Redirecting to ${target}` })],
-    ] as const) {
-      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(body, {
-          status: 302,
-          headers: { Location: target, "Content-Type": type },
-        })) as typeof fetch;
-      const client = new DispatchClient(
-        "http://dispatch.test",
-        bearerCredential("secret"),
-        fetchImpl,
-        {
-          sleep: async () => undefined,
-        }
-      );
-      for (const call of [
-        () => client.getIssue("DSP-1"),
-        () => client.comment("DSP-1", { body: "Review", actor }),
-      ]) {
-        const refusal = await call().then(
-          () => undefined,
-          (error: unknown) => error
-        );
-        const message = refusal instanceof Error ? refusal.message : String(refusal);
-        expect({
-          origin: message.includes("answered 302, redirecting to https://sso.example.com, "),
-          path: message.includes(path),
-          query: message.includes(state),
-          body: message.includes("Redirecting to"),
-        }).toEqual({ origin: true, path: false, query: false, body: false });
-      }
-    }
-  });
-
-  // No request reads the body of a redirect: a body that never ends delays no refusal, since
-  // nothing waits on it, and the client cancels it.
-  test("a refused redirect's body is not read", async () => {
-    let cancelled = 0;
-    const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      new Response(
-        new ReadableStream<Uint8Array>({
-          pull: () => new Promise<void>(() => {}),
-          cancel() {
-            cancelled += 1;
-          },
-        }),
-        { status: 302, headers: { Location: "https://sso.example.com/login" } }
-      )) as typeof fetch;
-    const client = new DispatchClient(
-      "http://dispatch.test",
-      bearerCredential("secret"),
-      fetchImpl,
-      { sleep: async () => undefined }
-    );
-    const started = performance.now();
-    for (const call of [
-      () => client.getIssue("DSP-1"),
-      () => client.comment("DSP-1", { body: "Review", actor }),
-    ]) {
-      const refusal = await call().then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      expect(refusal).toBeInstanceOf(DispatchGatewayError);
-    }
-    expect({ cancelled, atOnce: performance.now() - started < 10_000 }).toEqual({
-      cancelled: 2,
-      atOnce: true,
-    });
-  });
-
-  // The /healthz probe carries the credential's proof too, and its answer decides whether a write
-  // is sent again under its key: a probe that followed the redirect would hand the proof to the
-  // other origin, and take that origin's `idempotency_keys` as Dispatch's word.
-  test("the /healthz probe is not followed there, so another origin's answer resends nothing", async () => {
-    const elsewhere: string[] = [];
-    const other = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        elsewhere.push(`${request.method} ${new URL(request.url).pathname}`);
-        return jsonResponse({ status: "ok", idempotency_keys: true });
-      },
-    });
-    const asked: string[] = [];
-    const dispatch = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        const path = new URL(request.url).pathname;
-        asked.push(`${request.method} ${path}`);
-        if (path === "/healthz") {
-          return new Response(null, {
-            status: 302,
-            headers: { Location: `http://127.0.0.1:${other.port}/healthz` },
-          });
-        }
-        return new Response("<html><body>Bad Gateway</body></html>", {
-          status: 502,
-          headers: { "Content-Type": "text/html" },
-        });
-      },
-    });
-    const credential: RequestCredential = {
-      ...bearerCredential("secret"),
-      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
-    };
-    try {
-      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch, {
-        sleep: async () => undefined,
-      });
-      await client.comment("DSP-1", { body: "Review", actor }).catch(() => undefined);
-      expect({ asked, elsewhere }).toEqual({
-        asked: ["POST /api/v1/issues/DSP-1/comments", "GET /healthz"],
-        elsewhere: [],
-      });
-    } finally {
-      dispatch.stop(true);
-      other.stop(true);
     }
   });
 });

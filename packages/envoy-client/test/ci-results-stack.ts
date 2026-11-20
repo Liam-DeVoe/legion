@@ -441,6 +441,7 @@ async function forgeOnly(): Promise<void> {
     forged: true,
   });
   console.log(`export ACTIONS_ID_TOKEN_REQUEST_URL='${request.requestUrl}'`);
+  // fixture-secret-next-line: shell output interpolates the stand-in's randomly generated credential.
   console.log(`export ACTIONS_ID_TOKEN_REQUEST_TOKEN='${request.requestToken}'`);
   console.log("export AGENT_SECRETS_MACHINE_IDENTITY=github-actions");
   console.error(
@@ -480,6 +481,7 @@ async function wholeStack(): Promise<void> {
     console.log("# The try line: one stored result, then a session's read of it:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${tested}`);
     console.log(
+      // fixture-secret-next-line: shell output interpolates the Dispatch stack's random credential.
       `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN='${stack.dispatch.token}' ${CLI} results --project ${stack.project} --commit ${tested}`
     );
     console.log("# Each control is refused:");
@@ -492,6 +494,7 @@ async function wholeStack(): Promise<void> {
       `bun -e 'import { ownIdentityDispatch } from "${OWN_IDENTITY}"; const d = ownIdentityDispatch(process.env); const url = d.url + "/api/v1/issues?project=${stack.project}"; const r = await fetch(url, { headers: await d.credential.headers("GET", url) }); console.log(r.status, (await r.json()).code)'   # another route`
     );
     console.log(
+      // fixture-secret-next-line: shell output interpolates the issuer stand-in's random credential.
       `ACTIONS_ID_TOKEN_REQUEST_TOKEN='${forged.ACTIONS_ID_TOKEN_REQUEST_TOKEN}' ${result} --check ${PROBE_CHECK} --commit ${tested}   # a forged token`
     );
     console.error("ci-results-stack: ready; Ctrl-C stops the stack.");

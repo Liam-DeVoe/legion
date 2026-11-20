@@ -30,9 +30,17 @@ import (
 // trusted to the hint. An error is returned only where the broker itself failed — a storage
 // outage, or a row it could not decode — because answering that as "not live" would both deny a
 // sound token and hide the outage; notLive is how the two are told apart, and brokerFailure makes
-// that error say which of the two it was. A row whose run (ClaimCI) does not decode as one is the
-// broker's failure too, for the same reason.
+// that error say which of the two it was.
+//
+// A token whose HMAC is not the broker's is answered not live before anything is read: the
+// provider's own HMAC strategy (codeStrategy, built in New) checks it, as ValidateAccessToken ends
+// by doing (authelia strategy_hmac.go:125-141), with no prefix to trim since the broker's tokens
+// carry none (compose.NewOAuth2HMACStrategy). The auth service introspects every session token a
+// NATS connection presents, so a forged one must cost the broker no database query.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
+	if p.strategy.Enigma.Validate(ctx, token) != nil {
+		return oauthwire.Introspection{}, nil
+	}
 	kind, request, err := p.oauth.IntrospectToken(ctx, token, oauth2.AccessToken, oauthstore.NewExchangeSession())
 	if err != nil {
 		if notLive(err) {
@@ -96,11 +104,8 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	return answer, nil
 }
 
-// ciOf is the run a token's row carries under ClaimCI, read back through the one declaration the
-// exchange wrote it with (oauthwire.CIRun), and nil for a row that carries none. The store hands
-// a row's claims back as the JSON object it wrote, so the claim is decoded the way it was encoded
-// rather than read field by field under names spelled a second time here. A claim that is no such
-// object is the broker's own row failing to decode, never a token without a run.
+// ciOf reads the run the exchange wrote under ClaimCI through its wire declaration. A row
+// carrying no run answers nil; a claim that does not decode is a stored row failure.
 func ciOf(claim any) (*oauthwire.CIRun, error) {
 	if claim == nil {
 		return nil, nil

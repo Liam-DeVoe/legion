@@ -21,7 +21,7 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
-import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -56,6 +56,9 @@ import { renderTemplate } from "./text";
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
 
+/** The Dispatch token the gate's session and the real CLI are handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
+
 /** Dispatch's answer that the project holds no decision document of the session's name. */
 const NO_DOCUMENT = new DispatchServiceError(
   "ARTIFACT_NOT_FOUND",
@@ -84,13 +87,6 @@ const callEnders: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const end of callEnders.splice(0)) await end();
 });
-
-/**
- * The store and the session directory of each gate a row binds (`bind`), removed after the row by
- * the maker's afterEach: kept to the file's end, a whole run's of them, over a thousand, would be
- * the work of the suite's one afterAll, which runs under Bun's 5 s hook limit.
- */
-const bindDirectory = temporaryDirectories("gate-bind", { root: SUITE_TMP });
 
 /** One marker the gate minted, as the CLI reads it: its file name and its JSON. */
 type MintedMarker = {
@@ -243,10 +239,10 @@ function bind(opts: BindOptions = {}): BoundGate {
   const dryRuns: Array<{ script: string; cwd: string; timeoutMs: number }> = [];
   /** Every Dispatch client the gate asked for: the directory it asked for, and that read's signal. */
   const dispatchReads: Array<{ directory: string; signal: AbortSignal }> = [];
-  const store = opts.store ?? bindDirectory("store");
+  const store = opts.store ?? fs.mkdtempSync(path.join(SUITE_TMP, "store-"));
   // The session directory the gate records its mode into (one real process keeps a record per
   // session it binds). A test may share a store and a session across binds to drive the switch case.
-  const sessionDir = opts.sessionDir ?? bindDirectory("session");
+  const sessionDir = opts.sessionDir ?? fs.mkdtempSync(path.join(SUITE_TMP, "session-"));
   const self: AskgateOwner = {
     pid: process.pid,
     start: processStart(process.pid),
@@ -5681,7 +5677,7 @@ describe("askgate.ts, the entry", () => {
         OMP_ASKGATE_TIMEOUT_MS: "soon",
         OMP_ASKGATE_RECORD_PROJECT: "INFRA",
         DISPATCH_URL: "http://dispatch.test",
-        DISPATCH_TOKEN: "dispatch-token",
+        DISPATCH_TOKEN,
       });
       await loaded.then(
         () => expect.unreachable("the gate loaded"),
@@ -5735,7 +5731,7 @@ describe("askgate.ts, the entry", () => {
       const { loaded, handlers, registration } = await registerOnly({
         OMP_ASKGATE_RECORD_PROJECT: "INFRA",
         DISPATCH_URL: "http://dispatch.test",
-        DISPATCH_TOKEN: "dispatch-token",
+        DISPATCH_TOKEN,
       });
       await loaded;
       // The core's handlers are bound too, and the entry's shutdown handler is still the first.
@@ -5936,11 +5932,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     DISPATCH_SESSION_ID: "ses-real-cli",
     DISPATCH_STATE_DIR: path.join(work, "state"),
     DISPATCH_URL: "http://127.0.0.1:9",
-    DISPATCH_TOKEN: "test-token",
-    // The gate's dry run starts the real `dispatch` as a child `bun`, which keeps its transpiler
-    // cache, about 156 files, in HOME: with the cache off, the afterAll that removes this folder
-    // under Bun's 5 s hook limit removes only what the rows wrote.
-    BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+    DISPATCH_TOKEN,
   };
   // Block mode, so a post that does not use its marker is refused, never posted with a warning:
   // a post that succeeds then proves the marker the gate minted matched. The harness's default
@@ -5962,8 +5954,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       "block"
     );
     const sent: Array<{ path: string; body: unknown }> = [];
-    // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
-    const fetchImpl = keyedLayer(async (url: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
       const request =
         url instanceof Request ? new Request(url, init) : new Request(url.toString(), init);
       const route = new URL(request.url).pathname;
@@ -6029,8 +6020,6 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(g.dryRuns[0]?.script).toBe(`${command} --dry-run`);
   }, 30_000);
 
-  // The comment is Dispatch's own answer, which names the call's key back: the command prints the
-  // comment Dispatch stored.
   test("a reviewed --body-file posts the text the model reviewed, once", async () => {
     fs.writeFileSync(path.join(work, "note.md"), NOTE);
     const command = "dispatch comment --issue DSP-1 --body-file note.md";
@@ -6041,7 +6030,6 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toMatchObject([
       { path: "/api/v1/issues/DSP-1/comments", body: { body: NOTE } },
     ]);
-    expect(posted.stdout).toContain("comment-1");
   }, 30_000);
 
   for (const [form, file, command] of [
@@ -6117,20 +6105,6 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(result?.additionalContext).toContain("The call ran unreviewed.");
     expect(g.entries).toMatchObject([{ outcome: "unreadable", decision: "allow" }]);
     expect(markersIn(g.store)).toMatchObject([{ args: null, outcome: "unreadable" }]);
-  }, 30_000);
-
-  // The gate's dry run starts the real `dispatch` as a child `bun` whose HOME is this folder,
-  // where Bun keeps its transpiler cache, and an afterAll hook removes the folder under Bun's 5 s
-  // hook limit, which no row's own limit covers: what the child leaves there is all it reads.
-  test("the dry run's child leaves no Bun cache in the folder, which is its HOME", async () => {
-    fs.writeFileSync(path.join(work, "brief.md"), BRIEF);
-    const g = bind({ env: gateEnv, cwd: work });
-    const command = "dispatch artifact --issue DSP-1 --name brief.md --path brief.md";
-    expect(await g.bash("cache", command)).toBeUndefined();
-    expect({ ran: g.dryRuns.length > 0, cache: fs.existsSync(path.join(work, ".bun")) }).toEqual({
-      ran: true,
-      cache: false,
-    });
   }, 30_000);
 });
 
@@ -8072,13 +8046,4 @@ describe("the Dispatch decision record (A5)", () => {
 // a file under the suite's TMPDIR.
 test("no gated call of an earlier test made a snapshot directory", () => {
   expect(snapshotDirs()).toEqual([]);
-});
-// Runs last: each gate a row binds has a store and a session directory of the row's own, which go
-// with the row, so the suite's TMPDIR holds none of them for its afterAll hook to remove under
-// Bun's 5 s hook limit.
-test("no bound gate of an earlier test left its store or session directory", () => {
-  const left = fs
-    .readdirSync(SUITE_TMP)
-    .filter((name) => /^(gate-bind-)?(store|session)-/.test(name));
-  expect(left).toEqual([]);
 });
