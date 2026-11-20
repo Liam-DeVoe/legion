@@ -1457,11 +1457,20 @@ type artifactVersionText struct {
 	model.Version
 }
 
+// renderSourceHeader names, on every answer of a document's version, what its bytes are
+// (docs.RenderSource): `tree`, a render of the tree's tuples as of the version's time; `stored`,
+// the version's stored markdown byte for byte; `none`, a version that stores no markdown, whose
+// answer holds no bytes and is no document.
+const renderSourceHeader = "Dispatch-Render-Source"
+
 // getArtifactVersion answers one version of an artifact on all four version routes: a document's
 // text as artifactVersionText, or as its Markdown under its file name at the download address,
-// and a file's or an image's bytes (serveFileVersion).
+// each as the one renderer answers the version (docs.RenderVersion) and naming what its bytes are
+// in renderSourceHeader, and a file's or an image's bytes (serveFileVersion).
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	number, err := strconv.Atoi(r.PathValue("number"))
@@ -1485,12 +1494,18 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	// under its new name, and an older version's carries its number (versionFilename).
 	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {
-		var markdown string
-		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
+		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		rendering, err := docs.RenderVersion(r.Context(), s.deps.Store.Pool, reader, artifact.ID, number)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		markdown := rendering.Markdown
+		w.Header().Set(renderSourceHeader, string(rendering.Source))
 		if download {
 			// The download is the Markdown file itself, not the JSON that wraps it: the text the
 			// JSON's `markdown` field holds, with no display tree read.
@@ -1503,6 +1518,8 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, markdown)
 			return
 		}
+		size := len(markdown)
+		version.Size = &size
 		hash := sha256.Sum256([]byte(markdown))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
@@ -2516,25 +2533,23 @@ func (s *server) loadVersions(ctx context.Context, q queryer, artifactID string)
 	return versions, rows.Err()
 }
 
-// loadVersion reads one version of a document with its markdown, which the content route answers,
-// so its size is that markdown's length rather than a second read of the column.
-func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int, markdown *string) (model.Version, error) {
+// loadVersion reads one version of a document but its bytes, which the content route answers as
+// the renderer answers them (docs.RenderVersion) and sizes and digests from that answer.
+func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int) (model.Version, error) {
 	var version model.Version
 	var authors []byte
 	if err := q.QueryRow(ctx, `
-		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, v.markdown
+		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256
 		from artifact_versions v where v.artifact_id = $1 and v.number = $2
 	`, artifactID, number).Scan(
 		&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt,
-		&version.MIME, &version.SHA256, markdown,
+		&version.MIME, &version.SHA256,
 	); err != nil {
 		return model.Version{}, err
 	}
 	if err := json.Unmarshal(authors, &version.Authors); err != nil {
 		return model.Version{}, fmt.Errorf("decode version authors: %w", err)
 	}
-	size := len(*markdown)
-	version.Size = &size
 	return version, nil
 }
 

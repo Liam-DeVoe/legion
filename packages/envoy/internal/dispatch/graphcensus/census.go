@@ -89,6 +89,14 @@ type projection struct {
 	// own, which the handoff's list for the root names as the test of the three old arms. Empty
 	// for a kind whose row names no node only by a defect.
 	unmarked string
+	// unstated counts the rows of the kind's table that belong to a document of an issue that has
+	// not converted - no issue_trees row holds its issue - which no pass of this build's rule has
+	// stated (unconvertedUnstated): a document the release before indexed, whose blocks hold none
+	// of what this build's pass states until a pass of its rule reaches them. Those rows, and the
+	// nodes of their blocks, are on neither side: the census reports their count as a class of
+	// its own and compares none of them. It is a full `select count(*)`, empty for a kind no such
+	// row is left out of.
+	unstated string
 	// owed is a predicate over node.id, a present node of the kind (for a kind held triple by
 	// triple, the node holding the tuple), that holds where the node's row is owed by a writer
 	// that has not run yet rather than missing: such a node is no node-side difference. Empty for
@@ -128,6 +136,11 @@ type KindReport struct {
 	// own, and Unmarked is how many there are, none of them a difference (projection.unmarked).
 	CountsUnmarked bool
 	Unmarked       int64
+	// CountsUnstated says the kind holds the rows of an unconverted issue's documents that no pass
+	// of this build's rule has stated as a class of their own, and Unstated is how many there are,
+	// none of them compared and none a difference (projection.unstated).
+	CountsUnstated bool
+	Unstated       int64
 	// EmptyAgrees says a kind that read no row, no present node and no unmarked row is no refusal
 	// (projection.emptyAgrees).
 	EmptyAgrees bool
@@ -135,10 +148,13 @@ type KindReport struct {
 	MayBeEmpty bool
 }
 
-// Empty reports whether the kind read no row, no present node and no unmarked row, and so holds
-// nothing to compare. A table whose rows all name no node yet holds rows still: they are the
-// earlier release's, which the census cannot hold to a node until the backfill marks them.
-func (k KindReport) Empty() bool { return k.Rows == 0 && k.Nodes == 0 && k.Unmarked == 0 }
+// Empty reports whether the kind read no row, no present node, no unmarked row and no unstated
+// row, and so holds nothing to compare. A table whose rows all name no node yet holds rows still:
+// they are the earlier release's, which the census cannot hold to a node until the backfill marks
+// them; and so does one whose rows all wait for a pass of this build's rule.
+func (k KindReport) Empty() bool {
+	return k.Rows == 0 && k.Nodes == 0 && k.Unmarked == 0 && k.Unstated == 0
+}
 
 // Difference is one disagreement: why it is one, and the row or node it was found at.
 type Difference struct{ Cause, At string }
@@ -175,6 +191,10 @@ type StoreReport struct {
 	// census command from docs' reader of the decisions documents' sections, nil where no caller
 	// read it. It refuses nothing.
 	Decisions *DecisionsCensus
+	// VersionRenders is the census of the versions version_renders holds (VersionRenderCensus),
+	// set by the census command from docs' renderer, nil where no caller read it. A version whose
+	// stored markdown is not its render refuses the census.
+	VersionRenders *VersionRenderCensus
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
 }
@@ -249,7 +269,8 @@ func (r *StoreReport) Unpopulated() []string {
 // deployment may hold none of - a run and its frames, and the visibility and state of a run, a
 // lens, a finding, a risk, a constraint and a lens kind - is the other: it refuses nothing on zero
 // rows alone (projection.mayBeEmpty); a driver over a corpus that holds them still reads the
-// count.
+// count. A version version_renders holds whose stored markdown is not its render refuses too
+// (VersionRenders).
 //
 // A database the store does not exist in yet (Absent) has nothing to census. The sizing is taken
 // on just such a database (R4 reads before the first migration), so there the sizing alone
@@ -258,10 +279,19 @@ func (r *StoreReport) Refused() bool {
 	if r.Absent {
 		return r.Sizing == nil || r.Sizing.Refused()
 	}
-	if len(r.Unpopulated()) > 0 || r.Differences() > 0 || r.ProjectFindings() > 0 || r.Unresolved() > 0 {
+	if len(r.Unpopulated()) > 0 || r.Differences() > 0 || r.ProjectFindings() > 0 || r.Unresolved() > 0 || r.renderDifferences() > 0 {
 		return true
 	}
 	return r.Sizing != nil && r.Sizing.Refused()
+}
+
+// renderDifferences is how many versions version_renders holds store other markdown than their
+// render, 0 where the census read none of them.
+func (r *StoreReport) renderDifferences() int64 {
+	if r.VersionRenders == nil {
+		return 0
+	}
+	return r.VersionRenders.Differences
 }
 
 // projections are the kinds the census holds the store to, in the order it reads and reports
@@ -1377,17 +1407,20 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 // own, so each is planned and streamed exactly as before.
 func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (KindReport, error) {
 	kind := KindReport{Kind: held.name, NodeKind: held.nodeKind, Table: held.table, Note: held.note,
-		Triples: held.tuples != "", CountsUnmarked: held.unmarked != "", EmptyAgrees: held.emptyAgrees,
-		MayBeEmpty: held.mayBeEmpty}
+		Triples: held.tuples != "", CountsUnmarked: held.unmarked != "", CountsUnstated: held.unstated != "",
+		EmptyAgrees: held.emptyAgrees, MayBeEmpty: held.mayBeEmpty}
 	read := sidesOf(held)
-	// pastBound and unmarked are each a scalar `select count(*)`, so each is read directly rather
-	// than wrapped in a count of its own row; a kind without the class reads zero.
-	pastBound, unmarked := held.pastBound, held.unmarked
+	// pastBound, unmarked and unstated are each a scalar `select count(*)`, so each is read
+	// directly rather than wrapped in a count of its own row; a kind without the class reads zero.
+	pastBound, unmarked, unstated := held.pastBound, held.unmarked, held.unstated
 	if pastBound == "" {
 		pastBound = "select 0"
 	}
 	if unmarked == "" {
 		unmarked = "select 0"
+	}
+	if unstated == "" {
+		unstated = "select 0"
 	}
 	if err := tx.QueryRow(ctx, `select
 		(select count(*) from (`+held.rows+`) rows_read),
@@ -1395,8 +1428,9 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 		(select count(*) from (`+read.rowsFound+`) rows_found),
 		(select count(*) from (`+read.nodesFound+`) nodes_found),
 		(`+pastBound+`),
-		(`+unmarked+`)`, args...,
-	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences, &kind.PastBound, &kind.Unmarked); err != nil {
+		(`+unmarked+`),
+		(`+unstated+`)`, args...,
+	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences, &kind.PastBound, &kind.Unmarked, &kind.Unstated); err != nil {
 		return KindReport{}, fmt.Errorf("census of %s: %w", held.name, err)
 	}
 	var err error
@@ -1581,6 +1615,10 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 			fmt.Fprintf(w, "census: store kind=%s unmarked_rows=%s (rows a writer of the release before wrote, which name no node yet and graph_edges' old arms answer)\n",
 				kind.Kind, pgmigrate.Thousands(kind.Unmarked))
 		}
+		if kind.CountsUnstated {
+			fmt.Fprintf(w, "census: store kind=%s unstated_rows=%s (rows of a document of an issue that has not converted which no pass of this build's rule has stated, as the release before leaves them: counted, compared with nothing)\n",
+				kind.Kind, pgmigrate.Thousands(kind.Unstated))
+		}
 		switch {
 		case kind.EmptyAgrees && kind.Empty():
 			fmt.Fprintf(w, "census: store kind=%s holds no row and no %s: nothing of it is written yet, which is no refusal\n", kind.Kind, side)
@@ -1600,6 +1638,9 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 		writeMoves(w, r.Dangling, r.Collisions, verbose)
 		if r.Decisions != nil {
 			writeDecisions(w, *r.Decisions)
+		}
+		if r.VersionRenders != nil {
+			writeVersionRenders(w, *r.VersionRenders)
 		}
 	}
 	writeProjectCensus(w, r.Projects)
@@ -1623,6 +1664,9 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 		fmt.Fprintln(w, "census: store absent, sizing ok")
 	case r.Differences() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s difference(s))\n", pgmigrate.Thousands(r.Differences()))
+	case r.renderDifferences() > 0:
+		fmt.Fprintf(w, "census: store REFUSED (%s rendered version(s) store other markdown than their render)\n",
+			pgmigrate.Thousands(r.renderDifferences()))
 	case r.ProjectFindings() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or node(s) no row stands behind;"+
 			" run envoy-dispatch backfill-graph-store for the missing, gone and unscoped ones but those naming a party the store"+

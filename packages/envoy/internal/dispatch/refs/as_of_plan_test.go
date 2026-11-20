@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -139,31 +140,41 @@ type asOfRead struct {
 
 // asOfReads are the walk's reads over the seed: the head's cut, the children of two nodes in rank
 // order, the values and the relations out of nodes, the rows of nodes, the moves of old
-// addresses, and the nodes of a child placed under its parent's tree, each at the seed's seq. A
-// read of one value out of a node is served by graph_tuples_values as by graph_tuples_as_of_out,
-// each keyed on the node and the attribute, and a read of the part_of or the moved_to out of a
-// node by graph_tuples_current as by graph_tuples_as_of_out, each keyed on the node and the kind:
-// the planner takes whichever it costs lower.
+// addresses, and the nodes of a child placed under its parent's tree, each at the seed's seq; and
+// the reads a render makes as of a time inside the seed's history of text (TreeCut.Dated): the
+// children, the values and the blocks of a document. A read of one value out of a node is served
+// by graph_tuples_values as by graph_tuples_as_of_out, each keyed on the node and the attribute,
+// and a read of the part_of or the moved_to out of a node by graph_tuples_current as by
+// graph_tuples_as_of_out, each keyed on the node and the kind: the planner takes whichever it
+// costs lower.
 func asOfReads(seed asOfSeed) []asOfRead {
 	parents := []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}, {Kind: BlockNodeKind, ID: "SEED-1/spec#b1"}}
 	parentKinds, parentIDs := targetColumns(parents)
 	blocks := []Target{{Kind: BlockNodeKind, ID: "SEED-1/spec#b7"}, {Kind: BlockNodeKind, ID: "SEED-1/spec#b300"}}
 	blockKinds, blockIDs := targetColumns(blocks)
+	seq, open := TreeCut{ReadSeq: seed.readSeq}.bounds()
+	unbounded, at := TreeCut{At: time.Now().Add(-24*time.Hour + 30*time.Minute), Dated: true}.bounds()
 	return []asOfRead{
 		{"the head's cut", headCutStatement, nil, []string{"graph_tuples_pkey"}},
 		{"the children of a node in rank order at a time", treeChildrenStatement,
-			[]any{parentKinds, parentIDs, seed.readSeq}, []string{"graph_tuples_as_of_in"}},
+			[]any{parentKinds, parentIDs, seq, open}, []string{"graph_tuples_as_of_in"}},
+		{"the children of a node in rank order as of a render's time", treeChildrenStatement,
+			[]any{parentKinds, parentIDs, unbounded, at}, []string{"graph_tuples_as_of_in"}},
 		{"the values out of a node at a time", treeValuesStatement,
-			[]any{blockKinds, blockIDs, seed.readSeq}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
+			[]any{blockKinds, blockIDs, seq, open}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
+		{"the values out of a node as of a render's time", treeValuesStatement,
+			[]any{blockKinds, blockIDs, unbounded, at}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
 		{"the relations out of a node at a time", treeRelationsStatement,
-			[]any{blockKinds, blockIDs, seed.readSeq}, []string{"graph_tuples_as_of_out"}},
+			[]any{blockKinds, blockIDs, seq, open}, []string{"graph_tuples_as_of_out"}},
 		{"the rows of nodes", treeNodesStatement,
 			[]any{blockKinds, blockIDs}, []string{"graph_nodes_pkey"}},
 		{"the moved_to resolve at a time", treeMovedToStatement,
-			[]any{[]string{"SEED-1/old#b3", "SEED-1/spec#b9"}, seed.readSeq, graphstore.MovedToHops},
+			[]any{[]string{"SEED-1/old#b3", "SEED-1/spec#b9"}, seq, open, graphstore.MovedToHops},
 			[]string{"graph_tuples_as_of_out", "graph_tuples_current"}},
 		{"the nodes of an issue placed under an issue above, at a time", treePlacedAboveStatement,
-			[]any{"SEED-2", []string{"SEED-1"}, seed.readSeq}, []string{"graph_tuples_as_of_in"}},
+			[]any{"SEED-2", []string{"SEED-1"}, seq, open}, []string{"graph_tuples_as_of_in"}},
+		{"the blocks of a document as of a render's time", treeMembersStatement,
+			[]any{"SEED-1/spec", unbounded, at}, []string{"graph_tuples_as_of_in"}},
 	}
 }
 
@@ -213,7 +224,7 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	}
 
 	seed := seedAsOfStore(t, database)
-	children, err := TreeChildren(ctx, database.Pool, []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}}, seed.readSeq)
+	children, err := TreeChildren(ctx, database.Pool, []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}}, TreeCut{ReadSeq: seed.readSeq})
 	if err != nil {
 		t.Fatalf("read the children of SEED-1: %v", err)
 	}

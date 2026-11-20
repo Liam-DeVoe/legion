@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -338,6 +339,14 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 			return fmt.Errorf("delete the reviews over the erased bytes: %w", err)
 		}
 		e.removed("artifact_reviews", tag.RowsAffected())
+		// A version the erase deletes takes its version_renders row with it, so no row is left to
+		// render a version that is gone, nor to stand at the number the document's next version
+		// takes.
+		rendered, err := docs.ForgetVersionRenders(ctx, tx, read.artifacts, read.numbers)
+		if err != nil {
+			return err
+		}
+		e.removed("version_renders", rendered)
 		tag, err = tx.Exec(ctx, `delete from artifact_versions where exists (
 			select 1 from unnest($1::uuid[], $2::int[]) as doomed(artifact, number)
 			where doomed.artifact = artifact_versions.artifact_id and doomed.number = artifact_versions.number)`,

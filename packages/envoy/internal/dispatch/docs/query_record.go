@@ -140,6 +140,7 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	}
 	walk := treeWalk{
 		issue:    refs.Target{Kind: graphstore.KindIssue, ID: issueKey},
+		owner:    issueKey,
 		cut:      cut,
 		nodes:    map[refs.Target]TreeNode{},
 		children: map[refs.Target][]refs.Target{},
@@ -156,7 +157,7 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	if err != nil {
 		return IssueTree{}, fmt.Errorf("read the issues above %s: %w", issueKey, err)
 	}
-	above, err := refs.TreePlacedAbove(ctx, q, issueKey, ancestors, cut.ReadSeq)
+	above, err := refs.TreePlacedAbove(ctx, q, issueKey, ancestors, cut)
 	if err != nil {
 		return IssueTree{}, err
 	}
@@ -187,13 +188,42 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 	return tree, nil
 }
 
-// treeWalk is what a walk has read of the issue's tree: every node it took, by its address; the
-// part_of children of each node, ranked first, in the order the children read answers them; the
-// conversation's items and their blocks, in the order the conversation read answers them, the
-// items alone, the blocks of each item, and the parent each item's loader names; and the items
-// that hang under each node.
+// walkDocumentTree is the walk of the tree of a document no issue holds - a project's document, a
+// conversation's file - at cut, in the walk's order: the document's own node first and then its
+// part_of subtree, walked as the first part of WalkIssueTree walks an issue's, every node of it
+// one whose address begins with the owner its ref_key begins with, the project's key or the
+// conversation's (graphstore.ArtifactRefKey). No conversation hangs under such a document, and no
+// issue's walk has a second part there.
+func walkDocumentTree(ctx context.Context, q Queryer, refKey string, cut refs.TreeCut) ([]TreeNode, error) {
+	owner, _, _ := strings.Cut(refKey, "/")
+	document := refs.Target{Kind: graphstore.KindArtifact, ID: refKey}
+	walk := treeWalk{
+		issue:    document,
+		owner:    owner,
+		cut:      cut,
+		nodes:    map[refs.Target]TreeNode{},
+		children: map[refs.Target][]refs.Target{},
+		blocks:   map[refs.Target][]refs.Target{},
+		hanging:  map[refs.Target][]refs.Target{},
+	}
+	if err := walk.readSubtrees(ctx, q, []refs.Target{document}, false); err != nil {
+		return nil, err
+	}
+	tree := IssueTree{Cut: cut, Memo: -1, index: map[refs.Target]int{}}
+	walk.nodes[document] = TreeNode{Kind: document.Kind, ID: document.ID, Type: graphstore.SupertagDocument}
+	walk.take(&tree, document)
+	return tree.Nodes, nil
+}
+
+// treeWalk is what a walk has read of the issue's tree: its root, the issue's node, and the owner
+// every address of the issue's own nodes begins with, the issue's key (ownNode); every node it
+// took, by its address; the part_of children of each node, ranked first, in the order the children
+// read answers them; the conversation's items and their blocks, in the order the conversation read
+// answers them, the items alone, the blocks of each item, and the parent each item's loader names;
+// and the items that hang under each node.
 type treeWalk struct {
 	issue        refs.Target
+	owner        string
 	cut          refs.TreeCut
 	nodes        map[refs.Target]TreeNode
 	children     map[refs.Target][]refs.Target
@@ -255,7 +285,7 @@ func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 // takes as one of the walk's second part.
 func (w *treeWalk) readSubtrees(ctx context.Context, q Queryer, frontier []refs.Target, above bool) error {
 	for len(frontier) > 0 {
-		children, err := refs.TreeChildren(ctx, q, frontier, w.cut.ReadSeq)
+		children, err := refs.TreeChildren(ctx, q, frontier, w.cut)
 		if err != nil {
 			return err
 		}
@@ -281,10 +311,10 @@ func treeNodeOf(child refs.TreeChild, above bool) TreeNode {
 }
 
 // ownNode reports whether node is a node of the walk's issue as its address tells: an issue's node
-// is never one, and a document's, a version's or a document block's is one where the issue's key
-// is the first part of its address, the document's ref_key (graphstore.ArtifactRefKey). A finding
-// of a lens and every node whose address names no issue - a lens, a risk, a result - is the
-// issue's where the walk reaches it.
+// is never one, and a document's, a version's or a document block's is one where the walk's owner,
+// the issue's key, is the first part of its address, the document's ref_key
+// (graphstore.ArtifactRefKey). A finding of a lens and every node whose address names no issue - a
+// lens, a risk, a result - is the issue's where the walk reaches it.
 func (w *treeWalk) ownNode(node refs.Target) bool {
 	switch node.Kind {
 	case graphstore.KindIssue:
@@ -294,7 +324,7 @@ func (w *treeWalk) ownNode(node refs.Target) bool {
 			return true
 		}
 		owner, _, _ := strings.Cut(node.ID, "/")
-		return owner == w.issue.ID
+		return owner == w.owner
 	}
 	return true
 }
@@ -323,7 +353,7 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 	if len(anchored) == 0 {
 		return nil
 	}
-	facts, err := refs.TreeFactsOf(ctx, q, anchored, w.cut.ReadSeq)
+	facts, err := refs.TreeFactsOf(ctx, q, anchored, w.cut)
 	if err != nil {
 		return err
 	}
@@ -340,7 +370,7 @@ func (w *treeWalk) placeItems(ctx context.Context, q Queryer) error {
 			}
 		}
 	}
-	moved, err := refs.TreeMovedTo(ctx, q, unheld, w.cut.ReadSeq)
+	moved, err := refs.TreeMovedTo(ctx, q, unheld, w.cut)
 	if err != nil {
 		return err
 	}
@@ -490,7 +520,7 @@ func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) 
 			targets = append(targets, node.target())
 		}
 	}
-	facts, err := refs.TreeFactsOf(ctx, q, targets, tree.Cut.ReadSeq)
+	facts, err := refs.TreeFactsOf(ctx, q, targets, tree.Cut)
 	if err != nil {
 		return QueryRecord{}, fmt.Errorf("read the %s record of %s: %w", query, tree.Issue, err)
 	}

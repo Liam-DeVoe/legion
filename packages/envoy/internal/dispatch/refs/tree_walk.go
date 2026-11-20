@@ -3,8 +3,12 @@ package refs
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -12,30 +16,62 @@ import (
 )
 
 // The reads a walk of an issue's tree makes (docs' WalkIssueTree), each as of one cut of the tuple
-// log: every tuple a read takes has a seq at or below the cut's, and of each relation or value it
-// takes the newest such tuple by its time and then its seq, kept while it asserts, as
-// graphstore.AsOfOut and AsOfIn read a node at a time. The head is read at the newest seq the log
-// holds, and a version at the read_seq its record was taken at, so the head and every version are
-// one read at two cuts. Each statement reaches graph_tuples through graph_tuples_as_of_out, keyed
-// on the node and the kind, or graph_tuples_as_of_in, keyed on the far end and the kind,
-// and refs' TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore holds each to that.
+// log: of each relation or value it takes the newest tuple the cut holds by its time and then its
+// seq, kept while it asserts, as graphstore.AsOfOut and AsOfIn read a node at a time. A record's
+// cut holds every tuple whose seq is at or below its own, so the head - the newest seq the log
+// holds - and every version a record was taken at are one read at two cuts; a render's cut holds
+// every tuple dated at or before its time (TreeCut.Dated). Each statement reaches graph_tuples
+// through graph_tuples_as_of_out, keyed on the node and the kind, or graph_tuples_as_of_in, keyed
+// on the far end and the kind, and refs' TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore holds
+// each to that.
 
-// TreeCut is the one moment a walk of an issue's tree reads the store at: ReadSeq, the highest
-// graph_tuples.seq it takes, and At, the time it takes the issue's asks, comments and messages as
-// of, since the conversation test reads their rows by their times (ConversationNodes). The zero TreeCut is no
-// cut: a walk given it reads the head's (HeadCut).
+// TreeCut is the one moment a walk of an issue's tree reads the store at. A record's cut holds
+// each tuple whose seq is at or below ReadSeq, the highest graph_tuples.seq the record read,
+// whatever its time. A render's cut, Dated, holds each tuple whose time is at or before At,
+// whatever its seq: a render of a version reads, of each node, the newest text value, part_of
+// and rank dated at or before the version's time, with every retraction dated before it applied
+// (R15), so a tuple a later write dates after that time changes nothing of it. Either takes the
+// issue's asks, comments and messages as of At, since the conversation test reads their rows by
+// their times (ConversationNodes). The zero TreeCut is no cut: a walk given it reads the head's
+// (HeadCut).
 type TreeCut struct {
 	At      time.Time
 	ReadSeq int64
+	Dated   bool
 }
 
+// bounds are the highest seq and the latest time a read of the cut takes a tuple at, which every
+// statement here binds beside each other (cutBound): a record's cut leaves the time open, and a
+// render's the seq.
+func (cut TreeCut) bounds() (int64, pgtype.Timestamptz) {
+	if cut.Dated {
+		return math.MaxInt64, pgtype.Timestamptz{Time: cut.At, Valid: true}
+	}
+	return cut.ReadSeq, pgtype.Timestamptz{InfinityModifier: pgtype.Infinity, Valid: true}
+}
+
+// String names the cut in an error: the seq of a record's, the time of a render's.
+func (cut TreeCut) String() string {
+	if cut.Dated {
+		return "as of " + cut.At.UTC().Format(time.RFC3339Nano)
+	}
+	return fmt.Sprintf("at seq %d", cut.ReadSeq)
+}
+
+// cutBound is the predicate a tuple t of a read meets at the cut whose seq and time bounds the SQL
+// seq and at name (TreeCut.bounds).
+func cutBound(seq, at string) string { return `t.seq <= ` + seq + ` and t.at <= ` + at }
+
 // headCutStatement is the head's cut: the newest seq the tuple log holds, read off its primary
-// key, and the transaction's time.
-const headCutStatement = `select coalesce((select seq from graph_tuples order by seq desc limit 1), 0), now()`
+// key, and the database's clock as the statement runs. The clock is clock_timestamp() and not the
+// transaction's now(), which is its beginning: a version a pass writes in that transaction is
+// written after the pass dated its tuples (refs.IndexedVersion.At), and a render as of the cut's
+// time must take them.
+const headCutStatement = `select coalesce((select seq from graph_tuples order by seq desc limit 1), 0), clock_timestamp()`
 
 // HeadCut is the cut of the store as q sees it now: the newest seq of the tuple log and the
-// transaction's time. A version written in q's transaction records it as the read_seq its record
-// was read at.
+// database's clock. A version written in q's transaction records both, as the read_seq its record
+// was read at and the time it renders as of.
 func HeadCut(ctx context.Context, q Queryer) (TreeCut, error) {
 	var cut TreeCut
 	if err := q.QueryRow(ctx, headCutStatement).Scan(&cut.ReadSeq, &cut.At); err != nil {
@@ -44,11 +80,12 @@ func HeadCut(ctx context.Context, q Queryer) (TreeCut, error) {
 	return cut, nil
 }
 
-// asOfValue is a lateral's body reading, at the cut the SQL cut names, the value of attribute out
-// of the node whose kind and id the SQL kind and id name: the newest value tuple of that name, by
-// its time and then its seq, as held where it asserts and null where it retracts. The opening of
-// a text value is its first line alone, which says the type of a typed block (TreeNodeType).
-func asOfValue(kind, id, attribute, cut string, opening bool) string {
+// asOfValue is a lateral's body reading, at the cut the SQL predicate bound names (cutBound), the
+// value of attribute out of the node whose kind and id the SQL kind and id name: the newest value
+// tuple of that name, by its time and then its seq, as held where it asserts and null where it
+// retracts. The opening of a text value is its first line alone, which says the type of a typed
+// block (TreeNodeType).
+func asOfValue(kind, id, attribute, bound string, opening bool) string {
 	held := `t.to_id`
 	if opening {
 		held = `split_part(t.to_id, chr(10), 1)`
@@ -56,20 +93,21 @@ func asOfValue(kind, id, attribute, cut string, opening bool) string {
 	return `select case when t.asserted then ` + held + ` end as held
 		from graph_tuples t
 		where t.from_kind = ` + kind + ` and t.from_id = ` + id + ` and t.kind = '` + attribute + `'
-		  and t.to_kind = '` + graphstore.KindValue + `' and t.seq <= ` + cut + `
+		  and t.to_kind = '` + graphstore.KindValue + `' and ` + bound + `
 		order by t.at desc, t.seq desc
 		limit 1`
 }
 
-// asOfPlacement is a lateral's body reading, at the cut the SQL cut names, the parent of the node
-// whose kind and id the SQL kind and id name: of its part_of tuples, the newest of each far end
-// kept while it asserts, and of those the newest, so a node stands under one parent at a time.
-func asOfPlacement(kind, id, cut string) string {
+// asOfPlacement is a lateral's body reading, at the cut the SQL predicate bound names, the parent
+// of the node whose kind and id the SQL kind and id name: of its part_of tuples, the newest of
+// each far end kept while it asserts, and of those the newest, so a node stands under one parent
+// at a time.
+func asOfPlacement(kind, id, bound string) string {
 	return `select held.to_kind, held.to_id from (
 			select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted, t.at, t.seq
 			from graph_tuples t
 			where t.from_kind = ` + kind + ` and t.from_id = ` + id + ` and t.kind = '` + graphstore.TuplePartOf + `'
-			  and t.to_kind <> '` + graphstore.KindValue + `' and t.seq <= ` + cut + `
+			  and t.to_kind <> '` + graphstore.KindValue + `' and ` + bound + `
 			order by t.to_kind, t.to_id, t.at desc, t.seq desc
 		) held
 		where held.asserted
@@ -83,18 +121,18 @@ func asOfPlacement(kind, id, cut string) string {
 const treeNodeColumns = `rank.held, coalesce(node.supertag, ''), node.made_at, coalesce(opening.held, '')`
 
 // asOfNodeJoins are the joins of the node whose kind and id the SQL kind and id name that
-// treeNodeColumns reads, at the cut the SQL cut names: its rank, its state, which a read keeps
-// out where it is gone, the opening of its text, and its row.
-func asOfNodeJoins(kind, id, cut string) string {
-	return `left join lateral (` + asOfValue(kind, id, AttributeRank, cut, false) + `) rank on true
-		left join lateral (` + asOfValue(kind, id, graphstore.AttributeState, cut, false) + `) state on true
-		left join lateral (` + asOfValue(kind, id, graphstore.AttributeText, cut, true) + `) opening on true
+// treeNodeColumns reads, at the cut the SQL predicate bound names: its rank, its state, which a
+// read keeps out where it is gone, the opening of its text, and its row.
+func asOfNodeJoins(kind, id, bound string) string {
+	return `left join lateral (` + asOfValue(kind, id, AttributeRank, bound, false) + `) rank on true
+		left join lateral (` + asOfValue(kind, id, graphstore.AttributeState, bound, false) + `) state on true
+		left join lateral (` + asOfValue(kind, id, graphstore.AttributeText, bound, true) + `) opening on true
 		left join graph_nodes node on node.kind = ` + kind + ` and node.id = ` + id
 }
 
 // treeChildrenStatement is the children of each parent $1 and $2 name, kinds and ids, at the cut
-// $3: each node whose part_of names the parent there - read into the parent through
-// graph_tuples_as_of_in - and whose newest standing part_of out of it, read through
+// whose bounds $3 and $4 are: each node whose part_of names the parent there - read into the
+// parent through graph_tuples_as_of_in - and whose newest standing part_of out of it, read through
 // graph_tuples_as_of_out, is that one, unless its state there is gone. It answers each parent's
 // children by the parent's position, the ranked ones first by rank and then the unranked, a tie by
 // the lower address, `<kind>:<id>`, each compared byte for byte (collate "C"), since a rank is a
@@ -106,11 +144,11 @@ var treeChildrenStatement = `
 		select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
 		from graph_tuples t
 		where t.to_kind = parent.kind and t.to_id = parent.id and t.kind = '` + graphstore.TuplePartOf + `'
-		  and t.to_kind <> '` + graphstore.KindValue + `' and t.seq <= $3
+		  and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
 		order by t.from_kind, t.from_id, t.at desc, t.seq desc
 	) child
-	cross join lateral (` + asOfPlacement(`child.from_kind`, `child.from_id`, `$3`) + `) placed
-	` + asOfNodeJoins(`child.from_kind`, `child.from_id`, `$3`) + `
+	cross join lateral (` + asOfPlacement(`child.from_kind`, `child.from_id`, cutBound(`$3`, `$4`)) + `) placed
+	` + asOfNodeJoins(`child.from_kind`, `child.from_id`, cutBound(`$3`, `$4`)) + `
 	where child.asserted and placed.to_kind = parent.kind and placed.to_id = parent.id
 	  and state.held is distinct from '` + graphstore.StateGone + `'
 	order by parent.position, rank.held is null, rank.held collate "C", (child.from_kind || ':' || child.from_id) collate "C"`
@@ -127,16 +165,17 @@ type TreeChild struct {
 	Type         string
 }
 
-// TreeChildren is the children of each of parents at the cut readSeq, each parent's in the order
+// TreeChildren is the children of each of parents at cut, each parent's in the order
 // treeChildrenStatement answers them, the parents' in the order given.
-func TreeChildren(ctx context.Context, q Queryer, parents []Target, readSeq int64) ([]TreeChild, error) {
+func TreeChildren(ctx context.Context, q Queryer, parents []Target, cut TreeCut) ([]TreeChild, error) {
 	if len(parents) == 0 {
 		return nil, nil
 	}
 	kinds, ids := targetColumns(parents)
-	rows, err := q.Query(ctx, treeChildrenStatement, kinds, ids, readSeq)
+	seq, at := cut.bounds()
+	rows, err := q.Query(ctx, treeChildrenStatement, kinds, ids, seq, at)
 	if err != nil {
-		return nil, fmt.Errorf("read the children of %d nodes at seq %d: %w", len(parents), readSeq, err)
+		return nil, fmt.Errorf("read the children of %d nodes %s: %w", len(parents), cut, err)
 	}
 	defer rows.Close()
 	var children []TreeChild
@@ -147,14 +186,14 @@ func TreeChildren(ctx context.Context, q Queryer, parents []Target, readSeq int6
 	for rows.Next() {
 		child, row = TreeChild{}, treeNodeRow{}
 		if err := rows.Scan(targets...); err != nil {
-			return nil, fmt.Errorf("read a child at seq %d: %w", readSeq, err)
+			return nil, fmt.Errorf("read a child %s: %w", cut, err)
 		}
 		child.Parent = parents[position-1]
 		row.fill(&child)
 		children = append(children, child)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the children of %d nodes at seq %d: %w", len(parents), readSeq, err)
+		return nil, fmt.Errorf("read the children of %d nodes %s: %w", len(parents), cut, err)
 	}
 	return children, nil
 }
@@ -205,14 +244,26 @@ func TreeNodeType(kind, supertag, opening string) string {
 	return supertag
 }
 
-// treePlacedAboveStatement is, at the cut $3, each block of the issue $1 whose parent is a node of
-// an issue of $2, the issues above it: the blocks whose in_document names a document whose part_of
-// names the issue, each read into its far end through graph_tuples_as_of_in, of which those whose
-// newest standing part_of, read through graph_tuples_as_of_out, names a block of a document of one
-// of $2 - its address begins with that issue's key and a slash - or an ask, a comment or a message
-// of one, or a block of one, unless its state there is gone. It answers them by the parent's
-// address, then rank, then the node's address, each compared byte for byte, with the columns the
-// children read answers.
+// documentMembers is a lateral's body reading, at the cut the SQL predicate bound names, the
+// blocks whose in_document names the document whose ref_key the SQL refKey names: of each block's
+// in_document tuples into it, read into the document through graph_tuples_as_of_in, the newest,
+// answered as member.from_id and member.asserted; a caller keeps those that assert.
+func documentMembers(refKey, bound string) string {
+	return `select distinct on (t.from_id) t.from_id, t.asserted
+			from graph_tuples t
+			where t.to_kind = '` + graphstore.KindArtifact + `' and t.to_id = ` + refKey + ` and t.kind = '` + TupleInDocument + `'
+			  and t.from_kind = '` + BlockNodeKind + `' and t.to_kind <> '` + graphstore.KindValue + `' and ` + bound + `
+			order by t.from_id, t.at desc, t.seq desc`
+}
+
+// treePlacedAboveStatement is, at the cut whose bounds $3 and $4 are, each block of the issue $1
+// whose parent is a node of an issue of $2, the issues above it: the blocks whose in_document
+// names a document whose part_of names the issue (documentMembers), each read into its far end
+// through graph_tuples_as_of_in, of which those whose newest standing part_of, read through
+// graph_tuples_as_of_out, names a block of a document of one of $2 - its address begins with that
+// issue's key and a slash - or an ask, a comment or a message of one, or a block of one, unless
+// its state there is gone. It answers them by the parent's address, then rank, then the node's
+// address, each compared byte for byte, with the columns the children read answers.
 var treePlacedAboveStatement = `
 	with documents as (
 		select placed.from_id as ref_key
@@ -220,26 +271,20 @@ var treePlacedAboveStatement = `
 			select distinct on (t.from_id) t.from_id, t.asserted
 			from graph_tuples t
 			where t.to_kind = '` + graphstore.KindIssue + `' and t.to_id = $1 and t.kind = '` + graphstore.TuplePartOf + `'
-			  and t.from_kind = '` + graphstore.KindArtifact + `' and t.to_kind <> '` + graphstore.KindValue + `' and t.seq <= $3
+			  and t.from_kind = '` + graphstore.KindArtifact + `' and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
 			order by t.from_id, t.at desc, t.seq desc
 		) placed
 		where placed.asserted
 	), blocks as (
 		select distinct member.from_id as id
 		from documents
-		cross join lateral (
-			select distinct on (t.from_id) t.from_id, t.asserted
-			from graph_tuples t
-			where t.to_kind = '` + graphstore.KindArtifact + `' and t.to_id = documents.ref_key and t.kind = '` + TupleInDocument + `'
-			  and t.from_kind = '` + BlockNodeKind + `' and t.to_kind <> '` + graphstore.KindValue + `' and t.seq <= $3
-			order by t.from_id, t.at desc, t.seq desc
-		) member
+		cross join lateral (` + documentMembers(`documents.ref_key`, cutBound(`$3`, `$4`)) + `) member
 		where member.asserted
 	)
 	select placed.to_kind, placed.to_id, '` + BlockNodeKind + `', blocks.id, ` + treeNodeColumns + `
 	from blocks
-	cross join lateral (` + asOfPlacement(`'`+BlockNodeKind+`'`, `blocks.id`, `$3`) + `) placed
-	` + asOfNodeJoins(`'`+BlockNodeKind+`'`, `blocks.id`, `$3`) + `
+	cross join lateral (` + asOfPlacement(`'`+BlockNodeKind+`'`, `blocks.id`, cutBound(`$3`, `$4`)) + `) placed
+	` + asOfNodeJoins(`'`+BlockNodeKind+`'`, `blocks.id`, cutBound(`$3`, `$4`)) + `
 	where state.held is distinct from '` + graphstore.StateGone + `'
 	  and (placed.to_kind = '` + BlockNodeKind + `' and split_part(placed.to_id, '/', 1) = any($2::text[])
 	    or ` + itemOfIssuesSQL(ItemAsk, "asks", "$2") + `
@@ -258,16 +303,17 @@ func itemOfIssuesSQL(kind ItemKind, table, issues string) string {
 		select 1 from ` + table + ` item where item.id = ` + store.CastableUUID(id) + ` and item.issue_key = any(` + issues + `::text[]))`
 }
 
-// TreePlacedAbove is, at the cut readSeq, each block of the issue issueKey that stands under a
-// node of one of ancestors, the issues above it (IssueAncestors), with that node as its Parent, in
-// the order treePlacedAboveStatement answers them. An issue with no issue above holds none.
-func TreePlacedAbove(ctx context.Context, q Queryer, issueKey string, ancestors []string, readSeq int64) ([]TreeChild, error) {
+// TreePlacedAbove is, at cut, each block of the issue issueKey that stands under a node of one of
+// ancestors, the issues above it (IssueAncestors), with that node as its Parent, in the order
+// treePlacedAboveStatement answers them. An issue with no issue above holds none.
+func TreePlacedAbove(ctx context.Context, q Queryer, issueKey string, ancestors []string, cut TreeCut) ([]TreeChild, error) {
 	if len(ancestors) == 0 {
 		return nil, nil
 	}
-	rows, err := q.Query(ctx, treePlacedAboveStatement, issueKey, ancestors, readSeq)
+	seq, at := cut.bounds()
+	rows, err := q.Query(ctx, treePlacedAboveStatement, issueKey, ancestors, seq, at)
 	if err != nil {
-		return nil, fmt.Errorf("read the nodes of %s under an issue above at seq %d: %w", issueKey, readSeq, err)
+		return nil, fmt.Errorf("read the nodes of %s under an issue above %s: %w", issueKey, cut, err)
 	}
 	defer rows.Close()
 	var placed []TreeChild
@@ -283,34 +329,61 @@ func TreePlacedAbove(ctx context.Context, q Queryer, issueKey string, ancestors 
 		placed = append(placed, child)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the nodes of %s under an issue above at seq %d: %w", issueKey, readSeq, err)
+		return nil, fmt.Errorf("read the nodes of %s under an issue above %s: %w", issueKey, cut, err)
 	}
 	return placed, nil
 }
 
-// treeValuesStatement is, at the cut $3, every value out of each node $1 and $2 name: the newest
-// value tuple of each attribute, kept while it asserts.
+// treeMembersStatement is, at the cut whose bounds $2 and $3 are, every block whose in_document
+// names the document whose ref_key $1 is (documentMembers), by its address.
+var treeMembersStatement = `
+	select member.from_id
+	from (` + documentMembers(`$1`, cutBound(`$2`, `$3`)) + `) member
+	where member.asserted
+	order by member.from_id`
+
+// TreeMembers is every block of the document whose ref_key is refKey at cut: the nodes a render
+// of that document takes (D6 of this branch's plan), by their address.
+func TreeMembers(ctx context.Context, q Queryer, refKey string, cut TreeCut) ([]Target, error) {
+	seq, at := cut.bounds()
+	rows, err := q.Query(ctx, treeMembersStatement, refKey, seq, at)
+	if err != nil {
+		return nil, fmt.Errorf("read the blocks of %s %s: %w", refKey, cut, err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the blocks of %s %s: %w", refKey, cut, err)
+	}
+	members := make([]Target, len(ids))
+	for index, id := range ids {
+		members[index] = Target{Kind: BlockNodeKind, ID: id}
+	}
+	return members, nil
+}
+
+// treeValuesStatement is, at the cut whose bounds $3 and $4 are, every value out of each node $1
+// and $2 name: the newest value tuple of each attribute, kept while it asserts.
 var treeValuesStatement = `
 	select node.position, newest.kind, newest.to_id
 	from unnest($1::text[], $2::text[]) with ordinality as node (kind, id, position)
 	cross join lateral (
 		select distinct on (t.kind) t.kind, t.to_id, t.asserted
 		from graph_tuples t
-		where t.from_kind = node.kind and t.from_id = node.id and t.to_kind = '` + graphstore.KindValue + `' and t.seq <= $3
+		where t.from_kind = node.kind and t.from_id = node.id and t.to_kind = '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
 		order by t.kind, t.at desc, t.seq desc
 	) newest
 	where newest.asserted
 	order by node.position`
 
-// treeRelationsStatement is, at the cut $3, every relation out of each node $1 and $2 name: the
-// newest tuple of each kind and far end, kept while it asserts.
+// treeRelationsStatement is, at the cut whose bounds $3 and $4 are, every relation out of each
+// node $1 and $2 name: the newest tuple of each kind and far end, kept while it asserts.
 var treeRelationsStatement = `
 	select node.position, newest.kind, newest.to_kind, newest.to_id
 	from unnest($1::text[], $2::text[]) with ordinality as node (kind, id, position)
 	cross join lateral (
 		select distinct on (t.kind, t.to_kind, t.to_id) t.kind, t.to_kind, t.to_id, t.asserted
 		from graph_tuples t
-		where t.from_kind = node.kind and t.from_id = node.id and t.to_kind <> '` + graphstore.KindValue + `' and t.seq <= $3
+		where t.from_kind = node.kind and t.from_id = node.id and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
 		order by t.kind, t.to_kind, t.to_id, t.at desc, t.seq desc
 	) newest
 	where newest.asserted
@@ -329,24 +402,25 @@ type TreeFacts struct {
 	Relations []TreeRelation
 }
 
-// TreeFactsOf is what each of nodes states at the cut readSeq, keyed by the node: a node that
-// states nothing has no entry.
-func TreeFactsOf(ctx context.Context, q Queryer, nodes []Target, readSeq int64) (map[Target]TreeFacts, error) {
+// TreeFactsOf is what each of nodes states at cut, keyed by the node: a node that states nothing
+// has no entry.
+func TreeFactsOf(ctx context.Context, q Queryer, nodes []Target, cut TreeCut) (map[Target]TreeFacts, error) {
 	facts := make(map[Target]TreeFacts, len(nodes))
 	if len(nodes) == 0 {
 		return facts, nil
 	}
 	kinds, ids := targetColumns(nodes)
-	rows, err := q.Query(ctx, treeValuesStatement, kinds, ids, readSeq)
+	seq, at := cut.bounds()
+	rows, err := q.Query(ctx, treeValuesStatement, kinds, ids, seq, at)
 	if err != nil {
-		return nil, fmt.Errorf("read the values of %d nodes at seq %d: %w", len(nodes), readSeq, err)
+		return nil, fmt.Errorf("read the values of %d nodes %s: %w", len(nodes), cut, err)
 	}
 	for rows.Next() {
 		var position int
 		var attribute, value string
 		if err := rows.Scan(&position, &attribute, &value); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("read a value at seq %d: %w", readSeq, err)
+			return nil, fmt.Errorf("read a value %s: %w", cut, err)
 		}
 		node := nodes[position-1]
 		held := facts[node]
@@ -358,18 +432,18 @@ func TreeFactsOf(ctx context.Context, q Queryer, nodes []Target, readSeq int64) 
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the values of %d nodes at seq %d: %w", len(nodes), readSeq, err)
+		return nil, fmt.Errorf("read the values of %d nodes %s: %w", len(nodes), cut, err)
 	}
-	rows, err = q.Query(ctx, treeRelationsStatement, kinds, ids, readSeq)
+	rows, err = q.Query(ctx, treeRelationsStatement, kinds, ids, seq, at)
 	if err != nil {
-		return nil, fmt.Errorf("read the relations of %d nodes at seq %d: %w", len(nodes), readSeq, err)
+		return nil, fmt.Errorf("read the relations of %d nodes %s: %w", len(nodes), cut, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var position int
 		var relation TreeRelation
 		if err := rows.Scan(&position, &relation.Kind, &relation.To.Kind, &relation.To.ID); err != nil {
-			return nil, fmt.Errorf("read a relation at seq %d: %w", readSeq, err)
+			return nil, fmt.Errorf("read a relation %s: %w", cut, err)
 		}
 		node := nodes[position-1]
 		held := facts[node]
@@ -377,7 +451,7 @@ func TreeFactsOf(ctx context.Context, q Queryer, nodes []Target, readSeq int64) 
 		facts[node] = held
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the relations of %d nodes at seq %d: %w", len(nodes), readSeq, err)
+		return nil, fmt.Errorf("read the relations of %d nodes %s: %w", len(nodes), cut, err)
 	}
 	return facts, nil
 }
@@ -421,9 +495,9 @@ func TreeNodeRows(ctx context.Context, q Queryer, nodes []Target) (map[Target]Tr
 	return held, nil
 }
 
-// treeMovedToStatement follows, at the cut $2, the moved_to tuples from each block address of $1:
-// from an address, the newest standing moved_to to a block or an ask, read through
-// graph_tuples_as_of_out, and on from a block it reaches, at most $3 steps, as
+// treeMovedToStatement follows, at the cut whose bounds $2 and $3 are, the moved_to tuples from
+// each block address of $1: from an address, the newest standing moved_to to a block or an ask,
+// read through graph_tuples_as_of_out, and on from a block it reaches, at most $4 steps, as
 // block_address_walk follows them now (migration 20261118165901); a step that ends at an ask ends
 // the walk where it stands. It answers each address, the address its walk reaches, and the same
 // block id in the room the reached address's document is edited in (block_room_address), null
@@ -439,38 +513,39 @@ var treeMovedToStatement = `
 				select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted, t.at, t.seq
 				from graph_tuples t
 				where t.from_kind = '` + BlockNodeKind + `' and t.from_id = walk.address and t.kind = '` + graphstore.TupleMovedTo + `'
-				  and t.to_kind <> '` + graphstore.KindValue + `' and t.seq <= $2
+				  and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$2`, `$3`) + `
 				order by t.to_kind, t.to_id, t.at desc, t.seq desc
 			) held
 			where held.asserted and held.to_kind in ('` + BlockNodeKind + `', '` + graphstore.KindAsk + `')
 			order by held.at desc, held.seq desc
 			limit 1
 		) moved
-		where moved.to_kind = '` + BlockNodeKind + `' and walk.hop < $3
+		where moved.to_kind = '` + BlockNodeKind + `' and walk.hop < $4
 	)
 	select distinct on (walk.start) walk.start, walk.address, block_room_address(walk.address)
 	from walk
 	order by walk.start, walk.hop desc`
 
-// TreeMovedTo is, for each of addresses, the block addresses it resolves to at the cut readSeq,
-// in the order a resolve takes them: the same block id in the room of the document the address
-// its moved_to tuples reach is in, where that document has a room, and then that reached address
+// TreeMovedTo is, for each of addresses, the block addresses it resolves to at cut, in the order
+// a resolve takes them: the same block id in the room of the document the address its moved_to
+// tuples reach is in, where that document has a room, and then that reached address
 // (graphstore.MovedTo's order, read as of the cut).
-func TreeMovedTo(ctx context.Context, q Queryer, addresses []string, readSeq int64) (map[string][]string, error) {
+func TreeMovedTo(ctx context.Context, q Queryer, addresses []string, cut TreeCut) (map[string][]string, error) {
 	reached := make(map[string][]string, len(addresses))
 	if len(addresses) == 0 {
 		return reached, nil
 	}
-	rows, err := q.Query(ctx, treeMovedToStatement, addresses, readSeq, graphstore.MovedToHops)
+	seq, at := cut.bounds()
+	rows, err := q.Query(ctx, treeMovedToStatement, addresses, seq, at, graphstore.MovedToHops)
 	if err != nil {
-		return nil, fmt.Errorf("follow the moves of %d addresses at seq %d: %w", len(addresses), readSeq, err)
+		return nil, fmt.Errorf("follow the moves of %d addresses %s: %w", len(addresses), cut, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var start, address string
 		var room *string
 		if err := rows.Scan(&start, &address, &room); err != nil {
-			return nil, fmt.Errorf("follow the moves of an address at seq %d: %w", readSeq, err)
+			return nil, fmt.Errorf("follow the moves of an address %s: %w", cut, err)
 		}
 		if room != nil {
 			reached[start] = append(reached[start], *room)
@@ -478,7 +553,7 @@ func TreeMovedTo(ctx context.Context, q Queryer, addresses []string, readSeq int
 		reached[start] = append(reached[start], address)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("follow the moves of %d addresses at seq %d: %w", len(addresses), readSeq, err)
+		return nil, fmt.Errorf("follow the moves of %d addresses %s: %w", len(addresses), cut, err)
 	}
 	return reached, nil
 }

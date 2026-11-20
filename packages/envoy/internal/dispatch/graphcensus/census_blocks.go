@@ -135,7 +135,9 @@ var blockProjections = []projection{{
 		" block with no text, or with another text than the one its rows hold, is a difference, and an erase that" +
 		" rewrites both alike reads none; a block of a document still owed its index, or of an issue room any" +
 		" artifact of which is, is on neither side, since the reconciliation writes its text, and a census of" +
-		" documents that all owe theirs reads none of this kind",
+		" documents that all owe theirs reads none of this kind; and a block of a document of an issue that has not" +
+		" converted which no pass of this build's rule has stated, as the release before leaves every document it" +
+		" indexed, is on neither side and counted as unstated_rows, since only this build's pass writes its text",
 	// The projection of a text value is the newest document_block_texts row of its block (R15 of
 	// dispatch://INFRA-1253), and text_sha256 only for a block no row of that table records the
 	// text of: the erase rewrites the quote of an erased block in both a holding block's rows and
@@ -147,13 +149,21 @@ var blockProjections = []projection{{
 		           where t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.text is not null
 		           order by t.version desc limit 1), d.text_sha256))
 		from document_blocks d
-		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id") + `
+		  and not ` + rowUnstated("d"),
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(encode(sha256(convert_to(` + currentValue(graphstore.AttributeText) + `, 'UTF8')), 'hex'), ''))
 		from graph_nodes n
-		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n") + `
+		  and not exists (
+			select 1 from artifacts document
+			where document.ref_key = split_part(n.id, '#', 1) and ` + unconvertedUnstated("document") + `)`,
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	unstated: `
+		select count(*) from document_blocks d
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id") + `
+		  and ` + rowUnstated("d"),
 	emptyAgrees: true,
 }, {
 	name:     "block_size",
@@ -394,6 +404,29 @@ func blockDocumentOwed(alias string) string {
 func roomOwed(artifactID string) string {
 	return `(` + documentOwed(artifactID) + ` or exists (
 			select 1 from document_rooms held where held.room = ` + artifactID + ` and ` + documentOwed("held.artifact_id") + `))`
+}
+
+// unconvertedUnstated is true of the artifacts row aliased alias where it is a document of an
+// issue that has not converted - no issue_trees row holds its issue - which no pass of this
+// build's rule has stated: its document_block_versions row holds stated_rule null or below
+// refs.BlockIndexMarkingRule, as the release before leaves every document it indexed. Such a
+// document's blocks hold no text this build's pass states until a pass of its rule reaches them,
+// so the census counts them as a class of their own (projection.unstated) and compares none of
+// them; a document of a converted issue, and one a pass of this rule has stated, it compares
+// whatever its issue.
+func unconvertedUnstated(alias string) string {
+	return `(` + alias + `.issue_key is not null
+		and not exists (select 1 from issue_trees tree where tree.issue_key = ` + alias + `.issue_key)
+		and not exists (
+			select 1 from document_block_versions stated
+			where stated.artifact_id = ` + alias + `.id and stated.stated_rule >= ` + strconv.Itoa(refs.BlockIndexMarkingRule) + `))`
+}
+
+// rowUnstated is unconvertedUnstated of the document of the document_blocks row aliased alias, the
+// artifact its row is keyed by: a row of an issue room is keyed by the room's tree artifact, whose
+// issue has converted.
+func rowUnstated(alias string) string {
+	return `exists (select 1 from artifacts document where document.id = ` + alias + `.artifact_id and ` + unconvertedUnstated("document") + `)`
 }
 
 // roomNodeOwed is the owed predicate (projection.owed) of a block node of an issue room, one
