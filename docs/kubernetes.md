@@ -2262,8 +2262,8 @@ After the roll, the intake reads a project's daemon whole again in these cases, 
   A good read deletes the parts, since its snapshot holds them, and a read that fails keeps them.
 
 - **A message the database refuses for good** (reason `refused`): a Postgres error of SQLSTATE class 22 or 23, which no retry can write.
-  The intake logs `legion intake: the database refuses a state message for good, so it is finished and the project is read whole` at WARN with the project, the sequences and the SQLSTATE.
-  It finishes the message and reads the project whole.
+  The intake acknowledges the message unapplied, logs `legion intake: the database refuses a state message for good, so it is finished and the project is read whole` at WARN with the project, the sequences and the SQLSTATE, and reads the project whole.
+  Where that read is not due and the message holds it (below), the message goes back to the stream instead, and that delivery logs the hand-back alone; the message's next delivery is refused again.
   It tries every other database error again in place.
 
 - **A message of another store** (reason `store`): the message's `stateId` is not the `daemon.stateId` of the last good read.
@@ -2272,10 +2272,16 @@ After the roll, the intake reads a project's daemon whole again in these cases, 
 A project's whole reads start at least a minute apart, whatever their reason, and a good starting read holds back no read after it.
 A message that calls for a read inside that minute makes none: the intake records the read owed on the project's cursor, with the message's reason.
 The first message that owes the read goes back to the stream unacknowledged until the minute has passed, and its redelivery makes the read.
-For each such hand-back the intake logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO, with the project, the message's sequences and the `delay`.
-The intake acknowledges every later message that joins the owed read, and a read that fails again sends the first message back for another minute.
+For each such hand-back the intake logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO, with the project, the message's sequences, the read the message calls for as `reason`, its `delivery` count and the `delay`, and logs no other line for that delivery.
+The intake acknowledges every later message that joins the owed read.
+A read that fails sends the first message back for another minute, at most 10 times in all.
+Its next delivery is then acknowledged, whatever its read comes to, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN.
+A failed read that no message holds waits for the project's next message, boot, settings change or take-over, which makes it once the minute is over: a failed starting read is one, since no message makes it, and so is a read whose message went back 10 times.
+No timer makes a read.
+While a message holds the read, the durable's ack floor stays below it, so a take-over of the durable replays every message after it: at most about 11 minutes of messages where the daemon answers each read within seconds.
 The read's log line names the first reason as `reason` and every reason it was owed for as `reasons`, for example `reasons=gap,boot`.
-So a burst of messages that each call for a read, forged or from a bug, makes one read a minute and holds no other project's messages for longer than that one read, each project that owes a read holds one message of the durable's window, and a project that goes quiet is at most a minute behind.
+So a burst of messages that each call for a read, forged or from a bug, makes one read a minute and holds no other project's messages for longer than that one read, and each project that owes a read holds one message of the durable's window.
+Where a message holds the read, a project that goes quiet is at most a minute behind.
 While a read is owed, the intake applies each message that follows the cursor, and drops a gap, a boot that does not follow, a part that does not continue the held parts and a message of another store, since the read holds their events.
 While no good read has given a project's cursor a store, for example after a write of the setting whose first read failed, the intake applies no message of the project at all, so no message of the daemon the setting named before is applied.
 

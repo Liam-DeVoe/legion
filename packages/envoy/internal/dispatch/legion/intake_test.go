@@ -53,15 +53,17 @@ type intakeRig struct {
 }
 
 // intakeClock is the intake's clock (Intake.now): the wall clock, moved forward by what the test
-// has advanced it.
+// has advanced it, and by jump more at each reading once the test sets a jump (jumps).
 type intakeClock struct {
 	mu     sync.Mutex
 	offset time.Duration
+	jump   time.Duration
 }
 
 func (c *intakeClock) now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.offset += c.jump
 	return time.Now().Add(c.offset)
 }
 
@@ -69,6 +71,16 @@ func (c *intakeClock) advance(by time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.offset += by
+}
+
+// jumps has each reading of the clock from here on move it forward by jump first. A whole read's
+// time is one reading, and the read rule's decision after the read is the next (readFor), so a
+// jump of ReadRetryAfter less holdAtLeast sends a message that holds a read that failed back to the
+// stream for holdAtLeast rather than a minute, and the read is due again at its redelivery.
+func (c *intakeClock) jumps(jump time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.jump = jump
 }
 
 // newIntakeRig opens the test's database and NATS account, and sends the default logger to a
@@ -183,6 +195,26 @@ func (r *intakeRig) settledHolding(held int) {
 		return fmt.Sprintf("the intake has not answered through stream sequence %d with %d messages held (%d logged): %+v, %v",
 			last, held, len(r.logRecords(heldLine)), info, err)
 	})
+}
+
+// lastStreamSeq is the stream sequence of the message published last.
+func (r *intakeRig) lastStreamSeq() uint64 {
+	r.t.Helper()
+	stream, err := r.publisher.JS().StreamInfo(bus.Stream)
+	if err != nil {
+		r.t.Fatalf("read the stream: %v", err)
+	}
+	return stream.State.LastSeq
+}
+
+// consumerInfo is the state of the intake's durable.
+func (r *intakeRig) consumerInfo() *natsgo.ConsumerInfo {
+	r.t.Helper()
+	info, err := r.publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchLegionStateDurable)
+	if err != nil {
+		r.t.Fatalf("read the durable: %v", err)
+	}
+	return info
 }
 
 // awaitWholeReads waits for want whole reads of any project to be recorded.
@@ -421,19 +453,20 @@ type cursorRow struct {
 	run         *string
 	stateID     *string
 	readReasons []string
+	readHolder  *int64
 }
 
 func (r cursorRow) String() string {
-	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v run=%s stateId=%s}",
-		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.run), orNone(r.stateID))
+	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v readHolder=%s run=%s stateId=%s}",
+		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), orNone(r.run), orNone(r.stateID))
 }
 
 func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
 	t.Helper()
 	var row cursorRow
 	if err := database.Pool.QueryRow(context.Background(),
-		`select last_seq, read_owed, run, state_id, read_reasons from legion_event_cursors where project = $1`, project).Scan(
-		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons); err != nil {
+		`select last_seq, read_owed, run, state_id, read_reasons, read_holder from legion_event_cursors where project = $1`, project).Scan(
+		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder); err != nil {
 		t.Fatalf("read the cursor of %s: %v", project, err)
 	}
 	return row
@@ -1057,7 +1090,8 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 // then holds no store, so the messages that arrive meanwhile are not applied and the cursor stays
 // where the failed read left it; neither the next message nor a settings change reads again inside
 // ReadRetryAfter, and the first message after it does. The first message inside the minute holds
-// the owed read, so it goes back to the stream until the read is due, and the second is finished.
+// the owed read, so it goes back to the stream until the read is due and logs only that, and the
+// second is acknowledged and its drop logged.
 func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 	issue := planning("INFRA")
 	for _, tc := range []struct {
@@ -1128,8 +1162,8 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 
 			// Inside ReadRetryAfter, the next message and a settings change read nothing. No good
 			// read has said which store the daemon counts in, so neither message is applied: the
-			// first goes back to the stream until the read is due, the second is finished, and the
-			// drop is logged once.
+			// first goes back to the stream until the read is due and logs that alone, and the
+			// second is acknowledged, its drop logged once.
 			before := currentValues(t, rig.database, "INFRA")
 			rig.clock.advance(ReadRetryAfter / 2)
 			rig.publish("INFRA", change(5, "INFRA-1", moved("phase", "implementing")))
@@ -1146,8 +1180,11 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 			if current := cursorOf(t, rig.database, "INFRA"); !current.readOwed || current.lastSeq != nil || current.stateID != nil {
 				t.Fatalf("the cursor is %+v, want no sequence, no store and the read still owed", current)
 			}
-			if drops := rig.awaitLogRecords(noStoreLine, 1); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["seq"] != float64(5) {
-				t.Fatalf("the drops logged = %v, want one naming INFRA and the first message's sequence", drops)
+			if drops := rig.awaitLogRecords(noStoreLine, 1); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["seq"] != float64(6) {
+				t.Fatalf("the drops logged = %v, want one naming INFRA and the second message's sequence: the first went back to the stream", drops)
+			}
+			if held := rig.logRecords(heldLine); len(held) != 1 || held[0]["seq"] != float64(5) || held[0]["delivery"] != float64(1) {
+				t.Fatalf("the messages sent back = %v, want the first message once, at its first delivery", held)
 			}
 
 			// Past ReadRetryAfter, the next message reads the daemon again, and this time the
@@ -2485,5 +2522,305 @@ func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	if info.Config.MaxDeliver != -1 || info.Config.AckWait != stateAckWait || left >= info.Config.AckWait {
 		t.Errorf("the durable's MaxDeliver is %d and its AckWait %s, want -1, no limit, and %s, past the %s delay",
 			info.Config.MaxDeliver, info.Config.AckWait, stateAckWait, left)
+	}
+}
+
+// wholeReadsOf is project's legion_reads rows of kind `read`, oldest first.
+func wholeReadsOf(t *testing.T, database *store.Store, project string) []readRecord {
+	t.Helper()
+	var reads []readRecord
+	for _, row := range readRecords(t, database, project) {
+		if row.kind == readKindRead {
+			reads = append(reads, row)
+		}
+	}
+	return reads
+}
+
+// heldDeliveries is the delivery count each heldLine names, in order, and fails unless each names
+// the message at stream sequence holder.
+func (r *intakeRig) heldDeliveries(holder uint64) []any {
+	r.t.Helper()
+	var deliveries []any
+	for _, line := range r.logRecords(heldLine) {
+		if line["streamSeq"] != float64(holder) {
+			r.t.Fatalf("a hand-back names %v, want the message at stream sequence %d alone", line, holder)
+		}
+		deliveries = append(deliveries, line["delivery"])
+	}
+	return deliveries
+}
+
+// TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks: R3 bounds how long one message
+// holds its project's owed read while the project's reads fail, and so how long it holds the
+// durable's ack floor below it. INFRA's daemon refuses every read after its good starting read. A
+// gap makes a read, which fails, and goes back to the stream holding the read, owed for retry; each
+// redelivery makes the read again, and each read fails. The message goes back stateMaxHolds times,
+// 10, once after each of its first 10 failed reads, and its delivery after them, whose read is the
+// 11th to fail, is acknowledged and logged at WARN: nothing of INFRA waits for an ack, the ack floor
+// passes the message, the cursor names no holder, and the read stays owed for retry. INFRA's next
+// message makes that read, and the daemon answers it. The intake's clock jumps ReadRetryAfter less
+// holdAtLeast at each reading (intakeClock.jumps), so each hand-back is holdAtLeast long rather
+// than a minute, and each redelivery finds the read due.
+func TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks(t *testing.T) {
+	const failures = stateMaxHolds + 1
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	daemon.refuses(http.StatusServiceUnavailable)
+	rig.clock.jumps(ReadRetryAfter - holdAtLeast)
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
+	holder := rig.lastStreamSeq()
+	var info *natsgo.ConsumerInfo
+	rig.waitFor(time.Minute, func() bool {
+		info = rig.consumerInfo()
+		return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
+	}, func() string {
+		return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d reads and %d hand-backs: %+v",
+			daemon.served()-1, len(rig.logRecords(heldLine)), info)
+	})
+
+	if served := daemon.served(); served != 1+failures {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read and %d that failed", served, failures)
+	}
+	var reasons []string
+	for _, read := range wholeReadsOf(t, rig.database, "INFRA")[1:] {
+		if read.ok || read.reason == nil {
+			t.Fatalf("INFRA's whole read %s after the starting read, want a failed one", read)
+		}
+		reasons = append(reasons, *read.reason)
+	}
+	want := []string{ReadReasonGap}
+	for range failures - 1 {
+		want = append(want, ReadReasonRetry)
+	}
+	if !slices.Equal(reasons, want) {
+		t.Errorf("INFRA's failed reads were for %v, want %v: the gap's, then the retries its message made", reasons, want)
+	}
+	var deliveries []any
+	for delivery := range stateMaxHolds {
+		deliveries = append(deliveries, float64(delivery+1))
+	}
+	if got := rig.heldDeliveries(holder); !slices.Equal(got, deliveries) {
+		t.Errorf("the message went back at its deliveries %v, want %v: once after each failed read but the last", got, deliveries)
+	}
+	released := rig.awaitLogRecords(releasedLine, 1)
+	if len(released) != 1 || released[0]["level"] != "WARN" || released[0]["project"] != "INFRA" ||
+		released[0]["streamSeq"] != float64(holder) || released[0]["deliveries"] != float64(failures) {
+		t.Errorf("the release lines = %v, want one WARN naming INFRA, the message and its %d deliveries", released, failures)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.readHolder != nil ||
+		c.lastSeq == nil || *c.lastSeq != 10 {
+		t.Errorf("INFRA's cursor is %s, want it at 10 with the read owed for retry and no holder", c)
+	}
+
+	// INFRA's next message makes the owed read, the minute after the last failed one being over.
+	daemon.serves(daemonState("INFRA", 13, strings.Replace(planning("INFRA"), `"planning"`, `"testing"`, 1)))
+	rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "testing")))
+	rig.settled()
+	if served := daemon.served(); served != 2+failures {
+		t.Errorf("INFRA's daemon served %d reads, want one more for INFRA's next message", served)
+	}
+	reads := wholeReadsOf(t, rig.database, "INFRA")
+	requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, true)
+	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.readHolder != nil || c.lastSeq == nil || *c.lastSeq != 13 {
+		t.Errorf("INFRA's cursor is %s, want it at the read's 13 with nothing owed and no holder", c)
+	}
+	if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"testing"` {
+		t.Errorf("INFRA-1's phase is %s, want the read's testing", phase)
+	}
+	if got := len(rig.logRecords(heldLine)); got != stateMaxHolds {
+		t.Errorf("%d hand-backs logged, want the held message's %d and none for the next message", got, stateMaxHolds)
+	}
+}
+
+// TestAHeldReadThatFailsTwiceIsMadeByItsThirdRedelivery: a message that holds its project's owed
+// read makes it at each redelivery, and goes back again while the read fails. INFRA's gap read is
+// good, and a second gap reaches Dispatch with left of the minute after that read to go, so it goes
+// back to the stream until the read is due. INFRA's daemon refuses the reads its first two
+// redeliveries make, and it goes back after each; its third redelivery makes the read, the daemon
+// answers it, and the message is acknowledged with the read's state applied. The clock jumps from
+// the first hand-back on, as in TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks.
+func TestAHeldReadThatFailsTwiceIsMadeByItsThirdRedelivery(t *testing.T) {
+	const left = 3 * time.Second
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	// A gap past 10 whose read is good: INFRA's next read waits ReadRetryAfter after it.
+	daemon.serves(daemonState("INFRA", 12, strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+
+	// left before the minute ends, a second gap, whose read is owed: it holds the read.
+	daemon.serves(daemonState("INFRA", 14, strings.Replace(planning("INFRA"), `"planning"`, `"testing"`, 1)))
+	daemon.refusesFor(2, http.StatusServiceUnavailable)
+	rig.clock.advance(ReadRetryAfter - left)
+	rig.publish("INFRA", change(14, "INFRA-1", moved("phase", "testing")))
+	holder := rig.lastStreamSeq()
+	rig.settledHolding(1)
+	rig.clock.jumps(ReadRetryAfter - holdAtLeast)
+	rig.settled()
+
+	if served := daemon.served(); served != 5 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read, the first gap's and three the second gap's redeliveries made", served)
+	}
+	reads := wholeReadsOf(t, rig.database, "INFRA")
+	if len(reads) != 5 {
+		t.Fatalf("INFRA's whole reads are %v, want five", reads)
+	}
+	requireWholeRead(t, reads[2], ReadReasonGap, false)
+	requireWholeRead(t, reads[3], ReadReasonRetry, false)
+	requireWholeRead(t, reads[4], ReadReasonRetry, true)
+	if got := rig.heldDeliveries(holder); !slices.Equal(got, []any{float64(1), float64(2), float64(3)}) {
+		t.Errorf("the message went back at its deliveries %v, want 1, 2 and 3: its fourth delivery, the third redelivery, made the good read", got)
+	}
+	if released := rig.logRecords(releasedLine); len(released) != 0 {
+		t.Errorf("release lines %v, want none: the message went back three times", released)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.readHolder != nil || c.lastSeq == nil || *c.lastSeq != 14 {
+		t.Errorf("INFRA's cursor is %s, want it at the good read's 14 with nothing owed and no holder", c)
+	}
+	if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"testing"` {
+		t.Errorf("INFRA-1's phase is %s, want the good read's testing", phase)
+	}
+}
+
+// TestATakeOverDuringAHoldReplaysOnlyTheMessagesSinceTheHolder: while a message holds its
+// project's owed read, the durable's ack floor stays just below it, and a take-over creates the
+// durable again at that floor (delivery's takeOverConfig). So the next intake is delivered the
+// holder again and the messages after it, LINUX's two that the first intake had applied and
+// acknowledged, and none of the messages before it. Those it replays write nothing and make no
+// read: each is at or below its project's cursor. stateMaxHolds bounds the replay, since it bounds
+// how long one message holds the floor.
+func TestATakeOverDuringAHoldReplaysOnlyTheMessagesSinceTheHolder(t *testing.T) {
+	rig := newIntakeRig(t)
+	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
+	seedLegionProject(t, rig.database, "INFRA", infra.URL)
+	seedLegionProject(t, rig.database, "LINUX", linux.URL)
+	rig.start()
+	rig.awaitWholeReads(2)
+
+	// Before the holder: LINUX's 21, and a gap of INFRA's past 10 whose read is good, after which
+	// INFRA's next read waits ReadRetryAfter.
+	rig.publish("LINUX", change(21, "LINUX-1", moved("phase", "implementing")))
+	infra.serves(daemonState("INFRA", 12, strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+
+	// The holder, a second gap inside the minute, and after it LINUX's 22 and 23, which are applied
+	// and acknowledged while it waits.
+	rig.publish("INFRA", change(14, "INFRA-1", moved("phase", "testing")))
+	holder := rig.lastStreamSeq()
+	rig.publish("LINUX", change(22, "LINUX-1", moved("phase", "testing")))
+	rig.publish("LINUX", change(23, "LINUX-1", moved("phase", "reviewing")))
+	rig.settledHolding(1)
+	requireLastSeq(t, rig.database, "LINUX", 23)
+	last := rig.lastStreamSeq()
+	if floor := rig.consumerInfo().AckFloor.Stream; floor != holder-1 {
+		t.Fatalf("the durable's ack floor is %d while the message at %d holds INFRA's read, want %d", floor, holder, holder-1)
+	}
+
+	rig.stop()
+	rig.start()
+	var info *natsgo.ConsumerInfo
+	rig.waitFor(20*time.Second, func() bool {
+		info = rig.consumerInfo()
+		return info.Delivered.Stream >= last && info.NumPending == 0 && info.NumAckPending == 1 && len(rig.logRecords(heldLine)) >= 2
+	}, func() string {
+		return fmt.Sprintf("the next intake has not answered through stream sequence %d with the holder sent back again: %+v", last, info)
+	})
+	if info.Config.OptStartSeq != holder || info.Delivered.Consumer != last-holder+1 {
+		t.Errorf("the take-over's durable starts at %d and delivered %d messages, want the holder's %d and the %d from it on",
+			info.Config.OptStartSeq, info.Delivered.Consumer, holder, last-holder+1)
+	}
+	if got := rig.heldDeliveries(holder); !slices.Equal(got, []any{float64(1), float64(1)}) {
+		t.Errorf("the holder went back at its deliveries %v, want its first to each intake's durable", got)
+	}
+	if got := history(t, rig.database, "LINUX", "LINUX-1", FieldPhase); !slices.Equal(got,
+		[]string{`"planning"`, `"implementing"`, `"testing"`, `"reviewing"`}) {
+		t.Errorf("LINUX-1's phase history is %v, want the read's and each message's once", got)
+	}
+	if served := linux.served(); served != 1 {
+		t.Errorf("LINUX's daemon served %d reads, want the starting one alone", served)
+	}
+	if served := infra.served(); served != 2 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read and the first gap's", served)
+	}
+}
+
+// TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone: a message that holds its project's owed
+// read is not applied, and the delivery that sends it back to the stream logs that hand-back alone
+// (heldLine, naming the read the message calls for as its reason): not the line of a message
+// acknowledged unapplied that it would log otherwise, a gap's, a message of another store's or
+// one of a cursor with no store, and not the refusal of a message the database refuses for good.
+func TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// failedStart is a starting read the daemon refuses, after which the cursor holds no store;
+		// otherwise a good read of a gap past 10 sets the cursor at 12 first.
+		failedStart bool
+		publish     func(rig *intakeRig)
+		reason      string
+	}{
+		{
+			name:    "a gap",
+			publish: func(rig *intakeRig) { rig.publish("INFRA", change(14, "INFRA-1", moved("phase", "testing"))) },
+			reason:  ReadReasonGap,
+		},
+		{
+			name: "a message of another store",
+			publish: func(rig *intakeRig) {
+				rig.publishIn("INFRA", rig.run, otherStateID, time.Now().UTC().Truncate(time.Microsecond), false,
+					change(13, "INFRA-1", moved("phase", "testing")))
+			},
+			reason: ReadReasonStore,
+		},
+		{
+			name: "a message the database refuses for good",
+			publish: func(rig *intakeRig) {
+				rig.publish("INFRA", change(13, "INFRA-1", moved("waitingOn", json.RawMessage(`{"kind":"ask","detail":"\ud800"}`))))
+			},
+			reason: ReadReasonRefused,
+		},
+		{
+			name:        "a message while the cursor holds no store",
+			failedStart: true,
+			publish:     func(rig *intakeRig) { rig.publish("INFRA", change(5, "INFRA-1", moved("phase", "testing"))) },
+			reason:      "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIntakeRig(t)
+			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+			if tc.failedStart {
+				daemon.refuses(http.StatusServiceUnavailable)
+			}
+			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+			rig.start()
+			rig.awaitWholeReads(1)
+			if !tc.failedStart {
+				daemon.serves(daemonState("INFRA", 12, planning("INFRA")))
+				rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "planning")))
+				rig.settled()
+			}
+			tc.publish(rig)
+			rig.settledHolding(1)
+			held := rig.logRecords(heldLine)
+			if len(held) != 1 || held[0]["project"] != "INFRA" || held[0]["reason"] != tc.reason || held[0]["delivery"] != float64(1) {
+				t.Fatalf("the hand-backs logged = %v, want one naming INFRA, the reason %q and the first delivery", held, tc.reason)
+			}
+			for _, line := range []string{unfollowedLine, noStoreLine, otherStoreLine, refusedLine} {
+				if records := rig.logRecords(line); len(records) != 0 {
+					t.Errorf("the held message also logged %v", records)
+				}
+			}
+		})
 	}
 }

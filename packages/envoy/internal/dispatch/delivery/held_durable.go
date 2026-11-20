@@ -331,17 +331,10 @@ func (m HeldMessage) HandBack() {
 
 // HandBackAfter hands the message back for redelivery in after: the handler's own answer that the
 // message is to come round again later, not now (legion.Intake's owed read). It is published only
-// while this delivery may still answer the durable (intakeDelivery.mayAnswer), and withheld
-// otherwise, the message left with the durable for the next holder's take-over, which hands it over
-// at once. A hand-back the server does not take is logged, and the durable's ack wait then
-// redelivers the message, later than asked but not never (redeliverAfter).
+// while this delivery may still answer the durable, and withheld otherwise, the message left with
+// the durable for the next holder's take-over (intakeDelivery.handBackAfter).
 func (m HeldMessage) HandBackAfter(after time.Duration) {
-	if !m.delivery.mayAnswer() {
-		slog.Warn("dispatch delivery: this delivery may no longer answer the durable, so the message is left with the durable for the next holder's take-over",
-			"subject", m.Msg.Subject, "delay", after)
-		return
-	}
-	redeliverAfter(m.Msg, after)
+	m.delivery.handBackAfter(m.Msg, after)
 }
 
 // intakeHoldLost is the line of an intake whose durable's hold is no longer its own, so it stops
@@ -555,9 +548,15 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 // deployed config when a newer build stamped it with a higher generation, this build's (wanted)
 // otherwise, on a fresh deliver subject, starting at the stream sequence after the durable's ack
 // floor. Starting there, the recreated durable redelivers at once every message the durable had
-// not acknowledged -- what a dead holder had been handed, what a stopped one handed back --
-// replays nothing it had, and skips nothing (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse,
-// and TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt for a create retried).
+// not acknowledged -- what a dead holder had been handed, what a stopped one handed back, what a
+// handler handed back with a delay (intakeDelivery.handBackAfter) -- and skips nothing
+// (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse, and
+// TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt for a create retried).
+// The ack floor stays below the oldest message not acknowledged, so the recreated durable also
+// replays every message after that one that the durable had acknowledged. A message handed back
+// with a delay holds the floor there for a bounded time: an envelope whose head row was not stored
+// for headWriteMaxDeliveries deliveries, and a Legion state message that holds its project's owed
+// read for about 11 minutes (legion's stateMaxHolds).
 // The take-over records that start in its hold's token before it deletes the durable, and
 // finishTakeOver says what a create that fails after the delete leaves behind.
 // The deployed metadata keeps its own keys and drops the ones nats-server sets itself (the

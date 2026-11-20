@@ -318,7 +318,7 @@ func consumerGenerationMetadata() map[string]string {
 // again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
-// hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
+// hold still covers it (intakeDelivery.handBackAfter): a hand-back a process makes after its hold
 // has lapsed reaches the durable a take-over recreated under the same name, where it would move
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's
@@ -349,12 +349,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			return
 		}
 		if headNotStored {
-			if !d.mayAnswer() {
-				slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
-					"subject", msg.Subject)
-				return
-			}
-			redeliverAfter(msg, headWriteRedeliverAfter)
+			d.handBackAfter(msg, headWriteRedeliverAfter)
 			return
 		}
 		acknowledge(msg)

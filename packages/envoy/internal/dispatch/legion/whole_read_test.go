@@ -27,17 +27,22 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats
 
 // fakeDaemon is a Legion daemon stand-in whose state document and status the test moves between
 // reads, counting the reads it served. delay is how long each answer waits, as a daemon reading a
-// state of several MB does (slows), and held a gate each answer waits on until the test releases it
-// (holds).
+// state of several MB does (slows), held a gate each answer waits on until the test releases it
+// (holds), and refusals how many of the next reads it refuses with refusalStatus (refusesFor).
 type fakeDaemon struct {
 	*httptest.Server
-	mu     sync.Mutex
-	body   string
-	status int
-	reads  int
-	delay  time.Duration
-	held   chan struct{}
+	mu            sync.Mutex
+	body          string
+	status        int
+	reads         int
+	delay         time.Duration
+	held          chan struct{}
+	refusals      int
+	refusalStatus int
 }
+
+// refusalBody is the body of every read a fakeDaemon refuses.
+const refusalBody = `{"error":"the daemon is restarting"}`
 
 func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 	t.Helper()
@@ -49,6 +54,10 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 		}
 		daemon.mu.Lock()
 		body, status, delay, held := daemon.body, daemon.status, daemon.delay, daemon.held
+		if daemon.refusals > 0 {
+			daemon.refusals--
+			body, status = refusalBody, daemon.refusalStatus
+		}
 		daemon.reads++
 		daemon.mu.Unlock()
 		if held != nil {
@@ -80,7 +89,15 @@ func (d *fakeDaemon) serves(body string) {
 func (d *fakeDaemon) refuses(status int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.body, d.status = `{"error":"the daemon is restarting"}`, status
+	d.body, d.status = refusalBody, status
+}
+
+// refusesFor has the next reads the daemon serves answer status with refusalBody, and the reads
+// after them answer what it serves otherwise.
+func (d *fakeDaemon) refusesFor(reads, status int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.refusals, d.refusalStatus = reads, status
 }
 
 func (d *fakeDaemon) served() int {

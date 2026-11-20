@@ -289,6 +289,22 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 	redeliverAfter(msg, 0)
 }
 
+// handBackAfter publishes msg's hand-back to the durable with a delay of after, the delivery's own
+// answer that the message is to come round again later and not now, while this delivery may still
+// answer the durable (mayAnswer), and withholds it otherwise: the message is then left with the
+// durable, and the next holder's take-over hands it over at once. A hand-back the server does not
+// take is logged, and the durable's ack wait then redelivers the message, later than asked but not
+// never (redeliverAfter). Its two callers are HeldMessage.HandBackAfter, legion.Intake's owed read,
+// and Intake.deliver's ErrHeadNotStored case.
+func (d *intakeDelivery) handBackAfter(msg *natsgo.Msg, after time.Duration) {
+	if !d.mayAnswer() {
+		slog.Warn("dispatch delivery: this delivery may no longer answer the durable, so the message is left with the durable for the next holder's take-over",
+			"subject", msg.Subject, "delay", after)
+		return
+	}
+	redeliverAfter(msg, after)
+}
+
 // intakeDrainWait bounds how long stop waits for the drain to end once every handler has returned.
 // By then all that is left is nats.go's: the callback handing back what the client had buffered,
 // which never blocks, and the drain's flush to the server. So the bound is the one nats.go itself
@@ -326,8 +342,9 @@ func (d *intakeDelivery) holdCovers() bool {
 }
 
 // mayAnswer reports whether this delivery may answer the durable with a hand-back of its own,
-// which is the one answer no stop of this intake makes for it (Intake.deliver's ErrHeadNotStored
-// case). Two things have to hold, and both are the hold's:
+// which is the one answer no stop of this intake makes for it (handBackAfter, for
+// HeldMessage.HandBackAfter and Intake.deliver's ErrHeadNotStored case). Two things have to hold,
+// and both are the hold's:
 //
 //   - the hold has not passed its loss deadline (holdCovers), so no other process can hold the
 //     durable yet;
