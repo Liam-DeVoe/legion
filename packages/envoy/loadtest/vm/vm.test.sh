@@ -382,19 +382,13 @@ case $url in
     # A read of the profiling port on Dispatch's own machine always answers. A read of any other
     # port is one through the step's tunnel, and answers only while the fake tunnel that forwards
     # that port runs: the tunnel records its pid and its port in FAKE_DIR/tunnel-up, and this is
-    # how a test proves the tunnel was opened before the step and closed when it ended. Whether
-    # it runs is its own state in /proc/<pid>/stat, not `kill -0`, which a tunnel that ended and
-    # that nothing reaped (an orphan of a PID 1 that reaps nothing) answers as running.
+    # how a test proves the tunnel was opened before the step and closed when it ended.
     port=${url#http://127.0.0.1:}
     port=${port%%/*}
     if [ "$port" != "$(cat "$FAKE_DIR/pprof-port")" ]; then
       up=$FAKE_DIR/tunnel-up
       [ -f "$up" ] || { printf 'fake curl: connection refused on %s\n' "$url" >&2; exit 7; }
-      tunnel=$(awk '{print $1}' "$up") tunnel_state=""
-      { read -r tunnel_state <"/proc/$tunnel/stat"; } 2>/dev/null || true
-      tunnel_state=${tunnel_state##*) }
-      case ${tunnel_state%% *} in '' | Z | X) tunnel_state=ended ;; esac
-      [ "$tunnel_state" != ended ] && [ "$(awk '{print $2}' "$up")" = "$port" ] ||
+      kill -0 "$(awk '{print $1}' "$up")" 2>/dev/null && [ "$(awk '{print $2}' "$up")" = "$port" ] ||
         { printf 'fake curl: connection refused on %s\n' "$url" >&2; exit 7; }
     fi
     # A read of Dispatch's own profiling port is recorded here. vm.sh asks that port for

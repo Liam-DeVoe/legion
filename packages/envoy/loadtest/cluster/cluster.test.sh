@@ -3680,7 +3680,7 @@ stop_watchdog_end() {
   pg_disk_watch pgterm "$oneread_dir" step-pgterm "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgterm
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/lock-get-fails" ] || ! proc_running "$watcher"; do sleep 0.05; done
+  until [ -f "$fake/lock-get-fails" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
   [ -f "$fake/lock-get-fails" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=300
@@ -3689,7 +3689,7 @@ stop_watchdog_end() {
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
     fail "pg_disk_watch_stop did not return within 45 s: the TERM that landed inside the watcher's read of the lock was lost, and every path out of a step waits on that watcher"
-  ! proc_running "$watcher" ||
+  ! kill -0 "$watcher" 2>/dev/null ||
     fail "the disk watcher still runs after pg_disk_watch_stop returned: the TERM that landed inside its read of the lock was lost"
   ! grep -qF 'so it was killed' "$oneread_stop" ||
     fail "pg_disk_watch_stop had to kill a watcher that was sent a TERM it could take: $(cat "$oneread_stop")"
@@ -3702,7 +3702,7 @@ stop_watchdog_end() {
   pg_disk_watch pgbound "$oneread_dir" step-pgbound "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgbound
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/lock-get-fails" ] || ! proc_running "$watcher"; do sleep 0.05; done
+  until [ -f "$fake/lock-get-fails" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
   [ -f "$fake/lock-get-fails" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=2
@@ -3717,7 +3717,7 @@ stop_watchdog_end() {
     fail "pg_disk_watch_stop took $bound_took s to return, past its $PG_DISK_STOP_SECONDS s bound and a margin: a step hangs on a watcher that will not leave"
   grep -qF "step pgbound: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed" "$oneread_stop" ||
     fail "pg_disk_watch_stop did not name the step whose watcher it killed at its bound: $(cat "$oneread_stop")"
-  ! proc_running "$watcher" ||
+  ! kill -0 "$watcher" 2>/dev/null ||
     fail "the disk watcher still runs after pg_disk_watch_stop reached its bound: $(cat "$oneread_out")"
   [ ! -f "$oneread_dir/step-failed.json" ] ||
     fail "the watcher recorded a failure although no read of the lock answered: $(cat "$oneread_dir/step-failed.json")"
