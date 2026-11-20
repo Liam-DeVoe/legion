@@ -869,6 +869,13 @@ export interface InboundUnavailable {
   /** A registration was accepted: ends the outage, telling the session so through the host's
    *  `restored` when it was told of the outage, and the next outage tells the session again. */
   accepted(): void;
+  /**
+   * The session's own record says it was told it receives nothing and was not told since that it
+   * receives again: an earlier process of the session told the outage and ended before any
+   * registration of its was accepted. The outage is this process's from here, so the next
+   * accepted registration tells the session it receives again, and a refusal tells nothing new.
+   */
+  resume(): void;
 }
 
 /**
@@ -896,6 +903,9 @@ export function inboundUnavailable(
       if (!told) return;
       told = false;
       restored();
+    },
+    resume() {
+      told = true;
     },
   };
 }

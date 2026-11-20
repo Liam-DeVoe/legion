@@ -15,7 +15,8 @@ body: |-
   `registerWithRelay`
   takes `relayMissing`, so the refusal of a session with no relay subject (`NoRelaySubjectError`)
   and its outage notice say why. `inboundUnavailable` takes a second callback, told once when a
-  registration is accepted after an outage (`inboundRestoredNoticeText`).
+  registration is accepted after an outage (`inboundRestoredNoticeText`), and its `resume` takes
+  up an outage an earlier process of the session told, so this process tells its end.
 time: 2026-11-17T21:43:12Z
 custom:
     Issue: pr4353

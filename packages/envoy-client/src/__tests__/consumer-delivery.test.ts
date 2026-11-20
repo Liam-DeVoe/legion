@@ -1290,4 +1290,32 @@ describe("one registration", () => {
     expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
     expect(inboundRestoredNoticeText()).toContain("Envoy inbound restored");
   });
+
+  test("an outage an earlier process told is ended by this process's first accepted registration", async () => {
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    let refuse = true;
+    const register = () =>
+      registerWithRelay({
+        relay: fakeRelay(),
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage,
+        send: () =>
+          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
+        answered: () => undefined,
+      }).catch(() => undefined);
+
+    // The session's record says it was told it receives nothing: a refusal tells it nothing new,
+    // and the first accepted registration tells it the outage ended.
+    outage.resume();
+    await register();
+    refuse = false;
+    await register();
+    await register();
+    expect(told).toEqual(["restored"]);
+  });
 });

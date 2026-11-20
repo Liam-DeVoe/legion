@@ -20592,6 +20592,107 @@ console.log(JSON.stringify(args));
     }
   });
 
+  // The outage is told by one process, which ends before any registration of its is accepted: a
+  // Legion claim boot ends it (`stopAfterRegistration`). The daemon resumes the session in a new
+  // process, whose first registration is accepted. On 2026-11-20 an implementer session read the
+  // notice an earlier process of its session had written as its state for hours, and reported
+  // that the listener gives it no relay subject, while every registration the listener took from
+  // it was answered with one. Its twin: an earlier process that told the outage's end leaves the
+  // process resuming the session nothing to tell.
+  for (const { row, earlierRecovers } of [
+    {
+      row: "a session an earlier process told it receives nothing is told it receives again by the process that resumes it",
+      earlierRecovers: false,
+    },
+    {
+      row: "a session an earlier process told it receives again is told nothing of its inbound by the process that resumes it",
+      earlierRecovers: true,
+    },
+  ]) {
+    test(row, async () => {
+      let registered = 0;
+      globalThis.fetch = async (input, init) => {
+        if (new URL(input.toString()).pathname === "/v1/interests/subscribe") registered += 1;
+        return responseWithRegistration(input, init, {});
+      };
+      natsState.failConnects = 1;
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      try {
+        const earlier = createPi();
+        const resuming = createPi();
+        const transcript = (): readonly unknown[] => [...earlier.entries, ...resuming.entries];
+        const written = (entries: readonly unknown[], text: string) =>
+          entries.filter((entry) => JSON.stringify(entry).includes(text));
+        const restoredShown = (notifications: readonly string[]) =>
+          notifications.filter((m) => m.includes("inbound messages reach this session again"));
+        const intervals: (() => void)[] = [];
+        const processContext = (notifications: string[]): SessionContext => ({
+          cwd: "/tmp/envoy-omp-test",
+          sessionManager: {
+            ...topLevelSession,
+            getSessionId: () => "ses_resumed",
+            getBranch: transcript,
+            getEntries: transcript,
+          },
+          setInterval: (callback) => intervals.push(callback),
+          ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+        });
+
+        const earlierNotifications: string[] = [];
+        // Each process loads the extension afresh, as a new Oh My Pi process does: a static
+        // import would share one module, and with it the outage state this row is about.
+        const { default: earlierExtension } = await import(
+          `./envoy.ts?inbound-told-earlier-${earlierRecovers}`
+        );
+        earlierExtension(earlier.pi);
+        await earlier.handlers.get("session_start")?.({}, processContext(earlierNotifications));
+        expect(
+          earlierNotifications.filter((m) => m.includes("inbound messages are unavailable"))
+        ).toHaveLength(1);
+        expect(written(transcript(), "Envoy inbound unavailable")).toHaveLength(1);
+        expect(written(transcript(), "Envoy inbound restored")).toEqual([]);
+        if (earlierRecovers) {
+          // The background retry's pass dials, opens the relay and registers.
+          intervals.at(-1)?.();
+          await until(
+            () => restoredShown(earlierNotifications).length > 0,
+            "the restored notice from the earlier process"
+          );
+        }
+
+        // The earlier process ends here: nothing of it runs again.
+        const before = registered;
+        const resumingNotifications: string[] = [];
+        const { default: resumingExtension } = await import(
+          `./envoy.ts?inbound-told-resuming-${earlierRecovers}`
+        );
+        resumingExtension(resuming.pi);
+        await resuming.handlers.get("session_start")?.({}, processContext(resumingNotifications));
+        await until(() => registered > before, "the resuming process's registration");
+        if (!earlierRecovers) {
+          await until(
+            () => restoredShown(resumingNotifications).length > 0,
+            "the restored notice from the resuming process"
+          );
+        }
+        expect(restoredShown(resumingNotifications)).toHaveLength(earlierRecovers ? 0 : 1);
+        expect(written(resuming.entries, "Envoy inbound restored")).toHaveLength(
+          earlierRecovers ? 0 : 1
+        );
+        expect(warnings.filter((m) => m.includes("this session receives again"))).toHaveLength(1);
+        // The resuming process was refused nothing, so it tells no outage of its own.
+        expect(
+          resumingNotifications.filter((m) => m.includes("inbound messages are unavailable"))
+        ).toEqual([]);
+      } finally {
+        stopSink();
+      }
+    });
+  }
+
   test("a relay lost after the start names its failure in the refused registration, and the next heartbeat opens it again and says so once", async () => {
     // The relay subject opened at the start. Later its connection closes for good, as nats.js
     // closes one on an authorization error it does not ignore, and the hub refuses every dial

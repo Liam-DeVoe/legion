@@ -53,6 +53,16 @@ export const REPLAY_NOTICE_ENTRY = "envoy-replay-notice";
  */
 export const CONSUMER_STATE_ENTRY = "envoy-consumer-state";
 
+/**
+ * Transcript entry recording what the session was last told of its Envoy inbound: `{told: true}`
+ * when it was told it receives nothing, `{told: false}` when it was told it receives again. The
+ * newest one is the session's state. A process that resumes the session reads it
+ * (`inboundOutageTold`), so the end of an outage an earlier process told is told by the next
+ * process whose registration is accepted, and not only by the process that told it, which can end
+ * first: a Legion claim boot refused for want of a relay subject ends it.
+ */
+export const INBOUND_OUTAGE_ENTRY = "envoy-inbound-outage";
+
 /** A replay notice recorded as held (`REPLAY_NOTICE_ENTRY`), by the id its records share. */
 export interface HeldReplayNotice {
   readonly id: string;
@@ -216,6 +226,19 @@ export function heldReplayNotices(entries: readonly unknown[]): HeldReplayNotice
     if (!handed.has(id)) notices.push({ id, content });
   }
   return notices;
+}
+
+/** Whether the newest `INBOUND_OUTAGE_ENTRY` that parses says the session was told it receives
+ *  nothing; false for a session whose entries hold none. */
+export function inboundOutageTold(entries: readonly unknown[]): boolean {
+  const states = customEntries(entries, INBOUND_OUTAGE_ENTRY);
+  for (let index = states.length - 1; index >= 0; index -= 1) {
+    const state = states[index];
+    const told =
+      typeof state === "object" && state !== null ? Reflect.get(state, "told") : undefined;
+    if (typeof told === "boolean") return told;
+  }
+  return false;
 }
 
 /** What a session's entries record for `sessionID` to restore its consumer delivery with

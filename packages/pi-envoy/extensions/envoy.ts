@@ -208,6 +208,8 @@ import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
   heldReplayNotices,
+  INBOUND_OUTAGE_ENTRY,
+  inboundOutageTold,
   REPLAY_DELIVERED_ENTRY,
   REPLAY_NOTICE_ENTRY,
   REPLAY_STATE_ENTRY,
@@ -1075,6 +1077,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     // restart or a session change cut short, are held again for the first settled heartbeat.
     ledger?.restore(replaySnapshot(entries));
     unwritten.requeueNotices(heldReplayNotices(entries));
+    // An outage an earlier process told the session, and ended before it could tell its end, is
+    // this process's: its first accepted registration tells the session it receives again, after
+    // the outage notice the restart held again above, if that one was not handed yet.
+    if (inboundOutageTold(entries)) inboundOutage.resume();
     // The pictures the transcript the session is now on already shows (a fork's, a handoff's, a
     // resume's, a restart's) are in the history every request sends, so they count as shown. The
     // id the session left is no longer served: what it was shown is forgotten, and so are the
@@ -3368,6 +3374,22 @@ export default function envoyExtension(hostApi: PiApi): void {
     await registrationState.deregister(id, endsAt === undefined ? undefined : endsAt - Date.now());
   };
 
+  // Records in the session's transcript what it was last told of its inbound
+  // (`INBOUND_OUTAGE_ENTRY`), so a process that resumes the session after the one that told it
+  // the outage ended tells it the outage's end. A record that cannot be written leaves the end
+  // to this process alone, as before the record existed.
+  const recordInboundOutage = (told: boolean): void => {
+    if (transcriptSessionID() === undefined) return;
+    try {
+      pi.appendEntry(INBOUND_OUTAGE_ENTRY, { told });
+    } catch (error) {
+      logger.warn("envoy: the session file could not record what it was told of its inbound", {
+        told,
+        detail: messageFor(error),
+      });
+    }
+  };
+
   // Said once per outage: the listener refused this session's registration, so no consumer
   // delivers to it and Envoy inbound is unavailable. The session still starts and runs; the
   // reason is the listener's own, one of those `ErrorWireSchema.reason` lists
@@ -3384,6 +3406,7 @@ export default function envoyExtension(hostApi: PiApi): void {
         "warning"
       );
       unwritten.sendNotice(inboundUnavailableNoticeText(why));
+      recordInboundOutage(true);
     },
     () => {
       logger.warn("envoy: this session receives again: its registration was accepted");
@@ -3392,6 +3415,7 @@ export default function envoyExtension(hostApi: PiApi): void {
         "warning"
       );
       unwritten.sendNotice(inboundRestoredNoticeText());
+      recordInboundOutage(false);
     }
   );
 
