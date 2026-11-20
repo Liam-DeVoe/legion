@@ -48,7 +48,12 @@
  *   or not. Each skill with a fault is nominated.
  * - `tasks` (R6): a skill's name and description and first user messages of real sessions; search
  *   terms, and at least TASKS_PER_LABEL need and near-miss tasks, each labelled, each taken from a
- *   message by its id or written and marked written.
+ *   message by its id or written and marked written. Each need task says whether the skill governs
+ *   its first step (`firstStep`: an agent doing it would read the skill at once, before any other
+ *   act), and at least TASKS_PER_LABEL need tasks are ones it governs; the schema refuses a need
+ *   task that does not say. In `control` mode each message is a need task of the positive control
+ *   (a session whose first assistant message read the skill): the answer takes every message, once,
+ *   as a need task, and says only whether the skill governs its first step.
  *
  * The positive controls of the map, attack, same-job and sentence readers (`runControl`) each
  * plant a known finding in a copy of real input, run the reader once, and hold only when its
@@ -824,31 +829,40 @@ const namesReader: Reader<NamesInput, NamesAnswer> = {
 export const TasksInput = z
   .strictObject({
     skill: z.strictObject({ name: z.string().min(1), description: z.string() }),
-    /** First user messages of real sessions that a query returned, each with an id. */
+    /** First user messages of real sessions, each with an id: those a query returned (`pick`),
+     *  or the first requests of sessions whose first assistant message read the skill
+     *  (`control`). */
     messages: z.array(z.strictObject({ id: Id, text: z.string().min(1) })),
+    /** `pick` (when absent): propose terms, and pick and write the tasks. `control`: each message
+     *  is a need task of the positive control, unchosen; the reader only says whether the skill
+     *  governs its first step. */
+    mode: z.enum(["pick", "control"]).optional(),
   })
   .superRefine((input, ctx) => uniqueIds(input.messages, ctx, "messages"));
 export type TasksInput = z.infer<typeof TasksInput>;
+/** Whether a task's first step is one the skill governs (an agent doing the task would read the
+ *  skill at once, before any other act), and why. */
+export const FirstStep = z.strictObject({ governed: z.boolean(), reason: z.string().min(1) });
+export type FirstStep = z.infer<typeof FirstStep>;
+const TaskAnswerFields = {
+  label: TaskLabel,
+  why: z.string().min(1),
+  firstStep: FirstStep.optional(),
+};
 export const TasksAnswer = z.strictObject({
-  terms: z.array(z.string().min(1)).min(1).max(6),
+  terms: z.array(z.string().min(1)).max(6),
   tasks: z.array(
     z.discriminatedUnion("from", [
-      z.strictObject({
-        label: TaskLabel,
-        from: z.literal("session"),
-        messageId: Id,
-        why: z.string().min(1),
-      }),
-      z.strictObject({
-        label: TaskLabel,
-        from: z.literal("written"),
-        text: z.string().min(1),
-        why: z.string().min(1),
-      }),
+      z.strictObject({ ...TaskAnswerFields, from: z.literal("session"), messageId: Id }),
+      z.strictObject({ ...TaskAnswerFields, from: z.literal("written"), text: z.string().min(1) }),
     ])
   ),
 });
 export type TasksAnswer = z.infer<typeof TasksAnswer>;
+
+/** What the tasks reader's `<control>` part says. */
+const CONTROL_NOTE =
+  "Each message is the first request of a session whose agent read the skill in its first reply.";
 
 const tasksReader: Reader<TasksInput, TasksAnswer> = {
   input: TasksInput,
@@ -857,6 +871,13 @@ const tasksReader: Reader<TasksInput, TasksAnswer> = {
       const ids = new Set(input.messages.map((message) => message.id));
       const used = new Set<string>();
       for (const [index, task] of answer.tasks.entries()) {
+        if (task.label === "need" && task.firstStep === undefined) {
+          refuse(
+            ctx,
+            ["tasks", index, "firstStep"],
+            "is missing: a need task says whether the skill governs its first step"
+          );
+        }
         if (task.from !== "session") continue;
         if (!ids.has(task.messageId))
           refuse(ctx, ["tasks", index, "messageId"], "is no id of the messages");
@@ -865,15 +886,36 @@ const tasksReader: Reader<TasksInput, TasksAnswer> = {
         }
         used.add(task.messageId);
       }
-      for (const label of TaskLabel.options) {
-        const count = answer.tasks.filter((task) => task.label === label).length;
-        if (count < TASKS_PER_LABEL) {
-          refuse(ctx, ["tasks"], `holds ${count} ${label} tasks, fewer than ${TASKS_PER_LABEL}`);
+      if (input.mode === "control") {
+        for (const [index, task] of answer.tasks.entries()) {
+          if (task.label !== "need" || task.from !== "session") {
+            refuse(ctx, ["tasks", index], "is not a need task of a message: a control task is one");
+          }
         }
+        for (const id of ids) {
+          if (!used.has(id)) refuse(ctx, ["tasks"], `leaves out the message ${id}`);
+        }
+        return;
+      }
+      if (answer.terms.length === 0) refuse(ctx, ["terms"], "holds no term");
+      const governed = answer.tasks.filter(
+        (task) => task.label === "need" && task.firstStep?.governed === true
+      ).length;
+      if (governed < TASKS_PER_LABEL) {
+        refuse(
+          ctx,
+          ["tasks"],
+          `holds ${governed} need tasks whose first step the skill governs, fewer than ${TASKS_PER_LABEL}`
+        );
+      }
+      const nearMiss = answer.tasks.filter((task) => task.label === "near-miss").length;
+      if (nearMiss < TASKS_PER_LABEL) {
+        refuse(ctx, ["tasks"], `holds ${nearMiss} near-miss tasks, fewer than ${TASKS_PER_LABEL}`);
       }
     }),
   render: (input) =>
     [
+      ...(input.mode === "control" ? [`<control>\n${CONTROL_NOTE}\n</control>`] : []),
       `<skill name="${input.skill.name}">\n<description>\n${input.skill.description}\n</description>\n</skill>`,
       `<first-messages>\n${
         input.messages.length === 0

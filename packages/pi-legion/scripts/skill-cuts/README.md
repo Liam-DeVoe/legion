@@ -213,6 +213,8 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skil
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> --store <db>... --out <tasks.jsonl>
+bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> \
+  --skill <skill dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl>
 ```
 
 `build.ts`: `build-cases` pulls each candidate session through the config's `psqlCommand`, has
@@ -279,6 +281,27 @@ more on the real stores, so the summary records the terms and each query as it e
 `<out>.found.jsonl` the messages each found (path hashes and texts; removed once the tasks are
 written); a run of the same skill text, stores and window makes no terms call and repeats no
 recorded query, and a finished build is left as it is.
+
+The `tasks` reader says of each need task whether the skill governs its first step: whether an
+agent doing the task would read the skill at once, before any other act. `build-tasks` leaves out
+each need task whose first step the skill does not govern, and its summary counts them
+(`droppedNeed`) and keeps each with the reader's reason (`dropped`). The reader must give at least
+5 need tasks whose first step the skill governs, and 5 near-miss tasks.
+
+`build-tasks --first-read` writes the need tasks of R6's positive control. It takes the sessions
+file `attribute` wrote for the skill (`{"store", "hash", "path"?}` per line) in the order of
+`--seed`, pulls each session in turn, and keeps a session only when its first assistant message
+reads the skill (load.ts's rule: an Oh My Pi `read` of `skill://<name>` or of its `SKILL.md`). It
+takes that session's first request as a need task as it is, with its secrets taken out, and no
+reader chooses among them; a request that an earlier session already made is taken once. The
+`tasks` reader then says only whether the skill governs each request's first step, and a request
+whose first step it does not govern is left out and counted, with the reader's reason, as above.
+The build stops once `--max` requests (5 unless given) are kept, or the sessions run out. The
+summary records each session it tried and why it was not taken (`not first`, `same request`, or a
+pull that failed). A stopped run goes on as `build-tasks` does: the summary records its inputs
+(the SHA-256 of `SKILL.md` and of the sessions file, the seed and `--max`), each session tried
+and each request judged, and `<out>.found.jsonl` holds the requests found until the tasks are
+written.
 
 ## The request log
 

@@ -290,11 +290,14 @@ const tasksInput = {
     { id: "m2", text: "Write the beta greeting for the fixture project." },
   ],
 };
+/** A need task's statement that the skill governs its first step. */
+const governs = { firstStep: { governed: true, reason: "reading the checklist comes first" } };
 const written = (label: string, n: number) => ({
   label,
   from: "written",
   text: `task ${label} ${n}`,
   why: "the description",
+  ...(label === "need" ? governs : {}),
 });
 const fourEach = ["need", "near-miss"].flatMap((label) =>
   [1, 2, 3, 4].map((n) => written(label, n))
@@ -302,7 +305,13 @@ const fourEach = ["need", "near-miss"].flatMap((label) =>
 const tasksAnswer = {
   terms: ["alpha checklist"],
   tasks: [
-    { label: "need", from: "session", messageId: "m1", why: "it asks for the checklist" },
+    {
+      label: "need",
+      from: "session",
+      messageId: "m1",
+      why: "it asks for the checklist",
+      ...governs,
+    },
     {
       label: "near-miss",
       from: "session",
@@ -312,6 +321,10 @@ const tasksAnswer = {
     ...fourEach,
   ],
 };
+/** The first need task, saying nothing of its first step. */
+const unstated = Object.fromEntries(
+  Object.entries(tasksAnswer.tasks[0] ?? {}).filter(([key]) => key !== "firstStep")
+);
 
 const ROWS: Record<ReaderName, Row> = {
   restate: {
@@ -586,7 +599,22 @@ const ROWS: Record<ReaderName, Row> = {
     bad: [
       {
         answer: { ...tasksAnswer, tasks: tasksAnswer.tasks.slice(1) },
-        why: `holds 4 need tasks, fewer than ${TASKS_PER_LABEL}`,
+        why: `holds 4 need tasks whose first step the skill governs, fewer than ${TASKS_PER_LABEL}`,
+      },
+      {
+        answer: { ...tasksAnswer, tasks: [unstated, ...tasksAnswer.tasks.slice(1)] },
+        why: "tasks.0.firstStep: is missing: a need task says whether the skill governs its first step",
+      },
+      {
+        // A need task whose first step the skill does not govern is not one of the five.
+        answer: {
+          ...tasksAnswer,
+          tasks: [
+            { ...unstated, firstStep: { governed: false, reason: "the file is read first" } },
+            ...tasksAnswer.tasks.slice(1),
+          ],
+        },
+        why: `holds 4 need tasks whose first step the skill governs, fewer than ${TASKS_PER_LABEL}`,
       },
       {
         answer: {
@@ -738,6 +766,39 @@ test("the case reader's request shows only the offered lines, each with its numb
       files: [{ ...file, lines: [{ number: 7, text: " " }] }],
     }).success
   ).toBe(false);
+});
+
+test("in control mode the tasks reader takes every message, once, as a need task saying whether the skill governs its first step, and its request says so", () => {
+  const input = { ...tasksInput, mode: "control" };
+  const take = (id: string, governed: boolean) => ({
+    label: "need",
+    from: "session",
+    messageId: id,
+    why: "it asks for the checklist",
+    firstStep: { governed, reason: governed ? "the checklist comes first" : "a file comes first" },
+  });
+  expect(refusal("tasks", input, { terms: [], tasks: [take("m1", true), take("m2", false)] })).toBe(
+    undefined
+  );
+  expect(refusal("tasks", input, { terms: [], tasks: [take("m1", true)] })).toContain(
+    "leaves out the message m2"
+  );
+  expect(
+    refusal("tasks", input, {
+      terms: [],
+      tasks: [take("m1", true), take("m2", true), written("near-miss", 1)],
+    })
+  ).toContain("is not a need task of a message");
+  const bare = Object.fromEntries(
+    Object.entries(take("m2", true)).filter(([key]) => key !== "firstStep")
+  );
+  expect(refusal("tasks", input, { terms: [], tasks: [take("m1", true), bare] })).toContain(
+    "a need task says whether the skill governs its first step"
+  );
+  const [user] = UserMessage.parse(readerBody("tasks", input).messages);
+  expect(user.content[0]?.text).toStartWith("<control>\nEach message is the first request");
+  const [picking] = UserMessage.parse(readerBody("tasks", tasksInput).messages);
+  expect(picking.content[0]?.text).toStartWith('<skill name="alpha">');
 });
 
 test("the audit's request holds the line, the messages before the step and the step, and its input refuses a criterion; the restatement check's holds the line and its window", () => {

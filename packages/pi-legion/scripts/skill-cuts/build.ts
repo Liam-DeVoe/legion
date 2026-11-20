@@ -16,6 +16,9 @@
  *       --out <new cases.jsonl>
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --key-file <file>
  *       --skill <dir> --store <db>... --out <tasks.jsonl>
+ *   bun scripts/skill-cuts/build.ts build-tasks --first-read --config <skill-cuts.json>
+ *       --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>]
+ *       --out <tasks.jsonl>
  *
  * **build-cases.** `--sessions` holds the candidate sessions, one JSON line each:
  * `{"store", "hash", "path"?}`, `hash` the file hash count.sql names a file by (16 hex characters
@@ -237,8 +240,11 @@
  * per store and per UTC day of the configuration's window for first user messages holding them;
  * the distinct messages (at most TASK_MESSAGES, spread evenly over the stores' rows in path order)
  * go to the tasks reader again, which picks at least 5 need and 5 near-miss tasks from them, each
- * by its id, and writes the missing ones. The tasks file holds one JSON line per task, labelled
- * before any run: `{"id", "text", "label", "source": "session", "store", "pathHash"}` or
+ * by its id, and writes the missing ones. It says of each need task whether the skill governs its
+ * first step (an agent doing it would read the skill at once, before any other act); a need task
+ * whose first step it does not govern is left out, and the summary counts it (`droppedNeed`) and
+ * keeps it with the reader's reason (`dropped`). The tasks file holds one JSON line per task,
+ * labelled before any run: `{"id", "text", "label", "source": "session", "store", "pathHash"}` or
  * `{"id", "text", "label", "source": "written"}`. `<out>.summary.json` holds the terms, each query's
  * row count (or its error), the messages offered, each task's reason, and the spend. Its queries,
  * one per store and day, take most of its time (an hour and more on the real stores), so it goes
@@ -247,6 +253,9 @@
  * (path hashes and texts, appended whole before the summary records the query). A run of the same
  * inputs goes on from them with no terms call and no query already recorded; a finished build is
  * left as it is; other inputs are refused. The found file is removed once the tasks are written.
+ *
+ * **build-tasks --first-read** (plan, R6 "Positive control") writes the control's need tasks from
+ * the sessions file of the skill, unchosen: see `buildControlTasks`.
  *
  * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
  * `--budget-usd`, with the cases built so far written.
@@ -318,6 +327,7 @@ import {
   skillReadResults,
   stepText,
 } from "./judge";
+import { firstMessageLoad } from "./load";
 import { PullRow, psqlRows, pullText } from "./psql-rows";
 import {
   AuditAnswer,
@@ -327,6 +337,7 @@ import {
   RestateAnswer,
   runReader,
   skillFiles,
+  TASKS_PER_LABEL,
   TasksAnswer,
   type TasksInput,
 } from "./readers";
@@ -2138,7 +2149,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 const BUILD_CASES_USAGE =
   "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
-  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>";
+  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl>";
 
 /** One candidate session of the sessions file. */
 const Candidate = z.strictObject({
@@ -3630,9 +3641,19 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       skill: { type: "string" },
       store: { type: "string", multiple: true },
       out: { type: "string" },
+      "first-read": { type: "boolean" },
+      sessions: { type: "string" },
+      seed: { type: "string" },
+      max: { type: "string" },
     },
     BUILD_TASKS_USAGE
   );
+  if (values["first-read"] === true) return buildControlTasks(values, io);
+  for (const flag of ["sessions", "seed", "max"] as const) {
+    if (values[flag] !== undefined) {
+      throw new Refused(`--${flag} goes with --first-read only. ${BUILD_TASKS_USAGE}`);
+    }
+  }
   const given = required(values, ["config", "key-file", "skill", "out"], BUILD_TASKS_USAGE);
   const stores = values.store ?? [];
   if (stores.length === 0) throw new Refused(`--store required. ${BUILD_TASKS_USAGE}`);
@@ -3768,8 +3789,21 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
     gateway
   );
   const answer = TasksAnswer.parse(picked.answer);
+  // A need task whose first step the skill does not govern is left out, with the reader's reason:
+  // an agent doing it would act before it read the skill, so its first reply is no load test.
+  const kept = answer.tasks.filter(
+    (task) => task.label !== "need" || task.firstStep?.governed === true
+  );
+  const dropped = answer.tasks
+    .filter((task) => task.label === "need" && task.firstStep?.governed !== true)
+    .map((task) => ({
+      source: task.from,
+      ...(task.from === "session" ? { messageId: task.messageId } : { text: task.text }),
+      why: task.why,
+      reason: task.firstStep?.reason ?? "",
+    }));
   const byId = new Map(offered.map((message) => [message.id, message]));
-  const tasks = answer.tasks.map((task, n) => {
+  const tasks = kept.map((task, n) => {
     const id = `t${n + 1}`;
     if (task.from === "written")
       return { id, text: task.text, label: task.label, source: "written" as const };
@@ -3803,12 +3837,15 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
         messagesFound: found.length,
         messagesDistinct: distinct.size,
         messagesOffered: offered.length,
-        tasks: answer.tasks.map((task, n) => ({
+        tasks: kept.map((task, n) => ({
           id: `t${n + 1}`,
           label: task.label,
           source: task.from,
           why: task.why,
+          ...(task.firstStep === undefined ? {} : { firstStep: task.firstStep }),
         })),
+        droppedNeed: dropped.length,
+        dropped,
         counts: {
           need: { session: count("need", "session"), written: count("need", "written") },
           "near-miss": {
@@ -3825,8 +3862,393 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   // The messages found are in the tasks file where a task names one; the rest are not kept.
   rmSync(foundFile, { force: true });
   io.out(
-    `build-tasks: ${tasks.length} tasks (${tasks.filter((task) => task.source === "session").length} from sessions) from ${offered.length} first user messages offered; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+    `build-tasks: ${tasks.length} tasks (${tasks.filter((task) => task.source === "session").length} from sessions) from ${offered.length} first user messages offered, ${dropped.length} need tasks left out whose first step the skill does not govern; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );
+  return EXIT.ok;
+}
+
+/** What `build-tasks --first-read` is made from: the skill's SKILL.md, the sessions file, the seed
+ *  and `--max`. */
+const ControlInputs = z.strictObject({
+  skill: Digested,
+  sessions: Digested,
+  seed: z.string(),
+  max: z.number(),
+});
+type ControlInputs = z.infer<typeof ControlInputs>;
+
+/** One session `build-tasks --first-read` tried, as its summary records it. `outcome` is
+ *  `first request` when the session's first assistant message read the skill (`loadedBy` says
+ *  how), else why its first request is no task of the control. */
+interface ControlRecord {
+  store: string;
+  hash: string;
+  pathHash?: string;
+  pulls?: number;
+  outcome: string;
+  detail?: string;
+  loadedBy?: string;
+}
+
+/** A first request the control found, as `<out>.found.jsonl` keeps it until the tasks are
+ *  written: its session, the hash of its path, and its text with its secrets taken out. */
+const ControlFound = z.strictObject({
+  store: z.string(),
+  hash: z.string(),
+  pathHash: z.string().regex(/^[0-9a-f]{64}$/),
+  text: z.string(),
+  secretsRemoved: z.number().int().nonnegative(),
+});
+type ControlFound = z.infer<typeof ControlFound>;
+
+/** What the tasks reader said of one first request: whether the skill governs its first step. */
+const ControlJudged = z.strictObject({
+  store: z.string(),
+  hash: z.string(),
+  governed: z.boolean(),
+  reason: z.string(),
+});
+type ControlJudged = z.infer<typeof ControlJudged>;
+
+/** A `build-tasks --first-read` summary as a run that goes on reads it back. */
+const ControlSummary = z.looseObject({
+  command: z.literal("build-tasks"),
+  mode: z.literal("first-read"),
+  inputs: ControlInputs,
+  done: z.boolean(),
+  sessions: z.array(z.looseObject({ store: z.string(), hash: z.string(), outcome: z.string() })),
+  judged: z.array(ControlJudged),
+  sessionQueries: z.number(),
+  readerSpend: SpendRecord,
+});
+
+/** The outcome of a session whose first request is a task of the control. */
+const FIRST_REQUEST = "first request";
+
+/**
+ * `build-tasks --first-read`: the positive control's tasks (plan, R6 "Positive control"). The
+ * sessions of `--sessions` (`{"store", "hash", "path"?}`, the sessions file attribute.ts writes
+ * for the skill) are taken in judge.ts's `blindOrder` under `--seed`, one at a time: each is
+ * pulled, and kept when its first assistant message loads the skill by load.ts's rule
+ * (`firstMessageLoad`: an Oh My Pi `read` of `skill://<name>` or its SKILL.md; the stores hold
+ * Oh My Pi transcripts). Its first user message, its secrets taken out, is a need task, unchosen,
+ * unless an earlier session's first request is the same text. The tasks reader, in its `control`
+ * mode, says of each such request whether the skill governs its first step; one it does not is
+ * left out and counted, with the reader's reason. The build stops once `--max` requests
+ * (TASKS_PER_LABEL unless given) are kept, or the sessions run out. A run of the same inputs at
+ * `--out` goes on as `build-tasks` does: every session it tried and every request the reader
+ * judged is kept, with no pull and no reader call.
+ */
+async function buildControlTasks(
+  values: Readonly<Record<string, string | boolean | string[] | undefined>>,
+  io: BuildIo
+): Promise<number> {
+  const given = required(
+    values,
+    ["config", "key-file", "skill", "sessions", "seed", "out"],
+    BUILD_TASKS_USAGE
+  );
+  if (values.store !== undefined) {
+    throw new Refused("--first-read takes its sessions from --sessions, so it takes no --store");
+  }
+  if (!/^\d+$/.test(given.seed)) throw new Refused(`--seed ${given.seed} is not a whole number`);
+  const maxText = values.max;
+  const max = typeof maxText === "string" ? Number(maxText) : TASKS_PER_LABEL;
+  if (typeof maxText === "string" && (!/^\d+$/.test(maxText) || max < 1)) {
+    throw new Refused(`--max ${maxText} is not a whole number of 1 or more`);
+  }
+  const config = configFrom(given.config);
+  mustBeFile(given["key-file"], "--key-file");
+  const skillFile = path.join(given.skill, "SKILL.md");
+  mustBeFile(skillFile, "--skill's SKILL.md");
+  const fields = frontmatter(readFileSync(skillFile, "utf8")) ?? {};
+  const skill = {
+    name:
+      typeof fields.name === "string" && fields.name !== ""
+        ? fields.name
+        : path.basename(path.resolve(given.skill)),
+    description: typeof fields.description === "string" ? fields.description : "",
+  };
+  const candidates = readCandidates(given.sessions, config);
+  const order = blindOrder(candidates, given.seed).map(({ item }) => item);
+  const keyOf = (each: { store: string; hash: string }) => `${each.store}\0${each.hash}`;
+
+  const summaryFile = `${given.out}.summary.json`;
+  const foundFile = `${given.out}.found.jsonl`;
+  const inputs: ControlInputs = {
+    skill: digestOf(given.skill, ["SKILL.md"]),
+    sessions: {
+      ...digestOf(path.dirname(given.sessions), [path.basename(given.sessions)]),
+      path: given.sessions,
+    },
+    seed: given.seed,
+    max,
+  };
+
+  // An earlier run of the same inputs: its sessions, its judgements and the requests it found.
+  const recorded = new Map<string, ControlRecord>();
+  const judged = new Map<string, ControlJudged>();
+  let priorSpend: Spend = NO_SPEND;
+  let sessionQueries = 0;
+  if (existsSync(summaryFile)) {
+    const parsed = ControlSummary.safeParse(readJson(summaryFile));
+    if (!parsed.success) {
+      throw new Refused(
+        `${summaryFile} is no build-tasks --first-read summary, so this build does not go on from it; give another --out`
+      );
+    }
+    const was = parsed.data.inputs;
+    const differ: string[] = [];
+    if (was.seed !== inputs.seed) differ.push(`--seed was ${was.seed}, now ${inputs.seed}`);
+    if (was.max !== inputs.max) differ.push(`--max was ${was.max}, now ${inputs.max}`);
+    for (const key of ["skill", "sessions"] as const) {
+      if (was[key].sha256 !== inputs[key].sha256) {
+        differ.push(`--${key} was ${was[key].path}, now ${inputs[key].path}, and it differs`);
+      }
+    }
+    if (differ.length > 0) {
+      throw new Refused(
+        `--out ${given.out} holds a build of other inputs, so this one does not go on from it: ${differ.join("; ")}`
+      );
+    }
+    if (parsed.data.done) {
+      io.out(
+        `build-tasks: ${summaryFile} records a finished build of these inputs; nothing to do\n`
+      );
+      return EXIT.ok;
+    }
+    for (const session of parsed.data.sessions) {
+      recorded.set(keyOf(session), session as unknown as ControlRecord);
+    }
+    for (const each of parsed.data.judged) judged.set(keyOf(each), each);
+    priorSpend = parsed.data.readerSpend;
+    sessionQueries = parsed.data.sessionQueries;
+  } else if (existsSync(given.out)) {
+    throw new Refused(
+      `--out ${given.out} is there but ${summaryFile} is not, so what built it is not known; give another --out`
+    );
+  }
+  const found = new Map<string, ControlFound>();
+  if (existsSync(foundFile)) {
+    for (const line of readFileSync(foundFile, "utf8").split("\n")) {
+      let row: ControlFound;
+      try {
+        row = ControlFound.parse(JSON.parse(line));
+      } catch {
+        continue;
+      }
+      if (recorded.get(keyOf(row))?.outcome === FIRST_REQUEST) found.set(keyOf(row), row);
+    }
+  }
+  writeWhole(foundFile, [...found.values()].map((row) => `${JSON.stringify(row)}\n`).join(""));
+
+  // Paths for the candidates that lack one and are not tried yet, per store.
+  const paths = new Map<string, string>();
+  for (const store of config.stores) {
+    const hashes = order
+      .filter(
+        (each) => each.store === store.name && each.path === undefined && !recorded.has(keyOf(each))
+      )
+      .map((each) => each.hash);
+    if (hashes.length === 0) continue;
+    const resolved = await resolvePaths(config.psqlCommand, store.name, hashes);
+    sessionQueries += resolved.queries;
+    for (const [hash, filePath] of resolved.paths) paths.set(`${store.name}\0${hash}`, filePath);
+  }
+
+  const gateway = readerGateway(config, given["key-file"]);
+  const spend = () => addSpend(priorSpend, gateway.spend());
+  const sessions: ControlRecord[] = [];
+  const write = (done: boolean, extra: Record<string, unknown> = {}) =>
+    writeWhole(
+      summaryFile,
+      `${JSON.stringify(
+        {
+          command: "build-tasks",
+          mode: "first-read",
+          skill: skill.name,
+          inputs,
+          done,
+          order: order.map(({ store, hash }) => ({ store, hash })),
+          sessions,
+          judged: [...judged.values()],
+          sessionQueries,
+          pullCalls: sessions.reduce((total, each) => total + (each.pulls ?? 0), 0),
+          ...extra,
+          readerSpend: spend(),
+        },
+        null,
+        2
+      )}\n`
+    );
+
+  /** The record of a session not tried yet, and its first request when it is a task. */
+  const texts = new Set([...found.values()].map((row) => row.text.trim()));
+  const tryOne = async (
+    candidate: (typeof order)[number]
+  ): Promise<{ record: ControlRecord; request?: ControlFound }> => {
+    const record: ControlRecord = { store: candidate.store, hash: candidate.hash, outcome: "" };
+    const no = (outcome: string, detail: string) => {
+      record.outcome = outcome;
+      record.detail = detail;
+      return { record };
+    };
+    const transcriptPath = candidate.path ?? paths.get(keyOf(candidate));
+    if (transcriptPath === undefined)
+      return no("not-in-store", "sessions.sql gave no row of this hash");
+    const hashOfPath = pathHash(transcriptPath);
+    record.pathHash = hashOfPath;
+    let pulled: { text: string; calls: number };
+    try {
+      pulled = await pullTranscript(config.psqlCommand, candidate.store, transcriptPath);
+    } catch (error) {
+      return no("pull-failed", messageFor(error));
+    }
+    record.pulls = pulled.calls;
+    let entries: SessionEntry[];
+    try {
+      entries = transcriptEntries(pulled.text);
+    } catch (error) {
+      return no("unparseable", messageFor(error));
+    }
+    const messages = timeline(entries).items.map((item) => item.message);
+    const request = messages.find((message) => message.role === "user");
+    const reply = messages.find((message) => message.role === "assistant");
+    const text = request === undefined ? "" : messageText(request);
+    if (request === undefined || reply === undefined || text.trim() === "") {
+      return no("no first request", "the session has no user message with text, or no reply");
+    }
+    // load.ts's rule, on the transcript's tool calls as a reply's `tool_use` blocks.
+    const blocks = (reply.content ?? []).flatMap((block) =>
+      block.type === "toolCall"
+        ? [{ type: "tool_use", id: block.id, name: block.name, input: block.arguments }]
+        : []
+    );
+    const load = firstMessageLoad("omp", blocks, { name: skill.name });
+    if (!load.loaded) {
+      return no(
+        "not first",
+        `its first assistant message reads no file of ${skill.name}: its tool calls are ${load.toolCalls.join(", ") || "none"}`
+      );
+    }
+    const scrubbedText = removeSecrets(text);
+    if (texts.has(scrubbedText.text.trim())) {
+      return no("same request", "an earlier session's first request is the same text");
+    }
+    texts.add(scrubbedText.text.trim());
+    record.outcome = FIRST_REQUEST;
+    record.loadedBy = load.loadedBy ?? undefined;
+    return {
+      record,
+      request: {
+        store: candidate.store,
+        hash: candidate.hash,
+        pathHash: hashOfPath,
+        text: scrubbedText.text,
+        secretsRemoved: scrubbedText.removed,
+      },
+    };
+  };
+
+  // The tasks reader, in its control mode, on the requests found and not judged yet.
+  const countKept = () => [...judged.values()].filter((each) => each.governed).length;
+  let pending: ControlFound[] = [];
+  const judge = async () => {
+    if (pending.length === 0) return;
+    const batch = pending;
+    pending = [];
+    const result = await runReader(
+      "tasks",
+      {
+        skill,
+        messages: batch.map((row, n) => ({ id: `m${n + 1}`, text: row.text })),
+        mode: "control",
+      } satisfies TasksInput,
+      gateway
+    );
+    const answer = TasksAnswer.parse(result.answer);
+    for (const task of answer.tasks) {
+      if (task.from !== "session") continue;
+      const row = batch[Number(task.messageId.slice(1)) - 1];
+      if (row === undefined) continue;
+      judged.set(keyOf(row), {
+        store: row.store,
+        hash: row.hash,
+        governed: task.firstStep?.governed === true,
+        reason: task.firstStep?.reason ?? "",
+      });
+    }
+    write(false);
+  };
+
+  for (const [position, candidate] of order.entries()) {
+    if (countKept() + pending.length >= max) {
+      await judge();
+      if (countKept() >= max) break;
+    }
+    const key = keyOf(candidate);
+    let record = recorded.get(key);
+    if (record === undefined) {
+      const tried = await tryOne(candidate);
+      record = tried.record;
+      if (tried.request !== undefined) {
+        // The request is appended whole before the summary records its session.
+        appendFileSync(foundFile, `${JSON.stringify(tried.request)}\n`);
+        found.set(key, tried.request);
+      }
+      sessions.push(record);
+      write(false);
+      io.out(
+        `build-tasks: ${position + 1}/${order.length} ${candidate.store} ${candidate.hash}: ${record.outcome}${record.detail === undefined ? "" : ` (${record.detail})`}\n`
+      );
+    } else {
+      sessions.push(record);
+    }
+    const request = found.get(key);
+    if (record.outcome === FIRST_REQUEST && request !== undefined && !judged.has(key)) {
+      pending.push(request);
+    }
+  }
+  if (countKept() < max) await judge();
+
+  // The tasks: each request the reader says the skill governs the first step of, in the order.
+  const kept: ControlFound[] = [];
+  const dropped: { store: string; pathHash: string; reason: string }[] = [];
+  for (const session of sessions) {
+    const verdict = judged.get(keyOf(session));
+    const request = found.get(keyOf(session));
+    if (verdict === undefined || request === undefined) continue;
+    if (verdict.governed && kept.length < max) kept.push(request);
+    else if (!verdict.governed) {
+      dropped.push({ store: request.store, pathHash: request.pathHash, reason: verdict.reason });
+    }
+  }
+  const tasks = kept.map((row, n) => ({
+    id: `t${n + 1}`,
+    text: row.text,
+    label: "need" as const,
+    source: "session" as const,
+    store: row.store,
+    pathHash: row.pathHash,
+  }));
+  writeWhole(given.out, tasks.map((task) => `${JSON.stringify(task)}\n`).join(""));
+  write(true, {
+    tasks: kept.map((row, n) => ({
+      id: `t${n + 1}`,
+      store: row.store,
+      pathHash: row.pathHash,
+      secretsRemoved: row.secretsRemoved,
+    })),
+    droppedNeed: dropped.length,
+    dropped,
+  });
+  rmSync(foundFile, { force: true });
+  io.out(
+    `build-tasks: ${tasks.length} control tasks from ${sessions.length} sessions tried, ${dropped.length} left out whose first step the skill does not govern; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+  );
+  if (tasks.length < max) {
+    io.err(`build-tasks: the sessions gave ${tasks.length} control tasks, fewer than --max ${max}`);
+  }
   return EXIT.ok;
 }
 

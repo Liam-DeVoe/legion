@@ -602,13 +602,65 @@ function caseAnswer(name: string, transcript: string): unknown {
 /** The tool call of the stand-in reader's violating step. */
 const VIOLATING_CALL = { name: "read", arguments: { path: "skill://beta" } };
 
+/** A need task's statement that the skill governs its first step. */
+const GOVERNS = { firstStep: { governed: true, reason: "the checklist comes first" } };
+
 /** A written task of the stand-in tasks reader. */
 const written = (label: string, n: number) => ({
   label,
   from: "written",
   text: `A made-up ${label} task ${n}.`,
   why: "made up",
+  ...(label === "need" ? GOVERNS : {}),
 });
+
+/** The text of a first request whose first step the stand-in tasks reader says the skill does
+ *  not govern. */
+const UNGOVERNED = "(open the notes first)";
+
+/** The stand-in tasks reader's answer in its control mode: each message a need task, whose first
+ *  step the skill governs unless the message holds UNGOVERNED. */
+function controlAnswer(user: string): unknown {
+  const tasks = [...user.matchAll(/<message id="(m\d+)">\n([\s\S]*?)\n<\/message>/g)].map(
+    ([, id, text]) => ({
+      label: "need",
+      from: "session",
+      messageId: id,
+      why: "asks for the checklist",
+      firstStep: (text ?? "").includes(UNGOVERNED)
+        ? { governed: false, reason: "a file is opened first" }
+        : GOVERNS.firstStep,
+    })
+  );
+  return { terms: [], tasks };
+}
+
+/** The made-up sessions of the positive control's tasks (build-tasks --first-read), in store_a at
+ *  `/sessions/<name>.jsonl`: each is F1 with its first request replaced; c-late's first reply
+ *  reads a notes file instead of the skill, and c-same asks what c-one asks. */
+const CONTROL_SESSIONS: Record<string, { request: string; firstRead: boolean }> = {
+  "c-one": { request: "Give me the alpha checklist for the release.", firstRead: true },
+  "c-same": { request: "Give me the alpha checklist for the release.", firstRead: true },
+  "c-secret": {
+    request: `Run the alpha checklist on the API.\n> Authorization: Bearer ${SECRET_TOKEN}`,
+    firstRead: true,
+  },
+  "c-late": { request: "Write the alpha report.", firstRead: false },
+  "c-ungoverned": { request: `Fix the alpha checklist ${UNGOVERNED}.`, firstRead: true },
+  "c-two": { request: "Walk the alpha checklist for the fixture project.", firstRead: true },
+};
+
+/** The made-up path of control session `name`. */
+const controlPath = (name: string) => `/sessions/${name}.jsonl`;
+
+/** Control session `name`'s transcript text. */
+function controlText(name: string): string {
+  const lines = f1Lines();
+  const session = CONTROL_SESSIONS[name];
+  setText(lines, 0, () => session?.request ?? "");
+  if (session?.firstRead === false) setReadTarget(lines, 1, "/tmp/notes.md");
+  return lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+}
 
 /** The first words of the restate and audit prompts, by which the stand-in tells their requests. */
 const RESTATE_PROMPT = "You read part of a coding agent's session and find each message";
@@ -651,6 +703,7 @@ function readerAnswer(body: {
     return JSON.stringify(caseAnswer(name, user));
   }
   if (system.startsWith("You pick the tasks of a load test")) {
+    if (user.startsWith("<control>")) return JSON.stringify(controlAnswer(user));
     const fives = (label: string) => [1, 2, 3, 4, 5].map((n) => written(label, n));
     if (user.includes("None.")) {
       return JSON.stringify({ terms: ["alpha"], tasks: [...fives("need"), ...fives("near-miss")] });
@@ -658,7 +711,13 @@ function readerAnswer(body: {
     return JSON.stringify({
       terms: ["alpha"],
       tasks: [
-        { label: "need", from: "session", messageId: "m1", why: "asks for the checklist" },
+        {
+          label: "need",
+          from: "session",
+          messageId: "m1",
+          why: "asks for the checklist",
+          ...GOVERNS,
+        },
         {
           label: "near-miss",
           from: "session",
@@ -667,6 +726,11 @@ function readerAnswer(body: {
         },
         ...[1, 2, 3, 4].map((n) => written("need", n)),
         ...[1, 2, 3, 4].map((n) => written("near-miss", n)),
+        // A need task whose first step the skill does not govern: the build leaves it out.
+        {
+          ...written("need", 5),
+          firstStep: { governed: false, reason: "the notes are read first" },
+        },
       ],
     });
   }
@@ -833,6 +897,10 @@ beforeAll(() => {
   for (const [name, session] of Object.entries(SESSIONS)) {
     const store = files[session.store] ?? {};
     store[sessionPath(name)] = sessionText(name);
+  }
+  for (const name of Object.keys(CONTROL_SESSIONS)) {
+    const store = files.store_a ?? {};
+    store[controlPath(name)] = controlText(name);
   }
   writeFileSync(
     path.join(setupDir, "store.json"),
@@ -1946,6 +2014,17 @@ test("build-tasks proposes terms, reads first user messages per store and day, a
   // The same first message on two sessions is offered once.
   expect(summary.messagesFound).toBe(3);
   expect(summary.messagesOffered).toBe(2);
+  // The need task whose first step the skill does not govern is left out, with its reason.
+  expect(summary.droppedNeed).toBe(1);
+  expect(summary.dropped).toEqual([
+    {
+      source: "written",
+      text: "A made-up need task 5.",
+      why: "made up",
+      reason: "the notes are read first",
+    },
+  ]);
+  expect(summary.tasks[0].firstStep).toEqual(GOVERNS.firstStep);
 }, 30_000);
 
 /** The lines of the stand-in store's log since `from` characters, parsed. */
@@ -2136,6 +2215,189 @@ test("build-tasks killed after its first query and run again gives the tasks and
   expect(await main(args(killed), io(again))).toBe(0);
   expect(again.join("")).toContain("nothing to do");
 }, 60_000);
+
+/** A sessions file of the control sessions `names`, each with its path but `withoutPath`'s. */
+function controlSessionsFile(file: string, names: readonly string[], withoutPath: string[] = []) {
+  writeFileSync(
+    path.join(setupDir, file),
+    names
+      .map((name) => {
+        const line = { store: "store_a", hash: fileHash(controlPath(name)) };
+        return withoutPath.includes(name) ? line : { ...line, path: controlPath(name) };
+      })
+      .map((line) => `${JSON.stringify(line)}\n`)
+      .join("")
+  );
+  return path.join(setupDir, file);
+}
+
+/** The arguments of one build-tasks --first-read run. */
+const controlArgs = (sessions: string, out: string, seed: string, ...extra: string[]) => [
+  "build-tasks",
+  "--first-read",
+  "--config",
+  config,
+  "--key-file",
+  keyFile,
+  "--skill",
+  old,
+  "--sessions",
+  sessions,
+  "--seed",
+  seed,
+  ...extra,
+  "--out",
+  out,
+];
+
+/** The lines of a tasks file, parsed. */
+const tasksOf = (file: string): Record<string, unknown>[] =>
+  readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line));
+
+/** The control session whose transcript path's hash is `hash`. */
+const controlNamed = (hash: unknown) =>
+  Object.keys(CONTROL_SESSIONS).find((name) => fileHash(controlPath(name)) === hash);
+
+test("build-tasks --first-read takes the first requests of sessions whose first reply read the skill, once each, and leaves out one whose first step the skill does not govern", async () => {
+  const names = Object.keys(CONTROL_SESSIONS);
+  const sessions = controlSessionsFile("control.jsonl", names, ["c-two"]);
+  const out = path.join(scratch, "control", "tasks.jsonl");
+  const lines: string[] = [];
+  const from = recorder.requests.length;
+  expect(await main(controlArgs(sessions, out, "1", "--max", "10"), io(lines))).toBe(0);
+  // One reader call judged every request found.
+  expect(recorder.requests.slice(from)).toHaveLength(1);
+  const order = blindOrder(names, "1").map(({ item }) => item);
+  const firstOfSame = order.find((name) => name === "c-one" || name === "c-same");
+  const kept = order.filter((name) => [firstOfSame, "c-secret", "c-two"].includes(name));
+  const tasks = tasksOf(out);
+  expect(tasks.map((task) => task.pathHash)).toEqual(
+    kept.map((name) => pathHash(controlPath(name)))
+  );
+  expect(tasks.map((task) => task.id)).toEqual(["t1", "t2", "t3"]);
+  expect(
+    tasks.every(
+      (task) => task.label === "need" && task.source === "session" && task.store === "store_a"
+    )
+  ).toBe(true);
+  const secret = tasks.find((task) => task.pathHash === pathHash(controlPath("c-secret")));
+  expect(secret?.text).toBe(
+    `Run the alpha checklist on the API.\n> Authorization: Bearer ${SECRET_REMOVED}`
+  );
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.done).toBe(true);
+  const outcomes = Object.fromEntries(
+    (summary.sessions as { hash: string; outcome: string }[]).map((each) => [
+      controlNamed(each.hash),
+      each.outcome,
+    ])
+  );
+  expect(outcomes).toEqual({
+    "c-one": firstOfSame === "c-one" ? "first request" : "same request",
+    "c-same": firstOfSame === "c-same" ? "first request" : "same request",
+    "c-secret": "first request",
+    "c-late": "not first",
+    "c-ungoverned": "first request",
+    "c-two": "first request",
+  });
+  expect(summary.droppedNeed).toBe(1);
+  expect(summary.dropped).toEqual([
+    {
+      store: "store_a",
+      pathHash: pathHash(controlPath("c-ungoverned")),
+      reason: "a file is opened first",
+    },
+  ]);
+  expect(summary.tasks.map((task: { secretsRemoved: number }) => task.secretsRemoved)).toEqual(
+    kept.map((name) => (name === "c-secret" ? 1 : 0))
+  );
+  // c-two's path came from sessions.sql.
+  expect(summary.sessionQueries).toBe(1);
+  expect(lines.join("\n")).toContain("the sessions gave 3 control tasks, fewer than --max 10");
+  expect(existsSync(`${out}.found.jsonl`)).toBe(false);
+}, 60_000);
+
+test("build-tasks --first-read stops once --max requests are kept, and killed after its first session and run again gives the tasks and summary of one uninterrupted run", async () => {
+  const names = Object.keys(CONTROL_SESSIONS);
+  const sessions = controlSessionsFile("control-max.jsonl", names);
+  const once = path.join(scratch, "control-once", "tasks.jsonl");
+  const killed = path.join(scratch, "control-killed", "tasks.jsonl");
+  const fromOnce = recorder.requests.length;
+  expect(await main(controlArgs(sessions, once, "2", "--max", "2"), io([]))).toBe(0);
+  const onceCalls = recorder.requests.length - fromOnce;
+  // The sessions tried: the order up to the second request the skill governs the first step of.
+  const seen = new Set<string>();
+  let governed = 0;
+  const tried: string[] = [];
+  for (const name of blindOrder(names, "2").map(({ item }) => item)) {
+    if (governed === 2) break;
+    tried.push(name);
+    const session = CONTROL_SESSIONS[name];
+    if (session === undefined || !session.firstRead || seen.has(session.request)) continue;
+    seen.add(session.request);
+    if (!session.request.includes(UNGOVERNED)) governed += 1;
+  }
+  const summary = (out: string) =>
+    roundedSpend(
+      JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as Record<string, unknown>
+    );
+  const onceSummary = summary(once) as { sessions: { hash: string }[] };
+  expect(onceSummary.sessions.length).toBeLessThan(names.length);
+  expect(onceSummary.sessions.map((each) => controlNamed(each.hash))).toEqual(tried);
+  expect(tasksOf(once)).toHaveLength(2);
+
+  const lines: string[] = [];
+  const kill: BuildIo = {
+    ...io(lines),
+    out: (text) => {
+      lines.push(text);
+      if (/^build-tasks: 1\/\d+ /.test(text)) throw new Error("killed");
+    },
+  };
+  expect(await main(controlArgs(sessions, killed, "2", "--max", "2"), kill)).toBe(1);
+  const from = recorder.requests.length;
+  const logged = readFileSync(psqlLog, "utf8").length;
+  expect(await main(controlArgs(sessions, killed, "2", "--max", "2"), io(lines))).toBe(0);
+  // The first session is not pulled again.
+  const pulls = (out: string) =>
+    (summary(out) as { sessions: { pulls?: number }[] }).sessions
+      .slice(1)
+      .reduce((total, each) => total + (each.pulls ?? 0), 0);
+  expect(psqlLines(logged).filter((line) => line.kind === "pull")).toHaveLength(pulls(killed));
+  // The killed run made no reader call, so the run that went on makes them all.
+  expect(recorder.requests.length - from).toBe(onceCalls);
+  expect(readFileSync(killed, "utf8")).toBe(readFileSync(once, "utf8"));
+  expect(summary(killed)).toEqual(summary(once));
+  expect(existsSync(`${killed}.found.jsonl`)).toBe(false);
+  const again: string[] = [];
+  expect(await main(controlArgs(sessions, killed, "2", "--max", "2"), io(again))).toBe(0);
+  expect(again.join("")).toContain("nothing to do");
+  // Another seed and --max at the same --out are refused, naming each.
+  const other: string[] = [];
+  expect(await main(controlArgs(sessions, killed, "3", "--max", "3"), io(other))).toBe(2);
+  expect(other.join("\n")).toContain("--seed was 2, now 3; --max was 2, now 3");
+}, 60_000);
+
+test("build-tasks refuses --sessions, --seed and --max without --first-read, and --store with it, before any read", async () => {
+  const sessions = controlSessionsFile("control-refused.jsonl", ["c-one"]);
+  const out = path.join(scratch, "control-refused", "tasks.jsonl");
+  const from = recorder.requests.length;
+  const logged = readFileSync(psqlLog, "utf8").length;
+  const lines: string[] = [];
+  const pick = ["build-tasks", "--config", config, "--key-file", keyFile, "--skill", old];
+  expect(
+    await main([...pick, "--store", "store_a", "--sessions", sessions, "--out", out], io(lines))
+  ).toBe(2);
+  expect(lines.join("\n")).toContain("--sessions goes with --first-read only");
+  expect(await main([...controlArgs(sessions, out, "1"), "--store", "store_a"], io(lines))).toBe(2);
+  expect(lines.join("\n")).toContain("--first-read takes its sessions from --sessions");
+  expect(recorder.requests.length).toBe(from);
+  expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
+  expect(existsSync(out)).toBe(false);
+});
 
 test("removeSecrets takes out each secret shape and counts it, and leaves plain text alone", () => {
   const token = fixtureSecret("tok");
