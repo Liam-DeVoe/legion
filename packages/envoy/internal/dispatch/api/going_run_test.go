@@ -8,7 +8,6 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -176,23 +175,16 @@ func askRun(t *testing.T, rig goingRoutesRig, login string, body map[string]any)
 }
 
 // A run with a measured decision model decides first: the decision is the stream's first frame,
-// and the one answer call is told the action the decision chose with its argument schema, which
-// it could only have been told once the decision was in hand. Its arguments come back as the
-// proposal, the last frame before the ending: the chosen action's list of invocations as the
-// answer wrote them, one per item, and nothing for an action the decision did not choose, which
-// is never attempted. The pause writes nothing: no landing, and no run of the bar's agent
-// (going_runs).
-func TestGoingRunDecidesBeforeItAnswersAndProposesTheChosenAction(t *testing.T) {
+// then the answer's text, and the end last. The answer only reads: the pause writes nothing, no
+// landing and no run of the bar's agent (going_runs).
+func TestGoingRunDecidesBeforeItAnswers(t *testing.T) {
 	standIn := newDecisionStandIn(t)
 	standIn.answer(t, decidedAnswer{
 		action: "dispatch_issue_update", confidence: 0.9,
 		probabilities: map[string]float64{"dispatch_issue_update": 0.7, "dispatch_comment": 0.2, going.ActionNone: 0.1},
 		about:         going.ContextNamed, display: going.DisplayProse, displayConfidence: 0.9,
 	})
-	arguments := `{"dispatch_issue_update":[{"issue":"DEMO-1","status":"done"},{"issue":"DEMO-2","status":"done"}],` +
-		`"dispatch_comment":[{"issue":"DEMO-1","body":"Closing both."}],` +
-		`"dispatch_not_an_action":[{"issue":"DEMO-1"}]}`
-	answerer, chat := newGoingModelAnswerer(t, goingtest.Reply{Final: &goingtest.Final{Answer: "Both close.", Arguments: arguments}})
+	answerer, chat := newGoingModelAnswerer(t, goingtest.Reply{Final: &goingtest.Final{Answer: "Both close."}})
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{
 		answerer: answerer, answerModel: "going-test-deployment", decider: standIn.decider(t, staticToken),
 	})
@@ -204,8 +196,13 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesTheChosenAction(t *testing.T) 
 	if names[0] != contracts.GoingEventDecision || frames[0].Sequence != 1 {
 		t.Fatalf("the run stored %v, want the decision first", names)
 	}
-	if len(names) < 3 || names[len(names)-2] != contracts.GoingEventProposal || names[len(names)-1] != contracts.GoingEventEnd {
-		t.Fatalf("the run stored %v, want the proposal just before the end", names)
+	if len(names) < 3 || names[len(names)-1] != contracts.GoingEventEnd {
+		t.Fatalf("the run stored %v, want the answer after the decision and the end last", names)
+	}
+	for _, name := range names[1 : len(names)-1] {
+		if name != contracts.GoingEventText {
+			t.Fatalf("the run stored %v, want only the answer's text between the decision and the end", names)
+		}
 	}
 	if calls := standIn.calls.Load(); calls != 1 {
 		t.Fatalf("the decision model was called %d times, want once", calls)
@@ -217,36 +214,8 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesTheChosenAction(t *testing.T) 
 		t.Fatalf("the decision is %+v, want dispatch_issue_update, the line Do, about items the words name", decision)
 	}
 
-	requests := chat.Requests()
-	if len(requests) != 1 {
+	if requests := chat.Requests(); len(requests) != 1 {
 		t.Fatalf("the answer made %d calls, want one", len(requests))
-	}
-	var told string
-	for _, message := range requests[0].Messages {
-		if message.Role == "user" {
-			told = message.Content
-		}
-	}
-	for _, want := range []string{"name: dispatch_issue_update", `"name":"status"`} {
-		if !strings.Contains(told, want) {
-			t.Errorf("the answer call was told %q, want %q in it: the chosen action with its schema", told, want)
-		}
-	}
-	if strings.Contains(told, "name: dispatch_comment") || strings.Contains(told, "dispatch_not_an_action") || strings.Contains(told, "name: dispatch_claim") {
-		t.Errorf("the answer call was told %q, want only the chosen action", told)
-	}
-
-	var proposal goingProposal
-	frameData(t, frames, contracts.GoingEventProposal, &proposal)
-	// The words name DEMO-1 and DEMO-2, so every invocation on them may run at once.
-	want := goingProposal{Offers: []goingOffer{
-		{Action: "dispatch_issue_update", Offered: true, Invocations: []goingInvocation{
-			{Arguments: map[string]any{"issue": "DEMO-1", "status": "done"}, Automatic: true, TargetArgument: "issue"},
-			{Arguments: map[string]any{"issue": "DEMO-2", "status": "done"}, Automatic: true, TargetArgument: "issue"},
-		}},
-	}}
-	if !reflect.DeepEqual(proposal, want) {
-		t.Fatalf("the proposal is %+v, want %+v", proposal, want)
 	}
 
 	// With no run row a pause lands no write either: going_landings.run_id references going_runs.
@@ -323,121 +292,8 @@ func TestTheLineOnTop(t *testing.T) {
 	}
 }
 
-// The proposal's own rules, which need no model: on context page a target the words left out is
-// filled from the chip; elsewhere it is the one argument the bar asks for, as an item the search
-// finds; an action needing more than one argument, or one the bar cannot prompt for, is not
-// offered; an element naming an argument the action does not take or holding the wrong type is
-// dropped; with no structured reply an action is still offered on what the page fills.
-func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *testing.T) {
-	catalogue, err := BuildGoingCatalogue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	browser := catalogue.runnableBy(goingCredential{cookie: true, credential: personCredential})
-	session := catalogue.runnableBy(goingCredential{credential: &model.Credential{Session: "0199e2a0-1111-7000-8000-000000000001"}})
-	chip := &goingContext{Path: "/issues/DEMO-12", Project: "DEMO", Issue: "DEMO-12"}
-	offer := func(proposal goingProposal, action string) goingOffer {
-		t.Helper()
-		for _, offer := range proposal.Offers {
-			if offer.Action == action {
-				return offer
-			}
-		}
-		t.Fatalf("the proposal %+v holds no offer of %s", proposal, action)
-		return goingOffer{}
-	}
-
-	claimOnPage := goingPropose(
-		goingDecision{Context: going.ContextPage, offered: []string{"dispatch_claim", "dispatch_resolve_ask"}},
-		&going.Final{Arguments: `{"dispatch_claim":[{}]}`},
-		goingRunStart{chip: chip, actions: browser}, goingHolds{})
-	if got := offer(claimOnPage, "dispatch_claim"); !got.Offered || len(got.Invocations) != 1 ||
-		!reflect.DeepEqual(got.Invocations[0], goingInvocation{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true, TargetArgument: "issue"}) {
-		t.Errorf("on the page the claim is offered as %+v, want the chip's issue filled and nothing missing", got)
-	}
-	if got := offer(claimOnPage, "dispatch_resolve_ask"); got.Offered || len(got.Invocations) != 0 {
-		t.Errorf("an ask resolved with three arguments missing is offered as %+v, want it not offered", got)
-	}
-
-	claimNamed := goingPropose(
-		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_claim"}},
-		&going.Final{Arguments: `{}`},
-		goingRunStart{chip: chip, actions: browser}, goingHolds{})
-	want := goingInvocation{Arguments: map[string]any{}, Missing: &goingMissingArgument{Field: "issue", Kind: goingPromptItem, Item: "issue"}, Automatic: true, TargetArgument: "issue"}
-	if got := offer(claimNamed, "dispatch_claim"); !got.Offered || len(got.Invocations) != 1 || !reflect.DeepEqual(got.Invocations[0], want) {
-		t.Errorf("about items the words name, the claim is offered as %+v, want the issue asked for as an item", got)
-	}
-
-	follow := goingPropose(
-		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_follow"}},
-		&going.Final{Arguments: `{"dispatch_follow":[{"ask":"0199e2a0-2222-7000-8000-000000000002"}]}`},
-		goingRunStart{actions: session, session: "0199e2a0-1111-7000-8000-000000000001"}, goingHolds{})
-	wantFollow := goingInvocation{
-		Arguments:      map[string]any{"ask": "0199e2a0-2222-7000-8000-000000000002"},
-		Missing:        &goingMissingArgument{Field: "action", Kind: goingPromptEnum, Choices: []string{"follow", "unfollow"}},
-		TargetArgument: "ask",
-	}
-	if got := offer(follow, "dispatch_follow"); !got.Offered || !reflect.DeepEqual(got.Invocations, []goingInvocation{wantFollow}) {
-		t.Errorf("a session's follow is offered as %+v, want its action asked for among follow and unfollow", got)
-	}
-	browserFollow := goingPropose(
-		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_follow"}},
-		&going.Final{Arguments: `{"dispatch_follow":[{"ask":"0199e2a0-2222-7000-8000-000000000002"}]}`},
-		goingRunStart{actions: browser}, goingHolds{})
-	if got := offer(browserFollow, "dispatch_follow"); got.Offered {
-		t.Errorf("a browser's follow missing its action and its session is offered as %+v, want it not offered", got)
-	}
-
-	dropped := goingPropose(
-		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_issue_update"}},
-		&going.Final{Arguments: `{"dispatch_issue_update":[{"issue":12},{"issue":"DEMO-3","colour":"red"},{"issue":"DEMO-4","status":"done"}]}`},
-		goingRunStart{actions: browser}, goingHolds{})
-	if got := offer(dropped, "dispatch_issue_update"); !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-4", "status": "done"}, TargetArgument: "issue"}}) {
-		t.Errorf("the update is offered as %+v, want the one element its schema accepts", got)
-	}
-
-	fallback := goingPropose(
-		goingDecision{Context: going.ContextPage, offered: []string{"dispatch_claim"}},
-		nil,
-		goingRunStart{chip: chip, actions: browser}, goingHolds{})
-	if got := offer(fallback, "dispatch_claim"); !got.Offered || !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true, TargetArgument: "issue"}}) {
-		t.Errorf("with no structured reply the claim is offered as %+v, want it filled from the page", got)
-	}
-}
-
-// The argument an invocation names its item by is the item's own, as the row it reaches binds
-// it: none for a write that makes its item - a new issue, a new project - whose line names the
-// item once it is made; a document edit's document, on the project's route as on the issue's,
-// and never the project or issue it sits under; and an ask, not the caller's own session.
-func TestGoingTargetArgumentNamesTheItemItself(t *testing.T) {
-	catalogue, err := BuildGoingCatalogue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct{ action, pattern, want string }{
-		{"dispatch_issue", "/api/v1/issues", ""},
-		{"dispatch_project", "/api/v1/projects", ""},
-		{"dispatch_doc_edit", "/api/v1/projects/{key}/artifacts/{slug}/edits", "artifact"},
-		{"dispatch_doc_edit", "/api/v1/issues/{key}/artifacts/{slug}/edits", "artifact"},
-		{"dispatch_issue_update", "/api/v1/issues/{key}", "issue"},
-		{"dispatch_follow", "/api/v1/asks/{id}/followers/{session_id}", "ask"},
-	} {
-		action, held := catalogue.Lookup(tc.action)
-		if !held {
-			t.Fatalf("the catalogue holds no %s", tc.action)
-		}
-		index := slices.IndexFunc(action.Routes, func(route GoingRoute) bool { return route.Pattern == tc.pattern })
-		if index < 0 {
-			t.Fatalf("%s has no row %s", tc.action, tc.pattern)
-		}
-		if got := goingTargetArgument(action.Routes[index]); got != tc.want {
-			t.Errorf("%s through %s names its item by %q, want %q", tc.action, tc.pattern, got, tc.want)
-		}
-	}
-}
-
 // With no decision model configured, and with one whose token cannot be read, the answer streams
-// as it always did: no decision frame, no proposal, and no call to the decision endpoint.
+// as it always did: no decision frame, and no call to the decision endpoint.
 func TestGoingRunWithNoDecisionModelOrAnUnreachableOneAnswersWithNoDecision(t *testing.T) {
 	standIn := newDecisionStandIn(t)
 	standIn.answer(t, decidedAnswer{action: "dispatch_claim", confidence: 1, about: going.ContextPage, display: going.DisplayProse, displayConfidence: 1})
@@ -473,7 +329,7 @@ func TestGoingCancelStopsARunAtItsNextFrame(t *testing.T) {
 		t.Run(where, func(t *testing.T) {
 			answer := strings.Repeat("The pelicans arrive in spring and leave in autumn. ", 12)
 			answerer, chat := newGoingModelAnswerer(t, goingtest.Reply{
-				Final: &goingtest.Final{Answer: answer, Arguments: "{}"}, Chunk: 4, Pause: 100 * time.Millisecond,
+				Final: &goingtest.Final{Answer: answer}, Chunk: 4, Pause: 100 * time.Millisecond,
 			})
 			rig := newGoingRoutesRig(t, answerer)
 			id := askRun(t, rig, "alice", map[string]any{"words": "when do the pelicans arrive?"})

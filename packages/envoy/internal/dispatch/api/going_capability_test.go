@@ -226,11 +226,11 @@ func TestStructuredOutputRefusedTellsTheGoingCapabilityNoBlocks(t *testing.T) {
 		want  string
 	}{
 		"refused": {
-			reply: goingtest.Reply{RefuseFormat: true, Final: &goingtest.Final{Answer: "Nothing is open.", Arguments: "{}"}},
+			reply: goingtest.Reply{RefuseFormat: true, Final: &goingtest.Final{Answer: "Nothing is open."}},
 			want:  `"blocks":false`,
 		},
 		"accepted": {
-			reply: goingtest.Reply{Final: &goingtest.Final{Answer: "Nothing is open.", Arguments: "{}"}},
+			reply: goingtest.Reply{Final: &goingtest.Final{Answer: "Nothing is open."}},
 			want:  `"blocks":true`,
 		},
 	} {

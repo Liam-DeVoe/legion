@@ -51,12 +51,11 @@ type Reply struct {
 	Message string
 }
 
-// Final is a structured answer: the answer's text, the block drawn beside it and the arguments
-// of the offered actions, as going's Final schema names them.
+// Final is a structured answer: the answer's text and the block drawn beside it, as going's Final
+// schema names them.
 type Final struct {
-	Answer    string
-	Block     Block
-	Arguments string
+	Answer string
+	Block  Block
 }
 
 // Block is a structured answer's block. An empty Kind is written as none.
@@ -227,8 +226,7 @@ func (r Reply) content(structured bool) string {
 			Title string `json:"title"`
 			Spec  string `json:"spec"`
 		} `json:"block"`
-		Arguments string `json:"arguments"`
-	}{Answer: r.Final.Answer, Arguments: r.Final.Arguments}
+	}{Answer: r.Final.Answer}
 	final.Block.Kind, final.Block.Title, final.Block.Spec = kind, r.Final.Block.Title, r.Final.Block.Spec
 	out, _ := json.Marshal(final)
 	return string(out)

@@ -30,10 +30,10 @@ import { harnessPorts, stackValue } from "./harness-ports";
 //
 // Every other call (`replies`, `default`), which is the short answer the server streams as the
 // person pauses: a list of replies taken one per conversation in order, then the default reply,
-// and with neither a 500 that says so. A reply is a Final object (the answer, a block and the
-// offered actions' arguments, which a call carrying `response_format` gets as the JSON object
-// going's Final schema describes, answer first, and a call carrying none gets as the answer alone
-// in prose), plain prose (which a structured call reads as a reply that does not fit the schema),
+// and with neither a 500 that says so. A reply is a Final object (the answer and a block, which a
+// call carrying `response_format` gets as the JSON object going's Final schema describes, answer
+// first, and a call carrying none gets as the answer alone in prose), plain prose (which a
+// structured call reads as a reply that does not fit the schema),
 // tool calls the model makes before its answer, a 400 to every call carrying `response_format` (a
 // service with no structured output), or any status to every call. A reply with both tool calls
 // and an answer serves the tool calls first, and its answer to the call that carries their
@@ -48,8 +48,8 @@ import { harnessPorts, stackValue } from "./harness-ports";
 // belongs to, the tools it offered, the tool results it gave the model, the turn it was answered
 // with, and when its caller went away.
 
-/** The Final object of a reply. `spec` and `arguments` are JSON text on the wire; an object given
- *  here is written as its JSON. A block's kind defaults to `none`. */
+/** The Final object of a reply. `spec` is JSON text on the wire; an object given here is written
+ *  as its JSON. A block's kind defaults to `none`. */
 export interface ChatFinal {
   readonly answer: string;
   readonly block?: {
@@ -57,7 +57,6 @@ export interface ChatFinal {
     readonly title?: string;
     readonly spec?: unknown;
   };
-  readonly arguments?: unknown;
 }
 
 /** One tool call the model makes. `arguments` is JSON text on the wire; an object given here is
@@ -260,8 +259,7 @@ function content(reply: ChatReply, structured: boolean): string {
     `{"answer":${JSON.stringify(reply.final.answer)},` +
     `"block":{"kind":${JSON.stringify(block?.kind ?? "none")},` +
     `"title":${JSON.stringify(block?.title ?? "")},` +
-    `"spec":${JSON.stringify(jsonText(block?.spec, ""))}},` +
-    `"arguments":${JSON.stringify(jsonText(reply.final.arguments, "{}"))}}`
+    `"spec":${JSON.stringify(jsonText(block?.spec, ""))}}}`
   );
 }
 

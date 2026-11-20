@@ -244,12 +244,9 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// run is detached from it, and the row keeps no credential (model.Actor.Recorded).
 	credential := goingCredentialOf(r, caller, cookie)
 	start := goingRunStart{
-		words:     words,
-		chip:      chip,
-		actions:   s.going.runnableBy(credential),
-		session:   credential.session(),
-		reads:     s.goingReadsFor(credential, scoped),
-		serverURL: s.deps.ServerURL,
+		chip:    chip,
+		actions: s.going.runnableBy(credential),
+		reads:   s.goingReadsFor(credential, scoped),
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
 	// cancels the server's lifetime before the HTTP drain begins, so a run bound to either the
@@ -329,9 +326,8 @@ func goingContextFrom(input *goingContextInput) (*goingContext, error) {
 // Words the fast tier answers - an issue's key, or a hit's own title or name (goingNamedHit) -
 // are answered with that hit and ask no model at all: not the decider, not the answer (R2).
 //
-// A run with a decider decides first and stores the decision frame before the answer is asked
-// anything, so the answer is told the action the decision offered; once the answer has written,
-// the proposal frame carries its arguments, before the frame that ends the stream.
+// A run with a decider decides first and stores the decision frame, which names the line on top
+// of the bar, before the answer is asked anything; the answer only reads and changes nothing.
 // A pause's answer is no run of the bar's agent: it writes no going_runs row, so History, the
 // claim and the sweep of runs never read it (going_runs.go).
 func (s *server) startGoingRun(ctx context.Context, request goingRequest, start goingRunStart, turn *goingQuickTurn) {
@@ -387,14 +383,13 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 	}
 	defer release()
 
-	decision, err := run.decide(answering)
-	if err != nil || running.Err() != nil {
+	if err := run.decide(answering); err != nil || running.Err() != nil {
 		// Cancelled while it decided, or its decision frame could not be stored: nothing is
 		// asked of the answer.
 		goingRunStopped(request.ID, err)
 		return
 	}
-	goingRunStopped(request.ID, run.answer(answering, decision))
+	goingRunStopped(request.ID, run.answer(answering))
 }
 
 // goingRunning is one run as it answers: its request and start, and the context its frames are
@@ -440,52 +435,44 @@ func (g *goingRunning) fastTier(ctx context.Context) (bool, error) {
 	return true, g.emit(going.End(0, items))
 }
 
-// decide makes the run's decision and stores its frame: nil with no decision, which the answer
-// runs without, and an error where its frame could not be stored.
-func (g *goingRunning) decide(ctx context.Context) (*goingDecision, error) {
+// decide makes the run's decision and stores its frame, where it came to one: the answer runs the
+// same with a decision or without one. It answers an error where the frame could not be stored.
+func (g *goingRunning) decide(ctx context.Context) error {
 	decision, decided := g.s.goingDecide(ctx, g.request.Words, g.start)
 	if !decided || g.running.Err() != nil {
-		return nil, nil
+		return nil
 	}
-	if err := g.emit(going.Event{Name: contracts.GoingEventDecision, Data: decision}); err != nil {
-		return nil, err
-	}
-	return &decision, nil
+	return g.emit(going.Event{Name: contracts.GoingEventDecision, Data: decision})
 }
 
-// answer asks the answer of the run, told the action decision offered (none for no decision),
-// with every read tool its caller may call, each made as the run's author: the block's fill makes
-// its read through the same functions, and the roster read is what the roster frame reports.
-func (g *goingRunning) answer(ctx context.Context, decision *goingDecision) error {
-	var offer going.Offer
-	if decision != nil {
-		offer = decision.offer(g.start)
-	}
+// answer asks the answer of the run, with every read tool its caller may call, each made as the
+// run's author: the block's fill makes its read through the same functions, and the roster read is
+// what the roster frame reports.
+func (g *goingRunning) answer(ctx context.Context) error {
 	reads := g.s.goingRunReads(g.request, g.start)
 	return g.s.deps.Answerer.Run(ctx, going.Request{
 		Words:  g.request.Words,
 		Search: g.s.goingSearch(g.request.Project),
 		Bodies: g.s.goingBodies,
-		Offer:  offer,
 		Reads:  reads.funcs,
 		OnOutcome: func(outcome going.Outcome) error {
-			return g.finish(ctx, reads, decision, outcome)
+			return g.finish(ctx, reads, outcome)
 		},
 	}, g.emit)
 }
 
 // finish is the run's outcome, once the answer has written its last text frame: the block the
-// structured reply wrote and the roster frame, and the proposal of the decision.
-func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, decision *goingDecision, outcome going.Outcome) error {
+// structured reply wrote and the roster frame.
+func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, outcome going.Outcome) error {
 	if g.running.Err() != nil {
 		// Cancelled under the answer on this process: the answer's ending is the cancel's, so the
-		// run stores no ending and no proposal, as a cancel landing on another process leaves it.
+		// run stores no ending, as a cancel landing on another process leaves it.
 		return g.running.Err()
 	}
 	if outcome.StructuredOutput != "" {
-		// After every text frame and before the proposal and the ending (R2): the block the
-		// structured reply wrote, filled from its read, and how fresh the roster the run read
-		// was. Neither counts against the answer's word cut.
+		// After every text frame and before the ending (R2): the block the structured reply
+		// wrote, filled from its read, and how fresh the roster the run read was. Neither
+		// counts against the answer's word cut.
 		if block, drawn := reads.block(ctx, outcome.Final, g.request.Words); drawn {
 			if err := g.emit(going.Event{Name: contracts.GoingEventBlock, Data: block}); err != nil {
 				return err
@@ -493,14 +480,6 @@ func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, decision
 		}
 		if roster, read := reads.rosterRead(); read {
 			if err := g.emit(going.Event{Name: contracts.GoingEventRoster, Data: roster}); err != nil {
-				return err
-			}
-		}
-		// A run whose answer came to nothing - it failed before the model answered or refused -
-		// proposes nothing either.
-		if decision != nil {
-			proposal := goingPropose(*decision, outcome.Final, g.start, g.s.goingHoldsBy(ctx))
-			if err := g.emit(going.Event{Name: contracts.GoingEventProposal, Data: proposal}); err != nil {
 				return err
 			}
 		}

@@ -7,7 +7,6 @@ import {
   GOING_EVENT_ERROR,
   GOING_EVENT_ITEM,
   GOING_EVENT_NONE,
-  GOING_EVENT_PROPOSAL,
   GOING_EVENT_ROSTER,
   GOING_EVENT_TEXT,
   GOING_REQUEST_TTL_MS,
@@ -87,8 +86,7 @@ function answerTo(answer: GoingAnswer | undefined, words: string): GoingAnswer |
  * One run of Dispatch's answer to the words in the bar, as the frames of its stream have built
  * it so far. Every field is a frame's: the text is the `text` frames joined, the items are the
  * `item` frames in order, and so on. The decision model's `decision` frame names the line on top
- * (`line`), which the bar draws above the hits and the panel does not; its `proposal` frame
- * changes nothing of the answer.
+ * (`line`), which the bar draws above the hits and the panel does not.
  */
 export interface GoingAnswer {
   /** The run, which addresses its stream; undefined while the request that starts it is out. */
@@ -187,8 +185,6 @@ function withFrame(answer: GoingAnswer, frame: GoingEvent): GoingAnswer {
       return { ...answer, none: true };
     case GOING_EVENT_DECISION:
       return { ...answer, line: frame.data.line };
-    case GOING_EVENT_PROPOSAL:
-      return answer;
     case GOING_EVENT_BLOCK:
       return { ...answer, block: frame.data };
     case GOING_EVENT_ROSTER:

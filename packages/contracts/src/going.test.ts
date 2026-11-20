@@ -7,7 +7,6 @@ import blockProgress from "../fixtures/going/block_progress.json";
 import blockTable from "../fixtures/going/block_table.json";
 import blockTimeline from "../fixtures/going/block_timeline.json";
 import decision from "../fixtures/going/decision.json";
-import proposal from "../fixtures/going/proposal.json";
 import roster from "../fixtures/going/roster.json";
 import type {
   GoingBlockData,
@@ -16,13 +15,9 @@ import type {
   GoingChartSpec,
   GoingDecidedContext,
   GoingDecisionEvent,
-  GoingInvocation,
   GoingLine,
   GoingMetricSpec,
-  GoingMissingArgument,
-  GoingOffer,
   GoingProgressSpec,
-  GoingProposalEvent,
   GoingRosterEvent,
   GoingTableSpec,
 } from "./going";
@@ -46,18 +41,6 @@ type Roster = GoingRosterEvent["data"];
 const DECISION_KEYS = allOf<keyof Decision>()(["action", "line", "context"]);
 const LINES = allOf<GoingLine>()(["ask", "do", "file"]);
 const CONTEXTS = allOf<GoingDecidedContext>()(["page", "named", "none"]);
-const PROPOSAL_KEYS = allOf<keyof GoingProposalEvent["data"]>()(["offers"]);
-const OFFER_KEYS = allOf<keyof GoingOffer>()(["action", "invocations", "offered", "withheld"]);
-const OFFER_OPTIONAL = ["withheld"] as const;
-const INVOCATION_KEYS = allOf<keyof GoingInvocation>()([
-  "arguments",
-  "missing",
-  "automatic",
-  "target_argument",
-]);
-const MISSING_KEYS = allOf<keyof GoingMissingArgument>()(["field", "kind", "choices", "item"]);
-const MISSING_OPTIONAL = ["choices", "item"] as const;
-const MISSING_KINDS = allOf<GoingMissingArgument["kind"]>()(["text", "number", "enum", "item"]);
 const BLOCK_KEYS = allOf<keyof GoingBlockData>()(["kind", "title", "spec", "rows"]);
 const SOURCE_KEYS = allOf<keyof GoingBlockSource>()(["source", "params", "table"]);
 /** Every kind's spec, by kind: a kind without a row, or a row missing a key of its spec's type or
@@ -123,38 +106,6 @@ test("a decision frame carries the action chosen, the line on top it gives and w
   expect(typeof decision.action).toBe("string");
   expect(LINES).toContain(decision.line as GoingLine);
   expect(CONTEXTS).toContain(decision.context as GoingDecidedContext);
-});
-
-test("a proposal frame carries each offer's invocations, each with its arguments, what it still needs, whether it runs at once and the argument naming its item", () => {
-  expect(keysOf(proposal)).toEqual(sorted(PROPOSAL_KEYS));
-  const kinds = new Set<string>();
-  let withheld = 0;
-  for (const offer of proposal.offers as readonly Readonly<Record<string, unknown>>[]) {
-    expectKeys(offer, OFFER_KEYS, OFFER_OPTIONAL);
-    const invocations = offer.invocations as readonly Readonly<Record<string, unknown>>[];
-    // An offer nothing survived for offers no invocation.
-    expect(offer.offered).toBe(invocations.length > 0);
-    // A withheld invocation is said in words, one reason each.
-    if (offer.withheld !== undefined) {
-      for (const reason of offer.withheld as readonly unknown[])
-        expect(typeof reason).toBe("string");
-      withheld += (offer.withheld as readonly unknown[]).length;
-    }
-    for (const invocation of invocations) {
-      expect(keysOf(invocation)).toEqual(sorted(INVOCATION_KEYS));
-      expect(typeof invocation.automatic).toBe("boolean");
-      expect(typeof invocation.target_argument).toBe("string");
-      const missing = invocation.missing as Readonly<Record<string, unknown>> | null;
-      if (missing === null) continue;
-      expectKeys(missing, MISSING_KEYS, MISSING_OPTIONAL);
-      expect(MISSING_KINDS).toContain(missing.kind as GoingMissingArgument["kind"]);
-      kinds.add(missing.kind as string);
-    }
-  }
-  // The fixture withholds an upload, and asks for an enumeration's value and for an item, the two
-  // kinds with a key of their own.
-  expect(withheld).toBe(1);
-  expect(sorted([...kinds])).toEqual(["enum", "item"]);
 });
 
 test("a block frame of each kind carries its title, the spec its kind takes and rows of the fields it draws", () => {

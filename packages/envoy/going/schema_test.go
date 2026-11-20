@@ -29,8 +29,8 @@ func TestTheFinalSchemaKeepsToTheStrictSubset(t *testing.T) {
 	checkStrict(t, "#", root)
 
 	properties := root["properties"].(map[string]any)
-	if got := slices.Sorted(maps.Keys(properties)); !slices.Equal(got, []string{"answer", "arguments", "block"}) {
-		t.Errorf("the Final schema's properties are %v, want answer, block and arguments", got)
+	if got := slices.Sorted(maps.Keys(properties)); !slices.Equal(got, []string{"answer", "block"}) {
+		t.Errorf("the Final schema's properties are %v, want answer and block", got)
 	}
 	block := properties["block"].(map[string]any)["properties"].(map[string]any)
 	kinds := block["kind"].(map[string]any)["enum"].([]any)
@@ -41,8 +41,8 @@ func TestTheFinalSchemaKeepsToTheStrictSubset(t *testing.T) {
 }
 
 // The answer is the first property the schema names, so a model that writes the object in the
-// schema's order writes the answer first and the reader is given it while the block and the
-// arguments are still being written.
+// schema's order writes the answer first and the reader is given it while the block is still
+// being written.
 func TestTheFinalSchemaNamesTheAnswerFirst(t *testing.T) {
 	decoder := json.NewDecoder(bytes.NewReader(finalSchema))
 	depth := 0

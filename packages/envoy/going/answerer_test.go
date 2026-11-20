@@ -257,7 +257,7 @@ func testAnswerer(t *testing.T, model *goingtest.Model, cfg going.AnswererConfig
 // answer is a turn that answers with text, as the call asks for it: the Final object with no
 // block when it asks for one, the text as prose when it does not.
 func answer(text string) goingtest.Reply {
-	return goingtest.Reply{Final: &goingtest.Final{Answer: text, Arguments: "{}"}}
+	return goingtest.Reply{Final: &goingtest.Final{Answer: text}}
 }
 
 // searchCall is a turn that calls the one tool with q.
@@ -301,16 +301,14 @@ func TestNewAnswererRefusesAnAnswererWithoutAModel(t *testing.T) {
 // answer streams as the answer property grows: the reader is given it in several text frames
 // while the model writes, each cleared by the filter - the link to a hit the model was given
 // reaches the reader as the item frame and its own visible text, and markdown punctuation is
-// escaped. The block and the arguments are handed to the caller and are no frame of the stream.
+// escaped. The block is handed to the caller and is no frame of the stream.
 func TestAnswerThroughAgentloop(t *testing.T) {
 	link := fmt.Sprintf("[%s](%s)", routeHit.Title, routeHit.Href)
 	spec := `{"series":[{"name":"opened","points":[3,5,2]}]}`
-	arguments := `{"dispatch_claim":[{"key":"DEMO-12"}]}`
 	model := goingtest.NewModel(t, goingtest.Reply{
 		Final: &goingtest.Final{
-			Answer:    "The order is settled on " + link + ", and it is *final* for now.",
-			Block:     goingtest.Block{Kind: "chart", Title: "Opened a week", Spec: spec},
-			Arguments: arguments,
+			Answer: "The order is settled on " + link + ", and it is *final* for now.",
+			Block:  goingtest.Block{Kind: "chart", Title: "Opened a week", Spec: spec},
 		},
 		Chunk: 5,
 	})
@@ -336,7 +334,7 @@ func TestAnswerThroughAgentloop(t *testing.T) {
 	if !strings.Contains(text, `\*final\*`) {
 		t.Errorf("answer = %q, want the emphasis escaped as plain text", text)
 	}
-	for _, leaked := range []string{`"answer"`, `"block"`, spec, "Opened a week", "dispatch_claim"} {
+	for _, leaked := range []string{`"answer"`, `"block"`, spec, "Opened a week"} {
 		if strings.Contains(text, leaked) {
 			t.Errorf("answer = %q, want none of the object around the answer, but it holds %q", text, leaked)
 		}
@@ -367,7 +365,7 @@ func TestAnswerThroughAgentloop(t *testing.T) {
 		} `json:"json_schema"`
 	}
 	if err := json.Unmarshal(requests[0].ResponseFormat, &format); err != nil || format.Type != "json_schema" ||
-		!reflect.DeepEqual(format.JSONSchema.Schema.Required, []string{"answer", "block", "arguments"}) {
+		!reflect.DeepEqual(format.JSONSchema.Schema.Required, []string{"answer", "block"}) {
 		t.Errorf("response_format = %s (%v), want the Final schema as a json_schema format", requests[0].ResponseFormat, err)
 	}
 	if requests[0].MaxTokens <= 0 {
@@ -383,15 +381,14 @@ func TestAnswerThroughAgentloop(t *testing.T) {
 		t.Errorf("searches = %q, want the one seeding search with the question's words", search.queries)
 	}
 
-	// The caller is handed the reply whole: the block and the arguments the stream carries no
-	// frame of.
+	// The caller is handed the reply whole: the block the stream carries no frame of.
 	outcome := stream.reported(t)
 	if outcome.StructuredOutput != going.StructuredOutputAccepted || outcome.Final == nil {
 		t.Fatalf("outcome = %+v, want the structured reply accepted", outcome)
 	}
 	wantBlock := going.FinalBlock{Kind: "chart", Title: "Opened a week", Spec: spec}
-	if outcome.Final.Block != wantBlock || outcome.Final.Arguments != arguments {
-		t.Errorf("final = %+v, want block %+v and arguments %s", outcome.Final, wantBlock, arguments)
+	if outcome.Final.Block != wantBlock {
+		t.Errorf("final = %+v, want block %+v", outcome.Final, wantBlock)
 	}
 	if blocks, known := answerer.Blocks(); !blocks || !known {
 		t.Errorf("Blocks = %v, %v, want true once a structured reply was accepted", blocks, known)
@@ -402,7 +399,7 @@ func TestAnswerThroughAgentloop(t *testing.T) {
 // contracts.GoingAnswerWordMax, cut says so with that count, and end still follows - a cut answer
 // is an answer.
 func TestAnswerThroughAgentloopCutsAtTheWordCap(t *testing.T) {
-	model := goingtest.NewModel(t, goingtest.Reply{Final: &goingtest.Final{Answer: answerWords(300), Arguments: "{}"}, Chunk: 7})
+	model := goingtest.NewModel(t, goingtest.Reply{Final: &goingtest.Final{Answer: answerWords(300)}, Chunk: 7})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 
@@ -425,7 +422,7 @@ func TestAnswerThroughAgentloopCutsAtTheWordCap(t *testing.T) {
 // - and the stream says the answer was changed.
 func TestAnswerThroughAgentloopDropsALinkOutsideTheCitationSet(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{
-		Final: &goingtest.Final{Answer: "The order is settled on [another issue](" + outsideAnswerHref + ") instead.", Arguments: "{}"},
+		Final: &goingtest.Final{Answer: "The order is settled on [another issue](" + outsideAnswerHref + ") instead."},
 		Chunk: 6,
 	})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
@@ -490,15 +487,14 @@ func TestRunSaysNoneWhenTheModelWroteNothing(t *testing.T) {
 
 // TestStructuredOutputRefusedByA400FallsBackToProse: a service that refuses the structured
 // request with a 400 is asked the same again for prose, which streams through the filter as the
-// structured answer does; the run has no block and no arguments and reports the refusal, and the
-// process now knows its model draws no block.
+// structured answer does; the run has no block and reports the refusal, and the process now knows
+// its model draws no block.
 func TestStructuredOutputRefusedByA400FallsBackToProse(t *testing.T) {
 	link := fmt.Sprintf("[%s](%s)", routeHit.Title, routeHit.Href)
 	model := goingtest.NewModel(t, goingtest.Reply{
 		Final: &goingtest.Final{
-			Answer:    "It is settled on " + link + " and on [another](" + outsideAnswerHref + "), *for now*.",
-			Block:     goingtest.Block{Kind: "chart", Title: "never drawn", Spec: "{}"},
-			Arguments: "{}",
+			Answer: "It is settled on " + link + " and on [another](" + outsideAnswerHref + "), *for now*.",
+			Block:  goingtest.Block{Kind: "chart", Title: "never drawn", Spec: "{}"},
 		},
 		RefuseFormat: true,
 		Chunk:        5,
@@ -529,7 +525,7 @@ func TestStructuredOutputRefusedForAnotherCauseFallsBackForThatRunAlone(t *testi
 		goingtest.Reply{Status: http.StatusBadRequest,
 			Message: "The response was filtered due to the prompt triggering the content management policy."},
 		goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds no answer to that question."}},
-		goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds no answer to that question.", Arguments: "{}"}},
+		goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds no answer to that question."}},
 	)
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	for run := range 2 {
@@ -553,14 +549,13 @@ func TestStructuredOutputRefusedForAnotherCauseFallsBackForThatRunAlone(t *testi
 	}
 }
 
-// TestRunTellsTheStructuredCallTheOffer: the structured call is told each offered action with its
-// argument schema and the chart the words name, which is what lets it write their arguments and
-// the chart's block; the prose call that follows a refusal is told neither, since prose carries
-// no arguments and no block. The chart is offered because the run holds a read that fills one
-// (TestNoBlockIsOfferedWithoutAReadThatFillsIt is the other side).
-func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
+// TestRunTellsTheStructuredCallTheBlockItMayDraw: the structured call is told the chart the words
+// name, which is what lets it write the chart's block; the prose call that follows a refusal is
+// not told it, since prose carries no block. The chart is offered because the run holds a read
+// that fills one (TestNoBlockIsOfferedWithoutAReadThatFillsIt is the other side).
+func TestRunTellsTheStructuredCallTheBlockItMayDraw(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{
-		Final:        &goingtest.Final{Answer: "Claimed.", Arguments: `{"dispatch_claim":[{"issue":"DEMO-12"}]}`},
+		Final:        &goingtest.Final{Answer: "Claimed."},
 		RefuseFormat: true,
 	})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
@@ -569,12 +564,6 @@ func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
 	request.Reads = map[string]going.ReadFunc{going.ReadProjectActivity: func(context.Context, json.RawMessage) (going.Read, error) {
 		return going.Read{}, nil
 	}}
-	request.Offer = going.Offer{
-		Actions: []going.OfferedAction{
-			{Name: "dispatch_claim", Schema: json.RawMessage(`[{"name":"issue","kind":"string","required":true}]`)},
-			{Name: "dispatch_comment", Schema: json.RawMessage(`[{"name":"body","kind":"string","required":true}]`)},
-		},
-	}
 	if err := answerer.Run(t.Context(), request, stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -592,17 +581,12 @@ func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
 		return ""
 	}
 	structured, prose := told(requests[0]), told(requests[1])
-	for _, want := range []string{
-		"name: dispatch_claim", `schema: [{"name":"issue","kind":"string","required":true}]`,
-		"name: dispatch_comment", `schema: [{"name":"body","kind":"string","required":true}]`,
-		"kind: chart",
-	} {
-		if !strings.Contains(structured, want) {
-			t.Errorf("the structured call was told %q, want %q in it", structured, want)
-		}
-		if strings.Contains(prose, want) {
-			t.Errorf("the prose call was told %q, want no %q: prose carries no arguments and no block", prose, want)
-		}
+	const chart = "kind: chart"
+	if !strings.Contains(structured, chart) {
+		t.Errorf("the structured call was told %q, want %q in it", structured, chart)
+	}
+	if strings.Contains(prose, chart) {
+		t.Errorf("the prose call was told %q, want no %q: prose carries no block", prose, chart)
 	}
 	if !strings.Contains(prose, "claim DEMO-12") {
 		t.Errorf("the prose call was told %q, want the question", prose)
@@ -672,7 +656,7 @@ func assertProseAnswer(t *testing.T, stream *answerStream) {
 // whose model serves no structured output pays one call an answer and not two (c20).
 func TestStructuredOutputRefusedOnceMakesTheNextRunOneCall(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{
-		Final:        &goingtest.Final{Answer: "Dispatch holds no answer to that question.", Arguments: "{}"},
+		Final:        &goingtest.Final{Answer: "Dispatch holds no answer to that question."},
 		RefuseFormat: true,
 	})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
@@ -1089,7 +1073,7 @@ func TestRunHandsBackTheStreamWritersFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			model := goingtest.NewModel(t, goingtest.Reply{
-				Final: &goingtest.Final{Answer: fmt.Sprintf("It is on [%s](%s).", routeHit.Title, routeHit.Href), Arguments: "{}"},
+				Final: &goingtest.Final{Answer: fmt.Sprintf("It is on [%s](%s).", routeHit.Title, routeHit.Href)},
 				Chunk: 5,
 			})
 			answerer := testAnswerer(t, model, going.AnswererConfig{})

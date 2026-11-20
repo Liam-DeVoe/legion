@@ -15,7 +15,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -170,31 +169,6 @@ func (rig goingWritesRig) ask(t *testing.T, issue, question string) string {
 	return decodeBody[model.Ask](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
 		"question": question,
 	})).ID
-}
-
-// goingBrowserStart is the run of a person at a browser: every action of the catalogue whose rows a
-// cookie may call, and no session of their own.
-func goingBrowserStart(t *testing.T) goingRunStart {
-	t.Helper()
-	catalogue, err := BuildGoingCatalogue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return goingRunStart{actions: catalogue.runnableBy(goingCredential{cookie: true, credential: personCredential})}
-}
-
-// goingFakeProposal is what a run proposes when a fake decision chose action, about the items the
-// words name, and a fake answer call wrote arguments for it: one invocation per element. It reads
-// nothing of the store, so a hand-over or an upload's name runs at once only where the words name
-// it.
-func goingFakeProposal(t *testing.T, start goingRunStart, action string, arguments ...map[string]any) goingProposal {
-	t.Helper()
-	written, err := json.Marshal(map[string][]map[string]any{action: arguments})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{action}},
-		&going.Final{Answer: "Done.", Arguments: string(written)}, start, goingHolds{})
 }
 
 // TestGoingSettingsAreThePersonsOwnAndReadAskUntilSet: the mode of the bar is held for the
@@ -445,8 +419,8 @@ func goingRowCases(f goingRowFixtures) map[string]goingRowCase {
 // TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable is c8: every row of the catalogue
 // BuildGoingCatalogue holds, counted against that builder, executes through GoingCaller.Do against
 // the server's own route table called in-process, under the credential kind its route accepts,
-// with the arguments a fake answer call wrote for the action a fake decision chose, translated
-// into what the route takes; and each call reaches the row the catalogue names and is taken by it.
+// with its case's arguments translated into what the route takes; and each call reaches the row
+// the catalogue names and is taken by it.
 func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	cases := goingRowCases(newGoingRowFixtures(t, rig))
@@ -461,8 +435,6 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 	if len(cases) != rows {
 		t.Fatalf("%d row cases for the %d rows the builder holds: every row is executed, and only those", len(cases), rows)
 	}
-	browser := goingBrowserStart(t)
-	bearer := goingRunStart{actions: catalogue.runnableBy(goingCredential{credential: scopelessCredential})}
 	for _, action := range catalogue.Actions() {
 		for _, route := range action.Routes {
 			name := action.Action + " " + route.Method + " " + route.Pattern
@@ -471,16 +443,11 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 				if !held {
 					t.Fatalf("no case executes %s", name)
 				}
-				start, session := browser, ""
+				session := ""
 				if row.bearer {
 					// The session a bearer names itself as, as `dispatch` names it in actor.
-					start, session = bearer, goingPlanner
+					session = goingPlanner
 				}
-				proposal := goingFakeProposal(t, start, action.Action, row.arguments)
-				if len(proposal.Offers) != 1 || !proposal.Offers[0].Offered || len(proposal.Offers[0].Invocations) != 1 {
-					t.Fatalf("the proposal is %+v, want %s offered once", proposal, action.Action)
-				}
-				invocation := proposal.Offers[0].Invocations[0]
 				doer := &goingRecordingDoer{doer: rig.served.goingDoer(goingCallerOf(t, rig, row.bearer), testServerURL)}
 				if row.session != "" {
 					// The session a person names by its title, resolved as the person
@@ -490,11 +457,9 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 						t.Fatalf("resolve the session %q: %v", row.session, err)
 					}
 					session = resolved
-				} else if invocation.Missing != nil {
-					t.Fatalf("the invocation still misses %+v", invocation.Missing)
 				}
 				caller := GoingCaller{Catalogue: catalogue, Session: session, Doer: doer, sendIssue: row.sendIssue}
-				response, err := caller.Do(context.Background(), action.Action, invocation.Arguments)
+				response, err := caller.Do(context.Background(), action.Action, row.arguments)
 				if err != nil {
 					t.Fatalf("perform %s: %v", name, err)
 				}
@@ -547,8 +512,7 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 }
 
 // TestEveryGoingRowRefusesAnActionTheCatalogueDoesNotHoldWithNoRequest: an action the catalogue
-// does not hold is refused with its own error and nothing is sent, and the proposal never offers
-// it, whatever the answer wrote.
+// does not hold is refused with its own error and nothing is sent.
 func TestEveryGoingRowRefusesAnActionTheCatalogueDoesNotHoldWithNoRequest(t *testing.T) {
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
@@ -559,29 +523,6 @@ func TestEveryGoingRowRefusesAnActionTheCatalogueDoesNotHoldWithNoRequest(t *tes
 	var unknown GoingUnknownActionError
 	if !errors.As(err, &unknown) || unknown.Action != "dispatch_paint_widget" || len(doer.sent) != 0 {
 		t.Fatalf("an action outside the catalogue answered %v and sent %v, want its own refusal and nothing sent", err, doer.sent)
-	}
-	start := goingBrowserStart(t)
-	proposal := goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_paint_widget"}},
-		&going.Final{Arguments: `{"dispatch_paint_widget":[{"widget":"7"}]}`}, start, goingHolds{})
-	if len(proposal.Offers) != 0 {
-		t.Fatalf("the proposal offers %+v, want nothing for an action the catalogue does not hold", proposal.Offers)
-	}
-}
-
-// TestEveryGoingRowWithAnUnfillableArgumentIsNotOfferedUntilTheWordsSupplyIt: an action whose
-// required arguments neither the page, the words nor one field of the bar can fill is not
-// offered, and the same action is offered once the words supply them.
-func TestEveryGoingRowWithAnUnfillableArgumentIsNotOfferedUntilTheWordsSupplyIt(t *testing.T) {
-	start := goingBrowserStart(t)
-	start.chip = &goingContext{Path: "/issues/DEMO-1", Project: "DEMO", Issue: "DEMO-1"}
-	unfilled := goingFakeProposal(t, start, "dispatch_resolve_ask", map[string]any{})
-	if unfilled.Offers[0].Offered {
-		t.Fatalf("an ask resolve with its ask, kind and reason all missing is offered as %+v", unfilled.Offers[0])
-	}
-	filled := goingFakeProposal(t, start, "dispatch_resolve_ask",
-		map[string]any{"ask": "0199e2a0-2222-7000-8000-000000000002", "kind": "resolved", "reason": "Settled."})
-	if !filled.Offers[0].Offered || filled.Offers[0].Invocations[0].Missing != nil {
-		t.Fatalf("the same resolve, its arguments in the words, is offered as %+v, want it offered whole", filled.Offers[0])
 	}
 }
 

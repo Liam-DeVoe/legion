@@ -28,38 +28,14 @@ func goingFixtureBlock(t *testing.T, kind, title, spec string, tables map[string
 // TestTheGoingFrameFixturesAreWhatTheServerWrites holds packages/contracts/fixtures/going, which
 // the contracts' Bun test (src/going.test.ts) holds to the hand-written frames of
 // packages/contracts/src/going.ts key for key, to the data of the frames this server writes on a
-// run's stream: a decision with its action and the line on top it gives, a proposal with an
-// invocation complete, one missing an enumeration's value and one missing an item, each kind of
-// block as a block's spec and its read fill it, and the roster frame. A field the Go types gain,
-// lose or rename changes a fixture here, and the Bun test then fails until going.ts says the
-// same.
+// run's stream: a decision with its action and the line on top it gives, each kind of block as a
+// block's spec and its read fill it, and the roster frame. A field the Go types gain, lose or
+// rename changes a fixture here, and the Bun test then fails until going.ts says the same.
 // `go test ./internal/dispatch/api -run TestTheGoingFrameFixturesAreWhatTheServerWrites -update`
 // rewrites them.
 func TestTheGoingFrameFixturesAreWhatTheServerWrites(t *testing.T) {
 	frames := map[string]any{
 		"decision.json": goingDecision{Action: "dispatch_issue_update", Line: goingLineDo, Context: going.ContextPage},
-		"proposal.json": goingProposal{Offers: []goingOffer{
-			{Action: "dispatch_issue_update", Offered: true, Invocations: []goingInvocation{
-				{Arguments: map[string]any{"issue": "DEMO-12", "status": "done"}, Automatic: true, TargetArgument: "issue"},
-			}},
-			{Action: "dispatch_follow", Offered: true, Invocations: []goingInvocation{{
-				Arguments:      map[string]any{"ask": "0199e2a0-2222-7000-8000-000000000002"},
-				Missing:        &goingMissingArgument{Field: "action", Kind: goingPromptEnum, Choices: []string{"follow", "unfollow"}},
-				TargetArgument: "ask",
-			}}},
-			{Action: "dispatch_claim", Offered: true, Invocations: []goingInvocation{{
-				Arguments:      map[string]any{},
-				Missing:        &goingMissingArgument{Field: "issue", Kind: goingPromptItem, Item: "issue"},
-				TargetArgument: "issue",
-			}}},
-			{Action: "dispatch_comment", Offered: false, Invocations: []goingInvocation{}},
-			{Action: "dispatch_artifact", Offered: false, Invocations: []goingInvocation{}, Withheld: []string{
-				goingUploadWithheld("dispatch_artifact", map[string]any{"issue": "DEMO-12", "name": "notes.md"}, "", "save this as notes",
-					func(artifactTarget, string) (*goingHeldDocument, bool) {
-						return &goingHeldDocument{Name: "notes.md", Slug: "notes-md"}, true
-					}),
-			}},
-		}},
 		"block_chart.json": goingFixtureBlock(t, going.BlockChart, "Events by week",
 			`{"source":"read_project_activity","params":{"project":"DEMO"},"table":"weeks","x":"week","y":"events","mark":"line"}`,
 			map[string][]map[string]any{"weeks": {{"week": "2026-W44", "events": 3}, {"week": "2026-W45", "events": 5}}}),

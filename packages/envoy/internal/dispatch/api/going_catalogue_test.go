@@ -31,9 +31,9 @@ func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) 
 	t.Cleanup(func() { delete(goingWriteTools, tool) })
 }
 
-// goingProposedActions is the twenty actions the answer run's decision offers, which
+// goingDecisionActionNames is the twenty actions the answer run's decision offers, which
 // going/decision_models.json's measurement was made over.
-var goingProposedActions = []string{
+var goingDecisionActionNames = []string{
 	"dispatch_issue", "dispatch_issue_update", "dispatch_claim", "dispatch_ask", "dispatch_edit_ask",
 	"dispatch_resolve_ask", "dispatch_resolve_comment", "dispatch_follow", "dispatch_comment",
 	"dispatch_suggest", "dispatch_message", "dispatch_send_to_agent", "dispatch_doc_edit",
@@ -91,8 +91,8 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 		proposed = append(proposed, action.Action)
 	}
 	t.Logf("the catalogue holds %d write tools and serves %d actions", len(goingWriteTools), len(proposed))
-	if !slices.Equal(proposed, goingProposedActions) {
-		t.Fatalf("the catalogue serves the actions %v, want the twenty the decision was measured over %v", proposed, goingProposedActions)
+	if !slices.Equal(proposed, goingDecisionActionNames) {
+		t.Fatalf("the catalogue serves the actions %v, want the twenty the decision was measured over %v", proposed, goingDecisionActionNames)
 	}
 
 	t.Run("a tool naming a row the table does not hold fails the build", func(t *testing.T) {
@@ -329,8 +329,8 @@ func TestTheGoingCatalogueIsMountedOnTheServedTable(t *testing.T) {
 		t.Fatalf("GET the catalogue: status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := decodeBody[goingCatalogueBody](t, response)
-	if body.Total != len(body.Actions) || body.Total != len(goingProposedActions) {
-		t.Fatalf("the catalogue served %d of %d actions, want the %d the decision offers", len(body.Actions), body.Total, len(goingProposedActions))
+	if body.Total != len(body.Actions) || body.Total != len(goingDecisionActionNames) {
+		t.Fatalf("the catalogue served %d of %d actions, want the %d the decision offers", len(body.Actions), body.Total, len(goingDecisionActionNames))
 	}
 	for _, action := range body.Actions {
 		if action.Action != "dispatch_issue" {

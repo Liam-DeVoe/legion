@@ -4,9 +4,9 @@
  * bound of that stream is declared here once, and generated into Go (`contracts.Going*`), so the
  * server that writes a frame and the page that reads it cannot drift apart.
  *
- * The frames' shapes (`GoingDecisionEvent`, `GoingProposalEvent`, `GoingBlockEvent`,
- * `GoingRosterEvent` and their parts) are written by hand here and in Go (`going_decision.go`,
- * `going/blocks.go`, `going_reads.go`), since a frame union is no OpenAPI response.
+ * The frames' shapes (`GoingDecisionEvent`, `GoingBlockEvent`, `GoingRosterEvent` and their
+ * parts) are written by hand here and in Go (`going_decision.go`, `going/blocks.go`,
+ * `going_reads.go`), since a frame union is no OpenAPI response.
  * `fixtures/going/` holds the two together: the server's own Go test writes each frame's data
  * there from the server's types and fails where a fixture differs from them
  * (`go test ./internal/dispatch/api -run TestTheGoingFrameFixturesAreWhatTheServerWrites -update`
@@ -63,12 +63,6 @@ export const GOING_EVENT_ERROR = "error";
  *  none otherwise, nor for words the fast tier answers with their hit. Generated into Go as
  *  `contracts.GoingEventDecision`. */
 export const GOING_EVENT_DECISION = "decision";
-
-/** The frame carrying the arguments of each action the decision offered, parsed against that
- *  action's own schema, after the answer's last text frame and before the frame that ends the
- *  stream. A stream that carries a `decision` frame and answers carries one of these.
- *  Generated into Go as `contracts.GoingEventProposal`. */
-export const GOING_EVENT_PROPOSAL = "proposal";
 
 /** The frame carrying one typed block drawn beside the answer, filled from a read the server
  *  serves, after the answer's text frames. Generated into Go as `contracts.GoingEventBlock`. */
@@ -182,8 +176,7 @@ export interface GoingErrorEvent {
 }
 
 /** What the words are about, as the decision model chose: the item the bar's context chip names
- *  (`page`), items the words name themselves (`named`), or nothing in particular (`none`). The
- *  server fills an action's target from the chip on `page` alone. */
+ *  (`page`), items the words name themselves (`named`), or nothing in particular (`none`). */
 export type GoingDecidedContext = "page" | "named" | "none";
 
 /** The line on top of the bar's list, as the decision model's action gives it: `ask` for no
@@ -200,58 +193,6 @@ export interface GoingDecisionEvent {
     readonly line: GoingLine;
     readonly context: GoingDecidedContext;
   };
-}
-
-/** The one argument an invocation still needs, which the bar asks the person for: a `text`, a
- *  `number`, one of the `enum`'s `choices`, or an `item` the search finds, `item` naming the kind
- *  searched for (`issue`, `ask`, `comment`, `document` or `message`). `field` is the action's own
- *  argument, or `@session` for a row that addresses the caller's own session where the caller's
- *  credential proved none, which the person names as text. */
-export interface GoingMissingArgument {
-  readonly field: string;
-  readonly kind: "text" | "number" | "enum" | "item";
-  readonly choices?: readonly string[];
-  readonly item?: string;
-}
-
-/** One run of an action: the arguments the answer and the page filled, each checked against the
- *  action's own schema, the one argument still missing, null where none is, and whether it may
- *  run at once on submit: only where every item it names is the chip's issue or project, where the
- *  words are about the page, or is named by a reference in the person's own words (an issue key,
- *  a project key typed in upper case, an id, a `dispatch://` reference; a document's name only
- *  under an owner so named), and every route or assignee it sets is named in the words or already
- *  the issue's. Any other invocation came from text someone stored and is marked as an offer the
- *  person picks. `target_argument` is the argument naming the item the invocation acts on, as the
- *  row it reaches binds that item into its path, `""` for none: a write that makes its item, or
- *  one addressing the caller's own session. */
-export interface GoingInvocation {
-  readonly arguments: Readonly<Record<string, unknown>>;
-  readonly missing: GoingMissingArgument | null;
-  readonly automatic: boolean;
-  readonly target_argument: string;
-}
-
-/** One action the decision offered: one invocation per item it changes, and `offered` false
- *  where no invocation survived the checks, which leaves `invocations` empty. `withheld`, where
- *  present, says why each invocation the answer wrote that the person would otherwise have been
- *  offered was not, in words for the person at the bar: one the bar can never send as written - a
- *  picture file, a `dispatch://` reference giving its place, an upload of a file or with no text,
- *  a closing note on an update that does not close, a repository not written as `owner/name` -
- *  in the very words a write of it is refused with; and an upload under the name of a document
- *  its owner already holds, which would write that document's next version, and which the bar
- *  offers only where it carries `force`, its name is the one the document is stored under, never
- *  its slug, and the person's own words write that name. */
-export interface GoingOffer {
-  readonly action: string;
-  readonly invocations: readonly GoingInvocation[];
-  readonly offered: boolean;
-  readonly withheld?: readonly string[];
-}
-
-/** The arguments of each action the decision offered, in the decision's order. */
-export interface GoingProposalEvent {
-  readonly event: typeof GOING_EVENT_PROPOSAL;
-  readonly data: { readonly offers: readonly GoingOffer[] };
 }
 
 /** The seven kinds of block an answer may draw. */
@@ -348,7 +289,6 @@ export type GoingEvent =
   | GoingChangedEvent
   | GoingNoneEvent
   | GoingDecisionEvent
-  | GoingProposalEvent
   | GoingBlockEvent
   | GoingRosterEvent
   | GoingEndEvent

@@ -177,12 +177,11 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	link := "[" + linkText + "](" + href + ")"
 	answerer, model := newGoingModelAnswerer(t, goingtest.Reply{
 		Final: &goingtest.Final{
-			Answer:    "The pelicans arrive in spring, and the note Dispatch holds says so: " + link + ".",
-			Arguments: "{}",
+			Answer: "The pelicans arrive in spring, and the note Dispatch holds says so: " + link + ".",
 		},
-		// Six runes a frame over the Final object that answer is written in, about 180 runes, is
-		// some thirty frames, so the reply is written over about 30 * goingFramePause, and the
-		// answer, its first property, over the first two thirds of it.
+		// Six runes a frame over the Final object that answer is written in, about 170 runes, is
+		// some twenty-eight frames, so the reply is written over about 28 * goingFramePause, and
+		// the answer, its first property, over the first seven tenths of it.
 		Chunk: 6,
 		Pause: goingFramePause,
 	})
@@ -271,14 +270,14 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	}
 
 	// When it arrived, and not only what: the first text frame is readable while the model still
-	// has frames to come. The reply is written over about 3.7 s - some thirty frames at
+	// has frames to come. The reply is written over about 3.4 s - some twenty-eight frames at
 	// goingFramePause, which are the model's own sleeps, so nothing makes it faster - and the
 	// stream polls the record every goingStreamPoll (200 ms), so the first words are readable
-	// within a second: measured here, the first text frame arrives 0.71-0.86 s in, once the
-	// object's opening and the answer's first words are written, and the stream ends at
-	// 4.14-4.48 s, a lead of 3.3-3.7 s. The margins asserted are the run lasting at least 2 s and
-	// at least 1.5 s of it after the first words, better than twice the slack: failing the second
-	// needs the first text frame to be held back past 2.6 s, thirteen polls.
+	// within a second: measured here, the first text frame arrived 0.83 s in, once the object's
+	// opening and the answer's first words are written, and the stream ended at 4.16 s, a lead of
+	// 3.3 s. The margins asserted are the run lasting at least 2 s and at least 1.5 s of it after
+	// the first words, better than twice the slack: failing the second needs the first text frame
+	// to be held back past 2.6 s, thirteen polls.
 	first := firstGoingFrame(t, frames, contracts.GoingEventText)
 	if whole := ended.at.Sub(opened); whole < 2*time.Second {
 		t.Fatalf("the stream was over in %v, want the model's paced reply to take at least 2s: nothing was proved about streaming", whole)

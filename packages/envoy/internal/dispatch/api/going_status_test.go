@@ -139,7 +139,7 @@ func TestGoingStatusSummaryIsAnsweredFromStoredDataWithNoAgentMessaged(t *testin
 			{ID: "call_architecture", Name: going.ReadArchitecture, Arguments: `{}`},
 			{ID: "call_activity", Name: going.ReadProjectActivity, Arguments: `{"weeks":4}`},
 		}},
-		goingtest.Reply{Final: &goingtest.Final{Answer: "ACME has three issues; [Ship widgets](/issues/ACME-1) is open.", Arguments: "{}"}},
+		goingtest.Reply{Final: &goingtest.Final{Answer: "ACME has three issues; [Ship widgets](/issues/ACME-1) is open."}},
 	)
 	seedStatusFixture(t, rig)
 	// Dispatch's copy of the listener's list, as a fetch three seconds ago stored it, fresh for
@@ -307,7 +307,7 @@ func TestGoingStatusRefillingRosterIsWaitedOutThenLive(t *testing.T) {
 	})
 	rig := newBlockRig(t, testServerOptions{envoyURL: listener.url},
 		readCall(going.ReadRoster, `{}`),
-		goingtest.Reply{Final: &goingtest.Final{Answer: "Two sessions are live.", Arguments: "{}"}},
+		goingtest.Reply{Final: &goingtest.Final{Answer: "Two sessions are live."}},
 	)
 	// Every read asks the listener, as routeStatusServer's do, so the read after the wait meets
 	// the listener and not the refusal stored for the silence window.

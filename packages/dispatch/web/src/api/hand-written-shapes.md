@@ -75,10 +75,9 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   route table the document is emitted from, and `packages/contracts/fixtures/live/` with the Go
   diff (`delivery_live_diff_test.go`) already holds them against the server.
 - **The Going SSE frames** of `GET /api/v1/going/requests/{id}/stream` (`GoingEvent`): the
-  answer's `text`, `item`, `cut`, `changed`, `none`, `end` and `error` frames, and the four the
+  answer's `text`, `item`, `cut`, `changed`, `none`, `end` and `error` frames, and the three the
   command bar's decision and blocks add - `GoingDecisionEvent` (with `GoingLine` and
-  `GoingDecidedContext`), `GoingProposalEvent` (with `GoingOffer`, `GoingInvocation` and
-  `GoingMissingArgument`), `GoingBlockEvent` (with `GoingBlockKind`, `GoingBlockData`,
+  `GoingDecidedContext`), `GoingBlockEvent` (with `GoingBlockKind`, `GoingBlockData`,
   `GoingBlockSource` and each kind's spec, `GoingChartSpec`, `GoingTableSpec`, `GoingMetricSpec`
   and `GoingProgressSpec`) and `GoingRosterEvent`. A frame union is not an OpenAPI response, and
   `packages/contracts/src/going.ts` holds them. `packages/contracts/fixtures/going/` holds them

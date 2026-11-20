@@ -146,7 +146,6 @@ describe("the fake chat model", () => {
   test("a Final streams as the schema's object to a structured call, answer first, and as its answer to a plain one", async () => {
     const final = {
       answer: "DEMO-12 is open.",
-      arguments: { dispatch_claim: [{ key: "DEMO-12" }] },
       block: { kind: "metric", spec: { value: 3 }, title: "Open" },
     };
     await script({ default: { final } });
@@ -157,7 +156,6 @@ describe("the fake chat model", () => {
     expect(structured.content.startsWith('{"answer":')).toBe(true);
     expect(JSON.parse(structured.content)).toEqual({
       answer: final.answer,
-      arguments: JSON.stringify(final.arguments),
       block: { kind: "metric", spec: JSON.stringify(final.block.spec), title: "Open" },
     });
     expect(structured.finish).toBe("stop");

@@ -53,7 +53,7 @@ func readCall(name, arguments string) goingtest.Reply {
 // blockAnswer is a turn that answers with a short text and a block of kind with spec.
 func blockAnswer(kind, spec string) goingtest.Reply {
 	return goingtest.Reply{Final: &goingtest.Final{
-		Answer: "Here is what Dispatch holds.", Block: goingtest.Block{Kind: kind, Title: "What Dispatch holds", Spec: spec}, Arguments: "{}",
+		Answer: "Here is what Dispatch holds.", Block: goingtest.Block{Kind: kind, Title: "What Dispatch holds", Spec: spec},
 	}}
 }
 

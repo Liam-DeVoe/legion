@@ -18,9 +18,8 @@ package api
 // What the bar can never send - a picture or a file the CLI reads off the machine it runs on, which
 // the bar has no way to reach, a `ref` where the bar places a write by issue, project and document
 // instead, and the rest goingUnsendable names - is decided by goingUnsendable, which needs no read:
-// GoingCaller refuses such a call before its row's translation, and the proposal withholds it. What
-// a translator cannot send for a reason of its own it refuses by name (goingUntranslatable),
-// before anything is written.
+// GoingCaller refuses such a call before its row's translation. What a translator cannot send for
+// a reason of its own it refuses by name (goingUntranslatable), before anything is written.
 
 import (
 	"bytes"
@@ -146,13 +145,13 @@ func (e goingUntranslatable) Error() string { return string(e) }
 // that does not close the issue, which the update posts only before a close; and a sync's source
 // repository not written as owner/name, the two segments its route's path takes. An ask's `ref`
 // is none of these: the question carries it as a line of its own (goingAskBody). None needs a
-// read, so the proposal withholds such a call, saying why (goingPropose), and GoingCaller refuses
-// one before its row's translation (prepare), with the same words, which no translator repeats.
-// Each is worded for the person reading the bar's panel - what the bar cannot send, and what that
-// person can do there - and names no tool, no argument, no command line and no flag, none of
-// which that person holds. A picture list, a link or a file path written empty names no picture,
-// link or file, so it counts as absent, as null does (which the action's schema refuses first):
-// no translator sends any of the three on, and the call is sent as it would be without it.
+// read, so GoingCaller refuses such a call before its row's translation (prepare), with words no
+// translator repeats. Each is worded for the person reading the bar's panel - what the bar cannot
+// send, and what that person can do there - and names no tool, no argument, no command line and
+// no flag, none of which that person holds. A picture list, a link or a file path written empty
+// names no picture, link or file, so it counts as absent, as null does (which the action's schema
+// refuses first): no translator sends any of the three on, and the call is sent as it would be
+// without it.
 func goingUnsendable(action string, arguments map[string]any) string {
 	named := func(argument string) bool {
 		switch value := arguments[argument].(type) {

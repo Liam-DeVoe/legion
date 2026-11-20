@@ -132,7 +132,7 @@ func TestNewAnswererOnAzureBesideABedrockEmbedderSignsInAtTheConfiguredScope(t *
 			authority := &signInRecorder{}
 			signIn := httptest.NewServer(authority)
 			t.Cleanup(signIn.Close)
-			model := goingtest.NewModel(t, goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds nothing on that.", Arguments: "{}"}})
+			model := goingtest.NewModel(t, goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds nothing on that."}})
 			serveHostsLocally(t, map[string]string{
 				entraAuthorityHost:    signIn.URL,
 				azureChatEndpointHost: model.URL,

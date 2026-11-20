@@ -75,6 +75,29 @@ const (
 	goingAgentUploadRoute   = http.MethodPost + " /api/v1/agents/{session_id}/artifacts"
 )
 
+// goingUploadNames is the argument of each action that names the document its upload writes, by
+// action: an upload whose name is the name or the slug of a document its owner already holds is
+// that document's next version (artifactByNameOrSlugSQL), so a plan's row of such an action reads
+// which document its name finds before anything of it is sent (rowUpload).
+var goingUploadNames = map[string]string{"dispatch_artifact": "name"}
+
+// goingRouteUploadOwner is the owner an upload's route writes to, resolved from the values of its
+// path as that route resolves them: the issue (uploadArtifact), the project
+// (uploadProjectArtifact) or the session (uploadAgentArtifact), each value exactly as the route
+// reads it; false for a route that is no upload, or a value it lacks.
+func goingRouteUploadOwner(route GoingRoute, values map[string]string) (artifactTarget, bool) {
+	switch route.Method + " " + route.Pattern {
+	case goingIssueUploadRoute:
+		issue := values["key"]
+		return artifactTarget{IssueKey: &issue}, issue != ""
+	case goingProjectUploadRoute:
+		return artifactTarget{Project: values["key"]}, values["key"] != ""
+	case goingAgentUploadRoute:
+		return artifactTarget{Session: values["session_id"]}, values["session_id"] != ""
+	}
+	return artifactTarget{}, false
+}
+
 // goingUndoKind is one of the four ways a write is undone.
 type goingUndoKind string
 

@@ -144,7 +144,7 @@ func (f *answerFilter) Close() error {
 
 // Settle decides what the model's last span and last word left held, then says what the whole
 // answer came to short of its end: what the server changed, and the absence of an answer. It is
-// what lets a frame that follows the answer's text, such as the proposal, follow every frame of
+// what lets a frame that follows the answer's text, such as the block, follow every frame of
 // it. Only its first call emits anything.
 func (f *answerFilter) Settle() error {
 	if f.settled {
