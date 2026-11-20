@@ -428,6 +428,46 @@ export const controlHandedOut: string = callLibrary(() => randomState)();
 			}
 			return c.write(plantTSDir+"control-fetch.ts", "import { customFetch } from \"openid-client\";\n\n/** Control (23)'s planted fetch handed to openid-client without refusalFetch. */\nexport const controlFetch = { [customFetch]: fetch };\n")
 		}},
+	{id: "26", what: "a go-oidc call across OAuth2 with no CallScope, and an x/oauth2 client built over http.DefaultTransport rather than a RefusalClient base", stage: 2,
+		each: [][]string{
+			{"boundary census", plantDir + "control_scope.go:13", "CallScope"},
+			{"boundary census", plantDir + "control_default_client.go:14", "oauth2.HTTPClient"},
+		},
+		plant: func(c *controlRun) error {
+			if err := c.write(plantDir+"control_scope.go", `package brokerclient
+
+import (
+	"context"
+
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
+
+	"github.com/sjawhar/envoy/internal/redact"
+)
+
+// controlScope is control (26)'s go-oidc call without CallScope.
+func controlScope(ctx context.Context) {
+	_, _ = redact.OAuth2(gooidc.NewProvider(ctx, "https://issuer.example"))
+}
+`); err != nil {
+				return err
+			}
+			return c.write(plantDir+"control_default_client.go", `package brokerclient
+
+import (
+	"context"
+	"net/http"
+
+	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
+)
+
+// controlDefaultClient is control (26)'s x/oauth2 client with no RefusalClient base.
+func controlDefaultClient(ctx context.Context) *http.Client {
+	return oauth2.NewClient(ctx, redact.TokenSource(oauth2.StaticTokenSource(&oauth2.Token{})))
+}
+`)
+		}},
 	{id: "24", what: "an entry planted in the public-name table, in Go and in TypeScript: one with no contract source, and one under a name a credential travels under; each half's guard test fails on each",
 		own: publicNameGuardControl},
 	{id: "25", what: "a raw cfg.Exchange planted in a //go:build !linux file, an openid-client function destructured from the library's namespace outside callLibrary, and a dynamic import of the library outside it", stage: 2,

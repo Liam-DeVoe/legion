@@ -49,11 +49,20 @@
         "strings.Contains",
         "strings.EqualFold"
       ],
-      "parses": ["time.Parse", "strconv.ParseInt"],
-      "ts_parses": ["test", "new Date"],
+      "parses": [
+        "time.Parse",
+        "strconv.ParseInt"
+      ],
+      "ts_parses": [
+        "test",
+        "new Date"
+      ],
       "ts_file": "packages/contracts/src/remote-text.ts",
       "ts_class": "RemoteText",
-      "ts_rule": ["redactRemoteText", "readRemoteText"]
+      "ts_rule": [
+        "redactRemoteText",
+        "readRemoteText"
+      ]
     },
     "holders": [
       {
@@ -186,7 +195,10 @@
       {
         "file": "packages/envoy/internal/dispatch/pmdoc/update.go",
         "function": "github.com/sjawhar/envoy/internal/dispatch/pmdoc.yTextStartField",
-        "operands": ["*github.com/reearth/ygo/crdt.YXmlText", "unsafe.Pointer"],
+        "operands": [
+          "*github.com/reearth/ygo/crdt.YXmlText",
+          "unsafe.Pointer"
+        ],
         "why": "the head of a ygo text's item list, at the offset reflect finds by name"
       },
       {
@@ -229,7 +241,9 @@
         "why": "the AWS configuration a seed store writes with, walked for an nkey seed"
       }
     ],
-    "external_errors": ["golang.org/x/oauth2.RetrieveError"],
+    "external_errors": [
+      "golang.org/x/oauth2.RetrieveError"
+    ],
     "row_timeout": "10m",
     "leaks": [
       {
@@ -253,19 +267,25 @@
       {
         "row": "site-ts-token-type-minted",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "files": [
+          "packages/broker-client/src/__tests__/boundary-leaks.test.ts"
+        ],
         "capture": "leak"
       },
       {
         "row": "site-ts-issuer-said",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "files": [
+          "packages/broker-client/src/__tests__/boundary-leaks.test.ts"
+        ],
         "capture": "leak"
       },
       {
         "row": "site-ts-signin-ended",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "files": [
+          "packages/broker-client/src/__tests__/boundary-leaks.test.ts"
+        ],
         "capture": "leak"
       },
       {
@@ -1563,7 +1583,9 @@
       {
         "row": "ts-request-echo-description",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": ["packages/broker-client/src/__tests__/request-echo.test.ts"],
+        "files": [
+          "packages/broker-client/src/__tests__/request-echo.test.ts"
+        ],
         "capture": "ts.request-echo/description/message"
       },
       {
@@ -1663,7 +1685,10 @@
         "github.com/sjawhar/envoy/internal/redact.Field",
         "github.com/sjawhar/envoy/internal/redact.ruled"
       ],
-      "parses": ["net/http.ParseTime", "strconv.ParseInt"],
+      "parses": [
+        "net/http.ParseTime",
+        "strconv.ParseInt"
+      ],
       "held": [
         {
           "function": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
@@ -1744,7 +1769,7 @@
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
       {
-        "file": "packages/envoy/internal/redact/tokens.go",
+        "file": "packages/envoy/internal/redact/record.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
@@ -1757,6 +1782,16 @@
         "file": "packages/envoy/internal/redact/url.go",
         "callee": "(interface).Unwrap",
         "why": "the rule's own walk down an error's chain, which reads each error's type and prints none of them: it decides an error's closed code (refusalCode) or its class (tlsFailure)"
+      },
+      {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "callee": "(interface).Unwrap",
+        "why": "the rule's own walk down an error's chain, which reads each error's type and prints none of them: it decides an error's closed code (refusalCode) or its class (tlsFailure)"
+      },
+      {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "callee": "(golang.org/x/oauth2.TokenSource).Token",
+        "why": "BoundTokenSource's own call of the source it holds: Token immediately reads its error with the fresh scope record, and prints no error text itself"
       }
     ],
     "required": [

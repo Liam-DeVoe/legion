@@ -43,16 +43,34 @@ import (
 )
 
 const (
-	oauth2Path      = "golang.org/x/oauth2"
-	goOIDCPath      = "github.com/coreos/go-oidc"
-	modulePath      = "github.com/sjawhar/envoy"
-	redactPath      = modulePath + "/internal/redact"
-	oauth2callPath  = modulePath + "/oauth2call"
-	boundaryWrapper = "BoundTokenSource"
+	oauth2Path       = "golang.org/x/oauth2"
+	goOIDCPath       = "github.com/coreos/go-oidc"
+	impersonatePath  = "google.golang.org/api/impersonate"
+	cloudSQLConnPath = "cloud.google.com/go/cloudsqlconn"
+	modulePath       = "github.com/sjawhar/envoy"
+	redactPath       = modulePath + "/internal/redact"
+	oauth2callPath   = modulePath + "/oauth2call"
+	boundaryWrapper  = "BoundTokenSource"
 )
 
 // library reports whether path is a package of a library whose calls cross the boundary.
 func library(path string) bool {
+	return path == oauth2Path || strings.HasPrefix(path, oauth2Path+"/") || path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/") ||
+		path == impersonatePath || path == cloudSQLConnPath
+}
+
+// textOnly reports whether path is a library that hands back only the text of a refusal, with no
+// response or request to read its record from: each call of it must be read under CallScope.
+func textOnly(path string) bool {
+	return path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/") ||
+		path == oauth2Path+"/google" || strings.HasPrefix(path, oauth2Path+"/google/") ||
+		path == impersonatePath || path == cloudSQLConnPath
+}
+
+// dispatchLibrary reports whether library's exported types are used to resolve calls through an
+// interface. cloudsqlconn's Dialer implements io.Closer, so including it would turn every Close of
+// an unrelated io.Closer into a library call; its direct methods are already in the closed API.
+func dispatchLibrary(path string) bool {
 	return path == oauth2Path || strings.HasPrefix(path, oauth2Path+"/") || path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/")
 }
 
@@ -123,7 +141,9 @@ func main() {
 				api[name] = kind
 				perPackage[path]++
 			}
-			libTypes = append(libTypes, libraryTypes(imported)...)
+			if dispatchLibrary(path) {
+				libTypes = append(libTypes, libraryTypes(imported)...)
+			}
 		}
 	}
 	if len(api) == 0 || tokenSource == nil {
@@ -184,17 +204,22 @@ func main() {
 					rel = pos.Filename
 				}
 				verdict, why := "ok", "called across redact.OAuth2"
+				scoped := throughScope(pkg.TypesInfo, stack)
 				switch {
+				case textOnlyObject(pkg.TypesInfo.Uses[id], key) && !scoped:
+					verdict, why, failed = "FAIL", "not read under a CallScope: write s := redact.Scope[T](ctx), then redact.OAuth2(s.Read(call(s.Context(), ...)))", failed+1
 				case strings.HasPrefix(kind, httpClientKind):
 					if failure := clientBuilt(pkg.TypesInfo, stack, tokenSource); failure != "" {
 						verdict, why, failed = "FAIL", failure, failed+1
 					} else if kind != httpClientKind && !throughBoundary(pkg.TypesInfo, stack) {
 						verdict, why, failed = "FAIL", "a library HTTP client not called as the only argument of redact.OAuth2 or oauth2call.Call", failed+1
 					} else {
-						why = "a library HTTP client over a token source the boundary made"
+						why = "a library HTTP client over a RefusalClient base and a token source the boundary made"
 					}
 				case !throughBoundary(pkg.TypesInfo, stack):
 					verdict, why, failed = "FAIL", "not called as the only argument of redact.OAuth2 or oauth2call.Call", failed+1
+				case scoped:
+					why = "read under CallScope and across redact.OAuth2"
 				}
 				if via != "" {
 					why += "; called through " + via
@@ -420,7 +445,13 @@ func clientBuilt(info *types.Info, stack []ast.Node, tokenSource *types.Interfac
 	sources := 0
 	for _, arg := range call.Args {
 		tv, ok := info.Types[arg]
-		if !ok || tv.Type == nil || !types.Implements(tv.Type, tokenSource) {
+		if !ok || tv.Type == nil {
+			continue
+		}
+		if contextValue(tv.Type) && !refusalContext(info, arg) {
+			return "a library HTTP client over a context whose oauth2.HTTPClient is not a call of redact.RefusalClient, oauth2call.RefusalClient or CallScope.Context"
+		}
+		if !types.Implements(tv.Type, tokenSource) {
 			continue
 		}
 		sources++
@@ -428,10 +459,35 @@ func clientBuilt(info *types.Info, stack []ast.Node, tokenSource *types.Interfac
 			return fmt.Sprintf("a library HTTP client over %s, a token source the boundary did not make", types.ExprString(arg))
 		}
 	}
+
 	if sources == 0 {
 		return "a library HTTP client built over a token source of the library's own, whose refusal its requests answer raw through net/http"
 	}
 	return ""
+}
+
+// contextValue reports whether t is context.Context.
+func contextValue(t types.Type) bool {
+	named, ok := t.(*types.Named)
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "context" && named.Obj().Name() == "Context"
+}
+
+// refusalContext reports whether value is CallScope.Context, or context.WithValue whose
+// oauth2.HTTPClient value is a RefusalClient.
+func refusalContext(info *types.Info, value ast.Expr) bool {
+	call, ok := ast.Unparen(value).(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	fn := calleeFunc(info, call)
+	if fn == nil || fn.Pkg() == nil {
+		return false
+	}
+	if fn.Pkg().Path() == redactPath && fn.Name() == "Context" {
+		return true
+	}
+	return fn.Pkg().Path() == "context" && fn.Name() == "WithValue" && len(call.Args) == 3 &&
+		oauth2ClientKey(info, call.Args[1]) && refusalClient(info, call.Args[2])
 }
 
 // errorResult reports whether t is a function type one of whose results is error.
@@ -462,12 +518,55 @@ func objectKey(obj types.Object) string {
 	return ""
 }
 
+// textOnlyObject reports whether obj, or its key after an interface dispatch, is a call of a
+// text-only library.
+func textOnlyObject(obj types.Object, key string) bool {
+	if fn, ok := obj.(*types.Func); ok && fn.Pkg() != nil && textOnly(fn.Pkg().Path()) {
+		return true
+	}
+	return strings.Contains(key, goOIDCPath) || strings.Contains(key, oauth2Path+"/google") ||
+		strings.Contains(key, impersonatePath) || strings.Contains(key, cloudSQLConnPath)
+}
+
 // throughBoundary reports whether the identifier at the top of stack is the function of a call
-// that is the only argument of redact.OAuth2 or of oauth2call.Call, or the second argument of one
-// of them beside a value.
+// that is the only argument of redact.OAuth2 or oauth2call.Call, directly or as the value and
+// error CallScope.Read or Err answers.
 func throughBoundary(info *types.Info, stack []ast.Node) bool {
+	return directBoundary(info, stack) || throughScope(info, stack)
+}
+
+// directBoundary is throughBoundary's direct form.
+func directBoundary(info *types.Info, stack []ast.Node) bool {
+	call, before, ok := calledAt(stack)
+	if !ok || before < 1 {
+		return false
+	}
+	outer, ok := stack[before-1].(*ast.CallExpr)
+	return ok && boundaryCall(info, outer, call)
+}
+
+// throughScope reports whether the library call is the one CallScope.Read or Err reads, and that
+// scope call is the one redact.OAuth2 or oauth2call.Call reads.
+func throughScope(info *types.Info, stack []ast.Node) bool {
+	call, before, ok := calledAt(stack)
+	if !ok || before < 1 {
+		return false
+	}
+	scopeCall, ok := stack[before-1].(*ast.CallExpr)
+	if !ok || !scopeRead(info, scopeCall, call) || before < 2 {
+		return false
+	}
+	outer, ok := stack[before-2].(*ast.CallExpr)
+	return ok && boundaryCall(info, outer, scopeCall)
+}
+
+// calledAt is the call whose function is stack's top identifier, and the index before that call.
+func calledAt(stack []ast.Node) (*ast.CallExpr, int, bool) {
 	i := len(stack) - 1
-	id := stack[i].(*ast.Ident)
+	id, ok := stack[i].(*ast.Ident)
+	if !ok {
+		return nil, 0, false
+	}
 	fun := ast.Expr(id)
 	if i > 0 {
 		if sel, ok := stack[i-1].(*ast.SelectorExpr); ok && sel.Sel == id {
@@ -475,14 +574,30 @@ func throughBoundary(info *types.Info, stack []ast.Node) bool {
 		}
 	}
 	if i < 1 {
-		return false
+		return nil, 0, false
 	}
 	call, ok := stack[i-1].(*ast.CallExpr)
-	if !ok || call.Fun != fun || i < 2 {
+	return call, i - 1, ok && call.Fun == fun
+}
+
+// scopeRead reports whether call is CallScope.Read or Err with library as its error-bearing
+// argument.
+func scopeRead(info *types.Info, call *ast.CallExpr, library *ast.CallExpr) bool {
+	fn := calleeFunc(info, call)
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != redactPath || (fn.Name() != "Read" && fn.Name() != "Err") {
 		return false
 	}
-	outer, ok := stack[i-2].(*ast.CallExpr)
-	if !ok || !(len(outer.Args) == 1 && outer.Args[0] == call || len(outer.Args) == 2 && outer.Args[1] == call) {
+	for _, arg := range call.Args {
+		if arg == library {
+			return true
+		}
+	}
+	return false
+}
+
+// boundaryCall reports whether outer is redact.OAuth2 or oauth2call.Call reading inner.
+func boundaryCall(info *types.Info, outer *ast.CallExpr, inner ast.Expr) bool {
+	if !(len(outer.Args) == 1 && outer.Args[0] == inner || len(outer.Args) == 2 && outer.Args[1] == inner) {
 		return false
 	}
 	fn := calleeFunc(info, outer)
@@ -606,14 +721,19 @@ func httpClient(t types.Type) bool {
 	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/http" && named.Obj().Name() == "Client"
 }
 
-// refusalClient reports whether value is a call of redact.RefusalClient or oauth2call.RefusalClient.
+// refusalClient reports whether value is a call of redact.RefusalClient, oauth2call.RefusalClient
+// or CallScope.Client.
 func refusalClient(info *types.Info, value ast.Expr) bool {
 	call, ok := ast.Unparen(value).(*ast.CallExpr)
 	if !ok {
 		return false
 	}
 	fn := calleeFunc(info, call)
-	return fn != nil && fn.Pkg() != nil && fn.Name() == "RefusalClient" && (fn.Pkg().Path() == redactPath || fn.Pkg().Path() == oauth2callPath)
+	if fn == nil || fn.Pkg() == nil {
+		return false
+	}
+	return fn.Pkg().Path() == redactPath && (fn.Name() == "RefusalClient" || fn.Name() == "Client") ||
+		fn.Pkg().Path() == oauth2callPath && fn.Name() == "RefusalClient"
 }
 
 // boundaryMade reports whether t is a token source the boundary made: *redact.BoundTokenSource, or
