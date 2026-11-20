@@ -441,8 +441,8 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // for every type once the library has built the answer, because that is when the issued token's
 // expiry is set, and the claim must not end before the token it is made for.
 //
-// A developer box's token rests on Dispatch's answers that no project it lists is private or
-// closing (projectAccess), and is committed only while the oldest of them is younger than
+// A developer box's token rests on Dispatch's answers that no project it lists is closed to
+// developer boxes (projectAccess), and is committed only while the oldest of them is younger than
 // projectaccess.CacheTTL (developerBoxAnswerAged). So no token stored more than CacheTTL after a
 // project's closing state began rests on an answer from before it, which is the bound Dispatch
 // waits out before it completes a switch to private on the broker's count of live tokens.
@@ -778,9 +778,9 @@ func dispatchUnreachable(err error) error {
 }
 
 // developerBoxClosed is the trade's refusal of a developer box's token that names a project
-// Dispatch answers private or closing (projectaccess.ErrClosed): invalid_target, because the
-// project is the one target this broker mints a developer box no token for, and every other part
-// of the request may be sound. It names the project, which its person sees.
+// Dispatch answers closed to developer boxes (projectaccess.ErrClosed): invalid_target, because
+// the project is the one target this broker mints a developer box no token for, and every other
+// part of the request may be sound. It names the project, which its person sees.
 func developerBoxClosed(project string, err error) error {
 	return oauth2.ErrInvalidTarget.WithHintf("The token names the project %s, which is private or turning private, and a developer box gets no token of such a project: work on it in a session of the project's own namespace.", project).WithWrap(err).WithDebugError(err)
 }
@@ -806,9 +806,10 @@ func developerBoxAnswerAged() error {
 // Such a token that names a project is a developer box's: only a machine login's trade and a
 // person's sign-in on a machine act as their person and name projects, an entry's token being
 // named and one of no person naming none. So none of the projects it names may be one Dispatch
-// answers private or closing (projectaccess.DeveloperBoxAsOf): such a trade is refused
-// invalid_target naming the project (developerBoxClosed), a renewal included, since a renewal
-// is a fresh trade.
+// answers closed to developer boxes (projectaccess.DeveloperBoxAsOf): one in its closing state,
+// or private after its full switch. Such a trade is refused invalid_target naming the project
+// (developerBoxClosed), a renewal included, since a renewal is a fresh trade. A project private
+// on its first day, before its full switch, is not closed, and its trades are answered.
 //
 // A token an operator's entry maps: its one project must be one Dispatch says the entry's person
 // sees, and a pairing Dispatch refuses is refused invalid_request naming both. An account entry

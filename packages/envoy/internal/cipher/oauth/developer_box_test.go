@@ -15,18 +15,21 @@ import (
 )
 
 // closedRefusal is what the exchange says of a developer box's trade naming PRIV while Dispatch
-// answers it private or closing.
+// answers it closed to developer boxes.
 const closedRefusal = "The token names the project PRIV, which is private or turning private, and a developer box gets no token of such a project"
 
-// TestADeveloperBoxGetsNoTokenOfAPrivateProject: while Dispatch answers PRIV closing, and then
-// private, a full member's machine-login trade naming PRIV is refused invalid_target naming it,
-// and so is its renewal (a fresh trade of the same machine login, session and list as the token
-// minted while PRIV was public), a list naming PRIV among others, and a person's sign-in on a
-// machine naming PRIV; nothing of them is stored. The same box's trade naming another project is
-// still answered, and so is a restricted member's named trade naming PRIV, whose list names them:
-// that token is the outside person's own, not a developer box's. The broker's count of PRIV's
-// live developer-box tokens reads the two minted while PRIV was public, and neither named token,
-// and falls to 0 once those two are revoked.
+// TestADeveloperBoxGetsNoTokenOfAPrivateProject: the exchange refuses a developer box's token on
+// Dispatch's closed_to_developer_boxes alone. While PRIV is public, and while it is private on its
+// first day, before its full switch (the field false), a full member's machine-login trade and a
+// person's sign-in on a machine naming PRIV are each answered. While Dispatch answers PRIV closed
+// to developer boxes, in its closing state (public) and after its full switch (private), the
+// machine-login trade naming PRIV is refused invalid_target naming it, and so are its renewal (a
+// fresh trade of the same machine login, session and list as the tokens minted before), a list
+// naming PRIV among others, and the sign-in naming PRIV; nothing of them is stored. The same box's
+// trade naming another project is still answered, and so is a restricted member's named trade
+// naming PRIV, whose list names them: that token is the outside person's own, not a developer
+// box's. The broker's count of PRIV's live developer-box tokens reads the four minted before, and
+// neither named token, and falls to 0 once those four are revoked.
 func TestADeveloperBoxGetsNoTokenOfAPrivateProject(t *testing.T) {
 	const bob = "bob@outside.example"
 	access := newFakeAccess()
@@ -61,20 +64,31 @@ func TestADeveloperBoxGetsNoTokenOfAPrivateProject(t *testing.T) {
 		return exchangeForm(f.podToken(t, "pod-uid-bob", nil), oauthwire.SubjectTokenTypeKubernetes, "bob-agent")
 	}
 
-	status, body := machineTrade("PRIV")
-	f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, []string{"PRIV"})
-	status, body = signInTrade("PRIV")
-	f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, []string{"PRIV"})
+	mintBoth := func(t *testing.T) {
+		t.Helper()
+		status, body := machineTrade("PRIV")
+		f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, []string{"PRIV"})
+		status, body = signInTrade("PRIV")
+		f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, []string{"PRIV"})
+	}
+	mintBoth(t)
 	if got := live(t); got != 2 {
 		t.Fatalf("PRIV's live developer-box tokens while it is public = %d, want the 2 just minted", got)
 	}
+	t.Run("private on its first day", func(t *testing.T) {
+		access.set(func(a *fakeAccess) { a.private["PRIV"] = true })
+		mintBoth(t)
+		if got := live(t); got != 4 {
+			t.Fatalf("PRIV's live developer-box tokens while it is private before its full switch = %d, want 4", got)
+		}
+	})
 
 	for _, state := range []struct {
 		name string
 		set  func(*fakeAccess)
 	}{
-		{"closing", func(a *fakeAccess) { a.closing["PRIV"] = true }},
-		{"private", func(a *fakeAccess) { a.closing["PRIV"], a.private["PRIV"] = false, true }},
+		{"closing", func(a *fakeAccess) { a.private["PRIV"], a.closed["PRIV"] = false, true }},
+		{"private after its full switch", func(a *fakeAccess) { a.private["PRIV"], a.closed["PRIV"] = true, true }},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			access.set(state.set)
@@ -92,16 +106,16 @@ func TestADeveloperBoxGetsNoTokenOfAPrivateProject(t *testing.T) {
 			status, body = machineTrade(project)
 			f.introspectsProjects(t, accessTokenOf(t, status, body), oauthwire.ProjectScopePerson, []string{project})
 			f.introspectsProjects(t, f.exchanged(t, namedTrade(), key), oauthwire.ProjectScopeNamed, []string{"PRIV"})
-			if got := live(t); got != 2 {
-				t.Fatalf("PRIV's live developer-box tokens while it is %s = %d, want the 2 minted while it was public, and no named token", state.name, got)
+			if got := live(t); got != 4 {
+				t.Fatalf("PRIV's live developer-box tokens while it is %s = %d, want the 4 minted before, and no named token", state.name, got)
 			}
 		})
 	}
 
 	tag, err := f.pool.Exec(ctx, `update oauth_access_tokens set active = false
 		where active and request #>> '{session,extra,project_scope}' = 'person' and request #>> '{session,extra,projects}' = 'PRIV'`)
-	if err != nil || tag.RowsAffected() != 2 {
-		t.Fatalf("revoke the two developer-box tokens of PRIV: %v, %d rows", err, tag.RowsAffected())
+	if err != nil || tag.RowsAffected() != 4 {
+		t.Fatalf("revoke the four developer-box tokens of PRIV: %v, %d rows", err, tag.RowsAffected())
 	}
 	if got := live(t); got != 0 {
 		t.Fatalf("PRIV's live developer-box tokens once both are revoked = %d, want 0", got)

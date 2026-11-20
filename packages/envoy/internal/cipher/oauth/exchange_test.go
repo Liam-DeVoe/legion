@@ -1368,15 +1368,17 @@ func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
 // fakeAccess is Dispatch's project-access answers for the exchange's tests: which person sees
 // which project, which projects Dispatch holds, and each person's member kind. It records every
 // question, can be made unreachable, and caches nothing, so a test changes an answer and the next
-// trade reads it. A project is public unless private names it, and closing while closing does.
+// trade reads it. A project is public unless private names it, and closed to developer boxes
+// only where closed does, whatever its visibility.
 type fakeAccess struct {
 	mu    sync.Mutex
 	sees  map[string][]string // person → the projects they see
 	held  []string            // the projects Dispatch holds
 	kinds map[string]string   // person → member kind; absent is none
-	// private and closing are the projects Dispatch answers private, and in its closing state.
+	// private and closed are the projects Dispatch answers private, and closed to developer
+	// boxes (projectaccess.Answer.ClosedToDeveloperBoxes).
 	private map[string]bool
-	closing map[string]bool
+	closed  map[string]bool
 	// askedAt, when set, is the AskedAt each answer carries, and lastAsked the last it carried;
 	// unset, an answer carries none, as a source that keeps no clock answers.
 	askedAt   func() time.Time
@@ -1393,7 +1395,7 @@ func newFakeAccess() *fakeAccess {
 		held:    []string{"PRIV", "SECRET", project, otherProject},
 		kinds:   map[string]string{},
 		private: map[string]bool{},
-		closing: map[string]bool{},
+		closed:  map[string]bool{},
 	}
 }
 
@@ -1414,7 +1416,7 @@ func (a *fakeAccess) Access(_ context.Context, key, who string) (projectaccess.A
 	if a.private[key] {
 		visibility = projectaccess.VisibilityPrivate
 	}
-	answer := projectaccess.Answer{Project: key, Visibility: visibility, Closing: a.closing[key], Person: who, Visible: slices.Contains(a.sees[who], key)}
+	answer := projectaccess.Answer{Project: key, Visibility: visibility, ClosedToDeveloperBoxes: a.closed[key], Person: who, Visible: slices.Contains(a.sees[who], key)}
 	if a.askedAt != nil {
 		answer.AskedAt = a.askedAt()
 		a.lastAsked = answer.AskedAt

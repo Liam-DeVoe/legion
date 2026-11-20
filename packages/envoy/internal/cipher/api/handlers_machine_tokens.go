@@ -1,8 +1,8 @@
 // handlers_machine_tokens.go: GET /v1/admin/machine-tokens?project=<KEY> — how many live tokens
 // a developer box holds that list one project. Dispatch reads it before it completes a project's
-// switch to private: the exchange mints no such token for a project Dispatch answers private or
-// closing (internal/cipher/oauth's projectAccess), and Dispatch makes the project private only
-// once none minted before is still live. Part of the routes a listed service calls with its own
+// switch to private: the exchange mints no such token for a project Dispatch answers closed to
+// developer boxes (internal/cipher/oauth's projectAccess), and Dispatch makes the project private
+// only once none minted before is still live. Part of the routes a listed service calls with its own
 // ServiceAccount token (accountAuth), behind the power only Dispatch's caller name holds.
 package api
 

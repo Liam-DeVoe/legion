@@ -104,9 +104,9 @@ var (
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
 	ErrUnchecked = errors.New("projectaccess: dispatch could not be asked, so the empty list is allowed unchecked")
-	// ErrClosed is a developer box's credential naming a project Dispatch answers private or
-	// closing (Answer.Closed): the broker mints and renews no such credential, so a developer box
-	// holds none, whatever its person may see.
+	// ErrClosed is a developer box's credential naming a project Dispatch answers closed to
+	// developer boxes (Answer.ClosedToDeveloperBoxes): the broker mints and renews no such
+	// credential, so a developer box holds none, whatever its person may see.
 	ErrClosed = errors.New("projectaccess: names a project that is private or turning private, which no developer-box credential lists")
 )
 
@@ -120,9 +120,9 @@ func (e *NotVisibleError) Error() string { return ErrNotVisible.Error() + ": " +
 // Unwrap is ErrNotVisible.
 func (e *NotVisibleError) Unwrap() error { return ErrNotVisible }
 
-// ClosedError is DeveloperBoxAsOf's refusal: the first project of a list that is private or
-// closing. It is ErrClosed (errors.Is). It is answered only for a project its person sees, so
-// naming it tells nobody of a project they cannot see.
+// ClosedError is DeveloperBoxAsOf's refusal: the first project of a list that Dispatch answers
+// closed to developer boxes. It is ErrClosed (errors.Is). It is answered only for a project its
+// person sees, so naming it tells nobody of a project they cannot see.
 type ClosedError struct{ Project string }
 
 func (e *ClosedError) Error() string { return ErrClosed.Error() + ": " + e.Project }
@@ -172,13 +172,15 @@ type Answer struct {
 	SlackChannels []string `json:"-"`
 	// SlackChannelsPresent is whether the answer carried slack_channels.
 	SlackChannelsPresent bool `json:"-"`
-	// Closing is Dispatch's closing state: the owner has started the project's switch to
-	// private, which Dispatch completes only once no developer-box credential that lists the
-	// project is live. A closing project is public in every other way, Visibility included, and
-	// the exchange refuses a developer box a token of it as it refuses one of a private project
-	// (Closed). Dispatch writes the key only while the project is closing, so an answer that
-	// carries none, a Dispatch's from before the state included, is a project that is not.
-	Closing bool `json:"closing"`
+	// ClosedToDeveloperBoxes is Dispatch's word that no developer-box credential may list the
+	// project: true while it is in its closing state, the start of an owner's switch to private,
+	// and while it is private and its full switch is done (Dispatch names its key among the
+	// projects it provisioned as private). The exchange refuses a developer box a token of such a
+	// project on this field alone (DeveloperBoxAsOf), never on Visibility: a project private on its
+	// first day, before its full switch, still gives the developer boxes of the people who work
+	// on it their tokens. Dispatch writes the key only while it is true, so an answer that carries
+	// none, a Dispatch's from before the field included, is a project that is not.
+	ClosedToDeveloperBoxes bool `json:"closed_to_developer_boxes"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an
 	// answer from a source that keeps no clock, which Stale takes as fresh.
@@ -200,10 +202,6 @@ func (a Answer) Private() bool { return a.Visibility == VisibilityPrivate }
 // Public reports whether the project is public. A project is public only when Dispatch says so:
 // a caller reads no other visibility, an empty one included, as public.
 func (a Answer) Public() bool { return a.Visibility == VisibilityPublic }
-
-// Closed reports whether no developer-box token may list the project: it is private, or closing
-// on its way there.
-func (a Answer) Closed() bool { return a.Private() || a.Closing }
 
 // Access is every question a broker reader asks Dispatch; *Client answers all three.
 type Access interface {
@@ -544,16 +542,16 @@ func VisibleAsOf(ctx context.Context, a Access, person string, projects []string
 
 // DeveloperBoxAsOf is VisibleAsOf for a developer box's credential, which acts as its person
 // on a machine every agent of the box shares: beside the person seeing each project, it answers
-// a *ClosedError (which is ErrClosed) naming the first project Dispatch answers private or
-// closing (Answer.Closed). The broker mints such a credential for no project that is private,
-// or closing on its way there, and renews none, so no developer box holds one once the switch
-// to private completes. Each project is checked in the list's order, the person's sight first,
-// so a project the person may not see is refused as Visible refuses it, never named as closed.
-// Its answers are aged as VisibleAsOf's are, and the time it answers is the one a caller holds
-// its mint to (Stale) until the credential is stored.
+// a *ClosedError (which is ErrClosed) naming the first project Dispatch answers closed to
+// developer boxes (Answer.ClosedToDeveloperBoxes). The broker mints such a credential for no
+// such project and renews none, so no developer box holds one once a switch to private
+// completes. Each project is checked in the list's order, the person's sight first, so a
+// project the person may not see is refused as Visible refuses it, never named as closed. Its
+// answers are aged as VisibleAsOf's are, and the time it answers is the one a caller holds its
+// mint to (Stale) until the credential is stored.
 func DeveloperBoxAsOf(ctx context.Context, a Access, person string, projects []string) (time.Time, error) {
 	return passesAsOf(ctx, a, person, projects, func(project string, answer Answer) error {
-		if answer.Closed() {
+		if answer.ClosedToDeveloperBoxes {
 			return &ClosedError{Project: project}
 		}
 		return nil

@@ -47,9 +47,9 @@ type Row struct {
 	// OmitSlackChannels makes this project's answer carry no slack_channels key, the shape a
 	// Dispatch from before #t-a-31 answers.
 	OmitSlackChannels bool
-	// Closing is Dispatch's closing state, the start of a switch to private. The stand-in writes
-	// the key only while it is true, as Dispatch does.
-	Closing bool
+	// ClosedToDeveloperBoxes is Dispatch's word that no developer-box credential may list the
+	// project. The stand-in writes the key only while it is true, as Dispatch does.
+	ClosedToDeveloperBoxes bool
 }
 
 // Server is the stand-in: URL is its base, Token the one bearer it takes, and Account that bearer
@@ -182,8 +182,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			answer["slack_channels"] = channels
 		}
-		if row.Closing {
-			answer["closing"] = true
+		if row.ClosedToDeveloperBoxes {
+			answer["closed_to_developer_boxes"] = true
 		}
 		writeJSON(w, http.StatusOK, answer)
 	default:

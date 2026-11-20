@@ -450,7 +450,8 @@ func routes() []apiRoute {
 		// those that act as their person, a machine login's trades and a person's sign-ins on a
 		// machine, unrevoked and unexpired, with when the last expires. Dispatch reads it before
 		// it completes a project's switch to private, which it completes only at 0: the exchange
-		// mints and renews no such token while Dispatch answers the project private or closing.
+		// mints and renews no such token while Dispatch answers the project closed to developer
+		// boxes (closing, or private after its full switch).
 		// It names no token, person or session. ?project= must be one project key (400
 		// PROJECT_INPUT); a key no token lists answers 0. Only Dispatch's caller name holds the
 		// power it needs.
