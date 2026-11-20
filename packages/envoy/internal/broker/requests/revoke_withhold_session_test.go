@@ -2,7 +2,6 @@ package requests
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"testing"
 
@@ -135,8 +134,10 @@ func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
 // and the list says the same: dave's Live grants still holds the grant, which it selects by the
 // enrollment's record, but names no operator and no approver on it, so the page reads "Ends with
 // its machine login" (GrantsSection.tsx's unrevocable) rather than offering a Revoke the broker
-// refuses. dave's revoke is refused NOT_APPROVER. The control, in the same row: once the setting
-// maps the account to dave again, the row names him as the operator and his revoke ends it.
+// refuses. The control, in the same row: once the setting maps the account to dave again, the
+// row names him as the operator. That the revoke answers the same is
+// TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay's, and
+// TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant's control.
 func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
@@ -169,19 +170,10 @@ func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testi
 	if g.Approver != "" || g.Enrollment.Operator != "" {
 		t.Errorf("dave's row of grant %s names approver %q and operator %q; want neither, so the page offers no Revoke the broker refuses", grantID, g.Approver, g.Enrollment.Operator)
 	}
-	if err := m.RevokeByApprover(t.Context(), grantID, dave.person, record.HumanActor(dave.person)); !errors.Is(err, ErrNotApprover) {
-		t.Errorf("dave's revoke of grant %s = %v; want ErrNotApprover", grantID, err)
-	}
-	requireGrantLive(t, m, grantID)
-
 	m.PodOperators[dave.account] = dave.person
 	if g, ok := row(); !ok || g.Enrollment.Operator != dave.person {
 		t.Errorf("once the setting maps the pod to dave again, his row of grant %s = %+v, %v; want it naming him as the operator", grantID, g, ok)
 	}
-	if err := m.RevokeByApprover(t.Context(), grantID, dave.person, record.HumanActor(dave.person)); err != nil {
-		t.Errorf("dave's revoke once the setting maps the pod to him again = %v; want it ended", err)
-	}
-	requireRevokedBy(t, m, grantID, dave.person)
 }
 
 // TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName: box A of a session holds an

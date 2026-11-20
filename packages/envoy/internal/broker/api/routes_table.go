@@ -411,10 +411,12 @@ func routes() []apiRoute {
 		// revoke also withholds the secrets the grant's request got automatically from that session,
 		// even when the grant had already ended: its other grants that got them automatically end
 		// too, and it asks before it gets them again. To anyone else, a grant id no grant has and a
-		// grant a private project hides from the person are one 404 NOT_FOUND, and a grant Dispatch
-		// cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, revoking nothing. The revoking person
-		// is the login the request names, which the broker still takes on the caller's word: a
-		// revoke only takes power away.
+		// grant a private project hides from the person are one 404 NOT_FOUND, a grant Dispatch
+		// cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant they may see that names
+		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
+		// moved to another session each time the revoke read it, three times in a row, is 409
+		// GRANT_MOVING. Each of these revokes nothing. The revoking person is the login the request
+		// names, which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
 		// List the sign-ins the named person made on their machines with `agent-secrets login`,
 		// by machine: one row per box key they signed in with and have not revoked, each naming
@@ -457,10 +459,14 @@ func routes() []apiRoute {
 		{http.MethodGet, "/v1/operator/grants", launcherAuth((*server).listOperatorGrants)},
 		// End a grant as the operator: the revocation Dispatch's page offers, which also withholds an
 		// automatic grant's secrets from its session. It answers as the person's own revoke of the
-		// grant does: a grant that names the operator as its approver or its enrollment's operator
-		// is ended whatever Dispatch answers, and of any other grant an id no grant has and a grant a
-		// private project hides from the operator are one 404 NOT_FOUND, and a grant Dispatch cannot
-		// answer for is 503 PROJECT_ACCESS_UNAVAILABLE.
+		// grant does: a grant whose approver is the operator, or whose enrollment acts for the
+		// operator (an unmapped person's pod acts for no one), is ended whatever project it touches
+		// and whether or not Dispatch answers. Of any other grant, an id no grant has and a grant a
+		// private project hides from the operator are one 404 NOT_FOUND, a grant Dispatch cannot
+		// answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant the operator may see that names
+		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
+		// moved to another session each time the revoke read it, three times in a row, is 409
+		// GRANT_MOVING. Each of these revokes nothing.
 		{http.MethodPost, "/v1/operator/grants/{id}/revoke", launcherAuth((*server).revokeOperatorGrant)},
 		// The store, the namespace prefix, the agent-secrets key and the account or project it is
 		// in, and the Google exchange audience: what the CLI needs so it and the broker never

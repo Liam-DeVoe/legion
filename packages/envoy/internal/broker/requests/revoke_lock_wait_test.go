@@ -63,33 +63,49 @@ func waitBlockedBy(t *testing.T, m *Machine, holder pgx.Tx, done <-chan error) {
 // session's operator, exempt from the rule as the old holder's operator, revokes; the revoke waits
 // on the adoption's lock, and the adoption commits. The transaction must see the grant where the
 // adoption left it, start again from the rule, and answer the operator as for an unknown grant,
-// with the grant live.
+// with the grant live. It holds on the server's default level and on a pool whose transactions
+// default to REPEATABLE READ (storetest.RepeatableReadByDefault), since revokeJudged names READ
+// COMMITTED: without the name, the second case's transaction reads the grant as it was before the
+// move, and the grant's update fails with a serialization error instead.
 func TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant(t *testing.T) {
-	m, session, key := newJudgeFixture(t)
-	grantID := judgedGrant(t, m, session, key, 600, "SHARED_KEY")
-	answerFrom(t, m, map[string]projectaccesstest.Row{"INFRA": {Visibility: "private", Owner: otherPerson, Listed: []string{insider}}})
-	var operator *string
-	if err := m.Store.Pool.QueryRow(t.Context(), `select e.operator from grants g join enrollments e on e.id=g.enrollment_id where g.id=$1`, grantID).Scan(&operator); err != nil || deref(operator) == "" {
-		t.Fatalf("the judged grant's holder names operator %q, %v; want one", deref(operator), err)
-	}
-	login := *operator
-	pod, _ := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
-	adopt := adoptionInFlight(t, m, session, func(tx pgx.Tx) error {
-		_, err := tx.Exec(t.Context(), `with moved as (update grants set enrollment_id=$2 where id=$1 returning request_id)
-			update requests set enrollment_id=$2 where id=(select request_id from moved)`, grantID, pod)
-		return err
-	})
+	for _, repeatableRead := range []bool{false, true} {
+		name := "the server's default level"
+		if repeatableRead {
+			name = "REPEATABLE READ by default"
+		}
+		t.Run(name, func(t *testing.T) {
+			m, session, key := newJudgeFixture(t)
+			grantID := judgedGrant(t, m, session, key, 600, "SHARED_KEY")
+			answerFrom(t, m, map[string]projectaccesstest.Row{"INFRA": {Visibility: "private", Owner: otherPerson, Listed: []string{insider}}})
+			var operator *string
+			if err := m.Store.Pool.QueryRow(t.Context(), `select e.operator from grants g join enrollments e on e.id=g.enrollment_id where g.id=$1`, grantID).Scan(&operator); err != nil || deref(operator) == "" {
+				t.Fatalf("the judged grant's holder names operator %q, %v; want one", deref(operator), err)
+			}
+			login := *operator
+			pod, _ := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
+			adopt := adoptionInFlight(t, m, session, func(tx pgx.Tx) error {
+				_, err := tx.Exec(t.Context(), `with moved as (update grants set enrollment_id=$2 where id=$1 returning request_id)
+					update requests set enrollment_id=$2 where id=(select request_id from moved)`, grantID, pod)
+				return err
+			})
+			if repeatableRead {
+				serverDefault := m.Store.Pool
+				m.Store.Pool = storetest.RepeatableReadByDefault(t, m.Store)
+				t.Cleanup(func() { m.Store.Pool = serverDefault })
+			}
 
-	done := make(chan error, 1)
-	go func() { done <- m.RevokeByApprover(t.Context(), grantID, login, record.HumanActor(login)) }()
-	waitBlockedBy(t, m, adopt, done)
-	if err := adopt.Commit(t.Context()); err != nil {
-		t.Fatal(err)
+			done := make(chan error, 1)
+			go func() { done <- m.RevokeByApprover(t.Context(), grantID, login, record.HumanActor(login)) }()
+			waitBlockedBy(t, m, adopt, done)
+			if err := adopt.Commit(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; !errors.Is(err, pgx.ErrNoRows) {
+				t.Errorf("RevokeByApprover(the judged grant, its former operator %s, moved by the adoption it waited on) = %v; want the answer an unknown grant gets (pgx.ErrNoRows)", login, err)
+			}
+			requireGrantLive(t, m, grantID)
+		})
 	}
-	if err := <-done; !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("RevokeByApprover(the judged grant, its former operator %s, moved by the adoption it waited on) = %v; want the answer an unknown grant gets (pgx.ErrNoRows)", login, err)
-	}
-	requireGrantLive(t, m, grantID)
 }
 
 // TestAnOperatorsRevokeDuringTheirSessionsAdoptionWithholdsWhereTheSessionRuns: the operator ends

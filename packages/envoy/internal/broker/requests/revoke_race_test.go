@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
@@ -49,4 +50,41 @@ func TestARevokeDecidesOnlyOnTheGrantTheRuleJudged(t *testing.T) {
 		t.Errorf("RevokeByApprover(the judged grant, its former operator %s, moved since the rule read it) = %v; want the answer an unknown grant gets (pgx.ErrNoRows)", login, err)
 	}
 	requireGrantLive(t, m, grantID)
+}
+
+// TestARevokeOfAGrantThatKeepsMovingAnswersErrGrantMoving: the fixture operator's session holds
+// an automatic AUTO_TOKEN grant, and an adoption moves it to another box of the same operator
+// between the person rule and the transaction each time the revoke runs them (testRevokeHook).
+// After revokeJudgeAttempts tries the revoke answers ErrGrantMoving, which the API answers 409
+// GRANT_MOVING, having revoked and withheld nothing; once the grant stays put, the same revoke
+// ends it.
+func TestARevokeOfAGrantThatKeepsMovingAnswersErrGrantMoving(t *testing.T) {
+	m, a, keyA, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	_, grantID := grantOf(t, m, a, keyA, "deploy the worker", "AUTO_TOKEN")
+	b, _ := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
+	holders := []string{b, a}
+	moves := 0
+	m.testRevokeHook = func() {
+		to := holders[moves%2]
+		moves++
+		if _, err := m.Store.Pool.Exec(t.Context(), `with moved as (update grants set enrollment_id=$2 where id=$1 returning request_id)
+			update requests set enrollment_id=$2 where id=(select request_id from moved)`, grantID, to); err != nil {
+			t.Errorf("move the grant to %s: %v", to, err)
+		}
+	}
+	err := m.RevokeByApprover(t.Context(), grantID, fixtureOperator, record.HumanActor(fixtureOperator))
+	if moves != revokeJudgeAttempts {
+		t.Fatalf("the grant moved %d times; want %d, one before each of the revoke's transactions", moves, revokeJudgeAttempts)
+	}
+	if !errors.Is(err, ErrGrantMoving) {
+		t.Errorf("RevokeByApprover of a grant that moved before each of its transactions = %v; want ErrGrantMoving", err)
+	}
+	requireGrantLive(t, m, grantID)
+	if n := withheldCount(t, m, a) + withheldCount(t, m, b); n != 0 {
+		t.Errorf("the refused revoke withheld %d names; want none", n)
+	}
+	m.testRevokeHook = nil
+	if err := m.RevokeByApprover(t.Context(), grantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Errorf("the same revoke once the grant stays put = %v; want it ended", err)
+	}
 }

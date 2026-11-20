@@ -1594,9 +1594,11 @@ of a stored JSON value, and every credential of a well-known shape; any other se
 typed into its command, a shorter value among them, is kept as typed, and `GET /v1/grant-log`
 answers this row to the accounts that read the grant log),
 `grant.revoked` (naming, under `withheld`,
-the secrets an operator's revoke withheld from the session, and, on each other grant of the session
-that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's revoke of
-a grant already revoked, naming under `withheld` the secrets it withheld from the session),
+the secrets an operator's revoke withheld from the session, under `withheld_on`, the session's
+other enrollments it wrote them on besides the grant's own, and, on each other grant of the
+session that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's
+revoke of a grant already revoked, naming under `withheld` the secrets it withheld from the
+session, and under `withheld_on` the other enrollments it wrote them on),
 `request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person
 and the runs a check stopped included: each check and its result, the model, whether the model was
 asked, the verdict, the reason, the token counts, that it priced nothing, and the raw answer where
