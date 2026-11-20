@@ -1290,10 +1290,11 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     ? review !== undefined && review.event !== "REQUEST_CHANGES"
     : accepted && verdict === "pass";
   const ended = reviewer ? review?.event === "REQUEST_CHANGES" : accepted && verdict === "fail";
-  // How the role ended the round: the completion it posted and the review it submitted. The
-  // record is no part of it, since the record names the check whatever the round came to.
+  // How the role ended the round: the completion it posted and the review it submitted, as their
+  // words, so a line the summary opens with is read as it stands (decodedStrings). The record is
+  // no part of it, since the record names the check whatever the round came to.
   const said = [
-    completion === undefined ? "" : JSON.stringify(completion.args),
+    ...(completion === undefined ? [] : decodedStrings(completion.args)),
     review?.body ?? "",
   ].join("\n");
   // How the round must end (world.json's `round`): it goes on where the re-run cleared the red,
