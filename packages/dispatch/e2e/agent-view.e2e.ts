@@ -30,7 +30,7 @@ import { connect, watchLiveSockets } from "./live-socket-watch";
 import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
 import { selectMention } from "./mention";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -647,30 +647,44 @@ test("mid-turn, an empty box refuses Send, says why on screen once it is pressed
   }
 });
 
+/** The planner under a session id of the running row's own (`rowSessionId`, e2e/test.ts), live in
+ *  the fake Envoy, and a person of the row's own to talk to it (`rowPerson`): the navigation's
+ *  "New replies" counts one person's unread replies to their direct messages over every session,
+ *  and a session's conversation holds what every person said to it, so under alice and the
+ *  planner's fixed id a row reads every earlier row's messages and unread replies beside its
+ *  own. */
+async function ownPlanner(): Promise<{ readonly me: string; readonly planner: FakeSession }> {
+  const own = { ...planner, session_id: rowSessionId("planner") };
+  await setLiveSessions([own]);
+  return { me: rowPerson("alice"), planner: own };
+}
+
 // A session answers a human's direct message through Dispatch, which the relayed stream shows
 // only as a tool call. The replies are news the human did not go looking for, so they are
 // counted unread in the navigation, and the live view shows them - which is reading them.
 test("a session's replies to a direct message are unread until the live view shows them", async ({
   browser,
 }) => {
-  const asked = await createAgentMessage(planner.session_id, {
-    body: "Where is the dashboard?",
-    delivery: "aside",
-  });
-  const session = { id: planner.session_id, kind: "session" as const };
+  const own = await ownPlanner();
+  const asked = await createAgentMessage(
+    own.planner.session_id,
+    { body: "Where is the dashboard?", delivery: "aside" },
+    { login: own.me }
+  );
+  const session = { id: own.planner.session_id, kind: "session" as const };
   await replyToMessageDelivery(asked.id, { attempt: 1, body: "Switching to it now." }, session);
   // A follow-up, as `dispatch message` sends it.
   await replyToMessageDelivery(asked.id, { attempt: 1, body: "Done: it is at /dash." }, session, {
     followUp: true,
   });
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, own.me);
   const page = await context.newPage();
   try {
     await page.goto("/agents");
     // A shown badge: a folded row's text is in the page too, hidden.
     await expect(page.getByText("New replies 2").filter({ visible: true }).first()).toBeVisible();
 
-    await page.goto(`/agents/${planner.session_id}/live`);
+    await page.goto(`/agents/${own.planner.session_id}/live`);
     await expect(page.getByTestId("agent-thread")).toContainText("Where is the dashboard?");
     const replies = page.getByTestId("agent-dispatch-reply");
     await expect(replies).toHaveCount(2);
@@ -691,11 +705,13 @@ test("a session's replies to a direct message are unread until the live view sho
 test("the live view shows an unread reply from outside the fifty most active conversations", async ({
   browser,
 }) => {
-  const session = { id: planner.session_id, kind: "session" as const };
-  const asked = await createAgentMessage(planner.session_id, {
-    body: "Did the migration land?",
-    delivery: "aside",
-  });
+  const own = await ownPlanner();
+  const session = { id: own.planner.session_id, kind: "session" as const };
+  const asked = await createAgentMessage(
+    own.planner.session_id,
+    { body: "Did the migration land?", delivery: "aside" },
+    { login: own.me }
+  );
   await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: "No - it rolled back, here is why." },
@@ -707,10 +723,11 @@ test("the live view shows an unread reply from outside the fifty most active con
     await Promise.all(
       Array.from({ length: 10 }, async (_, offset) => {
         const index = batch + offset;
-        const busier = await createAgentMessage(planner.session_id, {
-          body: `Busier question ${index}`,
-          delivery: "aside",
-        });
+        const busier = await createAgentMessage(
+          own.planner.session_id,
+          { body: `Busier question ${index}`, delivery: "aside" },
+          { login: own.me }
+        );
         await replyToMessageDelivery(
           busier.id,
           { attempt: 1, body: `Busier answer ${index}` },
@@ -719,13 +736,13 @@ test("the live view shows an unread reply from outside the fifty most active con
       })
     );
   }
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, own.me);
   const page = await context.newPage();
   try {
     await page.goto("/agents");
     await expect(page.getByText("New replies 51").filter({ visible: true }).first()).toBeVisible();
 
-    await navigateInApp(page, `/agents/${planner.session_id}/live`);
+    await navigateInApp(page, `/agents/${own.planner.session_id}/live`);
     await expect(page.getByTestId("agent-thread")).toContainText("Did the migration land?");
     await expect(page.getByText("No - it rolled back, here is why.")).toBeVisible();
     await expect(page.getByText(/^New repl/)).toHaveCount(0);

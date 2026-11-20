@@ -1157,7 +1157,10 @@ test("a project document page draws its margin, and none of the issue page's pan
 
 test("the Inbox keeps its margin-less layout", async ({ browser }) => {
   const inb = rowKey("INB");
-  await createProject({ key: inb, name: "Inbox" });
+  // Named for none of the shell's own links: every project of the stack is a link in the
+  // navigation, named by its key and its name, so a project named `Inbox` is one more link a
+  // row's `{ name: "Inbox" }` finds beside the navigation's own.
+  await createProject({ key: inb, name: "Margin-less" });
   await createIssue({ project: inb, spec: SPEC, title: "An issue to list" });
   const alice = await asUser(browser, "alice");
   try {

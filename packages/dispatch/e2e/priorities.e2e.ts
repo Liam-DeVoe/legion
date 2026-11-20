@@ -9,6 +9,7 @@
  *  after a reload, that a count moves with no reload at all, and that two pages agree about one
  *  relation.
  */
+import { defaultView } from "../web/src/features/project/issues-table-model";
 import {
   claimIssue,
   createIssue,
@@ -187,6 +188,49 @@ async function seedPriorities(): Promise<Seeded> {
     smoke: smoke.key,
     titles: [first.title, second.title, third.title],
   };
+}
+
+/** What the deployment holds of the one order and its two faults before a row writes, read
+ *  through the read the page and the rail make (`GET /api/v1/priorities`). Every priority is the
+ *  deployment's and so is every issue in flight, so a row that reads a place in the order, the
+ *  size of a fault or the rail's count reads them beside what another row left: the review
+ *  corpus's priority and the work under it, where the worker seeded the corpus (`reviewCorpus`,
+ *  e2e/test.ts), and every earlier row's issues in flight, which advance nothing once that row's
+ *  priorities are taken out again (`ownPriorities`). A row reads it before its seed and asserts
+ *  what it held and what the row added to it; over an emptied database it holds nothing, and the
+ *  row reads what it always read. */
+interface Held {
+  /** The titles of the priorities standing, in rank order: `P1` onwards on the page. */
+  readonly titles: readonly string[];
+  /** The place the row's own `index`-th priority takes, from 0: the next after every one
+   *  standing, as a priority takes the last place when it is written. */
+  readonly place: (index: number) => string;
+  /** How many issues are in flight under no priority, the first fault. */
+  readonly unplaced: number;
+  /** The issues of the second fault, by the name a fault list's row is read by,
+   *  `<KEY> <title>`. */
+  readonly parked: readonly string[];
+  /** The rail's number: the two faults added (`Sidebar.tsx`), whatever the summary says of the
+   *  priorities themselves. */
+  readonly faults: number;
+}
+
+async function heldBefore(): Promise<Held> {
+  const read = await listPriorities();
+  const titles = (read.priorities ?? []).map((row) => row.title);
+  return {
+    faults: read.work_under_no_priority.count + read.priority_work_parked.count,
+    parked: (read.priority_work_parked.issues ?? []).map((row) => `${row.key} ${row.title}`),
+    place: (index) => `P${titles.length + index + 1}`,
+    titles,
+    unplaced: read.work_under_no_priority.count,
+  };
+}
+
+/** The priorities table's rows as `expectRowOrder` reads them, `P<n> <title>`: the ones standing
+ *  before the row, then `own`, the row's, in their places after them. */
+function orderAfter(held: Held, own: readonly string[]): string[] {
+  return [...held.titles, ...own].map((title, index) => `P${index + 1} ${title}`);
 }
 
 /** A page of alice's at a width the sidebar's rail is drawn at (1280 px, `WIDE_LAYOUT_MIN_PX`
@@ -439,7 +483,11 @@ test("with no priority the page reads the server's sentence, and writes the firs
 test("a priority row opens its work by status, and four writes survive a reload", async ({
   browser,
 }) => {
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  // The row's three priorities, P1 to P3 over an emptied database, take the places after every
+  // priority that stood before it (`heldBefore`).
+  const [first, second, third] = [held.place(0), held.place(1), held.place(2)];
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -448,7 +496,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
 
     // An opened row shows the work advancing that priority, read by status, which is the
     // grouping the page writes into the address when it opens the row.
-    await page.getByRole("button", { name: `Open P3 ${seed.titles[2]}` }).click();
+    await page.getByRole("button", { name: `Open ${third} ${seed.titles[2]}` }).click();
     const work = section(page, `Work advancing ${seed.titles[2]}`);
     await expect(page).toHaveURL(/w\.group=status/);
     await expect(work.getByRole("button", { name: /Needs review, 1 issue/ })).toBeVisible();
@@ -459,21 +507,21 @@ test("a priority row opens its work by status, and four writes survive a reload"
       `${seed.cutover} Ledger cut-over`,
       `${seed.ledger} Ledger read path`,
     ]);
-    await page.getByRole("button", { name: `Close P3 ${seed.titles[2]}` }).click();
+    await page.getByRole("button", { name: `Close ${third} ${seed.titles[2]}` }).click();
     await expect(section(page, `Work advancing ${seed.titles[2]}`)).toHaveCount(0);
 
     // Renamed where it is read: no edit mode and no Save, so leaving the field writes it.
     const renamed = "Cut the review queue in half";
-    await page.getByLabel("Title of P2").fill(renamed);
-    await page.getByLabel("Title of P2").blur();
+    await page.getByLabel(`Title of ${second}`).fill(renamed);
+    await page.getByLabel(`Title of ${second}`).blur();
 
     // Described in the row that holds it, which is where the whole description is shown: read
     // rendered, every paragraph of it, and opened into its editor by a click on what it reads.
     const described = "The fleet is one build, or the rollout is not done.";
-    const rendered = page.getByRole("group", { exact: true, name: "Description of P1" });
-    const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
+    const rendered = page.getByRole("group", { exact: true, name: `Description of ${first}` });
+    const editor = page.getByRole("textbox", { exact: true, name: `Description of ${first}` });
     const finished = "It is finished when no machine is left on the old build";
-    await page.getByRole("button", { name: `Open P1 ${seed.titles[0]}` }).click();
+    await page.getByRole("button", { name: `Open ${first} ${seed.titles[0]}` }).click();
     await expect(rendered).toContainText(finished);
     await rendered.getByText(finished).click();
     await expect(editor).toHaveValue(seed.description);
@@ -491,28 +539,24 @@ test("a priority row opens its work by status, and four writes survive a reload"
         name: "Add priority",
       })
       .click();
-    await expect(page.getByRole("row", { name: `P4 ${added}` })).toBeVisible();
+    await expect(page.getByRole("row", { name: `${held.place(3)} ${added}` })).toBeVisible();
 
     // And dragged: the third row onto the second, which writes the place the reader can see.
     const handle = page.getByRole("button", {
-      name: `Move P3 ${seed.titles[2]}: drag it, or press the up and down arrows`,
+      name: `Move ${third} ${seed.titles[2]}: drag it, or press the up and down arrows`,
     });
     await handle.dragTo(page.locator(`tr[data-issue-row="${seed.ids[1]}"]`));
-    await expect(page.getByRole("row", { name: `P2 ${seed.titles[2]}` })).toBeVisible();
+    await expect(page.getByRole("row", { name: `${second} ${seed.titles[2]}` })).toBeVisible();
 
     // Every one of the four is the store's now, not the page's: read back from the server, and
     // then from a page that was loaded again.
+    const order = [seed.titles[0], seed.titles[2], renamed, added];
     await expect
       .poll(async () => (await listPriorities()).priorities?.map((row) => row.title))
-      .toEqual([seed.titles[0], seed.titles[2], renamed, added]);
+      .toEqual([...held.titles, ...order]);
     await page.reload();
-    await expectRowOrder(section(page, "Priorities"), [
-      `P1 ${seed.titles[0]}`,
-      `P2 ${seed.titles[2]}`,
-      `P3 ${renamed}`,
-      `P4 ${added}`,
-    ]);
-    await page.getByRole("button", { name: `Open P1 ${seed.titles[0]}` }).click();
+    await expectRowOrder(section(page, "Priorities"), orderAfter(held, order));
+    await page.getByRole("button", { name: `Open ${first} ${seed.titles[0]}` }).click();
     await expect(rendered).toContainText(described);
     await expect(rendered).not.toContainText("It is finished when no machine is left");
 
@@ -521,7 +565,9 @@ test("a priority row opens its work by status, and four writes survive a reload"
     // is a moment that has passed, and no relative label reads forwards. Each absence is read
     // once the parts that carry dates and counts have drawn - the work under P1 and both fault
     // lists, each a read of its own - since a page still loading them would pass it on text it
-    // never drew.
+    // never drew. Each fault list is the deployment's: the first draws the row's four beside the
+    // issues in flight before it, up to the page the table opens on (`defaultView`), and the
+    // second the row's child beside the work parked before it.
     await expectRowNames(section(page, `Work advancing ${seed.titles[0]}`), [
       `${seed.rollout} Daemon rollout to the fleet`,
       `${seed.smoke} Daemon smoke suite`,
@@ -530,8 +576,9 @@ test("a priority row opens its work by status, and four writes survive a reload"
       page
         .getByRole("table", { exact: true, name: NO_PRIORITY_TABLE })
         .locator("tr[data-issue-row]")
-    ).toHaveCount(4);
-    await expectRowOrder(page.getByRole("table", { exact: true, name: PARKED_TABLE }), [
+    ).toHaveCount(Math.min(held.unplaced + 4, defaultView.pageSize));
+    await expectRowNames(page.getByRole("table", { exact: true, name: PARKED_TABLE }), [
+      ...held.parked,
       `${seed.child} Ledger client migration`,
     ]);
     const future = await page
@@ -560,6 +607,9 @@ test("a priority row opens its work by status, and four writes survive a reload"
 test("the rail's Priorities count falls as work leaves flight and as a parent link moves", async ({
   browser,
 }) => {
+  // The rail counts both faults over the whole deployment, so its number is the row's own five
+  // on top of what the faults held before the row wrote (`heldBefore`).
+  const held = await heldBefore();
   const seed = await seedPriorities();
   const context = await asUser(browser, "alice");
   try {
@@ -569,25 +619,36 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     await page.goto(`/issues/${seed.rollout}`);
     const entry = railEntry(page);
     await expect(entry).toBeVisible();
-    await expect(entry.locator("span").last()).toHaveText("5");
+    await expect(entry.locator("span").last()).toHaveText(String(held.faults + 5));
 
     // Four in flight under no priority plus one parked. An issue that leaves `in_progress` is
     // no longer in flight, so the first fault loses it - with no reload: the event that moved
     // it refreshes the two counts (`web/src/api/event-refresh.ts`).
     await patchIssue(seed.clock, { status: "done" });
-    await expect(entry.locator("span").last()).toHaveText("4");
+    await expect(entry.locator("span").last()).toHaveText(String(held.faults + 4));
 
     // And the child advances P3 only through the issue above it, so moving that link out
     // leaves it parked under nothing, which is no fault at all.
     await patchIssue(seed.child, { parent: null });
-    await expect(entry.locator("span").last()).toHaveText("3");
+    await expect(entry.locator("span").last()).toHaveText(String(held.faults + 3));
 
     // A deployment that has written no priority has nothing off a list that does not exist, so
-    // the entry carries no number: its label and its line, and no badge beside them.
+    // the entry carries no number: its label and its line, and no badge beside them. Ending the
+    // row's three leaves the priorities that stood before it: none over an emptied database,
+    // which is that deployment, and the review corpus's where the worker seeded it, under which
+    // the entry still counts both faults as the server answers them now.
     for (const id of seed.ids) await endPriority(id);
     await page.reload();
     await expect(railEntry(page)).toBeVisible();
-    await expect(railEntry(page).locator("span")).toHaveCount(2);
+    const after = await listPriorities({ summary: true });
+    expect(after.empty ?? "").toBe(held.titles.length === 0 ? NONE_LIVE : "");
+    if (held.titles.length === 0) {
+      await expect(railEntry(page).locator("span")).toHaveCount(2);
+    } else {
+      await expect(railEntry(page).locator("span").last()).toHaveText(
+        String(after.work_under_no_priority.count + after.priority_work_parked.count)
+      );
+    }
   } finally {
     await context.close();
   }

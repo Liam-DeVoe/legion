@@ -323,8 +323,9 @@ test.describe("inbox selection", () => {
     const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
-      // Every read of the Inbox the page sends, and every snooze event of alice's its live feed
-      // carries: a snooze's event names no ask.
+      // Every read of the Inbox the page sends, and every snooze event of the reader's its live
+      // feed carries: a snooze's event names no ask, and the reader is this row's own person, so
+      // it is the event that names that login.
       const inboxReads: string[] = [];
       page.on("request", (request) => {
         if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
@@ -338,7 +339,7 @@ test.describe("inbox selection", () => {
           const frame = String(payload);
           if (
             frame.includes("user_state.updated") &&
-            frame.includes('"login":"alice"') &&
+            frame.includes(`"login":${JSON.stringify(me)}`) &&
             frame.includes('"snoozed"')
           ) {
             snoozeEvents.push(frame);

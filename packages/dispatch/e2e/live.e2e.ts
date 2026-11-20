@@ -75,11 +75,14 @@ test("live: bob's ask updates alice's Inbox and project badges without reload @p
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const readingIssue = await createIssue({ project: core, title: "Reading" });
-  const targetIssue = await createIssue({ project: core, title: "Needs an answer" });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox holds no
+  // other row's question, so it starts empty and its count is this row's one question.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const readingIssue = await createIssue({ project: core, title: "Reading" }, { login: me });
+  const targetIssue = await createIssue({ project: core, title: "Needs an answer" }, { login: me });
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const inboxPage = await alice.newPage();
   await inboxPage.goto("/");
   await expect(inboxPage.getByText("Nothing needs you")).toBeVisible();

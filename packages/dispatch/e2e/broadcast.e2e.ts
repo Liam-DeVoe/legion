@@ -574,10 +574,17 @@ function agentRow(page: Page, title: string): Locator {
 test("opening a broadcast reads the answers it shows, on the badge, every agent's row and the viewer's other tabs", async ({
   browser,
 }, testInfo) => {
-  await setLiveSessions([planner, tester, observer]);
-  const id = await answeredBroadcast([tester.session_id, observer.session_id, planner.session_id]);
+  // The reader is a person of the row's own (`rowPerson`) and the sessions are the row's own
+  // (`rowSessions`): "New replies" counts one person's unread answers over every session, and an
+  // agent's row counts what its session holds, so each holds this row's answers and no other
+  // row's.
+  const me = rowPerson("alice");
+  const own = rowSessions();
+  await setLiveSessions([own.planner, own.tester, own.observer]);
+  const sessions = [own.tester.session_id, own.observer.session_id, own.planner.session_id];
+  const id = await answeredBroadcast(sessions, me);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const agents = await alice.newPage();
     await agents.goto("/agents");
@@ -590,7 +597,7 @@ test("opening a broadcast reads the answers it shows, on the badge, every agent'
     await page.goto(`/agents/broadcasts/${id}`);
     const view = page.getByRole("region", { name: "Broadcast" });
     await expect(view.getByText("3 of 3 answered")).toBeVisible();
-    for (const session of [tester.session_id, observer.session_id, planner.session_id]) {
+    for (const session of sessions) {
       await expect(view.getByText(`${session} reporting.`)).toBeVisible();
     }
     await expect(page.getByText(/^New repl/)).toHaveCount(0);

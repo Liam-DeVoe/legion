@@ -32,7 +32,7 @@ import {
 } from "./api";
 import { conversationFilter } from "./editor";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -187,15 +187,19 @@ test("Conversation updates an open ask in place after an agent edit and preserve
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Edited decision" });
+  // The reader is a person of the row's own (`rowPerson`): from 1280 px the Inbox draws a card
+  // for the selected row alone, its first, which is this row's question only in a list that
+  // holds no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Edited decision" }, { login: me });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "REST" }, { label: "gRPC" }], question: "Which implementation?" },
     agent
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);

@@ -23,8 +23,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
-import { expect, rowKey, test } from "./test";
+import { emptyDatabase, expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /** Holds the room's next durable append inside its `doc_updates` insert for this long, which is
@@ -143,7 +142,7 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   // at once (the header above), and what the probe starts from is the first thing a reader of
   // that comparison needs: a row whose 40 s are spent on one append cannot be read against
   // another tree's run without it.
-  await resetDatabase();
+  await emptyDatabase();
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
     project: core,

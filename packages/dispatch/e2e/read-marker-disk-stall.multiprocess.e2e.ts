@@ -10,8 +10,7 @@ import {
 } from "./disk-stall";
 import { connectedDot, documentEditor, holdFirstRequest } from "./editor";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
-import { expect, rowKey, test } from "./test";
+import { emptyDatabase, expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -176,8 +175,10 @@ test("a read marker whose page closed while the database's disk did not answer h
     await context.close();
 
     // The next row's reset, with the disk still silent. A reset that needs the disk waits on it
-    // until the row's timeout; only the cleanup ends the stall.
-    await resetDatabase();
+    // until the row's timeout; only the cleanup ends the stall. It is counted as the worker's
+    // (`emptyDatabase`), so the datasets the worker keeps are written again into the database
+    // the next row reads: the delivery settings `two-builds.multiprocess.e2e.ts` reads after it.
+    await emptyDatabase();
     expect(
       existsSync(stallEnvironment(stallDir).PG_STALL_FILE),
       "the disk was still stalled when the reset returned"

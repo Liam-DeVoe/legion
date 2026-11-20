@@ -10,6 +10,7 @@ import {
 } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
+import { keyedSearchWord } from "./search";
 import { expect, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
@@ -166,13 +167,17 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
   browser,
 }) => {
   const core = rowKey("CORE");
+  // The word searched for is the row's own (`keyedSearchWord`, e2e/search.ts): search reads
+  // every project of the stack, and other rows' issues hold `astrolabe` too.
+  const word = keyedSearchWord("astrolabe", core);
+  const title = `${keyedSearchWord("Astrolabe", core)} issue calibration`;
   await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Astrolabe issue calibration" });
+  const issue = await createIssue({ project: core, title });
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
-    await openIssue(page, issue.key, "Astrolabe issue calibration");
+    await openIssue(page, issue.key, title);
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
@@ -183,9 +188,9 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     // The bar `⌘K` opens: `/` is another key to it, not a list of its own, so this page's
     // actions are here too.
     await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(1);
-    await input.fill("astrolabe");
-    // No action's label and no project's name holds `astrolabe`, so the issue's own hit is the
-    // whole list.
+    await input.fill(word);
+    // No action's label and no project's key or name holds the row's word, so the issue's own
+    // hit is the whole list.
     await expect(dialog.getByRole("option")).toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -221,9 +226,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
     await expect(
-      page
-        .getByTestId("issue-header")
-        .getByRole("heading", { level: 1, name: "Astrolabe issue calibration" })
+      page.getByTestId("issue-header").getByRole("heading", { level: 1, name: title })
     ).toBeVisible();
     await expect(page.getByRole("button", { exact: true, name: "Close issue" })).toBeVisible();
     expect(statusWrites).toEqual([]);

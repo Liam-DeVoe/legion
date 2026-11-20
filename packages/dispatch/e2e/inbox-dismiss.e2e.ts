@@ -233,7 +233,7 @@ test("a Reply thread and an Agent thread read in the pane stay in the list after
     await selectRow(page, agentRowId(seeded.agent));
     await expect(inboxPane(page).getByText("Green.", { exact: true })).toBeVisible();
     await expect(agentRow.locator("[aria-label='Unread']")).toHaveCount(0);
-    await expect.poll(async () => unreadThreadRows()).toBe(0);
+    await expect.poll(async () => unreadThreadRows(rowPerson("alice"))).toBe(0);
     // The open ask is all that is left waiting on the reader.
     await expectSidebarInboxCount(page, 1);
 

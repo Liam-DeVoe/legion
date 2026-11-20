@@ -28,9 +28,12 @@ import { asUser } from "./users";
  *  the issue an earlier row made from its words holds those words, and a query whose words all
  *  match nothing together is answered by its rarest words one at a time (`searchRarestWords`,
  *  packages/envoy/internal/dispatch/api/search.go), so a word another row's issue also holds
- *  would answer this query with that issue. */
+ *  would answer this query with that issue. None of them is the key of the project this row
+ *  makes (`rowKey("CORE")`): the issue made in it holds that word in its own key (`CORE…-1`),
+ *  and the fallback takes first the words the term statistics have counted, so once the
+ *  statistics know the project it answers this query with that issue. */
 function words(): string {
-  return `the ${rowKey("SEXTANT")} ${rowKey("ROTA")} of ${rowKey("CORE")}`;
+  return `the ${rowKey("SEXTANT")} ${rowKey("ROTA")} of ${rowKey("COMPASS")}`;
 }
 
 /** The label and the session this Dispatch files such words under. A deployment sets them in

@@ -204,10 +204,14 @@ test("a reply on the live event feed refreshes a thread hydrated by the Inbox re
   browser,
 }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Live Inbox thread" });
+  // The reader is a person of the row's own (`rowPerson`): from 1280 px the Inbox draws a card
+  // for the selected row alone, its first, which is this row's question only in a list that
+  // holds no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Live Inbox thread" }, { login: me });
   const ask = await createAsk(issue.key, { question: "Which thread should refresh?" }, session);
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   let askReads = 0;
   page.on("request", (request) => {
@@ -298,14 +302,27 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
 
 test("a later Inbox response clears a hidden ask's pending refresh", async ({ browser }) => {
   const core = rowKey("CORE");
-  await createProject({ key: core, name: "Core" });
-  const visibleIssue = await createIssue({ project: core, title: "Visible Inbox ask" });
-  const hiddenIssue = await createIssue({ project: core, title: "Hidden Inbox ask" });
+  // The reader is a person of the row's own (`rowPerson`): her own list holds the visible
+  // question alone, so the reading column draws its card, and the Inbox body the page is held
+  // to is the one the server answers her.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const visibleIssue = await createIssue(
+    { project: core, title: "Visible Inbox ask" },
+    { login: me }
+  );
+  const hiddenIssue = await createIssue(
+    { project: core, title: "Hidden Inbox ask" },
+    { login: me }
+  );
   await patchIssue(hiddenIssue.key, { assignee: "bob" });
   const visibleAsk = await createAsk(visibleIssue.key, { question: "Visible question" }, session);
   const hiddenAsk = await createAsk(hiddenIssue.key, { question: "Hidden question" }, session);
-  const snapshot = await getInbox();
-  const alice = await asUser(browser, "alice");
+  const snapshot = await getInbox({ login: me });
+  // Widened below, the list is every open question of the stack: the hidden one is the newest
+  // of its band, so the page draws it among every earlier row's (`clearedInbox`).
+  expect((await clearedInbox(me)).rows).toContain(hiddenAsk.id);
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   let inboxReads = 0;
   let hiddenAskReads = 0;
@@ -367,11 +384,11 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
     // The held Inbox response must not land until the browser has handled the hidden ask's
     // event. A fixed delay is a race under load, and the hidden ask shows nothing to wait on.
     // Nor can an Inbox card or the sidebar's rows, which wait for the held first load: it is
-    // never cancelled. alice's own pin, written after the reply, makes the page read the pinned
-    // list again, which the sidebar reads beside the held Inbox. Event ids are delivered in
-    // order, so that read proves the frame before it was processed.
+    // never cancelled. The reader's own pin, written after the reply, makes the page read the
+    // pinned list again, which the sidebar reads beside the held Inbox. Event ids are delivered
+    // in order, so that read proves the frame before it was processed.
     const pinnedReadAgain = page.waitForRequest(pinnedRead);
-    await putIssueState(visibleIssue.key, { pinned: true });
+    await putIssueState(visibleIssue.key, { pinned: true }, { login: me });
     await pinnedReadAgain;
     // So the hidden reply reached the page before the held response lands: what follows tests its
     // pending refresh rather than passing without one.

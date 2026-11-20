@@ -53,7 +53,8 @@
  *  corpus the accessibility rows scan (`reviewCorpus`, handed to a row as its `reviewSeed`). Each
  *  is written once for each database the worker empties - before every row while the per-row
  *  reset runs, so once a row there, and once a worker without it - and a row that changes one
- *  puts it back when it ends.
+ *  puts it back when it ends. A row that empties the database itself does it through
+ *  `emptyDatabase`, which counts that database too.
  *
  *  The stubbed layer takes no part in any of this: it reaches no server, no database and no
  *  sign-in, and declares a `test` of its own (e2e/stub/stub-test.ts). So does the containerised
@@ -250,10 +251,22 @@ export function own(login: string): OwnPerson {
   return { own: login };
 }
 
-/** How many times this worker has emptied its database (`freshDatabase`): the database a dataset
+/** How many times this worker has emptied its database (`emptyDatabase`): the database a dataset
  *  the worker keeps was written into, so that it is written again once that database is gone,
  *  and never twice into one. */
 let emptied = 0;
+
+/** Empties the database (`resetDatabase`, e2e/seed.ts) and counts it as one more database this
+ *  worker holds, so that every dataset the worker keeps - the delivery settings, the review
+ *  corpus - is written again into it by the next row that reads one. `freshDatabase` empties
+ *  through it, and so does a row that empties the database itself (a reset is what it is
+ *  about): a reset made beside the count leaves the worker believing its datasets stand in a
+ *  database that holds none of them, and the next delivery row reads a deployment with no
+ *  delivery settings. */
+export async function emptyDatabase(): Promise<void> {
+  await resetDatabase();
+  emptied += 1;
+}
 
 /** What a spec may set with `test.use`. */
 type DispatchOptions = {
@@ -302,8 +315,7 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
     // Playwright refuses a first argument that is not a destructuring pattern.
     // biome-ignore lint/correctness/noEmptyPattern: the reset takes no other fixture.
     async ({}, use) => {
-      await resetDatabase();
-      emptied += 1;
+      await emptyDatabase();
       await use(undefined);
     },
     { auto: true },
