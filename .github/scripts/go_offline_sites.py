@@ -96,16 +96,13 @@ def go_word(word, go_names=()):
     return kind == "cmd" and looks_up_go(nested or ())
 
 
-def shell_sites(text, line=0, base=(), depth=0, names=("GOPROXY",), judge=offline, scripts=frozenset()):
-    """(line, offline) of each go command a shell text starts. Its environment: base (what a
-    command that ran this text gave it), each `export` or `unset` of GOPROXY before it at the top
-    level or in the function or subshell that holds it (none a forked command makes, in a pipeline
-    or the background), its own NAME=value prefix and the settings of an `env` before the go.
-    go_offline_images.py reads a Dockerfile's RUN through it with more: `names`, the settings an
-    export or unset is followed for; `judge`, what a site's environment elements are read as in
-    place of offline(); and `scripts`, programs (by path or by name) that start a go command of
-    their own, each a site where it is a command's program."""
-    commands = shell_script(text, line)
+def shell_scope(commands, names=("GOPROXY",)):
+    """What a shell text's commands (shell_script's list) set up for the go commands after them:
+    (the names a variable holding the go binary goes by, the names of arrays whose first word is
+    go with a subcommand, and each `export` or `unset` of one of `names`, as (the index of its
+    command, the frames that hold it, its element)). An export a forked command makes (in a
+    pipeline or the background) changes nothing after it, and is none. shell_sites and rule 7
+    (go_offline_fetched.py) read a text's environment through it, with in_scope."""
     go_names, go_arrays, exports, assigned = set(), set(), [], {}
     for order, command in enumerate(commands):
         values = command.values()
@@ -140,10 +137,31 @@ def shell_sites(text, line=0, base=(), depth=0, names=("GOPROXY",), judge=offlin
                         held = assigned.get(name)
                         element = ("set", name, held.value() if held is not None and held.static else None)
                     exports.append((order, command.frames, element))
+    return go_names, go_arrays, exports
+
+
+def in_scope(exports, order, frames):
+    """The elements of shell_scope's exports that hold for the command at index `order` whose
+    frames are `frames`: each made before it, at the top level or in a function or subshell that
+    holds it."""
+    return [e for at, held, e in exports if at < order and frames[:len(held)] == held]
+
+
+def shell_sites(text, line=0, base=(), depth=0, names=("GOPROXY",), judge=offline, scripts=frozenset()):
+    """(line, offline) of each go command a shell text starts. Its environment: base (what a
+    command that ran this text gave it), each `export` or `unset` of GOPROXY before it at the top
+    level or in the function or subshell that holds it (none a forked command makes, in a pipeline
+    or the background), its own NAME=value prefix and the settings of an `env` before the go.
+    go_offline_images.py reads a Dockerfile's RUN through it with more: `names`, the settings an
+    export or unset is followed for; `judge`, what a site's environment elements are read as in
+    place of offline(); and `scripts`, programs (by path or by name) that start a go command of
+    their own, each a site where it is a command's program."""
+    commands = shell_script(text, line)
+    go_names, go_arrays, exports = shell_scope(commands, names)
     found = []
     for order, command in enumerate(commands):
         values = command.values()
-        scope = [e for at, frames, e in exports if at < order and command.frames[:len(frames)] == frames]
+        scope = in_scope(exports, order, command.frames)
         program = shell_command_word(command)
         for k, word in enumerate(command.words):
             array = k == program and len(word.parts) == 1 and word.parts[0][0] == "param" \

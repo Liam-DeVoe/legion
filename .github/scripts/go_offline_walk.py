@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml
 
 import source_scan as scan
+from go_offline_argv import deps_args, fetch_calls, fetch_file_calls, go_args
 from go_offline_sites import REASON, go_subcommand, goish_text, offline
 from source_shell import shell_command_word, shell_env_elements, shell_inner_scripts, shell_script
 from source_statements import Source
@@ -41,12 +42,6 @@ ENVOY_BINARY = re.compile(r'\btestbuild\.EnvoyBinary\(\s*\w+\s*,\s*"([^"]+)"\s*\
 # The subcommands of an offline go command that build what they name. A go test or vet a script
 # runs is that step's own test, not a build one of its tests makes.
 BUILDS = {"build", "install", "run", "list", "generate"}
-# A go flag whose next word is its value, not a package.
-FLAGS_WITH_VALUES = {"-o", "-C", "-ldflags", "-gcflags", "-asmflags", "-tags", "-run", "-skip", "-timeout", "-count",
-                     "-p", "-mod", "-modfile", "-exec", "-bench", "-benchtime", "-coverprofile", "-cpuprofile",
-                     "-memprofile", "-cpu", "-parallel", "-f", "-overlay", "-pkgdir", "-toolexec", "-covermode",
-                     "-coverpkg", "-outputdir", "-buildmode", "-installsuffix", "-fuzz", "-fuzztime",
-                     "-fuzzminimizetime", "-shuffle", "-vet", "-blockprofile", "-mutexprofile", "-trace", "-pgo"}
 RUNNERS = (["bun", "test"], ["bunx", "playwright", "test"], ["npx", "playwright", "test"], ["bun", "x", "playwright", "test"])
 TEST_PATH = re.compile(r"\.(?:test|spec|e2e)\.[cm]?[jt]sx?$")
 REPO = "/@repo"
@@ -369,35 +364,24 @@ class Walk:
     def go_commands(self, command, values, origin, cwd, path, exported, reach):
         """The go commands of one simple command: a go test of testbuild's callers (rule 2's first
         half, offline or not, since testbuild builds offline inside it), and any offline go command
-        that loads the modules of what it names."""
+        that loads the modules of what it names. Each is read through go_offline_argv.go_args, the
+        reading rule 7 shares; a package here is an operand from the module's directory (./x, .)
+        or a path@version."""
         texts = [v if v is not None else "\x00" for v in values]
         for j in range(len(texts)):
             word = command.words[origin[j]]
             if not (goish_text(word.value()) and go_subcommand(texts, j)):
                 continue
-            rest, module = texts[j + 1:], cwd
-            if rest[:1] == ["-C"] and len(rest) > 1:
-                module, rest = join(cwd, values[j + 2]), rest[2:]
-            elif rest[0].startswith("-C="):
-                module, rest = join(cwd, rest[0][3:]), rest[1:]
-            sub, args = rest[0], rest[1:]
-            if args[:1] == ["-C"] and len(args) > 1:
-                module, args = join(cwd, args[1] if args[1] != "\x00" else None), args[2:]
-            packages, skip = [], False
-            for a in args:
-                if skip:
-                    skip = False
-                elif a in FLAGS_WITH_VALUES:
-                    skip = True
-                elif a.startswith("./") or a == "." or ("@" in a and "\x00" not in a):
-                    packages.append(a)
-            if sub == "test" and not ("-list" in args or ("-c" in args and "/dev/null" in args)):
+            go = go_args(texts, j)
+            module = cwd if go.chdir is None else None if "\x00" in go.chdir else join(cwd, go.chdir)
+            packages = [a for a in go.operands if a.startswith("./") or a == "." or ("@" in a and "\x00" not in a)]
+            if go.sub == "test" and not (go.flag("-list") or (go.flag("-c") and ("-o", "/dev/null") in go.flags)):
                 listed = not packages or "xargs" in texts[:j]
                 self.testbuild_tests(in_repo(module), packages, listed, reach)
-            if sub in BUILDS and offline([*exported, *shell_env_elements(command, origin[j])]):
+            if go.sub in BUILDS and offline([*exported, *shell_env_elements(command, origin[j])]):
                 # A module this reading cannot place, or one outside the repository (a scratch copy),
                 # is no module a fetch step names.
-                if in_repo(module) is not None and "\x00" not in "".join(args):
+                if in_repo(module) is not None and "\x00" not in "".join(texts[j + 1:]):
                     reach.needs.append(Need(in_repo(module), packages or ["."], f"{path}:{word.line + 1}"))
 
     @staticmethod
@@ -444,35 +428,24 @@ class Walk:
     def fetch(values, cwd, reach):
         """The fetches a command makes through go-fetch.sh: deps DIR PACKAGE..., tools FILE, and
         file FILE, whose every deps or tools line is one of those, its paths from the repository's
-        root (the GOOS, GOARCH or CGO_ENABLED setting before a deps aside)."""
-        for k, value in enumerate(values):
-            if not (value and value.endswith("go-fetch.sh")) or k + 2 >= len(values):
-                continue
-            if values[k + 1] == "file":
-                listed = in_repo(join(cwd, values[k + 2]))
-                for line in scan.read(listed).splitlines() if listed and os.path.isfile(listed) else ():
-                    words = line.split("#", 1)[0].split()
-                    while words and "=" in words[0]:
-                        words = words[1:]
-                    if len(words) >= 2 and words[0] in ("deps", "tools"):
-                        Walk.fetched(words[0], join(REPO, words[1]), words[2:], reach)
-            elif values[k + 1] in ("deps", "tools"):
-                Walk.fetched(values[k + 1], join(cwd, values[k + 2]), values[k + 3:], reach)
+        root (the GOOS, GOARCH or CGO_ENABLED setting before a deps aside). Each call and each line
+        is read through go_offline_argv, as rule 7 reads them."""
+        for call in fetch_calls(values):
+            if call.mode == "file":
+                listed = in_repo(join(cwd, call.words[0]))
+                text = scan.read(listed) if listed and os.path.isfile(listed) else ""
+                for line in fetch_file_calls(text):
+                    if line.mode in ("deps", "tools") and line.words:
+                        Walk.fetched(line.mode, join(REPO, line.words[0]), line.words[1:], reach)
+            elif call.mode in ("deps", "tools"):
+                Walk.fetched(call.mode, join(cwd, call.words[0]), call.words[1:], reach)
 
     @staticmethod
     def fetched(mode, path, rest, reach):
-        """One fetch into reach: for deps, the module at path and the packages rest names (its -test
-        and -tags T passed over); for tools, each pin the file at path lists."""
+        """One fetch into reach: for deps, the module at path and the packages rest names
+        (deps_args); for tools, each pin the file at path lists."""
         if mode == "deps":
-            packages, skip = [], False
-            for v in rest:
-                if v is None or v.startswith(("|", ";", "&")):
-                    break
-                if skip or v.startswith("-"):
-                    skip = not skip and v == "-tags"
-                    continue
-                packages.append(v)
-            reach.fetches.setdefault(in_repo(path), set()).update(packages)
+            reach.fetches.setdefault(in_repo(path), set()).update(deps_args(rest).packages)
             return
         listed = in_repo(path)
         if listed and os.path.isfile(listed):

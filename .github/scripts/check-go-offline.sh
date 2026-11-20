@@ -154,11 +154,13 @@
 #    says why it need not (.github/scripts/go_offline_images.py, whose header says which builds and
 #    stages it reads). A refusal names the Dockerfile, its line, and the job and step that build it.
 #
-# 7. Each offline go command a step of a required Go job runs in its own run text loads only
-#    packages a fetch before it in the job names: a deps line of a `go-fetch.sh file` (or a
-#    `go-fetch.sh deps`) whose patterns hold its packages, with -test where it is go test or go
-#    vet, the same tags and the same GOOS, GOARCH, CGO_ENABLED and GOWORK. A command whose
-#    packages, tags or settings are not literal is refused as well. Either says why in a
+# 7. Each offline go command a step of a required Go job runs in its own run text, or in a shell
+#    that text hands more shell to (bash -c, a pipe, a heredoc), loads only packages a fetch
+#    before it in the job names: a deps line of a `go-fetch.sh file` (or a `go-fetch.sh deps`)
+#    whose patterns hold its packages, with -test where it is go test or go vet, the same tags
+#    (its -tags, else its GOFLAGS') and the same GOOS, GOARCH, CGO_ENABLED and GOWORK, from its
+#    environment as rule 1 reads it. A command whose packages, tags or settings are not literal
+#    is refused as well. Either says why in a
 #    `# go-offline: <why>` line above it, or above its step's name. The job's fill runs the same fetch file
 #    (check-ci-filters.sh's rule 22), so a package no line covers is read from whatever an older
 #    entry holds, and fails on the run that restores the entry its own fill saved
@@ -187,7 +189,8 @@
 set -euo pipefail
 
 # The rules' code (go_offline_sites.py, go_offline_walk.py, go_offline_restore.py, go_offline_jobs.py,
-# package_installs.py, go_offline_images.py and go_offline_fetched.py) and the shared reading of
+# package_installs.py, go_offline_images.py and go_offline_fetched.py, with go_offline_argv.py, the
+# reading of a go command's and a fetch's words that rules 2 and 7 share) and the shared reading of
 # source files (source_scan.py and the source_*.py modules) sit beside this script's own file, which a test may link into a tree of
 # its own: PYTHONPATH names that directory, and the scan reads the tree this script stands in.
 # PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__. Each rule adds its problems to

@@ -169,7 +169,7 @@ fetched fetched-online 'deps packages/app -test ./other/' '      # go-offline: t
         run: go build -o out/app ./cmd/app
         working-directory: packages/app'
 check "exits 0" "$(is "$status" 0)"
-check "and counts nothing of it" "$(contains "$out" 'each of the 0 offline go commands')"
+check "and counts nothing of it, held or reasoned" "$(held 0 0)"
 
 echo "case: a cd before the go command is its directory, and go run's arguments are no packages"
 fetched fetched-cd 'deps packages/app -test ./internal/x/
@@ -327,3 +327,92 @@ fetched_with fetched-workflow-defaults 'deps packages/app -test ./internal/x/' '
     working-directory: packages/app' '' "$TEST_X_HERE"
 check "the workflow's: the line for the package there: exits 0" "$(is "$status" 0)"
 check "and counts it" "$(held 1 0)"
+
+echo "case: go test -C DIR, the -C as the subcommand's first flag, runs in DIR"
+C_AFTER_TEST='      - name: Test the app from the root
+        run: go test -C packages/app -count=1 ./internal/x/'
+fetched fetched-dash-c-after 'deps packages/app -test ./other/' "$C_AFTER_TEST"
+check "a line for another package: fails" "$(is "$status" 1)"
+check "names the package under DIR" \
+  "$(contains "$out" 'runs `go test -C packages/app -count=1 ./internal/x/`, which loads packages/app/internal/x, and no fetch before it')"
+fetched fetched-dash-c-after-held 'deps packages/app -test ./internal/x/' "$C_AFTER_TEST"
+check "the line for it: exits 0" "$(is "$status" 0)"
+check "and counts it" "$(held 1 0)"
+
+# The environment a go command reads its settings from, as rule 1 reads a shell's: an export
+# before it, env's words, and GOFLAGS, whose -tags go reads where the command gives none.
+echo "case: a setting exported before the go command is its setting"
+VET_EXPORTED='      - name: Vet for darwin
+        run: |
+          export GOOS=darwin
+          go vet ./...
+        working-directory: packages/app'
+fetched fetched-export 'deps packages/app -test ./...' "$VET_EXPORTED"
+check "a line for this platform: fails" "$(is "$status" 1)"
+check "names the darwin line to add" "$(contains "$out" 'add `GOOS=darwin deps packages/app -test ./...`')"
+fetched fetched-export-held 'GOOS=darwin deps packages/app -test ./...' "$VET_EXPORTED"
+check "a darwin line: exits 0" "$(is "$status" 0)"
+fetched fetched-export-subshell 'deps packages/app -test ./...' '      - name: Vet for darwin in a subshell, then for this platform
+        run: |
+          (export GOOS=darwin; true)
+          go vet ./...
+        working-directory: packages/app'
+check "an export inside a subshell holds for that subshell alone: exits 0" "$(is "$status" 0)"
+
+echo "case: a setting env gives the go command is its setting"
+fetched fetched-env-words 'deps packages/app -test ./...' '      - name: Vet for darwin
+        run: env GOOS=darwin go vet ./...
+        working-directory: packages/app'
+check "a line for this platform: fails" "$(is "$status" 1)"
+check "names the darwin line to add" "$(contains "$out" 'add `GOOS=darwin deps packages/app -test ./...`')"
+
+echo "case: the -tags of GOFLAGS are the command's tags, where it gives none"
+fetched fetched-goflags-tags 'deps packages/app -test ./...' "      - name: Vet the live tests
+        run: GOFLAGS='-mod=readonly -tags=live' go vet ./...
+        working-directory: packages/app"
+check "an untagged line: fails" "$(is "$status" 1)"
+check "names the tagged line to add" "$(contains "$out" 'add `deps packages/app -test -tags live ./...`')"
+fetched fetched-goflags-own-tags 'deps packages/app -test -tags other ./...' "      - name: Vet the other tests
+        run: GOFLAGS='-mod=readonly -tags=live' go vet -tags other ./...
+        working-directory: packages/app"
+check "the command's own -tags over GOFLAGS': exits 0" "$(is "$status" 0)"
+fetched fetched-goflags-unread 'deps packages/app -test ./...' '      - name: Vet with the flags given
+        run: GOFLAGS="$FLAGS" go vet ./...
+        working-directory: packages/app'
+check "a GOFLAGS that is not literal: fails" "$(is "$status" 1)"
+check "names it as a command this rule cannot read" "$(unread 'go vet ./...')"
+
+echo "case: a go command a shell's -c or a pipe hands to a shell is read"
+fetched fetched-shell-c 'deps packages/app -test ./other/' "      - name: Test through bash -c
+        run: bash -c 'go test -count=1 ./internal/x/'
+        working-directory: packages/app"
+check "bash -c: fails" "$(is "$status" 1)"
+check "names the command bash -c runs" \
+  "$(contains "$out" 'step "Test through bash -c", runs `go test -count=1 ./internal/x/`, which loads packages/app/internal/x, and no fetch before it')"
+fetched fetched-shell-pipe 'deps packages/app -test ./other/' "      - name: Test through a pipe
+        run: echo 'go test -count=1 ./internal/x/' | bash
+        working-directory: packages/app"
+check "echo | bash: fails" "$(is "$status" 1)"
+check "names the command the pipe feeds bash" \
+  "$(contains "$out" 'step "Test through a pipe", runs `go test -count=1 ./internal/x/`, which loads packages/app/internal/x, and no fetch before it')"
+fetched fetched-shell-c-held 'deps packages/app -test ./internal/x/' "      - name: Test through bash -c
+        run: bash -c 'cd ../app && go test -count=1 ./internal/x/'
+        working-directory: packages/app"
+check "bash -c, from the step's directory and its own cd, beside its line: exits 0" "$(is "$status" 0)"
+check "and counts it" "$(held 1 0)"
+
+echo "case: a setting or a working-directory that is a \${{ }} expression is one this rule cannot read"
+fetched fetched-expr-setting 'deps packages/app ./cmd/tool' '      - name: Build the tool for each architecture
+        env:
+          GOARCH: ${{ matrix.arch }}
+        run: go build ./cmd/tool
+        working-directory: packages/app'
+check "a setting: fails" "$(is "$status" 1)"
+check "names it as a command this rule cannot read" "$(unread 'go build ./cmd/tool')"
+check "and asks for no fetch line of the expression" "$(is "$(contains "$out" 'add `GOARCH=\${{')" false)"
+fetched fetched-expr-directory 'deps packages/app -test ./internal/x/' '      - name: Test each module
+        run: go test -count=1 ./internal/x/
+        working-directory: ${{ matrix.module }}'
+check "a working-directory: fails" "$(is "$status" 1)"
+check "names it as a command this rule cannot read" "$(unread 'go test -count=1 ./internal/x/')"
+check "and asks for no fetch line of the expression" "$(is "$(contains "$out" 'matrix.module }}/internal/x')" false)"
