@@ -7,7 +7,6 @@ import (
 	"go/importer"
 	"go/token"
 	"go/types"
-	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -68,24 +67,13 @@ var noticePublishers = []string{
 	"(" + senderModule + "notify.Publisher).PublishKept",
 }
 
-// noticePublisherExceptions is every function of the three packages that may publish a
-// record.Notice it holds without reaching the predicate, with why what it publishes is no person's
-// review of a design document.
-var noticePublisherExceptions = map[string]string{
-	"(*" + senderModule + "daemon.outbox).controllerNotice": "it publishes a controller notice row (record.ControllerNotice) to the " +
-		"project's controller topic as the record.Notice it is, and its kinds are the controller's: the wakes record names " +
-		"(record.TriageNotice to record.ArchitectStalledNotice) and the machinery's notices copied to the controller (a hold, a " +
-		"worker's death or stall, a lost session, a session store's fault), none of them a kind record.SpecDecision names. The " +
-		"one that carries a person's spec decision, a parked-decision notice, is written by record.RelayParkedDecision after " +
-		"the outbox's relay asked the predicate of it (parkDecision)",
-}
-
 // senderPackages are the three packages that hold senders of a person's design decision: the
 // workflow, which writes the notices and renders the resume and the kept-decisions tasks, the
 // daemon, which sends a held task at each send (rootTask), publishes a queued notice
 // (deliverNotice), writes a catch-up's decisions again at its delivery and asks a changes request
-// again there (readNoticeTree), and relays a decision nobody in its tree hears (parkDecision),
-// and admission, which composes a re-admitted root's start from what was kept for it.
+// again there (readNoticeTree), relays a decision nobody in its tree hears (parkDecision) and
+// asks a relayed changes request again at its publish to the controller (controllerNotice), and
+// admission, which composes a re-admitted root's start from what was kept for it.
 var senderPackages = []string{"workflow", "daemon", "admit"}
 
 // keptDecisionTypes are the record types that hold one kept decision: the row the daemon keeps
@@ -133,10 +121,10 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //     start was lost (workflow.Engine.SendArchitectStart); or
 //   - publishes a record.Notice it holds: hands a value of that type, however it was made (a
 //     row's payload, its Published copy, a conversion), to one of noticePublishers. A notice the
-//     workflow queued is published where it is delivered (the outbox's deliverNotice), which can
-//     be long after the workflow asked, so the publish is a send of its own. A function whose
-//     notices are never a person's review passes only where noticePublisherExceptions names it,
-//     with why, and a function named there that publishes no notice any more fails.
+//     workflow queued is published where it is delivered (the outbox's deliverNotice), and a
+//     relay to the controller where its own row runs (the outbox's controllerNotice), each of
+//     which can be long after the workflow or the relay asked, so the publish is a send of its
+//     own.
 //
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
@@ -151,7 +139,11 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // (readNoticeTree's decisionSuperseded), through the catch-up's Decided that readNoticeTree
 // writes again (workflow.KeptDecisionsTask), and through the relay of a parked decision
 // (parkDecision). Take the first out and the walk still passes. What holds that ask is its
-// behavior, which TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives.
+// behavior, which TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives. The publish of
+// a relay to the controller (controllerNotice) reaches it through its ask of a relayed changes
+// request alone (relayedChangesAnswered), so the walk fails it if that ask goes; that the ask
+// reads the review's mark from the decision the relay kept is its behavior too, which
+// TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
 //
 // A list of kept decisions is held to more: every loop that ranges over one (keptDecisionTypes)
 // and writes a decision's kind into text (a fmt print, a WriteString, a string conversion) is a
@@ -247,22 +239,13 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 				"task and no other", short(name))
 		}
 	}
-	for _, name := range slices.Sorted(maps.Keys(noticePublisherExceptions)) {
-		f := walk.byName[name]
-		if f == nil || len(f.publishes) == 0 {
-			t.Errorf("noticePublisherExceptions names %s, which publishes no record.Notice: take it out, so the list names every "+
-				"publisher of a notice that need not ask and no other", short(name))
-			continue
+	// A queued notice is published where it is delivered (the outbox's deliverNotice), and a relay
+	// to the controller where its row runs (controllerNotice): the walk has to see both publishes,
+	// or the rule for a publisher of a notice proves nothing.
+	for _, name := range []string{"(*daemon.outbox).deliverNotice", "(*daemon.outbox).controllerNotice"} {
+		if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.short() == name && len(s.fn.publishes) > 0 }) {
+			t.Errorf("the walk found no publish of a record.Notice in %s", name)
 		}
-		t.Logf("publisher of a notice %s (%s), at %s, need not ask: %s", f.short(), f.at, strings.Join(f.publishes, ", "),
-			noticePublisherExceptions[name])
-	}
-	// A queued notice is published where it is delivered (the outbox's deliverNotice): the walk
-	// has to see that publish, or the rule for a publisher of a notice proves nothing.
-	if !slices.ContainsFunc(senders, func(s decisionSender) bool {
-		return s.fn.short() == "(*daemon.outbox).deliverNotice" && len(s.fn.publishes) > 0
-	}) {
-		t.Error("the walk found no publish of a record.Notice in (*daemon.outbox).deliverNotice")
 	}
 	// The one wording of kept decisions (workflow.KeptDecisionsTask) renders them in a loop: the
 	// walk has to see it, or it proves nothing of any renderer.
@@ -396,7 +379,7 @@ func (w *decisionWalk) decisionSenders() []decisionSender {
 			add(f, fmt.Sprintf("writes a start that carries a person's answered wait, whose task the daemon renders at each send (%s)",
 				short(resumeSend)))
 		}
-		if _, excepted := noticePublisherExceptions[f.name]; len(f.publishes) > 0 && !excepted {
+		if len(f.publishes) > 0 {
 			add(f, fmt.Sprintf("publishes a record.Notice it holds, at %s", strings.Join(f.publishes, ", ")))
 		}
 		if len(f.phrases) == 0 {

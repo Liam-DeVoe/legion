@@ -95,6 +95,11 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //     slot, and the one parked-decision controller notice that names it, the decision, where in
 //     Dispatch, who made it, and a spec decision's version and a changes request's reason.
 //
+// The notice carries no mark of the review, and the decision kept beside it does (ParkedDecision.At
+// and Seq), so the publish of a changes request reads that kept decision again rather than the
+// notice (the daemon's controllerNotice, through Store.KeptDecision): a kept row gone, replaced by
+// the person's later decision, or followed by their approval finishes the notice unpublished.
+//
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
 // them again.
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,

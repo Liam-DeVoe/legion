@@ -2233,9 +2233,21 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
 // project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
 // row's own key.
+//
+// A parked-decision notice that relays a person's changes request is asked first whether the
+// request is still the person's word (relayedChangesAnswered), and finishes with nothing published
+// once it is not: the relay asked when it wrote the row (parkDecision), but the row waits here for
+// as long as no session holds the controller's claim, and an approval that lands meanwhile would
+// reach the controller as a request to act on. Every other notice, a parked decision of any other
+// kind among them, is published as it is.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
+	}
+	if payload.Kind == record.ParkedDecisionNotice && payload.Decision == record.DecisionDesignChangesRequested {
+		if answered, err := r.relayedChangesAnswered(ctx, row, payload); err != nil || answered {
+			return err
+		}
 	}
 	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {

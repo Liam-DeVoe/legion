@@ -38,10 +38,11 @@ type Approval struct {
 // of a root a person answered (resumeTask), the decisions and the
 // approval kept for an architect's start or catch-up (KeptDecisionsTask, again at each send and
 // each delivery) and the controller's relay of a decision nobody in its tree hears (the daemon's
-// parkDecision); the clear of a generation asks it too, of each decision kept on the issues it
-// clears, before it deletes their gates (Engine.ClearGeneration). It holds every guard that
-// chooses whether the one rule is asked (classify.ReviewSuperseded), so a new step kind or a
-// change to how an approval of the same version is read is made here once.
+// parkDecision, and again at a relayed changes request's publish, its controllerNotice); the
+// clear of a generation asks it too, of each decision kept on the issues it clears, before it
+// deletes their gates (Engine.ClearGeneration). It holds every guard that chooses whether the
+// one rule is asked (classify.ReviewSuperseded), so a new step kind or a change to how an
+// approval of the same version is read is made here once.
 //
 // It answers the approval that superseded the review, which a sender may name, and nil when the
 // review stands. A review stands when nothing the gate records can be the person's later word: a

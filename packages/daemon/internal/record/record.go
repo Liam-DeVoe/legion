@@ -1966,6 +1966,12 @@ type Store interface {
 	// in any state — newest first, ties by ref. It is what the close of a tree reads: the tree
 	// ends owing each of them (workflow's warnKeptDecisionsOfAClosedTree).
 	ParkedDecisions(ctx context.Context, tx pgx.Tx, tree string) ([]ParkedDecision, error)
+	// KeptDecision is the decision issue keeps on ref, in any state, nil where it keeps none: the
+	// one row AddParkedDecision keeps per issue and reference, its newest. It is what the publish
+	// of a relayed changes request reads (the daemon's controllerNotice), since the row carries
+	// Dispatch's mark of the review and the controller notice does not, and a row gone or
+	// replaced since the relay says the request is owed to nobody any more.
+	KeptDecision(ctx context.Context, tx pgx.Tx, issue, ref string) (*ParkedDecision, error)
 	// UnclaimedKept is what a start or catch-up of tree may name: every row whose issue stands in
 	// tree now and that no counting claim or hold holds — a claim counts only while the claiming
 	// outbox row's issue stands in the same tree, and a hold only while the holding claim's tree

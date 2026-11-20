@@ -1080,6 +1080,29 @@ func (s *Postgres) ParkedDecisions(ctx context.Context, tx pgx.Tx, tree string) 
 	return parkedDecisions(ctx, tx, tree, false)
 }
 
+func (s *Postgres) KeptDecision(ctx context.Context, tx pgx.Tx, issue, ref string) (*ParkedDecision, error) {
+	var decision ParkedDecision
+	err := scanKept(tx.QueryRow(ctx, `select `+keptColumns+` from parked_decisions kept where kept.issue = $1 and kept.ref = $2`,
+		issue, ref), &decision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the decision %s keeps on %s: %w", issue, ref, err)
+	}
+	return &decision, nil
+}
+
+// keptColumns is a parked_decisions row, under the alias kept, as scanKept reads it into a
+// ParkedDecision.
+const keptColumns = `kept.issue, kept.ref, kept.decision, kept.actor, kept.at, coalesce(kept.seq, 0), coalesce(kept.claimed_by, 0),
+	coalesce(kept.held_by_claim, ''), coalesce(kept.held_by_delivery, '')`
+
+func scanKept(row pgx.Row, decision *ParkedDecision) error {
+	return row.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At, &decision.Seq,
+		&decision.ClaimedBy, &decision.HeldBy.Claim, &decision.HeldBy.Delivery)
+}
+
 // UnclaimedKept locks every kept row of tree, and tree's readmitted approval, before it reads which
 // of them nothing claims: the composer that reads them claims what it names in the same
 // transaction (ClaimKeptDecisions), so a second composer of the tree waits here until the first
@@ -1112,8 +1135,7 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 // parkedDecisions is every decision owed to tree — every row whose issue stands in tree now — or
 // only those a start or catch-up of tree may name (keptCounts), newest first, ties by ref.
 func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool) ([]ParkedDecision, error) {
-	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at, coalesce(kept.seq, 0), coalesce(kept.claimed_by, 0),
-		coalesce(kept.held_by_claim, ''), coalesce(kept.held_by_delivery, '')
+	rows, err := tx.Query(ctx, `select `+keptColumns+`
 		from parked_decisions kept join issues owner on owner.key = kept.issue
 		where owner.tree = $1 and (not $2 or (`+keptNameable+`)) order by kept.at desc, kept.ref`, tree, nameable)
 	if err != nil {
@@ -1123,8 +1145,7 @@ func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool)
 	var decisions []ParkedDecision
 	for rows.Next() {
 		var decision ParkedDecision
-		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At, &decision.Seq,
-			&decision.ClaimedBy, &decision.HeldBy.Claim, &decision.HeldBy.Delivery); err != nil {
+		if err := scanKept(rows, &decision); err != nil {
 			return nil, fmt.Errorf("scan a decision owed to %s: %w", tree, err)
 		}
 		decisions = append(decisions, decision)

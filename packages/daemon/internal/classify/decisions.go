@@ -1475,7 +1475,8 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // resume task of a root that waited on a person (workflow's resumeTask), the kept decisions and
 // the kept approval of an architect's start or catch-up (workflow's KeptDecisionsTask, which the
 // daemon's rootTask also renders through at each send and its readNoticeTree at each delivery)
-// and the controller's relay of an undelivered spec decision (the outbox's parkDecision).
+// and the controller's relay of an undelivered spec decision (the outbox's parkDecision, and its
+// controllerNotice at a relayed changes request's publish).
 //
 // An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
 // one other caller, since a request is the architect's and no person's decision): the mirror
