@@ -181,8 +181,8 @@ func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
 // are warming is alive, and only one that answers nothing at all is restarted, after two minutes
 // of silence at startup (5 s × 24) or one minute later on (10 s × 6). Readiness is curl -fsS of
 // /healthz, which reads the HTTP status and never the body, and is the pod's gate into its
-// Service: the listener answers it 503 "starting" until its /v1 serves, so the rolling update
-// keeps the old pod until the new one's /v1 serves, and 200 to a standby, which serves /v1 while
+// Service: the listener answers it 503 "starting" until its /v1 serves its interest list, so the
+// rolling update keeps the old pod until then, and 200 to a standby, which serves /v1 while
 // the old pod holds the delivery lease, so the rolling update never waits for the lease.
 func TestClusteredNatsHubListenerProbes(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)

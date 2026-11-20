@@ -147,7 +147,7 @@ var ListenerLogSignals = []LogSignal{
 			"keeps serving, until the circuit breaker rolls the deployment back and the apply fails. " +
 			"Read %s for the " +
 			"durable and the setting, then recreate the durable by the recipe in cybermonklabs/legion " +
-			"packages/envoy/AGENTS.md (Operational notes), which keeps its cursor.",
+			"packages/envoy/deploy/README.md (Recreating a listener's durable), which keeps its cursor.",
 	},
 	{
 		// A lease holder that has waited durableTakeoverAlarmAfter (135 s) for its durable, which

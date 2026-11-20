@@ -101,6 +101,10 @@ type listenerDeps struct {
 	// listener (sender_limit.go). nil is no limit, which is what every test that builds
 	// listenerDeps itself runs with.
 	senderLimit *senderLimit
+	// dispatchPrincipal is ENVOY_DISPATCH_PRINCIPAL, Dispatch's own verified principal
+	// (resolveListenerDispatchPrincipal): the one caller whose send may carry a role mark
+	// (sendHandler). Empty names nobody, and every send carrying one is refused.
+	dispatchPrincipal string
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -1643,6 +1647,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Dispatch's own principal is read beside the bearers it is proved by, so a value no
+	// credential this listener takes could prove refuses the start before any issuer is asked.
+	dispatchPrincipal, err := resolveListenerDispatchPrincipal(os.Getenv, oidcIssuer, oidcAccounts, googleAccounts)
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Each issuer's discovery runs in the background until it succeeds (apiVerifier.discover): /v1
 	// answers 503 "service starting" and /healthz "starting" meanwhile, so an issuer that does not
 	// answer at start leaves the listener up and unready instead of ending it.
@@ -1675,6 +1685,7 @@ func main() {
 	}
 	logger.Info("listener API auth: " + describeListenerAPIAuth(apiAuthConfig, oidcIssuer))
 	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiAuthConfig))
+	logger.Info("listener role marks: " + describeListenerDispatchPrincipal(dispatchPrincipal))
 	// The operator's limit on the messages each agent session sends, read beside the API auth
 	// settings so a value it refuses stops the start before the listener connects to NATS, and
 	// stated in one line either way (sender_limit.go).
@@ -2126,6 +2137,7 @@ func main() {
 		roleDeadLetters:     roleDeadLetters,
 		roleKeptUndecodable: roleKeptUndecodable,
 		publishDeadLetter:   client.PublishStoredAs,
+		keepPublish:         client.PublishStoredAck,
 
 		fanoutUnresponsiveSkips: fanoutUnresponsiveSkips,
 
@@ -2343,8 +2355,12 @@ func main() {
 			// own; whichever pod a claim, a keep or a registration reaches still starts that
 			// role's handover itself. It costs one stream read a pass while no role has a kept
 			// lane (startKeptRoleSweep, role_keep_sweep.go), and its cadence is the interval the
-			// repeated wake report is named by (roleWakeInterval).
-			startKeptRoleSweep(ctx, deliveryConfig, roleWakeInterval),
+			// repeated wake report is named by (roleWakeInterval). It also runs the passes of
+			// every takeover record that is not finished (handOverTakenRole), each copy and
+			// record write of them held to this receive term and to the lease's loss deadline, so
+			// none is sent once the lease has stepped down or another pod may hold it
+			// (keptSweepConfig, takeoverWriteContext).
+			startKeptRoleSweep(ctx, keptSweepConfig(deliveryConfig, relays), roleWakeInterval),
 			// The session consumer sweep frees the slot every session consumer whose session
 			// ended without deregistering holds. The deregistration route deletes the consumer
 			// of a registration it removed, and a session whose pane closed or whose box went
@@ -2440,6 +2456,7 @@ func main() {
 
 		sendsToUnresponsive: sendsToUnresponsive,
 		senderLimit:         senderMessageLimit,
+		dispatchPrincipal:   dispatchPrincipal,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 

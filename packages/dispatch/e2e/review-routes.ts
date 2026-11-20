@@ -515,7 +515,7 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  and the `visual-phone` project runs. Derived from the layer each entry carries, as
  *  `shotRoutes` is, so a page joins this set by saying so in its own row.
  *
- *  A phone width is one under 768 px (`packages/dispatch/AGENTS.md`, "Phone acceptance"), where
+ *  A phone width is one under 768 px (`packages/dispatch/README.md`, "Projects"), where
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
@@ -625,10 +625,12 @@ export function topBarInboxBadge(page: Page): Locator {
  *  it is the sum of reads that answer on their own time, so a page whose own content has settled
  *  can still draw a count that is about to change.
  *
- *  Measured on the review corpus: the broadcast page marks the planner's reply read as it draws
- *  it, and the rail's 7 becomes 6 once that write's event refetches the unread total. Three runs
- *  of the shot rows, waiting only for the page's own content, read that row as 7 in light and 6
- *  in dark, as 7 in both, and as 6 in both.
+ *  Measured on the review corpus while the broadcast page's read mark was still its own: the page
+ *  marked the planner's reply read as it drew it, and the rail's 7 became 6 once that write's event
+ *  refetched the unread total. Three runs of the shot rows, waiting only for the page's own
+ *  content, read that row as 7 in light and 6 in dark, as 7 in both, and as 6 in both. The seed
+ *  now writes that mark first (`e2e/review-seed.ts`), so the page's own write moves nothing; the
+ *  wait stays, since any page's number is still the sum of reads that answer on their own time.
  *
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the

@@ -14,7 +14,8 @@ func init() {
 	streamSubjects = append(streamSubjects, "notifications.twobuild.>")
 	// streamCarriedSubjects and streamCfg took the slices as they stood when the package's
 	// variables were initialised, before this init ran, so each is given the later build's list:
-	// the notification subjects with the subject above, and the listener's kept lane after them.
-	streamCarriedSubjects = append(slices.Clone(streamSubjects), KeptTopicPrefix+">")
+	// the notification subjects with the subject above, and the listener's own lanes after them
+	// (listenerOwnStreamLanes: the kept, resume and takeover lanes), as the plain build carries them.
+	streamCarriedSubjects = slices.Concat(streamSubjects, listenerOwnStreamLanes)
 	streamCfg.Subjects = streamCarriedSubjects
 }

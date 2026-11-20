@@ -9,6 +9,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -324,24 +325,44 @@ func TestTwoPodsARelayedFrameReceivedButNotDoneAtAStopIsRepeatedAtMostOnceWithIt
 // term ends for a lost receive connection, not a stop. The session has the frame ("received") and
 // is writing it when the pod's receive connection alone is cut; the pod releases the lease after
 // leaseReceiveLost and its relays stop, while its session-consumer connection stays up. The
-// session answers "done" 200 ms after that release, inside relaySettleGrace, so the stopping relay
-// acks the message. The standby takes the released lease at its next poll - about 100 ms after the
-// release, well inside the grace - and must not restart the session's consumer until
-// relayFormerSettle has passed (lease.FormerSettleWait), or it is given the message again before
-// the ack lands. This is the one row that reads that wait: the stop rows reach the successor only
-// after the stopping pod has exited. With relayFormerSettle at zero it fails 3 of 3, the message
-// taken twice (INFRA-557 tester's round 29).
+// standby takes the released lease at its next poll, at most leaseStandbyPoll (500 ms) after the
+// release, and must not restart the session's consumer until relayFormerSettle has passed
+// (lease.FormerSettleWait), or it is given the message again before the stopping relay acks it.
+// This is the one row that reads that wait: the stop rows reach the successor only after the
+// stopping pod has exited.
+//
+// The session holds its "done" open until the standby has taken the lease and then until the
+// standby's relay sends the frame again or the release is 600 ms old, whichever comes first:
+// inside relaySettleGrace (750 ms) of the release, so the stopping relay acks the frame, and after
+// the moment a successor that waited out no settle would have restarted the consumer at its ack
+// floor, which sends the frame again at once. So with relayFormerSettle at zero the row fails at
+// every run, the message taken twice, and with the wait it passes; where the done went out at
+// 200 ms after the release whatever the standby had done, the zero wait failed only the runs in
+// which the standby's poll came first (2 of 10 at ba5b67ef).
 func TestTwoPodsARelayedFrameAnsweredInsideTheGraceOfAReceiveLostReleaseIsTakenOnce(t *testing.T) {
 	const sessionID = "ses_mp_relay_recvlost_grace_once"
 	row := mpStartRelayRow(t, sessionID, mpHoldReceived, true)
 	a, b, serving, publisher := row.a, row.b, row.serving, row.publisher
 	warm, m, release := row.warm, row.held, row.release
 	t.Cleanup(a.lanes.cut(mpReceiveConnection(a.instance)))
+	var releasedLine string
 	mpEventually(t, mpHardBound, a.instance+" to release the lease for its lost receive connection", func() bool {
-		return lineWith(a.Output.String(), `"msg":"listener lease released: the receive connection is down"`) != ""
+		releasedLine = lineWith(a.Output.String(), `"msg":"listener lease released: the receive connection is down"`)
+		return releasedLine != ""
 	})
-	time.Sleep(200 * time.Millisecond) // inside relaySettleGrace of the release
+	released := mpLineTime(t, releasedLine)
+	answerBy := released.Add(600 * time.Millisecond)
+	for lineWith(b.Output.String(), `"msg":"listener lease acquired"`) == "" && time.Now().Before(answerBy) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	took := lineWith(b.Output.String(), `"msg":"listener lease acquired"`) != ""
+	for serving.counts()[m.event] == 0 && time.Now().Before(answerBy) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	answered := time.Now()
 	release()
+	t.Logf("the session answered done %s after %s's release (%s had taken the lease by then: %t; the frame had reached it again: %t)",
+		answered.Sub(released), a.instance, b.instance, took, serving.counts()[m.event] > 0)
 	mpEventually(t, mpHardBound, b.instance+" to take the lease over", b.active)
 
 	after := publisher.mustPublish(t, sessionID)
@@ -349,6 +370,18 @@ func TestTwoPodsARelayedFrameAnsweredInsideTheGraceOfAReceiveLostReleaseIsTakenO
 	time.Sleep(mpQuiet)
 	serving.requireOnce(t, []mpMessage{warm, m, after})
 	serving.requireOrder(t, []mpMessage{warm, m, after})
+}
+
+// mpLineTime is the time a pod's JSON log line carries, which the pod wrote it at.
+func mpLineTime(t *testing.T, line string) time.Time {
+	t.Helper()
+	var record struct {
+		Time time.Time `json:"time"`
+	}
+	if err := json.Unmarshal([]byte(line), &record); err != nil || record.Time.IsZero() {
+		t.Fatalf("read the time of the log line %q: %v", line, err)
+	}
+	return record.Time
 }
 
 // A session that moves to the machine's other pod while the stopping relay is still inside its

@@ -110,6 +110,21 @@ type listenerDeliveryHandlerConfig struct {
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
 	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
 	roleKeptUndecodable *metrics.Counter
+	// takeoverFaults holds the takeover copy's test seams (takeoverFaultSet), shared by every copy
+	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
+	// fault.
+	takeoverFaults *takeoverFaultHooks
+	// takeoverTerm bounds each write of the takeover passes run under this configuration
+	// (takeoverWriteContext) by a receive term: it answers ctx bounded by that term's context and
+	// by the lease's loss deadline for it, and false once either has passed
+	// (sessionRelays.termContext). main.go sets it on the copy the kept lane's sweep runs on, a
+	// loop of the lease holder alone (holderLoops), and on no other: the claim route's passes run
+	// on whichever pod serves the claim, with no term to end them.
+	takeoverTerm func(context.Context) (context.Context, context.CancelFunc, bool)
+	// keepPublish is the stored publish a keep makes (keepRoleMessage): main.go sets it to
+	// client.PublishStoredAck, and so does every test that builds a config, while a test that
+	// answers a keep's publish itself replaces it on its copy.
+	keepPublish keptRolePublish
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
 	// refusal or failure; a duplicate the stream drops is no error (endKeptCopyWithDeadLetter).
@@ -553,13 +568,25 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
-	// keyed by the bare role name either way (store.Registry.ClaimedRole).
-	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
+	if forward, ok := resolveRoleForward(cfg, message, item); ok {
+		cfg.roleForwards.enqueue(forward)
+	}
+	message.finalize(false)
+}
+
+// resolveRoleForward resolves the holder of item's role, judges the forward to it by the lane's
+// rules (resolveCoreRoleHolder, beforeForward, and the delivery ledger's attempt for the pair,
+// ledgerAttempt, asked as message's lane asks it), reports a refusal or a skip with the lane's own
+// lines, and returns the forward to make, carrying the ledger attempt it claimed and stamped with
+// when its resolution started (roleForward.resolvedAt), and whether to make one. The lane names its
+// role in either form; the claim it resolves is keyed by the bare role name either way
+// (roleOfLaneTopic, store.Registry.ClaimedRole).
+func resolveRoleForward(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) (roleForward, bool) {
+	role, _ := roleOfLaneTopic(item.Topic)
+	resolvedAt := cfg.now()
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
 	// The repeat is the delivery ledger's to report (ledgerAttempt below), not a cache's, so the
 	// record beforeForward reads answers no here and its verdict is the echo's or the mode's.
@@ -572,13 +599,11 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 				logger.DeliveryLog(slog.LevelInfo, "listener skip role echo", sessionID, item.Topic, item.EventID, "skipped")
 			},
 		})
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
 	attempt, deliver, _ := ledgerAttempt(cfg, message, item, sessionID)
 	if !deliver {
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
 	if verdict.kind != forwardAllowed {
 		// The echo is disposed of above and the repeat is the ledger's, so what is left is a
@@ -589,11 +614,9 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		outcome := refusedRoleForwardOutcome(verdict, item, sessionID, roleLaneRefusalLines)
 		outcome.attempt, outcome.settle = attempt, settleClear
 		applyDeliveryOutcome(cfg, item, outcome)
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
-	cfg.roleForwards.enqueue(roleForward{item: item, sessionID: sessionID, attempt: attempt})
-	message.finalize(false)
+	return roleForward{item: item, sessionID: sessionID, attempt: attempt, resolvedAt: resolvedAt}, true
 }
 
 // roleForwardRefusalLines are one forward path's lines for each refusal beforeForward can return.

@@ -103,9 +103,9 @@ func clusteredHubListenerName(release string) string {
 // NATS lets it; one whose bus goes down later keeps its warm caches and repairs itself. Readiness
 // is readyProbe, curl -fsS of /healthz, which reads the HTTP status and never the body, and is the
 // pod's gate into its Service: the listener answers /healthz 503 "starting" until its /v1 gate is
-// open and its receive loop has started, since main publishes what /healthz reads right after
-// openV1Routes (packages/envoy/cmd/listener/main.go). So a new pod stays out of its Service until
-// its /v1 serves, and the rolling update newClusteredHubListener sets (maxSurge 1,
+// open, its receive loop has started and its interest copy has completed its first read
+// (listenerHealth and interestCopyRead, packages/envoy/cmd/listener/main.go). So a new pod stays
+// out of its Service until its /v1 serves its interest list, and the rolling update newClusteredHubListener sets (maxSurge 1,
 // maxUnavailable 0) keeps the old pod serving until the new one is Ready, which the Deployment
 // controller holds. The new pod opens /v1 without waiting for the delivery lease the old pod
 // holds, and answers /healthz 200 as its standby, so the rolling update never waits for the lease.

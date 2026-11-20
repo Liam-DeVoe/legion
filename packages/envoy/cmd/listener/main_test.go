@@ -118,9 +118,10 @@ func TestStartingGateLogsEachRefusedRequest(t *testing.T) {
 	}
 }
 
-// /healthz answers 503 "starting" until main publishes the listener's dependencies, and on a
-// listener configured with an OIDC issuer until the issuer's discovery has succeeded, so a
-// readiness probe sends a pod no traffic before it can serve.
+// /healthz answers 503 "starting" until main publishes the listener's dependencies, on a listener
+// configured with an OIDC issuer until the issuer's discovery has succeeded, and until the
+// interest copy's first read has completed, so a readiness probe sends a pod no traffic before it
+// can serve.
 func TestHealthzAnswersStartingUntilTheListenerIsReady(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -801,23 +802,33 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		t.Fatalf("human-sourced forwarded event id = %q, want %q", externalForwarded.EventID, externalHuman.EventID)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	var info *natsgo.StreamInfo
-	for {
-		info, err = harness.client.JS().StreamInfo(bus.Stream)
+	// The forwards are counted on the agent subjects alone: B's claim over A also writes a
+	// takeover record on the listener's own lane (role_takeover.go), which is no forward.
+	agentForwards := func() uint64 {
+		info, err := harness.client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: contracts.AgentTopicPrefix + ">"})
 		if err != nil {
 			t.Fatalf("read notification stream: %v", err)
 		}
-		if info.State.Msgs > 2 {
-			t.Fatalf("agent-subject role forwards were captured %d times, want at most two", info.State.Msgs)
+		var held uint64
+		for _, count := range info.State.Subjects {
+			held += count
 		}
-		if info.State.Msgs == 2 || time.Now().After(deadline) {
+		return held
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var forwards uint64
+	for {
+		forwards = agentForwards()
+		if forwards > 2 {
+			t.Fatalf("agent-subject role forwards were captured %d times, want at most two", forwards)
+		}
+		if forwards == 2 || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if info.State.Msgs != 2 {
-		t.Fatalf("agent-subject role forwards were captured %d times, want two", info.State.Msgs)
+	if forwards != 2 {
+		t.Fatalf("agent-subject role forwards were captured %d times, want two", forwards)
 	}
 	if _, err := laneProbe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("the route published on the role lane: the probe answered %v, want a timeout", err)
@@ -3631,12 +3642,16 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		roleDeadLetters:     met.NewCounter("test_role_dead_letters", "test"),
 		roleKeptUndecodable: met.NewCounter("test_role_kept_undecodable", "test"),
 		publishDeadLetter:   client.PublishStoredAs,
+		keepPublish:         client.PublishStoredAck,
 		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
 		// main.go's always has both; the harness's two handlers share these as main.go's do. The
 		// clock is main.go's too, which a test that crosses a kept copy's hour replaces on its copy.
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
+		// The takeover copy's seams, which a row forces a fault through (setTakeoverFaults):
+		// this listener's own, shared by every copy of this configuration.
+		takeoverFaults: &takeoverFaultHooks{},
 	}
 	// The role lane's forwards run on the role forwarder, as main.go wires them: it is the one
 	// path those messages take. It is wired last, from the configuration above, so a test that
@@ -3658,7 +3673,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 // testDeliveryLedger opens the listener state bucket on conn as main does and returns machineID's
 // shared delivery ledger as the process boot would hold it, with main's takeover age for a 5 s
 // request limit.
-func testDeliveryLedger(t *testing.T, conn *natsgo.Conn, machineID, boot string) *dedupe.KV {
+func testDeliveryLedger(t testing.TB, conn *natsgo.Conn, machineID, boot string) *dedupe.KV {
 	t.Helper()
 	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
 	if err != nil {

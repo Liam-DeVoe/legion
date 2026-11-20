@@ -13,7 +13,9 @@ package store
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -161,5 +163,82 @@ func TestALateSoftClaimIsRefusedOverAReleaseMadeAfterItsRead(t *testing.T) {
 	}
 	if !errors.Is(err, natsgo.ErrKeyExists) {
 		t.Fatalf("the late soft claim answered %v, want its write's refusal (nats.ErrKeyExists)", err)
+	}
+}
+
+// returnedKeyWrite is lateKeyWrite that also closes returned once the first write through it of
+// its key has come back from the bucket: a row whose claim abandons that write waits for it there,
+// since an abandoned write runs on after its caller has answered (bus.BoundedOn).
+type returnedKeyWrite struct {
+	*lateKeyWrite
+	returned chan struct{}
+	once     sync.Once
+}
+
+func (kv *returnedKeyWrite) Put(key string, value []byte) (uint64, error) {
+	defer kv.back(key)
+	return kv.lateKeyWrite.Put(key, value)
+}
+
+func (kv *returnedKeyWrite) Create(key string, value []byte) (uint64, error) {
+	defer kv.back(key)
+	return kv.lateKeyWrite.Create(key, value)
+}
+
+func (kv *returnedKeyWrite) Update(key string, value []byte, revision uint64) (uint64, error) {
+	defer kv.back(key)
+	return kv.lateKeyWrite.Update(key, value, revision)
+}
+
+func (kv *returnedKeyWrite) back(key string) {
+	if key == kv.key {
+		kv.once.Do(func() { close(kv.returned) })
+	}
+}
+
+// An outright claim of a role no claim record holds, whose caller abandons it while its write is in
+// flight (the claim route's request ended), is refused by the bucket once another session's claim
+// and its release have overtaken it: the role is left unclaimed, as the release left it, and not
+// held by a claimant that was answered a failure. The claim writes at the revision of the entry it
+// read (roleClaimToWrite: 0 for a key that held none), never through Create, which, refused over
+// the release's delete marker, updates at that marker's revision (nats.go@v1.53.1 kv.go:729-739)
+// and lands.
+func TestALateOutrightClaimItsCallerAbandonedIsRefusedOverAReleaseMadeAfterItsRead(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	t.Cleanup(cleanup)
+	reg, _ := coldRegistry(t, conn)
+	const (
+		role     = "legion-planner"
+		claimant = "ses_abandoned_claimant"
+		other    = "ses_claimed_and_released"
+	)
+	ctx, abandon := context.WithCancel(context.Background())
+	defer abandon()
+	raw := reg.roleKV.Legacy()
+	late := &returnedKeyWrite{lateKeyWrite: &lateKeyWrite{KeyValue: raw, key: role, late: func() {
+		createdAndDeleted(t, raw, role, []byte(`{"holder_session_id":"`+other+`"}`))
+		abandon()
+	}}, returned: make(chan struct{})}
+	reg.roleKV = bus.NewKeyValue(late, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+
+	_, err := reg.SetRoleWithPrevious(ctx, RoleClaimRequest{
+		SessionID: claimant,
+		MachineID: "example-host",
+		Role:      role,
+	})
+	if late.writes == 0 {
+		t.Fatal("the claim never reached its write, so nothing overtook it")
+	}
+	select {
+	case <-late.returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the abandoned claim's write never came back from the bucket")
+	}
+	if stood := storedRoleClaim(t, reg, role); stood.HolderSessionID != "" {
+		t.Fatalf("the role is held by %q at revision %d after the abandoned outright claim (answered %v): the claim read on no record landed over the release made after its read",
+			stood.HolderSessionID, stood.Revision, err)
+	}
+	if err == nil {
+		t.Fatal("the abandoned outright claim answered success")
 	}
 }

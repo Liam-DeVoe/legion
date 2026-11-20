@@ -186,10 +186,19 @@ const (
 // listener the session moved to is delivered them at once rather than after the consumer's ack
 // wait, and writes one line saying it has.
 //
+// The relay judges no frame by the listener's caches, with one exception: a frame that is a role
+// message is read against the role's claim, and one whose role another session holds, or none
+// does, is copied to the role's kept lane and acknowledged rather than delivered (takeOverFrame).
+// Every other frame it pulls is published whatever the caches hold.
+//
 // One loop goroutine owns the set of relays (relays) and applies the events it is sent in order;
 // each relay runs on a goroutine of its own.
 type sessionRelays struct {
 	delivery *sessionDelivery
+	// cfg is the delivery configuration a role message whose role another session holds is
+	// copied through (takeOverFrame): the role's claim read, the copy to its kept lane and the
+	// handover after it.
+	cfg      listenerDeliveryHandlerConfig
 	registry *store.Registry
 	// client is the listener's main connection, the one registry reads the bucket through: a
 	// restart waits for it to be connected before it reads the session's stored topics
@@ -549,6 +558,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 	inbox := nats.NewInbox()
 	m := &sessionRelays{
 		delivery:    delivery,
+		cfg:         cfg,
 		registry:    cfg.registry,
 		client:      cfg.client,
 		sessions:    cfg.sessions,
@@ -1354,6 +1364,12 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 				continue
 			}
 			return m.pullEnded(sessionID, err)
+		}
+		// A role message whose role another session holds, or none does, is copied to the role's
+		// kept lane rather than sent (takeOverFrame); a gap the restart named stays on the next
+		// frame this run sends.
+		if m.takeOverFrame(ctx, sessionID, msg) {
+			continue
 		}
 		if err := m.publishFrame(ctx, run, msg, streamID, gap); err != nil {
 			if ctx.Err() != nil {

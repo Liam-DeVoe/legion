@@ -295,19 +295,22 @@ func TestTwoPodsReportARedeliveredNoHolderOnceUnderOneID(t *testing.T) {
 	}
 }
 
-// A send and a role claim through the pod whose cache trails: the standby sits behind a 300 ms slow
+// A send and a role claim through the pod whose cache trails: the standby sits behind a 150 ms slow
 // link, a session registers through the active pod, and at once a POST /v1/messages/send to it, and
 // for another such session a role set, go to the standby. Both answer 200, read from the bucket.
 // Before INFRA-557 the standby answers from its cache alone, which has not seen the registration:
 // 404 "no live session" and 404 "session is not registered". The link is slow enough that the
 // standby's cache trails each write by far more than the test takes to make its next request, and
-// fast enough that a role set's eight or so bucket round trips fit the route's 3.5 s budget
-// (sendRequestBudget).
+// fast enough that a role set's bucket round trips up to its claim write fit the claim's tries,
+// which end claimCleanupWindow (1 s) before the route's 3.5 s budget (sendRequestBudget,
+// store's claimTriesContext): the role set takes about 2.25 s behind a 200 ms link, and behind a
+// 300 ms one the write of a role no claim has held, read with its delete marker
+// (roleClaimToWrite), runs past them.
 func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")
 	a, b := mpStartPair(t, binary, uri)
-	b.relay.delay(300 * time.Millisecond)
+	b.relay.delay(150 * time.Millisecond)
 	const target, claimant, role = "ses_mp_unseen_target", "ses_mp_unseen_claimant", "mp-unseen"
 
 	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, target)))

@@ -4,7 +4,7 @@ The listener takes webhooks in, serves the `/v1` API, and delivers the events of
 Any number of listener processes may run for one machine id, in Kubernetes as pods of one Deployment:
 one of them, the active pod, delivers what the machine's durable consumer `listener-<machine id>` carries;
 every other is a standby that serves everything else and takes over delivery when the active pod stops or is lost.
-`packages/envoy/AGENTS.md` holds the listener's wider rules; this file holds how its pods share one machine id.
+This file holds how those pods share one machine id.
 
 This file uses semantic line breaks: one sentence per line, and a long sentence may break after a clause.
 A blank line separates list items.
@@ -35,7 +35,7 @@ Every pod of a machine id, active or standby:
   the greatest time any report named (`RecordListenerReady`, `packages/daemon/internal/store/wake.go`), which one live reporter is enough to hold up.
 
 Only the pod holding the machine's **delivery lease** receives the durable consumer, writes its policy, and runs the loops one deliverer runs (`holderLoops`, `main.go`):
-the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes (`startKeptRoleSweep`), the session consumer sweep (`startSessionConsumerSweep`) and, on a listener with the GitHub webhook route, the CI summary loop.
+the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes with the takeover passes it runs (`startKeptRoleSweep`, `keptSweepConfig`), the session consumer sweep (`startSessionConsumerSweep`) and, on a listener with the GitHub webhook route, the CI summary loop.
 The one exception is a listener without a lease, whose NATS user lacks the grant for `envoy_listener` (`openDeliveryLease`, `main.go`):
 it does all three with no lease, and receives while no other subscriber holds the durable.
 A standby runs none of them, never creates or updates the durable, and registers no JetStream subscription, so a NATS restart leaves it nothing to re-subscribe.
@@ -388,7 +388,7 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).
   A claim stored before `service_since` keeps its grace for one session TTL after it; every pod answers a claim alike, whenever it started.
 
-- **Registry writes** are compare-and-set at the revision the pod read, all but a hard role claim with no `if_claim_revision`, and what each answers once it loses that race differs:
+- **Registry writes** are compare-and-set at the revision the pod read, a write over a key that held no entry included, and what each answers once it loses that race differs:
 
   - A session registration and an interest are merged again over the bucket's value on a conflict, and a role claim's release or hand-back weighs the claim again at the revision it now stands at.
     Each answers `503` with `Retry-After: 1` once its attempts are spent:
@@ -397,10 +397,15 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   - A role claim's renewal (`renewRoleClaim`, `internal/store/role_renewal.go`) makes one attempt.
     A renewal that a claim landed under is dropped and logged, the registration that sent it still answers `200`, and the next registration renews the claim that stands.
 
-  - A role claim itself is not retried by the store.
-    A hard claim with no `if_claim_revision` is an unconditional `Put`, so the last write wins.
-    A soft claim, or one that carries `if_claim_revision`, that a claim landed under is refused with `409` (`ErrRoleHeld`, `ErrRoleClaimRevisionMismatch`, `internal/store/roles.go`);
+  - A role claim writes at the revision of the entry it read: the claim's own, the delete marker of the release that ended the last claim, or none for a key that never held one (`roleClaimToWrite`, `internal/store/role_claim.go`), never through a create, so an abandoned write that lands late lands over nothing written since its read.
+    A hard claim with no `if_claim_revision` reads again and writes again on a conflict until its request's budget ends, so the last write still wins; one that met a conflict at every try answers `503` with `Retry-After: 1` (`ErrRoleClaimContended`) and writes nothing, its interest topic rolled back unless the claim that stands names its session (`rollBackUnlessHeld`).
+    A soft claim, or one that carries `if_claim_revision`, makes one try, and one that a claim landed under is refused with `409` (`ErrRoleHeld`, `ErrRoleClaimRevisionMismatch`);
     `/v1/roles/set` decides a soft claim that named no revision once more first, on the claim that replaced the one it read.
+
+  - A takeover record (`bus.TakeoverSubject`, `cmd/listener/role_takeover.go`) is a message of the stream rather than a key, written only while its subject's newest message is the one its pass read (`bus.Client.WriteTakeoverRecord`); a write that lost that race, or whose record the stream removed meanwhile, stores nothing (`bus.ErrTakeoverRecordMoved`), and the record's next pass reads it again.
+    The claim route writes a new record and runs its passes on whichever pod served the claim, within its handover window (10 min, `roleKeepHandoverWindow`) and not the request's;
+    the kept lane's sweep runs the passes of every unfinished record on the lease holder alone, each copy and record write held to its receive term and the lease's loss deadline (`takeoverWriteContext`), as the reapers' deletes are.
+    Two pods' passes over one record store each copy once, under its message id (`takenFrameMsgID`), which the stream's 72-hour duplicate window keeps for as long as the frame it copies is stored.
 
   A pod whose cache has not seen a registration reads the bucket before `/v1/messages/send` or `/v1/roles/set` answers that the session is unknown.
 
@@ -488,7 +493,7 @@ These concern the pods of one machine id:
 Recreating `listener-<machine id>` (to drop a setting NATS cannot change in place, as `subscribe
 refused, shutting down` names) keeps its cursor only while no pod of the machine runs: stop every pod of the machine id first, active and standby.
 A lease holder that finds the durable missing creates it at deliver policy `all`, which replays every retained message, and a standby takes the lease and does the same when the active pod stops.
-Then recreate it as `packages/envoy/AGENTS.md` (Operational notes) shows and start the pods;
+Then recreate it as `packages/envoy/deploy/README.md` ("Recreating a listener's durable") shows and start the pods;
 the lease holder stamps the rest of the policy onto it and subscribes.
 
 ## Tests
