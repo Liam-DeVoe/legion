@@ -696,10 +696,10 @@ export async function createProofEditor(
       applyReferences(view, references);
     },
     linkAtCaret(): string | null {
-      return view.isDestroyed ? null : (linkAtCaret(view.state) ?? null);
+      return view.isDestroyed ? null : (linkAtCaret(view) ?? null);
     },
     openLinkAtCaret(): boolean {
-      const target = view.isDestroyed ? undefined : linkAtCaret(view.state);
+      const target = view.isDestroyed ? undefined : linkAtCaret(view);
       if (target === undefined || opts.openLink === undefined) return false;
       opts.openLink(target, { newTab: false });
       return true;

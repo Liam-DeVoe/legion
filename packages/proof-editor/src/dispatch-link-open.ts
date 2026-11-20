@@ -28,11 +28,13 @@
  *   change it. ProseMirror prevents the default of every Enter it does not handle, and a host
  *   listener that skips a prevented press would never hear it, so with a link at the caret the
  *   press is left to the host; should nothing after the editor take it, it is prevented then, so
- *   the browser writes no new line into the text.
+ *   the browser writes no new line into the text. The caret is read where the page's selection
+ *   holds it (`caretPos`), since the editor's state can still hold it where it was before the key
+ *   pressed just before.
  */
 
 import type { Mark } from "@milkdown/kit/prose/model";
-import { type EditorState, Plugin, PluginKey } from "@milkdown/kit/prose/state";
+import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose } from "@milkdown/kit/utils";
 
@@ -114,13 +116,36 @@ export function opensLinkOn(view: EditorView, event: MouseEvent): boolean {
   return linkOpenKey.get(view.state) !== undefined && clickedLink(view, event) !== undefined;
 }
 
-/** What Alt+Enter opens at the caret: the target of the link the caret is in or at either end
- *  of, else the `dispatch://` reference of the title drawn over the text the caret holds or
- *  touches (`referenceAt`: the title gives way to that text while the caret is there), else
- *  undefined. A link mark keeps its target as written, a `dispatch://` one included; only its
- *  drawn `href` is sanitized. */
-export function linkAtCaret(state: EditorState): string | undefined {
-  const { $head } = state.selection;
+/** Where the caret is: in an editor that has the focus, the head of the page's selection, else
+ *  the head of the editor's own. A caret an arrow key moved natively reaches ProseMirror's state
+ *  only once the page's `selectionchange` for it has run, or once ProseMirror's own handler of the
+ *  next key reads the page's selection, before that key's keymaps; a `handleDOMEvents` handler
+ *  runs before that read, and a busy page can run the next key before the `selectionchange`
+ *  (dispatch://INFRA-2160, k-link-keys). Read from the state alone, Alt+Enter pressed straight
+ *  after an arrow found the caret where it stood before the arrow, beside no link, so it was left
+ *  to ProseMirror, which prevents every Enter it does not handle, and the host's key never heard
+ *  it. Without the focus the page's selection is not the editor's, and the state's caret is. */
+function caretPos(view: EditorView): number {
+  const selection = view.dom.ownerDocument.getSelection();
+  const node = selection?.focusNode ?? null;
+  if (selection !== null && node !== null && view.hasFocus() && view.dom.contains(node)) {
+    try {
+      return view.posAtDOM(node, selection.focusOffset);
+    } catch {
+      // A point inside something the editor draws no document position for: the state's caret.
+    }
+  }
+  return view.state.selection.head;
+}
+
+/** What Alt+Enter opens at the caret (`caretPos`): the target of the link the caret is in or at
+ *  either end of, else the `dispatch://` reference of the title drawn over the text the caret
+ *  holds or touches (`referenceAt`: the title gives way to that text while the caret is there),
+ *  else undefined. A link mark keeps its target as written, a `dispatch://` one included; only
+ *  its drawn `href` is sanitized. */
+export function linkAtCaret(view: EditorView): string | undefined {
+  const { state } = view;
+  const $head = state.doc.resolve(caretPos(view));
   const isLink = (mark: Mark) => mark.type.name === "link";
   const href: unknown = (
     $head.nodeAfter?.marks.find(isLink) ?? $head.nodeBefore?.marks.find(isLink)
@@ -200,7 +225,7 @@ export function dispatchLinkOpenPlugin(openLink: OpenLink) {
                 !event.ctrlKey &&
                 !event.metaKey &&
                 !event.shiftKey;
-              if (!view.editable || !altEnter || linkAtCaret(view.state) === undefined) {
+              if (!view.editable || !altEnter || linkAtCaret(view) === undefined) {
                 return false;
               }
               preventUnlessTaken(view, event);

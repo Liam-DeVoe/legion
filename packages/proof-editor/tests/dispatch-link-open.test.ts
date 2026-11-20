@@ -392,6 +392,60 @@ test("Alt+Enter beside a bare key opens the reference its title stood for", asyn
   );
 });
 
+// dispatch://INFRA-2160, k-link-keys: an arrow key moves the page's caret at once, and the
+// editor's state follows only once the page's `selectionchange` has run, or once ProseMirror's own
+// handler of the next key reads the page's selection, after the handlers of `handleDOMEvents`. A
+// busy page ran Alt+Enter before that event, the press read the caret where it was before the
+// arrow, beside no title, and ProseMirror prevented it, so the host's key never opened the key.
+test("Alt+Enter straight after an arrow key reads the caret where the page holds it", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    "See CORE-1 here.",
+    ({ handle, view }) => {
+      handle.setReferences({
+        onKeys: () => {},
+        scan: (text): ReferenceCandidate[] => {
+          const start = text.indexOf("CORE-1");
+          return start === -1 ? [] : [{ end: start + 6, key: "CORE-1", start }];
+        },
+        targets: new Map([
+          [
+            "CORE-1",
+            { href: "dispatch://CORE-1", path: "/issues/CORE-1", title: "CORE-1 Fix the thing" },
+          ],
+        ]),
+      });
+      const stored = handle.getMarkdown();
+      view.focus();
+      // "See CORE-1 here." opens at 0, so the space before CORE-1 is 4 to 5: the caret is before
+      // it, beside no title.
+      caretAt(view, 4);
+      expect(handle.linkAtCaret()).toBeNull();
+
+      // The arrow's move, past the space onto the key's start. The page has not run its
+      // `selectionchange` yet, so the editor's listener does not hear it.
+      const before = view.dom.querySelector("p")?.firstChild;
+      expect(before?.textContent).toBe("See ");
+      if (before === null || before === undefined) throw new Error("the paragraph holds no text");
+      const unheard = (event: Event) => event.stopImmediatePropagation();
+      view.dom.ownerDocument.addEventListener("selectionchange", unheard, true);
+      try {
+        window.getSelection()?.collapse(before, 4);
+        expect(view.state.selection.head).toBe(4);
+
+        expect(altEnter(view).handled).toBe(true);
+        expect(handle.linkAtCaret()).toBe("dispatch://CORE-1");
+        expect(handle.openLinkAtCaret()).toBe(true);
+      } finally {
+        view.dom.ownerDocument.removeEventListener("selectionchange", unheard, true);
+      }
+      expect(opened).toEqual([["dispatch://CORE-1", false]]);
+      expect(handle.getMarkdown()).toBe(stored);
+    },
+    { openLink }
+  );
+});
+
 test("a view the reader cannot edit leaves Alt+Enter alone, and opens links on a click all the same", async () => {
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
