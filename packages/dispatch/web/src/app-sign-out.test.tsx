@@ -607,7 +607,12 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
     second.close();
     app.teardown();
   }
-});
+  // A bound on work, not a hang guard: every wait above ends by its own count of real turns or by
+  // `waitFor`'s limit, so this limit only has to sit above the row's loaded cost. 100_000, above
+  // the suite's 60 s flag, which is less than twice this row's: worst measured cost 36 723.83 ms
+  // at 16 busy loops (the 96 rung) on a two-CPU, 8 GiB pod, where main's form of this row cost up
+  // to 24 268.83 ms.
+}, 100_000);
 
 // W53. The sign-out question names each change once, by key: a tab duplicated from this one, or
 // from another, copied its kept writes and resumed them under the same keys, so its copies are the
@@ -680,8 +685,9 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
   // A bound on work, not a hang guard: every wait above ends by its own count of real turns or by
   // `waitFor`'s limit, so this limit only has to sit above the row's loaded cost. 100_000, above
   // the suite's 60 s flag, which is twice its slowest loaded test and less than twice this row's:
-  // worst measured cost 31 992.94 ms at 36 busy loops (the 96 rung) on a two-CPU, 8 GiB pod, where
-  // main's form of this row costs the same. The row's rung is 96: at 240 one run cost 56 679.57 ms.
+  // worst measured cost 33 673.56 ms at 16 busy loops (the 96 rung) on a two-CPU, 8 GiB pod, where
+  // main's form of this row cost up to 33 328.32 ms. The row's rung is 96: at 240 one run cost
+  // 56 679.57 ms.
 }, 100_000);
 
 // W43. A lapsed tab shows the writes it keeps: the sign-in page lists the lapsed person's kept
