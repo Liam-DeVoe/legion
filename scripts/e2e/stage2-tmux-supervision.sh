@@ -247,6 +247,45 @@ expect_refusal() {
   grep -qF "$2" "$out" || fail "the refusal (exit $st) does not say \"$2\": $(grep -v '^{' "$out" | head -3)"
   note "legion start exit $st: $(grep -F "$2" "$out" | head -1)"
 }
+# gate_loaders SKILL: the files the boot gate's refusal names as loading SKILL, in its order, read
+# from the same files the gate reads (promptReferences and kindRefusal,
+# packages/daemon/internal/daemon/promptreferences.go): each Markdown file under the installed
+# pi-legion's `omp.skills` directories and then its agents/, by its path under the plugin, then each
+# role prompt the daemon embeds from this checkout, as roles/<file> (prompts.RoleReferences). Each
+# directory is walked as Go's WalkDir walks it, its entries in lexical order, and a file loads SKILL
+# when it writes skill://SKILL as promptrefs reads a skill's name.
+gate_loaders() {
+  python3 - "$1" "$work/pi-legion" "$root/packages/daemon/internal/prompts/roles" <<'PY'
+import json, os, re, sys
+from pathlib import Path
+
+skill, plugin, roles = sys.argv[1].encode(), sys.argv[2], sys.argv[3]
+reference = re.compile(rb"skill://([a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)")
+loaders = []
+
+def walk(directory, under, embedded=False):
+    with os.scandir(directory) as scan:
+        entries = sorted(scan, key=lambda entry: entry.name)
+    for entry in entries:
+        # go:embed leaves out of an embedded directory every name that begins with . or _.
+        if embedded and entry.name[0] in "._":
+            continue
+        if entry.is_dir(follow_symlinks=False):
+            walk(entry.path, os.path.join(under, entry.name), embedded)
+        elif embedded or entry.name.endswith(".md"):
+            names = (match.group(1) for match in reference.finditer(Path(entry.path).read_bytes()))
+            if skill in names:
+                loaders.append(os.path.join(under, entry.name))
+
+manifest = json.loads(Path(plugin, "package.json").read_text())
+for directory in (manifest.get("omp") or {}).get("skills") or []:
+    walk(os.path.realpath(os.path.join(plugin, directory)), os.path.normpath(directory))
+if os.path.exists(os.path.join(plugin, "agents")):
+    walk(os.path.realpath(os.path.join(plugin, "agents")), "agents")
+walk(roles, "roles", embedded=True)
+print(", ".join(loaders))
+PY
+}
 
 # ---- setup -----------------------------------------------------------------------------------------
 
@@ -451,9 +490,16 @@ pass
 begin gate-refuses-a-skill-only-a-role-prompt-loads
 # The gate also resolves the skills the daemon's role prompts load, beside the plugin's own: the
 # refusal of the plugin without legion-controller names roles/controller-root.md, which only a gate
-# that reads the daemon's own role prompts can name, after the pi-legion files that load it.
+# that reads the daemon's own role prompts can name, after the pi-legion files that load it, which
+# gate_loaders reads as the gate does, since the guides move references between files.
 mv "$work/pi-legion/dist/skills/legion-controller" "$work/controller-skill.aside"
-expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-architect/references/design-gate.md, dist/skills/legion-architect/references/wake-routing.md, dist/skills/legion-worker/references/findings.md, roles/controller-root.md)"
+loaders=$(gate_loaders legion-controller) || fail "could not read the files that load skill legion-controller"
+case ", $loaders, " in
+*", roles/controller-root.md, "*) ;;
+*) fail "roles/controller-root.md no longer loads skill legion-controller (its loaders: ${loaders:-none}), so this check proves nothing" ;;
+esac
+note "the files that load legion-controller, read as the gate reads them: $loaders"
+expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by $loaders)"
 mv "$work/controller-skill.aside" "$work/pi-legion/dist/skills/legion-controller"
 [ -f "$work/pi-legion/dist/skills/legion-controller/SKILL.md" ] || fail "the legion-controller skill was not restored"
 pass

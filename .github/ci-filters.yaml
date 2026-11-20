@@ -1571,20 +1571,20 @@ envoy_infra_go:
 # why: .github/ci-notes/ci.md#repository_markdown-the-repositorys-guides-the-corpus-tests-read
 repository_markdown: &repository_markdown
   - 'packages/envoy/internal/dispatch/testdata/repository-markdown.txt'
-  - 'AGENTS.md'
+  - 'docs/site/src/content/docs/dispatch/delivery.md'
+  - 'docs/site/src/content/docs/dispatch/issues-and-projects.md'
+  - 'docs/site/src/content/docs/legion/concepts.md'
+  - 'docs/solutions/github/join-a-job-to-the-ci-router.md'
+  - 'docs/solutions/legion/worker-pane-shell-gotchas.md'
   - 'docs/testing.md'
   - 'packages/claude-envoy/README.md'
-  - 'packages/dispatch/AGENTS.md'
   - 'packages/dispatch/README.md'
   - 'packages/envoy-client/README.md'
-  - 'packages/envoy/cmd/dispatch/AGENTS.md'
   - 'packages/envoy/cmd/dispatch/README.md'
   - 'packages/envoy/infra/README.md'
   - 'packages/envoy/loadtest/README.md'
   - 'packages/envoy/scripts/README.md'
-  - 'packages/pi-envoy/AGENTS.md'
   - 'packages/pi-envoy/README.md'
-  - 'packages/pi-legion/AGENTS.md'
   - 'scripts/e2e/README.md'
 envoy_go:
   - *ci_router

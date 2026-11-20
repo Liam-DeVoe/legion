@@ -112,7 +112,7 @@ log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" 
 # controller_omp STATE_DIR CLI_PID: the pid of the Oh My Pi that the run's `legion controller start`,
 # the process CLI_PID its pane recorded as it started it (record_pid_sh, lib/process-tree.sh),
 # launched for STATE_DIR. The command starts Oh My Pi through `sh -c` (controller.go's exec.Command),
-# so it is the process below CLI_PID that runs the Oh My Pi under proof, $omp (launched,
+# so it is the process below CLI_PID that runs the Oh My Pi under proof, $omp_exe (launched,
 # lib/process-tree.sh), and its
 # environment, read once in this shell with no pipe, must name STATE_DIR. Nothing searches the
 # machine's /proc for it: there it shares argv[0] with every other Oh My Pi and its own daemon
@@ -123,7 +123,7 @@ log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" 
 controller_omp() {
   local found entry state='' named=''
   local -a entries
-  if ! found=$(launched "$2" "$omp"); then
+  if ! found=$(launched "$2" "$omp_exe"); then
     printf '%s\n' "$found"
     return 1
   fi
@@ -151,17 +151,18 @@ omp=${LEGION_TEST_OMP:-}
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is unset: name the Oh My Pi the daemon and the controller run (.github/actions/install-omp exports it in CI)"
 [ -x "$omp" ] || fail "LEGION_TEST_OMP names $omp, which is not an executable file"
 # The run knows the controller's Oh My Pi by the program the kernel records it runs (controller_omp),
-# so LEGION_TEST_OMP names the binary itself (native_program, lib/process-tree.sh): a wrapper
-# script's process runs its interpreter and a mise shim's runs the version mise picks.
-omp=$(native_program "$omp") || fail "LEGION_TEST_OMP: $omp"
+# so LEGION_TEST_OMP names the binary itself, the Oh My Pi under proof, omp_exe (native_program,
+# lib/process-tree.sh): a wrapper script's process runs its interpreter and a mise shim's runs the
+# version mise picks.
+omp_exe=$(native_program "$omp") || fail "LEGION_TEST_OMP: $omp_exe"
 # Every `legion` of the run resolves Oh My Pi from LEGION_OMP_PATH, legion.yaml and controller.yaml
 # naming no omp_invocation (omplaunch.ResolveInvocation): `legion config check` resolves it too.
-export LEGION_OMP_PATH=$omp
+export LEGION_OMP_PATH=$omp_exe
 # The operator's shell, less the running session's own OMP and Envoy variables (omp_session_unsets,
 # lib/omp-home.sh), with the run's own HOME for Oh My Pi and the Oh My Pi under proof as
 # LEGION_OMP_PATH, which omp_session_unsets drops from the caller's environment first: operator_env
 # runs a command in it, and the daemon starts in it (start_kept).
-operator_shell=(env "${omp_session_unsets[@]}" LEGION_OMP_PATH="$omp" HOME="$omp_home" OMP_PROFILE="$profile")
+operator_shell=(env "${omp_session_unsets[@]}" LEGION_OMP_PATH="$omp_exe" HOME="$omp_home" OMP_PROFILE="$profile")
 operator_env() { "${operator_shell[@]}" "$@"; }
 pg_dsn=${LEGION_TEST_PG_DSN:-}
 [ -n "$pg_dsn" ] || fail "LEGION_TEST_PG_DSN is unset: name the loopback PostgreSQL the run creates the daemon's database in (the agent-harness job's service in CI)"
@@ -182,7 +183,7 @@ keep_port daemon_keeper daemon_port
 (cd "$root/packages/daemon" && go build -o "$work/legion" ./cmd/legion)
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener)
 (cd "$root/packages/envoy" && go build -o "$work/natsd" ./internal/testnats/cmd/natsd)
-note "legion $("$work/legion" version); Oh My Pi $omp ($("$omp" --version 2>&1 | head -1)); daemon port $daemon_port"
+note "legion $("$work/legion" version); Oh My Pi $omp_exe ($("$omp_exe" --version 2>&1 | head -1)); daemon port $daemon_port"
 
 refuse_leftovers legion-e2e-controller
 # The daemon's database, the run's own on LEGION_TEST_PG_DSN's server, as a libpq connection
@@ -209,8 +210,8 @@ until_true 60 "the Envoy listener" curl -fsS -H "@$work/envoy-auth-header" "http
 note "listener port $envoy_port"
 
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
-envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp-path "$omp")
-manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp-path "$omp")
+envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp-path "$omp_exe")
+manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp-path "$omp_exe")
 want_contract=$(jq -r .legion.daemonApiVersion "$root/packages/pi-legion/package.json")
 note "plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile, daemonApiVersion $want_contract"
 # The boot gate resolves the model of every task agent the prompts dispatch, so the profile names
@@ -366,7 +367,7 @@ begin controller-claims-the-role
 # omp-harness.ts's spawnInteractive sets the same). It records the pid of the
 # `legion controller start` it runs (record_pid_sh, lib/process-tree.sh), which execs in that
 # process, so the run knows the command by the pid it started.
-tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl1.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' OMP_SKIP_SETUP=1 LEGION_OMP_PATH='$omp' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
+tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl1.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' OMP_SKIP_SETUP=1 LEGION_OMP_PATH='$omp_exe' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
 until_true 180 "controllerLocator in the state" sh -c "'$work/legion' state --json --port $daemon_port | jq -e '.controllerLocator.sessionId != null'"
 locator1=$(state_json | jq -c .controllerLocator)
 session1=$(jq -r .sessionId <<<"$locator1")
@@ -474,7 +475,7 @@ if [ "$code" != 500 ] || ! grep -qF DISPATCH_UNAVAILABLE "$evidence/checks/grant
   fail "the grant answered $code $(cat "$evidence/checks/grant-before-second-start.json") before the second start, want 500 DISPATCH_UNAVAILABLE"
 fi
 note "the grant, before the second start → $code $(cat "$evidence/checks/grant-before-second-start.json")"
-tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl2.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' OMP_SKIP_SETUP=1 LEGION_OMP_PATH='$omp' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
+tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl2.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' OMP_SKIP_SETUP=1 LEGION_OMP_PATH='$omp_exe' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
 until_true 180 "controllerLocator to name a second session" sh -c "'$work/legion' state --json --port $daemon_port | jq -e --arg s '$session1' '.controllerLocator.sessionId != null and .controllerLocator.sessionId != \$s'"
 locator2=$(state_json | jq -c .controllerLocator)
 session2=$(jq -r .sessionId <<<"$locator2")

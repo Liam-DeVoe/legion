@@ -5,28 +5,38 @@
 # DISPATCH_TEST_SPEC_CORPUS (internal/dispatch/docs). envoy-go's pmdoc differential reads them too.
 #
 # A guide is here only when every one of those tests can take it as a document: at most 1 MiB,
-# the largest markdown document Dispatch stores (TestWriteCorpusReadsOnce seeds each one); at least
-# three top-level paragraphs that hold a phrase found once (the writes of TestWriteCorpusReadsOnce);
-# and at least 98 candidate sentences (the anchors of TestAMarginWriteMatchesTheWholeDocumentWrite).
-# Those three rules leave out every other AGENTS.md and README.md of the repository. The one docs
-# page here, docs/testing.md, took the place of scripts/dispatch/README.md when that guide fell
-# below 98: of the guides the rules leave in that the list did not hold, it has the most but
-# docs/kubernetes.md, which stands within a tenth of the 1 MiB and grows by that much in days.
-# Both jobs' filters in .github/workflows/ci.yaml name this file and every path in it, and
-# .github/scripts/ci_job_reads.py declares them as the two jobs' reads, so a change to one of these
-# guides starts the jobs that read it. A path added here is a path those filters must name too.
-AGENTS.md
+# the largest markdown document Dispatch stores (TestWriteCorpusReadsOnce seeds each one); three
+# paragraphs that each hold a phrase found once, two of them top-level and the third top-level or
+# in a list item or table cell (chooseWriteCorpusQuotes, the writes of TestWriteCorpusReadsOnce);
+# and at least 98 candidate sentences (pickQuotes, the anchors of
+# TestAMarginWriteMatchesTheWholeDocumentWrite). Those rules leave out every AGENTS.md of the
+# repository, each now cut to its purpose, components, pointers and rules, and every README.md but
+# the ones here. The rest are docs pages, never a CLAUDE.md, a SKILL.md or a file under skills/,
+# which the guides' owner rewrites the same way: docs/testing.md took the place of
+# scripts/dispatch/README.md when that guide fell below 98, and the five pages before it took the
+# places of the five AGENTS.md files the cut left below the rules, chosen among the docs pages that
+# meet them for their few bytes and their margin over 98 (docs/kubernetes.md meets them too, but
+# stands within a tenth of the 1 MiB and grows by that much in days).
+# Both jobs' comments give their times over the fifteen guides this list held on 2026-11-18, about
+# 3.6 MB then. It holds fifteen, about 2.2 MB, so those times still bound it; a change that adds a
+# guide or takes the list past 3.6 MB measures the jobs again.
+# Both jobs' filters name this file and every path in it (the repository_markdown group of
+# .github/ci-filters.yaml, which envoy_go and envoy_go_race_docs name), and
+# .github/scripts/ci_job_reads.py reads the paths from this file as the two jobs' reads, so a change
+# to one of these guides starts the jobs that read it. A path added here is a path that group must
+# name too.
+docs/site/src/content/docs/dispatch/delivery.md
+docs/site/src/content/docs/dispatch/issues-and-projects.md
+docs/site/src/content/docs/legion/concepts.md
+docs/solutions/github/join-a-job-to-the-ci-router.md
+docs/solutions/legion/worker-pane-shell-gotchas.md
 docs/testing.md
 packages/claude-envoy/README.md
-packages/dispatch/AGENTS.md
 packages/dispatch/README.md
 packages/envoy-client/README.md
-packages/envoy/cmd/dispatch/AGENTS.md
 packages/envoy/cmd/dispatch/README.md
 packages/envoy/infra/README.md
 packages/envoy/loadtest/README.md
 packages/envoy/scripts/README.md
-packages/pi-envoy/AGENTS.md
 packages/pi-envoy/README.md
-packages/pi-legion/AGENTS.md
 scripts/e2e/README.md

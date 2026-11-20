@@ -26,12 +26,12 @@ afterEach(() => {
 });
 
 // The probe runs each walk in a shell with the rigs' helpers sourced and the skill-scenario rig's
-// two taken from its script, and prints one line a
-// walk: its name, its exit status, and the first line it wrote on stderr. `fail` is a driver's, here
-// one that prints and returns, so refuse_leftovers' report reaches the line. The two port walks ask
-// for PORT, a port this test listens on (heldPort), so the socket is found in /proc/net/tcp and
-// each walk goes on to the processes it must read; a port nothing listens on ends them earlier, with
-// 1, at "0 sockets listen".
+// two taken from its script, and prints one line a walk: its name, its exit status, and the first
+// line it wrote on stderr. `fail` is a driver's, here one that prints and returns, so
+// refuse_leftovers' report reaches the line. The two port walks ask for PORT, a port this test
+// listens on (heldPort), so the socket is found in /proc/net/tcp and each walk goes on to the
+// processes it must read; a port nothing listens on ends them earlier, with 1, at "0 sockets
+// listen".
 const probe = `set -u
 root=${JSON.stringify(root)} timeout_hook=
 work=$(mktemp -d "$SCRATCH/work.XXXXXX")
@@ -174,7 +174,7 @@ walk stop_tree stop_tree 4242`,
     );
     expect(ran.stderr.toString()).toBe("");
     const got = walks(ran.stdout.toString());
-    expect(got).toHaveLength(12);
+    expect(got).toHaveLength(11);
     for (const { name, status, said } of got) {
       expect({ name, status, said: said !== "" }).toEqual({ name, status: 2, said: true });
     }

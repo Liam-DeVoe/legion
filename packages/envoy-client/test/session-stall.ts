@@ -30,6 +30,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, Events, type KV, type NatsConnection, StringCodec } from "nats";
@@ -1352,7 +1353,7 @@ describe.skipIf(hostsSkipped)(
               // stand-in can call envoy_subscribe by the name the turn offers it under.
               ENABLE_TOOL_SEARCH: "false",
               ANTHROPIC_BASE_URL: modelBase,
-              ANTHROPIC_API_KEY: "placeholder-not-a-secret",
+              ANTHROPIC_API_KEY: fixtureSecret("standin"),
               ENVOY_URL: stack.envoyUrl,
               ENVOY_NATS_URL: stack.natsUrl,
               ENVOY_HEARTBEAT_MS: String(HEARTBEAT_MS),
