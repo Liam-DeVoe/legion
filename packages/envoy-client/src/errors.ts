@@ -72,7 +72,11 @@ export function reachedNothing(error: unknown): boolean {
  * with its user info). Both live here, beside `messageFor`, since `./nats-credential`, which every
  * bundle reading `envoySettings` imports, uses them and imports nats.js's types alone.
  */
-export class LoggableError extends Error {}
+export class LoggableError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
 
 /** The refusals nats-server sends in its own fixed words (server/errors.go), which nats.js keeps
  *  as an `-ERR`'s whole text (protocol.js `toError`). A text that equals one of them, quotes
