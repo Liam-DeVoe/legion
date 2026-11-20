@@ -39,7 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
-	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -236,6 +236,16 @@ type bootConfig struct {
 	InsecureCookie bool
 	// EnvoyToken is ENVOY_TOKEN, the bearer every Envoy listener call sends.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is ENVOY_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
+	// Kubernetes service-account token for the listener's audience, which every listener call
+	// reads and presents in EnvoyToken's place. The file is read by the listener client on each
+	// call, never here: a projected token rotates.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE: on Google Cloud, the audience of the
+	// identity token the metadata server mints for Dispatch's machine's service account, which
+	// every listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); the listener's
+	// ENVOY_OIDC_GOOGLE_AUDIENCE. At most one of it and EnvoyAccountTokenFile is set.
+	EnvoyGoogleAudience string
 	// RoleHolderWindows are the session windows a role route's holder is judged by
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
 	// outbox's reader of the role and session buckets carries (roles.NewBuckets).
@@ -259,6 +269,15 @@ func main() {
 	if err != nil {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
+	}
+	// Dispatch's Google Cloud identity at the listener needs a metadata server, decided once here:
+	// a machine with none refuses to start, naming the setting, and a metadata server that does
+	// not answer later fails only the call it was asked for, which its delivery tries again.
+	if boot.EnvoyGoogleAudience != "" {
+		if err := dispatchenvoy.CheckGoogleIdentity(context.Background()); err != nil {
+			slog.Error("dispatch: Envoy listener identity", "error", err)
+			os.Exit(1)
+		}
 	}
 	// The registry's pace, before anything registers or reads what is live. The live window stays
 	// three beats, as processes.LiveWindow is of processes.HeartbeatInterval, so a run cannot give
@@ -768,8 +787,8 @@ func main() {
 			RoleClaims: holders,
 			Sessions:   holders,
 			// The registry a person's reply reads its thread's sessions from, on the Envoy
-			// listener and the token the API server's client uses (api.NewDeps).
-			Registry:         envoy.New(boot.EnvoyURL, envoy.WithToken(boot.EnvoyToken)),
+			// listener with the credentials the API server's client presents (api.NewDeps).
+			Registry:         dispatchenvoy.New(boot.EnvoyURL, listenerCredentials(boot)...),
 			KeptLanes:        natsClient,
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
@@ -1272,27 +1291,32 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot := bootConfig{
-		DatabaseURL:        strings.TrimSpace(env.get("DATABASE_URL")),
-		RepoProjects:       strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
-		DefaultProject:     strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
-		NewIssueLabel:      strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
-		NewIssueSession:    strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
-		GitHubAPIBase:      strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
-		SignInIssuer:       strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
-		SignInClientID:     strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
-		SignInClientSecret: strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_SECRET")),
-		SignInGroup:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_GROUP")),
-		SignInDomain:       strings.TrimSpace(env.get("DISPATCH_SIGNIN_DOMAIN")),
-		NATSDisabled:       env.get("DISPATCH_NATS_DISABLED") == "1",
-		TestHooksEnabled:   env.get("DISPATCH_TEST_HOOKS") == "1",
-		WebDist:            env.get("DISPATCH_WEB_DIST"),
-		FileStoreBucket:    strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")),
-		DevSignInSharedKey: env.get("DISPATCH_DEV_SIGNIN_SHARED_KEY"),
-		InsecureCookie:     env.get("DISPATCH_INSECURE_COOKIE") != "",
-		EnvoyToken:         env.get("ENVOY_TOKEN"),
+		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
+		RepoProjects:          strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
+		DefaultProject:        strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
+		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
+		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
+		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
+		SignInIssuer:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
+		SignInClientID:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
+		SignInClientSecret:    strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_SECRET")),
+		SignInGroup:           strings.TrimSpace(env.get("DISPATCH_SIGNIN_GROUP")),
+		SignInDomain:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_DOMAIN")),
+		NATSDisabled:          env.get("DISPATCH_NATS_DISABLED") == "1",
+		TestHooksEnabled:      env.get("DISPATCH_TEST_HOOKS") == "1",
+		WebDist:               env.get("DISPATCH_WEB_DIST"),
+		FileStoreBucket:       strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")),
+		DevSignInSharedKey:    env.get("DISPATCH_DEV_SIGNIN_SHARED_KEY"),
+		InsecureCookie:        env.get("DISPATCH_INSECURE_COOKIE") != "",
+		EnvoyToken:            env.get("ENVOY_TOKEN"),
+		EnvoyAccountTokenFile: strings.TrimSpace(env.get("ENVOY_ACCOUNT_TOKEN_FILE")),
+		EnvoyGoogleAudience:   strings.TrimSpace(env.get("ENVOY_ACCOUNT_GOOGLE_AUDIENCE")),
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
+		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")
 	}
 	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
 	if strings.TrimSpace(agentTokens) == "" {
@@ -1785,6 +1809,8 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
+	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
+	built.EnvoyGoogleAudience = boot.EnvoyGoogleAudience
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile
@@ -1797,6 +1823,20 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
+}
+
+// listenerCredentials are the credentials a listener client of main's presents, as the API
+// server's client presents them (api.NewDeps): the shared token, and Dispatch's own identity
+// where boot names one, which the client presents in the shared token's place.
+func listenerCredentials(boot bootConfig) []dispatchenvoy.Option {
+	options := []dispatchenvoy.Option{dispatchenvoy.WithToken(boot.EnvoyToken)}
+	if boot.EnvoyAccountTokenFile != "" {
+		options = append(options, dispatchenvoy.WithAccountTokenFile(boot.EnvoyAccountTokenFile))
+	}
+	if boot.EnvoyGoogleAudience != "" {
+		options = append(options, dispatchenvoy.WithGoogleIdentity(boot.EnvoyGoogleAudience))
+	}
+	return options
 }
 
 // loadEnvoyConfig is envoy.json as Dispatch reads it: the files config.Load finds, the user file
