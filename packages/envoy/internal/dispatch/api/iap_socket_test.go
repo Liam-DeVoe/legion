@@ -85,6 +85,21 @@ func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Heade
 	return k.assertion(t, exp)
 }
 
+// pastExpiry is a second past the last moment the verifier admits header's assertion: the
+// assertion's own exp, as the verifier reads it (Claims.Expiry, the whole second the assertion
+// carries), plus oidc.IAPClockSkew, the skew the verifier allows. The verifier still admits the
+// assertion at exactly that exp plus the skew (its check is a strict Before), so a row that moves
+// the verifier's fake here has the assertion expired by the exp it carries, whatever moment the row
+// started at. It asks the verifier while the verifier still admits the assertion.
+func (k iapSocketKeys) pastExpiry(t *testing.T, header http.Header) time.Time {
+	t.Helper()
+	claims, err := k.identity.Verifier.Verify(testwait.Context(t), header.Get(identity.IAPAssertionHeader))
+	if err != nil {
+		t.Fatalf("the verifier refused the assertion whose expiry the row reads: %v", err)
+	}
+	return claims.Expiry.Add(oidc.IAPClockSkew + time.Second)
+}
+
 // IAP signs an assertion for every request and Google gives one at most ten minutes, but a live
 // socket's heartbeat re-checks the assertion its upgrade carried. Once that assertion expires the
 // socket is rotated, not cut: it closes with 4001, the close the page answers by reopening at once,
@@ -96,9 +111,10 @@ func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Heade
 // one. The assertion's expiry is the IAP verifier's, judged on a fake of its own
 // (oidc.NewIAPVerifierOn) that stands still while the sockets open, so no upgrade comes after the
 // short assertion expired however slow the machine is. The row moves that fake a second past the
-// short assertion's exp and skew before it moves the heartbeats' fake to the heartbeat that
-// re-checks it, and no wall clock decides when the assertion expires. The sockets' read deadlines
-// run on a fake no one moves (liveSocketClock), so no pong the runner holds back ends a socket.
+// short assertion's exp, read from the assertion itself (pastExpiry), and the skew, before it moves
+// the heartbeats' fake to the heartbeat that re-checks it, and no wall clock decides when the
+// assertion expires. The sockets' read deadlines run on a fake no one moves (liveSocketClock), so
+// no pong the runner holds back ends a socket.
 func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T) {
 	database := storetest.Open(t)
 	judged := clocktest.New(time.Now())
@@ -115,10 +131,10 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	short := rig.dial(t, expiring)
 	long := rig.dial(t, iap.assertion(t, judged.Now().Add(9*time.Minute)))
 
-	// The short assertion's exp is lifetime less the skew past judged's present, cut to a whole
-	// second, and the verifier admits it until that exp plus the skew: at most lifetime past
-	// judged's present. A second past that, it has expired.
-	judged.Advance(lifetime + time.Second)
+	// The verifier admits the short assertion until its exp plus the skew, and the exp is rounded up
+	// to a whole second (expiring), so that moment lies up to a second beyond lifetime past judged's
+	// present. The row moves judged a second past the moment the assertion itself names.
+	judged.Set(iap.pastExpiry(t, expiring))
 	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat)
 	closed := short.closeError(t)
 	if closed.Code != contracts.LiveSocketMaxAgeClose || closed.Text != liveSocketCredentialExpiredReason {
@@ -293,8 +309,9 @@ func (rig *iapDocumentRig) openDocument(t *testing.T, headers http.Header) *sync
 // silent drop (1006) that ends a socket whose person no longer resolves. The control, a nine-minute
 // assertion, keeps its socket open and answering its editor. The heartbeats are on the server's
 // clock, a fake the row moves, and the assertion's expiry on a fake of the IAP verifier's own,
-// which the row moves past the short assertion's exp and skew before the heartbeat that re-checks
-// it, as in TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires.
+// which the row moves a second past the short assertion's exp and skew (pastExpiry) before the
+// heartbeat that re-checks it, as in
+// TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires.
 func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testing.T) {
 	const heartbeat = time.Second
 	fake := clocktest.New(time.Now())
@@ -302,13 +319,14 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 	judged := clocktest.New(time.Now())
 	rig := newIAPDocumentRigOn(t, heartbeat, fake, judged)
 	const lifetime = 3 * time.Second
-	short := rig.openDocument(t, rig.iap.expiring(t, lifetime))
+	expiring := rig.iap.expiring(t, lifetime)
+	short := rig.openDocument(t, expiring)
 	long := rig.openDocument(t, rig.iap.assertion(t, judged.Now().Add(9*time.Minute)))
 
-	// The verifier admits the short assertion until at most lifetime past judged's present
-	// (TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires); a second past that, it has
-	// expired.
-	judged.Advance(lifetime + time.Second)
+	// The verifier admits the short assertion until its exp plus the skew, up to a second beyond
+	// lifetime past judged's present (TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires);
+	// the row moves judged a second past the moment the assertion itself names.
+	judged.Set(rig.iap.pastExpiry(t, expiring))
 	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat)
 	testwait.Receive(t, "the document socket whose upgrade's assertion expired to close", short.connection().Ended)
 	if code := short.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
