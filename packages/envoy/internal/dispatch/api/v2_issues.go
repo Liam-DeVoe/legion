@@ -27,7 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -1375,20 +1374,10 @@ func (s *server) unsubscribeIssueSessionV2(w http.ResponseWriter, r *http.Reques
 }
 
 // requireResultV2 answers whether the check result id names exists, and where it does not writes
-// 404 RESULT_NOT_FOUND (dispatch://INFRA-4071/spec R7): an id that is no uuid names no result
-// either.
+// 404 RESULT_NOT_FOUND (requireHeldV2).
 func (s *server) requireResultV2(w http.ResponseWriter, r *http.Request, id string) bool {
-	held := false
-	if _, err := uuid.Parse(id); err == nil {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from check_results where id = $1)`, id).Scan(&held); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("read whether the check result exists: %w", err))
-			return false
-		}
-	}
-	if !held {
-		s.writeHandlerError(w, r, errorf(apicode.ResultNotFound, "no check result has the id %s", id))
-	}
-	return held
+	return s.requireHeldV2(w, r, id, "check result", `select exists (select 1 from check_results where id = $1)`,
+		apicode.ResultNotFound, "no check result has the id "+id)
 }
 
 // putResultStateV2 answers PUT /api/v2/results/{id}/state: the retraction POST

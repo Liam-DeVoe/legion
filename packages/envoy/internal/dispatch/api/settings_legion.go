@@ -1,7 +1,7 @@
 // settings_legion.go serves a project's Legion daemon (dispatch://INFRA-1077), a named
 // sub-resource of the project it serves: GET, PUT and DELETE /api/v1/projects/{key}/legion/daemon,
 // served at the same path under /api/v2 too, since they are rows of the INFRA-979 tree
-// (v2Infra979Rows, infra979Rows).
+// (v2Infra979Rows, OfINFRA979).
 // No route lists every project's daemon: R26 of dispatch://INFRA-979's spec permits one
 // cross-project read, and this is not it, so a page that shows every daemon reads each project's.
 //

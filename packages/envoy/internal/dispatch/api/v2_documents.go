@@ -25,8 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -58,34 +56,6 @@ const artifactIncludeText = "include=text adds to each document its canonical ma
 	"with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks " +
 	"reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown " +
 	"they index. A file or an image carries neither."
-
-// artifactTextPageMax is the largest page of documents a list of artifacts answers with include=text:
-// each document's text runs to pmdoc.MaxDocumentBytes, so a page of maxListLimit could hold 200
-// of them at once (textPageWithinBound).
-const artifactTextPageMax = 20
-
-// artifactListLimitText is what the description of each list of an owner's artifacts says of its
-// page, with include=text and without.
-var artifactListLimitText = fmt.Sprintf("limit 1 to %d (default %d), and 1 to %d (default %d) with include=text, and offset;",
-	maxListLimit, defaultListLimit, artifactTextPageMax, artifactTextPageMax)
-
-// textPageWithinBound holds page, the decoded page of a list of artifacts whose include is include,
-// to artifactTextPageMax where include names text: a limit the query names past it is refused 400
-// INVALID_LIMIT naming the bound, as the decoder refuses a limit past the row's bounds, and a query
-// that names none reads a page of that many. It writes the refusal and answers false, and runs
-// before the handler reads anything.
-func textPageWithinBound(w http.ResponseWriter, r *http.Request, page *pageQuery, include []string) bool {
-	if !artifactIncludeOf(include).text || page.Limit <= artifactTextPageMax {
-		return true
-	}
-	if v2QueryNames(r, "limit") {
-		writeError(w, r, apicode.InvalidLimit, fmt.Sprintf(
-			"limit must be one integer from 1 to %d with include=text, which answers each document's text", artifactTextPageMax))
-		return false
-	}
-	page.Limit = artifactTextPageMax
-	return true
-}
 
 // artifactSlugText is what the descriptions of an issue's and a project's artifact lists say of
 // slug=, which answers for the /api/v1 read by slug (J7).
@@ -503,7 +473,7 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "List an issue's documents, files and images, its spec among them, oldest first. " + artifactRowText +
-				" " + artifactSlugText + " " + artifactIncludeText + " " + artifactListLimitText + " {items, total, " +
+				" " + artifactSlugText + " " + artifactIncludeText + " " + includedPageLimitText("text") + " {items, total, " +
 				"limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
 			Handler:  s.listIssueArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
@@ -534,7 +504,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/projects/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "List a project's documents, files and images, oldest first: its own and every one of its issues' " +
 				"but each issue's spec. issue=none keeps the project's own, which no issue holds, and issue=<key> one issue's. " +
-				artifactRowText + " " + artifactSlugText + " " + artifactIncludeText + " " + artifactListLimitText + " {items, " +
+				artifactRowText + " " + artifactSlugText + " " + artifactIncludeText + " " + includedPageLimitText("text") + " {items, " +
 				"total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist.",
 			Handler:  s.listProjectArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
@@ -782,21 +752,10 @@ func (s *server) answerArtifactList(w http.ResponseWriter, r *http.Request, list
 }
 
 // requireArtifactV2 answers whether the artifact id names exists, and where it does not writes 404
-// ARTIFACT_NOT_FOUND (dispatch://INFRA-4071/spec R7): an id that is no uuid names no artifact
-// either. The prefix layer has already read an id written short into the whole one it names
-// (resolveIDPrefixes).
+// ARTIFACT_NOT_FOUND (requireHeldV2).
 func (s *server) requireArtifactV2(w http.ResponseWriter, r *http.Request, id string) bool {
-	held := false
-	if _, err := uuid.Parse(id); err == nil {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from artifacts where id = $1)`, id).Scan(&held); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("read whether the artifact exists: %w", err))
-			return false
-		}
-	}
-	if !held {
-		s.writeHandlerError(w, r, errorf(apicode.ArtifactNotFound, "artifact not found"))
-	}
-	return held
+	return s.requireHeldV2(w, r, id, "artifact", `select exists (select 1 from artifacts where id = $1)`,
+		apicode.ArtifactNotFound, "artifact not found")
 }
 
 // listAgentArtifactsV2 answers GET /api/v2/agents/{session_id}/artifacts: the files and images of
@@ -826,7 +785,7 @@ func (s *server) listIssueArtifactsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := v2Query[artifactListV2Query](r)
-	if !textPageWithinBound(w, r, &query.pageQuery, query.Include) {
+	if !includedPageWithinBound(w, r, &query.pageQuery, query.Include, "text", "each document's text") {
 		return
 	}
 	key := r.PathValue("key")
@@ -847,7 +806,7 @@ func (s *server) listProjectArtifactsV2(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	query := v2Query[projectArtifactsV2Query](r)
-	if !textPageWithinBound(w, r, &query.pageQuery, query.Include) {
+	if !includedPageWithinBound(w, r, &query.pageQuery, query.Include, "text", "each document's text") {
 		return
 	}
 	key := r.PathValue("key")

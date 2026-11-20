@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
@@ -99,8 +100,9 @@ func (s *server) v2CredentialRows() []routeRow {
 				"confirmation code as the person typed it, which the secrets broker checks on both. The broker " +
 				"decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE " +
 				"naming its page on the broker, and refuses a code that is missing or not the login's own. A request " +
-				"the broker already holds in that state, decided by the caller (or by anyone, for a login whose approver " +
-				"is anyone), is answered as it stands and nothing is relayed. Answers 200 the request as the broker " +
+				"the broker already holds in that state, sent by a caller the broker would let decide it (anyone signed " +
+				"in, for a service's machine login; the person its approver names, for any other), is answered as it " +
+				"stands and nothing is relayed. Answers 200 the request as the broker " +
 				"records it once decided, the record POST /api/v2/machine-login-lookups answers. state dismissed takes " +
 				"an expired request, a secret request or a machine login whose deadline passed before anybody decided " +
 				"it, off every list for good, the caller's and, for a shared request, everybody's, and answers 200 the " +
@@ -325,13 +327,12 @@ func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request
 // Client.Deny), the caller the approver, answered with the request as the broker then records it;
 // and the dismissal POST /api/v1/credential-requests/{id}/dismiss relays (dismissCredentialRequestV2).
 //
-// The no-op rule of dispatch://INFRA-4071/spec R8 is the broker's request already in that state by
-// that approver: a machine login records the one login that may decide it (or anyone), and its
-// typed code is the only thing that selects its record, so the record the code reads
-// (Client.MachineLookup) is held to the path's id, the state sent and the caller as its approver
-// before anything is relayed, and a PUT that would change nothing answers that record and relays
-// no decision. A decision that names no code reads no record: the broker refuses it, and its
-// refusal is relayed.
+// The no-op rule of dispatch://INFRA-4071/spec R8 is the broker's request already in that state,
+// sent by a caller the broker would let decide it: a machine login's typed code is the only thing
+// that selects its record, so the record the code reads (Client.MachineLookup) is held to the
+// path's id, the state sent and the caller as one who may decide it (recordSetter) before anything
+// is relayed, and a PUT that would change nothing answers that record and relays no decision. A
+// decision that names no code reads no record: the broker refuses it, and its refusal is relayed.
 func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -354,7 +355,7 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		current := credentialRequestStateV2Input{State: record.State, Code: input.Code}
-		if raw != nil && record.RecordID == id && putChangesNothing(input, current, recordSetter(record), login) {
+		if raw != nil && record.RecordID == id && putChangesNothing(input, current, recordSetter(record, login), login) {
 			relayBrokerResponse(w, r, raw, nil)
 			return
 		}
@@ -449,14 +450,23 @@ func lookupMachineRecord(ctx context.Context, client *agentsecrets.Client, code 
 }
 
 // recordSetter is who set a credential request's state as the no-op rule of
-// dispatch://INFRA-4071/spec R8 compares a caller with: the one login its record names as the
-// approver, or nobody in particular for a record any signed-in person may decide (the approver
-// `anyone`), which records no setter.
-func recordSetter(record wire.RecordResponse) putSetter {
-	if record.Approver == "anyone" {
-		return noSetterRecorded
+// dispatch://INFRA-4071/spec R8 compares the caller with, login its canonical login: the caller
+// where the broker would let it decide stored, and otherwise a setter nobody matches. The broker's
+// one rule decides it (record.MayDecide, over the record's kind, approver and service), so the
+// no-op admits exactly the callers the decision it stands in for admits: anyone signed in for a
+// service's machine login, whatever approver it stored, and for a request for a shared human-tier
+// secret (the approver `anyone`); otherwise the one person the approver names, so a person's
+// machine login whose approver is `anyone`, which only an older broker opened, admits nobody, and
+// its decision is relayed for the broker to refuse.
+func recordSetter(stored wire.RecordResponse, login string) putSetter {
+	service := ""
+	if stored.Service != nil {
+		service = *stored.Service
 	}
-	return setBy(model.CanonicalLogin(record.Approver))
+	if record.MayDecide(stored.Kind, stored.Approver, service, login) {
+		return setBy(login)
+	}
+	return setBy("")
 }
 
 // lookupMachineLoginV2 answers POST /api/v2/machine-login-lookups: the lookup POST

@@ -139,7 +139,8 @@ func TestTheV2DecoderRefusesAnUndeclaredKey(t *testing.T) {
 }
 
 // Every key the row declares is read by its type, and every key the query leaves out takes its
-// default or its zero value; session is read beside them on every route.
+// default or its zero value; session is read beside them on every route, and requestSession
+// answers the decoded one, where a request the decoder did not read names its raw query's.
 func TestTheV2DecoderReadsWhatTheRowDeclares(t *testing.T) {
 	route := widgetListRoute(listBounds{Default: 20, Max: 100})
 	target := "/api/v2/widgets?project=A&project=B&pinned=true&issue=ACME-7&sort=priority&include=thread,mark" +
@@ -164,8 +165,14 @@ func TestTheV2DecoderReadsWhatTheRowDeclares(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("decoded %+v, want %+v", got, want)
 	}
-	if session, decoded := decodedSession(request); !decoded || session != "s-1" {
-		t.Fatalf("session = %q, %v; want s-1 trimmed, read by the decoder", session, decoded)
+	// The raw query changed after the decoder read it: the session is still the decoded one.
+	request.URL.RawQuery = "session=another"
+	if session := requestSession(request); session != "s-1" {
+		t.Fatalf("session = %q; want s-1 trimmed, read by the decoder", session)
+	}
+	undecoded := httptest.NewRequest(http.MethodGet, "/api/v1/widgets?session=%20s-2%20", nil)
+	if session := requestSession(undecoded); session != "s-2" {
+		t.Fatalf("session of a request the decoder did not read = %q; want s-2 trimmed, read off the raw query", session)
 	}
 
 	empty, err := decodeQuery(t, route, "/api/v2/widgets")
@@ -516,7 +523,8 @@ func TestABothVersionRowThatDeclaresARequestRefusesToMount(t *testing.T) {
 // that tree's spec decides and whose handlers read their request as /api/v1 wrote it, are left out
 // and named.
 func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
-	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
+	served := &server{deps: Deps{TestHooksEnabled: true}}
+	routes := served.routes()
 	if faults := undecodableRoutes(routes); len(faults) > 0 {
 		t.Fatalf("%d route(s) the table mounts are undecodable:\n%s", len(faults), strings.Join(faults, "\n"))
 	}
@@ -525,7 +533,7 @@ func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 		if !route.columns {
 			continue
 		}
-		if route.ofINFRA979() {
+		if route.OfINFRA979 {
 			infra979 = append(infra979, route.Method+" "+route.Pattern)
 			continue
 		}
@@ -533,7 +541,7 @@ func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 			t.Errorf("%s %s is a routeRow served at /api/v1 that declares a query or a body; serve it at /api/v2 alone (Versions: onlyV2)", route.Method, route.Pattern)
 		}
 	}
-	if len(infra979) != len(infra979Rows) {
-		t.Errorf("left out the /api/v1 mounts %q, want each of the %d rows infra979Rows names", infra979, len(infra979Rows))
+	if rows := len(served.v2Infra979Rows()); len(infra979) != rows {
+		t.Errorf("left out the /api/v1 mounts %q, want each of the %d rows v2Infra979Rows declares", infra979, rows)
 	}
 }

@@ -4,12 +4,12 @@
 # versions by one declaration (a routeRow), so TestAV1OnlyRowOutsideTheFrozenListFails refuses a
 # row /api/v1 alone serves that this list does not hold, and a line no row of v1Rows is.
 #
-# It holds the 184 rows of c8a44f97's testdata/routes.txt that infra979Rows does not name (those
-# five are served in both versions), and each row another pull request merged into main before
-# /api/v2's change merged. Such a row is added here at the forward merge that brings it, with its
-# successor and its route-map entry in the same commit, and ends in a ` # ` note naming that pull
-# request: it is outside the bound of 137 /api/v2 routes for the rows of c8a44f97
-# (TestEveryV1RowNamesItsV2Route).
+# It holds the 184 rows of c8a44f97's testdata/routes.txt that are no rows of the INFRA-979 tree
+# (v2Infra979Rows: those five are served in both versions), and each row another pull request
+# merged into main before /api/v2's change merged. Such a row is added here at the forward merge
+# that brings it, with its successor and its route-map entry in the same commit, and ends in a
+# ` # ` note naming that pull request: it is outside the bound of 137 /api/v2 routes for the rows
+# of c8a44f97 (TestEveryV1RowNamesItsV2Route).
 GET /api/v1
 GET /api/v1/agents
 GET /api/v1/agents/{session_id}/answers

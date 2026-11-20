@@ -114,15 +114,17 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.putArchitectureSourceFrom(w, r, input, false)
+	s.putArchitectureSourceFrom(w, r, input, nil)
 }
 
 // putArchitectureSourceFrom saves the source input names, the work both versions' PUT does once
-// each has read its body. answersUnchanged is /api/v2's no-op rule (dispatch://INFRA-4071/spec
-// R8): a source records no setter, so a save of the branch an enabled source already has answers
-// that source as it stands, whoever sends it, and writes nothing - no access check, no reset of
-// its bookkeeping, no event. /api/v1 re-saves it.
-func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Request, input putArchitectureSourceInput, answersUnchanged bool) {
+// each has read its body. unchanged is /api/v2's no-op rule (dispatch://INFRA-4071/spec R8,
+// architectureSourceSaveChangesNothing), asked of the source the project already has from the
+// path's repository, read on the pool before the access check, with input as this save holds it,
+// its branch trimmed: where it answers true, the source is answered as it stands and nothing is
+// written - no access check, no reset of its bookkeeping, no event. /api/v1 passes nil, and
+// re-saves it.
+func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Request, input putArchitectureSourceInput, unchanged func(stored model.ArchitectureSource, input putArchitectureSourceInput) bool) {
 	key := r.PathValue("key")
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
@@ -133,8 +135,8 @@ func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Reques
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	branch := strings.TrimSpace(input.Branch)
-	if branch == "" {
+	input.Branch = strings.TrimSpace(input.Branch)
+	if input.Branch == "" {
 		writeError(w, r, apicode.SourceInput, "branch is required")
 		return
 	}
@@ -142,16 +144,13 @@ func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Reques
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if answersUnchanged {
+	if unchanged != nil {
 		stored, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 and repo = $2`, key, owner+"/"+name)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
 		}
-		// A disabled source is enabled by the save, which is a change.
-		sent := putArchitectureSourceInput{Branch: branch, Actor: input.Actor}
-		if len(stored) == 1 && stored[0].Enabled &&
-			putChangesNothing(sent, putArchitectureSourceInput{Branch: stored[0].Branch, Actor: input.Actor}, noSetterRecorded, "") {
+		if len(stored) == 1 && unchanged(stored[0], input) {
 			WriteJSON(w, http.StatusOK, stored[0])
 			return
 		}
@@ -161,7 +160,7 @@ func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Reques
 	// is not exactly the name of a branch the repository has (a commit SHA, a relative ref such as
 	// main~1, HEAD, a refs/ path) is refused like a missing branch, and a failed re-PUT leaves the
 	// stored source untouched.
-	installationID, err := s.checkArchitectureSource(r.Context(), owner, name, branch)
+	installationID, err := s.checkArchitectureSource(r.Context(), owner, name, input.Branch)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) || errors.Is(err, githubapp.ErrNoBranch) {
 			writeError(w, r, apicode.SourceAccess, err.Error())
@@ -195,7 +194,7 @@ func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Reques
 			last_tree_sha = null,
 			last_error = null
 		returning `+architecture.SourceColumns,
-		key, owner+"/"+name, branch, installationID, actorJSON))
+		key, owner+"/"+name, input.Branch, installationID, actorJSON))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

@@ -1739,8 +1739,17 @@ type Version struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Size is how many bytes the version stores: a file's or an image's bytes, or a document's
 	// markdown, the rendering the version recorded.
-	Size   *int    `json:"size,omitempty"`
-	MIME   *string `json:"mime,omitempty"`
+	Size *int    `json:"size,omitempty"`
+	MIME *string `json:"mime,omitempty"`
+	// SHA256 is the sha256 (hex) of the bytes of a version stored as bytes: a file's or an
+	// image's version, or a document's version that an upload of a file made, which the insert
+	// of such a version writes (queueFileVersion) and artifact_versions.sha256 holds. A document
+	// version, stored as its markdown, never carries it in an artifact's list of versions. `dispatch
+	// doc-read --version` (packages/envoy-client/src/dispatch-commands/documents.ts,
+	// docReadCommand) reads a document's version that carries it as bytes, as a file is read, so a
+	// change that hashes a document's markdown into this field must change that reader too. The
+	// JSON answer of one document version alone (serveArtifactVersion) sets it to the sha256 of
+	// the markdown it answers, which no list of versions carries.
 	SHA256 *string `json:"sha256,omitempty"`
 }
 

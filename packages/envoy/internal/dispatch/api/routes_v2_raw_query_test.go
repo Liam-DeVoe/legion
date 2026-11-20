@@ -22,10 +22,8 @@ import (
 var rawQueryReaders = map[string]string{
 	"api.v2Decoder.readQuery": "the decoder: the one reader of a /api/v2 route's query, which every handler behind it reads " +
 		"through v2Query",
-	"api.server.actingPerson": "its /api/v1 branch: a route the decoder does not read names `session` in its raw query, and " +
-		"a /api/v2 route's is the decoded one (decodedSession)",
-	"api.server.resolveIDPrefixes": "its /api/v1 branch: the session a short id's candidates are read as, raw on a route the " +
-		"decoder does not read and decoded on a /api/v2 route (decodedSession)",
+	"api.requestSession": "its fallback: the session a request names, decoded on a route the decoder reads and read off the " +
+		"raw query only on a route it does not read (a /api/v1 route, a test hook, a row of the INFRA-979 tree)",
 	"api.writeRequestFields": "the idempotency fingerprint, which holds the query whole, so a repeat with another query is " +
 		"another request (R4 lets it read the query whole)",
 	"api.unstorableParameter": "storable_text.go: every route refuses a parameter holding U+0000 or a byte that is not " +
@@ -219,7 +217,7 @@ func TestNoV2HandlerReadsTheRawQuery(t *testing.T) {
 		switch {
 		case reachedByV2[fn]:
 			offences = append(offences, fn.name+" reads the raw query at "+strings.Join(reads, ", ")+
-				", and a /api/v2 handler reaches it: read the decoded query (v2Query, decodedSession) instead")
+				", and a /api/v2 handler reaches it: read the decoded query (v2Query, requestSession) instead")
 		case !reachedByOther[fn]:
 			offences = append(offences, fn.name+" reads the raw query at "+strings.Join(reads, ", ")+
 				", and no handler reaches it: list it in rawQueryReaders with the reason it may")

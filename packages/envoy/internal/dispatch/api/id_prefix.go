@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -124,13 +123,9 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		// Who asks, which decides only whether a direct message's first line is listed among
 		// the candidates: a person reads any, and a bearer the conversations the session it
 		// names in ?session= is in, the claim the message routes already read. A /api/v2
-		// route's session is the one its decoder read (decodedSession, R4); every other route's
+		// route's session is the one its decoder read (requestSession, R4); every other route's
 		// is read off the raw query, as it always was.
-		session, decoded := decodedSession(r)
-		if !decoded {
-			session = strings.TrimSpace(r.URL.Query().Get("session"))
-		}
-		viewer := refs.Viewer{Human: human, Session: session}
+		viewer := refs.Viewer{Human: human, Session: requestSession(r)}
 		if id != "" {
 			scope := refs.Scope{}
 			if entry.WithinIssue {

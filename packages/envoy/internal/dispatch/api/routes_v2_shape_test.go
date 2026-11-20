@@ -578,12 +578,12 @@ func actionWordOf(segment string) string {
 
 // TestTheV2TableKeepsTheOneShape is c-shape's /api/v2 half: every route the rules of /api/v2 bind
 // keeps every rule, the test names each route it checked and each row of the INFRA-979 tree it
-// left out (infra979Rows), and for each rule a made-up row that breaks it alone is refused by it
+// left out (OfINFRA979), and for each rule a made-up row that breaks it alone is refused by it
 // alone.
 func TestTheV2TableKeepsTheOneShape(t *testing.T) {
 	var checked []apiRoute
 	for _, route := range servedAt(apiV2, (&server{}).routes()) {
-		if route.ofINFRA979() {
+		if route.OfINFRA979 {
 			t.Logf("left out, a row of the INFRA-979 tree: %s %s", route.Method, route.Pattern)
 			continue
 		}

@@ -434,9 +434,9 @@ func (s *server) v2ThreadRows() []routeRow {
 				"closed issue's too. phase=<phase> keeps one phase's (a lowercase slug, %s, 400 HANDOFF_INPUT otherwise). "+
 				"include=body adds each handoff's body, the exact text written. sort=-created_at (the default: newest first, "+
 				"then by phase, then the newest version), created_at, version or -version (a phase's newest version first: "+
-				"phase=<phase>&sort=-version&limit=1&include=body reads the phase's latest handoff). limit 1 to 200 (default "+
-				"50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
-				contracts.HandoffPhasePattern),
+				"phase=<phase>&sort=-version&limit=1&include=body reads the phase's latest handoff). %s {items, total, "+
+				"limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+				contracts.HandoffPhasePattern, includedPageLimitText("body")),
 			Handler:  s.listIssueHandoffsV2,
 			Resource: "handoffs", Kind: kindCollection, Key: "{id}",
 			Query:    issueHandoffsV2Query{},
@@ -603,38 +603,38 @@ type createHandoffV2Input struct {
 	Body  *string      `json:"body" required:"true"`
 }
 
-// requireCommentV2 answers whether the comment id names exists, and where it does not writes 404
-// COMMENT_NOT_FOUND, the code of the object a /api/v2 path names (dispatch://INFRA-4071/spec R7):
-// an id that is no uuid names no comment either. The prefix layer has already read an id written
-// short into the whole one it names (resolveIDPrefixes).
-func (s *server) requireCommentV2(w http.ResponseWriter, r *http.Request, id string) bool {
+// requireHeldV2 answers whether the object a /api/v2 path names by the uuid id exists, and where
+// it does not writes its 404, code with message, the code of the object the path names
+// (dispatch://INFRA-4071/spec R7). exists is the select exists that finds it, over $1, the id, and
+// more after it; what names the object in the error of a read that fails. An id that is no uuid
+// names no object and is not read. The prefix layer has already read an id written short into
+// the whole one it names (resolveIDPrefixes).
+func (s *server) requireHeldV2(w http.ResponseWriter, r *http.Request, id, what, exists string, code apicode.Code, message string, more ...any) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from comments where id = $1)`, id).Scan(&held); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("read whether the comment exists: %w", err))
+		if err := s.deps.Store.Pool.QueryRow(r.Context(), exists, append([]any{id}, more...)...).Scan(&held); err != nil {
+			s.writeHandlerError(w, r, fmt.Errorf("read whether the %s exists: %w", what, err))
 			return false
 		}
 	}
 	if !held {
-		s.writeHandlerError(w, r, errorf(apicode.CommentNotFound, "no comment has the id %s", id))
+		writeError(w, r, code, message)
 	}
 	return held
 }
 
+// requireCommentV2 answers whether the comment id names exists, and where it does not writes 404
+// COMMENT_NOT_FOUND (requireHeldV2).
+func (s *server) requireCommentV2(w http.ResponseWriter, r *http.Request, id string) bool {
+	return s.requireHeldV2(w, r, id, "comment", `select exists (select 1 from comments where id = $1)`,
+		apicode.CommentNotFound, "no comment has the id "+id)
+}
+
 // requireMessageV2 answers whether the message id names exists, and where it does not writes 404
-// MESSAGE_NOT_FOUND (dispatch://INFRA-4071/spec R7), as requireCommentV2 answers for a comment.
+// MESSAGE_NOT_FOUND (requireHeldV2).
 func (s *server) requireMessageV2(w http.ResponseWriter, r *http.Request, id string) bool {
-	held := false
-	if _, err := uuid.Parse(id); err == nil {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from messages where id = $1)`, id).Scan(&held); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("read whether the message exists: %w", err))
-			return false
-		}
-	}
-	if !held {
-		s.writeHandlerError(w, r, errorf(apicode.MessageNotFound, "no message has the id %s", id))
-	}
-	return held
+	return s.requireHeldV2(w, r, id, "message", `select exists (select 1 from messages where id = $1)`,
+		apicode.MessageNotFound, "no message has the id "+id)
 }
 
 // requireBearerCaller answers whether the request carries a bearer credential, and where it does
@@ -928,8 +928,7 @@ func (s *server) getMessageV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMessageV2(w, r, id) {
 		return
 	}
-	session, _ := decodedSession(r)
-	read, ok := s.readableThreadAs(w, r, id, session)
+	read, ok := s.readableThreadAs(w, r, id, requestSession(r))
 	if !ok {
 		return
 	}
@@ -1205,16 +1204,21 @@ func handoffListOrder(sort querySort) string {
 
 // listIssueHandoffsV2 answers GET /api/v2/issues/{key}/handoffs: one page of an issue's handoffs,
 // one phase's with phase=, each with its body with include=body, which also answers for GET
-// /api/v1/issues/{key}/handoffs/{phase}/latest (the route map's row 106).
+// /api/v1/issues/{key}/handoffs/{phase}/latest (the route map's row 106). A page with the bodies
+// holds at most includedPageMax handoffs, each body up to contracts.DispatchHandoffBodyMax, held
+// there before the issue is read (includedPageWithinBound).
 func (s *server) listIssueHandoffsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	query := v2Query[issueHandoffsV2Query](r)
+	if !includedPageWithinBound(w, r, &query.pageQuery, query.Include, "body", "each handoff's body") {
 		return
 	}
 	key := r.PathValue("key")
 	if !s.requireIssueV2(w, r, key) {
 		return
 	}
-	query := v2Query[issueHandoffsV2Query](r)
 	if query.Phase != "" && !handoffPhasePattern.MatchString(query.Phase) {
 		writeHandoffPhaseError(w, r, query.Phase)
 		return

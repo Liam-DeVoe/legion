@@ -846,7 +846,7 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 // names (session, "" for none) and held id to a message: the conversation message id belongs to,
 // read whole for a person's own credential and for an issue thread, and a direct conversation for
 // every other credential only where session is in it. GET /api/v2/messages/{id} passes the
-// session its decoded query names (decodedSession). ok is false once it has written the refusal.
+// session its decoded query names (requestSession). ok is false once it has written the refusal.
 func (s *server) readableThreadAs(w http.ResponseWriter, r *http.Request, id, session string) (messageRead, bool) {
 	var rootID string
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), messageThreadCTE+`

@@ -336,21 +336,11 @@ func (s *server) createAgentTokenV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireAgentTokenV2 answers whether the token id names is one owner holds, revoked or not, and
-// where it is not writes 404 AGENT_TOKEN_NOT_FOUND (dispatch://INFRA-4071/spec R7): another
-// person's token is no token of the caller's, and an id that is no uuid names none.
+// where it is not writes 404 AGENT_TOKEN_NOT_FOUND (requireHeldV2): another person's token is no
+// token of the caller's.
 func (s *server) requireAgentTokenV2(w http.ResponseWriter, r *http.Request, owner, id string) bool {
-	held := false
-	if _, err := uuid.Parse(id); err == nil {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(),
-			`select exists (select 1 from agent_tokens where id = $1 and owner = $2)`, id, owner).Scan(&held); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("read whether the agent token exists: %w", err))
-			return false
-		}
-	}
-	if !held {
-		s.writeHandlerError(w, r, errorf(apicode.AgentTokenNotFound, "you hold no agent token %s", id))
-	}
-	return held
+	return s.requireHeldV2(w, r, id, "agent token", `select exists (select 1 from agent_tokens where id = $1 and owner = $2)`,
+		apicode.AgentTokenNotFound, "you hold no agent token "+id, owner)
 }
 
 // revokeAgentTokenV2 answers DELETE /api/v2/me/agent-tokens/{id}: the revoke DELETE
@@ -508,11 +498,15 @@ func (agentMarkV2Input) sessionsAddressed(r *http.Request) []string {
 // An agent mark names a session, in the path's {id} or in an item's, and gateV2Authorities holds
 // each to the session the caller's credential proved (sessionAddressing). Both marks writes need
 // the person scope, so a broker token that lacks it is refused by the route's own gate
-// (gateRouteScopes) before any session rule; one that holds it marks its own session's agent
-// conversation and is refused 403 SESSION_SCOPE for any other's, though the row declares OAuth
-// scopes (refusesSessionOtherThanProved, which exempts no such row as refusesAnotherSession
-// does). A credential that proves no session, a browser cookie or a personal token, marks the
-// person's agent conversation with any session.
+// (gateRouteScopes) before any session rule; one that holds it marks, through the path or the
+// items, its own session's agent conversation and is refused 403 SESSION_SCOPE for any other's,
+// though the row declares OAuth scopes (refusesSessionOtherThanProved, which exempts no such row
+// as refusesAnotherSession does). A credential that proves no session, a browser cookie or a
+// personal token, marks the person's agent conversation with any session. The filter form names
+// no session, and sessionsAddressed names only the items, so a filter of kind agent
+// (`{"filter": {"kind": ["agent"]}, "set": {...}}`, patchMarksByFilter) marks the agent replies of
+// every session, even where a broker token of one session sends it, as /api/v1's POST
+// /me/inbox/read and POST /me/inbox/dismiss do.
 type marksPatchV2Input struct {
 	Items  []markItemV2        `json:"items"`
 	Filter *inboxThreadFilters `json:"filter"`
@@ -585,23 +579,13 @@ func markTargetID(kind, id string) string {
 
 // requireThreadV2 answers whether the id names a thread - an ask, or the root of a comment thread
 // or a message thread, each a thread by its root's id (user_threads) - and where it does not
-// writes 404 THREAD_NOT_FOUND (dispatch://INFRA-4071/spec R7): an id that is no uuid names none.
+// writes 404 THREAD_NOT_FOUND (requireHeldV2).
 func (s *server) requireThreadV2(w http.ResponseWriter, r *http.Request, id string) bool {
-	held := false
-	if _, err := uuid.Parse(id); err == nil {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), `
-			select exists (select 1 from asks where id = $1)
-			    or exists (select 1 from comments where id = $1 and ask_id is null and reply_to is null)
-			    or exists (select 1 from messages where id = $1 and in_reply_to is null)
-		`, id).Scan(&held); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("read whether the thread exists: %w", err))
-			return false
-		}
-	}
-	if !held {
-		s.writeHandlerError(w, r, errorf(apicode.ThreadNotFound, "no ask, root comment or root message has the id %s", id))
-	}
-	return held
+	return s.requireHeldV2(w, r, id, "thread", `
+		select exists (select 1 from asks where id = $1)
+		    or exists (select 1 from comments where id = $1 and ask_id is null and reply_to is null)
+		    or exists (select 1 from messages where id = $1 and in_reply_to is null)
+	`, apicode.ThreadNotFound, "no ask, root comment or root message has the id "+id)
 }
 
 // requireMarkTarget answers whether a mark's target exists, and where it does not writes its

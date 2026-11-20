@@ -959,7 +959,7 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 	if decoder != nil {
 		// Just inside the route's scope gate, so a query key the route does not declare is
 		// refused 400 QUERY_KEY_UNKNOWN before any lookup or write (R4), and every layer behind
-		// reads the session the decoded query names (decodedSession).
+		// reads the session the decoded query names (requestSession).
 		handler = s.readV2Query(decoder, handler)
 	}
 	if len(route.OAuthScopes) > 0 {
@@ -1577,7 +1577,7 @@ func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.Ha
 // parameter names where the caller gives it, the convention messages.go already reads; one that
 // proved a session is refused a parameter naming another, 403 ACTOR_SESSION_MISMATCH, which is
 // what bearerSessionActor answers the same disagreement in a body. On a /api/v2 route the
-// parameter is the one the decoder read (decodedSession, R4); on every other route it is read off
+// parameter is the one the decoder read (requestSession, R4); on every other route it is read off
 // the raw query, as it always was.
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
@@ -1600,10 +1600,7 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 	var act *model.ActorAct
 	if credential.TokenID != "" || credential.Session != "" {
 		session := credential.Session
-		named, decoded := decodedSession(r)
-		if !decoded {
-			named = strings.TrimSpace(r.URL.Query().Get("session"))
-		}
+		named := requestSession(r)
 		if named != "" {
 			if session != "" && named != session {
 				writeError(w, r, apicode.ActorSessionMismatch, fmt.Sprintf(

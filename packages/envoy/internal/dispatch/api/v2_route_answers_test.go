@@ -45,6 +45,54 @@ func TestTheCredentialStateAnswersItsOwnRecordAlone(t *testing.T) {
 	})
 }
 
+// PUT /api/v2/credential-requests/{id}/state answers a machine login the broker already holds in
+// the state sent as it stands, relaying nothing, to the callers the broker would let decide it and
+// to no other (recordSetter, record.MayDecide): anyone signed in for a service's login, whatever
+// approver it stored, and otherwise the person its approver names. A person's machine login whose
+// approver is anyone, which only an older broker opened, is the broker's to refuse to everybody,
+// so its state sent again by any person is relayed, and the broker's 403 NOT_APPROVER answered.
+func TestTheCredentialStateNoOpAdmitsWhomTheBrokerLetsDecide(t *testing.T) {
+	tour := newRouteTour(t)
+	route := tour.requireMounted(t, http.MethodPut, "/credential-requests/{id}/state")
+	service := "legion-daemon"
+	for _, test := range []struct {
+		name, approver string
+		service        *string
+		caller         string
+		unchanged      bool
+	}{
+		{"a person's login whose approver is anyone, sent by a person", "anyone", nil, "bob", false},
+		{"a service's login, sent by a person other than its stored approver", "alice", &service, "bob", true},
+		{"a person's login, sent by its approver", "alice", nil, "alice", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id := "tour-record-" + uuid.NewString()
+			stored := tourLoginRecord(id, "approved")
+			stored.Approver, stored.Service = test.approver, test.service
+			tour.secrets.answer(http.MethodPost, "/v1/machine-logins/lookup", http.StatusOK, stored)
+			approve := "/v1/credential-requests/" + id + "/approve"
+			tour.secrets.answer(http.MethodPost, approve, http.StatusForbidden, map[string]string{
+				"code": "NOT_APPROVER", "error": "not an approver of this record",
+			})
+			response := tour.send(t, route, tourRequest{
+				Path: map[string]string{"id": id}, Body: map[string]any{"state": "approved", "code": "ABCD-1234"}, As: tourPerson(test.caller),
+			}, "")
+			relayed := tour.secrets.callsTo(http.MethodPost, approve)
+			if test.unchanged {
+				if answered := decodeBody[wire.RecordResponse](t, response); response.Code != http.StatusOK || answered.RecordID != id || relayed != 0 {
+					t.Fatalf("%s's approval answered %d %s and was relayed %d times, want 200 with the request as it stands, relayed never",
+						test.caller, response.Code, response.Body.String(), relayed)
+				}
+				return
+			}
+			if code, _ := refusalOf(t, response); response.Code != http.StatusForbidden || code != "NOT_APPROVER" || relayed != 1 {
+				t.Fatalf("%s's approval answered %d %s and was relayed %d times, want the broker's 403 NOT_APPROVER, relayed once",
+					test.caller, response.Code, response.Body.String(), relayed)
+			}
+		})
+	}
+}
+
 // GET /api/v2/machine-logins answers each machine login's person as the secrets broker lists it
 // (#4452): a person's pod login, the login of a pod whose Kubernetes account the broker's
 // BROKER_POD_OPERATORS maps to a person, names that person, and every other login, a service's

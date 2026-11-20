@@ -659,21 +659,10 @@ func (s *server) writeAskV2(w http.ResponseWriter, r *http.Request, status int, 
 }
 
 // requireAskV2 answers whether the ask id names exists, and where it does not writes 404
-// ASK_NOT_FOUND, the code of the object a /api/v2 path names (dispatch://INFRA-4071/spec R7): an
-// id that is no uuid names no ask either. The prefix layer has already read an id written short
-// into the whole one it names (resolveIDPrefixes).
+// ASK_NOT_FOUND (requireHeldV2).
 func (s *server) requireAskV2(w http.ResponseWriter, r *http.Request, id string) bool {
-	held := false
-	if _, err := uuid.Parse(id); err == nil {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from asks where id = $1)`, id).Scan(&held); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("read whether the ask exists: %w", err))
-			return false
-		}
-	}
-	if !held {
-		s.writeHandlerError(w, r, errorf(apicode.AskNotFound, "no ask has the id %s", id))
-	}
-	return held
+	return s.requireHeldV2(w, r, id, "ask", `select exists (select 1 from asks where id = $1)`,
+		apicode.AskNotFound, "no ask has the id "+id)
 }
 
 // requireIssueV2 answers whether the issue key names exists, and where it does not writes 404

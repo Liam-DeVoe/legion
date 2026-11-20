@@ -28,8 +28,12 @@ package api
 // declares (refusesSessionOtherThanProved). Two rows declare such a body: PATCH
 // /api/v2/me/marks/{kind}/{id}, whose {id} is a session when {kind} is `agent`, and PATCH
 // /api/v2/me/marks, whose `agent` items each name one. Both need the person scope, and a broker
-// token of one session that holds it marks that session's agent conversation alone: another
-// session's is 403 SESSION_SCOPE (marksPatchV2Input).
+// token of one session that holds it marks, through that path or those items, that session's
+// agent conversation alone: another session's is 403 SESSION_SCOPE (marksPatchV2Input). The
+// filter form of PATCH /api/v2/me/marks (`{"filter": {"kind": ["agent"]}, "set": {...}}`,
+// patchMarksByFilter) names no session, and sessionsAddressed names only the items, so that form
+// marks the agent replies of every session, as /api/v1's POST /me/inbox/read and POST
+// /me/inbox/dismiss do.
 
 import (
 	"context"

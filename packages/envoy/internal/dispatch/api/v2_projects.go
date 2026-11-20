@@ -759,12 +759,21 @@ func (s *server) deleteArchitectureSourceV2(w http.ResponseWriter, r *http.Reque
 
 // putArchitectureSourceV2 answers PUT /api/v2/projects/{key}/architecture-sources/{owner}/{repo}:
 // the save PUT /api/v1 makes there (putArchitectureSourceFrom), under the no-op rule of
-// dispatch://INFRA-4071/spec R8.
+// dispatch://INFRA-4071/spec R8 (architectureSourceSaveChangesNothing).
 func (s *server) putArchitectureSourceV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !s.requireProjectV2(w, r, r.PathValue("key")) {
 		return
 	}
-	s.putArchitectureSourceFrom(w, r, v2Body[putArchitectureSourceInput](r), true)
+	s.putArchitectureSourceFrom(w, r, v2Body[putArchitectureSourceInput](r), architectureSourceSaveChangesNothing)
+}
+
+// architectureSourceSaveChangesNothing reports whether a save of input, its branch trimmed, would
+// leave the stored source exactly as it stands: an enabled source of the same branch. A disabled
+// source is enabled by the save, which is a change. A source records no setter, so the save that
+// changes nothing answers the source as it stands whoever sends it (noSetterRecorded).
+func architectureSourceSaveChangesNothing(stored model.ArchitectureSource, input putArchitectureSourceInput) bool {
+	return stored.Enabled &&
+		putChangesNothing(input, putArchitectureSourceInput{Branch: stored.Branch, Actor: input.Actor}, noSetterRecorded, "")
 }
 
 // architectureSyncV2Input is POST /api/v2/projects/{key}/architecture-syncs's body.
@@ -1050,7 +1059,7 @@ func (s *server) deleteRepositoryV2(w http.ResponseWriter, r *http.Request) {
 
 // putRepositoryV2 answers PUT /api/v2/repositories/{owner}/{repo}: the mapping PUT
 // /api/v1/settings/repo-projects/{owner}/{repo} writes (putRepoProjectFrom), under the no-op rule
-// of dispatch://INFRA-4071/spec R8.
+// of dispatch://INFRA-4071/spec R8 (repoProjectWriteChangesNothing).
 func (s *server) putRepositoryV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1060,7 +1069,26 @@ func (s *server) putRepositoryV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.putRepoProjectFrom(w, r, owner+"/"+name, v2Body[putRepoProjectInput](r), true)
+	s.putRepoProjectFrom(w, r, owner+"/"+name, v2Body[putRepoProjectInput](r), repoProjectWriteChangesNothing)
+}
+
+// repoProjectWriteChangesNothing reports whether a PUT of input, whose renamed_to parseRepoRename
+// read as renamedTo, would leave the stored mapping exactly as it stands: the same project, the
+// default it would store (a body naming none keeps the stored one while the project is unchanged)
+// and the rename it would store (a body naming none keeps the stored pair). A mapping records no
+// setter, so the PUT that changes nothing answers the mapping as it stands whoever sends it
+// (noSetterRecorded).
+func repoProjectWriteChangesNothing(stored model.RepoProject, input putRepoProjectInput, renamedTo *string) bool {
+	isDefault := stored.Default
+	if input.Default != nil {
+		isDefault = *input.Default
+	}
+	if input.RenamedTo == nil {
+		renamedTo = stored.RenamedTo
+	}
+	sent := putRepoProjectInput{Project: input.Project, Default: &isDefault, RenamedTo: renamedTo, Actor: input.Actor}
+	current := putRepoProjectInput{Project: stored.Project, Default: &stored.Default, RenamedTo: stored.RenamedTo, Actor: input.Actor}
+	return putChangesNothing(sent, current, noSetterRecorded, "")
 }
 
 // prioritiesV2Query is GET /api/v2/priorities's query.

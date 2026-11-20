@@ -49,8 +49,8 @@ package api
 // INVALID_LIMIT naming the bound, and an offset that is no integer of 0 or more 400 INVALID_OFFSET.
 //
 // `session` is declared on every route the decoder reads, once, beside the row's own keys (R4):
-// actingPerson and resolveIDPrefixes read the session it names from the decoded request on such a
-// route (decodedSession), and from the raw query on every other.
+// actingPerson and resolveIDPrefixes read the session it names through requestSession, the decoded
+// request's on such a route, and the raw query's on every other.
 //
 // register refuses to mount a table whose /api/v2 rows declare a query or a body the decoder
 // cannot read, or whose row served at /api/v1 too declares a query or a body at all, since /api/v1
@@ -152,7 +152,7 @@ type uploadFile struct {
 // v2Request is what the decoder read of one request to a route it reads (apiRoute.v2Bound).
 // register's decoding layers put it on the request's context, the query layer first and each
 // later layer a copy with its own part added, and the handler and the layers behind them read it
-// through v2Query, v2Body, v2BodyArm, v2Upload and decodedSession.
+// through v2Query, v2Body, v2BodyArm, v2Upload and requestSession.
 type v2Request struct {
 	// query is the row's Query type decoded, a value of that type; nil for a row that declares
 	// none.
@@ -249,24 +249,24 @@ func v2QueryNames(r *http.Request, key string) bool {
 	return named
 }
 
-// decodedSession is the session the decoded query of r names (`session`, trimmed, "" where it names
-// none), and false on a route the decoder does not read, whose session is the raw query's
+// requestSession is the session r names in its `session` query parameter, trimmed, "" where it
+// names none: on a route the decoder reads, the one it decoded (R4); on every other - a /api/v1
+// route, a test hook, a row of the INFRA-979 tree - the raw query's, as it always was
 // (actingPerson, resolveIDPrefixes).
-func decodedSession(r *http.Request) (session string, decoded bool) {
-	request, ok := decodedV2(r)
-	if !ok {
-		return "", false
+func requestSession(r *http.Request) string {
+	if request, decoded := decodedV2(r); decoded {
+		return request.session
 	}
-	return request.session, true
+	return strings.TrimSpace(r.URL.Query().Get("session"))
 }
 
 // v2Bound reports whether the rules of /api/v2 bind route: a routeRow's mount at /api/v2, but a
-// row of the INFRA-979 tree (infra979Rows), which that tree's own spec decides, and a test hook,
+// row of the INFRA-979 tree (OfINFRA979), which that tree's own spec decides, and a test hook,
 // which no rule of the parent's binds (dispatch://INFRA-2946/spec, R1). Only such a route is read
 // by the decoder (R4), held to the authorities its row declares (R1.8) and keyed on every write
 // method (R8, keyedMethod).
 func (route apiRoute) v2Bound() bool {
-	return route.Version == apiV2 && route.columns && !route.ofINFRA979()
+	return route.Version == apiV2 && route.columns && !route.OfINFRA979
 }
 
 // v2Decoder is a route's query and body declarations, read once when the route is mounted.
@@ -1148,9 +1148,9 @@ func undecodableRoutes(routes []apiRoute) []string {
 // v1DecodedDeclarations is what route, the /api/v1 mount of a routeRow, declares that only the
 // decoder reads - "a Query", "a Body" or both - and "" for any other route: a /api/v2 mount, a
 // route of the v1 table or a test hook, which declare neither, and a row of the INFRA-979 tree,
-// whose handler reads its request as /api/v1 wrote it (infra979Rows).
+// whose handler reads its request as /api/v1 wrote it (OfINFRA979).
 func v1DecodedDeclarations(route apiRoute) string {
-	if route.Version != apiV1 || !route.columns || route.ofINFRA979() {
+	if route.Version != apiV1 || !route.columns || route.OfINFRA979 {
 		return ""
 	}
 	var declared []string

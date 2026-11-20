@@ -7,15 +7,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// v2Infra979Rows are the rows of the INFRA-979 tree (infra979Rows), each served in both versions
-// by one declaration, at /api/v1 where that tree wrote it and at the same path under /api/v2. Each
-// keeps its v1 handler, its description and its shape: that tree's own spec decides their change,
-// in both versions (R3), and the parent's shape rules bind none of them, so they declare none of
-// the R1 columns. The facts the side maps held for them are their columns now. #2731's four rows
-// of a project's Legion daemon and board are that tree's too (dispatch://INFRA-1077, a child of
-// INFRA-979), served as the delivery rows are: same path, v1's handler, answers and codes.
+// v2Infra979Rows are the rows of the INFRA-979 tree, each served in both versions by one
+// declaration, at /api/v1 where that tree wrote it and at the same path under /api/v2, and each
+// marked OfINFRA979 here: rows 65, 66, 71, 179 and 180 of c8a44f97's routes.txt, and the four
+// #2731 added on main after it. Each keeps its v1 handler, its description and its shape: that
+// tree's own spec decides their change, in both versions (R3), and the parent's shape rules bind
+// none of them, so they declare none of the R1 columns. The facts the side maps held for them are
+// their columns now. #2731's four rows of a project's Legion daemon and board are that tree's too
+// (dispatch://INFRA-1077, a child of INFRA-979), served as the delivery rows are: same path, v1's
+// handler, answers and codes. The INFRA-979 tree adds its own rows here when it merges forward, as
+// that tree writes them.
 func (s *server) v2Infra979Rows() []routeRow {
-	return []routeRow{
+	rows := []routeRow{
 		{
 			Method: http.MethodGet, Pattern: "/settings/delivery", Auth: authAny,
 			Description: "The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set.",
@@ -94,4 +97,8 @@ func (s *server) v2Infra979Rows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: legionBoardResponse{}},
 		},
 	}
+	for index := range rows {
+		rows[index].OfINFRA979 = true
+	}
+	return rows
 }

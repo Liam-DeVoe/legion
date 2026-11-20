@@ -460,8 +460,8 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   // A document made from a file (a plan first sent as a .txt, then as Markdown under its name,
   // INFRA-4071 R15) keeps the file's versions, and Dispatch serves each of them as its bytes, as
   // it serves a file's. Only a version stored as bytes carries sha256 in the artifact's list of
-  // versions, so such a version is read as a file is; every other version of a document is read
-  // as its text.
+  // versions (the contract model.Version.SHA256 states in packages/envoy), so such a version is
+  // read as a file is; every other version of a document is read as its text.
   const storedAsBytes =
     version !== undefined &&
     resolved.artifact.versions?.find((entry) => entry.number === version)?.sha256 !== undefined;

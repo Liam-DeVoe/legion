@@ -135,12 +135,17 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 	for _, route := range routes {
 		mounted[route.Method+" "+route.Pattern] = route
 	}
+	infra979 := served.v2Infra979Rows()
+	ofINFRA979 := map[string]bool{}
+	for _, row := range infra979 {
+		ofINFRA979[row.Method+" "+versionPrefix(apiV1)+row.Pattern] = true
+	}
 
 	t.Run("every-row-names-its-successor", func(t *testing.T) {
 		for _, row := range rows {
 			name, next := row.Method+" "+row.Pattern, row.Successor
 			switch {
-			case infra979Rows[name]:
+			case ofINFRA979[name]:
 				t.Errorf("%s is a row of the INFRA-979 tree, served in both versions by its routeRow, and no v1Row", name)
 			case next.Method == "":
 				t.Errorf("%s names no /api/v2 route", name)
@@ -150,11 +155,12 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 				t.Errorf("%s names its successor %q, which is no path", name, successorRoute(next))
 			}
 		}
-		for name := range infra979Rows {
-			method, path, _ := strings.Cut(name, " ")
-			for _, at := range []string{name, method + " /api/v2" + strings.TrimPrefix(path, "/api/v1")} {
+		for _, row := range infra979 {
+			name := row.Method + " " + versionPrefix(apiV1) + row.Pattern
+			for _, version := range []apiVersion{apiV1, apiV2} {
+				at := row.Method + " " + versionPrefix(version) + row.Pattern
 				route, ok := mounted[at]
-				if !ok || !route.columns || !route.ofINFRA979() {
+				if !ok || !route.columns || !route.OfINFRA979 {
 					t.Errorf("%s is a row of the INFRA-979 tree, and the table serves no %s of its routeRow", name, at)
 				}
 			}
@@ -204,7 +210,7 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 			every[successorRoute(row.Successor)] = true
 		}
 		t.Logf("v1 rows, which /api/v1 alone serves: %d (%d of c8a44f97, %d other work added after it); rows of the INFRA-979 tree, served in both versions: %d",
-			len(rows), ofC8a44f97, later, len(infra979Rows))
+			len(rows), ofC8a44f97, later, len(infra979))
 		t.Logf("routes /api/v1 serves: %d; routes /api/v2 serves: %d", len(servedAt(apiV1, routes)), len(servedAt(apiV2, routes)))
 		t.Logf("distinct /api/v2 routes the %d rows of c8a44f97 name: %d (R2's bound: %d); the routes every v1 row names: %d",
 			ofC8a44f97, len(successorsOfC8a44f97(rows, frozen)), v2RouteBound, len(every))

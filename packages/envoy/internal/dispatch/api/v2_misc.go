@@ -19,7 +19,6 @@ package api
 // deployment's, which is also why its route is GET /api/v2/deploy-runs/{id} and no project's.
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -27,8 +26,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
@@ -760,31 +757,10 @@ func (s *server) createSessionGroupV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireSessionGroupV2 answers whether the group id names exists, and where it does not writes 404
-// SESSION_GROUP_NOT_FOUND (dispatch://INFRA-4071/spec R7): an id that is no uuid names no group
-// either.
+// SESSION_GROUP_NOT_FOUND (requireHeldV2).
 func (s *server) requireSessionGroupV2(w http.ResponseWriter, r *http.Request, id string) bool {
-	held, err := s.sessionGroupHeld(r.Context(), id)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return false
-	}
-	if !held {
-		writeError(w, r, apicode.SessionGroupNotFound, "no session group "+id)
-	}
-	return held
-}
-
-// sessionGroupHeld reports whether a Delivery session group carries the id.
-func (s *server) sessionGroupHeld(ctx context.Context, id string) (bool, error) {
-	if _, err := uuid.Parse(id); err != nil {
-		return false, nil
-	}
-	held := false
-	if err := s.deps.Store.Pool.QueryRow(ctx,
-		`select exists (select 1 from delivery_session_groups where id = $1::uuid)`, id).Scan(&held); err != nil {
-		return false, fmt.Errorf("read whether the session group exists: %w", err)
-	}
-	return held, nil
+	return s.requireHeldV2(w, r, id, "session group", `select exists (select 1 from delivery_session_groups where id = $1::uuid)`,
+		apicode.SessionGroupNotFound, "no session group "+id)
 }
 
 // deleteSessionGroupV2 answers DELETE /api/v2/session-groups/{id}: the delete DELETE
