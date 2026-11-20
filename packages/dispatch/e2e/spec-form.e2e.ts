@@ -151,16 +151,6 @@ async function brokenRequestUnderRoot(outside: string, count: number): Promise<s
   return opened.ask.id;
 }
 
-/** The height of the reason field and of the text it holds, and the height of the window. */
-function reasonFit(field: HTMLTextAreaElement) {
-  return {
-    held: field.scrollHeight,
-    shown: field.clientHeight,
-    tall: field.getBoundingClientRect().height,
-    window: window.innerHeight,
-  };
-}
-
 /** The definition of `session` that the person approves in the root's terms.md. */
 const sessionDefinition =
   "One conversation of an agent, with its id, in which the agent does its work.";
@@ -323,11 +313,13 @@ test("the person's Approve on the header of a broken statement under the root sh
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     const reason = dialog.getByLabel("Reason");
     await expect(reason).toHaveValue(changesReason);
-    // The field shows the whole reason it opens with, so the person reads what Request changes
-    // sends to the author without scrolling inside a two-line box.
+    // This header is outside NoTooltips: it keeps main's ordinary, scrollable reason field.
+    // The NoTooltips growth contract is covered by shared-controls.options.test.tsx.
     await expect
-      .poll(() => reason.evaluate((field) => field.scrollHeight <= field.clientHeight))
-      .toBe(true);
+      .poll(() =>
+        reason.evaluate((field) => getComputedStyle(field).getPropertyValue("field-sizing"))
+      )
+      .toBe("fixed");
     await expect(dialog.getByRole("alert")).toHaveCount(0);
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).click();
     await expect(page.getByRole("button", { name: "Changes requested" })).toBeVisible();
@@ -661,12 +653,10 @@ test("the person's note survives a refused Approve: the field holds Dispatch's r
   });
 });
 
-// The reason field of the Inbox card grows with the reason Dispatch wrote, up to half the height
-// of the window, and scrolls past that: a reason of three findings that is shorter than half the
-// window shows whole on a phone, and one of twenty-five stops at half the window, so Answer stays
-// on the screen. The refusal above the field lists each finding.
+// The ordinary Inbox is outside NoTooltips. Its reason field keeps main's fixed sizing, even
+// when Dispatch fills it with findings; the growing field belongs only to NoTooltips surfaces.
 // SLOW(>=2s): three cold `bun` starts of the real `dispatch` command around the Inbox and two refused answers.
-test("the Inbox card's reason field at 390 px shows a refusal of three findings whole, and stops a refusal of twenty-five at half the window", async ({
+test("the Inbox card outside NoTooltips keeps its fixed reason field at 390 px", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -676,28 +666,21 @@ test("the Inbox card's reason field at 390 px shows a refusal of three findings 
     const many = await brokenRequestUnderRoot(tree.outside, 25);
     await page.setViewportSize({ height: 844, width: 390 });
     await page.goto("/");
-    for (const [ask, whole] of [
-      [three, true],
-      [many, false],
-    ] as const) {
+    for (const ask of [three, many]) {
       const card = page.getByTestId(`ask-${ask}`);
       await card.getByRole("radio", { name: /^Approve / }).check();
       await card.getByRole("button", { name: "Answer" }).click();
       await expect(card.getByRole("alert")).toContainText("Dispatch refused this approval");
       const field = card.getByLabel("Reason (required)");
       await expect(field).toHaveValue(/^Dispatch refused my approval/);
-      // Each poll answers what it measured, so a failure names the heights it read.
-      const measured = async () => {
-        const fit = await field.evaluate(reasonFit);
-        const shape =
-          fit.held <= fit.shown
-            ? "whole"
-            : Math.abs(fit.tall - fit.window / 2) <= 1
-              ? "stops at half the window"
-              : "scrolls under half the window";
-        return `${shape}: ${fit.held} px of text, a field of ${fit.shown} px, a window of ${fit.window} px`;
-      };
-      await expect.poll(measured).toMatch(whole ? /^whole:/ : /^stops at half the window:/);
+      await expect
+        .poll(() =>
+          field.evaluate((element) => getComputedStyle(element).getPropertyValue("field-sizing"))
+        )
+        .toBe("fixed");
+      await expect
+        .poll(() => field.evaluate((element) => element.scrollHeight > element.clientHeight))
+        .toBe(true);
     }
   });
 });

@@ -515,10 +515,12 @@ export function ApprovalChip({
   // owes, unless the reader has put the focus elsewhere. Another header of the same document
   // shows the refusal and takes no focus.
   useEffect(() => {
-    if (formRefusal === undefined) return;
+    // onError publishes the refusal before TanStack clears pending. A native disabled Approve
+    // cannot take focus yet, so keep the press's focus claim until the button is enabled again.
+    if (formRefusal === undefined || review.isPending) return;
     if (!takeFormRefusalFocus(formRefusalKey, refusalSurface, chipRef.current)) return;
     if (focusIsFreeFor(chipRef.current)) approveButton.current?.focus();
-  }, [formRefusal, formRefusalKey, refusalSurface]);
+  }, [formRefusal, formRefusalKey, refusalSurface, review.isPending]);
   if (approval === undefined || approval.state === "draft") {
     return null;
   }
