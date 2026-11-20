@@ -16,7 +16,13 @@ import {
 import { ToolInputError } from "../tool-input-errors";
 import { renderAdvice } from "./advice";
 import { movedApprovalLine, resolveReplyToAsk } from "./asks";
-import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
+import {
+  type CommandContext,
+  type DispatchToolResult,
+  optionalString,
+  optionalStringArray,
+  stringArg,
+} from "./context";
 import { anchor, readRefOwner, resolveArtifact } from "./document-targets";
 import {
   dispatchAnswered,
@@ -315,6 +321,9 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
   // The schema already refused reply_to alongside reply_to_ask, turn without reply_to_ask,
   // and a turn outside agent|human, so the value is the contract's shape.
   const requestedTurn = optionalString(args, "turn") as CreateCommentInput["turn"];
+  // The schema already refused more mentions than Dispatch takes and any target that is neither
+  // role:<name> nor session:<id>, in the server's own words, so each value is sent as it came.
+  const mentions = optionalStringArray(args, "mentions");
   const body = await writePictures(resolved, stringArg(args, "body"));
   const commentInput: CreateCommentInput = {
     body,
@@ -323,6 +332,7 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
     ...(replyToBlock === undefined ? {} : { reply_to_block: replyToBlock }),
     ...(replyToAsk === undefined ? {} : { ask_id: replyToAsk }),
     ...(requestedTurn === undefined ? {} : { turn: requestedTurn }),
+    ...(mentions === undefined ? {} : { mentions: mentions.map((target) => ({ target })) }),
     actor,
   };
   const comment =

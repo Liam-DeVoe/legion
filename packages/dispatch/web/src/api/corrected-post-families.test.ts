@@ -645,10 +645,10 @@ for (const row of ROWS) {
 }
 
 // The architect's ruling of 2026-11-20 07:52Z: an answer composed before a correction cannot take
-// the correction's mark out. A read already out when the delete arrives is not cancelled
-// (`query-refresh.ts`), so its answer lands after the feed wrote the delete's mark; the feed then
-// writes the delete's facts into it again, and the refetch the event owes the read, which fails
-// here, leaves the mark where it is.
+// the correction's mark out. A read already out when the delete arrives was asked before it, so
+// the feed puts the delete's mark over it (`replaceQueryData`): the read is given up in the same
+// step and the list read again, so the answer the held read composed lands nowhere, and the
+// refetch, which fails here, leaves the mark where it is.
 test("an answer a read out at a delete lands with the post's words keeps the delete's mark, and no body, when the refetch after it fails", async () => {
   const list = ["issue-messages", "CORE-1"];
   const read: MessageRead = { message: messageOf(), replies: [] };
@@ -701,13 +701,15 @@ test("an answer a read out at a delete lands with the post's words keeps the del
   }
 });
 
-// The bound: a correction is kept for the reads out at its arrival and no longer. Once the one
-// read out has landed, an answer the cache is handed is left as it is handed.
+// The bound: a correction is kept for the reads out at its arrival of a query whose answer it
+// wrote nothing, and no longer. Here the list has no answer yet, so the delete writes nothing and
+// no write gives the read up: the answer it lands was composed before the delete, and is written
+// the delete's facts. Once the one read out has landed, an answer the cache is handed is left as
+// it is handed.
 test("a correction is kept only while a read out at its arrival is out", async () => {
   const list = ["issue-messages", "CORE-1"];
   const read: MessageRead = { message: messageOf(), replies: [] };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(list, [read]);
   const held = Promise.withResolvers<MessageRead[]>();
   const out = client.fetchQuery({ queryFn: () => held.promise, queryKey: list });
   expect(client.getQueryState(list)?.fetchStatus).toBe("fetching");
@@ -723,17 +725,18 @@ test("a correction is kept only while a read out at its arrival is out", async (
 
 // A kept edit is written again into each answer that lands while a read out at its arrival is
 // out, and an answer composed after a later edit, whose event has not arrived yet, carries that
-// edit's time: the kept edit's older time never moves it back. Its delete's facts would apply
-// whatever the answer said.
+// edit's time: the kept edit's older time never moves it back. The list holds no copy of the post
+// at the edit, so the edit writes nothing there and is kept for the read out. Its delete's facts
+// would apply whatever the answer said.
 test("an answer that lands carrying a later edit than a kept one keeps its own edit's time", async () => {
   const list = ["issue-messages", "CORE-1"];
   const later = "2026-11-20T00:45:00.5Z";
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(list, [{ message: messageOf(), replies: [] }]);
+  client.setQueryData<MessageRead[]>(list, []);
   const held = Promise.withResolvers<MessageRead[]>();
   const out = client.fetchQuery({ queryFn: () => held.promise, queryKey: list });
   markCorrectedPost(client, correction("message", POST, true));
-  expect(client.getQueryData<MessageRead[]>(list)?.[0]?.message.edited_at).toBe(EDITED_AT);
+  expect(client.getQueryData<MessageRead[]>(list)).toEqual([]);
   held.resolve([{ message: { ...messageOf(), edited_at: later }, replies: [] }]);
   await out;
   expect(client.getQueryData<MessageRead[]>(list)?.[0]?.message.edited_at).toBe(later);

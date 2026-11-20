@@ -46,6 +46,7 @@ import {
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
+  STORE_UNCONFIRMED_CAUSE,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -363,6 +364,12 @@ const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 // Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
 // and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
 const DeletedPostDeliveryError = ${JSON.stringify(DELETED_POST_DELIVERY_ERROR)}
+
+// StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
+// 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
+// from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
+// the dashboard keys its retry wording on cannot drift apart.
+const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
 
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's

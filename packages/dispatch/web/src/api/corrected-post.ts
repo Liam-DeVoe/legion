@@ -11,6 +11,7 @@ import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { correctedPostAddresses, rowsOf } from "./event-refresh";
 import type { ReferenceTargetsAnswer } from "./queries";
+import { replaceQueryData } from "./query-client";
 import type {
   Actor,
   Artifact,
@@ -276,11 +277,18 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  * cut short (`body_truncated`), so the words stay those of the answer until a read gives the new
  * ones.
  *
- * A read already out when the event arrives is not cancelled (`query-refresh.ts`), and its answer
- * was composed before the correction, so it would land the old words over the marks written here,
- * and keep them if the refetch the event owes it then fails. So the correction is kept while any
- * such read is out (`keepCorrection`), and each answer of a written family that lands meanwhile is
- * written again with every kept correction's facts.
+ * A read already out when the event arrives was asked before the correction, so its answer would
+ * land the old words over the marks written here, and keep them if the refetch the event owes it
+ * then fails. So each answer this writes is put over every read of its query still out
+ * (`replaceQueryData`, `query-client.ts`): the read is given up in the same step as the write, and
+ * the query is read again once the write is in, by a read asked after the correction. That guard
+ * stands on a write of the query, and a read out of a query whose answer this writes nothing -
+ * none yet, or one holding no copy of the post - has none, though what it lands can hold the post
+ * as it stood before the correction. Giving up every such read would give up reads that cannot
+ * hold a post, the issue's steps read (`["issue", key, "steps"]`), whose owner never cancels a
+ * read it has out (`ownQuery`), among them. So for those reads alone the correction is kept while
+ * any of them is out (`keepCorrection`), and each answer of a written family that lands meanwhile
+ * is written again with every kept correction's facts.
  *
  * A member a names read answered ambiguous or gone names no post, and is left as it is. An
  * answer holding no copy of the post, or no answer yet, is written nothing, and nor is one that
@@ -294,18 +302,22 @@ export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent
   if (post === undefined) {
     return;
   }
-  const out = new Set<string>();
+  // The reads of a written family out at the event whose answer this writes nothing. A query it
+  // writes is read again by the write, after the correction, and is not one of them.
+  const unwritten = new Set<string>();
   for (const query of queryClient.getQueryCache().getAll()) {
     const write = familyWrite(query.queryKey);
     if (write === undefined) {
       continue;
     }
-    writeCorrections(queryClient, query, write, [post]);
-    if (query.state.fetchStatus === "fetching") {
-      out.add(query.queryHash);
+    const marked = corrected(query, write, [post]);
+    if (marked !== undefined) {
+      replaceQueryData(queryClient, query.queryKey, marked);
+    } else if (query.state.fetchStatus === "fetching") {
+      unwritten.add(query.queryHash);
     }
   }
-  keepCorrection(queryClient, post, out);
+  keepCorrection(queryClient, post, unwritten);
 }
 
 /** The family of `queryKey`, as `CORRECTED_POST_FAMILIES` names one: its first element, with its
@@ -330,41 +342,34 @@ function familyWrite(queryKey: QueryKey): FamilyWrite | undefined {
     : undefined;
 }
 
-/** Writes each of `posts`' corrections, in order, with `write`, the writer of the family `query`
- *  is of, into the answer it holds, where the answer then reads otherwise than it does. The cache
- *  takes the answer with each part the corrections left as it was still the cached one's, so its
- *  own structural sharing walks only what they changed. */
-function writeCorrections(
-  queryClient: QueryClient,
-  query: Query,
-  write: FamilyWrite,
-  posts: readonly CorrectedPost[]
-): void {
+/** The answer `query` holds with each of `posts`' corrections written in, in order, by `write`, the
+ *  writer of the family `query` is of; undefined where it holds none, or the corrections leave it
+ *  reading as it does. The answer keeps each part the corrections left as it was the cached one's,
+ *  so the cache's own structural sharing walks only what they changed. */
+function corrected(query: Query, write: FamilyWrite, posts: readonly CorrectedPost[]): unknown {
   const answer = query.state.data;
   if (answer === undefined) {
-    return;
+    return undefined;
   }
   let marked: unknown = answer;
   for (const post of posts) {
     marked = write(marked, post, query.queryKey) ?? marked;
   }
   const shared = replaceEqualDeep(answer, marked);
-  if (shared !== answer) {
-    queryClient.setQueryData(query.queryKey, shared);
-  }
+  return shared === answer ? undefined : shared;
 }
 
 /**
  * The most corrections a page keeps at once (`keepCorrection`). Each is kept only while a read
- * that was out at its arrival is still out, so a page holds many only under a burst of corrections
- * that arrives while one read is slow. Past this the oldest goes, and a read out at its arrival
- * that lands after a hundred corrections since can bring its post's old words back, until the
- * refetch that event owes the read lands.
+ * that was out at its arrival, of a query whose answer it wrote nothing, is still out, so a page
+ * holds many only under a burst of corrections that arrives while one such read is slow. Past
+ * this the oldest goes, and such a read that lands after a hundred corrections since can bring its
+ * post's old words back, until the refetch that event owes the read lands.
  */
 const KEPT_CORRECTIONS_MAX = 100;
 
-/** A correction the cache keeps for the reads of a written family that were out when it arrived,
- *  by query hash, each until its fetch is no longer out. */
+/** A correction the cache keeps for the reads of a written family that were out when it arrived
+ *  and whose answer it wrote nothing, by query hash, each until its fetch is no longer out. */
 interface KeptCorrection {
   readonly post: CorrectedPost;
   readonly out: Set<string>;
@@ -377,10 +382,12 @@ const keptCorrections = new WeakMap<QueryClient, KeptCorrection[]>();
  * Keeps `post`'s correction while any read of `out` is still out, and writes every kept
  * correction's facts into each answer of a written family that lands meanwhile: the answer an out
  * read lands was composed before the correction, and a mutation's or a seed's write made from such
- * an answer was too. Its facts are final - a delete is never taken back, and an edit's time is the
- * time it was made, which never moves a copy's later edit back (`editedAfter`) - so writing them
- * again into an answer composed after the correction, which already reads that way, changes
- * nothing.
+ * an answer was too. `out` holds the reads whose query the correction wrote nothing into
+ * (`markCorrectedPost`): a read of a query it wrote is given up by that write
+ * (`replaceQueryData`), which leaves no answer of it composed before the correction to land. Its
+ * facts are final - a delete is never taken back, and an edit's time is the time it was made,
+ * which never moves a copy's later edit back (`editedAfter`) - so writing them again into an
+ * answer composed after the correction, which already reads that way, changes nothing.
  *
  * The bound is the reads themselves, not a clock: a read that begins after the event is answered
  * as the server reads the corrected post, so only one out at the event can land an answer that
@@ -419,16 +426,19 @@ function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
     const { query } = change;
     if (change.type === "updated" && change.action.type === "success" && query !== rewriting) {
       const write = familyWrite(query.queryKey);
-      if (write !== undefined) {
+      const marked =
+        write === undefined
+          ? undefined
+          : corrected(
+              query,
+              write,
+              kept.map((correction) => correction.post)
+            );
+      if (marked !== undefined) {
         const outer = rewriting;
         rewriting = query;
         try {
-          writeCorrections(
-            queryClient,
-            query,
-            write,
-            kept.map((correction) => correction.post)
-          );
+          queryClient.setQueryData(query.queryKey, marked);
         } finally {
           rewriting = outer;
         }

@@ -71,7 +71,7 @@ function payloadStrings(event: DispatchEvent, key: string): readonly string[] | 
 }
 
 /** Whether `login` is the signed-in viewer's, compared as the server compares logins. */
-function isViewer(login: string | undefined, viewer: string | undefined): boolean {
+export function isViewer(login: string | undefined, viewer: string | undefined): boolean {
   return (
     login !== undefined &&
     viewer !== undefined &&
@@ -1757,9 +1757,11 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * into each answer the cache holds as it arrives (`markCorrectedPost`): a read that then fails
  * names a deleted post by the deleted line and an edited one with its mark. An answer that a
  * read already out at an event lands was composed before it, and a refetch of it that fails
- * keeps it, which stands for every refresh but a correction's own facts: the feed keeps a
- * correction while a read out at its arrival is out, and writes its marks into the answer that
- * read lands (`keepCorrection` in `corrected-post.ts`).
+ * keeps it, which stands for every refresh but a correction's own facts: the feed puts each
+ * answer it marks over every read of that query still out, and reads the query again
+ * (`replaceQueryData`), and keeps a correction while a read out at its arrival of a query it
+ * marked nothing in is out, writing its marks into the answer that read lands (`keepCorrection`
+ * in `corrected-post.ts`).
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
