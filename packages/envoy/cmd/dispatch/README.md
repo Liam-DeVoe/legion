@@ -152,7 +152,8 @@ Each item below names a variable, then its purpose.
 
   The System One model the command bar's one decision call is put to before it answers (which action the words ask for, whether they point at the page's item, chart or prose), the endpoint's base URL, which `/v1/systemone` is appended to and which must be an absolute https URL with a host and no query or fragment, and the file holding the bearer token every call presents.
   Each defaults to empty; the endpoint and the token file are set together or not at all, and boot refuses one without the other, naming the one missing; the model is optional, since a deployment renders the endpoint and the file before it names a model.
-  The model must be one the committed measurement holds (`packages/envoy/going/decision_models.json`, which the bake-off `cmd/going-bakeoff` writes, and which marks the model its rule chose): a name it does not hold is no decision model, so the server starts, logs one line saying why and decides nothing, as it does with no model or no endpoint. The boot line of a measured model says whether the record chose it.
+  The model must be one the committed measurement holds (`packages/envoy/going/decision_models.json`, which the bake-off `cmd/going-bakeoff` writes, and which marks the model its rule chose): a name it does not hold is no decision model, so the server starts, logs one line saying why and decides nothing, as it does with no model or no endpoint.
+  The boot line of a measured model says whether the record chose it.
   The token file is read on every call and never at boot, so a rotation needs no restart; a file that is absent or empty at a call fails that call as the decision model that cannot be reached, with no request made, and the capability route reports it unreachable.
 
 - `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
@@ -635,6 +636,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 - Under `iap`, IAP signs a fresh assertion for every request, so each request is decided on its own:
   Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
+  A command-bar run is the one exception, since its calls come after the request that started or approved it: its grant names the person alone and lasts until the run's working budget ends, and an approval through IAP records it anew (Answering a question, below).
   Each person admitted is recorded in `people`.
   A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
   a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, read from an assertion IAP signed; both at WARN.
@@ -642,7 +644,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
   An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
   A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
-  An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
+  An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`api.EnforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
   Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
 
 - Under `iap`, a websocket is the one request whose assertion ages: the live socket and the document socket re-check the assertion their upgrade carried on every heartbeat (15 seconds, `api.whileCallerResolves`), and Google gives an assertion at most ten minutes and the skew.
@@ -1417,6 +1419,8 @@ The first rollout of the fleet's numbers needs a release before the fleet column
 That tag is lightweight and can move, so the commit is the pin: the test fails a first-rollout build of another commit (`firstRolloutRelease` in `twobuild_harness_test.go`), and the CI job fails when the tag names another commit (`FIRST_ROLLOUT_COMMIT`).
 The same CI job then runs the browser suite's `cross-build.multiprocess` beside each of the two builds, each build's page against the other build's server, and expects the document writable or read-only as the live registry's numbers admit it (`packages/dispatch/e2e/cross-build.multiprocess.e2e.ts`, `pageWritable`).
 In the run beside the first-rollout build, `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` holds the run to that build's commit and to a registry that reads version 0 while that build is live, so a build of another commit, or a build that registers its schema numbers, fails the run.
+The command bar's row (`twobuild_going_runs_test.go`) runs a fixed release beside this tree instead, the one tagged `legion-envoy-v32.15.0`, pinned by its commit `6c46f6bb7dd6a1ac9b6235fb3bce990ec82eae86` as the first-rollout build is (`goingReleaseCommit`, and `GOING_RELEASE_COMMIT` in the CI job), since its maintenance sweep ends and deletes its own command bar's going requests, a sweep the next release drops.
+Beside that release's sweep this tree's runs keep going: History lists the runs it saved, their frames stream as they were stored, a run at work ends with its model's answer, a waiting plan runs once it is approved, and a run saved at a run shape this tree does not read stays queued; a run whose saved steps name a tool this tree does not know fails, naming the tool.
 
 Generations and holds protect from the release after the first one that carries them.
 The build before them compares stream and consumer settings with no generation, binds its delivery durable by lookup with no hold, and refuses a request member it does not declare.
@@ -1549,7 +1553,7 @@ A process that finds it held tries again
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind, deletes the command bar's run records past their seven days (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
+- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind, deletes each command-bar conversation whose newest run is seven days old, stops each run that works under no live lease past its working budget (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
@@ -3582,7 +3586,8 @@ At that moment the running answer, a reader and the sweep may each try to end on
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
 
-The short answer and its decision call stay in this server, each run bounded (`api/going_quick.go`). The answer is one request of one person, a loop of at most 4 model calls with its searches and reads between them.
+The short answer and its decision call stay in this server, each run bounded (`api/going_quick.go`).
+The answer is one request of one person, a loop of at most 4 model calls with its searches and reads between them.
 A run is its person's one question in flight, so a newer `POST` of the same credential ends the one before as its cancel does, its record marked cancelled;
 a server answers 32 runs at once, and the next waits for a free slot within its 30 seconds, its decision call too, ending `ANSWER_DID_NOT_ARRIVE` where the window ends first;
 the 30 seconds bound the whole loop, all its calls together, not each call; each call's stream is read up to 4 MiB, past which the run fails `ANSWER_FAILED`; and the answerer paces its calls to 25% of `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE`, the agent's runs taking the rest.
@@ -3597,14 +3602,15 @@ The answer asks the model for a structured reply first: the answer, one block of
 A service that refuses that request with a `400`, or a reply that does not fit it, is asked again for prose, with no block and no arguments; after a `400`, this process asks for prose alone until it restarts.
 After the text frames come `block`, the one typed block the words asked for, which the server fills from its own read, and `roster`, `{age_ms, source}`, where the run read the roster.
 The last frame before the ending is `proposal`: the arguments of the chosen action, held to that action's own schema, with a target filled from the chip only where the words are about the page.
-An upload under the name of a document its owner already holds, as the proposal reads the store, would write that document's next version over the text it holds: without `force` every write of it is refused and the bar has no control that sets `force`, and with `force` a person's pick of it from the bar does not say it replaces the document.
+An upload under the name of a document its owner already holds, as the proposal reads the store, would write that document's next version over the text it holds.
 So it is offered only with `force` where the answer wrote the name the document is stored under, its file name, and the person's own words write that name as a whole word, whatever its case.
 An upload that finds the document by its slug is withheld whatever the words, and the offer's `withheld` names the stored name the person would have to write; the stored name without its extension counts for nothing.
 An issue's own spec is stored as `spec.md` under the slug `spec`: "replace spec.md with this" offers an upload named `spec.md`, while "replace the spec with this" and "add a note to the spec" offer none, named `spec` or `spec.md`; "add a note" offers none named `note.md`.
-A pick of such an offer is made; every other is withheld: the offer says why in `withheld`, which the bar shows beside whatever of the action it did offer, and a pick of it is refused `409 GOING_NOT_PROPOSED`.
+Every other upload of a document its owner holds is withheld: the offer says why in `withheld`.
+The bar draws none of the proposal: a change is made only by a run's approved plan (below).
 A call the bar can never send as written is withheld the same way, whatever the words, since none of it needs a read: a comment, a question or a message carrying picture files (`images`), a comment, a suggestion or a document edit whose place a `dispatch://` reference gives (`ref`), an upload of a file (`path`) or with no text, an update with a closing `reason` that does not mark the issue `done`, and a sync of a repository not written as `owner/name`.
 A picture list, a reference or a file path written empty names none, so it withholds nothing: the call is offered and sent as it would be without it, since the bar sends none of the three on.
-Its `withheld` says, in words for the person at the bar, what the bar cannot send and what that person can do there - ask again for the words alone, naming the issue or the document, with the text to upload in the question, and so on - naming no tool, no argument, no `dispatch` command and no flag; a write of such a call, however it came to run, is refused `400 GOING_ARGUMENTS` in the same words, and nothing is written.
+Its `withheld` says, in words for the person at the bar, what the bar cannot send and what that person can do there - ask again for the words alone, naming the issue or the document, with the text to upload in the question, and so on - naming no tool, no argument, no `dispatch` command and no flag.
 `POST /api/v1/going/requests/{id}/cancel` stops a run its author typed past or closed: from then on the run stores no frame that does not end its stream, so the answer stops at its next delta on whichever pod is writing it.
 The command bar sends it at the keystroke that types past the run, and its panel keeps what it drew of that run, marked as the answer to the earlier words, until the answer to the new words has text of its own, finds none or fails; no frame of the cancelled run reaches the panel after the keystroke, and emptying the box or closing the bar clears it.
 
@@ -3639,6 +3645,13 @@ A follow-up names the run it continues, which must be the caller's own, the newe
 One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next `429 GOING_RUN_READERS_FULL`.
 `GET /api/v1/me/going-runs`, History, answers the caller's own conversations, each with its runs newest first, while the conversation's newest run is younger than seven days, with `?issue=` and `?q=`; the maintenance sweep deletes a conversation whole once its newest run is seven days old, and stops a run that works under no live lease longer than its working budget allows (`TIME_BUDGET`).
 `GET /api/v1/me/going-plans` answers the caller's runs whose plan waits for them, which the Inbox shows; each change of what it lists appends `going_plan.updated` `{login}`, which names no owner and wakes nobody.
+
+A run acts with its grant (`api/going_grant.go`, `going_run_grants`): whom the request that started the run, or that approved its plan, names and by what, with no secret.
+A sign-in is recorded by its sessions' generation and its cookie's expiry, a sign-in through IAP by its login alone, a personal agent token by its row, and the header identity of a test server or a local deployment by its login.
+Each call of the run is made as the person the grant resolves to at that call, checked against the store as it is then, as the person's own request would be: a sign-out, a sign-in past its expiry, a revoked token or one no longer its person's, and a person the deployment's membership no longer admits each refuse the call, and the run stops with that reason (`SESSION_ENDED`, `SIGN_IN_EXPIRED`, `TOKEN_REVOKED`, `MEMBERSHIP_ENDED`).
+IAP signs an assertion for each request and nobody keeps it, so an IAP grant lasts until the run's working budget ends, and an approval through IAP records it anew.
+A call under a token holds the scopes its row holds at that call, and a sign-in every person scope.
+Each change of a run records the person as its actor, with `act.agent` `command-bar` and `act.run` the run's id, so the item's history reads "<person>, through the command bar".
 
 A run's agent process (`envoy-dispatch agent`) makes every read and write of a run as a call to this server over a Unix socket (`going/agentwire`, `api/going_agent.go`): `agent.sock` in `$XDG_RUNTIME_DIR/dispatch-agent`, or in a directory of the process's own under the system's temporary directory where that is unset, each of mode 0700.
 Each call carries the 32-byte secret the server made when it started, compared in constant time; a call without it, or with another one, is refused `UNAUTHORIZED`.
@@ -4230,7 +4243,8 @@ Each item below names a path with its method and identity, then its purpose.
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
-  `limit`, a whole number of 1 or more (else `400 INVALID_QUERY`), lists that many of the newest seen sessions alone and reads the open asks and last activity of those alone; the command bar's roster read (`read_roster`) sends 50, so a run's read of a roster of any size loads no more rows than it answers. Without it every session is listed.
+  `limit`, a whole number of 1 or more (else `400 INVALID_QUERY`), lists that many of the newest seen sessions alone and reads the open asks and last activity of those alone; the command bar's roster read (`read_roster`) sends 50, so a run's read of a roster of any size loads no more rows than it answers.
+  Without it every session is listed.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -4458,11 +4472,11 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
   The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
-  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
+  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the decision call that chooses from this catalogue never names one; a command-bar run proposes a review only as a row of its plan, which waits for the person in every mode.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
+  A write no catalogue action performs is named by the catalogue's own test instead, and the review route is kept out on purpose; a command-bar run's tools are another set, one for each route a person can use (`api/going_tools.go`).
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -5535,11 +5549,13 @@ go test -tags memory -count=1 -timeout 60m ./cmd/dispatch        # resident memo
 go test -tags multiprocess -count=1 -timeout 30m ./cmd/dispatch  # two servers, one database
 bash scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"
 bash scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"
+bash scripts/build-dispatch-build.sh --commit 6c46f6bb7dd6a1ac9b6235fb3bce990ec82eae86 --out "$TMPDIR/dispatch-going-release"
 DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" \
+  DISPATCH_GOING_RELEASE_BUILD="$TMPDIR/dispatch-going-release" \
   go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch   # this build beside earlier ones
 ```
 
-"Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build.
+"Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build and the command bar's release.
 
 `TestTheServerEndsTheAgentBeforeTheKernel` (`agent_memory_group_test.go`) skips, naming why, unless `DISPATCH_TEST_MEMORY_GROUP=1`, which its CI job sets on an amd64 runner with control groups v2 and Docker.
 It runs the server, built for linux/amd64, in a Docker container whose memory limit is 8 GiB with swap off, on `--network host` against `DISPATCH_TEST_DATABASE_URL`; `DISPATCH_TEST_MEMORY_GROUP_IMAGE` names another image than its default, the copy of `debian:bookworm-slim` in `.github/ci-images.yaml`.
@@ -5557,5 +5573,6 @@ Both hooks are refused without `DISPATCH_TEST_HOOKS=1` (`testHookBool` in `main.
 
 Two tests of `agent_load_test.go` build under the `memory` tag.
 `TestTheServerHeapUnderEightDeepRuns` seeds an Envoy listener of 200,000 sessions, a project of 5,000 issues, an issue of 1,000 comments and a spec of 1 MiB for each run, fills the read cache to its budget, and measures one Deep run at its limits: the most the agent's total Go memory rises while it works is one run's peak, and the claim gate (70% of the agent's `GOMEMLIMIT`) less the agent's base, divided by that peak, 8 at the most, must be the agent's slots (`agentSlots` in `memlimits.go`).
-Then 8 Deep runs at once read the issue listing, search, the roster, an issue's events and their spec, and edit it: the server's live heap outside the document rooms (samples with a `reearth/ygo` or a room frame of `internal/dispatch/docs`) stays under 1 GiB above its level before them and comes back to within 5% of it once the rooms close, and the agent's total Go memory stays under its `GOMEMLIMIT`.
-`TestTheAgentLeavesTheServerItsCPU` holds the p99 of one fixed read under twice its p99 with the agent idle, and every `/livez` under 1 s, while the agent works at its soft limit of 1 GiB through `test_soft_limit`.
+Then 8 Deep runs at once fill every cache the runs fill, and 8 more read the issue listing, search, the roster, an issue's events and their spec, and edit it: the server's live heap outside the document rooms (samples with a `reearth/ygo` or a room frame of `internal/dispatch/docs`) stays under 1 GiB above its level at rest before them and comes back to within 5% of it at rest after them, and the agent's total Go memory stays under its `GOMEMLIMIT`.
+At rest is once the rooms have closed and the database owes the server no settlement, block index or re-index; the test logs the three caches' bytes at each end and the five functions whose flat heap outside the rooms grew most between them.
+`TestTheAgentLeavesTheServerItsCPU` holds the p99 of one fixed read under twice its p99 with the agent idle, every `/livez` under 1 s, and every thread of the agent at nice 10, while the agent works at its soft limit of 1 GiB through `test_soft_limit`; it logs the CPUs the test runs on, the agent's `GOMAXPROCS`, and the p50, p90 and p99 of the read and of a round trip to the database, idle and at the load.

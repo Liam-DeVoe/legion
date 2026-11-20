@@ -151,8 +151,8 @@ type goingWriteTool struct {
 	// route that appends none.
 	Event string
 	// Proposed is a tool the answer run's decision offers (going_decision.go), the actions of the
-	// catalogue it serves at GET /api/v1/going/catalogue: going/decision_models.json's thresholds
-	// were measured over exactly these.
+	// catalogue it serves at GET /api/v1/going/catalogue: going/decision_models.json's measurement
+	// was made over exactly these.
 	Proposed bool
 }
 

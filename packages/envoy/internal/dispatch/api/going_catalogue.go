@@ -98,8 +98,8 @@ type GoingAction struct {
 	// Action is the catalogue's key: the tool's own name, such as "dispatch_issue".
 	Action string `json:"action"`
 	// Description is the tool spec's own description, whole and unchanged. It is what a model
-	// chooses on, and the confidence threshold and the model bake-off are tuned against these
-	// words, so nothing here shortens or rewrites them.
+	// chooses on, and the model bake-off measured the decision on these words, so nothing here
+	// shortens or rewrites them.
 	Description string `json:"description"`
 	// Routes are the rows of the server's table this action writes, in the order a call is
 	// matched against them.

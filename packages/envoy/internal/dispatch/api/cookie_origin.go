@@ -21,8 +21,10 @@ import (
 // It is the one check: routes.New wraps the whole server in it, and register wraps the route
 // table the command bar calls in-process in it too (server.inProcess). A request the bar sends
 // in-process names its caller on its context and carries no cookie and no assertion, so it passes
-// here as every request with neither credential does; the browser's request that pressed its write
-// was held to the origin on its way in.
+// here as every request with neither credential does. It is a call of the agent process, which
+// reaches the server over its Unix socket and never from a browser, or a request of a plan's read
+// or of an undo, which a person's own request made; the browser requests that approved a run's
+// plan or pressed its undo were held to the origin on their way in.
 func EnforceCookieOrigin(serverURL string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
@@ -56,7 +58,7 @@ func PublicOrigin(serverURL string, req *http.Request) string {
 }
 
 // unsafeMethod reports whether a request of method changes something, which is what the origin
-// check holds a cookie to.
+// check holds a browser's credential, a session cookie or an IAP assertion, to.
 func unsafeMethod(method string) bool {
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:

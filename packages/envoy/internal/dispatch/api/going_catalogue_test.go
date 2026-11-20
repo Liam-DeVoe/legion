@@ -32,7 +32,7 @@ func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) 
 }
 
 // goingProposedActions is the twenty actions the answer run's decision offers, which
-// going/decision_models.json's thresholds were measured over.
+// going/decision_models.json's measurement was made over.
 var goingProposedActions = []string{
 	"dispatch_issue", "dispatch_issue_update", "dispatch_claim", "dispatch_ask", "dispatch_edit_ask",
 	"dispatch_resolve_ask", "dispatch_resolve_comment", "dispatch_follow", "dispatch_comment",

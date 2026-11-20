@@ -17,8 +17,7 @@ import (
 // TestTheRecordReadsBack reads each entry the bake-off wrote back through DecisionRecord, by its
 // model's name, as the file holds it, and holds the chosen entry to R7: one model is chosen, it
 // was measured on at least 80 cases and 20 chart-worthy ones, and it reaches 90% on the cases
-// that name their action and 70% on the rest at a p95 under 500 ms. No entry holds a threshold
-// or the share of answers at or above one: the server reads none.
+// that name their action and 70% on the rest at a p95 under 500 ms.
 func TestTheRecordReadsBack(t *testing.T) {
 	raw, err := os.ReadFile("decision_models.json")
 	if err != nil {
@@ -30,13 +29,6 @@ func TestTheRecordReadsBack(t *testing.T) {
 	}
 	if len(fields) == 0 {
 		t.Fatal("the record holds no measured model")
-	}
-	for _, entry := range fields {
-		for _, field := range []string{"action_threshold", "action_share", "chart_threshold", "chart_share"} {
-			if _, held := entry[field]; held {
-				t.Errorf("an entry of the record holds %s %s", field, entry[field])
-			}
-		}
 	}
 	chosen := 0
 	for _, entry := range committedRecords(t) {

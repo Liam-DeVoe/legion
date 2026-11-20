@@ -146,8 +146,8 @@ its decision model (the model `packages/envoy/going/decision_models.json` marks 
 `SSL_CERT_FILE` naming that certificate (`e2e/harness-models.ts`, `e2e/run-server.sh`); the server
 hands the same settings to its agent process, whose runs call the same fake. A row scripts what
 each fake answers and reads back what the server asked of it through `e2e/fake-models-helpers.ts`,
-which skips the row outside the lane and reads the thresholds from the record rather than writing
-them. The fake writing model answers an agent run turn by turn, from a script keyed by the
+which skips the row outside the lane and reads the chosen decision model from the record rather
+than naming it. The fake writing model answers an agent run turn by turn, from a script keyed by the
 person's words (`scriptChat({ runs })`, with `findTools`, `callTool`, `proposePlan`, `say`,
 `endlessStream` and `refusedWith`), and records each call with the run's page and the tool results
 it gave the model (`runCalls`); the fake decision model can hold its answer until the row

@@ -138,7 +138,7 @@ func TestGoingCapabilityReadsTheFourPartsApart(t *testing.T) {
 // A decision model the committed record does not hold is no decision model: NewDecider builds
 // none, the capability reads the decision unset, and a question asked is answered with no call to
 // the decision endpoint. One the record holds reads configured, named, with the record's own
-// thresholds, and unreachable while its token does not read.
+// entry, and unreachable while its token does not read.
 func TestGoingCapabilityReadsAnUnmeasuredDecisionModelUnset(t *testing.T) {
 	standIn := newSystemOneCalls(t)
 	if decider, measured := NewDecider(standIn.model("unmeasured-model", staticToken)); measured || decider != nil {

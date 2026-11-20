@@ -27,8 +27,8 @@ import (
 
 // goingRefusal is a refusal of a request the going writes made in-process, or one of their own
 // in the same shape: its status, its code and its words, and the answer exactly as the route
-// wrote it where a route wrote one, which the writes route then answers whole. named is a
-// refusal whose words already name what of its write landed (after).
+// wrote it where a route wrote one, which a route of the bar's own then answers whole (write).
+// named is a refusal whose words already name what of its write landed (after).
 type goingRefusal struct {
 	Status  int
 	Code    string

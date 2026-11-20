@@ -268,12 +268,12 @@ func goingPathMatches(pattern, path string) bool {
 // table in-process outside any run's write.
 const goingTestRun = "0190c7d2-1111-7222-8333-444444444444"
 
-// goingCallerOf is the caller a write is performed as, resolved as the writes route resolves its
+// goingCallerOf is the caller a write is performed as, resolved as a route of the bar resolves its
 // own from a request standing for it - a person's browser on this deployment's page, or a
 // session's bearer - with the command bar's act beside it.
 func goingCallerOf(t *testing.T, rig goingWritesRig, bearer bool) resolvedCaller {
 	t.Helper()
-	caller := httptest.NewRequest(http.MethodPost, "/api/v1/going/runs/caller/writes", nil)
+	caller := httptest.NewRequest(http.MethodPost, "/api/v1/going/runs/caller/plan/approve", nil)
 	if bearer {
 		caller.Header.Set("Authorization", "Bearer agent-token")
 	} else {

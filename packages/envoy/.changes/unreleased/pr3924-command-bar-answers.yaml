@@ -1,77 +1,56 @@
 kind: Added
 body: |-
-  The Dispatch command bar's server half now decides, answers with typed blocks, runs
-  operations and undoes them. With a measured decision model configured
-  (`DISPATCH_DECISION_MODEL`, `DISPATCH_DECISION_MODEL_ENDPOINT` and
-  `DISPATCH_DECISION_MODEL_TOKEN_FILE`), each question first gets one decision call: which
-  operation the words ask for, whether they are about the page's item, and chart or prose. The
-  thresholds come from the committed measurement, `packages/envoy/going/decision_models.json`,
-  and a model that record does not hold decides nothing. The answer stream carries four new
-  frames: `decision`, `block` (one typed block filled from Dispatch's own reads), `roster` and
-  `proposal` (the arguments of each offered operation). An answering model that refuses
-  structured output answers in prose, with no block.
-  `POST /api/v1/going/runs/{id}/writes` runs one offered write as the caller and records the
-  value before and after it, and `POST /api/v1/going/runs/{id}/undo` undoes a turn.
-  An offered write runs at once only where every item it names is the page's or named in the
-  person's own words; any other is an offer the person picks (`409 GOING_NOT_AUTOMATIC` for
-  `auto`). An upload under the name of a document its owner already holds is offered only with
-  `force` where the answer wrote the name the document is stored under and the person's own
-  words write that name; one that finds the document by its slug is always withheld, and so is
-  every other: the proposal's offer says why in `withheld`. A write of an upload with `force`
-  is held to that rule again when it runs, whoever approved it, so a document made between the
-  proposal and the pick is no more written over by a pick than by a write sent at once:
-  `409 GOING_NOT_PROPOSED` in the offer's own words, or, for a name the person filled in, in
-  words saying that a filled-in name does not ask for that document to be replaced, with
-  nothing written. A write of an upload without `force`
-  under a name the store holds when it runs is refused, however it came to run:
-  `400 GOING_ARGUMENTS` naming the document and the name to write in the question to ask for
-  its replacement, where its read before finds the document. Every upload is
-  sent as a create alone, one with `force` too unless its read before found the document of its
-  name, so a document made after that read is the route's `409 DOCUMENT_EXISTS` and is never
-  written over; one with `force` over the document found names that document's token, read just
-  before it is sent, as the version it replaces, so a change another writer makes after that read
-  is the route's `409 PRECONDITION_FAILED`. Each write is
-  claimed on the run once, so a second request while it runs answers
-  `429 GOING_WRITE_IN_PROGRESS`.
-  A call the bar can never send as written - picture files, a `dispatch://` reference placing a
-  comment, a suggestion or a document edit, an upload of a file or with no text, an update's
-  closing `reason` that does not close the issue, a sync of a repository not written as
-  `owner/name` - is withheld too, its `withheld` the very words a write of it is refused with,
-  `400 GOING_ARGUMENTS`, which answers its reason alone, with no action's name before it. That
-  refusal and each refusal of `auto` say, in words for the person at the bar, what happened and
-  what to do there, and name no tool, argument or value of `approved`.
-  A write that sends a request before its own (a close with a reason posts the reason first)
-  records how each request went; the next write of that invocation, a retry under its
-  `Idempotency-Key` after a `5xx`, `408` or `429` or a new press under another key, resumes
-  after the requests that landed, and a refusal names what landed before it. A request landed
-  when its route's transaction committed, which it records there; a route's bookkeeping before it
-  refuses (an architecture sync's failure record) is no landing.
-  A turn's undo compares and puts back only what each write's own route answered its transaction
-  found and left, and has the route it writes through decide that the item still holds what the
-  turn left. The routes answer those values beside what they answered before:
-  `PATCH /api/v1/issues/{key}` answers `previous` (each field it names as it found it,
-  `advances_revision` beside `advances`, and a rank's place) and, for a rank, `rank_place`;
-  `PATCH /api/v1/asks/{id}` and `POST /api/v1/comments/{id}/resolve` answer `previous`;
-  `POST` and `DELETE /api/v1/issues/{key}/claim` answer `claim_changed` and `previous_claim`;
-  `POST /api/v1/artifacts/{id}/approval-requests` answers `opened`; the document edit routes
-  answer `previous_token` beside `token`; and the upload routes answer `previous_version`. A
-  create naming an external issue Dispatch already holds answers that issue `200`, not the `201`
-  of a create it made, as it did before: the bar records it as a write that made nothing, and its
-  undo closes nothing. The conditions the undo writes back with are the bar's in-process
-  conditions: its in-process caller carries each to the route on the request's context, never in
-  a body, so no other client can send one and a body naming `expect`, `expect_sha256`,
-  `expect_new`, `expect_holder`, `expect_unclaimed` or `expect_resolved_at` is answered as one
-  naming nothing. Each route decides its condition under its own lock: the issue update
-  (`409 ISSUE_CHANGED`), the ask edit (`409 ASK_CHANGED`), the release and the claim
-  (`409 CLAIM_HOLDER_CHANGED`), the reopen (`409 COMMENT_CHANGED`) and an upload
-  (`409 DOCUMENT_CHANGED`), and the bar's upload is a create alone, one with `force` too unless
-  its read before found the document of its name (`409 DOCUMENT_EXISTS` where the owner holds
-  the name when the upload takes its lock). A
-  request of the undo is marked as a write back, and a route refuses one carrying no condition it
-  decides `500 GOING_CONDITION_MISSING`, with nothing written. A request the bar sends in-process
-  refuses a body member or multipart field its route does not declare, `400 INVALID_JSON`
-  naming it.
-  `GET` and `PUT /api/v1/me/going/settings` hold a person's `confirm_writes`,
-  `GET /api/v1/me/going-runs` lists the person's runs of the last 7 days,
-  `POST /api/v1/going/requests/{id}/cancel` stops a run, and
-  `GET /api/v1/projects/{key}/activity` counts a project's events per ISO week.
+  The Dispatch command bar runs an agent. Enter on the bar's line starts a run
+  (`POST /api/v1/going/runs`, at a level, Fast, Standard or Deep, and as a follow-up of the run
+  before it), which the server's own agent process, `envoy-dispatch agent`, works. The server
+  starts that process, starts it again after an exit, kills it above its memory ceiling or when it
+  stops renewing, and answers its calls over a Unix socket under a secret it made at its start
+  (agent/v1). The agent holds no Dispatch data and no Dispatch secret: every read and write of a
+  run is a call to the server, which makes it through its own route table as the run's person,
+  checked as that person's own request would be.
+  A run acts with a grant, recorded with no secret by the request that started it or approved its
+  plan: a sign-in, a sign-in through IAP, a personal agent token or the header identity. A
+  broker-issued token, the shared token and a service-account token are refused
+  `403 RUN_NEEDS_PERSON_CREDENTIAL`. A sign-out, an expired sign-in, a revoked token or a lost
+  membership stops the run at its next call, and an IAP grant ends with the run's working budget.
+  Each change of a run records the person as its actor, with `act.agent` `command-bar` and
+  `act.run` the run's id.
+  A run changes nothing but through a plan its person approves: its model proposes one row for each
+  change, with the item, the value now and the new value. `GET /api/v1/going/runs/{id}/plan` reads
+  the plan, and `POST /api/v1/going/runs/{id}/plan/approve` (each row's tick and edited values),
+  `.../plan/revise` (words for another plan) and `.../plan/reject` answer it. The server runs the
+  approved rows alone, in order, and refuses every other write of the run `WRITE_NOT_APPROVED`; a
+  row whose item changed since its approval waits again, and each row's change is made once, also
+  when the agent or the server dies during it. `GET` and `PUT /api/v1/me/going/settings` hold the
+  person's `mode`: in `ask`, the default, every row waits; in `auto_review` one model call lets
+  through the field, link, claim and title-only create rows the person's words ask for. In both
+  modes the person's own approvals, reviews, answers, decisions and check results, a change of a
+  setting, a message, a broadcast, a change the outbox would deliver to an agent session and a
+  change of an issue a session claims wait for the person. A message to an agent session is posted
+  on the issue the session works on.
+  `POST /api/v1/going/runs/{id}/undo` undoes one run while History lists it: it writes back the
+  values the run's changes found where the item still holds what the run left, and keeps and names
+  a later value another writer left; it releases a claim the run took, unfollows, reopens a thread
+  the run resolved, retracts an ask the run opened, rejects the run's open suggestions, closes the
+  issues the run created with no message, and names a message or a broadcast sent, not undone. So
+  that an undo reads what each change found and left, routes answer more of their own transaction:
+  `PATCH /api/v1/issues/{key}` answers `previous` and, for a rank, `rank_place`;
+  `PATCH /api/v1/asks/{id}` and `POST /api/v1/comments/{id}/resolve` answer `previous`; `POST` and
+  `DELETE /api/v1/issues/{key}/claim` answer `claim_changed` and `previous_claim`;
+  `POST /api/v1/artifacts/{id}/approval-requests` answers `opened`; the document edit routes answer
+  `previous_token` beside `token`; and the upload routes answer `previous_version`.
+  `GET /api/v1/going/runs/{id}` reads a run, `GET /api/v1/going/runs/{id}/events` streams its
+  frames from `Last-Event-ID`, and `POST /api/v1/going/runs/{id}/stop` stops it.
+  `GET /api/v1/me/going-runs` is History: the person's conversations while the newest run of each
+  is younger than seven days, with `?issue=` and `?q=`. `GET /api/v1/me/going-plans` lists the
+  plans that wait for the person, and the event `going_plan.updated` says that list changed.
+  The bar's line on top reads Ask, Do or File as a new issue: a key or an exact title gives its hit
+  with no model call, and other words go to a measured decision model (`DISPATCH_DECISION_MODEL`,
+  `DISPATCH_DECISION_MODEL_ENDPOINT` and `DISPATCH_DECISION_MODEL_TOKEN_FILE`, a model
+  `packages/envoy/going/decision_models.json` records), whose `decision` frame gives the line. The
+  short answer of a pause in typing calls the read tools, draws a typed block (`block`) from rows
+  the server reads itself, and stops at `POST /api/v1/going/requests/{id}/cancel`.
+  `GET /api/v1/projects/{key}/activity` counts a project's events per ISO week, and
+  `GET /api/v1/agents?limit=` lists the newest sessions alone. `/metrics` shows the server's and
+  the agent's memory and goroutines, the cache sizes, the runs by state, and the agent's slots,
+  stuck goroutines and kills for memory.
