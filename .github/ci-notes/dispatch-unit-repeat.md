@@ -33,17 +33,17 @@ matrix and these notes and no line of the test.
 
 ### What was measured, on 2026-11-20
 
-The step times of every leg of 18 runs of the workflow, read from
-`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 54 legs a
+The step times of every leg of 19 runs of the workflow, read from
+`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 57 legs a
 lane:
 
 - the ten runs before 11:00Z that day (runs 44681726917 to 44712651976, pull requests and
   hand-started runs on five branches, each a merge of its head with main or that head);
 - run 44726566359, started by hand at main `1c7c825367`;
-- seven runs at the heads of the pull request that set these budgets, all on main `5570d0acd2`:
+- eight runs at the heads of the pull request that set these budgets, all on main `5570d0acd2`:
   44751162563 (started by hand) and 44751677485 (the pull request's own) at its first head,
   44759854373 and 44759866208 at its second, 44770373346 at its third, 44796999569 (started by
-  hand) at its fourth, and 44808555733 at its fifth.
+  hand) at its fourth, 44808555733 at its fifth, and 44814644776 at its sixth.
 
 A leg stopped before Bun ended has no time of its own, and no report. Its time is estimated from
 its `bun.log`, which holds a result line for each row that ended: the step's time, times the
@@ -52,36 +52,40 @@ holds.
 
 | Lane | Legs whose Bun ended by itself | Legs stopped before Bun ended | Slowest | Old step budget |
 | --- | --- | --- | --- | --- |
-| web | 38, 726 to 1,954 s | 16, by the budget at 972 or 973 s, estimated at most 1,133 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
-| web-cold | 52, 94 to 158 s; 9 of them past the budget, so their steps failed with no row failed | 2, both by the budget at 132 s | 158 s, run 44751677485, round 1 | 2 minutes |
-| harness | 53, 1,071 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,565 s, run 44796999569, round 2 | 30 minutes |
+| web | 41, 726 to 1,954 s | 16, by the budget at 972 or 973 s, estimated at most 1,133 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
+| web-cold | 55, 94 to 158 s; 9 of them past the budget, so their steps failed with no row failed | 2, both by the budget at 132 s | 158 s, run 44751677485, round 1 | 2 minutes |
+| harness | 56, 1,071 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,565 s, run 44796999569, round 2 | 30 minutes |
 
 The web lane grew within the day: main's `a8067fcd51` (11:41Z) added
 `web/src/features/issue/useIssueDrafts.test.ts`, whose rows took 1,168 s together over a leg's 20
 runs, and its rows a run went from 6,296 (run 44726566359) to 6,462 (run 44751162563). So the
-seven runs on main `5570d0acd2` hold the slowest legs of every lane. The same suite's web legs took
-1,202 to 1,954 s across those seven runs: one runner can take 1.6 times another's time, which is
-the spread the margin of 2 is there for.
+eight runs on main `5570d0acd2` hold the slowest legs of every lane. The same suite's web legs
+took 1,202 to 1,954 s across those eight runs: one runner can take 1.6 times another's time,
+which is the spread the margin of 2 is there for.
 
-The harness lane's slowest leg is read over the 45 legs of the branches that change no harness
+The harness lane's slowest leg is read over the 48 legs of the branches that change no harness
 row. Pull request #4236 adds harness rows whose real-time waits take minutes, and its 9 legs took
 1,651 to 2,301 s; it sets its own harness budget, and 2,301 s is inside the deadline set here.
 
-The other steps took at most 37 s in a web leg (run 44751162563, round 3), 32 s in a web-cold leg
-(run 44770373346, round 2) and 229 s in a harness leg (run 44709413418, round 1, most of it zsh's
+The other steps took at most 37 s in a web leg (run 44751162563, round 3), 44 s in a web-cold leg
+(run 44814644776, round 1) and 229 s in a harness leg (run 44709413418, round 1, most of it zsh's
 install).
 
-The window grew three times after a head had set budgets from it, each time because a lane's
-budgets no longer kept the rule over every leg read:
+The window grew four times after a head had set budgets from it:
 
 - the runs at the pull request's first head read a web leg of 1,661 s, which its second head took
   in;
 - the runs at its second head read a web leg of 1,954 s and a harness leg of 1,496 s, which its
   third head took in;
 - the runs at its third and fourth heads read a web-cold leg whose other steps took 32 s and a
-  harness leg of 1,565 s, which its sixth head took in.
+  harness leg of 1,565 s, which its sixth head took in;
+- the run at its sixth head read a web-cold leg whose other steps took 44 s, which its seventh head
+  took in.
 
-Each head that took the legs in set every lane's budgets again by the rule.
+The first three times, a lane's budgets no longer kept the rule over every leg read, and the head
+that took the legs in set every lane's budgets again by the rule. The fourth time the rule still
+held, since 8 minutes and 2 × 44 s come to 568 s, under the web-cold job's 10 minutes: the seventh
+head changed the measurement beside the budget, and no budget.
 
 The largest job budget, 70 minutes for a web leg, is far inside GitHub's own limit for a job on a
 GitHub-hosted runner. GitHub's "Actions limits" page
