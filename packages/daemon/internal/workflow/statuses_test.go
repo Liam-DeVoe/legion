@@ -60,11 +60,12 @@ func seedSettlingRound(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // settledCI is what a ci-settled message of a settlement at head names of its checks and its
-// commit statuses: the checks that did not pass (notPassed), the statuses that did not pass
-// (statuses), and the count of the checks and statuses that passed.
+// commit statuses: the checks that did not pass (notPassed), the checks GitHub skipped (skipped),
+// the statuses that did not pass (statuses), and the count of the checks and statuses that passed.
 type settledCI struct {
 	passed    int
 	notPassed []texts.CheckConclusion
+	skipped   []string
 	statuses  []texts.StatusState
 }
 
@@ -76,7 +77,7 @@ func statusesTold(t *testing.T, roles []claim.Role, at phase.Phase, settled sett
 	told := settledTold(t, roles, at, "head", settled.passed, settled.notPassed...)
 	for i := range told {
 		rec := told[i].Record.(texts.CISettledRecord)
-		rec.NotPassedStatuses = settled.statuses
+		rec.Skipped, rec.NotPassedStatuses = settled.skipped, settled.statuses
 		told[i].Record = rec
 	}
 	return told

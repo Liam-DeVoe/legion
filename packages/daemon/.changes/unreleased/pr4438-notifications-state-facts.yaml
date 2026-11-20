@@ -4,11 +4,12 @@ body: |-
   on one list (`internal/texts`), rendered as `key: value` lines in one form, with an urgency for
   each reader. A text gives the facts of its event as fields and no step the reader's prompt already
   gives; a list names what its reader acts on and counts the rest. So a CI settlement, a review
-  round GitHub will not merge and the wake of a settlement name each check that did not pass
-  (`not_passed`) and each commit status in state `failure` or `error` (`not_passed_statuses`), and
-  count the checks and statuses that passed. A text about a person's act carries the person's words,
-  up to 4,000 UTF-16 units of one act or 1,000 of each of several, in a block of its own after the
-  facts; the intake keeps those words on the rows the texts are built from (migration
+  round GitHub will not merge and the wake of a settlement name each check that did not pass, by
+  GitHub's word for its run (`not_passed`), each check GitHub skipped (`skipped`), and each commit
+  status in state `failure` or `error` (`not_passed_statuses`), and count the checks and statuses
+  that passed. A text about a person's act carries the person's words, up to 4,000 UTF-16 units of
+  one act or 1,000 of each of several, in a block of its own after the facts; the intake keeps those
+  words on the rows the texts are built from (migration
   `20261118092930_person_words`). A notice is published with its kind's urgency, and a `low` text
   wakes no released pod. Of the role messages to a role whose pod is released, only a `low` one is
   left unpublished; a `med` one, such as a design gate's move, is published and wakes the role. A

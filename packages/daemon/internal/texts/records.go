@@ -32,9 +32,12 @@ type RoleHead struct {
 	Issue string `json:"issue"`
 }
 
-// CheckConclusion is one check that did not pass on a head: its name and its conclusion (failed
-// or cancelled). A list of them is the table of the checks that did not pass, and the checks
-// that passed are counted beside it.
+// CheckConclusion is one check that did not pass on a head: its name and its conclusion, the word
+// GitHub gave its run (failure, timed_out, cancelled, action_required and the rest) where the
+// settlement carried one, else failed or cancelled (dispatch://INFRA-4135 R1). A list of them is
+// the table of the checks that did not pass. A record names the checks GitHub skipped in a list
+// of their own (skipped), since a skipped check ran nothing on the head and is neither a pass nor
+// a failure, and counts the checks that passed beside both.
 type CheckConclusion struct {
 	Check      string `json:"check"`
 	Conclusion string `json:"conclusion"`

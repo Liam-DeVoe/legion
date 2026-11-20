@@ -1112,9 +1112,9 @@ func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.Pul
 				task.EndsRound = texts.EndsRound(stuck.Head)
 			}
 			if stuck.Cause == texts.CauseMergeState && pr != nil {
-				red, redStatuses, passed := notPassed(headRuns(*pr), headStatuses(*pr))
-				task.MergeState, task.NotPassed, task.NotPassedStatuses = stuck.MergeState, red, redStatuses
-				task.Passed, task.ListPassed = &passed, texts.ListPassed(pr.Repo, pr.Number)
+				tally := tallyChecks(headRuns(*pr), headStatuses(*pr))
+				task.MergeState, task.NotPassed, task.Skipped = stuck.MergeState, tally.notPassed, tally.skipped
+				task.NotPassedStatuses, task.Passed, task.ListPassed = tally.notPassedStatuses, &tally.passed, texts.ListPassed(pr.Repo, pr.Number)
 			}
 		}
 	}

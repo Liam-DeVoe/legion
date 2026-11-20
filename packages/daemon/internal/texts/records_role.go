@@ -13,14 +13,15 @@ import (
 
 // CISettledRecord is the CI settlement on a pull request's head (workflow's tellChecks): the pull
 // request, the head, the issue's phase (which the urgency rule reads), each check that did not
-// pass with its conclusion, each commit status that did not pass with its state, the count of the
-// checks and statuses that passed, and the command that lists them.
+// pass with its conclusion, each check GitHub skipped, each commit status that did not pass with
+// its state, the count of the checks and statuses that passed, and the command that lists them.
 type CISettledRecord struct {
 	RoleHead
 	PullRequest       string            `json:"pull_request"`
 	Head              string            `json:"head"`
 	Phase             phase.Phase       `json:"phase"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
+	Skipped           []string          `json:"skipped,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            int               `json:"passed"`
 	ListPassed        string            `json:"list_passed"`
@@ -51,15 +52,16 @@ type GateMovedRecord struct {
 
 // ApprovedRoundStuckRecord is the message to the reviewer that the round it approved is stuck
 // because GitHub will not merge the head (workflow's tellStuckMergeState): the pull request, the
-// head, its merge state, each check of that head that did not pass, each commit status of that
-// head that did not pass, the count of the checks and statuses that passed, and the command that
-// lists them.
+// head, its merge state, each check of that head that did not pass, each check of that head GitHub
+// skipped, each commit status of that head that did not pass, the count of the checks and statuses
+// that passed, and the command that lists them.
 type ApprovedRoundStuckRecord struct {
 	RoleHead
 	PullRequest       string            `json:"pull_request"`
 	Head              string            `json:"head"`
 	MergeState        string            `json:"merge_state"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
+	Skipped           []string          `json:"skipped,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            int               `json:"passed"`
 	ListPassed        string            `json:"list_passed"`

@@ -25,12 +25,13 @@ import (
 //   - A tick names its held and blocked lists and its 30 silent workers whole.
 //   - The CI settlement, the review-stuck reason of a head GitHub will not merge, and the
 //     settlement wake of a role the settlement woke (workflow.SettlementWake) each name the 25
-//     checks that failed or were cancelled and name `gh pr checks` with the pull request and its
-//     repository; the settlement and the wake name the phase. The head also carries 30 commit
-//     statuses (cybermonklabs/legion#4299), 3 of them in state failure or error: each text names
-//     the 3 with their states and counts the other 27 with the 35 checks that passed, 62 in all.
-//     The head has no skipped conclusion yet (dispatch://INFRA-4135's R1) and no awaiting-children
-//     notice (#4017): those parts land with them.
+//     checks that failed or were cancelled, each by GitHub's word for its run where the settlement
+//     carried one, name the 5 that GitHub skipped in a list of their own (dispatch://INFRA-4135's
+//     R1), and name `gh pr checks` with the pull request and its repository; the settlement and the
+//     wake name the phase. The head also carries 30 commit statuses (cybermonklabs/legion#4299), 3
+//     of them in state failure or error: each text names the 3 with their states and counts the
+//     other 27 with the 30 checks that passed, 57 in all. The head has no awaiting-children notice
+//     (#4017): that part lands with it.
 //   - An update round ask, and an update-stalled notice of that round, name the image by a short
 //     digest and each of the 30 settings by its key, with no value.
 func TestEveryListNamesWhatNeedsAction(t *testing.T) {
@@ -162,7 +163,7 @@ func TestEveryListNamesWhatNeedsAction(t *testing.T) {
 				t.Errorf("%s #%d names the checks %v that did not pass, want the 25 %v", settled.kind, r.n, named, checks.notPassed)
 			}
 			for i, name := range named {
-				want := string(checks.conclusionOf[name])
+				want := checks.conclusionOf[name]
 				if got := values[fmt.Sprintf("not_passed[%d].conclusion", i)]; got != want {
 					t.Errorf("%s #%d names %q %s, want %s", settled.kind, r.n, name, got, want)
 				}
@@ -177,8 +178,11 @@ func TestEveryListNamesWhatNeedsAction(t *testing.T) {
 					t.Errorf("%s #%d names the commit status %q %s, want %s", settled.kind, r.n, context, got, want)
 				}
 			}
-			if values["passed"] != "62" || checks.passed != 35 || checks.statusesPassed != 27 {
-				t.Errorf("%s #%d counts %s that passed, want the 35 checks and the 27 commit statuses, 62", settled.kind, r.n, values["passed"])
+			if skipped := list(values, "skipped"); !slices.Equal(skipped, checks.skipped) || len(skipped) != 5 {
+				t.Errorf("%s #%d names the checks %v skipped, want the 5 %v", settled.kind, r.n, skipped, checks.skipped)
+			}
+			if values["passed"] != "57" || checks.passed != 30 || checks.statusesPassed != 27 {
+				t.Errorf("%s #%d counts %s that passed, want the 30 checks and the 27 commit statuses, 57", settled.kind, r.n, values["passed"])
 			}
 			if want := fmt.Sprintf("gh pr checks %d --repo %s", settled.number, r.repo); values["list_passed"] != want {
 				t.Errorf("%s #%d lists them with %q, want %q", settled.kind, r.n, values["list_passed"], want)

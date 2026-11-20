@@ -15,7 +15,7 @@ import (
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
-// c7e1cbd5 or 3d2dddd0 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
+// c7e1cbd5, 3d2dddd0 or 6d50ef31 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
 // stand for any text), the readers, and the passage of the readers' prompt
 // (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
 // word for word from one line of the file.
@@ -48,6 +48,8 @@ var goldenSteps = []goldenStep{
 		goPrompts + "reviewer.md", "`stuck_round: approved-other-code` means that you approved a head whose code the current head may not carry, and `reviewed_head` names that approved head."},
 	{texts.PhaseAssignment, "the reviewer approved head %s on pull request #%d, and GitHub reports that head %s rather than one it would merge.", "reviewer",
 		goPrompts + "reviewer.md", "`stuck_round: merge-state` means that GitHub will not merge the head you approved, as an `approved-round-stuck` message says."},
+	{texts.PhaseAssignment, "; a skipped check ran nothing on this head", "reviewer",
+		goPrompts + "reviewer.md", "A skipped check ran nothing on this head, so it is no pass."},
 	{texts.PhaseResume, " Resume the existing phase work.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "A `phase-resume` task names a phase that is already under way: resume the work of that phase where it stands."},
 	{texts.CheckLook, "unknown, read it from the pull request on GitHub", "tester",
@@ -146,6 +148,10 @@ var goldenSteps = []goldenStep{
 		goPrompts + "worker-common.md", "read the checks before you decide anything."},
 	{texts.PodWake, ". Read the checks before you decide anything.", "architect",
 		goPrompts + "architect-common.md", "read the checks before you decide anything."},
+	{texts.PodWake, "; skipped %s: a skipped check ran nothing on this head", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "It names each check GitHub skipped (`skipped`): a skipped check ran nothing on this head, so it is no pass"},
+	{texts.PodWake, "; skipped %s: a skipped check ran nothing on this head", "architect",
+		goPrompts + "architect-common.md", "each check GitHub skipped (`skipped`: a skipped check ran nothing on this head, so it is no pass)"},
 	{texts.PodWake, "A message sent with keep: false is not kept, and its sender sends it again.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "A message sent with `keep: false` is not kept, and its sender sends it again."},
 	{texts.PodWake, "A message sent with keep: false is not kept, and its sender sends it again.", "architect",
@@ -296,6 +302,12 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-common.md", "you read it at your next turn: the worker that holds the phase re-runs a red that failed on itself."},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "architect",
 		goPrompts + "architect-common.md", "A red is yours to decide on — re-run it, wait for it, or have the implementer fix the code —"},
+	{texts.CISettled, "; a skipped check ran nothing on this head", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "It names each check GitHub skipped (`skipped`): a skipped check ran nothing on this head, so it is no pass, and it did not fail either."},
+	{texts.CISettled, "; a skipped check ran nothing on this head", "architect",
+		goPrompts + "architect-common.md", "each check GitHub skipped (`skipped`: a skipped check ran nothing on this head, so it is no pass)"},
+	{texts.CISettled, "; a skipped check ran nothing on this head", "reviewer",
+		goPrompts + "reviewer.md", "each check GitHub skipped (`skipped`: a skipped check ran nothing on this head, so it is no pass)"},
 	{texts.GateMoved, "and every step the deployment gates now stands open, so the design you are working to is the approved one. A merge the closed gate held is released.", "planner, implementer, tester, reviewer",
 		goPrompts + "worker-common.md", "so the design you work to is the approved one, and a merge that the closed gate held is released."},
 	{texts.GateMoved, "so the design you are working to may change. Your phase goes on; the merge waits until every gated step stands open again.", "planner, implementer, tester, reviewer",
@@ -310,6 +322,10 @@ var goldenSteps = []goldenStep{
 		goPrompts + "reviewer.md", "The daemon reads the base's rules only for a head that conflicts with its base, so a required check that never ran is absent from it, and that missing check is the thing to look for."},
 	{texts.ApprovedRoundStuck, "The daemon reads the base's rules only on a conflicting read and so names no required check: …, which makes the missing check the thing to look for.", "reviewer",
 		goPrompts + "reviewer.md", "The daemon reads the base's rules only for a head that conflicts with its base, so a required check that never ran is absent from it, and that missing check is the thing to look for."},
+	{texts.ApprovedRoundStuck, "; a skipped check ran nothing on this head", "reviewer",
+		goPrompts + "reviewer.md", "A skipped check ran nothing on this head, so it is no pass."},
+	{texts.ReviewStuck, "; a skipped check ran nothing on this head", "architect",
+		goPrompts + "architect-common.md", "Its `skipped` names each check of that head GitHub skipped: a skipped check ran nothing on this head, so it is no pass."},
 	{texts.MemoryKill, "The pod's other processes and your session go on. ", "planner, implementer, tester, reviewer, merger",
 		rolePrompts + "mechanics/headless.md", "With `cause: guard` or `cause: kernel`, the pod's other processes and your session go on."},
 	{texts.MemoryKill, "The pod's other processes and your session go on. ", "architect",

@@ -23,10 +23,28 @@ import (
 // it says (tellChecks). It moves nothing: a failed CI check is information the worker holding the
 // phase decides on - rerun, wait, or fix - and not the daemon's to read the semantics of
 // (dispatch://INFRA-714/spec R1).
+//
+// It runs for every settlement fact, after the wake (wakeOnSettlement), and each settlement it
+// does not apply is named by one INFO line once the fact commits, since a pull request whose head
+// got no CI message otherwise leaves nothing to say whether the daemon dropped its settlement or
+// never heard it (dispatch://INFRA-4135 R6): one that no recorded pull request matches
+// (intake.NoRecordedPullRequestLine, which the consumer writes for nearly every such settlement
+// before any transaction, so here it names a record gone by the time the fact applies); one that
+// stands for no head the record holds (classify.SettlementFor), with the record's head, the head
+// its checks stand at and whether a head run is open; and one of the head that the fence takes as
+// stale or conflicting (classify.ClassifySettlement), with the generation and snapshot the record
+// holds. A redelivery of a settlement already applied is no drop and logs nothing. Each line
+// begins with the settlement's identity (intake.SettlementIdentity), by which it is matched to
+// the listener's line that published the settlement, and is written once for each identity
+// (logDroppedSettlement).
 func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Role) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
-	if err != nil || pr == nil {
+	if err != nil {
 		return intake.Result{}, err
+	}
+	if pr == nil {
+		e.logDroppedSettlement(ctx, fact, intake.NoRecordedPullRequestLine)
+		return intake.Result{}, nil
 	}
 	// The listener settles every commit of the pull request, its head or not, and a settlement
 	// stands only for the commit it names: it is for the head only when it names the head. While a
@@ -40,6 +58,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	told := settledChecks(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
+		e.logUnappliedSettlement(ctx, fact, *pr, candidate)
 		if pr.Run != nil {
 			*pr = settled
 			if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
@@ -81,11 +100,47 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)
 }
 
-// settlementCandidate is fact as the pull request's settlement rules read it
-// (classify.ApplyCheckSettlement).
+// settlementCandidate is the settlement fact as the apply step reads it, and the one place it is
+// built from the fact: checks applies it, and the wake (wakeOnSettlement) asks the apply step
+// whether it applies before it wakes anyone, so the two read one candidate and cannot drift. It is
+// the fact as delivered: a list of commit statuses the decoder could not read is no status here,
+// whatever the wake's task names in its place.
 func settlementCandidate(fact intake.PullRequestChecks) classify.SettlementCandidate {
 	return classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
 		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
+}
+
+// logUnappliedSettlement names a settlement checks does not apply to pr, the record as it stood
+// before the settlement: one that stands for no head the record holds, and one of its head the
+// fence takes as stale or conflicting. Every other settlement not applied, the redelivery of one
+// applied (classify.SettlementDuplicate) among them, logs nothing.
+func (e *Engine) logUnappliedSettlement(ctx context.Context, fact intake.PullRequestChecks, pr record.PullRequest, candidate classify.SettlementCandidate) {
+	stood, stands := classify.SettlementFor(pr, candidate)
+	if !stands {
+		e.logDroppedSettlement(ctx, fact, "workflow: a checks settlement stands for no head the record holds",
+			"recorded_head", pr.HeadSHA, "checked_head", pr.CheckedHead, "head_run_open", pr.Run != nil, "issue", pr.Issue)
+		return
+	}
+	switch classified := classify.ClassifySettlement(stood, candidate); classified {
+	case classify.SettlementStale, classify.SettlementConflict:
+		e.logDroppedSettlement(ctx, fact, "workflow: a checks settlement of the head was not applied",
+			"classification", string(classified), "recorded_generation", stood.Generation, "recorded_snapshot", stood.Snapshot, "issue", pr.Issue)
+	}
+}
+
+// logDroppedSettlement writes msg at INFO once the fact's transaction commits, after the
+// settlement's identity and then args, unless the engine has logged a drop of the same settlement
+// already: one settlement delivered many times writes one line, and the identity is marked in the
+// commit's own hook, so a fact rolled back neither writes the line nor keeps its retry from
+// writing it (Engine.droppedSettlements).
+func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullRequestChecks, msg string, args ...any) {
+	identity := fact.Identity()
+	args = append(identity.Attributes(), args...)
+	intake.OnCommit(ctx, func() {
+		if e.droppedSettlements.Add(identity) {
+			e.log.Info(msg, args...)
+		}
+	})
 }
 
 // conflictConfirmWait is how long after a first CONFLICTING read of a head the read that can
@@ -262,31 +317,42 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 }
 
 // settledHead is what the CI settlement standing for a pull request's head says: the head it
-// settled on, each check it reports with the conclusion it reports for it, and each commit status
-// the record keeps for that head, in context order (settledChecks).
+// settled on, each check it reports with what the texts name it as (shownChecks), and each commit
+// status the record keeps for that head, in context order (settledChecks).
 type settledHead struct {
-	head        string
-	conclusions map[string]record.RunConclusion
-	statuses    []record.CommitStatus
+	head     string
+	shown    map[string]string
+	statuses []record.CommitStatus
 }
 
-// same is whether s and other say the same: one head, each check with one conclusion, and each
-// commit status context in one state. Two settlements that leave it the same say nothing new
+// same is whether s and other say the same: one head, each check named alike, and each commit
+// status context in one state. Two settlements that leave it the same say nothing new
 // (tellChecks): a newer status of a context in the state the record kept is no news
-// (dispatch://INFRA-1997's R6).
+// (dispatch://INFRA-1997's R6), while a settlement that changes only the word GitHub gave a run,
+// or makes a run skipped, is a new judgement of the head and is told (dispatch://INFRA-4135 R1).
 func (s settledHead) same(other settledHead) bool {
-	return s.head == other.head && maps.Equal(s.conclusions, other.conclusions) &&
+	return s.head == other.head && maps.Equal(s.shown, other.shown) &&
 		slices.EqualFunc(s.statuses, other.statuses, func(a, b record.CommitStatus) bool { return a.Context == b.Context && a.State == b.State })
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it
-// settled on, and each check it reports with the conclusion it reports for it; a settlement of no
-// head while none stands. A check the settlement names as failed failed, one it names as
-// cancelled was cancelled, and one it reports as a run and names neither way succeeded - the
-// listener settles a commit once every check it has seen is terminal. Nothing here judges those
-// conclusions: a job GitHub never started reads like any other, and what they mean for the work is
-// the reading worker's (dispatch://INFRA-714/spec R1). It is the whole of what the daemon knows of
-// that head's CI.
+// settled on, and each check it reports with what it came to; a settlement of no head while none
+// stands. A check the settlement names as failed failed, one it names as cancelled was cancelled,
+// one whose run GitHub skipped (record.RunSkipped) was skipped, and one it reports as a run and
+// names no other way succeeded - the listener settles a commit once every check it has seen is
+// terminal. Nothing here judges those conclusions: a job GitHub never started is named skipped and
+// decides nothing, and what they mean for the work is the reading worker's
+// (dispatch://INFRA-714/spec R1). It is the whole of what the daemon knows of that head's CI.
+//
+// Each check is named by the word GitHub gave its run (record.AttemptRun.GitHubConclusion) where
+// the settlement carried one, and by the daemon's conclusion where it did not (shownAs). GitHub's
+// word is what tells a check that ran from one that did not, where the daemon's conclusion takes
+// every run that neither failed nor was cancelled as succeeded or skipped. A skipped check ran
+// nothing on the head, and a role that read it as a pass would believe a suite held back for the
+// merge queue passed on a head where it never ran (dispatch://INFRA-4135 R1), so the texts name it
+// apart from the checks that passed and from those that did not (tallyChecks). A settlement that
+// carries no word and names no run skipped, as a listener of an earlier release sends, names each
+// check by its conclusion, as the daemon did before it read either.
 //
 // Each name's conclusion is the newest run of it among the settlements of the head the fence
 // stands at, which is what the record holds (classify.SettlementFor): a settlement stands only
@@ -302,18 +368,21 @@ func settledChecks(pr record.PullRequest) settledHead {
 	if pr.CheckedHead == "" {
 		return settledHead{}
 	}
-	return settledHead{head: pr.CheckedHead, conclusions: checkConclusions(pr.CheckRuns, pr.Cancelled, pr.Failing),
+	return settledHead{head: pr.CheckedHead, shown: shownChecks(pr.CheckRuns, pr.Cancelled, pr.Failing),
 		statuses: keptStatuses(pr, pr.CheckedHead)}
 }
 
 // checkConclusions is each check a settlement reports, by name, with what it concluded: a run it
-// names neither cancelled nor failing passed, and a name in both failed. It is the one reading of
-// a settlement's lists, which the record's settlement (settledChecks) and the settlement that
-// wakes a released pod (SettlementWake) share.
+// names neither cancelled nor failing passed, or was skipped where its run is (record.RunSkipped),
+// and a name in both failed. It is the one reading of a settlement's lists, which the record's
+// settlement (settledChecks) and the settlement that wakes a released pod (SettlementWake) share.
 func checkConclusions(runs []record.AttemptRun, cancelled, failing []string) map[string]record.RunConclusion {
 	conclusions := make(map[string]record.RunConclusion, len(runs)+len(cancelled)+len(failing))
 	for _, run := range runs {
 		conclusions[run.Name] = record.RunSucceeded
+		if run.Conclusion == record.RunSkipped {
+			conclusions[run.Name] = record.RunSkipped
+		}
 	}
 	for _, name := range cancelled {
 		conclusions[name] = record.RunCancelled
@@ -324,43 +393,119 @@ func checkConclusions(runs []record.AttemptRun, cancelled, failing []string) map
 	return conclusions
 }
 
-// notPassed is each check of conclusions that did not pass, failed or cancelled, with its
-// conclusion in name order, each commit status of statuses that did not pass, in state failure or
-// error (record.CommitStatus.Failed), with its state in context order, and the count of the
-// checks and the statuses that passed. A check run's name and a status's context are whoever wrote
-// the workflow's text, and each is a field of its own here, which the card's encoder quotes where
-// it must.
-func notPassed(conclusions map[string]record.RunConclusion, statuses []record.CommitStatus) ([]texts.CheckConclusion, []texts.StatusState, int) {
-	var red []texts.CheckConclusion
-	passed := 0
-	for _, name := range slices.Sorted(maps.Keys(conclusions)) {
-		if conclusion := conclusions[name]; conclusion == record.RunSucceeded {
-			passed++
-		} else {
-			red = append(red, texts.CheckConclusion{Check: name, Conclusion: string(conclusion)})
-		}
+// shownChecks is each check a settlement reports, by name, with what the texts name it as: its
+// conclusion (checkConclusions), or the word GitHub gave its run where the settlement carried one
+// (shownAs). The fence holds one run per name (classify's mergeAttemptSets), the run that decided
+// it, and a settlement holds one run per name too.
+func shownChecks(runs []record.AttemptRun, cancelled, failing []string) map[string]string {
+	conclusions := checkConclusions(runs, cancelled, failing)
+	shown := make(map[string]string, len(conclusions))
+	for name, conclusion := range conclusions {
+		shown[name] = string(conclusion)
 	}
-	var redStatuses []texts.StatusState
-	for _, status := range statuses {
-		if status.Failed() {
-			redStatuses = append(redStatuses, texts.StatusState{Context: status.Context, State: string(status.State)})
-		} else {
-			passed++
-		}
+	for _, run := range runs {
+		shown[run.Name] = shownAs(run, conclusions[run.Name])
 	}
-	slices.SortFunc(redStatuses, func(a, b texts.StatusState) int { return strings.Compare(a.Context, b.Context) })
-	return red, redStatuses, passed
+	return shown
 }
 
-// headRuns is every check run GitHub reported on the pull request's current head with what that
-// run concluded (classify.HeadRuns), by name.
-func headRuns(pr record.PullRequest) map[string]record.RunConclusion {
-	runs := classify.HeadRuns(pr)
-	conclusions := make(map[string]record.RunConclusion, len(runs))
-	for _, run := range runs {
-		conclusions[run.Name] = run.Conclusion
+// shownAs is what a text names run's check as, conclusion being what the text concludes the check
+// came to: the word GitHub gave the run (record.AttemptRun.GitHubConclusion) where the settlement
+// carried one and the run's own conclusion is that conclusion, and the conclusion otherwise. The
+// word is the run's, so it names the check only where that run is what decided it: a name the
+// settlement's lists give another conclusion than its run's is named by the lists' conclusion, and
+// a run with no word - from a listener that sends none, or a word the decoder refused - by the
+// daemon's conclusion, as before the daemon kept a word. A run of a settlement not yet applied
+// carries no conclusion of its own but skipped (intake's decodeChecks; the wake reads it so,
+// SettlementWake), and its word names it as the stored run's would. A check the lists name failed
+// or cancelled is that, and never skipped or passed, whatever its run's word: the lists are what
+// the decisions read (dispatch://INFRA-4135 R2). The word needs no quoting: the decoder keeps only
+// a word of lower-case letters and underscores (intake's conclusionWord).
+func shownAs(run record.AttemptRun, conclusion record.RunConclusion) string {
+	if run.GitHubConclusion == "" || (run.Conclusion != "" && run.Conclusion != conclusion) {
+		return string(conclusion)
 	}
-	return conclusions
+	if conclusion == record.RunFailed || conclusion == record.RunCancelled {
+		switch run.GitHubConclusion {
+		case string(record.RunSkipped), wordSuccess, wordNeutral:
+			return string(conclusion)
+		}
+	}
+	return run.GitHubConclusion
+}
+
+// The words GitHub gives a check run that passed (dispatch://INFRA-4135 R1): a check named by
+// either, or by the daemon's conclusion succeeded where its run carries no word, counts as passed.
+const (
+	wordSuccess = "success"
+	wordNeutral = "neutral"
+)
+
+// checkTally is what a text of a head's CI states of its checks and commit statuses
+// (dispatch://INFRA-3686 R3): each check that did not pass with what it came to, each check
+// GitHub skipped, each commit status that did not pass with its state, and the count of the
+// checks and statuses that passed.
+type checkTally struct {
+	notPassed         []texts.CheckConclusion
+	skipped           []string
+	notPassedStatuses []texts.StatusState
+	passed            int
+}
+
+// tallyChecks is the checkTally of the checks shown names (shownChecks, headRuns) and of
+// statuses. A check named success or neutral, or succeeded, passed, and is counted. A check named
+// skipped ran nothing on the head, so it is no pass, and it neither failed nor was cancelled: it
+// is named in the list of skipped checks, in name order. Every other check did not pass, and is
+// named with what it came to - GitHub's word where the settlement carried one, else failed or
+// cancelled - in name order. A commit status in state failure or error
+// (record.CommitStatus.Failed) did not pass and is named with its state, in context order, and
+// every other status is counted with the checks that passed. A check run's name and a status's
+// context are whoever wrote the workflow's text, and each is a field of its own here, which the
+// card's encoder quotes where it must.
+func tallyChecks(shown map[string]string, statuses []record.CommitStatus) checkTally {
+	var tally checkTally
+	for _, name := range slices.Sorted(maps.Keys(shown)) {
+		switch word := shown[name]; word {
+		case wordSuccess, wordNeutral, string(record.RunSucceeded):
+			tally.passed++
+		case string(record.RunSkipped):
+			tally.skipped = append(tally.skipped, name)
+		default:
+			tally.notPassed = append(tally.notPassed, texts.CheckConclusion{Check: name, Conclusion: word})
+		}
+	}
+	for _, status := range statuses {
+		if status.Failed() {
+			tally.notPassedStatuses = append(tally.notPassedStatuses, texts.StatusState{Context: status.Context, State: string(status.State)})
+		} else {
+			tally.passed++
+		}
+	}
+	slices.SortFunc(tally.notPassedStatuses, func(a, b texts.StatusState) int { return strings.Compare(a.Context, b.Context) })
+	return tally
+}
+
+// headRuns is every check run GitHub reported on the pull request's current head with what the
+// texts name it as (shownAs: GitHub's word where the settlement carried one, else the run's
+// conclusion), by name. It is what the texts of a head GitHub will not merge name, where the
+// settlement's own checks would not be true: a settlement standing for the head can be of the code
+// head below it, and a name whose newest run is there ran on other heads of the tree and not on
+// this one. What GitHub weighs for the merge is the current head, so that is the head whose checks
+// those texts name, and a required check whose run is missing here is the thing its reader looks
+// for.
+//
+// Each run of the fence carries the head it ran on and its conclusion (record.AttemptRun), so
+// this is a reading of the fence and not of a settlement, through classify.HeadRuns, the one test
+// of a run's head the daemon's readers share: a check run on this head that a newer run of the
+// same name on another head has replaced in the fence is not named, and nor is a run stored before
+// the fence carried its head.
+func headRuns(pr record.PullRequest) map[string]string {
+	runs := classify.HeadRuns(pr)
+	shown := make(map[string]string, len(runs))
+	for _, run := range runs {
+		shown[run.Name] = shownAs(run, run.Conclusion)
+	}
+	return shown
 }
 
 // headStatuses is every commit status the record keeps for the pull request's current head
@@ -462,15 +607,15 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 
 // CISettledMessage is the ci-settled message of issue for the settlement standing for pr's head
 // (settledChecks): the pull request, the head it settled on, the issue's phase (at), each check
-// that failed or was cancelled with its conclusion, each commit status the record keeps for that
-// head in state failure or error with its state, the count of the checks and statuses that passed,
-// and the command that lists them all.
+// that did not pass with what it came to, each check GitHub skipped, each commit status the record
+// keeps for that head in state failure or error with its state, the count of the checks and
+// statuses that passed, and the command that lists them all (tallyChecks).
 func CISettledMessage(issue string, pr record.PullRequest, at phase.Phase) texts.CISettledRecord {
 	settled := settledChecks(pr)
-	red, redStatuses, passed := notPassed(settled.conclusions, settled.statuses)
+	tally := tallyChecks(settled.shown, settled.statuses)
 	return texts.CISettledRecord{RoleHead: texts.RoleHead{Kind: texts.CISettled, Issue: issue}, PullRequest: pullRequestRef(pr),
-		Head: settled.head, Phase: at, NotPassed: red, NotPassedStatuses: redStatuses, Passed: passed,
-		ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
+		Head: settled.head, Phase: at, NotPassed: tally.notPassed, Skipped: tally.skipped, NotPassedStatuses: tally.notPassedStatuses,
+		Passed: tally.passed, ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
@@ -1146,18 +1291,19 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the first names the reason the daemon set a review aside that would otherwise have decided it
 // (setAside), the only thing that says why the round has no decision. A round GitHub will not
 // merge from names the merge state GitHub reports for the head, each check run GitHub reported on
-// that head that failed or was cancelled, each commit status the record keeps for that head in
-// state failure or error, where the checked head is that head (headStatuses), the count of the
-// checks and statuses that passed, and the command that lists them: the daemon reads no ruleset,
-// so a check the base requires that never ran is in none of them.
+// that head that did not pass with what it came to, each one GitHub skipped, each commit status
+// the record keeps for that head in state failure or error, where the checked head is that head
+// (headStatuses), the count of the checks and statuses that passed, and the command that lists
+// them (tallyChecks): the daemon reads no ruleset, so a check the base requires that never ran is
+// in none of them.
 func ReviewStuckNotice(issue string, pr record.PullRequest, cause, by, topic, approved, setAside string) texts.ReviewStuckRecord {
 	stuck := texts.ReviewStuckRecord{NoticeHead: texts.NoticeHead{Kind: texts.ReviewStuck, Issue: issue}, Role: claim.RoleReviewer,
 		Phase: phase.Reviewing, Summary: by, Topic: topic, Cause: cause, PullRequest: pullRequestRef(pr), Head: pr.HeadSHA,
 		ApprovedHead: approved, SetAside: setAside}
 	if cause == texts.CauseMergeState {
-		red, redStatuses, passed := notPassed(headRuns(pr), headStatuses(pr))
-		stuck.MergeState, stuck.NotPassed, stuck.NotPassedStatuses = string(pr.MergeState), red, redStatuses
-		stuck.Passed, stuck.ListPassed = &passed, texts.ListPassed(pr.Repo, pr.Number)
+		tally := tallyChecks(headRuns(pr), headStatuses(pr))
+		stuck.MergeState, stuck.NotPassed, stuck.Skipped = string(pr.MergeState), tally.notPassed, tally.skipped
+		stuck.NotPassedStatuses, stuck.Passed, stuck.ListPassed = tally.notPassedStatuses, &tally.passed, texts.ListPassed(pr.Repo, pr.Number)
 	} else {
 		stuck.EndsRound = texts.EndsRound(pr.HeadSHA)
 	}
@@ -1166,15 +1312,15 @@ func ReviewStuckNotice(issue string, pr record.PullRequest, cause, by, topic, ap
 
 // ApprovedRoundStuckMessage is the approved-round-stuck message of issue to its reviewer, whose
 // approval of pr's head GitHub will not merge from: the pull request, the head, the merge state
-// GitHub reports for it, each check run GitHub reported on that head that failed or was
-// cancelled, each commit status the record keeps for that head in state failure or error
-// (headStatuses), the count of the checks and statuses that passed, and the command that lists
-// them.
+// GitHub reports for it, each check run GitHub reported on that head that did not pass with what
+// it came to, each one GitHub skipped, each commit status the record keeps for that head in state
+// failure or error (headStatuses), the count of the checks and statuses that passed, and the
+// command that lists them (tallyChecks).
 func ApprovedRoundStuckMessage(issue string, pr record.PullRequest) texts.ApprovedRoundStuckRecord {
-	red, redStatuses, passed := notPassed(headRuns(pr), headStatuses(pr))
+	tally := tallyChecks(headRuns(pr), headStatuses(pr))
 	return texts.ApprovedRoundStuckRecord{RoleHead: texts.RoleHead{Kind: texts.ApprovedRoundStuck, Issue: issue}, PullRequest: pullRequestRef(pr),
-		Head: pr.HeadSHA, MergeState: string(pr.MergeState), NotPassed: red, NotPassedStatuses: redStatuses, Passed: passed,
-		ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
+		Head: pr.HeadSHA, MergeState: string(pr.MergeState), NotPassed: tally.notPassed, Skipped: tally.skipped,
+		NotPassedStatuses: tally.notPassedStatuses, Passed: tally.passed, ListPassed: texts.ListPassed(pr.Repo, pr.Number)}
 }
 
 // tellStuckMergeState tells the architect and the reviewer of the one stuck cause a review

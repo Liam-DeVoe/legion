@@ -520,8 +520,8 @@ const (
 // word), the pull request and the head, the head the reviewer approved where it is not the head,
 // the review that ends the round (EndsRound, which keeps APPROVE of head <sha>), the reason the
 // daemon set a review aside, and, for a head GitHub will not merge, its merge state, the checks and
-// the commit statuses of that head that did not pass, the count of the checks and statuses that
-// passed and the command that lists them.
+// the commit statuses of that head that did not pass, the checks of that head GitHub skipped, the
+// count of the checks and statuses that passed and the command that lists them.
 type ReviewStuckRecord struct {
 	NoticeHead
 	Role              claim.Role        `json:"role,omitempty"`
@@ -536,6 +536,7 @@ type ReviewStuckRecord struct {
 	SetAside          string            `json:"set_aside,omitempty"`
 	MergeState        string            `json:"merge_state,omitempty"`
 	NotPassed         []CheckConclusion `json:"not_passed,omitempty"`
+	Skipped           []string          `json:"skipped,omitempty"`
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int              `json:"passed,omitempty"`
 	ListPassed        string            `json:"list_passed,omitempty"`

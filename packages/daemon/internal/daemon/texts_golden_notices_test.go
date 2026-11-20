@@ -288,9 +288,9 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	checks := goldenChecks(r, "stuck")
 	b.notice(r, "merge-state", arch, workflow.ReviewStuckNotice(issue.Key, stuck, texts.CauseMergeState,
 		[]string{texts.StuckByMergeState, texts.StuckByMerge}[r.n-1], "", "", ""),
-		checks.statusFacts(goldenWant("issue", issue.Key, "role", claim.RoleReviewer, "phase", phase.Reviewing, "cause", texts.CauseMergeState,
+		checks.skippedFacts(checks.statusFacts(goldenWant("issue", issue.Key, "role", claim.RoleReviewer, "phase", phase.Reviewing, "cause", texts.CauseMergeState,
 			"pull_request", stuckRef, "head", stuck.HeadSHA, "merge_state", string(stuck.MergeState),
-			"list_passed", texts.ListPassed(r.repo, stuck.Number))))
+			"list_passed", texts.ListPassed(r.repo, stuck.Number)))))
 	session := "session-" + r.id("reasserted")
 	b.notice(r, "reasserted", arch, workflow.StatusReassertedNotice(issue.Key, session, "done", "testing"),
 		goldenWant("issue", issue.Key, "session", session, "wrote", "done", "status", "testing"))
@@ -514,17 +514,17 @@ func goldenDrift(r goldenRendering) []runtime.DriftItem {
 func (b *goldenBuild) roleMessages(r goldenRendering) {
 	issue := r.key(260)
 
-	// ci-settled: a head of 60 checks, 25 of which failed or were cancelled, and 30 commit
-	// statuses, 3 of which are in state failure or error, told to the worker of the phase and to
-	// the architect.
+	// ci-settled: a head of 60 checks, 25 of which failed or were cancelled and 5 of which GitHub
+	// skipped, and 30 commit statuses, 3 of which are in state failure or error, told to the worker
+	// of the phase and to the architect.
 	{
 		checks := goldenChecks(r, "settled")
 		pr := record.PullRequest{Repo: r.repo, Number: 1000 + r.n, HeadSHA: checks.head, CheckedHead: checks.head, CheckRuns: checks.runs,
 			Failing: checks.failing, Cancelled: checks.cancelled, Statuses: checks.statuses}
 		at := []phase.Phase{phase.Testing, phase.Reviewing}[r.n-1]
 		reader := phase.RoleFor(at)
-		want := checks.statusFacts(goldenWant("issue", issue, "pull_request", texts.PullRequestRef(r.repo, pr.Number), "head", checks.head, "phase", at,
-			"list_passed", texts.ListPassed(r.repo, pr.Number), "not_passed#", len(checks.notPassed)))
+		want := checks.skippedFacts(checks.statusFacts(goldenWant("issue", issue, "pull_request", texts.PullRequestRef(r.repo, pr.Number), "head", checks.head, "phase", at,
+			"list_passed", texts.ListPassed(r.repo, pr.Number), "not_passed#", len(checks.notPassed))))
 		b.roleMessage(r, "settled", reader, issue, workflow.CISettledMessage(issue, pr, at),
 			texts.UrgencyOf(texts.CISettled, reader, texts.Variant{Phase: at}), want)
 	}
@@ -552,8 +552,8 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 		checks := goldenChecks(r, "stuck")
 		b.roleMessage(r, "merge-state", claim.RoleReviewer, issue, workflow.ApprovedRoundStuckMessage(issue, stuck),
 			texts.UrgencyOf(texts.ApprovedRoundStuck, claim.RoleReviewer, texts.Variant{}),
-			checks.statusFacts(goldenWant("issue", issue, "pull_request", texts.PullRequestRef(r.repo, stuck.Number), "head", stuck.HeadSHA,
-				"merge_state", string(stuck.MergeState), "list_passed", texts.ListPassed(r.repo, stuck.Number))))
+			checks.skippedFacts(checks.statusFacts(goldenWant("issue", issue, "pull_request", texts.PullRequestRef(r.repo, stuck.Number), "head", stuck.HeadSHA,
+				"merge_state", string(stuck.MergeState), "list_passed", texts.ListPassed(r.repo, stuck.Number)))))
 	}
 
 	// memory-kill: the guard's kill and the kernel's.

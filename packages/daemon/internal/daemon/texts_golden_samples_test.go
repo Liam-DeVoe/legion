@@ -417,7 +417,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 			round.MergeState = string([]record.MergeState{record.MergeStateBlocked, record.MergeStateBehind}[r.n-1])
 			want["merge_state"], want["not_passed#"] = round.MergeState, strconv.Itoa(len(checks.notPassed))
 			want["list_passed"] = texts.ListPassed(r.repo, request.Number)
-			checks.statusFacts(want)
+			checks.skippedFacts(checks.statusFacts(want))
 		}
 		if stuck.ends {
 			want["ends_round"] = "APPROVE of head " + head
@@ -673,9 +673,9 @@ func (b *goldenBuild) podWakes(r goldenRendering) {
 	settled := workflow.SettlementWake(issue, phase.Testing, r.repo, intake.PullRequestChecks{Repo: r.repo, Number: 500 + r.n,
 		HeadSHA: r.sha("wake/head"), CheckRuns: checks.runs, Failing: checks.failing, Cancelled: checks.cancelled, Statuses: checks.statuses})
 	settled.StoppedBy = stoppedBy
-	want := checks.statusFacts(goldenWant("issue", issue, "wake", pods.WakeChecks, "stopped_by", stoppedBy,
+	want := checks.skippedFacts(checks.statusFacts(goldenWant("issue", issue, "wake", pods.WakeChecks, "stopped_by", stoppedBy,
 		"pull_request", texts.PullRequestRef(r.repo, 500+r.n), "head", r.sha("wake/head"),
-		"phase", phase.Testing, "list_passed", texts.ListPassed(r.repo, 500+r.n), "not_passed#", len(checks.notPassed)))
+		"phase", phase.Testing, "list_passed", texts.ListPassed(r.repo, 500+r.n), "not_passed#", len(checks.notPassed))))
 	b.task(r, "checks", claim.RoleTester, issue, settled, want)
 	token := r.token(b.t, issue, claim.RoleImplementer)
 	b.taskText(r, texts.PodWake, "role-message", claim.RoleImplementer, issue, workflow.WakeTask(issue, pods.WakeRoleMessage, string(token), stop),
@@ -689,22 +689,28 @@ func (b *goldenBuild) podWakes(r goldenRendering) {
 }
 
 // goldenChecks is a head's 60 check runs: 15 that failed and 10 that were cancelled, the 25 that
-// did not pass, and 35 that passed (the head has no skipped conclusion yet,
-// dispatch://INFRA-4135's R1, so none is skipped). Hostile names are among them. Beside them the
-// head carries 30 commit statuses (cybermonklabs/legion#4299, dispatch://INFRA-1997's R7), each
-// stamped with the head as the pull request keeps it: 3 in state failure or error, the ones that
-// did not pass, a hostile context among them, and 27 that passed, in context order.
+// did not pass, 5 that GitHub skipped (dispatch://INFRA-4135's R1), and 30 that passed. The first
+// rendering's runs each carry the word GitHub gave them, as the listener sends it since
+// cybermonklabs/legion#4541 - failure or timed_out, cancelled, skipped, success or neutral - and a
+// text names a check that did not pass by that word; the second rendering's carry none, as a
+// listener of an earlier release sends them, and a text names such a check by the daemon's
+// conclusion. Hostile names are among them. Beside them the head carries 30 commit statuses
+// (cybermonklabs/legion#4299, dispatch://INFRA-1997's R7), each stamped with the head as the pull
+// request keeps it: 3 in state failure or error, the ones that did not pass, a hostile context
+// among them, and 27 that passed, in context order.
 type goldenCheckRuns struct {
 	runs               []record.AttemptRun
 	failing, cancelled []string
 	notPassed          []string
+	skipped            []string
 	passed             int
-	conclusionOf       map[string]record.RunConclusion
-	head               string
-	statuses           []record.CommitStatus
-	notPassedStatuses  []string
-	statusesPassed     int
-	stateOf            map[string]record.CommitStatusState
+	// conclusionOf is what a text names each check as: its word, else its conclusion.
+	conclusionOf      map[string]string
+	head              string
+	statuses          []record.CommitStatus
+	notPassedStatuses []string
+	statusesPassed    int
+	stateOf           map[string]record.CommitStatusState
 }
 
 // allPassed is the count of the checks and the commit statuses of the head that passed, which
@@ -712,7 +718,7 @@ type goldenCheckRuns struct {
 func (c goldenCheckRuns) allPassed() int { return c.passed + c.statusesPassed }
 
 func goldenChecks(r goldenRendering, label string) goldenCheckRuns {
-	checks := goldenCheckRuns{head: r.sha(label + "/head"), conclusionOf: map[string]record.RunConclusion{},
+	checks := goldenCheckRuns{head: r.sha(label + "/head"), conclusionOf: map[string]string{},
 		stateOf: map[string]record.CommitStatusState{}}
 	hostile := goldenHostile[r.n-1]
 	for i := range 60 {
@@ -720,15 +726,24 @@ func goldenChecks(r goldenRendering, label string) goldenCheckRuns {
 		if i < len(hostile) && hostile[i] != "" {
 			name = hostile[i] + fmt.Sprintf(" %02d", i)
 		}
-		conclusion := record.RunSucceeded
+		conclusion, word := record.RunSucceeded, []string{"success", "neutral"}[i%2]
 		switch {
 		case i%12 < 3:
-			conclusion = record.RunFailed
+			conclusion, word = record.RunFailed, []string{"failure", "timed_out"}[i%2]
 		case i%12 < 5:
-			conclusion = record.RunCancelled
+			conclusion, word = record.RunCancelled, "cancelled"
+		case i%12 == 5:
+			conclusion, word = record.RunSkipped, "skipped"
 		}
-		checks.runs = append(checks.runs, record.AttemptRun{Name: name, ID: int64(1000*r.n + i), Head: checks.head, Conclusion: conclusion})
-		checks.conclusionOf[name] = conclusion
+		if r.n != 1 {
+			word = ""
+		}
+		checks.runs = append(checks.runs, record.AttemptRun{Name: name, ID: int64(1000*r.n + i), Head: checks.head, Conclusion: conclusion,
+			GitHubConclusion: word})
+		checks.conclusionOf[name] = string(conclusion)
+		if word != "" {
+			checks.conclusionOf[name] = word
+		}
 		switch conclusion {
 		case record.RunFailed:
 			checks.failing = append(checks.failing, name)
@@ -736,11 +751,14 @@ func goldenChecks(r goldenRendering, label string) goldenCheckRuns {
 		case record.RunCancelled:
 			checks.cancelled = append(checks.cancelled, name)
 			checks.notPassed = append(checks.notPassed, name)
+		case record.RunSkipped:
+			checks.skipped = append(checks.skipped, name)
 		default:
 			checks.passed++
 		}
 	}
 	slices.Sort(checks.notPassed)
+	slices.Sort(checks.skipped)
 	for i := range 30 {
 		statusContext := fmt.Sprintf("status/%s-%02d %s", r.words(label+"/status", 3+r.n), i, r.words(fmt.Sprintf("%s/status/%d", label, i), 6))
 		if i == 3 {
@@ -764,6 +782,14 @@ func goldenChecks(r goldenRendering, label string) goldenCheckRuns {
 	slices.SortFunc(checks.statuses, func(a, b record.CommitStatus) int { return strings.Compare(a.Context, b.Context) })
 	slices.Sort(checks.notPassedStatuses)
 	return checks
+}
+
+// skippedFacts is the want of a sample that names the head's checks GitHub skipped (skipped): their
+// count and the first of them.
+func (c goldenCheckRuns) skippedFacts(want map[string]string) map[string]string {
+	want["skipped#"] = strconv.Itoa(len(c.skipped))
+	want["skipped[0]"] = c.skipped[0]
+	return want
 }
 
 // statusFacts is the want of a sample that names the head's commit statuses that did not pass

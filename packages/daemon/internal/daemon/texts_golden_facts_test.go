@@ -34,6 +34,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"head", "pull_request", "merge_state", "not_passed#", "passed", "list_passed"}},
 	{kind: texts.PhaseAssignment, variants: []string{"stuck-merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks, namedStatuses at 1cb6615c (each commit status of the head, with its state)",
 		keys: goldenStatusKeys},
+	{kind: texts.PhaseAssignment, variants: []string{"stuck-merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks, shownAs at 6d50ef31 (each check run of the head GitHub skipped, named skipped)",
+		keys: goldenSkippedKeys},
 	{kind: texts.PhaseResume, from: "workflow/effects.go:ResumePhaseTask, continueLine",
 		keys: []string{"issue", "title", "phase"}},
 	{kind: texts.RootResume, from: "workflow/awaiting_reconcile.go:resumeTask (the root, the gate's version, open or closed, armed)",
@@ -78,6 +80,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"head", "pull_request", "not_passed#"}},
 	{kind: texts.PodWake, variants: []string{"checks"}, from: "workflow/wake.go:settlementDetail at 1cb6615c (each failed commit status)",
 		keys: goldenStatusKeys},
+	{kind: texts.PodWake, variants: []string{"checks"}, from: "workflow/wake.go:settlementDetail at 6d50ef31 (each check GitHub skipped)",
+		keys: goldenSkippedKeys},
 	{kind: texts.PodWake, variants: []string{"role-message"}, from: "workflow/wake.go:WakeTask (the role topic)",
 		keys: []string{"topic"}},
 	{kind: texts.PodWake, variants: []string{"agent-message"}, from: "workflow/wake.go:WakeTask (the session)",
@@ -213,6 +217,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"merge_state", "passed"}},
 	{kind: texts.ReviewStuck, variants: []string{"merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks, namedStatuses at 1cb6615c (each commit status of the head, with its state)",
 		keys: goldenStatusKeys},
+	{kind: texts.ReviewStuck, variants: []string{"merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks, shownAs at 6d50ef31 (each check run of the head GitHub skipped, named skipped)",
+		keys: goldenSkippedKeys},
 	{kind: texts.StatusReasserted, from: "workflow/engine.go:sessionStatusWrite (the session, the status it wrote, the status set back)",
 		keys: []string{"issue", "session", "wrote", "status"}},
 	{kind: texts.VolumeNearFull, from: "workflow/engine.go:volumeNearFull, VolumeNearFullNotice at 708ca88c (the pod, the volume's last reading, why the sweep stopped)",
@@ -275,12 +281,16 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"issue", "pull_request", "head", "not_passed#"}},
 	{kind: texts.CISettled, from: "workflow/review.go:settledChecks, namedStatuses at 1cb6615c (each commit status of the checked head, with its state)",
 		keys: goldenStatusKeys},
+	{kind: texts.CISettled, from: "workflow/review.go:settledChecks, shownAs at 6d50ef31 (each check GitHub skipped, named skipped)",
+		keys: goldenSkippedKeys},
 	{kind: texts.GateMoved, from: "workflow/gate.go:tellGateMoved (the gate, the version, the document)",
 		keys: []string{"issue", "gate", "version", "artifact"}, links: []string{"document"}},
 	{kind: texts.ApprovedRoundStuck, from: "workflow/review.go:tellStuckMergeState, stuckMergeStateReason (the head, the pull request, its merge state)",
 		keys: []string{"issue", "pull_request", "head", "merge_state", "passed"}},
 	{kind: texts.ApprovedRoundStuck, from: "workflow/review.go:tellStuckMergeState, headChecks, namedStatuses at 1cb6615c (each commit status of the head, with its state)",
 		keys: goldenStatusKeys},
+	{kind: texts.ApprovedRoundStuck, from: "workflow/review.go:tellStuckMergeState, headChecks, shownAs at 6d50ef31 (each check run of the head GitHub skipped, named skipped)",
+		keys: goldenSkippedKeys},
 	{kind: texts.MemoryKill, from: "workflow/engine.go:memoryGuardNote, kernelKillNote (the process, its pid)",
 		keys: []string{"issue", "cause", "process", "pid"}},
 	{kind: texts.MergeForwardAsk, variants: []string{"ask"}, from: "record/outbox.go:MergeForwardMessage.Message at 724196ef (the pull request, the head, the base, the phase it stays in, why)",
@@ -308,6 +318,12 @@ var goldenMainFacts = []goldenFactsOf{
 // 1cb6615c names every status with its state; the record names those in state failure or error
 // and counts the others with the checks that passed (passed).
 var goldenStatusKeys = []string{"not_passed_statuses#", "not_passed_statuses[0].context", "not_passed_statuses[0].state", "passed"}
+
+// goldenSkippedKeys is where a sample of a head's CI names the checks GitHub skipped
+// (dispatch://INFRA-4135's R1): their count, and the first. main's text at 6d50ef31 names each
+// check by GitHub's word, a skipped one skipped; the record names the skipped checks in a list of
+// their own, apart from the checks that did not pass and from the count of those that passed.
+var goldenSkippedKeys = []string{"skipped#", "skipped[0]"}
 
 // goldenCutTurnNote is the cut-turn note of a task taken back, word for word as main's
 // interruptedTask wrote it (supervise/delivery.go and relaunch.go's relaunchSentence at b4a566cb,
