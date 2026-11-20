@@ -82,7 +82,7 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 			continue
 		}
 		if err != nil {
-			slog.Error("dispatch: the secrets broker did not revoke the machine logins of a restricted member taken off an access list; trying again",
+			slog.Error("dispatch: the machine logins of a restricted member taken off an access list were not revoked: the secrets broker did not confirm, or the claim could not be read; trying again",
 				"email", revocation.Email, "revoked", revoked, "retry_in", brokerRevocationRetry, "error", err)
 			continue
 		}
