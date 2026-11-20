@@ -66,8 +66,8 @@ func TestRepairIssueAsksAtBootWithdrawsAndLogsItsCounts(t *testing.T) {
 
 	repairIssueAsks(ctx, api.Deps{Store: database, Docs: documents, Events: broker}, issueAskRepairBootTimeout)
 
-	if out := logs.String(); !strings.Contains(out, "repaired the asks of closed and reopened issues") || !strings.Contains(out, "withdrawn=1 restored=0 swept=0") {
-		t.Errorf("logged, want the counts withdrawn=1 restored=0 swept=0:\n%s", out)
+	if out := logs.String(); !strings.Contains(out, "repaired the asks of closed and reopened issues") || !strings.Contains(out, "withdrawn=1 restored=0 left_resolved=0 swept=0") {
+		t.Errorf("logged, want the counts withdrawn=1 restored=0 left_resolved=0 swept=0:\n%s", out)
 	}
 	var state, kind, actor string
 	if err := database.Pool.QueryRow(ctx, `
