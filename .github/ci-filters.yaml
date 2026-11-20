@@ -2811,6 +2811,8 @@ envoy_go_race_api:
   - 'packages/envoy/internal/session/*'
   - 'packages/envoy/internal/store/*'
   - 'packages/envoy/internal/testpg/testdb/*'
+  # internal/dispatch/api/results_pull_request_event_test.go runs the delivery intake
+  # on an in-process NATS server.
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -3030,9 +3032,10 @@ envoy_go_claim_model:
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#the-postgresql-16-job-three-delivery-tests-on-the-version-an-envoy-infra-stack-can-run
-# The closure of the plain test build of ./internal/dispatch/delivery (`go list -deps -test` in
-# packages/envoy), one pattern per directory, with what those packages embed and the testdata of
-# the package whose tests the job runs.
+# The job runs three tests with `go test -run`, and a -run moves no closure, so this is the closure
+# of the plain test build of ./internal/dispatch/delivery (`go list -deps -test` in packages/envoy),
+# one pattern per directory, with what those packages embed and the testdata of the package whose
+# tests the job runs.
 envoy_go_postgres16:
   - *ci_router
   - *ci_filters_data
