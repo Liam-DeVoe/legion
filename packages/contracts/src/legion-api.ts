@@ -1309,12 +1309,16 @@ export type LegionReadyRequestBody = z.output<typeof LegionReadyRequest>;
  * the producer's own count of the turns it has ended at `generation`, from 1, and the daemon
  * keeps the report under the pair, so a report that arrives late or out of order lands in its own
  * place and the run of refused turns it derives is the same either way. `message` is what the
- * provider said about a refusal, and a clean turn carries none. */
+ * provider said about a refusal, and a clean turn carries none. `httpStatus` is the HTTP status the
+ * provider answered a refused turn with, where the harness gives one, and a clean turn and a
+ * refusal that names none carry none: the daemon fails the claim on a refusal whose status cannot
+ * clear (a 4xx other than 401, 403, 408 and 429), as it does on a prompt result with that status. */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
   outcome: z.enum(["clean", "refused"]),
   message: z.string().optional(),
+  httpStatus: z.number().int().min(100).max(599).optional(),
 };
 
 /** `claim.AgentCaller`'s report: the producer inside the agent's own session — pi-legion's
@@ -1349,9 +1353,9 @@ export const LegionTurnOutcomeRequest = z.union([
 export type LegionTurnOutcomeRequestBody = z.output<typeof LegionTurnOutcomeRequest>;
 
 /** `claim.TurnOutcomeResponse`, the answer to a reported turn: `refusedRun` is the run of refused
- * turns the claim's retained reports end with, and `failed` whether the claim is failed after the
- * report. A report never fails a claim by itself. The producer acts on neither — its turn is over
- * — and logs them. */
+ * turns the claim's reports end with, counted whole, and `failed` whether the claim is failed after
+ * the report, which a refusal whose `httpStatus` cannot clear fails. The producer acts on neither —
+ * its turn is over — and logs them. */
 export const LegionTurnOutcomeResponse = z.object({
   refusedRun: z.number().int().nonnegative(),
   failed: z.boolean(),

@@ -2452,4 +2452,23 @@ package api
 // refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
-const DaemonAPIVersion = 178
+//
+// 190: a refused turn's report carries the provider's HTTP status. `POST
+// /legion/v1/claims/turn-outcome` (`claim.TurnOutcomeRequest`, contracts'
+// `LegionTurnOutcomeRequest`) takes an optional `httpStatus`, from 100 to 599, beside a `refused`
+// outcome: the status the provider answered the turn's failed request with, which Oh My Pi puts
+// on the assistant message (`errorStatus`) and Claude Code on the result (`api_error_status`).
+// pi-legion's agent_end hook and the Claude bridge send it. A status on a clean turn, or one
+// outside 100 to 599, is refused 400 and records nothing. The daemon fails the claim on a refused
+// turn whose status cannot clear (a 4xx other than 401, 403, 408 and 429), as it does on a prompt
+// result with that status, so a turn no daemon prompt ran — a phase reminder's, an Envoy
+// message's — fails its claim and holds its issue for its architect, and the answer's `failed`
+// says so. The answer's `refusedRun` counts the whole run, past the window of reports the claim
+// keeps. `readBody` refuses an unknown field, so a plugin sending `httpStatus` to a daemon below
+// 190 would have every refused turn's report refused; the bump is why the two never meet. No
+// shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
+// (This entry takes 190, above main's 178: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 251 open pull requests of cybermonklabs/legion, fetched on
+// 2026-11-20 at 07:18:16Z, found 179 to 189 each declared by another open pull request and none
+// declaring 190.)
+const DaemonAPIVersion = 190

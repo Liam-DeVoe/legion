@@ -7,8 +7,12 @@ import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
 /**
  * The Oh My Pi half of the turn-outcome report. Every turn this pane ends — one the model
  * answered, and one the provider refused — is reported to the daemon over HTTP, under a sequence
- * this plugin counts itself. The daemon keeps each outcome as a record and fails no claim from
- * it: the prompt result carries the provider's HTTP status, and that result decides.
+ * this plugin counts itself, and a refused one with the HTTP status the provider answered it with
+ * (the assistant message's `errorStatus`), where it answered one. The daemon keeps each outcome as
+ * a record, and fails the claim on a refusal whose status cannot clear, by the rule it applies to
+ * the prompt result of a turn its own prompt ran. A turn no daemon prompt ran — the phase
+ * reminder's, an Envoy card's, a background job's follow-up — gets no prompt result, so this
+ * report is all the daemon learns of it.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
@@ -47,6 +51,15 @@ export interface TurnOutcomeReporter {
   readonly report: (sessionID: string, event: AgentEndEvent) => Promise<void>;
 }
 
+/** The HTTP status an assistant message's `errorStatus` holds, and undefined for one that holds
+ * none a provider answers with: the daemon refuses a report whose `httpStatus` is outside 100 to
+ * 599, and a refusal reported with no status still reaches it, where a refused report does not. */
+function httpStatusOf(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599
+    ? value
+    : undefined;
+}
+
 export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOutcomeReporter {
   /** The generation the sequence below counts within, and the last number it gave out. */
   let counting: number | undefined;
@@ -67,9 +80,9 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       // The number this report owns: `sequence` moves on as the next turn ends, and the lines
       // below are written after an await.
       const mine = sequence;
-      const refusal = assistantRefusal(
-        event.messages?.findLast((message) => message.role === "assistant")
-      );
+      const last = event.messages?.findLast((message) => message.role === "assistant");
+      const refusal = assistantRefusal(last);
+      const status = refusal === undefined ? undefined : httpStatusOf(last?.errorStatus);
       const request = {
         claimToken: claim.claimToken,
         sessionId: claim.sessionID,
@@ -78,14 +91,16 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         sequence: mine,
         outcome: refusal === undefined ? ("clean" as const) : ("refused" as const),
         ...(refusal === undefined ? {} : { message: refusal }),
+        ...(status === undefined ? {} : { httpStatus: status }),
       };
       try {
         // A send that fails on nothing but a restarting daemon is retried until it lands: the
         // daemon stores one outcome per `(generation, sequence)`, so a repeat of this report
         // writes the same cell and changes no count, and a turn that goes unreported is a turn
-        // the daemon counts neither way — a refusal silently dropped is a claim that never
-        // fails. A refusal the daemon itself gives (a 4xx) will not pass on retry: it is warned
-        // about once and the turn goes uncounted, since nothing this pane can do fixes it.
+        // the daemon counts neither way — a refusal whose status cannot clear, silently dropped,
+        // is a claim the turns no daemon prompt ran never fail. A refusal the daemon itself gives
+        // (a 4xx) will not pass on retry: it is warned about once and the turn goes uncounted,
+        // since nothing this pane can do fixes it.
         const outcome = await retryWhileDaemonRestarts("claims/turn-outcome", () =>
           deps.daemon().turnOutcome(request)
         );
@@ -94,6 +109,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
           role: claim.role,
           sequence: mine,
           outcome: request.outcome,
+          httpStatus: status,
           refusedRun: outcome.refusedRun,
           failed: outcome.failed,
         });

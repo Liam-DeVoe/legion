@@ -96,6 +96,33 @@ test("a turn the provider refused is reported refused, with the provider's own m
   });
 });
 
+// The status is what the daemon decides a refused turn by: a 4xx that cannot clear fails the
+// claim, which is the one decision a turn no daemon prompt ran (the phase reminder's, an Envoy
+// card's) gets. Oh My Pi puts it on the assistant message as `errorStatus`, beside the provider's
+// words; a refusal that names none (a content filter's) and a clean turn report none, and so does a
+// value that is no HTTP status, which the daemon would refuse with the whole report.
+test("a refused turn carries the HTTP status the provider answered it with, and nothing else does", async () => {
+  const { report, posted } = rig();
+  const refused = (errorStatus?: number) => ({
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "invalid_request_error", errorStatus }],
+  });
+
+  await report(SESSION, refused(400));
+  await report(SESSION, refused(529));
+  await report(SESSION, refused());
+  await report(SESSION, refused(0));
+  await report(SESSION, { messages: [{ role: "assistant", stopReason: "stop", errorStatus: 400 }] });
+
+  expect(posted.map((body) => [body.outcome, body.httpStatus])).toEqual([
+    ["refused", 400],
+    ["refused", 529],
+    ["refused", undefined],
+    ["refused", undefined],
+    ["clean", undefined],
+  ]);
+  expect(posted.slice(2).every((body) => !("httpStatus" in body))).toBe(true);
+});
+
 // The sequence is this producer's own: it is what keys the outcome the daemon stores, so two
 // turns must never share one, and the order it gives them out is the order the turns ended in.
 test("the sequence counts this plugin's own turns, from one and in order, within the generation", async () => {

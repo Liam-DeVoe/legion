@@ -608,7 +608,8 @@ type RequestExit struct {
 // pi-legion agent_end hook for an Oh My Pi session, the Claude bridge for a Claude Code one, each
 // over the claim's own HTTP route. Sequence is that producer's own count of the turns it has
 // ended at Generation, from 1, and the pair is the key the claim keeps the report under
-// (recordTurnOutcome).
+// (recordTurnOutcome). HTTPStatus is the status the provider answered a refused turn with, and
+// zero where the harness gave none (claim.TurnOutcomeRequest).
 //
 // Neither is fenced. A report naming a generation the claim has left is not stale: it is a turn of
 // that generation, which belongs in its own place in the order the run is derived in, and the
@@ -619,6 +620,7 @@ type RequestTurnOutcome struct {
 	Sequence   uint64
 	Refused    bool
 	Message    string
+	HTTPStatus int
 }
 
 // RequestCompact takes the claim for a compaction of its Oh My Pi session, which is what a claim
@@ -1223,8 +1225,10 @@ func fillTable(t *builder) {
 	// The outcome of a turn, from the producer that ended it. Every live state takes one: the
 	// report is the producer's HTTP call, which races the turn's end on the worker stream and the
 	// relaunch of a process that is coming up, and a report is about the provider rather than
-	// about where the claim stands.
-	t.row(onTurnOutcome, "record the turn's outcome as diagnostic state", turnOutcome, nil, live...)
+	// about where the claim stands. A refused turn whose status cannot clear fails the claim, as
+	// a prompt result with that status does (holdOnProviderError).
+	t.row(onTurnOutcome, "record the turn's outcome; a refusal whose provider error cannot clear fails the claim",
+		turnOutcome, []ClaimState{StateFailed}, live...)
 	t.ignore(onTurnOutcome, "no launch has minted a boot token", StateQueued)
 	t.ignore(onTurnOutcome, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onTurnOutcome, "the claim is suspended and its process stopped", StateSuspended)

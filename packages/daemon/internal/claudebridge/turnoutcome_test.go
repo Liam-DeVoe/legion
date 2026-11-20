@@ -88,9 +88,9 @@ func (r *rig) untilTurnEnds() {
 }
 
 // The bridge reports every turn it ends, clean and refused alike, with its own sequence counted
-// from 1 within the launch generation and the launch's boot token as its name: the daemon's count
-// of refused turns is made of these reports and of nothing else. A step Claude Code ended with an
-// error is the turn's refusal, carrying what it said.
+// from 1 within the launch generation and the launch's boot token as its name: the daemon's run of
+// refused reports is made of these reports and of nothing else. A step Claude Code ended with an
+// error is the turn's refusal, carrying what it said and the status it named.
 func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 
@@ -114,8 +114,35 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	if refused.Outcome != claim.TurnRefused || refused.Sequence != 2 || refused.Generation != 4 {
 		t.Fatalf("the refused turn was reported %+v, want the second turn of generation 4 refused", refused)
 	}
-	if refused.Message == "" || refused.BootToken != testBootToken {
-		t.Fatalf("the refused turn was reported %+v, want the provider's message and the launch's boot token", refused)
+	if refused.Message == "" || refused.BootToken != testBootToken || refused.HTTPStatus != 529 {
+		t.Fatalf("the refused turn was reported %+v, want the provider's message, its status 529 and the launch's boot token", refused)
+	}
+}
+
+// A turn the daemon's prompt did not start — one an Envoy delivery started, here — ends with no
+// prompt_result, so its report is the one thing the daemon decides it by: the report carries the
+// status Claude Code named for the refusal (api_error_status), and the daemon fails the claim on
+// one that cannot clear. A content filter's refusal names no status, and its report carries none.
+func TestARefusedTurnIsReportedWithTheStatusClaudeCodeNamedForIt(t *testing.T) {
+	r := newReportingRig(t, "-p", "--resume", sessionID)
+	inbox := r.dialInbox()
+
+	inbox.deliver("ev1", "api-error-400 the request is malformed")
+	r.expect("agent_start", nil)
+	for r.next()["type"] != "agent_end" {
+	}
+	if report := r.reported(); report.Outcome != claim.TurnRefused || report.HTTPStatus != 400 || report.Message == "" {
+		t.Fatalf("the Envoy delivery's refused turn was reported %+v, want it refused with status 400 and the provider's words", report)
+	}
+	if answer := inbox.answer(); !answer.OK || answer.ID != "ev1" {
+		t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
+	}
+
+	r.prompt("p1", "refusal the content filter refused")
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	if report := r.reported(); report.Outcome != claim.TurnRefused || report.HTTPStatus != 0 || report.Sequence != 2 {
+		t.Fatalf("the content filter's refusal was reported %+v, want the second turn refused with no status", report)
 	}
 }
 
@@ -123,8 +150,8 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 // reason as the pinned Claude Code writes it (providerFailed): a step
 // Claude Code ended with its own cap on the steps of one turn (error_max_turns) is the worker
 // having worked, not the provider refusing, and a turn whose newest step ran is the provider
-// having answered after all. Counting either would walk a working claim to the launch failure
-// limit, fail it, and abandon the session it is working in (dispatch://INFRA-714).
+// having answered after all. Counting either would tell the project's controller of a run of
+// refused turns that the provider never refused.
 func TestOnlyTheStepsTheProviderRefusedAreReportedRefused(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 

@@ -582,9 +582,9 @@ const (
 // prompt_result carries an error for (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d).
 // A turn that ended any other way — Claude Code's own turn limit, a tool that failed — is a turn
 // the daemon retires the task on, as a turn that ended well is. It is also what the turn's own
-// outcome report carries (turnoutcome.go): counting a turn the agent worked to Claude Code's own
-// cap, or one a tool failed in, would walk a working claim to the launch failure limit and
-// abandon the session it is working in (dispatch://INFRA-714).
+// outcome report carries (turnoutcome.go): a turn the agent worked to Claude Code's own cap, or
+// one a tool failed in, is work the agent did, so it is reported clean, and it counts toward no
+// run of refused turns the project's controller is told of.
 func providerFailed(res resultLine) bool {
 	return res.isError && res.terminalReason == terminalAPIError && res.subtype != subtypeMaxTurns
 }
@@ -733,9 +733,9 @@ func answerAll(deliveries []delivery, err error) {
 // nothing but it releases the prompts the seeding holds.
 //
 // The turn's outcome is the outcome of its newest step (refusal), reported when the turn ends
-// with the bridge's own sequence (turnoutcome.go): a step the provider failed is the turn
-// refused, and a step that ran clears what an earlier failed one left, since the provider
-// answered after all.
+// with the bridge's own sequence and, for a refusal, the HTTP status Claude Code named for that
+// step (turnoutcome.go): a step the provider failed is the turn refused, and a step that ran
+// clears what an earlier failed one left, since the provider answered after all.
 //
 // Which turn a delivery belongs to is decided by the queue as this result reads it, and by
 // nothing else. In a turn the bridge stepped, a delivery already queued is sent as the next step
@@ -802,10 +802,15 @@ func (b *bridge) result(res resultLine) {
 		b.sendQueued()
 		return
 	}
-	refusal := b.refusal
+	refusal, status := b.refusal, 0
+	if refusal != "" {
+		// refusal is this result's own (it was cleared above and set only from res), so its
+		// status is this result's too.
+		status = res.httpStatus
+	}
 	b.inRun, b.refusal = false, ""
 	b.emit(shimwire.AgentEnd{})
-	b.reports.turnEnded(refusal)
+	b.reports.turnEnded(refusal, status)
 	if prompt := b.promptRun; prompt != "" {
 		// The turn that ran the daemon's prompt is over, and this is what says it was that
 		// prompt's: an agent_end names no prompt, and a turn Claude Code started by itself when a

@@ -386,10 +386,10 @@ test("a failed delivery arms nothing once a turn has started meanwhile", async (
 
 // The whole of dispatch://INFRA-264: every turn of that implementer was refused by the provider,
 // and every reminder it was given at once bought another refused turn. So a refused turn earns no
-// continuation; but the daemon's task for the phase ended with that turn, and below
-// `launch_failure_limit` nothing fails the claim and nothing hands the task out again, so one
+// continuation; but the daemon's task for the phase ended with that turn, and a refusal whose
+// error can clear fails no claim and, off the ladder, hands the task out again nowhere, so one
 // delayed reminder follows it rather than silence (the architect's decision, review round 2).
-test("a refused turn below the limit reminds once, after the delay and not before", async () => {
+test("a refused turn off the ladder reminds once, after the delay and not before", async () => {
   const { reminder, timers, sent, entries } = rig({});
   const recorded = entries.length;
 
@@ -415,11 +415,12 @@ test("a refused turn below the limit reminds once, after the delay and not befor
   expect(timers).toHaveLength(2);
 });
 
-// A provider error that cannot clear fails the claim, which is the daemon's own word that this
-// session is finished: the retry runs in a session of its own, in which the phase's task is given
-// again. The timer the refused turn armed still fires, and its record check drops the reminder, so
-// nothing is written into a session nobody can act on.
-test("a refused turn at the limit, whose claim the daemon failed, reminds nothing", async () => {
+// A provider error that cannot clear fails the claim, from the turn's prompt result or from its
+// own report where no daemon prompt ran it: that is the daemon's word that this session is
+// finished, and the architect's retry gives the phase's task again. The timer the refused turn
+// armed still fires, and its record check drops the reminder, so nothing is written into a session
+// nobody can act on.
+test("a refused turn whose claim the daemon failed reminds nothing", async () => {
   const { reminder, timers, sent } = rig({ state: claimFailed });
 
   expect(
@@ -489,9 +490,35 @@ test("a claim on the ladder is still reminded after a turn that ends with its ph
   expect(sent).toEqual([]);
 });
 
-// The daemon failing this role's claim is its word that the session is finished: the retry runs
-// in a session of its own, and a reminder written into this one reaches nobody who can act on it.
-// It is what stops the reminding on Claude Code, whose turns this host does not settle.
+/** The daemon's state with this role's claim off the ladder through its task alone: a run of
+ * provider errors, and no task held. The ladder's send drops a task whose phase the issue has left,
+ * and the run is not put back by that, so the shape is reachable. */
+const runWithNoTask = {
+  issues: {
+    "LEGION-208": {
+      phase: "implementing",
+      workers: { implementer: { claim: { state: "idle", providerErrorRun: 3 } } },
+    },
+  },
+} as unknown as LegionState;
+
+// The third control: the ladder holds a task only while the claim holds one, so a claim with a
+// run of provider errors and no task is off the ladder, and its refused turn is reminded after the
+// delay. A check that read the run alone would leave this claim with no wake at all.
+test("a claim with a run of provider errors and no task is still reminded after a refused turn", async () => {
+  const { reminder, timers, sent } = rig({ state: runWithNoTask });
+
+  expect(await reminder.settle({ kind: "refused", message: "Overloaded" })).toBeUndefined();
+  expect(timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.reminderMs]);
+  await fireLast(timers);
+
+  expect(sent).toEqual([REMINDER]);
+});
+
+// The daemon failing this role's claim is its word that the session is finished: the claim's
+// process is stopped, and the issue waits for its architect's retry, so a reminder written into
+// this session reaches nobody who can act on it. It is what stops the reminding on Claude Code,
+// whose turns this host does not settle.
 test("no reminder is sent once the daemon has failed this role's claim", async () => {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];

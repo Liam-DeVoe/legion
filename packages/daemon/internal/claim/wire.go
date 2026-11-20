@@ -149,7 +149,12 @@ func (c BootCaller) named() bool { return c.BootToken != "" }
 // Sequence is that producer's own count of the turns it has ended at Generation, from 1, and the
 // daemon keeps the report under the pair: a report that arrives late or out of order lands in its
 // own place, and the run of refused turns the daemon derives is the same either way. Message is
-// what the provider said about a refusal, and is left out of a clean turn.
+// what the provider said about a refusal, and is left out of a clean turn. HTTPStatus is the HTTP
+// status the provider answered the refused turn's failed request with, where the harness gives
+// one (Oh My Pi's AssistantMessage.errorStatus, Claude Code's api_error_status), and is left out
+// of a clean turn and of a refusal that names none, such as a content filter's. The daemon
+// decides a refused turn from it by the rule it decides a prompt result by (supervise's
+// holdOnProviderError), which is what decides a turn no daemon prompt ran.
 //
 // The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
 // its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same
@@ -161,6 +166,7 @@ type TurnOutcomeRequest struct {
 	Sequence   uint64 `json:"sequence"`
 	Outcome    string `json:"outcome"`
 	Message    string `json:"message,omitempty"`
+	HTTPStatus int    `json:"httpStatus,omitempty"`
 }
 
 // Caller is the identity the body named, and false when it named both or neither: each says who
@@ -175,9 +181,10 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 	return r.AgentCaller, true
 }
 
-// TurnOutcomeResponse is what the daemon made of the report. RefusedRun is diagnostic state from
-// the reports the claim retains. Failed says whether the claim is failed after the route processes
-// the report. A producer acts on neither because its turn is over.
+// TurnOutcomeResponse is what the daemon made of the report. RefusedRun is the run of refused
+// turns the claim's reports end with, counted whole however long it is. Failed says whether the
+// claim is failed after the route processes the report: a refused turn whose status cannot clear
+// fails it. A producer acts on neither because its turn is over.
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`

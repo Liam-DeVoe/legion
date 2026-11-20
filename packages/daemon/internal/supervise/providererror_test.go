@@ -139,8 +139,8 @@ func TestRefusedProviderErrorsThatCanClearHaveNoAttemptLimit(t *testing.T) {
 	h.wantPrompts(26)
 }
 
-// A refused report can arrive before the prompt result that carries the HTTP status. A 400 still
-// fails the claim at once, because it is a provider error that cannot clear.
+// A refused report that names no status can arrive before the prompt result that carries one. A
+// 400 still fails the claim at once, because it is a provider error that cannot clear.
 func TestARefusedProviderErrorThatCannotClearFailsAtOnce(t *testing.T) {
 	h := workingClaim(t)
 	sent := 1
@@ -167,6 +167,77 @@ func TestARefusedProviderErrorThatCannotClearFailsAtOnce(t *testing.T) {
 		t.Fatalf("the failure is %q, want %q", h.claim().Failure, want)
 	}
 	h.wantPrompts(3)
+}
+
+// The report and the prompt result of a turn a daemon prompt ran each carry the provider's status,
+// and they reach the daemon in either order. A report whose status cannot clear that arrives first
+// fails the claim, as the result would have; the result that follows finds the claim failed and
+// changes nothing, so the claim is failed once, and it still holds the task it owes for the retry
+// that comes after its architect.
+func TestARefusalThatCannotClearReportedBeforeItsPromptResultFailsTheClaimOnce(t *testing.T) {
+	h := workingClaim(t)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	delivery := h.pending().ID
+
+	h.reportRefused(1, "the provider rejected the request", 400)
+
+	h.wantState(StateFailed)
+	failed := h.claim()
+	if want := "a provider error that cannot clear ended this claim's turn: a provider error (HTTP 400)"; failed.FailureCause != CauseProviderError || failed.Failure != want {
+		t.Fatalf("the claim failed with %q (%q), want %q (%q)", failed.Failure, failed.FailureCause, want, CauseProviderError)
+	}
+
+	h.must(StreamPromptResult{
+		Claim: h.token, AgentInvoked: true, DeliveryID: delivery,
+		Error: "invalid_request_error", HTTPStatus: 400,
+	})
+
+	h.wantState(StateFailed)
+	if c := h.claim(); c.Failure != failed.Failure || !c.FailedAt.Equal(failed.FailedAt) {
+		t.Fatalf("the prompt result changed the failure to %q at %s, want %q at %s", c.Failure, c.FailedAt, failed.Failure, failed.FailedAt)
+	}
+	if p := h.claim().Pending; p == nil || p.Task != providerErrorTaskText {
+		t.Fatalf("the failed claim holds %+v, want the task it owes", p)
+	}
+	h.wantPrompts(1)
+}
+
+// The controller's notice counts each refused turn once, whichever of its two reports reaches the
+// daemon first: the producer's turn-outcome report, which carries the status, or the prompt
+// result. The notice goes at the sixth turn and at no other, with the sixth turn's report the
+// first of its two in one case and the second in the other.
+func TestTheControllerIsToldOnceWhicheverReportOfARefusedTurnArrivesFirst(t *testing.T) {
+	for name, reportFirstAt := range map[string]int{"the report first at the sixth turn": 1, "the result first at the sixth turn": 0} {
+		t.Run(name, func(t *testing.T) {
+			var notices []string
+			h := workingClaim(t, func(d *Deps) {
+				d.ProviderErrorRunReached = func(_ Claim, reason string) { notices = append(notices, reason) }
+			})
+			sent := 1
+			for turn := range 12 {
+				if turn%2 == reportFirstAt {
+					h.mustQuiet(StreamTurnEnd{Claim: h.token})
+					delivery := h.pending().ID
+					h.reportRefused(uint64(turn+1), "the provider is overloaded", 529)
+					h.must(StreamPromptResult{
+						Claim: h.token, AgentInvoked: true, DeliveryID: delivery,
+						Error: "overloaded_error", HTTPStatus: 529, Model: "overloaded-model",
+					})
+				} else {
+					h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529, Model: "overloaded-model"})
+					h.reportRefused(uint64(turn+1), "the provider is overloaded", 529)
+				}
+				if want := min(max(turn-4, 0), 1); len(notices) != want {
+					t.Fatalf("the controller was told %d times after refused 529 turn %d, want %d: %v", len(notices), turn+1, want, notices)
+				}
+				h.climbs(sent, promptRetryDelay(turn+1))
+				sent++
+			}
+			if want := "6 turns in a row"; len(notices) != 1 || !strings.HasPrefix(notices[0], want) {
+				t.Fatalf("the controller was told %q, want one notice of %q", notices, want)
+			}
+		})
+	}
 }
 
 // promptRetryDelay is read by nothing else, and the step it is asked for comes from a persisted

@@ -22,8 +22,12 @@ const reportTimeout = 15 * time.Second
 
 // turnReports is the bridge as the Claude Code backend's producer of turn outcomes: every turn the
 // bridge ends is reported to the daemon, clean or refused, with the bridge's own sequence within
-// its launch generation (POST /legion/v1/claims/turn-outcome). The daemon keeps those reports as
-// diagnostic state. The provider-error result decides whether the claim can continue.
+// its launch generation (POST /legion/v1/claims/turn-outcome), and a refusal with the HTTP status
+// Claude Code named for it (resultLine.httpStatus, from the result's api_error_status). The daemon
+// keeps those reports as a record, and fails the claim on a refusal whose status cannot clear, as
+// it fails it on the prompt result with that status. That report is the one decision a turn the
+// daemon's prompt did not start gets: a turn Claude Code started by itself, or one an Envoy
+// message started, ends with no prompt_result (result).
 //
 // The bridge is the producer because it is what sees the refusal: a step Claude Code ends with an
 // error is the assistant message it writes with stopReason "error" (result), and the pane's own
@@ -86,9 +90,10 @@ func missingReportInputs(cfg Config) string {
 	return strings.Join(missing, ", ")
 }
 
-// turnEnded reports the turn the bridge has just ended: refused, with what the provider said, when
-// a step of it failed, and clean otherwise. It takes the next sequence and returns at once.
-func (r *turnReports) turnEnded(refusal string) {
+// turnEnded reports the turn the bridge has just ended: refused, with what the provider said and
+// the HTTP status it answered (zero for none, which the report leaves out), when a step of it
+// failed on the provider, and clean otherwise. It takes the next sequence and returns at once.
+func (r *turnReports) turnEnded(refusal string, status int) {
 	if r == nil {
 		return
 	}
@@ -99,7 +104,7 @@ func (r *turnReports) turnEnded(refusal string) {
 		Outcome:    claim.TurnClean,
 	}
 	if refusal != "" {
-		request.Outcome, request.Message = claim.TurnRefused, refusal
+		request.Outcome, request.Message, request.HTTPStatus = claim.TurnRefused, refusal, status
 	}
 	go r.post(request)
 }
