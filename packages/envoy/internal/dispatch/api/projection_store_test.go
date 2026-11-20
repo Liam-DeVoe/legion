@@ -36,8 +36,9 @@ import (
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
 // tuple store: each row of them names the node it is the projection of, and that node is
-// written by the same transaction, before the row.
-var projectedTables = []string{"block_refs", "comments", "document_blocks"}
+// written by the same transaction, before the row. They are the tables
+// censustest.ProjectedColumns lists, in order, so a table added there is one this test holds.
+var projectedTables = slices.Sorted(maps.Keys(censustest.ProjectedColumns))
 
 // TestNoProjectionRowIsWrittenWithoutTheStore holds every writer of a projected table to the
 // one rule the projections rest on: a row of one of them is written only by a transaction that
@@ -97,10 +98,20 @@ func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 
 // --- the source scan --------------------------------------------------------------------
 
-// projectionWriteHead matches the head of every statement that writes a projected table: an
-// insert or a delete, which makes or unmakes a row, and an update, which changes columns of a
-// row that is already there.
-var projectionWriteHead = regexp.MustCompile(`(?is)\b(insert\s+into|delete\s+from|update)\s+(?:only\s+)?(block_refs|comments|document_blocks)\b`)
+// projectionWriteHead matches the head of every statement that writes a projected table
+// (projectedTables): an insert or a delete, which makes or unmakes a row, and an update, which
+// changes columns of a row that is already there.
+var projectionWriteHead = regexp.MustCompile(`(?is)\b(insert\s+into|delete\s+from|update)\s+(?:only\s+)?(` +
+	literalAlternation(projectedTables) + `)\b`)
+
+// literalAlternation is a regular expression matching any one of words, each read literally.
+func literalAlternation(words []string) string {
+	quoted := make([]string, len(words))
+	for index, word := range words {
+		quoted[index] = regexp.QuoteMeta(word)
+	}
+	return strings.Join(quoted, "|")
+}
 
 // projectedColumns are the columns of each projected table that the store states, each with
 // what states it: censustest.ProjectedColumns, which says why each one stands there, and which

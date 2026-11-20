@@ -571,9 +571,10 @@ func threeBadRequests(t *testing.T) {
 			continue
 		}
 		// A server error is no refusal: a route that let another project's object past its key
-		// fails further in, where it reads that object as its key's - the step write's read of the
-		// key's issue's runs, which does not list a run of another issue, answers 500 - and a 5xx
-		// from a route that refused nothing would pass the check above as a refusal.
+		// fails further in, where it reads that object as its key's - the step write's and the
+		// rating write's read of the key's issue's runs, which does not list a run of another issue,
+		// answers 500 - and a 5xx from a route that refused nothing would pass the check above as a
+		// refusal.
 		if response.Code >= 500 {
 			t.Errorf("%s fails %d for an identifier of another project rather than refusing it: %s",
 				route.Method+" "+target, response.Code, firstLine(response.Body.String()))
@@ -582,10 +583,17 @@ func threeBadRequests(t *testing.T) {
 		// A refusal of the caller comes before the identifier is read, so it says nothing about
 		// whether the route would answer another project's object: each route is sent as a caller
 		// its own checks admit (crossProjectRequest), and one that refuses that caller all the same
-		// proves nothing about the identifier.
+		// proves nothing about the identifier. Nor does a refusal of the body: the step routes
+		// refuse 400 STEP_INPUT a value outside its form before they read the identifier, and a run
+		// of a kind the route does not write (the rating write's ratingOfKind) only after the
+		// identifier has passed the check of its issue, so a STEP_INPUT is never that check's
+		// refusal.
 		if code := responseCode(t, response); code == codeStepWriter {
 			t.Errorf("%s refuses the probe's caller %d %s before it reads the identifier, so the probe proves nothing about it",
 				route.Method+" "+target, response.Code, code)
+		} else if code == codeStepInput {
+			t.Errorf("%s refuses the probe's body %d %s rather than the identifier's project, so the probe proves nothing about it: %s",
+				route.Method+" "+target, response.Code, code, firstLine(response.Body.String()))
 		} else if refused, why := authRefusal(response); refused {
 			t.Errorf("%s refuses the probe's caller %s before it reads the identifier, so the probe proves nothing about it",
 				route.Method+" "+target, why)
@@ -845,10 +853,12 @@ type crossProject struct {
 	// what it sends a route of an issue document.
 	message, document, documentSlug, documentBlock string
 	// step is the id of a run of a step of the issue, written as the project's Legion daemon
-	// writes one: the id the cross-project probe sends the step write and the rating write. plan
-	// is the id of the plan of a run of the issue, written the same way: the id it sends the plan
-	// write.
-	step, plan string
+	// writes one: the id the cross-project probe sends the step write. retro is the id of the run
+	// of the issue's retro, written the same way: the id it sends the rating write, which rates a
+	// retro's run alone and refuses a run of any other kind 400 STEP_INPUT under every key alike
+	// (ratingOfKind). plan is the id of the plan of a run of the issue, written the same way: the
+	// id it sends the plan write.
+	step, retro, plan string
 	// priority is the id of a priority. A priority belongs to no project, so no project's key
 	// addresses it, and only the probe that reads each object at its own address reads it.
 	priority string
@@ -857,13 +867,14 @@ type crossProject struct {
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
-// comment, an ask, a message, a run of a step of the issue, a project document and a block of
-// each document, and the Legion daemon it names with a read of it; a second project with an
-// issue, which the cross-project probe addresses them under; and one priority, which belongs to
-// neither project and is read at its own id. Under the second project's key the probe sends each
-// route the object of the first its path names (crossProjectPath): design.md to a route of an
-// issue document, the project document to a route of a project document, the message to the
-// message read and the run to the step write.
+// comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
+// document and a block of each document, and the Legion daemon it names with a read of it; a
+// second project with an issue, which the cross-project probe addresses them under; and one
+// priority, which belongs to neither project and is read at its own id. Under the second
+// project's key the probe sends each route the object of the first its path names
+// (crossProjectPath): design.md to a route of an issue document, the project document to a route
+// of a project document, the message to the message read, the run of a step to the step write and
+// the retro's run to the rating write.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -905,6 +916,12 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	// key is the refusal of an id outside that key.
 	owned.step = uuid.NewString()
 	putStepOK(t, handler, issue.Key, owned.step, implementerStart(daemonSessionOf("TEST")))
+	// The run of the issue's retro, written the same way (as plans_test.go seeds one): the rating
+	// write rates a retro's run alone, and refuses a run of a step 400 STEP_INPUT for its kind
+	// under its own issue's key too, so only a retro's run makes the rating write's refusal under
+	// another project's key the refusal of an id outside that key.
+	owned.retro = uuid.NewString()
+	putStepOK(t, handler, issue.Key, owned.retro, withFields(retroIdentity(daemonSessionOf("TEST"), 1), map[string]any{"started_at": stepStart}))
 	// The plan of a run of the issue, written the same way (putPlanRecordOK).
 	owned.plan = uuid.NewString()
 	putPlanRecordOK(t, handler, issue.Key, owned.plan, defaultPlanBody(daemonSessionOf("TEST"), 1))
@@ -959,8 +976,10 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //     served a project document under whatever project's key it was sent answers a row;
 //   - {number} beside either: 1, the first version, which each of the two documents holds;
 //   - {id} of /issues/{key}/messages/{id}: the issue's message;
-//   - {id} of /issues/{key}/steps/{id}, and of its /rating: the run of a step of the issue its
-//     project's daemon wrote;
+//   - {id} of /issues/{key}/steps/{id}: the run of a step of the issue its project's daemon
+//     wrote;
+//   - {id} of /issues/{key}/steps/{id}/rating: the run of the issue's retro its project's daemon
+//     wrote, the one kind of run the rating write rates;
 //   - {id} of /issues/{key}/plans/{id}: the plan of a run of the issue its project's daemon
 //     wrote.
 //
@@ -977,6 +996,9 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		{"/projects/{key}/artifacts/{slug}", "{slug}", owned.documentSlug},
 		{"/artifacts/{slug}/versions/{number}", "{number}", "1"},
 		{"/issues/{key}/messages/{id}", "{id}", owned.message},
+		// The rating's place comes before the step write's, whose path its own path holds: the
+		// first replaces its {id} with the retro's run, and the second finds none left.
+		{"/issues/{key}/steps/{id}/rating", "{id}", owned.retro},
 		{"/issues/{key}/steps/{id}", "{id}", owned.step},
 		{"/issues/{key}/plans/{id}", "{id}", owned.plan},
 	} {
