@@ -860,6 +860,25 @@ It holds and releases nobody.
 A process that runs with the old domain after Google's change holds each full member whose refresh it runs, and that member must then sign in again.
 It exits 0 once it forgot the domains, 1 when the database cannot be opened or written, and 2 for any argument.
 
+### Checking the Directory reads
+
+```sh
+envoy-dispatch directory-check --active <login> --held <login> --scope-probe <scope>
+```
+
+checks, before IAP admits anyone, that an `iap` deployment's Workspace Directory reads work and that the signer's grant gives nothing more.
+It builds the reader Dispatch builds from `DISPATCH_DIRECTORY_ACCOUNT` and `DISPATCH_DIRECTORY_ADMIN` (`identity.DirectoryReader`): the process's own Google identity calls IAM `signJwt` on the signer for a JWT naming the delegated user and `https://www.googleapis.com/auth/admin.directory.user.readonly`, trades it at Google's token endpoint, and reads `users.get` with `fields=id,suspended,primaryEmail`.
+It checks each login once, as a person with no stored Directory user id, so by its primary address, and prints one line for each, `<login>: Active`, `<login>: Held` or `<login>: Failed (<reason>)`.
+Then it asks Google for a token for `--scope-probe`, a scope the grant must not give (`https://www.googleapis.com/auth/admin.directory.user`, say), with the same signer and delegated user, and prints `scope <scope>: granted`, `scope <scope>: refused (<OAuth error code>)`, or `scope <scope>: Failed (<reason>)` when Google gave neither answer.
+A reason names the step that failed (`signJwt`, the token exchange or the Directory read) and the HTTP status of its answer, and never a word Google wrote; an OAuth error code prints only when it is lowercase letters and underscores.
+Each check and the probe has the 15 seconds a check in the server has.
+It needs no server and no database.
+
+It exits 0 only when the `--active` login is Active, the `--held` login (a suspended or deleted account) is Held, and Google refuses the probe with `unauthorized_client`;
+1 for any other verdict, each named on stderr, or when the reader cannot be built (no Application Default Credentials);
+and 2 for a missing or blank flag, an argument, or `DISPATCH_DIRECTORY_ACCOUNT` or `DISPATCH_DIRECTORY_ADMIN` unset.
+Google states that a new Domain-wide Delegation grant can take up to 24 hours to take effect, so a run that fails at the token exchange soon after the grant may pass later.
+
 ## Local Postgres
 
 Start the local database once:
