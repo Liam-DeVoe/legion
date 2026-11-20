@@ -675,7 +675,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
 			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
 			// with the project's pause gone, the `paused` contract 178 added (withoutPause), and
-			// with every root's `treeRuns` gone, the key contract 189 added beside the gated steps
+			// with every root's `treeRuns` gone, the key contract 191 added beside the gated steps
 			// of a root on an ancestor's basis, which go with `gatedSteps` itself for a caller this
 			// far back (withoutGateBasis). Every row that reaches here is below all of them, so
 			// every one of them goes whatever the row is; contract 132's strip takes a word of the
