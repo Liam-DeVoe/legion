@@ -1343,6 +1343,61 @@ func rolePushNextSecond() {
 	time.Sleep(now.Truncate(time.Second).Add(time.Second).Sub(now))
 }
 
+// rolePushGitCommit is the word of an unimported row's arguments that stands for the commit id of
+// the commit the real git made.
+const rolePushGitCommit = "{git commit}"
+
+// rolePushUnimportedRows are the pushes that name, by its commit id, a commit the real git made in
+// the colocated working copy and that no jj command has imported yet: each with the bookmark name
+// it sends the commit under, "" for -c's own.
+var rolePushUnimportedRows = []struct {
+	name, ref string
+	args      []string
+}{
+	{name: "--named nm=<commit id>", ref: "nm", args: []string{"git", "push", "--named", "nm=" + rolePushGitCommit}},
+	{name: "-c <commit id>", args: []string{"git", "push", "-c", rolePushGitCommit}},
+}
+
+// A push that names, by its commit id, a commit that a git commit in the colocated working copy
+// made and that jj has not imported yet sends it as jj alone does. The step's commands run with
+// --ignore-working-copy, so none of them imports the commit from git or can read it: the step
+// prints its one line of a dry run it cannot read, which names the commit, and changes nothing,
+// and the real push imports the commit and sends it as it is.
+func TestAPushOfACommitJJHasNotImportedSendsIt(t *testing.T) {
+	t.Parallel()
+	for _, row := range rolePushUnimportedRows {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				f.write()
+				run := f.runner(f.setupPath, rolePushImplementer)
+				run.Run(f.repo, f.git, "add", "change-"+strconv.Itoa(f.files)+".txt")
+				run.Run(f.repo, f.git, "commit", "--quiet", "-m", rolePushMessage("work", "implementer"))
+				commit := strings.TrimSpace(run.Out(f.repo, f.git, "rev-parse", "HEAD"))
+				if change := f.changeOf(commit); change != "" {
+					t.Fatalf("jj reads the git commit %s as change %s before the push, want a commit no jj command imported", commit, change)
+				}
+				args := make([]string, len(row.args))
+				for i, arg := range row.args {
+					args[i] = strings.ReplaceAll(arg, rolePushGitCommit, commit)
+				}
+				divergent := f.divergence()
+				code, _, stderr := f.push(rolePushImplementer, args...)
+				change := f.changeOf(commit)
+				ref := row.ref
+				if ref == "" {
+					ref = "push-" + change[:min(12, len(change))]
+				}
+				f.check(rolePushWant{
+					refs:       []rolePushRef{{ref: "refs/heads/" + ref, commits: []rolePushCommit{{change: change, commit: commit}}}},
+					cannotRead: rolePushCannotReadIt, cannotReadNames: commit,
+				}, code, stderr, divergent, 0)
+			})
+		})
+	}
+}
+
 // rolePushUntouchedRows are the commits a push leaves as they are, each beside a commit of the
 // push's that the step may rewrite (pushed), so that the step runs.
 func rolePushUntouchedRows() []rolePushRow {
@@ -1589,13 +1644,47 @@ func rolePushCannotReadRows() []struct {
 	}
 }
 
+// rolePushCannotReadIDRows are pushes of a commit id whose dry run the step cannot read (the
+// recording jj of rolePushUnreadableDryRun adds a line of neither shape to each block), each with
+// the setup that makes the repository and answers the push's arguments and what it must leave.
+var rolePushCannotReadIDRows = []struct {
+	name  string
+	setup func(f *rolePushFixture) ([]string, rolePushWant)
+}{
+	// No rewrite of the step's hid the commit, so the real push gets its id as the role wrote it
+	// and sends that commit, as jj alone does, which makes it visible again beside the other.
+	{name: "a commit id hidden before the push, its change with one visible commit", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+		impl, rev := rolePushImplementer, rolePushReviewer
+		hidden := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
+		f.jj(impl, "describe", "-r", hidden.commit, "-m", rolePushMessage("work, described again", "implementer"))
+		visible := f.read(hidden.change)
+		return []string{"git", "push", "--named", "nm=" + hidden.commit}, rolePushWant{
+			refs:       []rolePushRef{{ref: "refs/heads/nm", commits: []rolePushCommit{{change: hidden.change, author: rev, commit: hidden.commit}}}},
+			same:       map[string]rolePushIdentity{hidden.commit: rev, visible.commit: rev},
+			diverges:   true,
+			cannotRead: rolePushCannotReadIt, cannotReadNames: rolePushUnreadableLine, noMetaedit: true,
+		}
+	}},
+	// The step's loop over jj's refusal of a commit with no author fills the commit the role named
+	// before the dry run it cannot read, and that rewrite hides it: the real push gets the commit
+	// after the rewrite.
+	{name: "a commit id of a commit the step fills before that dry run", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+		c := f.commitOn(rolePushNobody, rolePushNobody, "main", rolePushMessage("work", "implementer"))
+		want := rolePushSends("nm", c, "implementer", rolePushImplementer)
+		want.cannotRead, want.cannotReadNames = rolePushCannotReadIt, rolePushUnreadableLine
+		return []string{"git", "push", "--named", "nm=" + c.commit}, want
+	}},
+}
+
 // A dry run the step cannot read, one with a line of neither shape in its block or one that exits
 // 0 with no block (a recording jj ahead of the real one prints each), makes the step print one
-// line and change nothing, and the real push runs as written. A metaedit that fills no author
-// ends the step's loop over jj's refusal of a commit with no author the same way: one line naming
-// the commit, and the real push, which jj refuses. A --quiet on the push and ui.quiet in the
-// repository's configuration do not silence the step's dry run: the remote's commit has the
-// trailer's author.
+// line and change nothing, and the real push runs as written. A commit id of a commit hidden
+// before the push goes to it as the role wrote it, and one whose commit the step's loop over a
+// commit with no author rewrote before that dry run gets the commit after the rewrite. A metaedit
+// that fills no author ends the step's loop over jj's refusal of a commit with no author the same
+// way: one line naming the commit, and the real push, which jj refuses. A --quiet on the push and
+// ui.quiet in the repository's configuration do not silence the step's dry run: the remote's
+// commit has the trailer's author.
 func TestADryRunTheStepCannotReadChangesNothing(t *testing.T) {
 	t.Parallel()
 	for _, row := range rolePushCannotReadRows() {
@@ -1611,6 +1700,16 @@ func TestADryRunTheStepCannotReadChangesNothing(t *testing.T) {
 						t.Fatalf("jj alone printed %q, want its refusal of a commit with no author", stderr)
 					}
 				}
+			})
+		})
+	}
+	for _, row := range rolePushCannotReadIDRows {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, rolePushUnreadableDryRun)
+				args, want := row.setup(f)
+				f.pushAndCheck(args, want)
 			})
 		})
 	}
@@ -1898,7 +1997,8 @@ func rolePushHelpOptions(help string) []rolePushOption {
 	return options
 }
 
-// rolePushEveryArgument is every argument of every row of these tests' pushes.
+// rolePushEveryArgument is every argument of every row of these tests' pushes that the row writes
+// out, ahead of its setup (rolePushCannotReadIDRows' setups answer theirs, each a --named).
 func rolePushEveryArgument() []string {
 	var words []string
 	for _, rows := range [][]rolePushRow{rolePushAuthorRows(), rolePushFormRows(), rolePushRefusedRows(), rolePushUntouchedRows()} {
@@ -1913,6 +2013,9 @@ func rolePushEveryArgument() []string {
 		words = append(words, row.args...)
 	}
 	for _, row := range rolePushNoStepRows {
+		words = append(words, row.args...)
+	}
+	for _, row := range rolePushUnimportedRows {
 		words = append(words, row.args...)
 	}
 	words = append(words, rolePushTwoRemoteSecond...)

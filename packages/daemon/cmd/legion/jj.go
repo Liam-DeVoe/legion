@@ -8,13 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"slices"
 	"strings"
 	"syscall"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // jjUsage is the help of `legion jj`, which reads its own arguments (passThrough), --help among
@@ -45,31 +45,22 @@ const wrappedJJAt = "WRAPPED_JJ_AT"
 // runJJ is `legion jj`. Both of Legion's jj wrappers run it: the pod's /opt/legion/bin/jj
 // (packages/daemon/docker/jj) hands it each `jj git push` with --real /usr/local/bin/jj after its
 // two setup checks, and the jj first on a tmux pane's PATH (workerbin.Install's bin/jj) hands it
-// every command with --after and its own directory. It chooses the jj to run (pickAfter for
-// --after), runs the author step before a push (jjStep), and replaces itself with that jj
-// (execWrapped), so a stop of the process group and its budgets reach jj as before. A command
-// that is no push, a push the step leaves alone (readJJPush), a run that finds wrappedJJAt set,
-// and a process with no table (runtime.RoleIdentitiesVariable unset, as a controller's is) run
-// that jj at once, with nothing printed and no other process started. A table that is set but
-// cannot be used (runtime.ReadRoleIdentities) prints one line, and then runs the same.
+// every command with --after and its own directory. It reads its arguments and puts back the
+// signals' actions as runGit does (startWrapper), chooses the jj to run (pickAfter for --after),
+// runs the author step before a push (jjStep), and replaces itself with that jj (execWrapped), so
+// a stop of the process group and its budgets reach jj as before. A command that is no push, a
+// push the step leaves alone (readJJPush), a run that finds wrappedJJAt set, and a process with
+// no table (runtime.RoleIdentitiesVariable unset, as a controller's is) run that jj at once, with
+// nothing printed and no other process started. A table that is set but cannot be used
+// (runtime.ReadRoleIdentities) prints one line, and then runs the same. After a dry run the step
+// cannot read, the push gets the role's own words, but for a commit id whose commit a metaedit of
+// the step hid (jjPush.withRevisions).
 //
-// Signals are handled as runGit handles them: the actions SIGINT and SIGTERM had at the process
-// start are put back (signal.Reset), so an interrupt or a terminate ends legion jj where it
-// stands, and a signal that came before that ends it with the status a shell reads a death by
-// that signal as (endedBySignal), before it runs anything. The step's own commands are children
-// in this process's group, so a signal sent to the group ends them too, and the push never
-// starts. runGit's limit on a signal the caller ignores holds here as well.
+// An interrupt or a terminate ends legion jj where it stands. The step's own commands are
+// children in this process's group, so a signal sent to the group ends them too, and the push
+// never starts.
 func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
-	if len(args) > 0 && helpRequested(args[0]) {
-		fmt.Fprint(stderr, jjUsage)
-		return 0
-	}
-	if len(args) < 3 || (args[0] != "--real" && args[0] != "--after") || args[1] == "" || args[2] != "--" {
-		fmt.Fprint(stderr, "legion jj: give --real <jj> or --after <directory>, then --, then the jj arguments\n"+jjUsage)
-		return 2
-	}
-	signal.Reset(os.Interrupt, syscall.SIGTERM)
-	if status, ok := signalled(ctx); ok {
+	if status, runs := startWrapper(ctx, "jj", jjUsage, args, stderr); !runs {
 		return status
 	}
 	jjArgs := args[3:]
@@ -106,7 +97,7 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "legion jj: %v\n", err)
 		return 1
 	}
-	return execWrapped("legion jj", next, push.withRevisions(step.ids), env, nil, stderr)
+	return execWrapped("legion jj", next, push.withRevisions(step.ids, errors.Is(err, errJJUnreadable)), env, nil, stderr)
 }
 
 // jjPush is a jj command line as legion jj reads it (readJJPush).
@@ -224,11 +215,15 @@ func (p jjPush) steps() bool { return p.push && !p.leave }
 
 // withRevisions is the command's words with each commit-id revision argument whose commit no
 // longer stands for itself replaced by the commit that does (jjFollowed), in its own spelling:
-// the real push's words, and the dry run's before dryRun adds to them.
-func (p jjPush) withRevisions(ids map[int]*jjFollowed) []string {
+// the dry run's words before dryRun adds to them, and the real push's after a dry run the step
+// read. With moved, it replaces only an argument whose commit a metaedit of the step moved: the
+// real push's words after a dry run the step could not read, which are the role's own but for a
+// commit the step's own rewrite hid (its loop over a commit with no author can rewrite one before
+// such a dry run).
+func (p jjPush) withRevisions(ids map[int]*jjFollowed, moved bool) []string {
 	words := slices.Clone(p.args)
 	for _, r := range p.revisions {
-		if f := ids[r.index]; f != nil && f.commit != f.origin {
+		if f := ids[r.index]; f != nil && f.commit != f.origin && (f.moved || !moved) {
 			words[r.index] = words[r.index][:r.offset] + f.commit
 		}
 	}
@@ -241,7 +236,7 @@ func (p jjPush) withRevisions(ids map[int]*jjFollowed) []string {
 // repository's configuration silences it.
 func (p jjPush) dryRun(ids map[int]*jjFollowed) []string {
 	var words []string
-	for i, word := range p.withRevisions(ids) {
+	for i, word := range p.withRevisions(ids, false) {
 		if !p.pushOnly[i] {
 			words = append(words, word)
 		}
@@ -272,10 +267,12 @@ type jjStep struct {
 
 // jjFollowed is a commit the step follows through each of its metaedits: origin, the commit id
 // the step read, and commit, the commit that stands for it now, of change; hidden is whether that
-// commit is hidden now. arg is whether it is a revision argument's.
+// commit is hidden now. arg is whether it is a revision argument's, and moved whether a metaedit
+// of the step moved it to another commit (advance), apart from readIDs' reading of a hidden
+// commit as its change's one visible commit.
 type jjFollowed struct {
 	origin, commit, change string
-	hidden, arg            bool
+	hidden, arg, moved     bool
 }
 
 // jjRewrite is a commit a metaedit of the step rewrote under role's identity.
@@ -285,7 +282,8 @@ type jjRewrite struct {
 }
 
 // jjStepFailure is a command of the step that failed: legion jj ends with code, after output,
-// what the command printed on standard error, and runs no push.
+// what the command printed on standard error, and runs no push. Only readIDs goes on past one,
+// the failure of its read of a revision argument.
 type jjStepFailure struct {
 	code   int
 	output string
@@ -304,17 +302,22 @@ func (s *jjStep) rewrite() error {
 	if err := s.readIDs(); err != nil {
 		return err
 	}
-	run, err := s.dryRunFilled()
+	heads, err := s.dryRunFilled()
 	if err != nil {
 		return err
 	}
-	return s.setAuthors(run)
+	return s.setAuthors(heads)
 }
 
 // readIDs reads each revision argument that is lower-case hex: it is a commit id when the
 // one commit it resolves to has an id that starts with it, and is followed from that commit. A
 // hidden commit whose change has exactly one visible commit stands for that commit, in the dry
-// run and in the real push. One whose change has none, or more than one, stands for itself.
+// run and in the real push. One whose change has none, or more than one, stands for itself. So
+// does an argument whose read fails: jj alone may still push it, as it pushes a commit that a git
+// command made and that no jj command has imported yet. The step's commands run with
+// --ignore-working-copy, so none of them imports it from git or can read it, and the real push
+// imports it. The dry run then fails as the read did, with jj's error, which the step cannot
+// read (dryRunFilled).
 func (s *jjStep) readIDs() error {
 	s.ids = map[int]*jjFollowed{}
 	for _, r := range s.push.revisions {
@@ -323,6 +326,10 @@ func (s *jjStep) readIDs() error {
 			continue
 		}
 		commits, err := s.read(word)
+		var failed jjStepFailure
+		if errors.As(err, &failed) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -344,60 +351,61 @@ func (s *jjStep) readIDs() error {
 	return nil
 }
 
-// dryRunFilled is what the push sends, read from its dry run. A dry run that jj refuses
-// because a commit it sends has no author (jjNoAuthorCommit) gets that commit filled, by the
-// metaedit of the role its trailer names, and runs again. The loop has a bound it can prove:
-// a dry run that names a commit an earlier pass already named or made, or a pass beyond the
-// number of commits in `mutable() ~ ::remote_bookmarks()`, which holds every commit the step can
-// fill, ends it as a dry run the step cannot read. So does a commit whose trailer names no role
-// of the table, and any other failure of the dry run.
-func (s *jjStep) dryRunFilled() (jjDryRun, error) {
+// dryRunFilled is what the push sends, read from its dry run: the commit ids it adds or moves a
+// ref to (parseJJDryRun). A dry run that jj refuses because a commit it sends has no author
+// (jjNoAuthorCommit) gets that commit filled, by the metaedit of the role its trailer names, and
+// runs again. The loop has a bound it can prove: a dry run that names a commit an earlier pass
+// already named or made, or a pass beyond the number of commits in
+// `mutable() ~ ::remote_bookmarks()`, which holds every commit the step can fill, ends it as a dry
+// run the step cannot read. So does a commit whose trailer names no role of the table, and any
+// other failure of the dry run.
+func (s *jjStep) dryRunFilled() ([]string, error) {
 	var named, made []string
 	bound, passes := -1, 0
 	for {
 		_, stderr, code, err := s.command(s.env, s.push.dryRun(s.ids))
 		if err != nil {
-			return jjDryRun{}, err
+			return nil, err
 		}
 		if code == 0 {
-			run, err := parseJJDryRun(stderr)
+			heads, err := parseJJDryRun(stderr)
 			if err != nil {
-				return jjDryRun{}, s.unreadable(err.Error())
+				return nil, s.unreadable(err.Error())
 			}
-			return run, nil
+			return heads, nil
 		}
 		id, refusal, ok := jjNoAuthorCommit(stderr)
 		if !ok {
-			return jjDryRun{}, s.unreadable(jjFirstLine(stderr, code))
+			return nil, s.unreadable(jjFirstLine(stderr, code))
 		}
 		if slices.Contains(named, id) || slices.ContainsFunc(made, func(commit string) bool { return strings.HasPrefix(commit, id) }) {
-			return jjDryRun{}, s.unreadable(refusal)
+			return nil, s.unreadable(refusal)
 		}
 		if bound < 0 {
 			out, err := s.jj(s.env, "--color=never", "log", "--no-graph", "-r", "mutable() ~ ::remote_bookmarks()", "-T", `"."`)
 			if err != nil {
-				return jjDryRun{}, err
+				return nil, err
 			}
 			bound = len(out)
 		}
 		if passes >= bound {
-			return jjDryRun{}, s.unreadable(refusal)
+			return nil, s.unreadable(refusal)
 		}
 		passes++
 		named = append(named, id)
 		commits, err := s.read("commit_id(" + id + ")")
 		if err != nil {
-			return jjDryRun{}, err
+			return nil, err
 		}
 		if len(commits) != 1 {
-			return jjDryRun{}, s.unreadable(refusal)
+			return nil, s.unreadable(refusal)
 		}
 		if _, ok := s.table[commits[0].role]; !ok {
-			return jjDryRun{}, s.unreadable(refusal)
+			return nil, s.unreadable(refusal)
 		}
 		f := s.follow(commits[0], false)
 		if err := s.metaedit(commits[0].role, []*jjFollowed{f}); err != nil {
-			return jjDryRun{}, err
+			return nil, err
 		}
 		if f.commit != f.origin {
 			made = append(made, f.commit)
@@ -406,18 +414,12 @@ func (s *jjStep) dryRunFilled() (jjDryRun, error) {
 }
 
 // setAuthors rewrites the author of each commit the push sends: the set
-// `(::(<each new commit of the dry run>) ~ ::remote_bookmarks()) & mutable()`, every commit of
-// which whose role is in the table and whose author's email is not that role's. It runs one
-// metaedit for each role with such commits, in claim.Roles' order, and reads the set again before
-// each metaedit after its first, from what the dry run's new commits stand for after the one
-// before. Nothing to rewrite runs no metaedit.
-func (s *jjStep) setAuthors(run jjDryRun) error {
-	var heads []string
-	for _, ref := range run.Refs {
-		if ref.To != "" && !slices.Contains(heads, ref.To) {
-			heads = append(heads, ref.To)
-		}
-	}
+// `(::(<each of heads>) ~ ::remote_bookmarks()) & mutable()`, heads being the new commits of the
+// dry run, every commit of which whose role is in the table and whose author's email is not that
+// role's. It runs one metaedit for each role with such commits, in claim.Roles' order, and reads
+// the set again before each metaedit after its first, from what the dry run's new commits stand
+// for after the one before. Nothing to rewrite runs no metaedit.
+func (s *jjStep) setAuthors(heads []string) error {
 	if len(heads) == 0 {
 		return nil
 	}
@@ -501,9 +503,9 @@ func (s *jjStep) readSet(heads []string) ([]jjSetCommit, error) {
 
 // metaedit runs one `jj metaedit --update-author` over commits under role's identity: the
 // caller's options first, then that identity as the command's last --config user.name and
-// user.email, each a TOML string, since a --config of the push's outranks JJ_USER and JJ_EMAIL,
-// which are set to the same. Then it follows every followed commit through it (advance), and
-// records each of commits as one role rewrote.
+// user.email, each a TOML string (workspace.TOMLString), since a --config of the push's outranks
+// JJ_USER and JJ_EMAIL, which are set to the same. Then it follows every followed commit through
+// it (advance), and records each of commits as one role rewrote.
 func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 	identity := s.table[role]
 	in := map[string]bool{}
@@ -526,7 +528,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 			return err
 		}
 	}
-	args = append(args, "--config", "user.name="+tomlString(identity.Name), "--config", "user.email="+tomlString(identity.Email))
+	args = append(args, "--config", "user.name="+workspace.TOMLString(identity.Name), "--config", "user.email="+workspace.TOMLString(identity.Email))
 	env := withVariable(withVariable(slices.Clone(s.env), "JJ_USER", identity.Name), "JJ_EMAIL", identity.Email)
 	if _, err := s.jj(env, args...); err != nil {
 		return err
@@ -539,9 +541,9 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 
 // advance follows each followed commit through the metaedit that just ran over in: a
 // commit that metaedit hid, itself or by rebasing it, stands now for the visible commit that
-// replaced it (successor). A commit that was hidden already and that the metaedit did not name
-// stays as it is. before is what s.visible read of the changes of in's hidden commits ahead of
-// the metaedit.
+// replaced it (successor), and has moved. A commit that was hidden already and that the metaedit
+// did not name stays as it is. before is what s.visible read of the changes of in's hidden
+// commits ahead of the metaedit.
 func (s *jjStep) advance(in map[string]bool, before map[string][]string) error {
 	var moving []*jjFollowed
 	var changes []string
@@ -579,7 +581,7 @@ func (s *jjStep) advance(in map[string]bool, before map[string][]string) error {
 			f.hidden = true
 			continue
 		}
-		f.commit, f.hidden = next, false
+		f.commit, f.hidden, f.moved = next, false, true
 	}
 	return nil
 }
@@ -658,7 +660,8 @@ func (s *jjStep) report() {
 }
 
 // unreadable prints the one line of a dry run the step cannot read, naming line, the first line
-// of it that it could not read, and answers errJJUnreadable.
+// of it that it could not read, and answers errJJUnreadable: the push then runs with the role's
+// own words, but for a commit id whose commit a metaedit of the step hid (jjPush.withRevisions).
 func (s *jjStep) unreadable(line string) error {
 	fmt.Fprintf(s.stderr, "legion jj: could not read what the push sends: %s; the push runs as written\n", line)
 	return errJJUnreadable
@@ -760,34 +763,4 @@ func jjFirstLine(output string, code int) string {
 // isLowerHex is whether word is lower-case hex, as a commit id or its prefix is.
 func isLowerHex(word string) bool {
 	return word != "" && strings.Trim(word, "0123456789abcdef") == ""
-}
-
-// tomlString is value as a TOML basic string, which `--config <name>=<value>` reads as that
-// value: jj refuses a bare value such as legion-implementer[bot]. A `"` and a `\` are escaped,
-// and each control character is written as \uXXXX.
-func tomlString(value string) string {
-	var quoted strings.Builder
-	quoted.WriteByte('"')
-	for _, r := range value {
-		switch {
-		case r == '"' || r == '\\':
-			quoted.WriteByte('\\')
-			quoted.WriteRune(r)
-		case r < 0x20 || r == 0x7f:
-			fmt.Fprintf(&quoted, `\u%04X`, r)
-		default:
-			quoted.WriteRune(r)
-		}
-	}
-	quoted.WriteByte('"')
-	return quoted.String()
-}
-
-// withVariable is env with name set to value, in place of any value it held. It changes env's own
-// array, so a caller that keeps env gives it a copy (slices.Clone).
-func withVariable(env []string, name, value string) []string {
-	env = slices.DeleteFunc(env, func(entry string) bool {
-		return strings.HasPrefix(entry, name+"=")
-	})
-	return append(env, name+"="+value)
 }

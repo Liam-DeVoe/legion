@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -13,26 +14,49 @@ import (
 // command that made it, and after it that command's standard error, as jj printed it.
 const capturedDryRuns = "testdata/jj-push-dry-run"
 
-// capturedBlockLine is one line of a captured dry run inside a block `Changes to push to <remote>:`.
-type capturedBlockLine struct{ remote, line string }
-
 // capturedBlockLines is each line inside a block of stderr: every indented line after a block's
-// heading, up to the first line that is not.
-func capturedBlockLines(stderr string) []capturedBlockLine {
-	var lines []capturedBlockLine
-	remote := ""
+// heading `Changes to push to <remote>:`, up to the first line that is not.
+func capturedBlockLines(stderr string) []string {
+	var lines []string
+	in := false
 	for line := range strings.SplitSeq(stderr, "\n") {
-		if heading, ok := strings.CutPrefix(line, "Changes to push to "); ok && strings.HasSuffix(heading, ":") {
-			remote = strings.TrimSuffix(heading, ":")
+		if strings.HasPrefix(line, "Changes to push to ") && strings.HasSuffix(line, ":") {
+			in = true
 			continue
 		}
-		if remote != "" && strings.HasPrefix(line, "  ") {
-			lines = append(lines, capturedBlockLine{remote: remote, line: line})
+		if in && strings.HasPrefix(line, "  ") {
+			lines = append(lines, line)
 			continue
 		}
-		remote = ""
+		in = false
 	}
 	return lines
+}
+
+// capturedSendTo is the commit id a line inside a block adds or moves its ref to, in either
+// release's shape: the hex after the line's last ` to `, which ends the line or comes before the
+// `]` that ends it.
+var capturedSendTo = regexp.MustCompile(` to ([0-9a-f]+)\]?$`)
+
+// capturedSends is each commit id that the block lines add or move a ref to (capturedSendTo),
+// each once, in the order of the lines. A line that deletes, `[delete from <id>]` or
+// `  Delete …`, holds none, and every other line holds one.
+func capturedSends(t *testing.T, lines []string) []string {
+	t.Helper()
+	var sends []string
+	for _, line := range lines {
+		deletes := strings.Contains(line, "[delete from ") || strings.HasPrefix(line, "  Delete ")
+		parts := capturedSendTo.FindStringSubmatch(line)
+		switch {
+		case deletes && parts != nil:
+			t.Fatalf("the delete line %q holds a commit to send, %s", line, parts[1])
+		case !deletes && parts == nil:
+			t.Fatalf("the line %q holds no commit to send", line)
+		case parts != nil && !slices.Contains(sends, parts[1]):
+			sends = append(sends, parts[1])
+		}
+	}
+	return sends
 }
 
 // capturedNoAuthorCommit is the commit id jj's refusal of a commit with no author names, the word
@@ -51,11 +75,12 @@ func capturedNoAuthorCommit(t *testing.T, stderr string) string {
 
 // The step reads what a push sends from its dry run, in jj 0.45's shape and in jj 0.38's
 // (packages/daemon/cmd/legion/jj_dryrun.go). Every dry run captured from jj 0.45.1-sami, 0.38.0
-// and 0.46.0 is read without an error, one ref for each line of each block, each of the block's
-// remote, naming the line's bookmark or tag and the commits the line names; a dry run that sends
-// nothing reads as Nothing. jj's refusal of a commit with no author names that commit. That
-// refusal, a conflicted bookmark and 0.38's refusal of a second --remote hold neither a block nor
-// `Nothing changed.`, and the parser answers an error that says so.
+// and 0.46.0 is read without an error, so the parser places every line of each block: it answers
+// the commit ids those lines add or move a ref to, each once, in order, as this test reads them
+// from the lines itself (capturedSends), and none for a line that deletes or a dry run that sends
+// nothing. jj's refusal of a commit with no author names that commit. That refusal, a conflicted
+// bookmark and 0.38's refusal of a second --remote hold neither a block nor `Nothing changed.`,
+// and the parser answers an error that says so.
 func TestTheDryRunParserPlacesEveryCapturedLine(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join(capturedDryRuns, "*", "*.txt"))
 	if err != nil {
@@ -86,7 +111,7 @@ func TestTheDryRunParserPlacesEveryCapturedLine(t *testing.T) {
 				fallthrough
 			case form == "conflicted-bookmark", form == "two-remotes" && len(blocks) == 0:
 				if err == nil || !strings.Contains(err.Error(), "neither a block of changes nor `Nothing changed.`") {
-					t.Errorf("parseJJDryRun of jj's refusal = %+v, %v, want the error that the output has neither a block nor `Nothing changed.`", got, err)
+					t.Errorf("parseJJDryRun of jj's refusal = %q, %v, want the error that the output has neither a block nor `Nothing changed.`", got, err)
 				}
 				return
 			}
@@ -96,46 +121,32 @@ func TestTheDryRunParserPlacesEveryCapturedLine(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseJJDryRun: %v\nof:\n%s", err, stderr)
 			}
-			if len(got.Refs) != len(blocks) {
-				t.Fatalf("parseJJDryRun read %d refs, %+v, want %d, one for each line of each block:\n%s", len(got.Refs), got.Refs, len(blocks), stderr)
+			if len(blocks) == 0 && !strings.Contains(stderr, "\nNothing changed.\n") {
+				t.Fatalf("the fixture holds neither a line in a block nor `Nothing changed.`:\n%s", stderr)
 			}
-			if want := len(blocks) == 0; got.Nothing != want || want && !strings.Contains(stderr, "\nNothing changed.\n") {
-				t.Errorf("parseJJDryRun read Nothing = %v, want %v:\n%s", got.Nothing, want, stderr)
-			}
-			for i, block := range blocks {
-				checkCapturedRef(t, got.Refs[i], block)
+			if want := capturedSends(t, blocks); !slices.Equal(got, want) {
+				t.Errorf("parseJJDryRun = %q, want %q, the commit ids its block lines add or move a ref to, each once:\n%s", got, want, stderr)
 			}
 		})
 	}
 }
 
-// checkCapturedRef checks the ref the parser read from one line of a block against that line:
-// its remote, its kind, a name, an action and commit ids that the line holds, and a commit to send
-// for every action but a delete, from the commit it moves or deletes from for every action but an
-// add.
-func checkCapturedRef(t *testing.T, ref jjPushRef, block capturedBlockLine) {
-	t.Helper()
-	line, words := block.line, strings.Fields(block.line)
-	if ref.Remote != block.remote {
-		t.Errorf("%q read as remote %q, want %q", line, ref.Remote, block.remote)
-	}
-	tag := slices.Contains(words, "tag:") || slices.Contains(words, "tag")
-	if ref.Tag != tag {
-		t.Errorf("%q read as a tag line %v, want %v", line, ref.Tag, tag)
-	}
-	if ref.Name == "" || !slices.Contains(words, ref.Name) && !slices.Contains(words, ref.Name+":") {
-		t.Errorf("%q read with name %q, want one of its words", line, ref.Name)
-	}
-	actions := []string{"add", "move forward", "move backward", "move sideways", "delete"}
-	if !slices.Contains(actions, ref.Action) || !strings.Contains(strings.ToLower(line), ref.Action) {
-		t.Errorf("%q read with action %q, want the line's own, one of %q", line, ref.Action, actions)
-	}
-	if (ref.Action == "delete") != (ref.To == "") || (ref.Action == "add") != (ref.From == "") {
-		t.Errorf("%q read as %s from %q to %q: a delete sends no commit, and an add moves from none", line, ref.Action, ref.From, ref.To)
-	}
-	for _, id := range []string{ref.From, ref.To} {
-		if id != "" && (strings.Trim(id, "0123456789abcdef") != "" || !strings.Contains(line, id)) {
-			t.Errorf("%q read with commit %q, want hex that the line holds", line, id)
-		}
+// A block heading with no line under it, which jj never prints, is a dry run the parser cannot
+// read, so the step prints its one line for it: the error names that heading, whether the block
+// is the only one, the first of two, the last of two, or one that a line outside a block follows.
+func TestTheDryRunParserNamesABlockWithNoLine(t *testing.T) {
+	const heading = "Changes to push to origin:"
+	for _, tc := range []struct{ name, stderr string }{
+		{name: "the only block", stderr: heading + "\n"},
+		{name: "the first of two", stderr: heading + "\nChanges to push to fork:\n  bookmark: legion/K-1 [add to 0123456789ab]\n"},
+		{name: "the last of two", stderr: "Changes to push to fork:\n  Add bookmark legion/K-1 to 0123456789ab\n" + heading + "\n"},
+		{name: "a line outside a block after it", stderr: heading + "\nNothing changed.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseJJDryRun(tc.stderr)
+			if err == nil || !strings.Contains(err.Error(), heading) {
+				t.Errorf("parseJJDryRun = %q, %v, want an error naming %q, of:\n%s", got, err, heading, tc.stderr)
+			}
+		})
 	}
 }

@@ -73,17 +73,21 @@ func Install(root, legionExecutable, path string) error {
 	if err := installScript(bin, "gh", "#!/bin/sh\nexec "+legion+" gh \"$@\"\n"); err != nil {
 		return err
 	}
-	if isImage(firstOnPath(path, "git", bin), imageGit) {
-		if err := removeScript(bin, "git"); err != nil {
-			return err
-		}
-	} else if err := installScript(bin, "git", "#!/bin/sh\nexec "+legion+" git --after "+shellprefix.Literal(bin)+" -- \"$@\"\n"); err != nil {
+	if err := installWrapper(bin, legion, path, "git", imageGit); err != nil {
 		return err
 	}
-	if isImage(firstOnPath(path, "jj", bin), imageJJ) {
-		return removeScript(bin, "jj")
+	return installWrapper(bin, legion, path, "jj", imageJJ)
+}
+
+// installWrapper writes bin's script name (git, jj), which execs legion, quoted, as
+// `legion <name> --after <bin>`, unless the first executable program of that name on path,
+// leaving out bin itself, is the image's wrapper at image (imageGit, imageJJ): it then removes the
+// script of that name an earlier Install wrote.
+func installWrapper(bin, legion, path, name, image string) error {
+	if isImage(firstOnPath(path, name, bin), image) {
+		return removeScript(bin, name)
 	}
-	return installScript(bin, "jj", "#!/bin/sh\nexec "+legion+" jj --after "+shellprefix.Literal(bin)+" -- \"$@\"\n")
+	return installScript(bin, name, "#!/bin/sh\nexec "+legion+" "+name+" --after "+shellprefix.Literal(bin)+" -- \"$@\"\n")
 }
 
 // firstOnPath is the first executable program named name (git, jj) on path, leaving out each

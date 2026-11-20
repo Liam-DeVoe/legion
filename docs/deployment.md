@@ -354,7 +354,8 @@ Where a commit's author is not the identity that the table gives the trailer's r
 runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
 It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
-own arguments.
+own arguments, but for a commit id of a hidden commit, hidden by the step's rewrite or before the
+push: the push gets the one visible commit that replaced it, where there is one.
 It changes no commit that a remote bookmark holds and no immutable commit.
 It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
 the table.
@@ -363,7 +364,10 @@ commit id and the step's identity as committer, and it keeps its author.
 A commit with an empty author whose trailer names a role of the table gets that role's author
 too, and `jj git push` still refuses one with no such trailer.
 The step adds no refusal: where it cannot read the dry run, it prints one line, and the push runs
-as written.
+as written, but for a commit id of a commit whose empty author the step filled first.
+A push that names a commit that no jj command has imported yet, such as one that a `git commit`
+made, is such a push: the step's commands import nothing from git, so the dry run cannot find the
+commit, and the push imports it and sends it as it is.
 A process with no table runs no step, such as a controller or a pane of an earlier release.
 Where a host's jj wrapper runs `bin/jj` again, `legion jj` follows the loop rule of `legion git`
 above, and that second run runs no step.

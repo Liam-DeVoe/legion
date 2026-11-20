@@ -78,7 +78,7 @@ It carries:
   The jj wrapper runs every command but a `jj git push` unchanged with the real jj.
   Before a push it makes two checks:
   that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
-  Then it hands the push to `legion jj --real /usr/local/bin/jj`, which runs the push step and then the real jj with the push's own arguments.
+  Then it hands the push to `legion jj --real /usr/local/bin/jj`, which runs the push step and then the real jj with the push's own arguments, where a commit id of a hidden commit can name the visible commit that replaced it (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   The step gives each commit the push sends the author of the role that the commit's first `Legion-Role` trailer names, from that role's identity in `LEGION_ROLE_IDENTITIES` (daemon API contract 187, below).
   It prints one `legion jj:` line for each commit it rewrote, sets the author of no commit with no such trailer, and adds no refusal to the push.
   jj rebases a commit with no such trailer when it sits above a commit that the step rewrote, which gives it a new commit id and the step's identity as committer, and it keeps its author.
