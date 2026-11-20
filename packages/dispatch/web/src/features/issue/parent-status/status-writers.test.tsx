@@ -21,12 +21,14 @@ import type {
   IssueDetails,
   IssueSummary,
   StatusChangeAnswer,
+  StatusChangeInput,
   UpdateIssueInput,
   UserIssueState,
 } from "../../../api/types";
 import { useIssueHeaderWrites } from "../../issue-page/useIssueHeaderWrites";
 import { issueStatuses } from "../../project/board-model";
 import { IssueBoard } from "../../project/IssueBoard";
+import { IssuesTable } from "../../project/IssuesTable";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../../shell/keymap";
 import { IssueHeader } from "../IssueHeader";
@@ -130,10 +132,19 @@ function answerWrites(): Writes {
   return { patches, statusChanges };
 }
 
-/** The move's dry run went out, and nothing was written before it. */
-async function expectDryRunFirst(writes: Writes, key: string, status: string): Promise<void> {
+/** The move's dry run went out, with `options` beside its status, and nothing was written before
+ *  it. */
+async function expectDryRunFirst(
+  writes: Writes,
+  key: string,
+  status: string,
+  options: Omit<StatusChangeInput, "status"> = {}
+): Promise<void> {
   await waitFor(() => expect(writes.statusChanges).toHaveBeenCalledTimes(1));
-  expect(writes.statusChanges.mock.calls[0]?.slice(0, 2)).toEqual([key, { dry_run: true, status }]);
+  expect(writes.statusChanges.mock.calls[0]?.slice(0, 2)).toEqual([
+    key,
+    { dry_run: true, status, ...options },
+  ]);
   expect(writes.patches).not.toHaveBeenCalled();
 }
 
@@ -274,6 +285,45 @@ async function dropInColumn(article: HTMLElement, status: string): Promise<void>
   await act(async () => {
     fireEvent.mouseUp(document, to);
   });
+}
+
+/** The project's issues table over `list`, at the address's `search`, with the reads it makes
+ *  answered and any create refused: no case may reach one. */
+function renderTable(list: IssueSummary[], search = "") {
+  const reads = [
+    spyOn(api, "listIssues").mockResolvedValue(list),
+    spyOn(api, "getMyState").mockResolvedValue({}),
+    spyOn(api, "listAgents").mockResolvedValue([]),
+    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
+  ];
+  const create = spyOn(api, "createIssue").mockRejectedValue(new Error("Unexpected create"));
+  // The unit DOM has no layout: the table's scroll box gets the height a browser would give it,
+  // so its rows are drawn.
+  const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.testid === "issues-table-scroll" ? 600 : (height?.get?.call(this) ?? 0);
+    },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={[`/projects/CORE/issues${search}`]}>
+      <QueryClientProvider client={signedIn()}>
+        <KeymapProvider>
+          <IssuesTable listing={{ project: "CORE" }} />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    create,
+    cleanup: () => {
+      view.unmount();
+      for (const read of [...reads, create]) read.mockRestore();
+      if (height) Object.defineProperty(HTMLElement.prototype, "clientHeight", height);
+      else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+    },
+  };
 }
 
 describe("every status writer of the page asks", () => {
@@ -422,8 +472,68 @@ describe("every status writer of the page asks", () => {
     }
   });
 
-  // The issues table's parent writers - New epic over an issue in work, Move to epic of an issue
-  // in work to an epic on the backlog, and Merge of an epic holding an issue in work into an epic
-  // on the backlog - each ask before any write, New epic before its create. They are plan task
-  // t10's, and join this list as three cases here.
+  // The issues table's parent writers ask before any write: each moves an issue in work under an
+  // epic that is not in work, which Dispatch's rule needs in work first (D12).
+  test("the issues table's New epic, over an issue in work, before its create", async () => {
+    const writes = answerWrites();
+    const user = userEvent.setup();
+    const { cleanup, create } = renderTable([card({ key: "CORE-3", parent: null })]);
+    try {
+      await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
+      await user.click(screen.getByRole("button", { name: "New epic from these" }));
+      const naming = await screen.findByRole("dialog", { name: "Name the new epic" });
+      await user.type(within(naming).getByRole("textbox", { name: "Name" }), "Platform");
+      await user.click(within(naming).getByRole("button", { name: "Create epic" }));
+      // A new epic is no issue yet, so it asks with no dry run.
+      await screen.findByRole("dialog", { name: "Move “Platform” into work too?" });
+      expect(create).not.toHaveBeenCalled();
+      expect(writes.statusChanges).not.toHaveBeenCalled();
+      expect(writes.patches).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the issues table's Move to epic, of an issue in work to an epic on the backlog", async () => {
+    const writes = answerWrites();
+    const user = userEvent.setup();
+    const { cleanup } = renderTable([
+      card({ key: "CORE-3", parent: null }),
+      card({ key: "CORE-9", labels: ["epic"], status: "backlog", title: "Platform" }),
+    ]);
+    try {
+      await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
+      await user.selectOptions(screen.getByRole("combobox", { name: "Move to epic" }), "CORE-9");
+      await user.click(screen.getByRole("button", { name: "Move" }));
+      await expectDryRunFirst(writes, "CORE-9", "in_progress", { include_parent: true });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the issues table's Merge, of an epic holding an issue in work into an epic on the backlog", async () => {
+    const writes = answerWrites();
+    const user = userEvent.setup();
+    const { cleanup } = renderTable(
+      [
+        card({ key: "CORE-1", labels: ["epic"], title: "Source" }),
+        card({ key: "CORE-2", labels: ["epic"], status: "backlog", title: "Target" }),
+        card({ key: "CORE-3", parent: "CORE-1" }),
+      ],
+      "?group=epic"
+    );
+    try {
+      const heading = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+      if (heading === null) throw new Error("The source epic has no heading row");
+      await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
+      await user.selectOptions(
+        screen.getByRole("combobox", { name: "Merge into another epic" }),
+        "CORE-2"
+      );
+      await user.click(screen.getByRole("button", { name: "Merge…" }));
+      await expectDryRunFirst(writes, "CORE-2", "in_progress", { include_parent: true });
+    } finally {
+      cleanup();
+    }
+  });
 });

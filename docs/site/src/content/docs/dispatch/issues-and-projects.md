@@ -120,6 +120,11 @@ An epic group's **Epic actions** can rename it, merge its open work into another
 Merge moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after every move succeeds; otherwise the source stays open and the notice identifies the failed moves.
 Closed issues keep their original parent and history.
 Move, Take out and New epic skip selected closed issues and report how many were skipped; New epic requires at least one open selection.
+Move, New epic and Merge keep a parent's status in line with its children's.
+When an issue you move is in work and the epic is not, the table asks first. **Move into work too** moves the epic, and each parent above it that is not in work, to In progress, and then makes the move.
+When the epic is done, the table asks to reopen it into In progress the same way (**Reopen it too**).
+The question lists each change it makes. **Cancel** changes nothing.
+A new epic is not in work, so New epic asks before it makes the epic.
 Naming and renaming an epic happen in a dialog in the page, like creating an issue.
 If a new epic may duplicate another issue, **Create anyway** is an explicit choice.
 If Dispatch created the epic but lost its answer, the table says so and leaves the selected issues in place rather than guessing the new epic's key.
