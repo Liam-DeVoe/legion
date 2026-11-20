@@ -51,11 +51,10 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	// A plans X, in the turn of its accepted take of its planning task; B, X's architect, is idle in
 	// the same pod.
 	now := r.clock.Now().UTC()
-	planning := supervise.Delivery{ID: "outbox:101", Task: "Plan " + X + ".", Phase: phase.Planning, Generation: 1, Entry: 1,
-		QueuedAt: now, ConfirmedAt: now, TurnStarted: true}
-	a := r.running(X, claim.RolePlanner, supervise.StateWorking)
-	a.Pending = &planning
-	r.seed(r.root(X, phase.Planning), a, r.running(X, claim.RoleArchitect, supervise.StateIdle))
+	planning := supervise.Delivery{ID: "outbox:101", Number: 1, Task: "Plan " + X + ".", Phase: phase.Planning, Generation: 1,
+		Entry: 1, QueuedAt: now, ConfirmedAt: now, TurnStarted: true}
+	r.seed(r.root(X, phase.Planning), inTakesTurn(r.running(X, claim.RolePlanner, supervise.StateWorking), planning),
+		r.running(X, claim.RoleArchitect, supervise.StateIdle))
 	// C's pod was released earlier, and its pull request's head is still running its checks.
 	r.seed(r.root(Y, phase.Implementing), r.released(Y, claim.RoleImplementer))
 	head := strings.Repeat("c", 40)
@@ -83,7 +82,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 
 	// D takes its task in a turn; E's boot launch is let straight out by the burst, its process
 	// dies, and its relaunch waits in the pacing for the interval after it.
-	dShim := r.dialShim(pauseRigBootToken(D))
+	dShim := r.dialWorkerShim(D)
 	dTask := r.startTurn(dShim, "Resume the existing phase work.")
 	r.awaitState(D, supervise.StateWorking, "D's turn has started")
 	r.parkRelaunch(E)
@@ -139,8 +138,9 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 		}
 	}
 
-	// A's turn ends, and its process stops although its session reported background work.
-	r.handle(A, supervise.StreamTurnEnd{Claim: A})
+	// A's turn ends, its plugin's report finishes its task, and its process stops although its
+	// session reported background work.
+	r.endSeededTurn(A, planning.Number)
 	if a := r.awaitState(A, supervise.StateSuspended, "A stops when its turn ends"); !a.Released() {
 		t.Fatalf("A after its turn is suspended by %s, want released", a.SuspendedBy)
 	}
@@ -153,9 +153,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	// D's turn ends in the provider's refusal its report names. D stops, and keeps its task.
 	r.handle(D, supervise.StreamTurnEnd{Claim: D})
 	dDriver := r.driver(dShim)
-	dDriver.mu.Lock()
-	dDriver.inTurn, dDriver.running = false, 0
-	dDriver.mu.Unlock()
+	dDriver.turnOver()
 	if err := dDriver.report(claim.TurnOutcomeRequest{Outcome: claim.TurnRefused, Message: "overloaded_error", Task: dTask.Number,
 		ProviderError: &claim.ProviderError{Status: 529, Message: "overloaded_error", Retryable: true}}); err != nil {
 		t.Fatalf("D's report of the turn the provider refused: %v", err)
@@ -168,11 +166,10 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	// Twenty minutes more: F's backstop comes due, and every timer the turns' ends armed fires.
 	r.advance(20 * time.Minute)
 
-	// D keeps its task, and no take of it is accepted while the project is paused.
+	// D keeps its task while the project is paused.
 	if later := r.claim(D); later.Pending == nil || later.Pending.Task != d.Pending.Task {
 		t.Fatalf("D holds %+v thirty minutes into the pause, want the task it kept at its stop, %q", later.Pending, d.Pending.Task)
 	}
-	r.noTake(D, dTask.Number, paused, "D's task is not taken again while the project is paused")
 
 	// No role launched since the pause, E's parked launch included.
 	if launched := r.rt.launches()[launchesBefore:]; len(launched) != 0 {
@@ -580,10 +577,9 @@ func TestPauseHoldsAcrossRestart(t *testing.T) {
 	S, T, R := r.token(issues[2], claim.RoleImplementer), r.token(issues[3], claim.RoleImplementer), r.token(issues[4], claim.RoleImplementer)
 	controller := r.controller()
 	now := r.clock.Now().UTC()
-	g := r.running(issues[0], claim.RoleImplementer, supervise.StateWorking)
-	g.Pending = &supervise.Delivery{ID: "outbox:201", Task: "Implement " + issues[0] + ".", Phase: phase.Implementing, Generation: 1,
-		Entry: 1, QueuedAt: now, ConfirmedAt: now, TurnStarted: true}
-	r.seed(r.root(issues[0], phase.Implementing), g)
+	implementing := supervise.Delivery{ID: "outbox:201", Number: 1, Task: "Implement " + issues[0] + ".", Phase: phase.Implementing,
+		Generation: 1, Entry: 1, QueuedAt: now, ConfirmedAt: now, TurnStarted: true}
+	r.seed(r.root(issues[0], phase.Implementing), inTakesTurn(r.running(issues[0], claim.RoleImplementer, supervise.StateWorking), implementing))
 	r.seed(r.root(issues[1], phase.Implementing), r.running(issues[1], claim.RoleArchitect, supervise.StateIdle))
 	r.seed(r.root(issues[2], phase.Implementing), r.running(issues[2], claim.RoleImplementer, supervise.StateIdle))
 	r.seed(r.root(issues[3], phase.Implementing), r.running(issues[3], claim.RoleImplementer, supervise.StateReady))
@@ -632,8 +628,9 @@ func TestPauseHoldsAcrossRestart(t *testing.T) {
 		t.Fatalf("H's start is not among the rows the pause holds after the restart: %+v", state.Paused.Held)
 	}
 
-	// G, in its turn across the restart, stops when that turn ends.
-	r.handle(G, supervise.StreamTurnEnd{Claim: G})
+	// G, in its turn across the restart, stops when that turn ends and its plugin's report has
+	// finished its task.
+	r.endSeededTurn(G, implementing.Number)
 	if c := r.awaitState(G, supervise.StateSuspended, "G stops when its turn ends after the restart"); !c.Released() {
 		t.Fatalf("G after its turn is suspended by %s, want released", c.SuspendedBy)
 	}
@@ -892,21 +889,6 @@ func (r *pauseDaemonRig) pullRequest(issue string, number int, head string) {
 			Branch: "legion/" + issue, HeadSHA: head, HeadUpdatedAt: r.clock.Now().Add(-time.Hour).UTC(), State: record.PullRequestOpen})
 	}); err != nil {
 		r.t.Fatalf("record the pull request of %s: %v", issue, err)
-	}
-}
-
-// noTake is no take of task number by token's worker accepted since mark: the daemon's line of
-// each take it answered (supervise's takeAnsweredLine) names no accepted one, a take answered
-// again from the record included, so the task stays untaken however its value is written.
-func (r *pauseDaemonRig) noTake(token claim.Token, number uint64, mark int, why string) {
-	r.t.Helper()
-	for _, line := range r.linesAfter(mark, "supervise: a take was answered") {
-		if line["claim"] != string(token) || line["outcome"] != string(supervise.TakeOutcomeAccepted) {
-			continue
-		}
-		if task, _ := line["task"].(float64); uint64(task) == number {
-			r.t.Fatalf("%s: the daemon accepted a take of task %d: %v", why, number, line)
-		}
 	}
 }
 

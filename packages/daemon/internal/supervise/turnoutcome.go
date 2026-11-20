@@ -503,21 +503,22 @@ type aheadReport struct {
 
 // turnCount is a process's turns as this machine counts them from the worker stream, which is
 // what tells which turn a turn-outcome report is of (RequestTurnOutcome.Sequence): the producer
-// numbers the turns of a launch generation from 1 in the order they end, and the end of every one
-// of them reaches the machine as an end frame — of a turn it saw start (turnEnded), of one it did
-// not (blindTurnEnded), or of one under a compaction — before the next one starts. So the turn
-// starting now is the one after the ends counted, and a report whose sequence is at or below that
-// count is of a turn whose start was seen.
+// numbers the turns of a launch generation from 1 in the order they end, and the end of every turn
+// that ends once its agent is ready reaches the machine as an end frame — of a turn it saw start
+// (turnEnded), of one it did not (blindTurnEnded), or of one under a compaction — before the next
+// one starts. So the turn starting now is the one after the ends counted, and a report whose
+// sequence is at or below that count is of a turn whose start was seen.
 //
 // generation is the launch generation counted, ended the ends of its turns seen, and take the
 // sequence of the turn the daemon gave the pending task's accepted take (turnStarted), or the one
 // a report of that take's number named first (startedUnseen); 0 for none. known is whether ended
 // is every end of the generation's turns: a machine a daemon start builds over a process may have
-// missed turns of it, and a start that arrives with a turn still running says an end was missed
-// (turnStartedWhileBusy). The next launch counts its generation afresh (counted). A count not
-// known gives no take its turn back (notTheTakesTurn) and reads a report's turn start as unseen
-// wherever the claim is not working (startedUnseen), as the machine read every report before it
-// counted.
+// missed turns of it, a start that arrives with a turn still running says an end was missed
+// (turnStartedWhileBusy), and a turn that ends before the agent said ready is one the producer may
+// or may not have numbered (turnEndedBeforeReady). The next launch counts its generation afresh
+// (counted). A count not known gives no take its turn back (notTheTakesTurn) and reads a report's
+// turn start as unseen wherever the claim is not working (startedUnseen), as the machine read every
+// report before it counted.
 type turnCount struct {
 	generation, ended, take uint64
 	known                   bool

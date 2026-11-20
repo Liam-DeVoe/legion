@@ -29,7 +29,17 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // phase task of a claim whose idle pod was released: that suspension ends no phase, and the wake
 // that brings the pod back resumes the claim with the task it kept
 // (SuspendSource.RetiresPhaseTask).
+//
+// A claim idle while a held suspension waits past the end of its take's turn for the report that
+// settles the task (Machine.heldForReport) is still that hold's: a suspension asked again then —
+// the daemon's row or stopElsewhere asking again, a pause's stop row asking again, an operator's
+// second suspend — joins the hold as one asked during the turn does (holdSuspension) and is
+// answered ErrSuspendHeld. Stopped here, the process would take with it the report the hold waits
+// for, and settle would take back as a cut turn a task whose turn ran whole.
 func suspend(m *Machine, ctx context.Context, ev Event) error {
+	if m.held != nil && m.heldForReport {
+		return holdSuspension(m, ctx, ev)
+	}
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
@@ -37,8 +47,9 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 	return m.suspendNow(ctx, request, false)
 }
 
-// holdSuspension is a suspension that arrives while the agent is in a turn, and this is the one
-// statement of what a held suspension (Machine.held) does.
+// holdSuspension is a suspension that arrives while the agent is in a turn, or while a held
+// suspension waits past the end of its take's turn for that turn's report (suspend), and this is
+// the one statement of what a held suspension (Machine.held) does.
 //
 // A worker's issue can close, or an operator suspend it, while it is in a turn: the production
 // check's sign-off, say, arriving while the implementer's report of the check is still a tool call
@@ -120,8 +131,11 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// the operator's hold the operator's source, which must not give it the operator's stop timeout
 	// too, nor hold a request whose asker reports a refusal as nothing having happened.
 	if ev.(RequestSuspend).NeverHold {
-		return &RefusedError{State: m.claim.State, Request: "suspend",
-			Reason: "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"}
+		reason := "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"
+		if m.heldForReport {
+			reason = "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"
+		}
+		return &RefusedError{State: m.claim.State, Request: "suspend", Reason: reason}
 	}
 	deadline := ev.(RequestSuspend).Deadline
 	if ev.(RequestSuspend).By == SuspendedByOperator {

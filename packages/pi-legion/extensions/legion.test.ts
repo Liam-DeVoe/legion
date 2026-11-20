@@ -535,6 +535,9 @@ function createPi(
     readonly agentsExposed?: boolean;
     /** The Envoy entry the pane binds; the one this file loaded unless a test loads another. */
     readonly envoyEntry?: typeof envoyExtension;
+    /** The host's answer to each `sendUserMessage`, made once the call is recorded: nothing,
+     * unless a test gives one, such as the rejection Oh My Pi answers a prompt it dropped. */
+    readonly sendAnswer?: (content: string) => void | Promise<void>;
   } = {}
 ): {
   readonly commands: RegisteredCommand[];
@@ -611,6 +614,7 @@ function createPi(
       }
       sentUserMessages.push(content);
       sentUserMessageOptions.push(sendOptions);
+      return options.sendAnswer?.(content);
     },
     appendEntry: (customType, data) => {
       entries.push({ type: "custom", customType, data });
@@ -2385,6 +2389,47 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         [2, value.number],
       ]);
       expect(taken).toBe(1);
+    });
+
+    // A switch, a branch or a tree navigation can leave the pane on another session than the one
+    // its claim registered (`afterSessionChange`), whose runs reach `agent_start` and `agent_end`
+    // here as the claim's own do. Such a run is no run of the claim's session: it neither starts
+    // nor ends the turn of the text the take handed the claim's session, and its end reports
+    // nothing. The claim's own session's run is the task's turn, and its report names the task.
+    test("a run of another session of the pane neither starts nor ends the take's turn", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => true,
+        routes: (url, body) => tasks.answer(url.pathname, body as Record<string, unknown>),
+      });
+      await turns(() => worker.sentUserMessages.length > 0);
+      expect(worker.sentUserMessages).toEqual([text]);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+
+      const other: SessionContext = {
+        ...worker.context,
+        sessionManager: { ...worker.context.sessionManager, getSessionId: () => "ses_other" },
+      };
+      await hook(worker.handlers, "agent_start")({}, other);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+      await hook(worker.handlers, "agent_end")(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        other
+      );
+
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+
+      const reports = daemonRequests(worker.requests)
+        .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+        .map((request) => request.body as Record<string, unknown>);
+      expect(reports.map((report) => [report.sessionId, report.sequence, report.task])).toEqual([
+        ["ses_stall", 1, value.number],
+      ]);
     });
 
     // At the pane: the take's answer finds the host setting up a prompt it already took — a
@@ -4422,6 +4467,8 @@ async function launchedController(options: {
   /** The listener's answer to a `/v1/roles/set` for the controller role, in place of its own
    * registry's when it gives one. */
   readonly roleClaim?: () => Response | undefined | Promise<Response | undefined>;
+  /** The host's answer to each `sendUserMessage` (`createPi`'s `sendAnswer`). */
+  readonly sendAnswer?: (content: string) => void | Promise<void>;
 }): Promise<LaunchedController> {
   const project = options.project ?? "omp";
   const token = `legion-${project}-controller`; // fixture-secret: the controller's claim token, the role the daemon and the listener name it by; no client holds it
@@ -4548,7 +4595,10 @@ async function launchedController(options: {
     exits.push(code);
     throw new Error("process would exit");
   });
-  const fixture = createPi({ bindEnvoy: options.order !== "legion.ts" });
+  const fixture = createPi({
+    bindEnvoy: options.order !== "legion.ts",
+    sendAnswer: options.sendAnswer,
+  });
   legionExtension(fixture.pi);
   if (options.order === "legion.ts") envoyExtension(fixture.pi as never);
   return {
@@ -5035,6 +5085,47 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     ]);
     expect(envoyPluginInterface().startupTurn).toEqual({
       session: "ses_controller_refused",
+      sentAt: expect.any(Number),
+    });
+  });
+
+  // Oh My Pi answers a prompt it dropped before its turn began with a rejection
+  // (`PiApi.sendUserMessage`): a start message so dropped ran nothing, so the claim that sent it
+  // logs the drop, leaves it unsent and clears its startup mark, and the next claim sends it again.
+  test("a start message the host drops is logged and its startup mark cleared, and the next claim sends it again", async () => {
+    let drop = true;
+    const controller = await launchedController({
+      sessionId: "ses_controller_dropped",
+      sendAnswer: () =>
+        drop ? Promise.reject(new Error("Prompt dropped before provider dispatch.")) : undefined,
+    });
+    const context = controller.context("ses_controller_dropped");
+    const { value: notices, errors } = await loggedErrors(() =>
+      startOperatorController(controller, context)
+    );
+
+    expect(notices).toEqual([]);
+    expect(errors).toContain(
+      "[legion] Oh My Pi dropped the controller's start message before its turn began; run /legion-claim-controller to send it again: Prompt dropped before provider dispatch."
+    );
+    expect(controller.sentUserMessages).toEqual([
+      "Legion controller start: follow skill://legion-controller",
+    ]);
+    expect(envoyPluginInterface().startupTurn).toBeUndefined();
+
+    drop = false;
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    await claimCommand.handler("", commandContext(context));
+
+    expect(controller.sentUserMessages).toEqual([
+      "Legion controller start: follow skill://legion-controller",
+      "Legion controller start: follow skill://legion-controller",
+    ]);
+    expect(envoyPluginInterface().startupTurn).toEqual({
+      session: "ses_controller_dropped",
       sentAt: expect.any(Number),
     });
   });

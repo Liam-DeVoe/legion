@@ -202,7 +202,7 @@ type Accepted =
       readonly during: number | undefined;
     }
   | {
-      readonly kind: "sent";
+      readonly kind: "handed";
       readonly number: number;
       readonly handing: number;
       readonly again: string | undefined;
@@ -287,8 +287,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
    * once; with none, the take asks at the number's next revision, and the text its accepted answer
    * carries goes to the host.
    */
-  const dropped = (handing: number, error: unknown): void => {
-    if (closed || accepted.kind !== "sent" || accepted.handing !== handing) return;
+  const hostDropped = (handing: number, error: unknown): void => {
+    if (closed || accepted.kind !== "handed" || accepted.handing !== handing) return;
     const { number, again } = accepted;
     log.warn("legion: the host dropped an accepted take's text before its turn started", {
       task: number,
@@ -301,19 +301,19 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
 
   /** Hands an accepted take's text to the host (`run`), when no run is going: from here it has
    *  reached the host, unless the host's answer to it rejects before the text's turn starts
-   *  (`dropped`). A host that answers it is not idle, one setting up a prompt it already took,
+   *  (`hostDropped`). A host that answers it is not idle, one setting up a prompt it already took,
    *  took nothing: the text is held as one accepted during a run is, and goes to the host at the
    *  end of the run that setup starts (`runEnded`). */
   const hand = (number: number, text: string): void => {
     handings += 1;
     const handing = handings;
-    accepted = { kind: "sent", number, handing, again: undefined };
+    accepted = { kind: "handed", number, handing, again: undefined };
     const answer = deps.run(text);
     if (answer === "not idle") {
       accepted = { kind: "held", number, text, during: undefined };
       return;
     }
-    Promise.resolve(answer).then(undefined, (error: unknown) => dropped(handing, error));
+    Promise.resolve(answer).then(undefined, (error: unknown) => hostDropped(handing, error));
   };
 
   const answered = (value: TaskValue, answer: LegionTake): void => {
@@ -330,9 +330,9 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
         // of a number whose text has reached the host, before the task's turn (while the host
         // sets the text up), during it, or after its end was reported with no provider error
         // (`runEnded`) and until that report is refused, runs nothing more. While the host holds
-        // the text unstarted, the answer is kept for the host's drop of it (`dropped`).
+        // the text unstarted, the answer is kept for the host's drop of it (`hostDropped`).
         if (!owed(value) || turnRunning(accepted) === value.number) return;
-        if (accepted.kind === "sent" && accepted.number === value.number) {
+        if (accepted.kind === "handed" && accepted.number === value.number) {
           accepted = { ...accepted, again: answer.text };
           return;
         }
@@ -401,7 +401,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       (owed(held) && key !== undefined && !asked.has(key)) ||
       taking !== undefined ||
       accepted.kind === "held" ||
-      accepted.kind === "sent";
+      accepted.kind === "handed";
     if (pending === marked) return;
     marked = pending;
     deps.setPending(pending);
@@ -482,7 +482,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       // accepted, or that the host was setting up then (`hand`), so a run that starts before that
       // end is not its turn: the daemon counts that run as the take's, and its end, reported
       // naming no task, puts the take back.
-      if (accepted.kind === "sent") accepted = { kind: "running", number: accepted.number };
+      if (accepted.kind === "handed") accepted = { kind: "running", number: accepted.number };
       settle();
     },
     runEnded: (providerError) => {

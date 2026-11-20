@@ -295,14 +295,22 @@ func (w *takeDriver) turnSeen(number uint64) error {
 // the number of the take the turn ran, which finishes that task. A turn of the agent's own ends
 // with no report, as the turn of a worker whose plugin took nothing does.
 func (w *takeDriver) endTurn() error {
-	w.mu.Lock()
-	running := w.running
-	w.inTurn, w.running = false, 0
-	w.mu.Unlock()
+	running := w.turnOver()
 	if err := w.send(shimwire.AgentEnd{}); err != nil || running == 0 {
 		return err
 	}
 	return w.report(claim.TurnOutcomeRequest{Outcome: claim.TurnClean, Task: running})
+}
+
+// turnOver marks the driver's turn over, as the end of a turn leaves the plugin, and answers the
+// number of the take that turn ran, 0 for a turn of the agent's own. A test whose turn ends in a
+// report of its own calls it before that report (report).
+func (w *takeDriver) turnOver() (running uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	running = w.running
+	w.inTurn, w.running = false, 0
+	return running
 }
 
 // inATurn is whether a turn of the agent's is running, which is what its answer to the daemon's

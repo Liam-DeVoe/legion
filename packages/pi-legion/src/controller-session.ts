@@ -99,9 +99,6 @@ export function createControllerSession(deps: {
   readonly daemon: () => LegionDaemonClient;
   readonly persistedTranscript: PersistedTranscript;
   readonly pi: PiApi;
-  /** Sends an accepted take's text as the turn's user message, or answers `"not idle"` and sends
-   *  nothing where the host is not idle; the host's answer rejects when the host dropped the text
-   *  before its turn began (`TaskTakeDeps.run`). */
   readonly runTask: TaskTakeDeps["run"];
   readonly exitProcess: (code: number) => never;
 }): ControllerSession {
@@ -170,6 +167,26 @@ export function createControllerSession(deps: {
     return run;
   };
 
+  // The start message sent to an idle `sessionID`, marked as its startup turn right before.
+  const sendStartTurn = (sessionID: string, startMessage: string): void | Promise<void> => {
+    markStartupTurnSent(sessionID);
+    startTurnSession = sessionID;
+    return pi.sendUserMessage(startMessage);
+  };
+
+  // Oh My Pi dropped the start message sent to `sessionID` before its turn began
+  // (`PiApi.sendUserMessage`): nothing of it ran, so it is still to send, and the next claim
+  // (`/legion-claim-controller`, or a session change's re-claim) sends it. The startup mark the send
+  // set goes with it, so the Envoy entry holds no card back for a start that is not coming.
+  const startMessageDropped = (sessionID: string, error: unknown): void => {
+    logger.error(
+      `[legion] Oh My Pi dropped the controller's start message before its turn began; run /legion-claim-controller to send it again: ${messageFor(error)}`
+    );
+    startMessageSent = false;
+    clearStartupTurn(sessionID);
+    if (startTurnSession === sessionID) startTurnSession = undefined;
+  };
+
   /**
    * Makes the context's session the controller: it registers on the claim route with the
    * capability `legion controller start` fetched in place of a boot token, then claims the role
@@ -219,7 +236,8 @@ export function createControllerSession(deps: {
    * registers the new session, sends the start message there, and tells the operator so
    * (`startHandedOver`). `startMessageSent` keeps this process from sending it twice: a retried
    * claim after a failure past the send, and a later `/legion-claim-controller` in the same
-   * session, send nothing more.
+   * session, send nothing more. A start message Oh My Pi dropped before its turn began ran nothing,
+   * so it is still to send (`startMessageDropped`): the next claim sends it.
    *
    * The controller topic is no live wake: this session receives what its own JetStream consumer
    * delivers and nothing else (INFRA-771), and the registration above puts the topic in that
@@ -396,14 +414,12 @@ export function createControllerSession(deps: {
         startHandedOver = true;
         return;
       }
-      if (context.isIdle?.() === false) {
-        pi.sendUserMessage(startMessage, { deliverAs: "followUp" });
-      } else {
-        markStartupTurnSent(sessionID);
-        startTurnSession = sessionID;
-        pi.sendUserMessage(startMessage);
-      }
+      const send =
+        context.isIdle?.() === false
+          ? pi.sendUserMessage(startMessage, { deliverAs: "followUp" })
+          : sendStartTurn(sessionID, startMessage);
       startMessageSent = true;
+      void Promise.resolve(send).catch((error: unknown) => startMessageDropped(sessionID, error));
     }
     const caller = claimCaller(registration, sessionID);
     const taken = supervised ? takeFor(client, caller) : undefined;

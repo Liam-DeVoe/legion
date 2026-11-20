@@ -1,4 +1,8 @@
-import { claimCaller, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  type ClaimCaller,
+  claimCaller,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import {
   exportJjSessionAttribution,
   type PaneAttribution,
@@ -29,13 +33,21 @@ export interface ClaimSession {
    * session. */
   readonly capability: (sessionID: string) => ClaimCapability | undefined;
   /** The take of this pane's claim (`@legion/pi-shared/task-take`), whose hooks `legion.ts` calls
-   * for a run of this pane's session (`agent_start` and `agent_end`, never a `task` subagent's
+   * for a run of the claim's session (`agent_start` and `agent_end`, never a `task` subagent's
    * event) and for the daemon's refusal of that run's report (`src/turn-outcome.ts`): the first
    * run after an accepted take's text was handed to the idle host is that task's turn, and its end
    * the report naming its number.
-   * Every session of this pane is its claim's, so `sessionID` selects nothing. Undefined before
-   * the claim is registered. */
+   * Undefined for any other session than the one the claim registered, which a switch, a branch
+   * or a tree navigation can leave the pane on (`afterSessionChange` in `legion.ts`): a run of
+   * that session neither starts nor ends the take's turn, as its end reports nothing
+   * (`capability`). Undefined before the claim is registered. */
   readonly take: (sessionID: string) => TaskTake | undefined;
+}
+
+/** The take of this pane's claim (`takeClaimTask`), and the caller it takes for: the claim's
+ * registration, made for the session the boot ran in. */
+interface Taking extends ClaimTaskTake {
+  readonly caller: ClaimCaller;
 }
 
 /**
@@ -97,15 +109,12 @@ export function createClaimSession(deps: {
   readonly persistedTranscript: (
     context: SessionContext
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
-  /** Sends an accepted take's text as the turn's user message, or answers `"not idle"` and sends
-   *  nothing where the host is not idle; the host's answer rejects when the host dropped the text
-   *  before its turn began (`TaskTakeDeps.run`). */
   readonly runTask: TaskTakeDeps["run"];
   readonly exitProcess: (code: number) => never;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
-  let taking: ClaimTaskTake | undefined;
+  let taking: Taking | undefined;
   // Ends the take's hold on its mark, kept until the read after the ready has answered
   // (`afterReadyRead`).
   let readAnswered: (() => void) | undefined;
@@ -128,12 +137,8 @@ export function createClaimSession(deps: {
         pluginContract: pkg.legion.daemonApiVersion,
       },
       afterRegister: async (claim) => {
-        taking = takeClaimTask({
-          daemon,
-          caller: claimCaller(claim, sessionID),
-          run: deps.runTask,
-          log: logger,
-        });
+        const caller = claimCaller(claim, sessionID);
+        taking = { ...takeClaimTask({ daemon, caller, run: deps.runTask, log: logger }), caller };
         taking.take.read(claim);
         readAnswered = taking.take.awaitRead();
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);
@@ -177,6 +182,6 @@ export function createClaimSession(deps: {
   return {
     bootstrap,
     capability: (sessionID) => (capability?.sessionID === sessionID ? capability : undefined),
-    take: () => taking?.take,
+    take: (sessionID) => (taking?.caller.sessionId === sessionID ? taking.take : undefined),
   };
 }

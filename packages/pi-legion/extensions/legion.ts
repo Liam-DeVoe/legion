@@ -389,6 +389,12 @@ export default function legionExtension(pi: PiApi): void {
     log: logger,
   });
 
+  // The take a run of `sessionID` is heard by, as the report of that run is chosen above: the
+  // claim's, for the session it registered, or the daemon-launched controller's, for the session
+  // its take was made for; none for any other session.
+  const sessionTake = (sessionID: string): TaskTake | undefined =>
+    claimSession.take(sessionID) ?? controllerSession.take(sessionID);
+
   // An accepted take's text, sent as the turn's user message (dispatch://INFRA-2811 R2): it is no
   // turn the Envoy entry sent in, so the phase-stall check reads it as the assignment
   // (`inboundKind`). The take sends it only while no run of the session is going, as its
@@ -780,8 +786,7 @@ export default function legionExtension(pi: PiApi): void {
     // (`@legion/pi-shared/task-take`). A `task` subagent's event is not a turn of this session
     // (`subagentEvent`).
     if (!subagentEvent(context)) {
-      const sessionID = context.sessionManager.getSessionId();
-      (claimSession.take(sessionID) ?? controllerSession.take(sessionID))?.runStarted();
+      sessionTake(context.sessionManager.getSessionId())?.runStarted();
     }
   });
   pi.on("session_shutdown", async (_event, context) => {
@@ -913,7 +918,7 @@ export default function legionExtension(pi: PiApi): void {
     let providerError = false;
     if (!subagentEvent(context)) {
       providerError = reportsProviderError(event);
-      take = claimSession.take(sessionID) ?? controllerSession.take(sessionID);
+      take = sessionTake(sessionID);
       task = take?.runEnded(providerError);
     }
     const answer = await turnOutcomes.report(sessionID, event, task);

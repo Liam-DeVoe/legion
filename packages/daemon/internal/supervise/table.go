@@ -1017,7 +1017,11 @@ func fillTable(t *builder) {
 	// did (dispatch://INFRA-1691, INFRA-1545, INFRA-722, A9).
 	t.row(onTurnEnd, "a turn the daemon never saw begin ended: write again a value whose take it refused", blindTurnEnded,
 		nil, prompted...)
-	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a task is in flight", unready...)
+	t.row(onTurnEnd, "a turn of the process ended before its agent said ready: the count of its turns is no longer known", turnEndedBeforeReady,
+		nil, StateShimConnected, StateRegistered)
+	t.ignore(onTurnEnd, "no process of the launch has said hello, so the turn that ended was of a process the launch replaces, whose turns no count of the launch's covers",
+		StateLaunching)
+	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a task is in flight", StateQueued, StateLaunchUncertain)
 	t.ignore(onTurnEnd, noProcess, gone...)
 
 	// The agent's answer to whether it is in a turn, behind the frames its shim sent before it. It
@@ -1197,8 +1201,8 @@ func fillTable(t *builder) {
 	t.ignore(onReady, failedClaim, StateFailed)
 	t.ignore(onReady, retiredClaim, StateRetired)
 
-	t.row(onSuspend, "suspend: stop the process, keep the session", suspend, []ClaimState{StateSuspended},
-		StateRegistered, StateReady, StateIdle)
+	t.row(onSuspend, "suspend: stop the process, keep the session, unless a held suspension waits for the report of the claim's last turn: the request joins that hold",
+		suspend, []ClaimState{StateSuspended}, StateRegistered, StateReady, StateIdle)
 	t.row(onSuspend, "a suspension of a claim in a turn is held for that turn's end, since stopping the agent now would cut its turn off, unless no process stands behind the claim: that one is suspended here",
 		holdSuspension, []ClaimState{StateSuspended}, StateWorking)
 	t.row(onSuspend, "a suspension of a launch stops the start, and is otherwise held until the agent is ready, unless its paced wake waits over no process: that one is suspended here", holdSuspendUntilReady,
@@ -1922,6 +1926,20 @@ func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 		}
 	}
 	return m.offerPending(ctx)
+}
+
+// turnEndedBeforeReady is a turn of the claim's process ending before its agent said ready: its
+// shim has said hello at the claim's generation, so the turn was this process's, and no take
+// awaits a turn before ready. Whether its producer numbered that turn is the producer's own:
+// pi-legion numbers only the turns that end once its registration has answered, the Claude bridge
+// every turn of its process. So the machine no longer knows how many of the process's turns the
+// producer has ended (turnCount): counted or let by with the count still known, the end could
+// leave the turn the daemon gives a take named as an earlier one, and that turn's late report
+// would give back a take whose turn is running (notTheTakesTurn).
+func turnEndedBeforeReady(m *Machine, _ context.Context, _ Event) error {
+	m.log.Info("supervise: a turn ended before the agent said ready; the count of its process's turns is no longer known")
+	m.counted().known = false
+	return nil
 }
 
 // issueTurnEnded is a turn ending on another claim of this claim's issue. It carries nothing the
