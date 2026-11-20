@@ -13,13 +13,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime/pprof"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,6 +234,15 @@ func fakeHelperAt(t *testing.T, sock string, canned helper.Response) <-chan help
 // fakeHelperAnswering is fakeHelperAt answering each request by answer, given how many requests
 // came before it: a helper whose answer changes between calls, such as one that says the caller is
 // in its session and then refuses to sign.
+//
+// Each connection is served on a goroutine of its own, as the real helper serves them
+// (helper.Server.Serve), so a connection that sends nothing holds only itself and the next call
+// still gets its answer. A connection's request is read within helper.BrokerCallWait: that is the
+// longest wait a client gives one call to this fake (enroll --helper and unenroll --helper give
+// helper.Call that wait), so past it no client is still waiting for the answer. When the test
+// fails, the fake logs what it did with each connection and when (fakeHelperLog), so a call that
+// got no answer shows whether the fake never took the connection, never read its request, or
+// answered it late.
 func fakeHelperAnswering(t *testing.T, sock string, answer func(call int) helper.Response) <-chan helper.Request {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
@@ -240,24 +252,97 @@ func fakeHelperAnswering(t *testing.T, sock string, answer func(call int) helper
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := &fakeHelperLog{sock: sock}
 	t.Cleanup(func() { ln.Close() })
+	// Registered after the close, so it runs before it: the socket table still lists the socket.
+	t.Cleanup(func() { events.reportIfFailed(t) })
 	reqs := make(chan helper.Request, 8)
 	go func() {
 		for call := 0; ; call++ {
 			conn, err := ln.AcceptUnix()
 			if err != nil {
+				if !errors.Is(err, net.ErrClosed) {
+					events.note("accept failed, so the fake takes no more connections: %v", err)
+				}
 				return
 			}
-			line, _ := bufio.NewReader(conn).ReadBytes('\n')
-			var req helper.Request
-			_ = json.Unmarshal(line, &req)
-			reqs <- req
-			data, _ := json.Marshal(answer(call))
-			_, _ = conn.Write(append(data, '\n'))
-			conn.Close()
+			events.note("call %d: connection taken", call)
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(helper.BrokerCallWait))
+				line, err := bufio.NewReader(conn).ReadBytes('\n')
+				events.note("call %d: request read, %d bytes, error %v", call, len(line), err)
+				var req helper.Request
+				_ = json.Unmarshal(line, &req)
+				reqs <- req
+				data, _ := json.Marshal(answer(call))
+				_, err = conn.Write(append(data, '\n'))
+				events.note("call %d: answer written, error %v", call, err)
+			}()
 		}
 	}()
 	return reqs
+}
+
+// fakeHelperLog is what one fake helper did, with the time of each step, for the log of a test
+// that failed.
+type fakeHelperLog struct {
+	sock   string
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *fakeHelperLog) note(format string, args ...any) {
+	line := time.Now().UTC().Format("15:04:05.000000") + " " + fmt.Sprintf(format, args...)
+	l.mu.Lock()
+	l.events = append(l.events, line)
+	l.mu.Unlock()
+}
+
+// goroutinesLogged holds each failed test whose goroutines a fake has logged, so a test with more
+// than one fake logs them once.
+var goroutinesLogged sync.Map
+
+// reportIfFailed logs, when t failed, every step the fake took, the lines of the unix socket table
+// (/proc/net/unix, Linux) that name its socket, and the test process's goroutines.
+func (l *fakeHelperLog) reportIfFailed(t *testing.T) {
+	if !t.Failed() {
+		return
+	}
+	l.mu.Lock()
+	events := strings.Join(l.events, "\n")
+	l.mu.Unlock()
+	t.Logf("the fake helper at %s, as of %s:\n%s", l.sock, time.Now().UTC().Format("15:04:05.000000"), events)
+	if table, err := os.ReadFile("/proc/net/unix"); err == nil {
+		var lines []string
+		for _, line := range strings.Split(string(table), "\n") {
+			if strings.HasSuffix(line, " "+l.sock) {
+				lines = append(lines, line)
+			}
+		}
+		t.Logf("the unix socket table's lines for %s (Num RefCount Protocol Flags Type St Inode Path):\n%s", l.sock, strings.Join(lines, "\n"))
+	}
+	if _, logged := goroutinesLogged.LoadOrStore(t, true); !logged {
+		var b strings.Builder
+		_ = pprof.Lookup("goroutine").WriteTo(&b, 2)
+		t.Logf("the test process's goroutines:\n%s", b.String())
+	}
+}
+
+// TestFakeHelperAnswersPastAConnectionThatSendsNothing pins fakeHelperAnswering's own contract: a
+// connection that sends no request holds only itself, so a call behind it still gets its answer,
+// within the wait enroll --helper gives one call (helper.BrokerCallWait).
+func TestFakeHelperAnswersPastAConnectionThatSendsNothing(t *testing.T) {
+	sock, _ := fakeHelper(t, helper.Response{OK: true, EnrollmentID: "enr-behind"})
+	silent, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	resp, err := helper.Call(sock, helper.Request{Op: "enroll-session-key"}, helper.BrokerCallWait)
+	if err != nil || resp.EnrollmentID != "enr-behind" {
+		t.Fatalf("a call behind a connection that sends nothing = %+v, %v; want the fake's answer", resp, err)
+	}
 }
 
 // TestHelperSignerAsksTheHelper covers both a granted proof and the helper's error code
