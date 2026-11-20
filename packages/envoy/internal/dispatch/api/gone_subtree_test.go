@@ -53,14 +53,17 @@ func storedStateOf(t *testing.T, rig reasoningRig, address string) string {
 // alice may see none of L4, F4 and L5. Her gone on L1 answers L1 alone and takes F1, L3, L4, F4
 // and L5 to gone in the same transaction, each with one new state tuple written by her, and the
 // first agent's lens read and reference read of L3, and the second agent's of L4 and of L5, answer
-// what a lens nobody wrote answers. The first agent's gone on each of two risks under a pre-mortem
-// of its own, one with nothing under it and one under which alice reserves a lens for herself, is
-// 403 STATE_NOT_PERMITTED naming the risk, the two answers alike byte for byte once the risk is
-// substituted and both risks at the value they held. Its gone on the finding F7 of a trade-off
-// analysis of its own, on which the second agent reserves a lens L7 for itself, is refused the same
-// way, F7 and L7 keeping their values, and alice's gone on F7 takes L7, which she may not see, gone
-// with it. Each of these checks is an error and not the end of the test, so a run whose route
-// leaves a node standing, or takes a move it refuses, names each node.
+// what a lens nobody wrote answers. alice writes a pre-mortem with one risk R, and the first agent
+// invokes a lens L6 on R: her gone on R takes L6 to gone with it. Her gone on a constraint of hers
+// takes the lens the first agent invoked on it to gone in the same way. The first agent's gone on
+// each of two risks under a pre-mortem of its own, one with nothing under it and one under which
+// alice reserves a lens for herself, is 403 STATE_NOT_PERMITTED naming the risk, the two answers
+// alike byte for byte once the risk is substituted and both risks at the value they held. Its gone
+// on the finding F7 of a trade-off analysis of its own, on which the second agent reserves a lens
+// L7 for itself, is refused the same way, F7 and L7 keeping their values, and alice's gone on F7
+// takes L7, which she may not see, gone with it. Each of these checks is an error and not the end
+// of the test, so a run whose route leaves a node standing, or takes a move it refuses, names each
+// node.
 func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	rig := newReasoningRig(t)
 	first := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"The first lens's finding."}})
@@ -287,6 +290,29 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 			}
 		}
 	}
+
+	// requireTakenWith fails, naming the node, unless alice's gone on parent, called parentName,
+	// left the node name names at address gone.
+	requireTakenWith := func(parentName, parent, name, address string) {
+		t.Helper()
+		if state := storedNodeOf(t, settle.database, address).State; state != graphstore.StateGone {
+			t.Errorf("alice's gone on %s %s left %s %s at %s, want gone with it: a node's gone takes its whole part_of subtree, at every depth and whoever invoked each node",
+				parentName, parent, name, address, state)
+		}
+	}
+	// A risk's gone takes the lens on it, and so does a constraint's, whoever invoked that lens:
+	// alice's pre-mortem holds one risk R, on which the first agent invokes a lens L6, and the
+	// first agent invokes another lens on a constraint of alice's.
+	alicePremortem := invokeAs("alice's pre-mortem", settle.asAlice, map[string]any{"on": settle.spec, "kind": graphstore.LensKindPreMortem})
+	r := riskAs("R, alice's risk", settle.asAlice, alicePremortem.Address)
+	l6 := invokeAs("the first agent's lens L6 on R", settle.asFirst, map[string]any{"on": r.Address, "kind": "trade-off"})
+	aliceConstraint := decodeBody[riskWritten](t, posted("alice's constraint", "/constraints", settle.asAlice,
+		map[string]any{"standard": "RFC 9110", "reference": "section 9.2.2"})).Address
+	onAliceConstraint := invokeAs("the first agent's lens on alice's constraint", settle.asFirst, map[string]any{"on": aliceConstraint, "kind": "trade-off"})
+	takeGone("R", r.Address)
+	requireTakenWith("R", r.Address, "L6", l6.Address)
+	takeGone("her constraint", aliceConstraint)
+	requireTakenWith("her constraint", aliceConstraint, "the first agent's lens on it", onAliceConstraint.Address)
 
 	// refusedGone is the first agent's gone on the node at address, one it wrote, held to 403
 	// STATE_NOT_PERMITTED naming the node, and the node to the state and the state tuples it held;
