@@ -148,6 +148,7 @@ from pathlib import Path
 
 import yaml
 from ci_filter_coverage import called_workflows, script_lines, step_workdir
+from private_proc import FALSE, read_go_args
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -423,10 +424,6 @@ GO_WRAPPERS = (".github/scripts/race_memory.py", ".github/scripts/private_proc.p
 WRAPPER_OPTIONS = ("--sudo",)
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
-# go test flags whose value is the next argument.
-VALUE_FLAGS = ("-run", "-skip", "-tags", "-timeout", "-count", "-parallel", "-cpu", "-bench",
-               "-o", "-fuzz", "-fuzztime", "-shuffle", "-exec", "-coverprofile", "-covermode",
-               "-p")
 # The one `-skip` shape this script reads: the anchored alternation of whole test names
 # ci_job_reads.py builds for both steps of this repository that carry one, `^(Name|Name|…)$`.
 # Its names are read off the pattern's own text, and every other pattern is refused by name,
@@ -712,35 +709,29 @@ def skip_names(pattern: str) -> list[str] | None:
 
 
 def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
-    """The packages, -tags, -race, -run and -skip of one `go test` command."""
+    """The packages, -tags, -race, -run and -skip of one `go test` command, its words read by
+    private_proc.py's read_go_args, the reader the wrapper and rule 22 of check-ci-filters.sh read
+    a go test by."""
     command = GoTest(step=step, text=text, packages=list(packages))
     words = shlex.split(text)
-    position = words.index("test") + 1
-    while position < len(words):
-        word = words[position]
-        position += 1
-        if word == "-race":
-            command.race = True
-        elif word.startswith("-"):
-            flag, _, value = word.partition("=")
-            if not value and flag in VALUE_FLAGS:
-                value = words[position]
-                position += 1
-            if flag == "-run":
-                command.run = value
-            elif flag == "-skip":
-                if skip_names(value) is None:
-                    raise Refused(f"{step.label}: `{text}` skips by `{value}`, and this script "
-                                  "reads only the anchored alternation of whole test names, "
-                                  "`^(Name|Name|…)$`, that ci_job_reads.py writes")
-                command.skip = value
-            elif flag == "-tags":
-                command.tags = value
-            elif flag == "-bench":
-                raise Refused(f"{step.label}: `{text}` runs benchmarks, which this script "
-                              "does not expand")
-        else:
-            command.packages.append(word)
+    flags, named = read_go_args(words[words.index("test") + 1:])
+    for flag, value, _ in flags:
+        if flag == "-race":
+            command.race = value not in FALSE
+        elif flag == "-run":
+            command.run = value or ""
+        elif flag == "-skip":
+            if skip_names(value or "") is None:
+                raise Refused(f"{step.label}: `{text}` skips by `{value}`, and this script "
+                              "reads only the anchored alternation of whole test names, "
+                              "`^(Name|Name|…)$`, that ci_job_reads.py writes")
+            command.skip = value or ""
+        elif flag == "-tags":
+            command.tags = value or ""
+        elif flag == "-bench":
+            raise Refused(f"{step.label}: `{text}` runs benchmarks, which this script "
+                          "does not expand")
+    command.packages += named
     if not command.packages:
         raise Refused(f"{step.label}: `{text}` names no package")
     return command

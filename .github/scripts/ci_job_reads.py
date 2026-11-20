@@ -2549,6 +2549,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
+        (PRIVATE_PROC_READ, "the go command reader rule 22 imports (read_go_args), linked in beside it"),
+        (f"{SCRIPTS}/shell_commands.py", "the shell keywords rule 22 imports (SKIP_WORDS), linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
@@ -2563,6 +2565,7 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/go-test-step-expansion.test.sh", [
         (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:42)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
+        (PRIVATE_PROC_READ, "the module imports its go test reader, read_go_args"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its two-steps case reads this file's own go test line, the wrapper one"),
@@ -3760,6 +3763,9 @@ GATES = [
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
                                               "check-workflow-files.sh imports its repeated-key test"),
+        (PRIVATE_PROC_READ, "ci_workflow_rules.py's rule 22 reads a go command's words with its read_go_args"),
+        (".github/scripts/shell_commands.py", "ci_workflow_rules.py's rule 22 reads the words bash reads before "
+                                              "a command from its SKIP_WORDS"),
         (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
                      "its directory walk, its constraint-name reader, is_tag, platforms and its go list "
                      "stream decoder"),

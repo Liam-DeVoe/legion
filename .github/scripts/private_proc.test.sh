@@ -19,8 +19,9 @@
 # this harness started on the machine before the run; the two are told apart by a marker in their
 # command line, never by a pid, which two namespaces can share. The second module's
 # internal/hostproc stands in for packages/daemon's: it writes the record's lines as that one does
-# (hostproc.RecordEnv), so the list and its UNKNOWNs are read from a binary that links it, one that
-# links it and scans nothing, and one that does not link it. Stand-ins for unshare and sudo, first
+# (hostproc.RecordEnv), and names a scan by its test only in the binary the wrapper marks as the one
+# go ran (hostproc.BinaryEnv), so the list and its UNKNOWNs are read from a binary that links it, one
+# that links it and scans nothing, and one that does not link it. Stand-ins for unshare and sudo, first
 # on PATH, make each way fail where a case needs it to. The script needs both ways to work here: a
 # kernel that lets this user make a user namespace (ci-job-test.yaml lifts the runner's AppArmor
 # restriction before it runs this), and `sudo -n`, which CI's runners give; and a go on PATH.
@@ -382,6 +383,8 @@ check "go vet exits 2" "$(is "$status" 2)"
 run "$wrapper" go test -exec /bin/env ./...
 check "a -exec of its own exits 2" "$(is "$status" 2)"
 check "says why" "$(contains "$out" 'sets -exec itself, which would run its test binaries outside a namespace of their own')"
+run "$wrapper" go test --exec=/bin/env ./...
+check "a --exec= of its own exits 2 too, as go reads it for -exec" "$(is "$status" 2)"
 
 # The second module: a stand-in for packages/daemon's internal/hostproc, which writes the record's
 # lines as that package does, and three packages with tests: reads, whose test records three scans
@@ -395,7 +398,10 @@ printf 'module scans\n\ngo 1.22\n' > "$scans/go.mod"
 cat > "$scans/internal/hostproc/hostproc.go" <<'GO'
 // Package hostproc stands in for packages/daemon's internal/hostproc: it writes the lines of the
 // record HOSTPROC_RECORD names as that package does, a binary line as the binary starts and a
-// scan line for each Scan, and nothing at all with SCANS_SILENT=1.
+// scan line for each Scan, and nothing at all with SCANS_SILENT=1. As that package does, it takes
+// HOSTPROC_BINARY, which the wrapper sets for the binary go ran alone, out of its environment as it
+// starts, and a process that had none is a child, whose scans are named by HOSTPROC_TEST alone: so
+// a wrapper that no longer marks the binary makes every scan of the binary's own unnamed.
 package hostproc
 
 import (
@@ -419,10 +425,22 @@ func write(fields ...string) {
 	}
 }
 
-func init() { write("binary", strconv.Itoa(os.Getpid())) }
+// binary is whether this process is the binary go ran.
+var binary bool
 
-// Scan records one scan of test's.
-func Scan(kind, test, scanner, root, reason string) { write("scan", kind, test, scanner, root, reason) }
+func init() {
+	_, binary = os.LookupEnv("HOSTPROC_BINARY")
+	_ = os.Unsetenv("HOSTPROC_BINARY")
+	write("binary", strconv.Itoa(os.Getpid()))
+}
+
+// Scan records one scan of test's, or, in a child, of the test HOSTPROC_TEST names.
+func Scan(kind, test, scanner, root, reason string) {
+	if !binary {
+		test = os.Getenv("HOSTPROC_TEST")
+	}
+	write("scan", kind, test, scanner, root, reason)
+}
 GO
 cat > "$scans/reads/reads_test.go" <<'GO'
 package reads

@@ -92,7 +92,8 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve()
 
 # The go test flags whose value is the next word, as `go help testflag` and `go help build` list
-# them: a word after one of these is its value and no package.
+# them: a word after one of these is its value and no package. read_go_args reads by this table,
+# for this script and for rule 22 of check-ci-filters.sh (ci_workflow_rules.py), which imports it.
 VALUE_FLAGS = frozenset({
     "-bench", "-benchtime", "-blockprofile", "-blockprofilerate", "-count", "-coverpkg", "-coverprofile",
     "-covermode", "-cpu", "-cpuprofile", "-exec", "-fuzz", "-fuzzcachedir", "-fuzzminimizetime", "-fuzztime",
@@ -131,27 +132,52 @@ def say(line: str) -> None:
     print(f"private-proc: {line}", file=sys.stderr, flush=True)
 
 
-def split_go_test(args: list[str]) -> tuple[list[str], list[str]]:
-    """The build flags `go list` must be given and the packages of a `go test` command's arguments
-    (the words after `go test`): a word that starts with `-` is a flag, a VALUE_FLAGS word takes the
-    next word as its value, `-args` ends the command's own words, and every other word is a package.
-    A command naming no package tests the package in its directory."""
-    build, packages, index = [], [], 0
+# What a bool flag's value may say for false, as Go's strconv.ParseBool reads it.
+FALSE = frozenset({"0", "f", "F", "false", "FALSE", "False"})
+
+
+def read_go_args(args: list[str], value_flags: frozenset = VALUE_FLAGS,
+                 test: bool = True) -> tuple[list[tuple[str, str | None, list[str]]], list[str]]:
+    """A go command's words after its subcommand, as cmd/go reads them: its flags, each as its name
+    spelled with one leading `-`, its value (the text after `=`, the next word for a value_flags
+    name given without `=`, or None) and the words that gave it, and its package arguments, every
+    other word. For `go test`, `-args`, `--args` and `--` end the command's own words: every word
+    from there is the test binary's (cmd/go's testFlags). For `go list` (test False) every word
+    after `--` is a package. The one reader of a go command line for this script and for rule 22
+    of check-ci-filters.sh, which each take what they judge by from its answer."""
+    flags: list[tuple[str, str | None, list[str]]] = []
+    packages: list[str] = []
+    index = 0
     while index < len(args):
         word = args[index]
-        if word == "-args":
+        if word == "--":
+            if not test:
+                packages += args[index + 1:]
             break
-        if word.startswith("-"):
-            name = word.split("=", 1)[0].replace("--", "-", 1)
-            takes = name in VALUE_FLAGS and "=" not in word
-            given = [word, args[index + 1]] if takes and index + 1 < len(args) else [word]
-            if name in BUILD_FLAGS:
-                build += given
-            index += len(given)
+        if test and word in ("-args", "--args"):
+            break
+        if not word.startswith("-"):
+            packages.append(word)
+            index += 1
             continue
-        packages.append(word)
-        index += 1
-    return build, packages or ["."]
+        spelled, equals, value = word.partition("=")
+        name = spelled.replace("--", "-", 1)
+        if equals:
+            flags.append((name, value, [word]))
+        elif name in value_flags and index + 1 < len(args):
+            flags.append((name, args[index + 1], [word, args[index + 1]]))
+        else:
+            flags.append((name, None, [word]))
+        index += len(flags[-1][2])
+    return flags, packages
+
+
+def split_go_test(args: list[str]) -> tuple[list[str], list[str]]:
+    """The build flags `go list` must be given and the packages of a `go test` command's arguments
+    (the words after `go test`, read_go_args's reading). A command naming no package tests the
+    package in its directory."""
+    flags, packages = read_go_args(args)
+    return [word for name, _, words in flags if name in BUILD_FLAGS for word in words], packages or ["."]
 
 
 def expected_dirs(build: list[str], packages: list[str]) -> dict[str, bool]:
@@ -324,7 +350,7 @@ def run_command(argv: list[str]) -> int:
         say(f"give a go test command, for example: private_proc.py [--sudo] go test ./...; got {shlex.join(argv)}")
         return 2
     rest = argv[2:]
-    if any(word == "-exec" or word.startswith("-exec=") for word in rest):
+    if any(name == "-exec" for name, _, _ in read_go_args(rest)[0]):
         say("the command sets -exec itself, which would run its test binaries outside a namespace of their own")
         return 2
     route, said = choose_route(sudo_only)
