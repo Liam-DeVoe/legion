@@ -42,6 +42,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		group(&cobra.Command{Use: "controller", Short: "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 			newControllerStartCommand(stderr),
 		),
+		newMergeCommand(stdout, stderr),
 		newWorkerShimCommand(stdout, stderr),
 		newLauncherCommand(stdout, stderr),
 		newClaudeBridgeCommand(stdout, stderr),
