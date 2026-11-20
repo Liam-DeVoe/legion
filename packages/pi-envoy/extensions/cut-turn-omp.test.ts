@@ -250,7 +250,10 @@ test.skipIf(omp === undefined && !onActions)(
     // The cancel ended the retry: at the pin the host writes the cancel itself as the run's last
     // reply, an aborted one, right after the failed attempt it cancelled the retry of.
     const replies = assistantReplies(left);
-    expect(replies.at(-1)).toMatchObject({ stopReason: "aborted", errorMessage: "Retry cancelled" });
+    expect(replies.at(-1)).toMatchObject({
+      stopReason: "aborted",
+      errorMessage: "Retry cancelled",
+    });
     expect(replies.at(-2)).toMatchObject({
       stopReason: "error",
       errorMessage: expect.stringContaining("Overloaded"),
