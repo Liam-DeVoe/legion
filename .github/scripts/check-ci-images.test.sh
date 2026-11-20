@@ -811,6 +811,13 @@ printf 'FROM docker.io/library/scratchpad:1 AS pad\n' >> "$root/packages/envoy/d
 run_check tree "$root"
 check "a third-party image whose name starts scratch fails" "$(is "$status" 1)"
 check "  and is named" "$(contains "$out" 'names docker.io/library/scratchpad')"
+# The same image named bare, as Docker Hub's library images are: only `scratch` itself is passed
+# over, never a name that starts with it.
+root=$(fixture from-scratch-lookalike-bare)
+printf 'FROM scratchpad:1 AS pad\n' >> "$root/packages/envoy/docker/Dockerfile"
+run_check tree "$root"
+check "a bare image whose name starts scratch fails" "$(is "$status" 1)"
+check "  and is named" "$(contains "$out" 'scratchpad')"
 
 echo "case: a file of the \`no CI job runs it\` ground, moved into CI's reach"
 # scripts/e2e/stage3-devbox-workflow.sh may name mirror.gcr.io, because no CI job runs it. The
