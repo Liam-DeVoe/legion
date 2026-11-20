@@ -138,8 +138,11 @@ var itemRowWriters = map[string]map[string]string{
 			"the row is read (refs.LockItemOwner)",
 	},
 	"internal/dispatch/docs/anchor_refresh.go": {
-		"refreshAnchors": "the document's owner lock, which the version write that calls it " +
-			"holds (lockArtifactOwner, writeVersionTx)",
+		"writeChangedAnchors": "the document's owner lock, which the version write that refreshes " +
+			"the anchors holds (lockArtifactOwner, writeVersionTx), or which the comment delete " +
+			"that rewrites the anchors its reject took text from takes before it reads the comment " +
+			"(RewriteTakenAnchors; api's lockedCommentForCorrection, through lockOwnerOfComment): " +
+			"every comment and ask anchored on the document shares that owner",
 	},
 	"internal/dispatch/docs/approval_ask.go": {
 		"rewriteApprovalAsk": "the document's owner lock, held by the version write that moves " +
@@ -367,7 +370,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
 	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
 	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
-	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
+	"internal/dispatch/docs/anchor_refresh.go": {"writeChangedAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
