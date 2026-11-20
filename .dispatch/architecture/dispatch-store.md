@@ -2,7 +2,7 @@
 title: Postgres store and migrations
 parent: dispatch-server
 depends_on: [dispatch-auth, dispatch-duty, dispatch-model]
-paths: [packages/envoy/internal/dispatch/store, packages/envoy/internal/dispatch/store/migrations, packages/envoy/internal/pgmigrate, packages/envoy/internal/dispatch/workflowstore]
+paths: [packages/envoy/internal/dispatch/store, packages/envoy/internal/dispatch/store/migrations, packages/envoy/internal/pgmigrate, packages/envoy/internal/dispatch/workflowstore, packages/envoy/internal/dispatch/textversions]
 ---
 The schema every other package reads and writes through: ordered migrations applied in one transaction each at boot, the pool, and the session and people rows — which is why it imports `auth`. The boot's migration lock goes back through `duty.FreeSessionLockThenReset`, which returns the connection to the pool only once Postgres has freed the lock — which is why it imports `duty`. `internal/pgmigrate` holds the runner's rules, which the secrets broker's runner shares: the whole migration set is refused before anything applies when two files share a version or a file is misnamed or unreadable, and every migration's lock waits are bounded at five seconds. `internal/pgmigrate` reads migration and census SQL as Postgres 18's lexer does.
 
@@ -17,3 +17,17 @@ The store also holds what the related-item check reads and writes: each project'
 It holds the near-copy gate's record too: one `near_copy_checks` row for each answer the gate gives an issue create (`20261115182525_near_copy_checks`), with the outcome, the reason a check was not made, the candidates it read with their scores, the two bars and the build's commit, and the spec of a refused create alone, which no issue holds. A refusal's row is written before its `409`, a create's row after its commit or, for a refusal whose row could not be confirmed, in the create's own transaction, where it replaces a refused row under the same id; table checks keep a refused row free of an issue and every other row free of a spec.
 
 It holds the record of each run of each step of an issue's workflow as a node and its tuples, in `workflow_nodes` and `workflow_tuples` (`20261116235202_workflow_nodes`), the priority's columns, keys and indexes under another name, so the rows copy into the node and tuple store the day it lands. `internal/dispatch/workflowstore` is their one writer: a run is one node of kind `step`, `part_of` its issue, each field an attribute written once, so the start and the end the Legion daemon writes under one id merge in either order and a write that runs again changes nothing; its read answers an issue's runs with each one's attempt, which no write stores. Each node and tuple it writes records its writer as a `model.Actor` (`made_by`), which is why it imports `model`.
+
+It holds the keyword table of each past version of the searchable text, in two tables with no foreign key (`20261120021308_search_text_versions`).
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, and no row is ever updated.
+`search_text_versions_fill` holds the one cursor row of the keyword fill: every event at or below its `event_id` has its rows.
+`internal/dispatch/textversions` is the fill, the one writer of both tables, and no migration writes them.
+It runs in a serving process once the server listens, under the hold `search-text-versions-fill`, so one process writes at a time and the others stand by.
+It reads the event log up to the safe horizon in batches of at most 500 events and 2 MB of text, and after each batch it rests for as long as the batch ran.
+Before each batch it pauses while an answers read that its process serves took longer than 800 ms within the last 10 s, or has run longer than 800 ms (`sessionanswers.Latency`).
+A reset of the event log (`events.EventLogWasReset`) empties both tables and starts the cursor again at the first event.
+`store.TextVersionsAt` gives `store.TextVersions`, the relation of the version of each item that held at a cut, only for a cut at or before the reach.
+It refuses a later cut with `store.TextVersionsNotReachedError`, which names the reach.
+The reach is the latest time at or before which every event has its rows, an event that a transaction still open will commit included.
+`store.ComputeTextVersionsReach` takes the earliest of the oldest open transaction that can write an event, the oldest event above the cursor, and the time less 1 s.
+The fill imports `events`, for the horizon and the reset check, and `sessionanswers`, for the pause.
