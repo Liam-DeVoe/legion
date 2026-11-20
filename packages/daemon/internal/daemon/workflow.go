@@ -875,8 +875,8 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 // run names no phase, so no phase ever drops it, and it waits on the claim until that claim next
 // runs — which a park, a hand back to `todo` or a linger can put generations later. The decisions
 // such a task names are held by its delivery and told when the turn that takes it starts
-// (store's holdKeptDecisions, tellKeptDecisions), so sending it while the tree has nobody to act on
-// it would spend a person's decision on an architect no run of the root owns. The answer is the
+// (store's holdKeptDecisions, tellKeptDecisions), so a take of it while the tree has nobody to act
+// on it would spend a person's decision on an architect no run of the root owns. The answer is the
 // workflow's one reading of that question
 // (workflow.ArchitectHears), which the hand-over of a released decision reads too, in a short
 // read-only transaction of its own: a root that hears is one that is its tree's root, runs, does
@@ -901,7 +901,7 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 }
 
 // rootTask answers supervise's Deps.RootTask: what a root architect's held task of a run says now,
-// at the moment it is about to be sent. Such a task names the decisions a person made while nobody
+// when a take of it is decided. Such a task names the decisions a person made while nobody
 // in the root's tree could hear them, and holds those rows on its own delivery until the turn that
 // takes it confirms (the claim store's putDelivery, 20261101163106_parked_decisions). An issue it names can
 // have left this tree while the task waited — a child a linger handed to Legion, a parked child a
@@ -917,7 +917,7 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
 // the record does not hold is kept rather than dropped: a person's decision is never lost, and
 // this answer drops one only where the record says another tree is owed it. A task left naming
-// nothing is retired rather than sent, and its delivery's write releases whatever it still held.
+// nothing is dropped rather than taken, and its delivery's write releases whatever it still held.
 //
 // It is the machine that asks, because the machine owns the pending delivery: the hand-over that
 // moved the issue commits in a transaction of its own, with no lock on this claim, and a task

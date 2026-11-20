@@ -121,8 +121,9 @@ export interface TaskTake {
    * error, so from such a run's end the take holds that number finished, beside a reading's
    * `finished`, until the daemon refuses that report (`reportRefused`): a newer revision of the
    * same number, which the daemon may write before the report lands (a daemon start writes every
-   * owed value again) and would answer with the same text while the task is unfinished, is
-   * reported seen, owed nothing and runs nothing a second time. A report with a provider error
+   * owed value again, and the daemon writes the value again from its record where the bucket lost
+   * it or holds another write) and would answer with the same text while the task is unfinished,
+   * is reported seen, owed nothing and runs nothing a second time. A report with a provider error
    * finishes nothing: the daemon takes the task back, and the take takes that number again at
    * the revision the daemon writes after its wait.
    */

@@ -142,21 +142,22 @@ import type {
  * and `sentAt` once the start was sent, undefined while it is due and unsent. The operator's
  * controller is marked unsent at its `session_start`, and `/legion-controller-start`, which Oh My
  * Pi runs after its startup, sends the start and marks it sent; the daemon's controller in RPC
- * mode is marked sent right before it reports ready, which is when the daemon writes the start
- * prompt, read only once the drain has returned. That start must be the session's first turn,
- * and every startup card still gets a turn after it. Without the mark, a terminal's idle card
- * starts a turn that runs ahead of the start command, and an RPC card's wake fires once the host is
- * idle after the drain, which can be before the daemon's prompt arrives. So while the mark holds —
- * it names this session (the instance's own and the host's live one), and its start is unsent
- * and this module first read that unsent mark less than `STARTUP_TURN_CAP_MS` ago, or was sent
- * less than `STARTUP_TURN_CAP_MS` ago — the phase holds whatever `ctx.mode` is: an idle card in
- * any mode goes as a startup card. An idle check while it holds keeps the phase and the seen
- * startup cards, sends no wake and checks again when the hold may end: at the sent mark's cap, or
- * every `STARTUP_TURN_POLL_MS` while the start is unsent, up to that mark's cap (a poll, since no
- * event tells this module of the send, nor of a start claim refused before the send, which clears
- * the mark). The unsent mark's cap counts from this module's first read of it, never again from a
- * later check, so a start that never comes (a claim that never answers, a session given no start
- * command) holds the cards back once, for that long. A busy check is as before. The start turn's
+ * mode is marked sent right before it reports ready, after which the daemon writes the value of
+ * its start task, which that controller takes only once the drain has returned. That start must
+ * be the session's first turn, and every startup card still gets a turn after it. Without the
+ * mark, a terminal's idle card starts a turn that runs ahead of the start command, and an RPC
+ * card's wake fires once the host is idle after the drain, which can be before the controller has
+ * taken its start task. So while the mark holds — it names this session (the instance's own and
+ * the host's live one), and its start is unsent and this module first read that unsent mark less
+ * than `STARTUP_TURN_CAP_MS` ago, or was sent less than `STARTUP_TURN_CAP_MS` ago — the phase
+ * holds whatever `ctx.mode` is: an idle card in any mode goes as a startup card. An idle check
+ * while it holds keeps the phase and the seen startup cards, sends no wake and checks again when
+ * the hold may end: at the sent mark's cap, or every `STARTUP_TURN_POLL_MS` while the start is
+ * unsent, up to that mark's cap (a poll, since no event tells this module of the send, nor of a
+ * start claim refused before the send, which clears the mark). The unsent mark's cap counts from
+ * this module's first read of it, never again from a later check, so a start that never comes (a
+ * claim that never answers, a session given no start command) holds the cards back once, for that
+ * long. A busy check is as before. The start turn's
  * run clears the mark at its `agent_start`, and its `agent_end` checks again: that check ends the
  * phase and sends one wake. A startup card seen while the mark held, at its `message_end` or at a
  * check, is owed that wake unless a turn after the start turn read it, since the start turn's

@@ -964,13 +964,13 @@ type Deps struct {
 	RootHears func(ctx context.Context, c Claim, d Delivery) (bool, error)
 	// RootTask is what a root architect's held task of a run says now: its text, and what it names
 	// of the decisions a person made while nobody in the root's tree could hear them
-	// (Delivery.Kept), re-read from the record at the moment the task is about to be sent. An
-	// issue the task names can have left this claim's tree while the task waited, and the tree it
-	// stands in now is the one owed that answer: the answer drops it from the task, releases this
-	// delivery's hold on its row and writes that tree's architect a catch-up naming it, all in one
-	// write of its own. An empty text is a task that names nothing now, which is retired rather
-	// than sent. It is asked only about a root architect's task of a run (asksRoot), once that
-	// root has an architect to hear it, and nil leaves every task as it was queued.
+	// (Delivery.Kept), re-read from the record when a take of the task is decided. An issue the
+	// task names can have left this claim's tree while the task waited, and the tree it stands in
+	// now is the one owed that answer: the answer drops it from the task, releases this delivery's
+	// hold on its row and writes that tree's architect a catch-up naming it, all in one write of
+	// its own. An empty text is a task that names nothing now, which is dropped rather than taken.
+	// It is asked only about a root architect's task of a run (asksRoot), once that root has an
+	// architect to hear it, and nil leaves every task as it was queued.
 	RootTask func(ctx context.Context, c Claim, d Delivery) (task string, kept []byte, err error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather

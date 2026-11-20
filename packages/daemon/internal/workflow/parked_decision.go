@@ -108,9 +108,9 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 
 // KeptDecisionsTask is the text that names kept to the architect of tree, the one wording a start
 // task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
-// when an issue it names leaves that tree while the task waits to be sent (supervise's
+// when an issue it names leaves that tree while the task waits to be taken (supervise's
 // Deps.RootTask, the daemon's rootTask): a task whose decisions have all left is written back to
-// "", which is a task that names nothing and is retired rather than sent. The approval is the
+// "", which is a task that names nothing and is dropped rather than taken. The approval is the
 // root's own, so it is named whenever kept carries one — the gate was read where it was first
 // kept — and it is named on the document of its own step (record.DesignStep.Document), which is
 // the document the person reviewed and the one whose approval the architect requests again.

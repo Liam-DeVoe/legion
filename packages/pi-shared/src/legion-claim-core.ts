@@ -79,9 +79,9 @@ export interface LegionClaimBoot {
  * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the claim's task
  * value read again (`claims/task`) into the host's `taskValue`; `afterReadyRead` once that read
  * has answered; the Envoy role claimed right after that; and the regain listener, which reads the
- * claim's task value again each time the heartbeat regains the role. It answers the claim it
- * booted, through which the host reads that value again at a new epoch of its relay, or undefined
- * for a boot that stopped.
+ * claim's task value again, once, each time the heartbeat regains the role, logging a read that
+ * fails. It answers the claim it booted, through which the host reads that value again at a new
+ * epoch of its relay, or undefined for a boot that stopped.
  *
  * The daemon writes the number of the task a claim is owed as the claim's value, which the
  * listener relays to the session holding the role, and the session takes it once its host is idle

@@ -824,7 +824,7 @@ const legionIssue = z.object({
    * architect at this read, in the order the controller is told them (contract 146):
    * `took-nothing`, the task of the entry its `phases` row names was first queued to its claim more
    * than ten minutes ago and no take of it by that claim's worker stands accepted, counted from
-   * that first queueing however many times the daemon sent that entry's task again, where a task
+   * that first queueing however many times the daemon wrote that entry's task again, where a task
    * whose turn ended with the claim's process (a death, or a replacement the daemon made) counts
    * only while the claim is ready, working or idle, and from the relaunched agent's ready where
    * that is later, and where a task the root's own record has superseded — one that carries an

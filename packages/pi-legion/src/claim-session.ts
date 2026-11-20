@@ -90,7 +90,8 @@ export function attributionInputs(
  *
  * The transcript is recorded as the bootstrapped session before the registration; the jj
  * attribution (`exportJjSessionAttribution`) runs once it answered, before the capability is set.
- * A 4xx registration refusal, and any failure after a registration, exit the process.
+ * A 4xx registration refusal, and any failure after a registration but the read after the ready,
+ * exit the process.
  */
 export function createClaimSession(deps: {
   readonly daemon: () => LegionDaemonClient;
@@ -142,7 +143,8 @@ export function createClaimSession(deps: {
       },
       // The claim's role topic is where the daemon sends every notice for an architect (the
       // notice executor, packages/daemon/internal/daemon/outbox.go), and where the listener
-      // relays the claim's task value: no issue topic carries one, so no claim subscribes to one.
+      // relays the claim's task value: no issue topic carries one, so no claim subscribes to one,
+      // and no phase worker is woken by an architect's notice.
       claimRole: (role) => claimEnvoyRole(sessionID, role, context),
       taskValue: (reading) => taking?.take.read(reading),
       afterReadyRead: () => readAnswered?.(),

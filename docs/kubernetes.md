@@ -6973,6 +6973,8 @@ It connects to Envoy's NATS (`nats_urls`) as the daemon's own user (`nats_daemon
 So a grant that lacks a subject that open uses refuses the probe with the boot's own refusal, which names the bucket and the subject the server refused:
 the bucket stream's info, and, for a bucket not created yet, the account info, the notification stream's info and the create, with the update when another daemon created it first.
 A daemon that connects as the pane seed's user (`NATS_NKEY_SEED_FILE`), the session user every pane shares and which holds no grant on the bucket, is refused and told to take a user of its own.
+A file that names no NATS is refused at its read, before anything else runs, since `runtime: kubernetes` requires `nats_urls` (`nats_urls is required when runtime is kubernetes: every pod's Envoy client connects to NATS`).
+A NATS that does not answer that one dial refuses the probe too (`legion probe-boot: connect Envoy NATS: …`, exit 1), where a booting daemon waits it out, so the probe runs only where the daemon's `nats_urls` answer.
 A grant that lacks only the bucket's gets, its key writes, its purge or its watch's calls passes the probe as it passes the boot, which first uses them once it runs ([Configuration](#configuration) says what such a daemon logs).
 It skips every other boot stage that reads nothing of the worker pod or the grant:
 the store, its legacy-claims fence, the migration and the GitHub App mint, which a booting daemon runs before the probe, the workflow's durable consumers it opens beside the bucket, and the Dispatch listing, which it runs after.
@@ -7003,7 +7005,7 @@ a refusal is boot's own, on stderr, and exits 1.
   Run it with the daemon's environment.
   With `nats_nkey_seed_file` unset, whether the caller's environment holds `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` decides both the probe container's providers pointer to the seed and the probe's check of the providers Secret's seed against the pane NATS user, so a caller without them runs another probe than the daemon would.
   It also reads every secret file the configuration names, as `legion config check` does, so the host it runs on holds all of them.
-  Of their contents, only the pane NATS seed's enters the probe: it decides the pane NATS user the probe checks the providers Secret's seed against.
+  Of their contents, only the NATS seeds enter the probe: the daemon's own (`nats_daemon_nkey_seed_file`, else the pane seed) is the user it opens the task bucket as, and the pane seed decides the pane NATS user the probe checks the providers Secret's seed against.
   Every other file only has to pass boot's reads.
 
 - **Its own probe Sandbox.**

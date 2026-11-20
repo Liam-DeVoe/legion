@@ -1903,7 +1903,7 @@ type Store interface {
 	// it (the claim store's RetireDelivery).
 	ReleaseHeldDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, marks []DecisionMark) ([]string, error)
 	// HeldKeptRefs is the reference of every decision the delivery of claim token still holds: what
-	// a held task may still name when it is about to be sent (workflow's RootTask). A reference it
+	// a held task may still name when a take of it is decided (workflow's RootTask). A reference it
 	// named that is gone from here was told by something else, or replaced by a newer decision on
 	// the same reference, and this task names it no longer.
 	HeldKeptRefs(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string) ([]string, error)

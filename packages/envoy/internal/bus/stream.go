@@ -126,6 +126,10 @@ func ListenerDurable(machineID string) string {
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,
 // so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two.
 // A space in the machine id is a hyphen in the name.
+//
+// A claim's task value (legiontasks.Bucket) is no role message and travels on no role lane: it is
+// the delivered copy of the daemon's record of the claim's task, which the listener relays to the
+// session that holds the claim's role, and the record stays its one keeper.
 func ListenerQueue(machineID string) string {
 	return "envoy-listener-" + strings.ReplaceAll(machineID, " ", "-")
 }

@@ -31,9 +31,10 @@ import { configuredValue } from "./claude-session"
  *
  * The record lives in a file rather than a transcript entry, `<CLAUDE_CONFIG_DIR>/
  * legion-phase-stall-<session id>.json`. Nothing else writes that file: the Go bridge, which
- * wrote it until this change made it pure transport, is now only what carries a line into the
- * session. The path and the atomic rename are kept as the bridge left them, so a session carried
- * across the cutover from the build now in the pods still reads its record.
+ * wrote it until this change moved the phase-stall machine here, holds no phase rule now, and of a
+ * reminder it only carries the line into the session. The path and the atomic rename are kept as
+ * the bridge left them, so a session carried across the cutover from the build now in the pods
+ * still reads its record.
  *
  * The first reminder of a run is the `Stop` hook's `block`, which Claude Code turns into one more
  * turn of the same session. Every one after it is written into the session over the bridge's

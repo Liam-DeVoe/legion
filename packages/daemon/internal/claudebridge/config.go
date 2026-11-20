@@ -25,8 +25,8 @@
 //     otherwise, is reported to the daemon, naming the task whose turn it was, and sent again
 //     until the daemon answers it (turnoutcome.go).
 //
-// The bridge is transport: the phase-stall machine — a worker whose turn ends with its phase still
-// open is reminded — runs in the pane's `legion` MCP server
+// The bridge holds no phase rule: the phase-stall machine — a worker whose turn ends with its
+// phase still open is reminded — runs in the pane's `legion` MCP server
 // (packages/claude-envoy/src/legion-phase-hook.ts), driven by Claude Code's own hooks.
 //
 // A fresh session (`--session-id`) is seeded with a local `/rename` before anything else: Claude

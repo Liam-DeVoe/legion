@@ -494,7 +494,7 @@ func pendingID(p *Delivery) string {
 // one: it says why the architect's pod came back, which no entry's task says, so a newer entry's
 // task is refused behind it and the wake's task is offered first, as it was before
 // dispatch://INFRA-2614 (TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne), and the
-// entry's task is queued once the wake's turn has run
+// entry's task is queued once the wake's turn has started
 // (TestAnEntrysTaskRefusedBehindAWakesTaskIsSentOnceTheWakesTurnEnds).
 //
 // What the older task named of a person's decisions is not lost with it: its retirement releases

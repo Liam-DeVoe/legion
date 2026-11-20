@@ -14,9 +14,13 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * model answered, and one the provider refused — is reported to the daemon over HTTP, under a
  * sequence this plugin counts itself, so the daemon, not a reminder, answers a session whose
  * provider refuses turn after turn (dispatch://INFRA-264). A refusal this plugin reports carries
- * the provider's failure (`providerError`, below), which the daemon answers with its provider-error
- * wait and counts toward no launch failure; only a refused turn with no such failure counts toward
- * the run that fails the claim at `launch_failure_limit`.
+ * the provider's failure (`providerError`, below). Where the report is of the turn of the task a
+ * take of the claim holds, the daemon's provider-error ladder takes it, and the turn counts toward
+ * no launch failure: the task is kept and given to the same session again after a wait, or, for a
+ * client error the ladder cannot wait out (a 4xx but 401, 403, 408 and 429), the claim fails and
+ * the workflow holds the issue. Every other refused turn — one with no such failure, and one whose
+ * report reaches no ladder, a reminder's, a card's or a background result's — counts toward the
+ * run that fails the claim at `launch_failure_limit`.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
