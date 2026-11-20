@@ -2837,7 +2837,9 @@ func (s *outboxClaimStore) OweResume(context.Context, supervise.Claim) (int64, s
 	return 0, "", nil
 }
 
-func (s *outboxClaimStore) ForgetResume(context.Context, claim.Token) (bool, error) { return false, nil }
+func (s *outboxClaimStore) ForgetResume(context.Context, claim.Token) (bool, error) {
+	return false, nil
+}
 
 func (s *outboxClaimStore) PutDelivery(_ context.Context, token claim.Token, delivery supervise.Delivery) error {
 	s.mu.Lock()

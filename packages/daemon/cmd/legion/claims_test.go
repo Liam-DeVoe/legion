@@ -142,7 +142,9 @@ func (s *memoryClaims) OweResume(context.Context, supervise.Claim) (int64, strin
 	return 0, "", nil
 }
 
-func (s *memoryClaims) ForgetResume(context.Context, legionclaim.Token) (bool, error) { return false, nil }
+func (s *memoryClaims) ForgetResume(context.Context, legionclaim.Token) (bool, error) {
+	return false, nil
+}
 
 func (s *memoryClaims) PutDelivery(context.Context, legionclaim.Token, supervise.Delivery) error {
 	return nil

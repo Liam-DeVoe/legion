@@ -2193,7 +2193,9 @@ func (*supervisedSandboxStore) OweResume(context.Context, supervise.Claim) (int6
 	return 0, "", nil
 }
 
-func (*supervisedSandboxStore) ForgetResume(context.Context, claim.Token) (bool, error) { return false, nil }
+func (*supervisedSandboxStore) ForgetResume(context.Context, claim.Token) (bool, error) {
+	return false, nil
+}
 
 func (s *supervisedSandboxStore) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.claim = c
