@@ -643,16 +643,21 @@ func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) 
 // the wait for the foreground hands each of them the deadline (waitForeground), so one interrupted
 // once the deadline has passed ends, where a wait handed no deadline was tried again for as long as
 // the signals kept coming, and the prompt never answered. The helper's count of the waits it
-// interrupted shows the signals reached them.
+// interrupted shows the signals reached them. The deadline's clock starts at the first of them,
+// so however long the machine holds the helper before the prompt's first wait, the deadline
+// passes only while the prompt waits.
 func TestPromptJobValueDeadlineEndsAForegroundWaitSignalsKeepInterrupting(t *testing.T) {
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_DEADLINE=1s AGENT_SECRETS_JOB_INTERRUPT_WATCH=1 "
 	s.start(false, true)
 	s.wait("RETURNED nothing was stored: no value came in time, within 1s")
 	s.wait("LABEL_HELD=false")
-	if said := s.out.String(); !strings.Contains(said, "WATCH_INTERRUPTED=") || strings.Contains(said, "WATCH_INTERRUPTED=0") {
-		t.Fatalf("no wait for the watcher's event was interrupted: %q", said)
+	_, rest, _ := strings.Cut(s.out.String(), "WATCH_INTERRUPTED=")
+	interrupted, _ := strconv.Atoi(rest[:len(rest)-len(strings.TrimLeft(rest, "0123456789"))])
+	if interrupted == 0 {
+		t.Fatalf("no wait for the watcher's event was interrupted: %q", s.out.String())
 	}
+	t.Logf("the helper interrupted %d waits for the watcher's event", interrupted)
 }
 
 // A signal key that follows a paste's closing mark in the same read is a keypress: it acts as it

@@ -398,12 +398,21 @@ func TestPromptJobHelper(t *testing.T) {
 	// AGENT_SECRETS_JOB_INTERRUPT_WATCH interrupts every wait for the signal watcher's event that
 	// could block (pollWatch's EINTR), each after 5 ms with no event, as a stream of signals would:
 	// an event already there still ends the wait, so a signal sent to the helper still acts. It
-	// prints WATCH_INTERRUPTED=<n>, the count of waits it interrupted, before RETURNED.
+	// prints WATCH_INTERRUPTED=<n>, the count of waits it interrupted, before RETURNED. With a
+	// deadline, the prompt's clock (promptNow) starts only at the first wait it interrupts: the
+	// deadline is the window after that wait began, so a machine that stalls the helper before the
+	// prompt's wait for the foreground uses none of it up, and a prompt that answers the deadline
+	// has been through at least one interrupted wait. Only the reader's goroutine calls pollWatch
+	// and promptNow.
 	interruptWatch, watchInterrupted := os.Getenv("AGENT_SECRETS_JOB_INTERRUPT_WATCH") != "", 0
+	var firstInterrupted time.Time // the zero time until a wait is interrupted
 	if interruptWatch {
 		pollWatch = func(fds []unix.PollFd, timeout int) (int, error) {
 			if n, err := unix.Poll(fds, 0); n != 0 || err != nil || timeout == 0 {
 				return n, err
+			}
+			if firstInterrupted.IsZero() {
+				firstInterrupted = time.Now()
 			}
 			time.Sleep(5 * time.Millisecond)
 			watchInterrupted++
@@ -568,6 +577,15 @@ func TestPromptJobHelper(t *testing.T) {
 	label := &labelCheck{}
 	if window != 0 {
 		deadline = time.Now().Add(window)
+		if interruptWatch {
+			set := deadline.Add(-window)
+			promptNow = func() time.Time {
+				if firstInterrupted.IsZero() {
+					return set
+				}
+				return set.Add(time.Since(firstInterrupted))
+			}
+		}
 		if os.Getenv("AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE") != "" {
 			time.AfterFunc(time.Until(deadline), func() { fmt.Println("DEADLINE_REACHED") })
 		}
