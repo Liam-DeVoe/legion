@@ -609,6 +609,9 @@ type child struct {
 	// (wait). Nil for a child whose sessions are no rows, and for a Claude Code child, which never
 	// dials the store: its keeper is the launcher's own.
 	store *sessionDial
+	// witness is the launcher's own record of store from the child's start, for a child whose
+	// connections no proxy sees (storeWitness); nil otherwise.
+	witness *storeWitness
 	// stopBy is when the stop under way, if any, gives up on the child: the end of its grace
 	// (endGeneration), which bounds the keeper's last save. Guarded by manager.mu.
 	stopBy time.Time
@@ -941,7 +944,8 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		m.mu.Unlock()
 		return abandon(fmt.Errorf("start child: %w", err))
 	}
-	active := &child{generation: command.Generation, pid: process.cmd.Process.Pid, process: process.cmd.Process, dir: dir, status: process.status, output: process.output, proxy: proxy, keeper: keeper, store: childStore(env, keeper, clientURL), done: make(chan struct{})}
+	store := childStore(env, keeper, clientURL)
+	active := &child{generation: command.Generation, pid: process.cmd.Process.Pid, process: process.cmd.Process, dir: dir, status: process.status, output: process.output, proxy: proxy, keeper: keeper, store: store, witness: watchStore(store, proxy != nil), done: make(chan struct{})}
 	m.child = active
 	result := shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation}
 	m.requests[command.ID] = request{body: body, result: result}
@@ -1027,7 +1031,8 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 // under either session store: its exit carries shimwire.SessionStoreUnreachable, which the daemon
 // waits out a minute at a time with the session kept and charges nothing for, where any other exit
 // is the child's own end (childExitFault). A Claude Code child never dials the store, so its exit is
-// always its own, whatever its keeper met.
+// always its own, whatever its keeper met. The generation's store witness, if it has one, ends here
+// whatever the exit.
 func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	var reported *syscall.WaitStatus
 	if active.status != nil {
@@ -1063,8 +1068,14 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	if ownEnd {
 		end = time.Now().Add(m.cfg.StopGrace)
 	}
-	if active.store != nil && ownEnd && failedExit(exit) {
-		if fault := childExitFault(*active.store, active.proxy, time.Until(end)/2); fault != nil {
+	judged := active.store != nil && ownEnd && failedExit(exit)
+	var bound time.Duration
+	if judged {
+		bound = time.Until(end) / 2
+	}
+	witnessed := active.witness.finish(bound)
+	if judged {
+		if fault := childExitFault(*active.store, active.proxy, witnessed, time.Until(end)/2); fault != nil {
 			exit.Session = shimwire.SessionStoreUnreachable
 			m.logf("launcher: generation %d exited with an error on a session database that stopped answering it: %v",
 				active.generation, fault)
@@ -1113,17 +1124,20 @@ func failedExit(exit shimwire.LauncherExit) bool {
 // nil for an exit of the child's own. First the child's own connections, as proxy, the
 // generation's, saw them at the exit: the latest event of the database's own, a dial it refused or
 // never answered or a served connection it ended, with no dial that reached it since
-// (sessionproxy.Proxy.Fault). With no fault there, or with no proxy, the launcher asks the store
-// once, as the child would, within bound, half of what the child's grace leaves, as the proxy's
-// proof dial is bounded by half of it (storeAnswers): through the proxy's socket that ask's own
-// dial is one more event the proxy records. The ask comes after the exit, so a store that came back
-// in between, before any connection of the proxy's saw it go, reads as the child's own end, and a
-// store that failed just then by chance reads as the store's.
-func childExitFault(store sessionDial, proxy *sessionproxy.Proxy, bound time.Duration) error {
+// (sessionproxy.Proxy.Fault). With no proxy, witnessed, the latest store fault the generation's
+// store witness met from the child's start to its exit (storeWitness), so a store that failed the
+// child's first open and answered again before the ask below still reads as the store's. With no
+// fault there, the launcher asks the store once, as the child would, within bound, half of what
+// the child's grace leaves, as the proxy's proof dial is bounded by half of it (storeAnswers):
+// through the proxy's socket that ask's own dial is one more event the proxy records.
+func childExitFault(store sessionDial, proxy *sessionproxy.Proxy, witnessed error, bound time.Duration) error {
 	if proxy != nil {
 		if fault := proxy.Fault(); fault != nil {
 			return fault
 		}
+	}
+	if witnessed != nil {
+		return witnessed
 	}
 	if fault := storeAnswers(store, bound); fault != nil {
 		return fault
