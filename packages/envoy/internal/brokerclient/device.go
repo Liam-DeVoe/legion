@@ -72,7 +72,8 @@ func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	if d.config != nil {
 		return d.config, nil
 	}
-	provider, err := redact.OAuth2(gooidc.NewProvider(d.context(ctx), d.Issuer))
+	s := redact.Scope[*gooidc.Provider](d.context(ctx))
+	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), d.Issuer)))
 	if err != nil {
 		return nil, fmt.Errorf("read the sign-in issuer %s: %w", d.Issuer, err)
 	}
@@ -85,11 +86,8 @@ func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	return d.config, nil
 }
 
-// context is ctx carrying the HTTP client x/oauth2 and go-oidc send their requests with.
+// context is ctx carrying the RefusalClient x/oauth2 and go-oidc send their requests with.
 func (d *DeviceFlow) context(ctx context.Context) context.Context {
-	if d.HTTP == nil {
-		return ctx
-	}
 	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(d.HTTP))
 }
 

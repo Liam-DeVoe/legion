@@ -246,7 +246,7 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 	if resp.StatusCode/100 != 2 {
 		reason := bytes.TrimSpace(answer)
 		reason = reason[:min(len(reason), maxMintRefusal)]
-		said := redact.NewRemoteText(string(bytes.ToValidUTF8(reason, nil))).WithoutTokens(redact.Carried(req)...)
+		said := redact.NewRemoteText(string(bytes.ToValidUTF8(reason, nil))).WithoutTokens(redact.Carried(resp)...)
 		return "", fmt.Errorf("generateIdToken answered HTTP %d: %s", resp.StatusCode, said)
 	}
 	var minted struct {

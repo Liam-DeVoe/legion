@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"golang.org/x/oauth2"
@@ -87,16 +88,16 @@ func TestOAuth2HoldsEveryAnswerAsTheRuleReadsIt(t *testing.T) {
 			t.Errorf("%s: errors.Unwrap hands back %v", name, errors.Unwrap(got))
 		}
 	}
-	// It finds what the error found: an ended context, and the *url.Error a transport's failure
-	// comes in, as errors.Is and errors.As find them in the error as the library made it.
+	// A library error with neither a scope nor a request record fails closed: its class still
+	// compares through Is and As, but the timeout's URL is never printed.
 	ended := &url.Error{Op: "Post", URL: "https://h.example/token", Err: context.DeadlineExceeded}
 	_, got := OAuth2(0, ended)
 	var asURL *url.Error
 	if _, ok := got.(*LibraryError); !ok || !errors.Is(got, context.DeadlineExceeded) || !errors.As(got, &asURL) || asURL != ended {
 		t.Errorf("OAuth2 of %v = %#v; want a *LibraryError that errors.Is finds DeadlineExceeded in and errors.As finds the *url.Error in", ended, got)
 	}
-	if got.Error() != ended.Error() {
-		t.Errorf("OAuth2 of %v prints %q, want the text the rule leaves as it is", ended, got)
+	if strings.Contains(got.Error(), ended.URL) || !strings.Contains(got.Error(), "message withheld") {
+		t.Errorf("OAuth2 of %v prints %q, want its class with the message withheld", ended, got)
 	}
 	if value, got := OAuth2("value", nil); got != nil || value != "value" {
 		t.Errorf("OAuth2 of a value and no error = %q, %v", value, got)

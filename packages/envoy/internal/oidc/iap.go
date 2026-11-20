@@ -105,7 +105,8 @@ func (v *IAPVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 		IssuedAt  *float64 `json:"iat"`
 		NotBefore *float64 `json:"nbf"`
 	}
-	if _, err := redact.OAuth2(struct{}{}, token.Claims(&times)); err != nil {
+	s := redact.Scope[struct{}](ctx)
+	if _, err := redact.OAuth2(s.Read(struct{}{}, token.Claims(&times))); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
 	exp, err := numericDate("exp", times.Expiry)

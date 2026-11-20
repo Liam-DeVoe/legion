@@ -1,6 +1,7 @@
 package redact_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,14 +68,18 @@ func TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried(t *testing.T) {
 		}
 	})
 	t.Run("refusal client", func(t *testing.T) {
-		client := redact.RefusalClient(&http.Client{Transport: echoingTransport{}})
+		s := redact.Scope[struct{}](context.Background())
+		client := s.Client(&http.Client{Transport: echoingTransport{}})
 		response, err := client.Do(bearerRequest(t))
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
 		body, _ := io.ReadAll(response.Body)
-		_, err = redact.OAuth2(0, fmt.Errorf("status %s: %s", response.Status, body))
-		redacttest.RequireNone(t, "redact.tokens-refusal-library", err.Error())
+		if _, err := redact.OAuth2(struct{}{}, s.Err(fmt.Errorf("status %s: %s", response.Status, body))); err != nil {
+			redacttest.RequireNone(t, "redact.tokens-refusal-library", err.Error())
+		} else {
+			t.Fatal("OAuth2 answered no error")
+		}
 	})
 }

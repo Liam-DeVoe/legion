@@ -94,11 +94,11 @@ var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credent
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("it is not a JSON credentials file: %w", err)
 	}
-	creds, err := redact.OAuth2(google.CredentialsFromJSONWithType(ctx, data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...))
+	s := redact.Scope[*google.Credentials](ctx)
+	creds, err := redact.OAuth2(s.Read(google.CredentialsFromJSONWithType(s.Context(), data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)))
 	if err != nil {
 		return nil, err
 	}
-	creds.TokenSource = redact.TokenSource(creds.TokenSource)
 	return creds, nil
 }
 
@@ -141,18 +141,23 @@ var gcpMetadataPrincipal = func(ctx context.Context) string {
 // answers only a token that carries an email scope. Only --owner me asks for it
 // (gcpBackend.personEmail). Tests replace it so no form makes a network call for it.
 var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, error) {
-	httpClient := oauth2.NewClient(ctx, redact.TokenSource(creds.TokenSource))
+	s := redact.Scope[*http.Response](ctx)
+	httpClient := oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource))
 	// The client's transport asks creds.TokenSource for a token, and an OAuth error answer it
 	// gets comes back inside this call's *url.Error, so the call crosses the same boundary.
-	resp, err := redact.OAuth2(httpClient.Get("https://www.googleapis.com/oauth2/v2/userinfo"))
+	resp, err := redact.OAuth2(s.Read(httpClient.Get("https://www.googleapis.com/oauth2/v2/userinfo")))
 	if err != nil {
 		return "", fmt.Errorf("read the Google sign-in's email: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// Google's words, which can quote a URL: they print as the rule for remote text reads them.
+		// Google's words, which can quote the bearer its request carried, are read with the
+		// answer's own record before the remote-text rule reads them.
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("read the Google sign-in's email: %s: %s", redact.NewRemoteText(resp.Status), redact.NewRemoteText(strings.TrimSpace(string(body))))
+		carried := redact.Carried(resp)
+		status := redact.NewRemoteText(resp.Status).WithoutTokens(carried...)
+		said := redact.NewRemoteText(strings.TrimSpace(string(body))).WithoutTokens(carried...)
+		return "", fmt.Errorf("read the Google sign-in's email: %s: %s", status, said)
 	}
 	var userinfo struct {
 		Email string `json:"email"`

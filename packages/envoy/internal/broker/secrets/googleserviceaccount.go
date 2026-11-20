@@ -119,8 +119,9 @@ func (m *GoogleServiceAccount) ownSource(ctx context.Context) (oauth2.TokenSourc
 	// The default credentials are found with a context detached from the request's cancellation
 	// (its values are kept): x/oauth2's refresher holds on to the context its source was built
 	// with, so a source built from one request's context would fail every refresh once that
-	// request ended. Their error is dropped: it names the file or metadata server it tried.
-	source, err := redact.OAuth2(google.DefaultTokenSource(context.WithoutCancel(ctx), googleCloudPlatformScope))
+	// request ended. The text-only library call and the source it returns share a record scope.
+	s := redact.Scope[oauth2.TokenSource](context.WithoutCancel(ctx))
+	source, err := redact.OAuth2(s.Read(google.DefaultTokenSource(s.Context(), googleCloudPlatformScope)))
 	if err != nil {
 		return nil, fmt.Errorf("%w: the broker found no Google credentials of its own", ErrMintUpstream)
 	}

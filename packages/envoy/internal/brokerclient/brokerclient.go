@@ -691,7 +691,7 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		if resp.StatusCode/100 == 4 && !answer.Error.IsEmpty() {
 			// The answer's words print with every credential the trade carried redacted, and compare
 			// as they came (RemoteText.WithoutTokens).
-			carried := redact.Carried(resp.Request)
+			carried := redact.Carried(resp)
 			answer.Error, answer.ErrorDescription = answer.Error.WithoutTokens(carried...), answer.ErrorDescription.WithoutTokens(carried...)
 			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}

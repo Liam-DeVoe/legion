@@ -96,14 +96,16 @@ type keysFetch struct {
 // whose discovery document cannot be read or names no jwks_uri. No key is fetched here: the first
 // Key reads the set, and ctx bounds discovery alone.
 func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
-	provider, err := redact.OAuth2(gooidc.NewProvider(ctx, issuer))
+	s := redact.Scope[*gooidc.Provider](ctx)
+	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), issuer)))
 	if err != nil {
 		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
 	}
 	var discovery struct {
 		JWKSURI string `json:"jwks_uri"`
 	}
-	if _, err := redact.OAuth2(struct{}{}, provider.Claims(&discovery)); err != nil {
+	claims := redact.Scope[struct{}](ctx)
+	if _, err := redact.OAuth2(claims.Read(struct{}{}, provider.Claims(&discovery))); err != nil {
 		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", issuer, err)
 	}
 	if discovery.JWKSURI == "" {

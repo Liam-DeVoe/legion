@@ -1,7 +1,6 @@
 package redact
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -9,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -254,132 +252,3 @@ func requestBodyValues(r *http.Request) []string {
 // requestBodyLimit is the most of a request's body requestTokens reads again, the bound x/oauth2
 // reads a token endpoint's answer to (golang.org/x/oauth2/internal/token.go).
 const requestBodyLimit = 1 << 20
-
-// RefusalClient is base (nil is http.DefaultClient), its timeout, redirect rule and cookie jar as
-// they are, which records the credentials each refused request carried (Carried: every header's
-// value, the URL's user information and query values, and every form or JSON body value) for every
-// answer outside 2xx it gets, and changes nothing of any answer: the library that sent the request
-// parses the answer as it came, so its code and every decision made on it are the answer's own.
-// OAuth2 then reads the text of an error a library made of such an answer with every recorded
-// credential redacted (LibraryError): a library builds its requests' credentials itself and prints
-// a refusal's body in an error of text alone, with no request left to read them from, as
-// golang.org/x/oauth2/google's external_account exchange prints `status code <n>: <body>` and
-// google.golang.org/api/impersonate `impersonate: status code <n>: <body>`. It is the one wrapper on
-// every HTTP client this change's boundary and clients build or hand a library; the census in
-// cmd/redact-gate fails on one without it.
-func RefusalClient(base *http.Client) *http.Client {
-	client := new(http.Client)
-	if base != nil {
-		*client = *base
-	}
-	client.Transport = refusalTransport{client.Transport}
-	return client
-}
-
-// refusalTransport sends each request through base (nil is http.DefaultTransport) and records the
-// credentials of each one answered outside 2xx (refused.record).
-type refusalTransport struct{ base http.RoundTripper }
-
-func (t refusalTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	base := t.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	tokens := requestTokens(r)
-	response, err := base.RoundTrip(r)
-	if err != nil || response.StatusCode >= 200 && response.StatusCode < 300 {
-		return response, err
-	}
-	// A RefusalClient beneath this one recorded the answer already, with the credentials its own
-	// request carried, a bearer a transport between the two set among them: one answer is one
-	// refusal, which this request's credentials join.
-	if inner, ok := response.Body.(readCloser); ok {
-		refused.join(inner.refusal, tokens)
-		return response, nil
-	}
-	// The body is read and handed on as the same bytes, the read part first and the rest after,
-	// so the library parses what was answered.
-	read, _ := io.ReadAll(io.LimitReader(response.Body, requestBodyLimit))
-	one := &refusal{tokens: tokens, quote: quoted(read)}
-	response.Body = readCloser{io.MultiReader(bytes.NewReader(read), response.Body), response.Body, one}
-	refused.record(one)
-	return response, nil
-}
-
-// readCloser reads from Reader and closes Closer: a refused answer's body, with the refusal
-// RefusalClient recorded of it, which a RefusalClient above it joins.
-type readCloser struct {
-	io.Reader
-	io.Closer
-	refusal *refusal
-}
-
-// quotedLength is how much of a refused answer's body, trimmed, an error must quote for the
-// boundary to read it with that refusal's request's credentials redacted: a library that prints
-// a body prints at least its start.
-const quotedLength = 64
-
-// quoted is the start of body an error that quotes it holds: its first quotedLength bytes,
-// trimmed, or "" for a body of nothing but space.
-func quoted(body []byte) string {
-	trimmed := bytes.TrimSpace(body)
-	return string(trimmed[:min(len(trimmed), quotedLength)])
-}
-
-// refusal is what RefusalClient records of a refused answer: the credentials its request carried,
-// as each RefusalClient it passed through saw them, and the start of its body an error that quotes
-// it holds.
-type refusal struct {
-	tokens []string
-	quote  string
-}
-
-// refusedKept is how many refusals refused keeps, the newest: more than a process makes between a
-// library's refused request and the boundary's reading of its error.
-const refusedKept = 1024
-
-// refused is the latest refusals RefusalClient's transports saw, newest last.
-var refused refusals
-
-type refusals struct {
-	mu   sync.Mutex
-	kept []*refusal
-}
-
-func (r *refusals) record(one *refusal) {
-	if one.quote == "" {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.kept = append(r.kept, one)
-	if len(r.kept) > refusedKept {
-		r.kept = r.kept[len(r.kept)-refusedKept:]
-	}
-}
-
-// join adds tokens, the credentials an outer RefusalClient's request carried, to one.
-func (r *refusals) join(one *refusal, tokens []string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	one.tokens = append(one.tokens, tokens...)
-}
-
-// quotedBy is the credentials of the newest refusal whose answer text quotes: only an error that
-// prints a refused answer can echo that request's credentials, so no other request's values touch
-// it, and the work is one request's however many refusals came before.
-func (r *refusals) quotedBy(text string) []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for i := len(r.kept) - 1; i >= 0; i-- {
-		if strings.Contains(text, r.kept[i].quote) {
-			return append([]string(nil), r.kept[i].tokens...)
-		}
-	}
-	return nil
-}
-
-// Carried is every credential r carries (requestTokens), for a client of this repository that
-// reads a refused answer itself: it holds the answer's words with these redacted
-// (RemoteText.WithoutTokens) before it prints them.
-func Carried(r *http.Request) []string { return requestTokens(r) }

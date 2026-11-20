@@ -401,6 +401,8 @@ func requestedScopes(lists []string) []string {
 // tokenSource is the token source of one scope set: the exchange GKE's server makes, of the token
 // file's contents for an access token of the pool, kept until tokenEarlyRefresh before its expiry.
 // It is made once per scope set; once maxTokenSources are kept, one of them makes way for a new one.
+// The external_account exchange hands errors back as text only, so its construction and each
+// Token run under the same record scope.
 func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error) {
 	key := strings.Join(scopes, " ")
 	s.mu.Lock()
@@ -408,13 +410,14 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 	if source, ok := s.sources[key]; ok {
 		return source, nil
 	}
-	source, err := oauth2call.Call(externalaccount.NewTokenSource(s.ctx, externalaccount.Config{
+	call := oauth2call.Scope[oauth2.TokenSource](s.ctx)
+	source, err := oauth2call.Call(call.Read(externalaccount.NewTokenSource(call.Context(), externalaccount.Config{
 		Audience:         s.audience,
 		SubjectTokenType: subjectTokenType,
 		TokenURL:         s.tokenURL,
 		Scopes:           scopes,
 		CredentialSource: &externalaccount.CredentialSource{File: s.tokenFile},
-	}))
+	})))
 	if err != nil {
 		return nil, err
 	}

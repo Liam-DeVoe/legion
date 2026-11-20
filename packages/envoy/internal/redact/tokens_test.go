@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -151,7 +152,8 @@ func TestRefusalClientRedactsOnlyARefusalsEchoOfItsRequest(t *testing.T) {
 		_, _ = io.WriteString(w, "<pre>\n"+strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")+"\nAuthorization: "+r.Header.Get("Authorization")+"</pre>")
 	}))
 	defer server.Close()
-	client := RefusalClient(&http.Client{Timeout: 7 * time.Second})
+	s := Scope[struct{}](context.Background())
+	client := s.Client(&http.Client{Timeout: 7 * time.Second})
 	if client.Timeout != 7*time.Second {
 		t.Fatalf("RefusalClient's timeout = %s, want its base's", client.Timeout)
 	}
@@ -170,7 +172,7 @@ func TestRefusalClientRedactsOnlyARefusalsEchoOfItsRequest(t *testing.T) {
 	if !strings.Contains(refused, bearer) {
 		t.Errorf("the refusal = %q, want it as it came, the echo of the bearer in it", refused)
 	}
-	if _, err := OAuth2(0, fmt.Errorf("status code 502: %s", refused)); strings.Contains(err.Error(), bearer) || strings.Count(err.Error(), Redacted) != 2 {
+	if _, err := OAuth2(struct{}{}, s.Err(fmt.Errorf("status code 502: %s", refused))); strings.Contains(err.Error(), bearer) || strings.Count(err.Error(), Redacted) != 2 {
 		t.Errorf("OAuth2 of a library's error over the refusal = %q, want both echoes of the bearer redacted", err)
 	}
 	if answered := get("/ok"); answered != string(okBody) {

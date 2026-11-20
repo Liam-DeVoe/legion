@@ -98,9 +98,10 @@ func TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal(t *testing.T) {
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			client := &http.Client{}
+			s := redact.Scope[struct{}](context.Background())
+			client := s.Client(&http.Client{})
 			request := row.send(t, client)
-			response, err := redact.RefusalClient(client).Do(request)
+			response, err := client.Do(request)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +110,7 @@ func TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal(t *testing.T) {
 			if len(redacttest.Held(string(body))) == 0 {
 				t.Fatalf("the control: the answer RefusalClient handed on holds no echo of the request: %q", body)
 			}
-			_, err = redact.OAuth2(0, fmt.Errorf("status code %d: %s", response.StatusCode, body))
+			_, err = redact.OAuth2(struct{}{}, s.Err(fmt.Errorf("status code %d: %s", response.StatusCode, body)))
 			redacttest.RequireNone(t, "redact.request-echo/"+row.name, err.Error())
 		})
 	}
@@ -239,33 +240,33 @@ func TestARefusalPrintsAPublicNamesValueAndRedactsAnUnlistedOnes(t *testing.T) {
 	}
 }
 
-// TestALibraryErrorReadsOnlyTheRefusalItQuotes: a request whose credential holds the word
-// "metadata" is refused, and then a library reports another failure, of the metadata server,
-// that quotes no part of that refusal's answer. The report keeps the word: only an error that
-// quotes a refused answer is read with that request's credentials, so no request's values touch
-// another's error (the defect agent-secrets' metadata-source test showed in this change's first
-// build). The same report quoting the refused answer has the credential redacted.
-func TestALibraryErrorReadsOnlyTheRefusalItQuotes(t *testing.T) {
+// TestALibraryErrorNeedsTheRecordItCameWith: a request whose credential holds the word
+// "metadata" is refused, and another error names the metadata server. The second error has no
+// record of a request, so it fails closed rather than borrowing the first refusal's credentials.
+// The refusal's own text is read under that refusal's scope and redacts only that request.
+func TestALibraryErrorNeedsTheRecordItCameWith(t *testing.T) {
 	const credential = "metadata-identity-token-RDX"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = io.WriteString(w, "refused: the identity token "+credential+" is not accepted here")
 	}))
 	defer srv.Close()
+	const other = "no metadata server: the metadata server at 127.0.0.1 could not be reached"
+	_, err := redact.OAuth2(struct{}{}, errors.New(other))
+	if strings.Contains(err.Error(), credential) || !strings.Contains(err.Error(), "message withheld") {
+		t.Errorf("an error with no request record = %q, want its class alone", err)
+	}
+
+	s := redact.Scope[struct{}](context.Background())
 	request := newRequest(t, http.MethodGet, srv.URL+"/subject?identity="+credential, "", nil)
-	response, err := redact.RefusalClient(nil).Do(request)
+	response, err := s.Client(nil).Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	answer, _ := io.ReadAll(response.Body)
 	response.Body.Close()
-	const other = "no metadata server: the metadata server at 127.0.0.1 could not be reached"
-	_, err = redact.OAuth2(0, errors.New(other))
-	if err.Error() != other {
-		t.Errorf("a report that quotes no refusal reads %q, want it as it was: %q", err.Error(), other)
-	}
-	_, err = redact.OAuth2(0, fmt.Errorf("status code 403: %s", answer))
+	_, err = redact.OAuth2(struct{}{}, s.Err(fmt.Errorf("status code 403: %s", answer)))
 	if strings.Contains(err.Error(), credential) {
-		t.Errorf("a report that quotes the refusal prints the credential its request carried: %q", err.Error())
+		t.Errorf("a report that carries the refusal's record prints its credential: %q", err)
 	}
 }

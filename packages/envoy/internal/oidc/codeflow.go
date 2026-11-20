@@ -98,7 +98,8 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 // authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
 // no revocation_endpoint is accepted, and Revoke fails against it.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
-	provider, err := redact.OAuth2(gooidc.NewProvider(ctx, issuer))
+	s := redact.Scope[*gooidc.Provider](ctx)
+	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), issuer)))
 	if err != nil {
 		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
 	}
@@ -109,7 +110,8 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 	var revocation struct {
 		Endpoint string `json:"revocation_endpoint"`
 	}
-	if _, err := redact.OAuth2(struct{}{}, provider.Claims(&revocation)); err != nil {
+	claims := redact.Scope[struct{}](ctx)
+	if _, err := redact.OAuth2(claims.Read(struct{}{}, provider.Claims(&revocation))); err != nil {
 		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint: %w", issuer, err)
 	}
 	return &codeFlowIssuer{
@@ -374,7 +376,8 @@ type workspaceClaims struct {
 // which is the only place a claim a person or a caller is admitted on may come from.
 func readWorkspaceClaims(token *gooidc.IDToken, claims *Claims) error {
 	var workspace workspaceClaims
-	if _, err := redact.OAuth2(struct{}{}, token.Claims(&workspace)); err != nil {
+	s := redact.Scope[struct{}](context.Background())
+	if _, err := redact.OAuth2(s.Read(struct{}{}, token.Claims(&workspace))); err != nil {
 		return fmt.Errorf("payload is not a claim set: %w", err)
 	}
 	claims.Email = jsonString(workspace.Email)
