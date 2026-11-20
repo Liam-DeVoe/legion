@@ -2030,15 +2030,15 @@ export class DispatchApiClient {
   }
 
   /** `GET /api/v2/machine-logins`, every page: the machine logins the viewer may revoke, their
-   *  own machines' and every service's, whoever approved it, that are unexpired or expired with
-   *  a session still running. */
+   *  own machines', their own pods' (`person` set) and every service's, whoever approved it, that
+   *  are unexpired or expired with a session still running. */
   async getMachineLogins() {
     return (await this.readWholeList("/api/v2/machine-logins", {})).items;
   }
 
-  /** Revoke a machine login, expired or not: a service's, or one of the viewer's machines'.
-   *  Dispatch names the viewer as the person revoking, and every session the login enrolled ends
-   *  with it. */
+  /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
+   *  of the viewer's pods'. Dispatch names the viewer as the person revoking, and every session
+   *  the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v2/machine-logins/{id}", { id: credentialId }, bounds);
   }

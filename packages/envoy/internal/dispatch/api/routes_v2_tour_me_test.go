@@ -297,7 +297,11 @@ func credentialTourSteps() []tourStep {
 		},
 		{
 			Method: http.MethodGet, Pattern: "/machine-logins", Status: http.StatusOK,
-			Setup: func(*testing.T, *routeTour) tourRequest { return tourRequest{As: alice} },
+			Setup: func(_ *testing.T, tour *routeTour) tourRequest {
+				tour.secrets.answer(http.MethodGet, "/v1/launcher-credentials", http.StatusOK,
+					wire.LauncherCredentialsResponse{Credentials: tourMachineLogins("alice")})
+				return tourRequest{As: alice}
+			},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/machine-logins/{id}", Status: http.StatusNoContent,
@@ -324,6 +328,26 @@ func tourLoginRecord(record, state string) wire.RecordResponse {
 		RecordID: record, Kind: "launcher_credential", State: state, Approver: "alice",
 		Identifiers: []string{"tour-host"}, Reason: "the tour's machine", RulesVersion: "tour",
 		ExpiresAt: time.Now().UTC().Add(time.Hour), RequestedAt: time.Now().UTC(),
+	}
+}
+
+// tourMachineLogins are the machine logins the broker lists for person: a service's token login,
+// whose person is null, and a person's pod login, whose person is person, each holding every
+// member the broker's wire type writes (wire.LauncherCredentialResp), so the tour holds a person
+// set and a person null to the /api/v2 document.
+func tourMachineLogins(person string) []wire.LauncherCredentialResp {
+	issued := time.Now().UTC().Truncate(time.Second)
+	service, subject := "legion-daemon", "system:serviceaccount:legion-system:legion-daemon"
+	podService, podSubject := "person-pods", "system:serviceaccount:people:"+person
+	return []wire.LauncherCredentialResp{
+		{
+			CredentialID: "tour-person-pod-login", Host: "people/" + person, Service: &podService, Subject: &podSubject,
+			Person: &person, IssuedAt: issued, ExpiresAt: issued.Add(time.Hour),
+		},
+		{
+			CredentialID: "tour-service-login", Host: "legion-system/legion-daemon", Service: &service, Subject: &subject,
+			IssuedAt: issued, ExpiresAt: issued.Add(time.Hour),
+		},
 	}
 }
 

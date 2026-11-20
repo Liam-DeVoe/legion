@@ -3,9 +3,12 @@ package api
 import (
 	"net/http"
 	"net/url"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/broker/wire"
 )
 
 // PUT /api/v2/credential-requests/{id}/state answers the request as the broker records it once
@@ -40,6 +43,34 @@ func TestTheCredentialStateAnswersItsOwnRecordAlone(t *testing.T) {
 			t.Fatalf("an approval whose lookup answered no record Dispatch reads answered %d %s, want 500 INTERNAL", status, code)
 		}
 	})
+}
+
+// GET /api/v2/machine-logins answers each machine login's person as the secrets broker lists it
+// (#4452): a person's pod login, the login of a pod whose Kubernetes account the broker's
+// BROKER_POD_OPERATORS maps to a person, names that person, and every other login, a service's
+// among them, answers person null. The page reads the broker's rows into its own type before it
+// slices them, so a member that type lacked would never reach the Machine logins section, which
+// reads a pod login as the viewer's own by its person.
+func TestAPersonsPodLoginNamesItsPersonOnV2(t *testing.T) {
+	tour := newRouteTour(t)
+	route := tour.requireMounted(t, http.MethodGet, "/machine-logins")
+	tour.secrets.answer(http.MethodGet, "/v1/launcher-credentials", http.StatusOK,
+		wire.LauncherCredentialsResponse{Credentials: tourMachineLogins("alice")})
+	response := tour.send(t, route, tourRequest{As: tourPerson("alice")}, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v2/machine-logins answered %d %s, want 200", response.Code, response.Body.String())
+	}
+	persons := map[any]any{}
+	for _, login := range decodeBody[page[map[string]any]](t, response).Items {
+		person, named := login["person"]
+		if !named {
+			t.Errorf("GET /api/v2/machine-logins answered a login with no person: %v", login)
+		}
+		persons[login["credential_id"]] = person
+	}
+	if want := map[any]any{"tour-person-pod-login": "alice", "tour-service-login": nil}; !reflect.DeepEqual(persons, want) {
+		t.Errorf("GET /api/v2/machine-logins answered the persons %v, want %v: %s", persons, want, response.Body.String())
+	}
 }
 
 // GET /api/v2/asks?source=<kind>:<id> names its source by a whole uuid or a prefix of 8 characters

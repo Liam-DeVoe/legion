@@ -149,10 +149,12 @@ func (s *server) v2CredentialRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/machine-logins", Auth: authAny, Versions: onlyV2,
 			Description: "The machine logins the caller may revoke that can still reach a secret, from the secrets " +
-				"broker, newest first: every service's login, whoever approved it, and the caller's own machines', " +
-				"unexpired, or expired with a session still running, each {credential_id, host, service, subject, " +
-				"approved_by, issued_at, expires_at, expired}. Needs the person scope. " + brokerPageText + ". " +
-				brokerRelayText + ".",
+				"broker, newest first: every service's login, whoever approved it, the caller's own machines' and the " +
+				"caller's own pods', unexpired, or expired with a session still running, each {credential_id, host, " +
+				"service, subject, person, approved_by, issued_at, expires_at, expired}. A person's pod login is the " +
+				"login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person: only that " +
+				"person's list holds it, and its person names that person; person is null on every other login. " +
+				"Needs the person scope. " + brokerPageText + ". " + brokerRelayText + ".",
 			Handler:  s.listMachineLoginsV2,
 			Resource: "machine-logins", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
@@ -163,10 +165,14 @@ func (s *server) v2CredentialRows() []routeRow {
 		{
 			Method: http.MethodDelete, Pattern: "/machine-logins/{id}", Auth: authAny, Versions: onlyV2,
 			Description: "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods " +
-				"included: anyone signed in revokes a service's login, and only the person who approved a person's " +
-				"machine login revokes that one, as the secrets broker decides. 204. Needs the person and approve " +
-				"scopes; a credential scoped to one project is refused. 404 MACHINE_LOGIN_NOT_FOUND for an id the " +
-				"broker holds no machine login of, and " + brokerRelayText + ".",
+				"and a person's pod included: anyone signed in revokes a service's login, only the person who approved " +
+				"a person's machine login revokes that one, and only the person a person's pod login names (its " +
+				"person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes " +
+				"that one, as the secrets broker decides. The revoke does not keep that pod out: it logs in again with " +
+				"its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that " +
+				"login is the person's while BROKER_POD_OPERATORS still maps the account to that person. 204. Needs " +
+				"the person and approve scopes; a credential scoped to one project is refused. 404 " +
+				"MACHINE_LOGIN_NOT_FOUND for an id the broker holds no machine login of, and " + brokerRelayText + ".",
 			Handler:  s.revokeMachineLoginV2,
 			Resource: "machine-logins", Kind: kindItem, Key: "{id}",
 			Shape:       routeShape{Status: http.StatusNoContent},

@@ -98,7 +98,11 @@ function createReviewPriority() {
  *  set that comes to write a mark as it draws needs that mark written here too: until it is, the
  *  visual job's reverse-order run (`DISPATCH_E2E_VISUAL_ORDER=reverse`, e2e/visual-order.ts) fails
  *  by the name of a row that read it. */
-async function markWhatTheShotPagesRead(broadcastId: string, issue: string): Promise<void> {
+async function markWhatTheShotPagesRead(
+  broadcastId: string,
+  issue: string,
+  specId: string
+): Promise<void> {
   const broadcast = await getBroadcast(broadcastId);
   let replies = 0;
   for (const recipient of broadcast.recipients ?? []) {
@@ -120,15 +124,12 @@ async function markWhatTheShotPagesRead(broadcastId: string, issue: string): Pro
         "nothing read and the rows' Agents badge reads a state no baseline holds"
     );
   }
-  const specId = (await getIssue(issue)).primary_artifact_id;
   // The server lists a document's versions oldest first (`listArtifactVersions`), and the Spec tab
   // shows the spec's latest (`useSpecMarks`): so the mark is the highest number, read from every
   // version, and never the list's first, which is the newest only for a one-version spec.
   const numbers =
-    specId === undefined || specId === null
-      ? []
-      : (await listArtifactVersions(specId)).map((version) => version.number);
-  if (specId === undefined || specId === null || numbers.length === 0) {
+    specId === "" ? [] : (await listArtifactVersions(specId)).map((version) => version.number);
+  if (specId === "" || numbers.length === 0) {
     throw new Error(
       `seedReviewRoutes: ${issue} has no spec with a version for its Spec tab to read`
     );
@@ -239,7 +240,7 @@ Each page is read once it is drawn.
   const runbook = await getProjectArtifact("CORE", "runbook");
 
   // Last, so the spec's newest version is the one its tab will show.
-  await markWhatTheShotPagesRead(workspace.broadcast.id, issue);
+  await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);
 
   return {
     broadcast: workspace.broadcast.id,
