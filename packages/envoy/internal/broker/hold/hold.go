@@ -307,6 +307,23 @@ func heldUnwritten(person string, cause error) error {
 		fmt.Errorf("%w: %s", ErrHeld, person))
 }
 
+// Reason is why the gate could not decide a person (err, an error Check answered that matches
+// ErrUncheckable), in words a refused caller may read: one of three fixed reasons, never the
+// gate's error, which can carry a Postgres error's database user, name and address. Dispatch
+// refusing the broker's own account is the deployment's to fix; a held answer the broker could not
+// keep still holds the person; and otherwise Dispatch could not be asked while the broker could
+// not read the last answer Dispatch gave either. Every point that refuses 503 HOLD_UNCHECKABLE, or
+// server_error at the token endpoint, names one of them, and logs err itself.
+func Reason(err error) string {
+	switch {
+	case errors.Is(err, projectaccess.ErrBrokerRefused):
+		return "Dispatch refused the broker's own account"
+	case errors.Is(err, ErrHeld):
+		return "the broker could not keep Dispatch's answer that holds them"
+	}
+	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
+}
+
 // sweepLocked forgets the failures, warnings and writes whose time has passed once the gate
 // remembers maxRemembered of them. A write is forgotten once its answer is older than the client's
 // cache keeps one, after which the client answers it no more. g.mu is held.

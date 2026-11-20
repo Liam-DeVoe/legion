@@ -7,9 +7,11 @@
 package directorytest
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -91,6 +93,8 @@ type Google struct {
 	signs     []Sign
 	exchanges []Sign
 	reads     []Read
+	// open is how many requests each host is answering now.
+	open map[string]int
 }
 
 // ServeGoogle starts the three hosts, stopped when t ends; a stalled reply is released first.
@@ -104,11 +108,12 @@ func ServeGoogle(t testing.TB) *Google {
 		users:     map[string]Answer{},
 		signed:    map[string]Sign{},
 		issued:    map[string]Sign{},
+		open:      map[string]int{},
 	}
 	servers := map[string]*httptest.Server{
-		SignerHost:    httptest.NewServer(http.HandlerFunc(g.serveSign)),
-		TokenHost:     httptest.NewServer(http.HandlerFunc(g.serveToken)),
-		DirectoryHost: httptest.NewServer(http.HandlerFunc(g.serveDirectory)),
+		SignerHost:    httptest.NewServer(g.counted(SignerHost, g.serveSign)),
+		TokenHost:     httptest.NewServer(g.counted(TokenHost, g.serveToken)),
+		DirectoryHost: httptest.NewServer(g.counted(DirectoryHost, g.serveDirectory)),
 	}
 	// A transport of its own, with no proxy, so HTTPS_PROXY in the test's environment reroutes nothing.
 	transport := &http.Transport{}
@@ -228,6 +233,37 @@ func (g *Google) Reads() []Read {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]Read(nil), g.reads...)
+}
+
+// Open is how many requests to host (SignerHost, TokenHost or DirectoryHost) the fake is still
+// answering: a held or stalled one stays open until it is let go, or until the client that sent
+// it hangs up, which ends the request's context.
+func (g *Google) Open(host string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.open[host]
+}
+
+// counted serves host with serve, counting the request open until serve returns. It reads the
+// request's body to its end first: net/http notices a client that hung up, and ends the request's
+// context, only once the body was read to its end.
+func (g *Google) counted(host string, serve http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		g.mu.Lock()
+		g.open[host]++
+		g.mu.Unlock()
+		defer func() {
+			g.mu.Lock()
+			g.open[host]--
+			g.mu.Unlock()
+		}()
+		serve(w, r)
+	}
 }
 
 // route sends each of the three hosts' https requests to its server, and refuses any other.
