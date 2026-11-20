@@ -1715,6 +1715,39 @@ func TestADryRunTheStepCannotReadChangesNothing(t *testing.T) {
 	}
 }
 
+// A dry run of `jj git push -c` prints `Creating bookmark push-<change> for revision <change>`
+// on standard error before jj's refusal of the push, here of a commit with no description. The
+// step cannot read such a dry run, and its one line names what it could not read: jj's error,
+// never the line before it, which it reads. The push then runs as written, and jj refuses it.
+func TestTheLineOfADryRunTheStepCannotReadNamesJJsError(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct{ name, revision string }{
+		{name: "-c with a commit id", revision: "commit id"},
+		{name: "-c @-", revision: "@-"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				f.jj(rolePushReviewer, "new", "main")
+				f.write()
+				f.jj(rolePushImplementer, "new")
+				c := f.read("@-")
+				revision := row.revision
+				if revision == "commit id" {
+					revision = c.commit
+				}
+				f.pushAndCheck([]string{"git", "push", "-c", revision}, rolePushWant{
+					exit:            1,
+					same:            map[string]rolePushIdentity{c.commit: rolePushReviewer},
+					cannotRead:      rolePushCannotReadIt,
+					cannotReadNames: "Error: Won't push commit " + c.commit[:12] + " since it has no description",
+				})
+			})
+		})
+	}
+}
+
 // rolePushTableRows are the values of LEGION_ROLE_IDENTITIES that the step cannot use; nil leaves
 // it unset.
 var rolePushTableRows = []struct {
