@@ -439,6 +439,26 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		t.Fatalf("the machine's view holds state beside the claim that this test does not put a machine in: %s", strings.Join(wrong, "; "))
 	}
 	checked, owed, refused, fields := 0, 0, 0, 0
+	// sweepTrial is one phase's account of the groups it puts to the path, and try is the one way
+	// each phase puts a group there: run is the tick it is put to, r.hold at a tick that finds the
+	// round open or r.open at the tick that opens it. try adds the group's claims to the test's
+	// totals and to the phase's own, counts the claims the sweep treated otherwise than the rule,
+	// and keeps the phase's first such claim, with the shape the group was tried in.
+	type sweepTrial struct {
+		wrong, seen int
+		example     string
+	}
+	try := func(p *sweepTrial, run func([]supervise.Claim) (int, []string), shape string, group []supervise.Claim) {
+		asked, misses := run(group)
+		checked += len(group)
+		p.seen += len(group)
+		owed += asked
+		refused += len(group) - asked
+		p.wrong += len(misses)
+		if p.example == "" && len(misses) > 0 {
+			p.example = shape + ", " + misses[0]
+		}
+	}
 	buf := make([]supervise.Claim, 0, sweepRoleCount)
 	others := make([]supervise.Claim, len(facts))
 	for _, leaf := range leaves {
@@ -448,7 +468,8 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			}
 		}
 		pools := newSweepPools(others, r.asks)
-		tried, held, wrong, example := 0, 0, 0, ""
+		tried, held := 0, 0
+		var trial sweepTrial
 		for n, i := range kinds {
 			c := facts[i]
 			if !leaf.empty(c) {
@@ -457,16 +478,9 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			tried++
 			for _, s := range sweepFieldShapes {
 				group := pools.group(buf, i, s.at(n), s.others, nil)
-				asked, misses := r.hold(group)
+				try(&trial, r.hold, s.name, group)
 				if !leaf.empty(group[s.at(n)]) {
 					held++
-				}
-				checked += len(group)
-				owed += asked
-				refused += len(group) - asked
-				wrong += len(misses)
-				if example == "" && len(misses) > 0 {
-					example = s.name + ", " + misses[0]
 				}
 			}
 		}
@@ -481,9 +495,9 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		case tried > 0:
 			fields++
 		}
-		if wrong > 0 {
+		if trial.wrong > 0 {
 			t.Errorf("with %s set, the sweep disagrees with the rule on %d claims of %d groups, for example %s; want the sweep to ask a claim, and the ask to reach it, exactly where the rule owes it an ask, it has a session, its agent said it is ready and a machine holds it",
-				leaf.name, wrong, tried*len(sweepFieldShapes), example)
+				leaf.name, trial.wrong, tried*len(sweepFieldShapes), trial.example)
 		}
 	}
 
@@ -497,34 +511,25 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 	for v := range sweepViewStates {
 		state := &sweepViewStates[v]
 		r.path.view, r.path.taken = state, 0
-		wrong, seen, example := 0, 0, ""
+		var trial sweepTrial
 		for n, i := range kinds {
 			for si, s := range sweepFieldShapes {
 				before := r.path.taken
-				group := pools.group(buf, i, s.at(n), s.others, nil)
-				asked, misses := r.hold(group)
+				try(&trial, r.hold, s.name, pools.group(buf, i, s.at(n), s.others, nil))
 				if si == 0 && r.path.taken > before {
 					took[v] = append(took[v], i)
-				}
-				checked += len(group)
-				seen += len(group)
-				owed += asked
-				refused += len(group) - asked
-				wrong += len(misses)
-				if example == "" && len(misses) > 0 {
-					example = s.name + ", " + misses[0]
 				}
 			}
 		}
 		r.path.view = nil
 		if r.path.taken == 0 {
-			t.Errorf("no machine of the %d claims put %s took that state, so this test tried it on no claim", seen, state.what)
+			t.Errorf("no machine of the %d claims put %s took that state, so this test tried it on no claim", trial.seen, state.what)
 		} else {
 			views++
 		}
-		if wrong > 0 {
+		if trial.wrong > 0 {
 			t.Errorf("with each machine %s (%s), the sweep disagrees with the rule on %d of %d claims, for example %s",
-				state.what, state.field, wrong, seen, example)
+				state.what, state.field, trial.wrong, trial.seen, trial.example)
 		}
 	}
 
@@ -544,30 +549,14 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 		for v := range sweepViewStates {
 			state := &sweepViewStates[v]
 			r.path.view = state
-			wrong, seen, example := 0, 0, ""
-			try := func(shape string, open bool, group []supervise.Claim) {
-				asked, misses := 0, []string(nil)
-				if open {
-					asked, misses = r.open(group)
-				} else {
-					asked, misses = r.hold(group)
-				}
-				checked += len(group)
-				seen += len(group)
-				owed += asked
-				refused += len(group) - asked
-				wrong += len(misses)
-				if example == "" && len(misses) > 0 {
-					example = shape + ", " + misses[0]
-				}
-			}
+			var trial sweepTrial
 			for n, i := range kinds {
 				for _, s := range sweepFieldShapes {
 					group := pools.group(buf, i, s.at(n), s.others, nil)
 					for j := range group {
 						group[j].UpdateRound, group[j].UpdateOpenedAt = "", nil
 					}
-					try("at the tick that opens the round, "+s.name, true, group)
+					try(&trial, r.open, "at the tick that opens the round, "+s.name, group)
 					viewOpenings++
 				}
 			}
@@ -591,20 +580,20 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 					}
 					c := facts[i]
 					leaf.set(&c, at)
-					try("with "+leaf.name+" set, alone", false, append(buf[:0], c))
+					try(&trial, r.hold, "with "+leaf.name+" set, alone", append(buf[:0], c))
 					viewFields++
 				}
 				c := facts[eligible[(viewTurn+1)%len(eligible)]]
 				viewTurn++
 				leaf.set(&c, at)
 				c.UpdateRound, c.UpdateOpenedAt = "", nil
-				try("with "+leaf.name+" set, at the tick that opens the round", true, append(buf[:0], c))
+				try(&trial, r.open, "with "+leaf.name+" set, at the tick that opens the round", append(buf[:0], c))
 				viewFields++
 			}
 			r.path.view = nil
-			if wrong > 0 {
+			if trial.wrong > 0 {
 				t.Errorf("with each machine %s (%s), at the round's opening or with a field of the claim set beside the state, the sweep disagrees with the rule on %d of %d claims, for example %s",
-					state.what, state.field, wrong, seen, example)
+					state.what, state.field, trial.wrong, trial.seen, trial.example)
 			}
 		}
 	}
@@ -629,33 +618,22 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			}
 			return c
 		}
-		wrong, seen, example := 0, 0, ""
-		try := func(shape string, group []supervise.Claim) {
-			asked, misses := r.hold(group)
-			checked += len(group)
-			seen += len(group)
-			owed += asked
-			refused += len(group) - asked
-			wrong += len(misses)
-			if example == "" && len(misses) > 0 {
-				example = shape + ", " + misses[0]
-			}
-		}
+		var trial sweepTrial
 		for _, i := range kinds {
-			try("alone", append(buf[:0], with(facts[i])))
+			try(&trial, r.hold, "alone", append(buf[:0], with(facts[i])))
 		}
 		for _, g := range groups {
 			group := buf[:0]
 			for _, i := range g {
 				group = append(group, with(facts[i]))
 			}
-			try("in a group of every role", group)
+			try(&trial, r.hold, "in a group of every role", group)
 		}
 		sets++
-		if wrong > 0 {
+		if trial.wrong > 0 {
 			if setsWrong++; setsWrong <= 10 {
 				t.Errorf("with %s set together, the sweep disagrees with the rule on %d of %d claims, for example %s",
-					sweepLeafNames(leaves, block), wrong, seen, example)
+					sweepLeafNames(leaves, block), trial.wrong, trial.seen, trial.example)
 			}
 		}
 	}
@@ -690,23 +668,7 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 	beside := make([]int, 0, len(kinds))
 	for a := range leaves {
 		for b := a + 1; b < len(leaves); b++ {
-			wrong, seen, example := 0, 0, ""
-			try := func(shape string, open bool, group []supervise.Claim) {
-				asked, misses := 0, []string(nil)
-				if open {
-					asked, misses = r.open(group)
-				} else {
-					asked, misses = r.hold(group)
-				}
-				checked += len(group)
-				seen += len(group)
-				owed += asked
-				refused += len(group) - asked
-				wrong += len(misses)
-				if example == "" && len(misses) > 0 {
-					example = shape + ", " + misses[0]
-				}
-			}
+			var trial sweepTrial
 			beside = beside[:0]
 			for _, i := range pairKinds {
 				c := facts[i]
@@ -715,13 +677,13 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 				}
 				leaves[a].set(&c, at)
 				leaves[b].set(&c, at)
-				try("alone", false, append(buf[:0], c))
+				try(&trial, r.hold, "alone", append(buf[:0], c))
 				if !r.asks(facts[i]) {
 					continue
 				}
 				beside = append(beside, i)
 				c.UpdateRound, c.UpdateOpenedAt = "", nil
-				try("at the tick that opens the round", true, append(buf[:0], c))
+				try(&trial, r.open, "at the tick that opens the round", append(buf[:0], c))
 				pairsOpened++
 			}
 			if len(beside) > 0 {
@@ -733,16 +695,16 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 				pairTurn++
 				leaves[a].set(&c, at)
 				leaves[b].set(&c, at)
-				try("beside the ready "+string(sweepRoleList[role])+" claim", false, append(buf[:0], c, facts[ready[role]]))
+				try(&trial, r.hold, "beside the ready "+string(sweepRoleList[role])+" claim", append(buf[:0], c, facts[ready[role]]))
 				pairsBeside++
 			}
-			if seen > 0 {
+			if trial.seen > 0 {
 				pairs++
 			}
-			if wrong > 0 {
+			if trial.wrong > 0 {
 				if pairsWrong++; pairsWrong <= 10 {
 					t.Errorf("with %s and %s set and no other field, the sweep disagrees with the rule on %d of %d claims, for example %s",
-						leaves[a].name, leaves[b].name, wrong, seen, example)
+						leaves[a].name, leaves[b].name, trial.wrong, trial.seen, trial.example)
 				}
 			}
 		}
@@ -766,32 +728,22 @@ func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds
 			set(&c)
 			return c
 		}
-		wrong, seen, example := 0, 0, ""
-		try := func(shape string, group []supervise.Claim) {
-			asked, misses := r.open(group)
-			checked += len(group)
-			seen += len(group)
-			refused += len(group) - asked
-			wrong += len(misses)
-			if example == "" && len(misses) > 0 {
-				example = shape + ", " + misses[0]
-			}
-		}
+		var trial sweepTrial
 		for _, i := range opening {
-			try("alone", append(buf[:0], build(i)))
+			try(&trial, r.open, "alone", append(buf[:0], build(i)))
 		}
 		for _, g := range openingGroups {
 			group := buf[:0]
 			for _, i := range g {
 				group = append(group, build(i))
 			}
-			try("in a group of every role", group)
+			try(&trial, r.open, "in a group of every role", group)
 		}
 		opened++
-		if wrong > 0 {
+		if trial.wrong > 0 {
 			if openedWrong++; openedWrong <= 10 {
 				t.Errorf("at the tick that opens the round, %s, the sweep disagrees with the rule on %d of %d claims, for example %s; want the round posted to each claim with a session that has not retired, and no ask, since no claim records the round yet",
-					label, wrong, seen, example)
+					label, trial.wrong, trial.seen, trial.example)
 			}
 		}
 	}
