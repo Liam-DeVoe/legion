@@ -159,9 +159,11 @@ func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 }
 
 // publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
-// envelope (the shape intake.go's handlePullRequestEnvelope reads) and waits for the publish to
-// be acknowledged by JetStream before returning.
-func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) {
+// envelope (the shape intake.go's handlePullRequestEnvelope reads), waits for the publish to be
+// acknowledged by JetStream, and answers the stream sequence the stream stored it at. The publish
+// takes the context a test's call to nats.go takes (testnats.Context), so it waits for its
+// acknowledgement under the test binary's deadline and no bound of its own.
+func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(fields)
 	if err != nil {
@@ -176,9 +178,11 @@ func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, rep
 		TraceID:       "test-trace",
 		IssuedAt:      time.Now().Unix(),
 	}
-	if err := natsClient.Publish(envelope); err != nil {
+	stored, err := natsClient.PublishAckWithin(testnats.Context(t), envelope)
+	if err != nil {
 		t.Fatalf("publish envelope: %v", err)
 	}
+	return stored.Sequence
 }
 
 // publishGitHubEnvelope publishes one envelope on topic carrying payload as it stands, for a payload

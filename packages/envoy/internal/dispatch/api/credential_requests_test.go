@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -62,7 +62,7 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 }
 
 // newCredentialTestHandlerOn is newCredentialTestHandler whose client judges how old its read of
-// the broker's metadata is on grants (agentsecrets.WithClock), a fake the test moves.
+// the broker's metadata is on grants (cipher.WithClock), a fake the test moves.
 func newCredentialTestHandlerOn(t *testing.T, brokerURL string, grants clock.Clock) http.Handler {
 	t.Helper()
 	return credentialTestHandler(t, brokerURL, accountTokenFile(t, credentialTestAccountToken), grants)
@@ -95,7 +95,7 @@ func credentialTestHandler(t *testing.T, brokerURL, tokenFile string, grants clo
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	if grants != nil && deps.AgentSecrets != nil {
-		agentsecrets.WithClock(grants)(deps.AgentSecrets)
+		cipher.WithClock(grants)(deps.AgentSecrets)
 	}
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
@@ -513,7 +513,7 @@ func TestOnePersonReachesNoneOfAnothersSignIns(t *testing.T) {
 // it has to follow that document, cost the broker one read however many pages ask, answer for a
 // Dispatch with no broker at all, and keep the page rather than lose it when the broker cannot
 // be read. What a lapsed window does with a broker that has stopped answering is the client's
-// own test (internal/dispatch/agentsecrets).
+// own test (internal/dispatch/cipher).
 func TestCredentialCapabilitiesFollowTheBrokersMetadata(t *testing.T) {
 	const metadata = "GET /.well-known/oauth-authorization-server"
 	ask := func(t *testing.T, handler http.Handler) bool {

@@ -13,7 +13,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -52,7 +52,7 @@ const documentSocketPerson = "alice@d.example"
 func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, fake *clocktest.Fake) *documentSocketTokenRig {
 	t.Helper()
 	ctx := context.Background()
-	rig := &documentSocketTokenRig{tokens: newBrokerTokenRig(t, func(options *brokertoken.Options) { options.Now = fake.Now })}
+	rig := &documentSocketTokenRig{tokens: newBrokerTokenRig(t, func(options *ciphertoken.Options) { options.Now = fake.Now })}
 	database := rig.tokens.database
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
@@ -169,7 +169,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name   string
-		answer func(jkt string) brokertoken.Introspection
+		answer func(jkt string) ciphertoken.Introspection
 	}{
 		{"a read-only token", readOnlyToken},
 		{"a token that writes", liveNamedToken},
@@ -264,8 +264,8 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 3, heartbeat)
 	client.sentNothing(t, "a live socket whose token the broker holds live")
 
-	rig.tokens.broker.Says(token, brokertoken.Introspection{Active: false})
-	lapsed := opened.Add(brokertoken.AffirmativeCacheTTL)
+	rig.tokens.broker.Says(token, ciphertoken.Introspection{Active: false})
+	lapsed := opened.Add(ciphertoken.AffirmativeCacheTTL)
 	for next.Before(lapsed) {
 		next = driveHeartbeats(t, fake, next, 1, heartbeat)
 	}
