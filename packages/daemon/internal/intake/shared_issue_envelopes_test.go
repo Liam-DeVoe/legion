@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
@@ -163,7 +164,9 @@ func (r *fromReadForTest) UnmarshalJSONFrom(decoder *jsontext.Decoder) error {
 }
 
 // rawReadHolderForTest keeps a field rawReads names, and reads it with a decoder of its own
-// rather than raw; rawKeptHolderForTest keeps it raw, as the daemon's own types do.
+// rather than raw; rawKeptHolderForTest keeps it raw, as the daemon's own types do; and
+// rawPlainHolderForTest reads it as a plain struct of its own, reading "other", neither raw nor as
+// the text of a JSON value.
 type (
 	rawReadHolderForTest struct {
 		Lanes ownStructReadForTest `json:"lanes"`
@@ -171,10 +174,17 @@ type (
 	rawKeptHolderForTest struct {
 		Lanes json.RawMessage `json:"lanes"`
 	}
+	rawPlainHolderForTest struct {
+		Lanes struct {
+			Other string `json:"other"`
+		} `json:"lanes"`
+	}
 )
 
 // The holders TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads embeds, each reading a
-// "lane" key no example carries: tagged, unexported and exported, one level deeper, and untagged.
+// "lane" key no example carries: tagged, unexported and exported, one level deeper, untagged, and
+// a struct that two embedded structs at one depth both embed (laneLeftForTest and
+// laneRightForTest, each embedding laneMidForTest).
 type (
 	laneHolderForTest struct {
 		Lane string `json:"lane"`
@@ -185,6 +195,9 @@ type (
 	laneDeeperForTest   struct{ laneHolderForTest }
 	laneUntaggedForTest struct{ Lane string }
 	LaneUntaggedForTest struct{ Lane string }
+	laneMidForTest      struct{ laneHolderForTest }
+	laneLeftForTest     struct{ laneMidForTest }
+	laneRightForTest    struct{ laneMidForTest }
 )
 
 // recordedErrors is a testing.TB that keeps each error a walk reports, so a test can require the
@@ -285,13 +298,26 @@ func TestSharedIssueEnvelopeWalkRejectsUninspectedReadTypes(t *testing.T) {
 	if len(recorded.errors) != 0 {
 		t.Fatalf("the walk of a field kept raw reported %q, want it walked as rawReads says", recorded.errors)
 	}
+	// A field the daemon reads as a plain struct of its own is read now, not kept for later: a
+	// rawReads entry for it is refused by name, and the field is walked as the type it is, so its
+	// "other" is required and the target's "lane" is not.
+	recorded = &recordedErrors{TB: t}
+	requireReadFields(recorded, "holder", lanes, reflect.TypeFor[rawPlainHolderForTest](),
+		map[string]reflect.Type{"rawPlainHolderForTest.lanes": target})
+	if len(recorded.errors) != 2 || !strings.Contains(recorded.errors[0], "rawReads says what the daemon reads rawPlainHolderForTest.lanes into") ||
+		!strings.Contains(recorded.errors[1], `holds no "other"`) {
+		t.Fatalf("the walk of a plain struct behind rawReads reported %q, want a refusal of the rawReads entry and the struct's own \"other\" required", recorded.errors)
+	}
 }
 
 // The walk requires each name encoding/json decodes into a reading type, by encoding/json's rule
-// for the fields a struct's embedded structs promote (readFields). For each holder, encoding/json
-// itself decodes {"lane":"fast"} into it, and the walk of an object holding no "lane" must refuse
-// it exactly when that decode read it: so a key the daemon reads through an embedded struct,
-// exported or not, is required as a field of its own is, and one encoding/json passes over is not.
+// for the fields a struct's embedded structs promote (readFields), and asks encoding/json itself
+// of each name (readByEncodingJSON). For each holder, encoding/json decodes {"lane":"fast"} into
+// it, and the walk of an object holding no "lane" must refuse it exactly when that decode read it,
+// with no name the two answer differently: so a key the daemon reads through an embedded struct,
+// exported or not, is required as a field of its own is, one encoding/json passes over is not,
+// and a readFields that parts from encoding/json on a holder - one reached by two paths, or its
+// precedence of depths reversed - fails here by the holder's name.
 func TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -308,6 +334,12 @@ func TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads(t *testing.T) 
 			Lane string `json:"lane"`
 			laneHolderForTest
 		}]()},
+		// Untagged, so that no two fields at one depth repeat a tag (go vet's structtag check).
+		{"a field of its own over two promoted at one depth", reflect.TypeFor[struct {
+			Lane string
+			laneUntaggedForTest
+			LaneUntaggedForTest
+		}]()},
 		{"an untagged field, read under its Go name", reflect.TypeFor[struct{ Lane string }]()},
 		{"an embedded struct tagged -", reflect.TypeFor[struct {
 			laneHolderForTest `json:"-"`
@@ -319,6 +351,10 @@ func TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads(t *testing.T) 
 			laneUntaggedForTest
 			LaneUntaggedForTest
 		}]()},
+		{"a struct reached twice at one depth that embeds the reader", reflect.TypeFor[struct {
+			laneLeftForTest
+			laneRightForTest
+		}]()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decoded := reflect.New(tc.holder)
@@ -328,15 +364,18 @@ func TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads(t *testing.T) 
 			read := !decoded.Elem().IsZero()
 			recorded := &recordedErrors{TB: t}
 			requireReadFields(recorded, "holder", map[string]json.RawMessage{}, tc.holder, nil)
-			refused := 0
+			refused, disagreed := 0, 0
 			for _, problem := range recorded.errors {
 				// encoding/json matches a name in any case, so an untagged Lane reads "lane".
 				if strings.Contains(strings.ToLower(problem), `holds no "lane"`) {
 					refused++
 				}
+				if strings.Contains(problem, "passes over") {
+					disagreed++
+				}
 			}
-			if want := map[bool]int{true: 1}[read]; refused != want {
-				t.Fatalf("encoding/json reads \"lane\" into a holder of %s: %v; the walk reported %q, want %d refusals of it",
+			if want := map[bool]int{true: 1}[read]; refused != want || disagreed != 0 {
+				t.Fatalf("encoding/json reads \"lane\" into a holder of %s: %v; the walk reported %q, want %d refusals of it and no name readFields and encoding/json answer differently",
 					tc.name, read, recorded.errors, want)
 			}
 		})
@@ -379,10 +418,22 @@ func uninspectedReadType(typ reflect.Type) string {
 // (json.RawMessage), or holding the text of a JSON value (a string), is read into later. The walk
 // asks each field's own type first, so a decoder of its own is refused even where into names a
 // target. A map, an interface or a custom decoder has no declared field to walk, so it is refused
-// by name rather than silently skipped (uninspectedReadType).
+// by name rather than silently skipped (uninspectedReadType). And a name of reads that readFields
+// and encoding/json itself (readByEncodingJSON) answer differently fails by name.
 func requireReadFields(t testing.TB, what string, object map[string]json.RawMessage, reads reflect.Type, into map[string]reflect.Type) {
 	t.Helper()
-	for _, read := range readFields(reads) {
+	fields, passed := readFields(reads)
+	for _, field := range fields {
+		if !readByEncodingJSON(reads, field.name) {
+			t.Errorf("readFields reads %q into %s, which encoding/json passes over", field.name, reads)
+		}
+	}
+	for _, name := range passed {
+		if readByEncodingJSON(reads, name) {
+			t.Errorf("encoding/json reads %q into %s, which readFields passes over", name, reads)
+		}
+	}
+	for _, read := range fields {
 		name, own := read.name, read.typ
 		raw, ok := object[name]
 		if !ok {
@@ -480,24 +531,39 @@ type readField struct {
 	typ  reflect.Type
 }
 
-// readFields lists the JSON names encoding/json decodes into typ, a struct, by encoding/json's
-// rule for a struct's fields (its typeFields): an unexported field is passed over unless it embeds
-// a struct, and so is a field tagged "-"; a field is read under its tag's name, else under its Go
-// name; and a struct embedded with no tag name, exported or not, is read as the embedding type's
-// own fields, one level down. Of the fields one name reaches, the one nearest typ is read; of two
-// at that level, the one tagged where the other is not, and neither when both or neither are.
-// TestSharedIssueEnvelopeWalkRejectsUninspectedReadTypes holds this to encoding/json's own decode.
-func readFields(typ reflect.Type) []readField {
+// readFields lists the JSON names encoding/json decodes into typ, a struct, by the rule the
+// module's go1.27 builds with (encoding/json/v2's makeStructFields, which encoding/json runs on
+// under the JSONv2 experiment): an unexported field is passed over unless it embeds a struct, and
+// so is a field tagged "-"; a field is read under its tag's name, else under its Go name; and a
+// struct embedded with no tag name, exported or not, is read as the embedding type's own fields,
+// one level down. The walk is breadth first, and a struct type met before is read for its own
+// fields alone, not for its embedded structs' again, so a struct two paths reach at one depth
+// promotes the fields of the structs it embeds once. Of the fields one name reaches, the one
+// nearest typ is read; of two at that level, the one tagged where the other is not, and neither
+// when both or neither are. It also returns each name a field holds that no field is read under,
+// so requireReadFields can ask encoding/json of every name a field of typ holds
+// (readByEncodingJSON), and TestSharedIssueEnvelopeWalkRequiresEachNameEncodingJSONReads holds
+// both to encoding/json's own decode.
+func readFields(typ reflect.Type) (read []readField, passed []string) {
 	type candidate struct {
 		readField
 		depth  int
 		tagged bool
 	}
+	type queued struct {
+		holder   reflect.Type
+		prefix   string
+		depth    int
+		children bool
+	}
 	var order []string
 	reached := map[string][]candidate{}
-	var visit func(holder reflect.Type, prefix string, depth int, embedding map[reflect.Type]bool)
-	visit = func(holder reflect.Type, prefix string, depth int, embedding map[reflect.Type]bool) {
-		for field := range holder.Fields() {
+	queue := []queued{{typ, "", 0, true}}
+	seen := map[reflect.Type]bool{typ: true}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		for field := range next.holder.Fields() {
 			base := field.Type
 			if base.Kind() == reflect.Pointer {
 				base = base.Elem()
@@ -511,12 +577,12 @@ func readFields(typ reflect.Type) []readField {
 			}
 			name, _, _ := strings.Cut(tag, ",")
 			if field.Anonymous && name == "" && base.Kind() == reflect.Struct {
-				// A type that embeds itself, through a pointer, is walked once on each path.
-				if !embedding[base] {
-					inner := maps.Clone(embedding)
-					inner[base] = true
-					visit(base, prefix+field.Name+".", depth+1, inner)
+				// A struct met before - reached by a second path, or embedding itself through a
+				// pointer - is read for its own fields alone.
+				if next.children {
+					queue = append(queue, queued{base, next.prefix + field.Name + ".", next.depth + 1, !seen[base]})
 				}
+				seen[base] = true
 				continue
 			}
 			tagged := name != ""
@@ -526,11 +592,9 @@ func readFields(typ reflect.Type) []readField {
 			if reached[name] == nil {
 				order = append(order, name)
 			}
-			reached[name] = append(reached[name], candidate{readField{name, prefix + field.Name, field.Type}, depth, tagged})
+			reached[name] = append(reached[name], candidate{readField{name, next.prefix + field.Name, field.Type}, next.depth, tagged})
 		}
 	}
-	visit(typ, "", 0, map[reflect.Type]bool{typ: true})
-	var fields []readField
 	for _, name := range order {
 		candidates := reached[name]
 		slices.SortStableFunc(candidates, func(a, b candidate) int {
@@ -546,9 +610,25 @@ func readFields(typ reflect.Type) []readField {
 			return 1
 		})
 		if len(candidates) > 1 && candidates[0].depth == candidates[1].depth && candidates[0].tagged == candidates[1].tagged {
+			passed = append(passed, name)
 			continue
 		}
-		fields = append(fields, candidates[0].readField)
+		read = append(read, candidates[0].readField)
 	}
-	return fields
+	return read, passed
+}
+
+// readByEncodingJSON reports whether encoding/json decodes the JSON name into a value of typ: it
+// decodes an object holding that name alone, as null, with unknown names refused, so the answer is
+// encoding/json's own and no copy of its rule. A name it reads into a field whose decode then
+// fails (an embedded pointer to an unexported struct, which it cannot set) is still one it reads.
+func readByEncodingJSON(typ reflect.Type, name string) bool {
+	object, err := json.Marshal(map[string]any{name: nil})
+	if err != nil {
+		panic(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(object))
+	decoder.DisallowUnknownFields()
+	err = decoder.Decode(reflect.New(typ).Interface())
+	return err == nil || !strings.Contains(err.Error(), "unknown field")
 }

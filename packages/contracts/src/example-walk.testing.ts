@@ -1,4 +1,12 @@
-import { objectSchema, objectShape, schemaNode, takes } from "./schema-inspection.testing";
+import {
+  closedValues,
+  type JsonKind,
+  jsonKinds,
+  objectSchema,
+  objectShape,
+  schemaNode,
+  takes,
+} from "./schema-inspection.testing";
 
 /**
  * How the Dispatch contract tests hold a shared example file to the schemas that read it: the one
@@ -18,11 +26,20 @@ import { objectSchema, objectShape, schemaNode, takes } from "./schema-inspectio
  *   unless the test's table names the value at one of the places the set is read, with the
  *   reason. The sets of the union members no example takes count too. So a schema that drops a
  *   value fails to parse the example that holds it, and one that gains a value fails here.
- * - **Forms** (`widenings`). Each key of every object a walk reads must be refused absent, and
- *   refused null, by its schema, unless some example holds it in that form or the test's table
- *   names the form with the reason the schema takes it. So a schema that starts taking a form
- *   its writer never writes - a required key made optional, a value made nullable - fails here,
- *   whichever schema it is: an envelope's, an event's, a payload's or a tolerant reader's.
+ * - **Closed sets** (`closedSets`). Each place a walked schema reads a closed set of values at -
+ *   an enum, a literal or a union of them, through its wrappers, a union member's no example
+ *   takes included - must be one the test's list names, and each place the list names must read
+ *   a closed set alone and refuse a value outside it. So a set that is opened - turned into a
+ *   string, or joined with one, or given a fallback that takes any value - fails here by its
+ *   place, and so does a new closed set until the list names it.
+ * - **Forms** (`widenings`). Each key of every object a walk reads, each element of a list it
+ *   reads and each value of a map must be refused by its schema in every form no example holds
+ *   there - a key absent, a value null, a value of each other kind of JSON (a string, a number, a
+ *   boolean, an object, a list), or any value at all - unless the test's table names the form
+ *   with the reason the schema takes it. So a schema that starts taking a form its writer never
+ *   writes - a required key made optional, a value made nullable, a number that takes a string, a
+ *   list whose element takes null - fails here, whichever schema it is: an envelope's, an
+ *   event's, a payload's or a tolerant reader's.
  *
  * Every exception is by the name of the object it is for (`labels`, or the place the walk reaches
  * an unnamed object at), so each name must be one schema's: two schemas the walk reads under one
@@ -54,6 +71,18 @@ export interface WalkMode {
   readonly tolerant: boolean;
 }
 
+/** A form a value takes at a place: the key left out (`absent`), or a value of one kind of JSON;
+ *  `any` is a schema's taking a value of every kind. */
+export type Form = "absent" | JsonKind;
+
+/** A test's table of the forms its schemas take that no example holds, by the place
+ *  (`<object>.<key>`, `<place>[]` for a list's element, `<place>.*` for a map's value), then by
+ *  the form, each with the reason the schema takes it. */
+export type Wider = Readonly<Record<string, Readonly<Partial<Record<Form, string>>>>>;
+
+/** The forms of a value besides `absent` that `widenings` reads, `any` apart: each kind of JSON. */
+const KINDS: readonly Form[] = ["null", "string", "number", "boolean", "object", "array"];
+
 /** One closed set of values a schema declares: its values, the places it is read at, and the
  *  values the examples hold there, each as its JSON. */
 interface ValueSet {
@@ -62,17 +91,63 @@ interface ValueSet {
   readonly held: Set<string>;
 }
 
-/** What the examples show of one key's two empty forms: whether its schema takes each, and
- *  whether an example holds each. */
-interface KeyForms {
-  takesAbsent: boolean;
-  takesNull: boolean;
-  holdsAbsent: boolean;
-  holdsNull: boolean;
+/** What the walks show of one place's forms: each its schema takes, and each an example holds. */
+interface PlaceForms {
+  readonly taken: Set<Form>;
+  readonly held: Set<Form>;
+}
+
+/** What the walks show of the set of values one place reads: its closed set's values, or
+ *  undefined where the schema reads an open set there, and each value outside that set the
+ *  schema took, as its JSON. */
+interface PlaceSet {
+  readonly values: readonly unknown[] | undefined;
+  readonly outside: Set<string>;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** The kind of JSON value a value is. */
+function kindOf(value: unknown): JsonKind {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  const kind = typeof value;
+  return kind === "string" || kind === "number" || kind === "boolean" ? kind : "object";
+}
+
+/** One value of each kind a closed set holds that is not in the set: a string and a number
+ *  beside its own, and the boolean it does not hold. */
+function outsideValues(values: readonly unknown[]): readonly unknown[] {
+  const outside: unknown[] = [];
+  if (values.some((value) => typeof value === "string")) {
+    let text = "outside the set";
+    while (values.includes(text)) text += "+";
+    outside.push(text);
+  }
+  const numbers = values.filter((value): value is number => typeof value === "number");
+  if (numbers.length > 0) outside.push(Math.max(...numbers) + 1);
+  if (values.some((value) => typeof value === "boolean")) {
+    outside.push(...[true, false].filter((value) => !values.includes(value)));
+  }
+  return outside;
+}
+
+/** How a problem names a form a schema takes. */
+function described(form: Form): string {
+  switch (form) {
+    case "absent":
+    case "null":
+      return `it ${form}`;
+    case "any":
+      return "any value";
+    case "object":
+    case "array":
+      return `an ${form}`;
+    default:
+      return `a ${form}`;
+  }
 }
 
 /** The closed set of values a schema reads a value as, through its wrappers, and the schema that
@@ -108,9 +183,9 @@ function valueSet(
 
 /**
  * The walks of one test over its examples, and the problems they found. `walk` reads one value of
- * an example with the schema it is read by; once every value is walked, `staleExceptions` and
- * `widenings`, and for a test that asks for them `unheldValues`, add what only every walk
- * together can show.
+ * an example with the schema it is read by; once every value is walked, `staleExceptions`,
+ * `closedSets` and `widenings`, and for a test that asks for them `unheldValues`, add what only
+ * every walk together can show.
  */
 export class ExampleWalk {
   /** Each problem the walks found, in the order they found it. */
@@ -118,7 +193,8 @@ export class ExampleWalk {
   private readonly declared = new Map<string, Set<string>>();
   private readonly excused = new Map<string, Set<string>>();
   private readonly values = new Map<unknown, ValueSet>();
-  private readonly forms = new Map<string, KeyForms>();
+  private readonly forms = new Map<string, PlaceForms>();
+  private readonly sets = new Map<string, PlaceSet>();
   /** The schema each name stands for, as the walks met it, and each name met for two. */
   private readonly named = new Map<string, unknown>();
   private readonly namedTwice = new Set<string>();
@@ -154,6 +230,7 @@ export class ExampleWalk {
         return;
       case "array":
         if (Array.isArray(value)) {
+          this.inside(node.element, value, `${name}[]`, `${where}[]`);
           value.forEach((item, index) => {
             this.walk(node.element, item, example, `${path}[${index}]`, `${name}[]`, mode);
           });
@@ -161,6 +238,7 @@ export class ExampleWalk {
         return;
       case "record":
         if (isObject(value)) {
+          this.inside(node.value, Object.values(value), `${name}.*`, `${where}.*`);
           for (const [key, entry] of Object.entries(value)) {
             this.walk(node.value, entry, example, `${path}.${key}`, `${name}.*`, mode);
           }
@@ -218,7 +296,7 @@ export class ExampleWalk {
       declared.add(key);
       const at = `${path}.${key}`;
       const written = never[key] === undefined;
-      if (written) this.form(schema, value, `${label}.${key}`, key);
+      if (written) this.form(schema, field, value, `${label}.${key}`, key, `${example.name} ${at}`);
       if (key in value) {
         if (!written) {
           this.problems.push(
@@ -270,11 +348,13 @@ export class ExampleWalk {
   }
 
   /** Records the value sets of a union member no example's value took: its own set, or each set
-   *  its object's keys read, so a value of a member no example holds is not passed over. */
+   *  its object's keys read, so a value of a member no example holds is not passed over, and a
+   *  closed set of it is read as `closedSets` reads every other. */
   private declareValues(option: unknown, name: string): void {
     const own = valueSet(option, name);
     if (own !== undefined) {
       this.hold(own, name, undefined);
+      this.readSet(option, name, name, (outside) => takes(option, outside));
       return;
     }
     const shape = objectShape(option, name);
@@ -282,37 +362,77 @@ export class ExampleWalk {
     const label = this.rules.labels.get(objectSchema(option, name)) ?? name;
     for (const [key, field] of Object.entries(shape)) {
       if (this.rules.never[label]?.[key] !== undefined) continue;
-      const set = valueSet(field, `${label}.${key}`);
-      if (set !== undefined) this.hold(set, `${label}.${key}`, undefined);
+      const place = `${label}.${key}`;
+      const set = valueSet(field, place);
+      if (set !== undefined) this.hold(set, place, undefined);
+      this.readSet(field, place, place, (outside) => takes(field, outside));
     }
   }
 
-  /** Records what one object shows of `key`'s empty forms: the form it holds the key in, or, for
-   *  a key it holds, whether its schema would take the object with the key absent or null. */
+  /** The forms one place's record holds. */
+  private placeForms(place: string): PlaceForms {
+    const forms = this.forms.get(place) ?? { taken: new Set<Form>(), held: new Set<Form>() };
+    this.forms.set(place, forms);
+    return forms;
+  }
+
+  /** Records the set of values `field` reads at `place`, and each value outside a closed set of
+   *  it that `takesOutside` says the schema reading it there takes. */
+  private readSet(
+    field: unknown,
+    place: string,
+    where: string,
+    takesOutside: (outside: unknown) => boolean
+  ): void {
+    const values = closedValues(field, where);
+    const entry = this.sets.get(place) ?? { values, outside: new Set<string>() };
+    this.sets.set(place, entry);
+    for (const outside of values === undefined ? [] : outsideValues(values)) {
+      if (takesOutside(outside)) entry.outside.add(JSON.stringify(outside));
+    }
+  }
+
+  /** Records what one object shows of its key's forms - the form it holds the key in, and
+   *  whether its schema would take the object with the key absent or null - and each kind of
+   *  JSON the key's own schema takes besides null, with the set of values it reads. */
   private form(
     schema: unknown,
+    field: unknown,
     value: Readonly<Record<string, unknown>>,
     place: string,
-    key: string
+    key: string,
+    where: string
   ): void {
-    const forms = this.forms.get(place) ?? {
-      takesAbsent: false,
-      takesNull: false,
-      holdsAbsent: false,
-      holdsNull: false,
-    };
-    this.forms.set(place, forms);
+    const forms = this.placeForms(place);
+    for (const kind of jsonKinds(field, where)) {
+      if (kind !== "null") forms.taken.add(kind);
+    }
+    this.readSet(
+      field,
+      place,
+      where,
+      (outside) => key in value && takes(schema, { ...value, [key]: outside })
+    );
     if (!(key in value)) {
-      forms.holdsAbsent = true;
+      forms.held.add("absent");
       return;
     }
     const without = Object.fromEntries(Object.entries(value).filter(([held]) => held !== key));
-    if (takes(schema, without)) forms.takesAbsent = true;
-    if (value[key] === null) {
-      forms.holdsNull = true;
-    } else if (takes(schema, { ...value, [key]: null })) {
-      forms.takesNull = true;
+    if (takes(schema, without)) forms.taken.add("absent");
+    forms.held.add(kindOf(value[key]));
+    if (value[key] !== null && takes(schema, { ...value, [key]: null })) {
+      forms.taken.add("null");
     }
+  }
+
+  /** Records what a list's elements or a map's values show at `place`: each kind of JSON their
+   *  schema `element` takes, null among them, each kind they hold, and the set of values it
+   *  reads. */
+  private inside(element: unknown, items: readonly unknown[], place: string, where: string): void {
+    const forms = this.placeForms(place);
+    for (const kind of jsonKinds(element, where)) forms.taken.add(kind);
+    for (const item of items) forms.held.add(kindOf(item));
+    this.readSet(element, place, where, (outside) => takes(element, outside));
   }
 
   /** Adds a problem for each exception no walk used: an example's `absent` entry for a key the
@@ -375,23 +495,56 @@ export class ExampleWalk {
   }
 
   /**
-   * Adds a problem for each empty form - a key absent, a key null - that the schema of a key some
-   * walk read with `forms` takes, that no example holds, and that `wider` gives no reason for; and
-   * for each `wider` entry for a form its schema refuses, an example holds, or no walk read.
-   * `wider` is by place (`<object>.<key>`), then by the form.
+   * Adds a problem for each place a walk read a closed set of values at that `closed` does not
+   * name; and for each place `closed` names that no walk read, where the schema reads an open set
+   * of values (a string, a closed set joined with an open one), or where the schema reading it
+   * took a value outside its set. `closed` is by place (`<object>.<key>`, `<place>[]`, `<place>.*`).
    */
-  widenings(wider: Readonly<Record<string, Readonly<{ absent?: string; null?: string }>>>): void {
+  closedSets(closed: readonly string[]): void {
+    const listed = new Set(closed);
+    for (const [place, set] of [...this.sets].sort(([a], [b]) => a.localeCompare(b))) {
+      if (!listed.has(place)) {
+        if (set.values !== undefined) {
+          this.problems.push(
+            `${place} reads the closed set ${JSON.stringify(set.values)}, which CLOSED does not name`
+          );
+        }
+        continue;
+      }
+      if (set.values === undefined) {
+        this.problems.push(`CLOSED names ${place}, where its schema reads an open set of values`);
+        continue;
+      }
+      for (const outside of [...set.outside].sort()) {
+        this.problems.push(
+          `the schema of ${place} takes ${outside}, a value outside its closed set ${JSON.stringify(set.values)}`
+        );
+      }
+    }
+    for (const place of closed) {
+      if (!this.sets.has(place)) this.problems.push(`CLOSED names ${place}, which no walk read`);
+    }
+  }
+
+  /**
+   * Adds a problem for each form - a key absent, a value null, a value of another kind of JSON,
+   * any value - that the schema of a place some walk read takes, that no example holds, and that
+   * `wider` gives no reason for; and for each `wider` entry for a form its schema refuses, an
+   * example holds, or no walk read. A schema that takes any value at a place is read as that one
+   * form, `any`, there.
+   */
+  widenings(wider: Wider): void {
     const used = new Set<string>();
     for (const [place, forms] of [...this.forms].sort(([a], [b]) => a.localeCompare(b))) {
-      for (const [form, taken, held] of [
-        ["absent", forms.takesAbsent, forms.holdsAbsent],
-        ["null", forms.takesNull, forms.holdsNull],
-      ] as const) {
+      const kinds: readonly Form[] = forms.taken.has("any") ? ["any"] : KINDS;
+      for (const form of ["absent", ...kinds] as const) {
+        const taken = forms.taken.has(form);
+        const held = forms.held.has(form);
         const reason = wider[place]?.[form];
         if (reason === undefined) {
           if (taken && !held) {
             this.problems.push(
-              `the schema of ${place} takes it ${form}, a form no example holds, and WIDER gives no reason it may`
+              `the schema of ${place} takes ${described(form)}, a form no example holds, and WIDER gives no reason it may`
             );
           }
           continue;

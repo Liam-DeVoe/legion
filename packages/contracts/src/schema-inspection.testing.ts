@@ -22,6 +22,9 @@ import { z } from "zod";
  *   `undefined` and `void`), `closed` when it takes a closed set of values (an `enum` or a
  *   `literal`, whose kinds are their values'), and that set's `values` (none for an open one).
  *
+ * On that reading, `jsonKinds` says which kinds of JSON value a schema takes, and `closedValues`
+ * which closed set of values it reads a value as, if any.
+ *
  * Any other kind (`tuple`, `map`, `set`, a bare `transform`, ...) is an error naming it and where
  * it is: a schema these tests cannot read is reported, never taken as read.
  */
@@ -157,4 +160,97 @@ export function objectSchema(schema: unknown, where: string): z.core.$ZodType | 
 export function takes(schema: unknown, value: unknown): boolean {
   if (!(schema instanceof z.core.$ZodType)) return false;
   return z.safeParse(schema, value).success;
+}
+
+/** A value of each kind of JSON value, by which `jsonKinds` reads a schema whose definition does
+ *  not say which values it takes. */
+const KIND_PROBES: Readonly<Record<Exclude<JsonKind, "any">, readonly unknown[]>> = {
+  string: ["x"],
+  number: [0],
+  boolean: [true, false],
+  null: [null],
+  object: [{}],
+  array: [[]],
+};
+
+/** The kinds of JSON value zod's own parse of a schema takes, of one probe value of each kind;
+ *  `any` alone when it takes every kind. */
+function probedKinds(schema: unknown): ReadonlySet<JsonKind> {
+  const kinds = (Object.keys(KIND_PROBES) as Exclude<JsonKind, "any">[]).filter((kind) =>
+    KIND_PROBES[kind].some((value) => takes(schema, value))
+  );
+  return new Set<JsonKind>(kinds.length === Object.keys(KIND_PROBES).length ? ["any"] : kinds);
+}
+
+/**
+ * The kinds of JSON value a schema takes, read at `where`: those its definition declares through
+ * its wrappers (a `nullable` adds `null`), every member's of a union, the kinds both parts of an
+ * intersection take, `object` for an object or a map and `array` for a list, whatever their
+ * contents; `any` alone for a schema that takes a value of every kind. A refinement does not
+ * narrow a kind, so a string with a format still takes the kind `string`. Where a definition
+ * does not say which values pass - a `custom` check, `unknown` and `any`, a `catch` (which
+ * answers its fallback for every value it refuses), a `success`, and a pipe whose input is a
+ * transform (`z.preprocess`) - zod's own parse of one value of each kind says.
+ */
+export function jsonKinds(schema: unknown, where: string): ReadonlySet<JsonKind> {
+  const node = schemaNode(schema, where);
+  const def = (schema as z.core.$ZodType)._zod.def;
+  if (
+    def.type === "catch" ||
+    def.type === "success" ||
+    (schema instanceof z.core.$ZodPipe && schema._zod.def.in._zod.def.type === "transform")
+  ) {
+    return probedKinds(schema);
+  }
+  switch (node.kind) {
+    case "object":
+    case "record":
+      return new Set<JsonKind>(["object"]);
+    case "array":
+      return new Set<JsonKind>(["array"]);
+    case "union": {
+      const kinds = new Set<JsonKind>();
+      for (const option of node.options) {
+        for (const kind of jsonKinds(option, where)) kinds.add(kind);
+      }
+      return kinds.has("any") ? new Set<JsonKind>(["any"]) : kinds;
+    }
+    case "intersection": {
+      const [left, right] = node.parts.map((part) => jsonKinds(part, where));
+      if (left === undefined || right === undefined || left.has("any")) return right ?? new Set();
+      if (right.has("any")) return left;
+      return new Set([...left].filter((kind) => right.has(kind)));
+    }
+    case "wrapper": {
+      const inner = jsonKinds(node.inner, where);
+      if (def.type !== "nullable" || inner.has("any")) return inner;
+      return new Set<JsonKind>([...inner, "null"]);
+    }
+    case "leaf":
+      return node.json.includes("any") ? probedKinds(schema) : new Set(node.json);
+  }
+}
+
+/** The closed set of values a schema reads a value as, through its wrappers: an enum's or a
+ *  literal's values, or every member's of a union of such sets. Undefined for a schema any part
+ *  of which takes an open set of values (a string, a number, a boolean, an object, ...). */
+export function closedValues(schema: unknown, where: string): readonly unknown[] | undefined {
+  const node = schemaNode(schema, where);
+  switch (node.kind) {
+    case "wrapper":
+      return closedValues(node.inner, where);
+    case "leaf":
+      return node.closed ? node.values : undefined;
+    case "union": {
+      const values: unknown[] = [];
+      for (const option of node.options) {
+        const set = closedValues(option, where);
+        if (set === undefined) return undefined;
+        values.push(...set);
+      }
+      return node.options.length === 0 ? undefined : values;
+    }
+    default:
+      return undefined;
+  }
 }

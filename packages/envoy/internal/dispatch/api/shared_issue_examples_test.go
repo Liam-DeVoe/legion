@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
-	"maps"
 	"net/http"
 	"os"
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
 // sharedIssueExamples is where the shared issue event examples are: the envelopes the outbox's
@@ -17,22 +19,53 @@ const sharedIssueExamples = "../../../../daemon/internal/intake/testdata/dispatc
 // The claim and release handlers write what the shared issue event examples say they write. The
 // outbox's test builds each example's event from a hand-made model.Event, so a handler that started
 // writing another reason, claim or actor would change no example and fail none of the tests that
-// read them. Here each write the examples show runs through its real handler - a first claim, a
-// forced takeover under a person's token, a takeover of a session that ended, the holder's release
-// and a person's close - and the event it records must carry its example's type, reason, claim and
-// previous claim, as null or not, and notify mark; where the test's credential is the one the
-// example's write used, its actor must have the example's keys, kind and proven mark too. So a
-// handler's reason renamed fails here by name.
+// read them. Here each write the examples show runs through its real handler, under the credential
+// the example's write was made with - a first claim and the holder's release under a token the
+// secrets broker issued a session acting for its person, a forced takeover under a person's
+// personal token, a takeover of a session that ended under a broker token an operator's entry
+// scoped to the issue's project, and a person's close at a browser - and the event it records must
+// carry its example's type, reason, claim and previous claim, as null or not, and notify mark, and
+// an actor of the example's kind and proven mark with the example's keys at every depth. So a
+// handler's reason renamed, or an actor written with a key more or less than its example's, fails
+// here by name.
 func TestTheClaimHandlersWriteWhatTheSharedIssueExamplesHold(t *testing.T) {
 	live := &liveRegistry{}
 	live.set("session-one", "session-two")
-	handler, _, _ := claimHandler(t, live)
+	rig := newBrokerTokenRigOn(t, testServerOptions{envoyURL: claimListener(t, live, nil).URL})
+	handler := rig.handler
 	key := claimIssueKey(t, handler, "todo")
 	path := "/api/v1/issues/" + key
+	// Each token the broker says it issued a session: one acting for its person, which names no
+	// project (issue-claimed-first.json's and issue-released-null-claim.json's actor), and one an
+	// operator's entry scoped to the issue's project (issue-claimed-every-field.json's).
+	caller := newBrokerCaller(t)
+	sessionToken := func(token, session, scope string, projects ...string) string {
+		rig.broker.Says(token, brokertoken.Introspection{
+			Active:       true,
+			Session:      session,
+			Person:       brokerTestPerson,
+			ProjectScope: scope,
+			Projects:     projects,
+			Scope:        "dispatch.write",
+			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+			ClientID:     brokertoken.ExchangeClientID,
+			Thumbprint:   caller.jkt,
+		})
+		return token
+	}
+	firstHolder := sessionToken("first-holder-acting-for-its-person", "session-one", brokertoken.ProjectScopePerson)
+	secondHolder := sessionToken("second-holder-scoped-to-the-project", "session-two", brokertoken.ProjectScopeNamed, "TEST")
+	releasing := sessionToken("second-holder-acting-for-its-person", "session-two", brokertoken.ProjectScopePerson)
+	brokerWrite := func(write, method, token string, body any) {
+		t.Helper()
+		if response := rig.serve(caller.presenting(t, method, path+"/claim", token, body)); response.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", write, response.Code, response.Body.String())
+		}
+	}
 	recorded := 0
 	// requireLike reads the claim or release event the write before it recorded, the one more
 	// than the issue held before, and holds it to the example file.
-	requireLike := func(write, file string, sameCredential bool) {
+	requireLike := func(write, file string) {
 		t.Helper()
 		response := dispatchRequest(t, handler, http.MethodGet, path+"/events", nil, "alice")
 		if response.Code != http.StatusOK {
@@ -76,9 +109,6 @@ func TestTheClaimHandlersWriteWhatTheSharedIssueExamplesHold(t *testing.T) {
 				t.Errorf("%s recorded %s %s, and %s holds %s", write, claim, gotHeld, file, wantHeld)
 			}
 		}
-		if !sameCredential {
-			return
-		}
 		var gotActor, wantActor map[string]json.RawMessage
 		if err := json.Unmarshal(got["actor"], &gotActor); err != nil {
 			t.Fatalf("decode the actor %s recorded: %v", write, err)
@@ -86,7 +116,7 @@ func TestTheClaimHandlersWriteWhatTheSharedIssueExamplesHold(t *testing.T) {
 		if err := json.Unmarshal(want["actor"], &wantActor); err != nil {
 			t.Fatalf("decode %s's actor: %v", file, err)
 		}
-		gotKeys, wantKeys := slices.Sorted(maps.Keys(gotActor)), slices.Sorted(maps.Keys(wantActor))
+		gotKeys, wantKeys := heldKeys(t, got["actor"]), heldKeys(t, want["actor"])
 		if !slices.Equal(gotKeys, wantKeys) || string(gotActor["kind"]) != string(wantActor["kind"]) ||
 			string(gotActor["proven"]) != string(wantActor["proven"]) {
 			t.Errorf("%s recorded the actor %s, and %s holds %s: want its keys %v, kind and proven mark",
@@ -94,12 +124,8 @@ func TestTheClaimHandlersWriteWhatTheSharedIssueExamplesHold(t *testing.T) {
 		}
 	}
 
-	if response := bearerRequest(t, handler, http.MethodPost, path+"/claim", map[string]any{
-		"actor": claimActorBody("session-one", "Implementer"),
-	}); response.Code != http.StatusOK {
-		t.Fatalf("first claim: status=%d body=%s", response.Code, response.Body.String())
-	}
-	requireLike("a first claim", "issue-claimed-first.json", false)
+	brokerWrite("first claim", http.MethodPost, firstHolder, map[string]any{})
+	requireLike("a first claim", "issue-claimed-first.json")
 
 	// A person's personal token takes the live session's claim with force, for a session outside
 	// tmux its body names: the actor is that session, with the token's person as its owner.
@@ -112,34 +138,49 @@ func TestTheClaimHandlersWriteWhatTheSharedIssueExamplesHold(t *testing.T) {
 	}, token.Token); response.Code != http.StatusOK {
 		t.Fatalf("forced takeover: status=%d body=%s", response.Code, response.Body.String())
 	}
-	requireLike("a forced takeover under a person's token", "issue-claimed-forced.json", true)
+	requireLike("a forced takeover under a person's token", "issue-claimed-forced.json")
 
-	// The forced holder's session is not among the live ones, so another takes it without force.
-	if response := bearerRequest(t, handler, http.MethodPost, path+"/claim", map[string]any{
-		"actor": claimActorBody("session-two", "Second agent"),
-	}); response.Code != http.StatusOK {
-		t.Fatalf("takeover of a session that ended: status=%d body=%s", response.Code, response.Body.String())
-	}
-	requireLike("a takeover of a session that ended", "issue-claimed-every-field.json", false)
+	// The forced holder's session is not among the live ones, so another takes it without force,
+	// from a tmux pane its body names.
+	brokerWrite("takeover of a session that ended", http.MethodPost, secondHolder, map[string]any{
+		"actor": map[string]any{"kind": "session", "id": "session-two", "origin": map[string]any{
+			"host": "worker-7", "machine": "worker-7", "cwd": "/work/widgets", "tmux": "legion", "pane": "%4",
+			"session_title": "Second agent",
+		}},
+	})
+	requireLike("a takeover of a session that ended", "issue-claimed-every-field.json")
 
-	if response := bearerRequest(t, handler, http.MethodDelete, path+"/claim", map[string]any{
-		"actor": claimActorBody("session-two", "Second agent"),
-	}); response.Code != http.StatusOK {
-		t.Fatalf("the holder's release: status=%d body=%s", response.Code, response.Body.String())
-	}
-	requireLike("the holder's release", "issue-released-null-claim.json", false)
+	brokerWrite("the holder's release", http.MethodDelete, releasing, map[string]any{})
+	requireLike("the holder's release", "issue-released-null-claim.json")
 
-	if response := bearerRequest(t, handler, http.MethodPost, path+"/claim", map[string]any{
-		"actor": claimActorBody("session-two", "Second agent"),
-	}); response.Code != http.StatusOK {
-		t.Fatalf("claim again: status=%d body=%s", response.Code, response.Body.String())
-	}
+	brokerWrite("claim again", http.MethodPost, releasing, map[string]any{})
 	recorded++
 	// A person at a browser closes the issue, which releases the claim.
 	if response := dispatchRequest(t, handler, http.MethodPatch, path, map[string]string{"status": "done"}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("a person's close: status=%d body=%s", response.Code, response.Body.String())
 	}
-	requireLike("a person's close", "issue-released-closed.json", true)
+	requireLike("a person's close", "issue-released-closed.json")
+}
+
+// heldKeys lists the keys a JSON object holds at every depth, each by its path (`origin.host`),
+// sorted, so two actors with the same keys in nested objects compare equal.
+func heldKeys(t *testing.T, raw json.RawMessage) []string {
+	t.Helper()
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	var keys []string
+	for key, value := range object {
+		keys = append(keys, key)
+		if len(value) > 0 && value[0] == '{' {
+			for _, inner := range heldKeys(t, value) {
+				keys = append(keys, key+"."+inner)
+			}
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // sharedIssueExample is the event a shared issue event example's envelope carries.

@@ -16,7 +16,7 @@ import {
   WrittenIssueEventPayloadSchema,
 } from "./dispatch-api";
 import { EnvelopeSchema } from "./envelope";
-import { ExampleWalk, type WalkedExample } from "./example-walk.testing";
+import { ExampleWalk, type WalkedExample, type Wider } from "./example-walk.testing";
 import { objectSchema, objectShape } from "./schema-inspection.testing";
 
 /**
@@ -215,20 +215,29 @@ const TOLERANT = (reader: string, written: string) =>
   `${reader} is a reader's tolerant reading, which takes a frame lacking it so a valid header is not discarded; ${written}, which Go writes on every event, is held to the examples`;
 const OWNERLESS =
   "Go's model.Event.IssueKey is a pointer, null on an event no issue owns (a priority's write, DispatchEvent's priority.* members); an issue event names its issue";
+const DOCUMENTLESS =
+  "Go's model.Event.ArtifactID is a pointer, a string on an event an unlinked document owns (api.documentOwner); an issue owns these events (api.issueOwner), so each holds null";
 
 /**
- * Each empty form - a key absent, a key null - that a schema the examples are read through takes
- * and no example holds, by the place (`<object>.<key>`) and the form, with the reason the schema
- * takes it. Every other form such a schema takes - the envelope's, the event's, a payload's and a
- * tolerant reader's, at every depth - must be one an example holds: so a key made optional or
- * nullable where Go always writes it fails here.
+ * Each form that a schema the examples are read through takes and no example holds, by the place
+ * (`<object>.<key>`, `<place>[]` for a list's element, `<place>.*` for a map's value) and the form
+ * (`absent`, `null`, a kind of JSON value, or `any` value), with the reason the schema takes it.
+ * Every other form such a schema takes - the envelope's, the event's, a payload's and a tolerant
+ * reader's, at every depth - must be one an example holds: so a key made optional or nullable
+ * where Go always writes it fails here, and so does a value given another type, or a list's
+ * element made nullable, where Go writes one type.
  */
-const WIDER: Record<string, { absent?: string; null?: string }> = {
+const WIDER: Wider = {
   "envelope.payload": { absent: OMITTED("listenerwire.Envelope.Payload") },
   "event.issue_key": { null: OWNERLESS },
+  "event.artifact_id": { string: DOCUMENTLESS },
+  "event.payload.*": {
+    any: "PublishedEventSchema reads the payload as a map of any value; the schema of the event's type reads it (PAYLOADS), and the walk holds that schema's forms",
+  },
   "frame.issue_key": { null: OWNERLESS },
   "frame.artifact_id": {
     absent: TOLERANT("DispatchEventSchema", "the event's artifact_id (PublishedEventSchema)"),
+    string: DOCUMENTLESS,
   },
   "frame.project": {
     absent: TOLERANT("DispatchEventSchema", "the event's project (PublishedEventSchema)"),
@@ -250,18 +259,28 @@ const WIDER: Record<string, { absent?: string; null?: string }> = {
     null: "Go's model.Issue.CreatedBy is a pointer, which the API document declares nullable (the spellings test pairs the two); every issue holds its creator since migration 0001 (the Go test's neverEmpty)",
   },
   ...Object.fromEntries(
-    ["title", "labels", "status", "priority", "rank", "route", "changed", "ancestors"].map(
-      (key) => [
-        `issue.updated payload read.${key}`,
-        {
-          absent: TOLERANT(
-            "IssueEventPayloadSchema",
-            `the payload's ${key} (WrittenIssueEventPayloadSchema)`
-          ),
-        },
-      ]
-    )
+    ["title", "labels", "status", "priority", "rank", "route"].map((key) => [
+      `issue.updated payload read.${key}`,
+      {
+        absent: TOLERANT(
+          "IssueEventPayloadSchema",
+          `the payload's ${key} (WrittenIssueEventPayloadSchema)`
+        ),
+      },
+    ])
   ),
+  // The reader reads these two with the written payload's own schema, which takes them absent
+  // for the reason the written payload's entries above give.
+  "issue.updated payload read.changed": { absent: OLDER("the changed list") },
+  "issue.updated payload read.ancestors": { absent: OLDER("the parent chain") },
+  "issue.released payload.repo": {
+    string:
+      "Go writes the issue's own repo (model.IssueClaimEventPayload.Repo, model.Issue.Repo): a string where the issue names one, null where it names none; neither release example's issue names one, and two claim examples hold a string",
+  },
+  "issue.released payload.claim": {
+    object:
+      "the release payload reads claim as the issue's own field (issueFields.claim), the type the API document declares for an issue and the spellings test holds it to; a release clears the claim, so Go writes null (api.claimEvent with the issue after the release)",
+  },
   "user actor.proven": {
     absent:
       "an actor stored before the proven mark carries none (model.Actor.Proven), and a payload carries stored actors: an older issue's created_by, a claim taken before the mark",
@@ -271,6 +290,29 @@ const WIDER: Record<string, { absent?: string; null?: string }> = {
   "origin.cwd": { absent: OMITTED("model.ActorOrigin.Cwd") },
   "external link.kind": { absent: OMITTED("model.ExternalLink.Kind") },
 };
+
+/**
+ * Each place a schema the examples are read through reads a closed set of values at - an enum, a
+ * literal, a union of them - by the place (`<object>.<key>`, as WIDER names it). Go writes each
+ * of these from a closed set of its own, so each must read its set alone and refuse a value
+ * outside it (the walk's `closedSets`): so a set opened to any string, or joined with an open
+ * type, fails here by its place, and so does a new closed set until this names it. Which values
+ * of each set the examples hold is UNHELD's.
+ */
+const CLOSED: readonly string[] = [
+  "envelope.source",
+  "user actor.kind",
+  "user actor.proven",
+  "session actor.kind",
+  "session actor.proven",
+  "system actor.kind",
+  "issue.updated payload.priority",
+  "issue.updated payload read.priority",
+  "components.mode",
+  "changed reference.kind",
+  "issue.claimed payload.reason",
+  "issue.released payload.reason",
+];
 
 /** The name each object of the schemas is known by in NEVER, UNHELD, WIDER and the problems; an
  *  object not named here (an `advances` entry) is named by where it is. Each name is one schema's:
@@ -391,6 +433,7 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
   }
   walk.staleExceptions(examples);
   walk.unheldValues(UNHELD);
+  walk.closedSets(CLOSED);
   walk.widenings(WIDER);
   expect(walk.problems).toEqual([]);
 });
