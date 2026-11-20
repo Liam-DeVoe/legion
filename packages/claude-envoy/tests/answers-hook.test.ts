@@ -965,17 +965,19 @@ test(
     const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
     const envoyJson = join(config, "envoy.json")
     const gate = join(home, "gate")
+    const started = join(home, "started")
     const user = "user-7f2a"
     const secret = "pw-4c7e19"
     const beforeUrl = before.base.replace("://", `://${user}:${secret}@`)
 
-    // The first hook's refresher runs the command, which waits until the gate opens.
+    // The first hook's refresher runs the command, which marks its own start and waits until the
+    // gate opens.
     await writeFile(
       envoyJson,
       JSON.stringify({
         dispatch: {
           serverUrl: beforeUrl,
-          token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
+          token: `!: > '${started}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
         },
       }),
     )
@@ -989,8 +991,11 @@ test(
     )
 
     // The refresher resolves envoy.json before its command runs: once the command runs, it reads
-    // `before` whatever envoy.json names next.
-    await eventually(() => processesWith(gate) !== "", "the command's start")
+    // `before` whatever envoy.json names next. The case waits for the command's own mark, not a
+    // look at the process table, which a loaded machine can stretch past the command's own limit,
+    // 10 s (`COMMAND_TIMEOUT_MS` in envoy-client's envoy-config.ts): the command then dies before
+    // the gate opens, and the next hook reads `now` itself.
+    await eventually(() => existsSync(started), "the command's start")
 
     // envoy.json now names another Dispatch. A hook starts while the refresher runs; it opens the
     // gate once its process has started and holds its code until the refresher has read `before`
