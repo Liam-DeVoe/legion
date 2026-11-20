@@ -143,6 +143,97 @@ func TestANoTTLRequestDoesNotJoinATwelveHourPendingRequest(t *testing.T) {
 	}
 }
 
+// writtenBeforeMigrationThirteen moves request requestID, and its grant when it has one, to an
+// hour before migration 0013 was applied, as a broker of the release before it wrote them: that
+// release recorded its fixed 43200 seconds for a request that asked for no lifetime, the seconds
+// the caller's request signs. The grant's expiry is left as it was.
+func writtenBeforeMigrationThirteen(t *testing.T, m *Machine, requestID string) {
+	t.Helper()
+	for _, statement := range []string{
+		`update requests set created_at = (select applied_at from broker_schema_migrations where version=13) - interval '1 hour' where id=$1`,
+		`update grants set created_at = (select applied_at from broker_schema_migrations where version=13) - interval '1 hour' where request_id=$1`,
+	} {
+		if _, err := m.Store.Pool.Exec(context.Background(), statement, requestID); err != nil {
+			t.Fatalf("move request %s to before migration 0013: %v", requestID, err)
+		}
+	}
+}
+
+// TestANoTTLRequestTakesNoGrantWrittenBeforeMigrationThirteen: a request without --ttl, which gets
+// no lifetime here (default-grant=session), is not handed the live grant of a request that a
+// broker of the release before migration 0013 wrote with that release's 43200 seconds. A rule for
+// such requests once handed that grant back; with the rule gone, a key granted at once gets a
+// grant of its own, and a key that needs an approval asks its approver again.
+func TestANoTTLRequestTakesNoGrantWrittenBeforeMigrationThirteen(t *testing.T) {
+	for _, c := range []struct {
+		name, secret string
+		approved     bool
+	}{
+		{"a key granted at once gets a grant of its own", "AUTO_TOKEN", false},
+		{"a key that needs an approval asks its approver again", "DEEL_API_KEY", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, approver := newFixture(t)
+			ctx := context.Background()
+			sessionDefaultFixture(t, m)
+
+			compact := signRequestFor(t, m, key, 43200, c.secret)
+			var old Request
+			var oldGrant string
+			if c.approved {
+				old, oldGrant = approvedRequest(t, m, enr, compact, approver)
+			} else {
+				granted, err := m.Create(ctx, enr, compact, "", nil)
+				if err != nil || granted.GrantID == nil {
+					t.Fatalf("Create(%s, 43200 seconds) = %+v, %v; want a grant", c.secret, granted, err)
+				}
+				old, oldGrant = granted, *granted.GrantID
+			}
+			writtenBeforeMigrationThirteen(t, m, old.ID)
+
+			got, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL after migration 0013", c.secret), "", nil)
+			if err != nil || got.ID == old.ID || got.Coalesced || got.LifetimeSeconds != nil {
+				t.Fatalf("Create(no TTL) beside the grant of request %s, written before migration 0013 = %+v, %v; want a new request with no lifetime", old.ID, got, err)
+			}
+			if c.approved {
+				if got.State != "pending" || got.GrantID != nil {
+					t.Fatalf("Create(no TTL, %s) = %+v; want pending on its approver, not grant %s", c.secret, got, oldGrant)
+				}
+			} else if got.GrantID == nil || *got.GrantID == oldGrant {
+				t.Fatalf("Create(no TTL, %s) = %+v; want a grant of its own, not grant %s", c.secret, got, oldGrant)
+			}
+		})
+	}
+}
+
+// TestANoTTLRequestJoinsNoPendingRequestWrittenBeforeMigrationThirteen: a request without --ttl is
+// not joined to a pending request that a broker of the release before migration 0013 wrote with
+// that release's 43200 seconds. A rule for such requests once joined it; with the rule gone, the
+// one-pending-request rule refuses it REQUEST_PENDING until that request is decided, and then it
+// asks its approver again.
+func TestANoTTLRequestJoinsNoPendingRequestWrittenBeforeMigrationThirteen(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
+	ctx := context.Background()
+	sessionDefaultFixture(t, m)
+
+	old, err := m.Create(ctx, enr, signRequestFor(t, m, key, 43200, "DEEL_API_KEY"), "", nil)
+	if err != nil || old.State != "pending" || old.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY, 43200 seconds) = %+v, %v; want pending on a record", old, err)
+	}
+	writtenBeforeMigrationThirteen(t, m, old.ID)
+
+	if refused, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL after migration 0013", "DEEL_API_KEY"), "", nil); !errors.Is(err, ErrRequestPending) {
+		t.Fatalf("Create(no TTL) beside request %s, pending since before migration 0013 = %+v, %v; want ErrRequestPending, not that request joined", old.ID, refused, err)
+	}
+	if denied, err := m.ApplyDecision(ctx, *old.RecordID, false, approver); err != nil || denied.State != "denied" {
+		t.Fatalf("deny request %s = %+v, %v; want denied", old.ID, denied, err)
+	}
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "no TTL once the old request is decided", "DEEL_API_KEY"), "", nil)
+	if err != nil || again.ID == old.ID || again.Coalesced || again.State != "pending" || again.LifetimeSeconds != nil {
+		t.Fatalf("Create(no TTL) once request %s is denied = %+v, %v; want a new request pending on its approver, with no lifetime", old.ID, again, err)
+	}
+}
+
 // TestAPendingRequestWithAnotherLifetimeIsRefused keeps one pending approval per session and
 // secret name: changing --ttl must name the request already in the approver's Inbox rather than
 // opening another card.
