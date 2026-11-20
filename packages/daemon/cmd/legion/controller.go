@@ -66,7 +66,7 @@ func newControllerStartCommand(stderr io.Writer) *cobra.Command {
 	}
 	configPath := cmd.Flags().String("config", "", "path to the operator-side controller.yaml (required)")
 	daemonURL := cmd.Flags().String("daemon-url", "", "the daemon's API address, overriding the file's daemon_url")
-	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+	stoppingOnHangupOrQuit(cmd, func(ctx context.Context, _ []string) int {
 		if *configPath == "" {
 			return refuse(cmd, "--config is required")
 		}

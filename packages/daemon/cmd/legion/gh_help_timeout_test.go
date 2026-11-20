@@ -69,8 +69,9 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 //
 // A SIGINT to the group, a Ctrl-C, cancels the command's context (main's signal.NotifyContext),
 // which stops the held work's group, and `legion gh` ends with 130 within a few seconds. A SIGHUP
-// to the group, a pane that closes, is caught until gh would start (hangupCancels) and stops the
-// held work's group the same way, and `legion gh` ends with 129.
+// to the group, a pane that closes, or a SIGQUIT, a terminal's quit key, is caught until gh would
+// start (hangupOrQuitCancels) and stops the held work's group the same way, and `legion gh` ends
+// with 129 or 131.
 //
 // Every row runs with the role's state directory set, so `legion gh` keeps the helps gh prints
 // (ghHelpKeep). The help read's stand-in prints gh's whole help before it holds the read, and the
@@ -134,6 +135,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 		}{
 			{"SIGINT", syscall.SIGINT},
 			{"SIGHUP", syscall.SIGHUP},
+			{"SIGQUIT", syscall.SIGQUIT},
 		} {
 			t.Run(held.name+" "+tc.name, func(t *testing.T) {
 				dir := t.TempDir()

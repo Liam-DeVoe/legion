@@ -2802,10 +2802,10 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 // A signal that reaches `legion gh` before it has armed its own forwarding ends the command
 // there, with the status a shell reads a death by that signal as, and gh is never started.
 // Until that arming the signal's reader is main's own signal.NotifyContext for a SIGINT or a
-// SIGTERM, and hangupCancels for a SIGHUP: each cancels the command's context with a cause naming
-// the signal and raises it no further, and the context the child is given has that cancellation
-// taken off. Without the read of that cause gh would start and run to the end as if nothing had
-// been sent, and `legion gh` would answer with gh's own status.
+// SIGTERM, and hangupOrQuitCancels for a SIGHUP: each cancels the command's context with a cause
+// naming the signal and raises it no further, and the context the child is given has that
+// cancellation taken off. Without the read of that cause gh would start and run to the end as if
+// nothing had been sent, and `legion gh` would answer with gh's own status.
 //
 // The window is everything this command does before the child, and here it is held open in the
 // guard's read of the repository's visibility, which this command makes through PATH's gh before

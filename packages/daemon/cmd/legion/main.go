@@ -135,7 +135,7 @@ func newStartCommand(stderr io.Writer) *cobra.Command {
 		Args:  configOnly,
 	}
 	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")
-	cmd.RunE = runs(func(ctx context.Context, _ []string) int { return start(ctx, *configPath, stderr) })
+	stoppingOnHangupOrQuit(cmd, func(ctx context.Context, _ []string) int { return start(ctx, *configPath, stderr) })
 	return cmd
 }
 

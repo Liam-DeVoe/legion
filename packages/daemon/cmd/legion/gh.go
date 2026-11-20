@@ -118,10 +118,10 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // children, the shared check and the visibility reads, which the guard starts under the context
 // it is given (leakguard's Guard.run) — runs in a process group of its own, which none of the
 // terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
-// cancel its context (main's signal.NotifyContext), and on a SIGHUP, which it catches until it
-// hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends the command with
-// 128+<signal> (endedBySignal), and gh is never started, as for a signal that came before
-// runGhChild's forwarding.
+// cancel its context (main's signal.NotifyContext), and on a SIGHUP or a SIGQUIT, which it catches
+// until it hands over to runGhChild's own forwarding (hangupOrQuitCancels). Such a signal ends the
+// command with 128+<signal> (endedBySignal), and gh is never started, as for a signal that came
+// before runGhChild's forwarding.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	env := processEnvironment()
 	repo, commandPath, visibilitySource := "", "", ""
@@ -145,11 +145,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		commandPath = "auth git-credential"
 		return runGitCredential(ctx, args[2:], stdout, stderr)
 	}
-	// Everything this command starts from here until gh runs under beforeGh, which a SIGHUP
-	// cancels as well (hangupCancels): each runs in a process group of its own, which a closing
-	// pane's SIGHUP does not reach, and the cancel is what stops that group. A signal that stopped
-	// one ends the command with its status rather than with the refusal its stopped work made.
-	beforeGh, stopHangup := hangupCancels(ctx)
+	// Everything this command starts from here until gh runs under beforeGh, which a SIGHUP or a
+	// SIGQUIT cancels as well (hangupOrQuitCancels): each runs in a process group of its own, which
+	// a closing pane's SIGHUP and a terminal's SIGQUIT do not reach, and the cancel is what stops
+	// that group. A signal that stopped one ends the command with its status rather than with the
+	// refusal its stopped work made.
+	beforeGh, stopHangup := hangupOrQuitCancels(ctx)
 	defer stopHangup()
 	if read, ok := sharedCheckVisibilityRead(args, env); ok {
 		// The shared check's own read, which this command answers by the guard's rule. Like the
@@ -349,8 +350,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
 		return 2
 	}
-	// runGhChild arms a forwarding of its own, so the SIGHUP watch ends here, and a SIGHUP it took
-	// in its last moment, which nothing else will end the command on, is read after it ends.
+	// runGhChild arms a forwarding of its own, so the SIGHUP and SIGQUIT watch ends here, and such
+	// a signal it took in its last moment, which nothing else will end the command on, is read
+	// after it ends.
 	stopHangup()
 	if status, ok := signalled(beforeGh); ok {
 		return status
@@ -1246,8 +1248,9 @@ var ghHelpTimeout = 30 * time.Second
 // is stopped whole when the read outlives ghHelpTimeout or ctx ends (procgroup.Configure): a stop
 // that killed gh alone would leave whatever gh started running, reparented and unwaited for. That
 // group is not the terminal's, so none of the terminal's signals reach it, and ctx is how they do:
-// runGh's, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a SIGHUP. It runs
-// under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
+// runGh's, which main cancels on a SIGINT or a SIGTERM and hangupOrQuitCancels on a SIGHUP or a
+// SIGQUIT. It runs under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is
+// refused there.
 func readGhHelp(ctx context.Context, gh string, env, path []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, ghHelpTimeout)
 	defer cancel()
