@@ -93,17 +93,19 @@ func TestAChildsOwnReportOfAStoreItCouldNotOpenIsReadByWhereItsFailureCameFrom(t
 		written []string
 		fault   bool
 	}{
-		"the store refused the connection":                                        {written: []string{prefix + "Failed to connect (ERR_POSTGRES_CONNECTION_REFUSED)\n"}, fault: true},
-		"the store ended the connection while it opened":                          {written: []string{prefix + "Connection closed before the connection was established (ERR_POSTGRES_CONNECTION_FAILED)\n"}, fault: true},
-		"the report in pieces, and coloured":                                      {written: []string{"Still starting after 10s\n\x1b[31m" + prefix[:20], prefix[20:] + "Failed to connect (ERR_POSTG", "RES_CONNECTION_REFUSED)\x1b[39m\n"}, fault: true},
-		"a server's own answer with its SQLSTATE, the store starting up":          {written: []string{prefix + "the database system is starting up (ERR_POSTGRES_SERVER_ERROR 57P03)\n"}, fault: true},
-		"a server's own answer with its SQLSTATE, no client slot left":            {written: []string{prefix + "sorry, too many clients already (ERR_POSTGRES_SERVER_ERROR 53300)\n"}, fault: true},
-		"control: a server's own answer with its SQLSTATE, a password it refuses": {written: []string{prefix + "password authentication failed for user \"legion\" (ERR_POSTGRES_SERVER_ERROR 28P01)\n"}},
-		"control: a server's own answer whose SQLSTATE is no SQLSTATE":            {written: []string{prefix + "the database system is starting up (ERR_POSTGRES_SERVER_ERROR 57p3)\n"}},
-		"control: a server's own answer, the store starting up (57P03)":           {written: []string{prefix + "the database system is starting up (ERR_POSTGRES_SERVER_ERROR)\n"}},
-		"control: a server's own answer, a password it refuses (28P01)":           {written: []string{prefix + "password authentication failed for user \"legion\" (ERR_POSTGRES_SERVER_ERROR)\n"}},
-		"control: a report with no end of line":                                   {written: []string{prefix + "Failed to connect (ERR_POSTGRES_CONNECTION_REFUSED)"}},
-		"control: a line too long to be a report":                                 {written: []string{strings.Repeat("x", reportLine) + prefix + "Failed to connect (ERR_POSTGRES_CONNECTION_REFUSED)\n"}},
+		"the store refused the connection":                                           {written: []string{prefix + "Failed to connect (ERR_POSTGRES_CONNECTION_REFUSED)\n"}, fault: true},
+		"the store ended the connection while it opened":                             {written: []string{prefix + "Connection closed before the connection was established (ERR_POSTGRES_CONNECTION_FAILED)\n"}, fault: true},
+		"the report in pieces, and coloured":                                         {written: []string{"Still starting after 10s\n\x1b[31m" + prefix[:20], prefix[20:] + "Failed to connect (ERR_POSTG", "RES_CONNECTION_REFUSED)\x1b[39m\n"}, fault: true},
+		"a server's own answer with its SQLSTATE, the store starting up":             {written: []string{prefix + "the database system is starting up (ERR_POSTGRES_SERVER_ERROR 57P03)\n"}, fault: true},
+		"a server's own answer with its SQLSTATE, no client slot left":               {written: []string{prefix + "sorry, too many clients already (ERR_POSTGRES_SERVER_ERROR 53300)\n"}, fault: true},
+		"control: a server's own answer with its SQLSTATE, a password it refuses":    {written: []string{prefix + "password authentication failed for user \"legion\" (ERR_POSTGRES_SERVER_ERROR 28P01)\n"}},
+		"control: a server's own answer whose SQLSTATE is no SQLSTATE":               {written: []string{prefix + "the database system is starting up (ERR_POSTGRES_SERVER_ERROR 57p3)\n"}},
+		"control: five characters of the server's own class, one of them lower case": {written: []string{prefix + "the database system is starting up (ERR_POSTGRES_SERVER_ERROR 57p03)\n"}},
+		"control: five characters of the server's own class, one of them a symbol":   {written: []string{prefix + "the database system is starting up (ERR_POSTGRES_SERVER_ERROR 57P0!)\n"}},
+		"control: a server's own answer, the store starting up (57P03)":              {written: []string{prefix + "the database system is starting up (ERR_POSTGRES_SERVER_ERROR)\n"}},
+		"control: a server's own answer, a password it refuses (28P01)":              {written: []string{prefix + "password authentication failed for user \"legion\" (ERR_POSTGRES_SERVER_ERROR)\n"}},
+		"control: a report with no end of line":                                      {written: []string{prefix + "Failed to connect (ERR_POSTGRES_CONNECTION_REFUSED)"}},
+		"control: a line too long to be a report":                                    {written: []string{strings.Repeat("x", reportLine) + prefix + "Failed to connect (ERR_POSTGRES_CONNECTION_REFUSED)\n"}},
 		"control: no report": {written: []string{"Still starting after 10s — phase: resolveSessionStorage\n"}},
 	} {
 		t.Run(name, func(t *testing.T) {
