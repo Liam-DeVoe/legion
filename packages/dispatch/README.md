@@ -767,8 +767,8 @@ DATABASE_URL=<a PostgreSQL this run may truncate> DISPATCH_E2E_ACCESS_ISSUER=1 \
   bash e2e/acceptance/with-harness.sh bash e2e/acceptance/membership-answer.sh
 ```
 
-Every driver here but `document-roundtrip.sh`, `omp-roundtrip.sh` and `outside-path-reach.sh`
-sources `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+Every driver here but `document-roundtrip.sh`, `omp-roundtrip.sh`, `outside-path-reach.sh` and
+`restricted-sweep.sh` sources `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
@@ -864,6 +864,43 @@ network refuses that address at once, and `outside-path-reach-tmout.test.ts` for
 a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
 timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
 zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+
+`e2e/acceptance/restricted-sweep.sh` is the driver of the check `c-restricted-sweep`: a read sweep
+of a deployment as a restricted member, for the objects of one project whose access list does not
+name that member. A full member's token looks the project's objects up first: an issue whose spec
+has blocks, a comment, an ask, a message, a handoff, a document of the project itself and a
+near-copy check, with a person, a session and a repository that worked in it. Then every GET row
+of the route index (`packages/envoy/internal/dispatch/api/testdata/routes.txt`) is called as the
+member, its wildcards filled with those objects, and each list once more for each of its query
+parameters that names a project's object (read from the API document). Each answer must be 404,
+403, what a missing object is answered, or one that holds no row of the project. It also holds both
+sockets: the member is not admitted to the room of the project's document, while the same probe
+admits them to a document of their own, and the member's event feed is sent no event of the
+project for `SWEEP_LIVE_SECONDS` (60 by default) while the full member comments on
+`SWEEP_WRITE_ISSUE`, the one write it makes, which the full member's own feed must be sent. Its
+inputs are `SWEEP_ORIGIN` (`https://`, or `http://` to a loopback host), `SWEEP_PROJECT`,
+`SWEEP_FULL_TOKEN`, `SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's `<name>=<value>`) and
+`SWEEP_WRITE_ISSUE`. It needs bash 3.2 or later, curl 7.55 or later, jq, and bun with this
+checkout's dependencies installed, which runs the socket probe `e2e/acceptance/socket-access.ts`.
+No token or cookie reaches a command line or the output.
+
+```bash
+SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=CORE SWEEP_WRITE_ISSUE=CORE-12 \
+  SWEEP_FULL_TOKEN=... SWEEP_RESTRICTED_COOKIE=... bash e2e/acceptance/restricted-sweep.sh
+```
+
+Every row's line says whether it can fail (the full member is answered the project's object
+otherwise than a missing one, or a row of it) or is `blind`. `PASS` (exit 0) needs every kind of
+object found, at least one row that can fail and both sockets' controls held; `FAIL` (exit 1)
+names each answer that gave the member a row of the project and, in its verdict, the first;
+everything that proved nothing, a project the full member finds nothing of among them, is
+`UNKNOWN` (exit 2). `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each request, which keeps a
+run far under an edge's per-address request limit.
+`bun run test:harness e2e/__tests__/restricted-sweep.test.ts` holds its inputs and the kinds it
+fills wildcards with, and, given `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, runs it against
+two stacks of the local harness: this checkout's server, where it passes, and the build of the
+newest commit with no read check (`DISPATCH_E2E_SWEEP_BASE`, by default the merge base of #4177),
+where it fails naming the route and both sockets.
 
 ## Acceptance run against the deployed image
 

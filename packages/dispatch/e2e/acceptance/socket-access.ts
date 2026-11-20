@@ -1,13 +1,15 @@
-/** `bun socket-access.ts doc <server> <header file> <document id> <schema version>` and
- *  `bun socket-access.ts live <server> <header file> <ready file> <written file>`: opens one of
- *  Dispatch's two sockets as the caller whose credential the header file holds - one
+/** `bun socket-access.ts doc <server> <header file> <document id> <schema version>`,
+ *  `bun socket-access.ts live <server> <header file> <ready file> <written file>` and
+ *  `bun socket-access.ts watch <server> <header file> <ready file> <written file> <seconds>`: opens
+ *  one of Dispatch's two sockets as the caller whose credential the header file holds - one
  *  `Name: value` line, a `Cookie` or an `Authorization` - and prints what that caller is answered,
  *  in one form for every outcome, so a driver compares two callers' answers, or the answers to two
- *  ids, byte for byte.
+ *  ids, byte for byte. The server is an `http://` or an `https://` origin; an `https://` one is
+ *  asked over TLS, on port 443 when it names none.
  *
  *  - An upgrade the server refuses prints `http <status> <body>`. Bun's WebSocket reports a
- *    refused upgrade as an error with no status, so the upgrade is asked once over a plain
- *    connection first, and the socket is opened only when that answer is 101.
+ *    refused upgrade as an error with no status, so the upgrade is asked once over a connection of
+ *    its own first, and the socket is opened only when that answer is 101.
  *  - `doc` sends the one token frame the browser's Hocuspocus provider sends (as socket-scope.ts
  *    does) and prints `authenticated <scope>` or `denied <reason>`, or `closed <code> <reason>`
  *    for a socket closed before either.
@@ -18,9 +20,15 @@
  *    the writes the driver made. Each event's id, in the frame and in the event, is printed as
  *    `<event>`: two servers number their events apart, and which events a caller is sent is the
  *    answer, not their numbers.
+ *  - `watch` subscribes as `live` does and writes the ready file at the same moment, then prints
+ *    every frame the server sent but heartbeats, each as the server wrote it, from the
+ *    `events_start` frame until `<seconds>` after the written file appeared, however busy or quiet
+ *    the feed was: what this caller was sent in that window. The driver has `writtenWithinMs` to
+ *    make the written file. e2e/acceptance/restricted-sweep.sh runs it.
  *
  *  Exit 0 for any answer, a refusal included; 1 when the server could not be reached or gave no
- *  answer within ten seconds; 2 for a wrong call. e2e/acceptance/project-access.sh runs it. */
+ *  answer within ten seconds (for `watch`, within ten seconds beyond the written file's wait and
+ *  the window); 2 for a wrong call. e2e/acceptance/project-access.sh runs `doc` and `live`. */
 import { createDecoder, readVarString, readVarUint } from "lib0/decoding";
 import { createEncoder, toUint8Array, writeVarString, writeVarUint } from "lib0/encoding";
 
@@ -39,21 +47,31 @@ const authenticatedSubtype = 2;
 const answerWithinMs = 10_000;
 /** How long the event feed must be quiet before its replay is taken as whole. */
 const quietMs = 1_500;
+/** How long `watch` waits for its driver's written file once its feed has started. */
+const writtenWithinMs = 60_000;
 
 function usage(): never {
   console.error(
     "usage: bun socket-access.ts doc <server> <header file> <document id> <schema version>\n" +
-      "       bun socket-access.ts live <server> <header file> <ready file> <written file>"
+      "       bun socket-access.ts live <server> <header file> <ready file> <written file>\n" +
+      "       bun socket-access.ts watch <server> <header file> <ready file> <written file> <seconds>"
   );
   process.exit(2);
 }
 
-const [mode, server, headerFile, third, fourth] = Bun.argv.slice(2);
+const [mode, server, headerFile, third, fourth, fifth] = Bun.argv.slice(2);
 if (server === undefined || headerFile === undefined) usage();
-if (mode !== "doc" && mode !== "live") usage();
+if (mode !== "doc" && mode !== "live" && mode !== "watch") usage();
 if (third === undefined || fourth === undefined) usage();
 const [documentId, schemaVersion] = mode === "doc" ? [third, fourth] : [undefined, undefined];
-const [readyFile, writtenFile] = mode === "live" ? [third, fourth] : [undefined, undefined];
+const [readyFile, writtenFile] = mode === "doc" ? [undefined, undefined] : [third, fourth];
+/** `watch`'s window, in milliseconds: a whole number of seconds, at least one. */
+const watchMs = mode === "watch" ? Number(fifth) * 1000 : 0;
+if (mode === "watch" && !(/^[1-9][0-9]*$/.test(fifth ?? "") && Number.isSafeInteger(watchMs))) {
+  usage();
+}
+const protocol = new URL(server).protocol;
+if (protocol !== "http:" && protocol !== "https:") usage();
 
 const origin = new URL(server).origin;
 const credential = (await Bun.file(headerFile).text()).trim();
@@ -71,10 +89,30 @@ const path =
     ? `/ws/doc/${encodeURIComponent(documentId ?? "")}?schema_version=${encodeURIComponent(schemaVersion ?? "")}`
     : "/ws/live";
 
+/** A chunked body's bytes, once the last chunk has come, and otherwise undefined. */
+function dechunked(body: string): string | undefined {
+  let rest = body;
+  let whole = "";
+  for (;;) {
+    const line = rest.indexOf("\r\n");
+    if (line < 0) return undefined;
+    const size = Number.parseInt(rest.slice(0, line), 16);
+    if (Number.isNaN(size)) return undefined;
+    if (size === 0) return whole;
+    const end = line + 2 + size;
+    if (rest.length < end + 2) return undefined;
+    whole += rest.slice(line + 2, end);
+    rest = rest.slice(end + 2);
+  }
+}
+
 /** The server's answer to a WebSocket upgrade of `path`: its status, and its body when it is not
- *  101. Asked over a plain connection, since only a raw read of the response sees a refusal. */
+ *  101. Asked over a connection of its own, TLS for an `https://` server, since only a raw read of
+ *  the response sees a refusal. A refusal's body is read to its length, to its last chunk, or to
+ *  the connection's close. */
 async function upgradeAnswer(): Promise<{ status: number; body: string }> {
   const url = new URL(server ?? "");
+  const secure = url.protocol === "https:";
   const key = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
   const request = [
     `GET ${path} HTTP/1.1`,
@@ -103,11 +141,21 @@ async function upgradeAnswer(): Promise<{ status: number; body: string }> {
     if (length?.[1] !== undefined && Buffer.byteLength(body) >= Number(length[1])) {
       received.resolve({ status, body });
       connection.end();
+      return;
+    }
+    const chunks = /\r\ntransfer-encoding: *chunked/i.test(raw.slice(0, head))
+      ? dechunked(body)
+      : undefined;
+    if (chunks !== undefined) {
+      received.resolve({ status, body: chunks });
+      connection.end();
     }
   };
   const connection = await Bun.connect({
-    hostname: url.hostname,
-    port: Number(url.port),
+    // A bracketed IPv6 literal is the URL's spelling; the connect takes the address alone.
+    hostname: url.hostname.replace(/^\[(.*)\]$/, "$1"),
+    port: Number(url.port || (secure ? 443 : 80)),
+    tls: secure,
     socket: {
       data(socket, chunk) {
         raw += chunk.toString();
@@ -210,6 +258,45 @@ function liveAnswer(socket: WebSocket): Promise<string> {
   return answer.promise;
 }
 
+/** What the event feed sends this caller in a window, as the frames it printed: the feed starts
+ *  with no resume, the ready file says it has, and every frame but a heartbeat is kept as the
+ *  server wrote it until `watchMs` after the written file appeared. A driver that makes no written
+ *  file within `writtenWithinMs` gets no answer, which exits 1. */
+function watchAnswer(socket: WebSocket): Promise<string> {
+  const answer = Promise.withResolvers<string>();
+  const lines: string[] = [];
+  const settled = () => answer.resolve(lines.join("\n"));
+  socket.addEventListener("open", () =>
+    socket.send(JSON.stringify({ type: "subscribe", sub: "e", view: { kind: "events" } }))
+  );
+  socket.addEventListener("message", (event) => {
+    if (typeof event.data !== "string") return;
+    const frame = JSON.parse(event.data) as { type?: string };
+    if (frame.type === "heartbeat") return;
+    lines.push(event.data);
+    if (frame.type !== "events_start") return;
+    void (async () => {
+      await Bun.write(readyFile ?? "", "ready\n");
+      const deadline = Date.now() + writtenWithinMs;
+      while (!(await Bun.file(writtenFile ?? "").exists())) {
+        if (Date.now() > deadline) {
+          answer.reject(
+            new Error(`the written file did not appear within ${writtenWithinMs / 1000} s`)
+          );
+          return;
+        }
+        await Bun.sleep(50);
+      }
+      setTimeout(settled, watchMs);
+    })();
+  });
+  socket.addEventListener("close", (event) => {
+    lines.push(`closed ${event.code} ${event.reason}`);
+    settled();
+  });
+  return answer.promise;
+}
+
 try {
   const upgrade = await upgradeAnswer();
   if (upgrade.status !== 101) {
@@ -217,11 +304,17 @@ try {
   } else {
     const socket = new BunWebSocket(`${origin.replace(/^http/, "ws")}${path}`, { headers });
     socket.binaryType = "arraybuffer";
+    // `watch` answers only after its driver's write and its window, so its bound adds both.
+    const answerMs = mode === "watch" ? answerWithinMs + writtenWithinMs + watchMs : answerWithinMs;
     const timer = setTimeout(() => {
-      console.error(`no answer on ${path} within ${answerWithinMs / 1000} s`);
+      console.error(`no answer on ${path} within ${answerMs / 1000} s`);
       process.exit(1);
-    }, answerWithinMs);
-    const answer = await (mode === "doc" ? documentAnswer(socket) : liveAnswer(socket));
+    }, answerMs);
+    const answer = await (mode === "doc"
+      ? documentAnswer(socket)
+      : mode === "live"
+        ? liveAnswer(socket)
+        : watchAnswer(socket));
     clearTimeout(timer);
     console.log(answer);
     socket.close();
