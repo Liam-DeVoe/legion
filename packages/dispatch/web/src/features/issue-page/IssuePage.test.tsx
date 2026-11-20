@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -109,8 +109,10 @@ test("a landing on the new issue page ends the shell's hold on its extras when t
     // The new page drew the title: today's page draws it too, but not in this root.
     expect(title.closest("[data-issue-page]")).toBeInTheDocument();
     // No key or pointer press goes to the window, and the hold's limit is far away, so only the
-    // switch can end the hold here.
-    expect(await holdWithin(AFTER_DRAW_MS)).toBe("ended");
+    // switch can end the hold here. The page's own reads may still be answering as it waits - on
+    // a loaded machine they land after the title - so the wait is inside `act`, as every real
+    // wait of a row with a page on screen is (`onRealTurns`).
+    expect(await act(() => holdWithin(AFTER_DRAW_MS))).toBe("ended");
   } finally {
     view.unmount();
     for (const read of reads) read.mockRestore();

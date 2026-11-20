@@ -13,15 +13,23 @@ import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser, LandingResponse } from "./api/types";
 import { AuthGate } from "./app";
-// The Answers, document and project pages are lazy routes of the app, and the margin a lazy part
-// of its shell (`MarginColumn.tsx`, which mounts it on every route). A page module's first
-// compile is not what a wait is for, and a load a row starts and ends before lands in a later row
-// as React's report of a suspended resource outside `act`. So the modules are loaded here, with
-// the test file, and no row starts or waits for that load.
+// The Answers, document and project pages are lazy routes of the app, the Inbox it draws at `/` a
+// chunk of its own (`features/inbox/InboxHost.tsx`), and the margin a lazy part of its shell
+// (`MarginColumn.tsx`, which mounts it on every route). A page module's first compile is not what
+// a wait is for, and a load a row starts and ends before lands in a later row as React's report of
+// a suspended resource outside `act`. So the modules are loaded here, with the test file, and no
+// row starts or waits for that load.
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
+import "./features/inbox/inbox-chunk";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
+// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
+// of what a reload kept waits for from the sign-in on, and every write a row presses waits for that
+// take-up (`Writes.resume`, `Writes.run`). The rows here are about the writes, not about that
+// download, and a row on a held clock runs its waits out in a few real milliseconds while
+// `test:web:cold` holds the chunk for a real second. So the kinds are loaded here too.
+import "./features/writes/kinds";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 

@@ -22,11 +22,20 @@ import { setReplyDraft, useReplyDraft } from "./features/inbox/reply-drafts";
 import { OTHER_TABS_ANSWER_MS, type UnsentChange } from "./features/shell/sign-in-channel";
 import { SEND_DEADLINE_MS, stoppedWriteNote } from "./features/writes/keyed-write";
 import { writesOf } from "./features/writes/write-store";
-// The margin is a lazy part of the shell (`MarginColumn.tsx`), which loads it at `/` too. No row
-// here reads it, and a load that lands between two `act` scopes of a row is React's report of a
-// suspended resource outside `act`. So the module is loaded here, with the test file, and no row
-// starts or waits for it.
+// The Inbox the app draws at `/` is a chunk of its own (`features/inbox/InboxHost.tsx`), and the
+// margin a lazy part of the shell (`MarginColumn.tsx`), which loads it at `/` too. No row here
+// reads either, and a load that lands between two `act` scopes of a row is React's report of a
+// suspended resource outside `act`. So both modules are loaded here, with the test file, and no
+// row starts or waits for them.
+import "./features/inbox/inbox-chunk";
 import "./features/margin/Margin";
+// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
+// of what a reload kept waits for from the sign-in on, and every write a row presses waits for that
+// take-up (`Writes.resume`, `Writes.run`). The rows here are about the writes, not about that
+// download, and a row on a held clock runs its waits out in a few real milliseconds while
+// `test:web:cold` holds the chunk for a real second. So the kinds are loaded here, with the test
+// file, and no row's press waits for them.
+import "./features/writes/kinds";
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
