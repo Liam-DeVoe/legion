@@ -90,6 +90,8 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/testport/*'
+  # why: .github/ci-notes/ci.md#daemon_envoy_deps-the-pool-size-every-test-of-both-modules-builds-at
+  - 'packages/envoy/testpool/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/poolsetting/*'
@@ -418,6 +420,8 @@ plugin_pack:
   - 'packages/envoy/dispatchbody/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/testport/*'
+  # why: .github/ci-notes/ci.md#plugin_pack-internaldaemons-tests-build-their-pools-at-envoys-testpool-size
+  - 'packages/envoy/testpool/*'
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
