@@ -1549,8 +1549,8 @@ A process that finds it held tries again
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
 
-- The writing check event sweep (`api.RunWritingCheckEventSweep`) deletes the `writing_check_events` rows older than 90 days (`store.WritingCheckRetention`, Writing check below) but those the counts' rows read, once a day, its first pass at start.
-  It takes no lease and records no `duty_passes` row, so it holds no connection of the lease pool: the pass is one delete by age on the shared pool, which every process runs, and a second process's pass the same day deletes nothing the first left.
+- The writing check event sweep (`api.RunWritingCheckEventSweep`) deletes the `writing_check_events` rows the counts' rows read once they are older than 366 days (`store.WritingCheckCountedRetention`), and every other row once it is older than 90 days (`store.WritingCheckRetention`, Writing check below), once a day, its first pass at start.
+  It takes no lease and records no `duty_passes` row, so it holds no connection of the lease pool: the pass is two deletes by age on the shared pool, each reading by an index only the rows it deletes, which every process runs, and a second process's pass the same day deletes nothing the first left.
 
 - The records job of the words people ask about (`wordrecords.Job.Run`, lease `word-records`, The word records below) runs every 10 seconds through `duty.RunLeased`, its first pass at start, while `DISPATCH_WORD_RECORDS` is `on` and its model group is set.
   Its tick records its period in `duty_passes`, so one process serves each period; a pass reads the event log after its cursor up to the safe horizon, then classifies up to 100 texts that are due, 4 calls at a time.
@@ -3773,9 +3773,9 @@ Each caller's own tokens-per-minute setting is a ceiling on its share inside tha
 So a caller whose ceiling is under the deployment's rate leaves the rest to the others, and where no quota is set, the caller with the largest ceiling can take the whole rate; a quota above each caller's ceiling leaves each of them a part.
 The answerer joins the process's pacer at boot (`newAnswerer`); a call the limiters cannot serve inside the run's time left ends the run as its deadline does.
 
-Each call is charged before it is sent: its prompt's estimated tokens, the system prompt and the user message at four characters a token, and its whole reply bound (`modelpace.Charge`, which every caller charges with through `modelpace.Caller.WaitFor`); the pacer refuses for good a call that costs more than a minute's whole quota.
+Each call is charged before it is sent: its prompt's estimated tokens, the system prompt and the user message at four characters a token, and its whole reply bound (`modelpace.Charge`, which every caller charges with through `modelpace.Caller.WaitFor`; the answerer's request names no reply bound, so it is charged its request alone); the pacer refuses for good a call that costs more than a minute's whole quota.
 The reply bound is `reviewer.DefaultOutputTokens`, 32768 tokens, for the reviewer's group and for Rewrite and Define's, and `wordrecords.CallOutputTokens`, 1024 tokens, for the records job's.
-No call's prompt is shorter than the shortest system prompt of the group's calls: the reviewer's under `DISPATCH_REVIEWER_RULES` (`reviewer.LeastSystemPromptRunes`), and the records job's selection prompt.
+No call's prompt is shorter than the shortest system prompt of the calls the group sends, under `DISPATCH_REVIEWER_RULES` (`reviewer.LeastSystemPromptRunes`): the reviewer's group's reviews, Rewrite and Define's rewrites and definitions, a test model's reviews, rewrites and definitions, and the records job's selection prompt.
 So a minute's quota not more than the charge of that prompt and the reply bound could serve no call: each call would fail, and each reviewed text would post as written.
 The boot is refused, naming the setting, its value and that least charge (`refuseQuotaNoCallFits`), when a set group's `_TOKENS_PER_MINUTE` is not more than it, and when the quota that paces the group's deployment is not more than it.
 That quota is the one `DISPATCH_MODEL_DEPLOYMENT_QUOTAS` names for the group's deployment.
@@ -3847,30 +3847,29 @@ One registry (`api/writing_check_fields.go`) marks every string member of every 
 A document edit is read for the text it adds (an operation's `with` and `markdown`), and a new version uploaded whole for the blocks it adds to the newest saved version.
 An upload stored as a Markdown document is read as inline content is; any other file is not read, and only its `summary` is.
 The check runs once the request is decoded and its writer resolved, before the write opens a transaction:
-the reader may call a model, and no transaction waits on it.
-A reader fault (`reader_timeout`, `reader_error`, `reader_malformed`, `reader_budget`, `candidate_cap`, `model_mismatch`) changes nothing for the write: the structure rules decide the record alone.
+it reads the record to decide the write's reader, and no transaction waits on it.
 
 ### Records
 
 Each decision about a write that took place is one row of `writing_check_events`:
-the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, the code stage's candidate count, how long the model reader took, `reader`, the login of the person who reads the text (null where no person does), on every row, `project`, the project of the text's issue or document where the writer records it, and `write_id`, the id of the write where more than one row records it (a held text's id on its rows; an id the server makes for the write on the check's row and on the review of the text after its post), so the counts count its text once.
-The outcomes are `findings` (a sentence breaks a rule; the write went on), `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader`, `exempt_generated`, and the reader's fail-open outcomes with `no_model`.
+the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the rules broken and their fields, `reader`, the login of the person who reads the text (null where no person does), on every row, `project`, the project of the text's issue or document where the writer records it, and `write_id`, the id of the write where more than one row records it (a held text's id on its rows; an id the server makes for the write on the check's row and on the review of the text after its post), so the counts count its text once.
+The outcomes are `findings` (a sentence breaks a rule; the write went on), `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader` and `exempt_generated`.
 The table also admits the reviewer's outcomes (`held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`), a person's typed command (`exempt_person_typed`) and each Rewrite a person asks for (`rewrite_requested`, its `reader` the person who asked), which the reviewer and Rewrite record.
 A write that carries no prose text is not recorded, and neither is a write the route refuses after the check (a closed issue, an unknown check, a delivery never made), which writes nothing else either.
 Nor is a call a reply route answers with a 2xx status and nothing written: a reply to an attempt already answered, which posts nothing, and an error report repeated on an attempt already failed.
 The server inserts the row once the route answered the write with a 2xx status, outside the write's transaction, which has ended by then, and before the request ends; an insert that fails is logged with the route and the write stands.
-A daily sweep deletes the rows older than 90 days but those of the outcomes the counts' rows read (`store.SweepWritingCheckEvents`, Background loops, above).
+A daily sweep deletes the rows the counts' rows read (below) once they are older than 366 days, the longest range the counts route reads, and every other row once it is older than 90 days (`store.SweepWritingCheckEvents`, Background loops, above).
 
 `GET /api/v1/writing-check` answers the check as this process runs it:
 `enabled`, the `rules` it applies, `rules_left_out` with each reason, the check's own `detector`, off, with why (the phrase detector runs as the reviewer's `detector` rule set), and `bundle_model_id`.
 `GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, items, total, limit, offset}`:
 
-- `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route. A day older than 90 days counts only the outcomes the rows below read, which the sweep keeps.
+- `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route. A day older than 90 days counts only the outcomes the rows below read, which the sweep keeps for 366 days.
 
 - `items`: one page of the rows of each day, project and person with a count, in that order: `limit` rows (1 to 200, default 50) from `offset`, and `total` counts every row.
   From `word_questions` (The word records, above): `word_questions`, `texts` (every text of the person the job read), `texts_unread` (still waiting for its model) and `define_uses`.
   From the event log: `asks_answered`, the asks the person answered, and `asks_replied_before_answer`, those of them a person commented on in the ask's thread before the answer.
-  From `writing_check_events`, each row given to its `reader` and `project`: `rewrite_uses` (`rewrite_requested`), `reviewer_held`, `reviewer_rewrote` (`rewrite_posted`), `reviewer_passed`, `reviewer_posted_unreviewed`, and `posted_over_finding` (`findings`, `posted_as_written`, and `reviewed_after` with findings), which counts a text once by its `write_id` where the writing check and the reviewer both record a finding of it, on the project of the first of its rows that names one.
+  From `writing_check_events`, each row given to its `reader` and `project`: `rewrite_uses` (`rewrite_requested`), `reviewer_held`, `reviewer_rewrote` (`rewrite_posted`), `reviewer_passed`, `reviewer_posted_unreviewed`, and `posted_over_finding` (`findings`, `posted_as_written`, and `reviewed_after` with findings), which counts a text once by its `write_id` where the writing check and the reviewer both record a finding of it, on the day and the project of the first of its rows that names a project, picked among all its rows, so it counts on that one day whichever range is asked.
   `project` is `""` for a text on no project or whose project was not recorded, and `person` `""` for a person the record does not name.
 
 A day's writes with findings, by rule and route:

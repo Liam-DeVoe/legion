@@ -29,7 +29,7 @@ type Rewritten struct {
 // it. A model call that gives no usable answer is a *ModelError, and the Rewritten then still
 // carries the calls made.
 func Rewrite(ctx context.Context, m Model, rules []RuleSet, record Record, answer Answer) (Rewritten, error) {
-	p, err := prepare(ctx, m, "rewrite", rules, record, extra{question: answer.Question, answer: answer.Text})
+	p, err := prepare(ctx, m, PurposeRewrite, rules, record, extra{question: answer.Question, answer: answer.Text})
 	if err != nil {
 		return Rewritten{}, err
 	}

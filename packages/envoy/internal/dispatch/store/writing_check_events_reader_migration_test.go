@@ -15,7 +15,7 @@ const (
 // written before it keeps its outcome and records no reader, the census refuses nothing, and after
 // it a row names its reader and a write with no person as its reader is recorded as such; an
 // outcome the check does not name, the refused and forced outcomes of a check that refused writes
-// among them, is still refused.
+// and a model reader's fail-open outcomes, which nothing writes, among them, is still refused.
 func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -78,7 +78,7 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 	if want := []string{"s-two findings alice", "alice exempt_no_reader <none>", "s-five exempt_generated alice"}; len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Errorf("rows = %q, want %q", got, want)
 	}
-	for _, outcome := range []string{"exempt_unknown", "refused", "forced"} {
+	for _, outcome := range []string{"exempt_unknown", "refused", "forced", "reader_timeout", "no_model"} {
 		if err := store.InsertWritingCheckEvent(ctx, WritingCheckEvent{
 			Route: "/api/v1/broadcasts", Method: "POST", ActorKind: "session", ActorID: "s-four", Outcome: outcome,
 		}); err == nil {

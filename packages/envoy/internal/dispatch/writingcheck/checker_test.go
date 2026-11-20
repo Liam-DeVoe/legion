@@ -3,7 +3,6 @@ package writingcheck
 import (
 	"context"
 	"reflect"
-	"slices"
 	"sync"
 	"testing"
 
@@ -51,7 +50,7 @@ func (s *stubReader) Calls() int64 {
 var everyRule = []string{"semicolon", "phrasal-verb", "nominalization", "long-sentence", "dangling-conjunction", "key-pointer"}
 
 func on(r Reader) Config {
-	return Config{Enabled: true, Rules: everyRule, Detector: true, Reader: r}
+	return Config{Rules: everyRule, Detector: true, Reader: r}
 }
 
 func rulesOf(findings []Finding) []string {
@@ -133,45 +132,6 @@ func TestABodyThatAddressesTheReaderReachesItAsData(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rulesOf(got.Findings), []string{DetectorRule, DetectorRule}) || got.Outcome != OutcomeRefused {
 		t.Errorf("result %+v, want the detector's two findings and a refusal", got)
-	}
-}
-
-// (d) RulesOff drops one rule and leaves the rest.
-func TestRulesOffDropsOneRule(t *testing.T) {
-	t.Parallel()
-	fields := []Field{{Name: "description", Text: "The job runs at 2 am; the log rotates at 3 am.\n\n" +
-		"- The first step reads the file and"}}
-	all := New(Config{Enabled: true, Rules: everyRule}).Check(context.Background(), fields)
-	if ids := rulesOf(all.Findings); !slices.Contains(ids, "semicolon") || !slices.Contains(ids, "dangling-conjunction") {
-		t.Fatalf("findings %v, want semicolon and dangling-conjunction", ids)
-	}
-	off := New(Config{Enabled: true, Rules: everyRule, RulesOff: []string{"semicolon"}}).Check(context.Background(), fields)
-	if ids := rulesOf(off.Findings); slices.Contains(ids, "semicolon") || !slices.Contains(ids, "dangling-conjunction") {
-		t.Errorf("findings %v, want dangling-conjunction and no semicolon", ids)
-	}
-}
-
-// DetectorRule in RulesOff turns the detector off.
-func TestRulesOffTurnsTheDetectorOff(t *testing.T) {
-	t.Parallel()
-	stub := &stubReader{vacuous: true}
-	cfg := on(stub)
-	cfg.RulesOff = []string{DetectorRule}
-	got := New(cfg).Check(context.Background(), []Field{{Name: "description", Text: "This names the problem."}})
-	if !reflect.DeepEqual(got, Result{Outcome: OutcomeClean}) || stub.Calls() != 0 {
-		t.Errorf("result %+v with %d reads, want clean and none", got, stub.Calls())
-	}
-}
-
-// (e) A check turned off finds nothing and reads nothing.
-func TestACheckTurnedOffFindsNothing(t *testing.T) {
-	t.Parallel()
-	stub := &stubReader{vacuous: true}
-	cfg := on(stub)
-	cfg.Enabled = false
-	got := New(cfg).Check(context.Background(), []Field{{Name: "description", Text: "This names the problem; it is late."}})
-	if !reflect.DeepEqual(got, Result{Outcome: OutcomeOff}) || stub.Calls() != 0 {
-		t.Errorf("result %+v with %d reads, want off and none", got, stub.Calls())
 	}
 }
 

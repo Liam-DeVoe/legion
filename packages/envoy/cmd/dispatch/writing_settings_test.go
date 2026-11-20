@@ -21,6 +21,9 @@ const (
 	reviewerModel      = "DISPATCH_REVIEWER_MODEL_"
 	rewriteDefineModel = "DISPATCH_REWRITE_DEFINE_MODEL_"
 	wordRecordsModel   = "DISPATCH_WORD_RECORDS_MODEL_"
+	// testModelsPrefix stands for the test models of either kind (DISPATCH_TEST_MODELS) where a
+	// helper takes a group's prefix.
+	testModelsPrefix = "DISPATCH_TEST_MODELS_"
 	// gatewayEndpoint is the model gateway as a pod reaches it, over plain HTTP to a cluster
 	// Service.
 	gatewayEndpoint = "http://model-gateway.model-gateway.svc.cluster.local:4000"
@@ -262,15 +265,21 @@ func TestTheTestModels(t *testing.T) {
 }
 
 // leastCharged is the least a call of a group is charged under the default rule sets, as the boot
-// weighs it: the pacer's charge (modelpace.Charge) of the group's shortest system prompt with its
-// reply bound. The reviewer's group and Rewrite and Define's send the reviewer's prompts; the
-// records job sends its selection prompt alone.
+// weighs it: the pacer's charge (modelpace.Charge) of the shortest system prompt of the calls the
+// group sends, with its reply bound. The reviewer's group sends reviews, Rewrite and Define's
+// rewrites and definitions, and a test model, which a request names in place of either group, all
+// three; the records job sends its selection prompt alone.
 func leastCharged(t *testing.T, prefix string) (least, bound int) {
 	t.Helper()
 	if prefix == wordRecordsModel {
 		return modelpace.Charge(utf8.RuneCountInString(wordrecords.SelectPrompt), wordrecords.CallOutputTokens), wordrecords.CallOutputTokens
 	}
-	runes, err := reviewer.LeastSystemPromptRunes(api.DefaultReviewerRules)
+	purposes := map[string][]string{
+		reviewerModel:      {reviewer.PurposeReview},
+		rewriteDefineModel: {reviewer.PurposeRewrite, reviewer.PurposeDefine},
+		testModelsPrefix:   {reviewer.PurposeReview, reviewer.PurposeRewrite, reviewer.PurposeDefine},
+	}[prefix]
+	runes, err := reviewer.LeastSystemPromptRunes(api.DefaultReviewerRules, purposes...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,19 +287,23 @@ func leastCharged(t *testing.T, prefix string) (least, bound int) {
 }
 
 // Each call is charged its prompt's estimated tokens and its whole reply bound before it is sent,
-// and no call's prompt is shorter than the shortest system prompt of the group's calls, so a
-// minute's quota not more than that charge could serve no call. A set group's ceiling at that
-// charge refuses the boot, naming the setting, its value, the charge and the bound, and a ceiling
-// one token more starts; the rule sets of DISPATCH_REVIEWER_RULES set the reviewer's shortest
-// prompt, so a ceiling that fits the structure rule set alone is refused under the default ones.
-// So it is with the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, and a
-// quota for a deployment no group names is not judged by this rule. A group beside the stand-in
-// model is paced as any other, so it is held to the same charge. A group on the answerer's
-// deployment (the same kind, endpoint host and deployment) is paced at the answerer's quota where
-// no quota names that deployment, so that quota is held to it too; an answerer on another
-// endpoint host, of another deployment or beside a group of another kind is another limiter and
-// is not judged. The test models serve the reviewer's calls and Rewrite and Define's, so each
-// kind's ceiling and each test model's quota are held to the charge of those calls.
+// and no call's prompt is shorter than the shortest system prompt of the calls the group sends, so
+// a minute's quota not more than that charge could serve no call. A set group's ceiling at that
+// charge refuses the boot, naming the setting, its value, the group's calls, the charge and the
+// bound, and a ceiling one token more starts. Each group is held to its own calls' prompts: the
+// reviewer's to its reviews, and Rewrite and Define's to their rewrites and definitions, whose
+// shortest prompt is another length, so a floor taken from the other group's prompts starts a
+// group whose calls the pacer refuses or refuses one whose calls it serves. The rule sets of
+// DISPATCH_REVIEWER_RULES set the reviewer's shortest prompt, so a ceiling that fits the structure
+// rule set alone is refused under the default ones. So it is with the quota
+// DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, and a quota for a deployment
+// no group names is not judged by this rule. A group beside the stand-in model is paced as any
+// other, so it is held to the same charge. A group on the answerer's deployment (the same kind,
+// endpoint host and deployment) is paced at the answerer's quota where no quota names that
+// deployment, so that quota is held to it too; an answerer on another endpoint host, of another
+// deployment or beside a group of another kind is another limiter and is not judged. The test
+// models serve the reviewer's reviews and Rewrite and Define's rewrites and definitions, so each
+// kind's ceiling and each test model's quota are held to the charge of the shortest of those.
 func TestAMinutesQuotaNoCallFitsRefusesBoot(t *testing.T) {
 	const (
 		quotas        = "DISPATCH_MODEL_DEPLOYMENT_QUOTAS"
@@ -304,10 +317,14 @@ func TestAMinutesQuotaNoCallFitsRefusesBoot(t *testing.T) {
 			t.Errorf("%s: the boot is refused: %v", what, err)
 		}
 	}
-	for _, row := range []struct{ prefix, whose string }{
-		{reviewerModel, "the reviewer's"},
-		{rewriteDefineModel, "Rewrite and Define's"},
-		{wordRecordsModel, "the records job's"},
+	reviews, _ := leastCharged(t, reviewerModel)
+	if rewrites, _ := leastCharged(t, rewriteDefineModel); reviews == rewrites {
+		t.Fatalf("the reviews and the rewrites and definitions are both charged %d at the least: no row below tells a floor taken from the other group's prompts", reviews)
+	}
+	for _, row := range []struct{ prefix, whose, calls string }{
+		{reviewerModel, "the reviewer's", "reviews"},
+		{rewriteDefineModel, "Rewrite and Define's", "rewrites and definitions"},
+		{wordRecordsModel, "the records job's", "calls"},
 	} {
 		t.Run(row.prefix, func(t *testing.T) {
 			least, bound := leastCharged(t, row.prefix)
@@ -315,14 +332,14 @@ func TestAMinutesQuotaNoCallFitsRefusesBoot(t *testing.T) {
 				t.Fatalf("the least charge %d is not more than the reply bound %d: the system prompt adds nothing", least, bound)
 			}
 			ceiling, at, over := row.prefix+"TOKENS_PER_MINUTE", strconv.Itoa(least), strconv.Itoa(least+1)
-			charged := strconv.Itoa(least) + ", the least " + row.whose + " calls are charged (a reply bound of " + strconv.Itoa(bound) + " tokens and the shortest system prompt)"
+			charged := strconv.Itoa(least) + ", the least " + row.whose + " " + row.calls + " are charged (a reply bound of " + strconv.Itoa(bound) + " tokens and the shortest system prompt of those calls)"
 			refusedWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: at}), ceiling+"="+at+" is not more than "+charged+why)
 			refusedWith(t, standInGroup(row.prefix, "azure", map[string]string{ceiling: at}), ceiling+"="+at+" is not more than "+charged+why)
 			if got := groupOf[row.prefix](resolveWith(t, anthropicGroup(row.prefix, map[string]string{ceiling: over})).Writing).TokensPerMinute; got != least+1 {
 				t.Errorf("a ceiling one over the charge: TokensPerMinute = %d, want %d", got, least+1)
 			}
 			if row.prefix == reviewerModel {
-				runes, err := reviewer.LeastSystemPromptRunes([]reviewer.RuleSet{reviewer.RuleStructure})
+				runes, err := reviewer.LeastSystemPromptRunes([]reviewer.RuleSet{reviewer.RuleStructure}, reviewer.PurposeReview)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -360,11 +377,11 @@ func TestAMinutesQuotaNoCallFitsRefusesBoot(t *testing.T) {
 		})
 	}
 	t.Run("the test models", func(t *testing.T) {
-		least, bound := leastCharged(t, reviewerModel)
+		least, bound := leastCharged(t, testModelsPrefix)
 		at, over := strconv.Itoa(least), strconv.Itoa(least+1)
 		for kind, model := range map[string]string{"azure": "grok-4.7", "anthropic": "claude-haiku-5-5"} {
 			ceiling := "DISPATCH_TEST_MODELS_" + strings.ToUpper(kind) + "_TOKENS_PER_MINUTE"
-			charged := at + ", the least the " + kind + " test models' calls are charged (a reply bound of " + strconv.Itoa(bound) + " tokens and the shortest system prompt)"
+			charged := at + ", the least the " + kind + " test models' reviews, rewrites and definitions are charged (a reply bound of " + strconv.Itoa(bound) + " tokens and the shortest system prompt of those calls)"
 			refusedWith(t, testModelsEnv(map[string]string{ceiling: at}), ceiling+"="+at+" is not more than "+charged+why)
 			if got := resolveWith(t, testModelsEnv(map[string]string{ceiling: over})).Writing.TestModels[model].TokensPerMinute; got != least+1 {
 				t.Errorf("%s one over the charge: TokensPerMinute = %d, want %d", ceiling, got, least+1)
@@ -382,23 +399,23 @@ func TestAMinutesQuotaNoCallFitsRefusesBoot(t *testing.T) {
 				"DISPATCH_TEST_MODELS_AZURE_ENDPOINT": "https://chat.example/models",
 			}))
 		}
-		refusedWith(t, onAnswerer(at), answererQuota+"="+at+" is not more than "+at+", the least the azure test models' calls are charged (a reply bound of "+strconv.Itoa(bound)+
-			" tokens and the shortest system prompt), which go to the answerer's deployment (DISPATCH_TEST_MODELS) and are paced at its quota, since "+quotas+" names none for it"+why)
+		refusedWith(t, onAnswerer(at), answererQuota+"="+at+" is not more than "+at+", the least the azure test models' reviews, rewrites and definitions are charged (a reply bound of "+strconv.Itoa(bound)+
+			" tokens and the shortest system prompt of those calls), which go to the answerer's deployment (DISPATCH_TEST_MODELS) and are paced at its quota, since "+quotas+" names none for it"+why)
 		starts(t, "the answerer's quota one over the charge", onAnswerer(over))
 	})
 }
 
 // The boot refuses the answerer's quota exactly where the pacer would refuse a group's call for
 // good. Each row is the reviewer's group beside an answerer whose quota is the least the group's
-// calls are charged. The boot is asked first. Then the answerer and the group join a pacer as
-// main joins them (newAnswerer, modelGroup.pace), and the group is charged a call of its shortest
-// system prompt and a user message of one token, as it charges every call
+// reviews are charged. The boot is asked first. Then the answerer and the group join a pacer as
+// main joins them (newAnswerer, modelGroup.pace), and the group is charged a review of the
+// shortest review prompt and a user message of one token, as it charges every call
 // (modelpace.Caller.WaitFor): the pacer refuses it for good in the rows the boot refuses, and
 // serves it in the others. The boot models how the pacer picks a deployment's rate and what it
 // charges, and this holds the two together.
 func TestTheBootRefusesTheAnswerersQuotaWhereThePacerRefusesTheCall(t *testing.T) {
 	least, bound := leastCharged(t, reviewerModel)
-	runes, err := reviewer.LeastSystemPromptRunes(api.DefaultReviewerRules)
+	runes, err := reviewer.LeastSystemPromptRunes(api.DefaultReviewerRules, reviewer.PurposeReview)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,24 +40,40 @@ const (
 	modelKindAnthropic = "anthropic"
 )
 
-// modelGroupSpec is one model group's settings: the prefix of its settings, whose group it is, as
-// a refusal names it, and what each of its calls is charged on the pacer at the least
-// (modelpace.Charge), which a minute's quota must be more than (refuseQuotaNoCallFits): the reply
-// bound of its calls, the most tokens one reply may hold, and its shortest system prompt under
-// the reviewer's rule sets (leastPrompt).
+// modelGroupSpec is one model group's settings: the prefix of its settings, whose group it is and
+// what its calls are, as a refusal names them, what each of its calls is charged on the pacer at
+// the least (modelpace.Charge), which a minute's quota must be more than (refuseQuotaNoCallFits):
+// the reply bound of its calls, the most tokens one reply may hold, and the shortest system prompt
+// of the calls it sends under the reviewer's rule sets (leastPrompt); and its group of a
+// writingSettings, nil for the test models, which are no field of their own.
 type modelGroupSpec struct {
-	prefix, whose string
-	replyBound    int
-	leastPrompt   func(rules []reviewer.RuleSet) (int, error)
+	prefix, whose, calls string
+	replyBound           int
+	leastPrompt          func(rules []reviewer.RuleSet) (int, error)
+	group                func(cfg *writingSettings) *modelGroup
 }
 
-// The three model groups, and each kind's test models, which serve the reviewer's calls and
-// Rewrite and Define's.
+// The three model groups, and each kind's test models. The reviewer's group sends reviews, Rewrite
+// and Define's rewrites and definitions, and a test model, which a request names in place of
+// either group, all three.
 var (
-	reviewerModelSpec      = modelGroupSpec{"DISPATCH_REVIEWER_MODEL_", "the reviewer's", reviewer.DefaultOutputTokens, reviewer.LeastSystemPromptRunes}
-	rewriteDefineModelSpec = modelGroupSpec{"DISPATCH_REWRITE_DEFINE_MODEL_", "Rewrite and Define's", reviewer.DefaultOutputTokens, reviewer.LeastSystemPromptRunes}
-	wordRecordsModelSpec   = modelGroupSpec{"DISPATCH_WORD_RECORDS_MODEL_", "the records job's", wordrecords.CallOutputTokens, selectPromptRunes}
+	reviewerModelSpec = modelGroupSpec{"DISPATCH_REVIEWER_MODEL_", "the reviewer's", "reviews", reviewer.DefaultOutputTokens,
+		reviewerPrompts(reviewer.PurposeReview), func(cfg *writingSettings) *modelGroup { return &cfg.ReviewerModel }}
+	rewriteDefineModelSpec = modelGroupSpec{"DISPATCH_REWRITE_DEFINE_MODEL_", "Rewrite and Define's", "rewrites and definitions", reviewer.DefaultOutputTokens,
+		reviewerPrompts(reviewer.PurposeRewrite, reviewer.PurposeDefine), func(cfg *writingSettings) *modelGroup { return &cfg.RewriteDefineModel }}
+	wordRecordsModelSpec = modelGroupSpec{"DISPATCH_WORD_RECORDS_MODEL_", "the records job's", "calls", wordrecords.CallOutputTokens,
+		selectPromptRunes, func(cfg *writingSettings) *modelGroup { return &cfg.WordRecordsModel }}
+	// modelGroupSpecs is the three model groups, in the order a refusal weighs them.
+	modelGroupSpecs = []modelGroupSpec{reviewerModelSpec, rewriteDefineModelSpec, wordRecordsModelSpec}
 )
+
+// reviewerPrompts is the shortest system prompt of the reviewer's calls of purposes under rules
+// (reviewer.LeastSystemPromptRunes).
+func reviewerPrompts(purposes ...string) func([]reviewer.RuleSet) (int, error) {
+	return func(rules []reviewer.RuleSet) (int, error) {
+		return reviewer.LeastSystemPromptRunes(rules, purposes...)
+	}
+}
 
 // selectPromptRunes is the records job's one system prompt's characters (wordrecords.SelectPrompt),
 // which no rule set changes.
@@ -67,7 +83,8 @@ func selectPromptRunes([]reviewer.RuleSet) (int, error) {
 
 // testModelSpec is the spec of the test models of kind (DISPATCH_TEST_MODELS_<KIND>_*).
 func testModelSpec(kind string) modelGroupSpec {
-	return modelGroupSpec{testModelPrefixes[kind], testModelsWhose(kind), reviewer.DefaultOutputTokens, reviewer.LeastSystemPromptRunes}
+	return modelGroupSpec{testModelPrefixes[kind], testModelsWhose(kind), "reviews, rewrites and definitions", reviewer.DefaultOutputTokens,
+		reviewerPrompts(reviewer.PurposeReview, reviewer.PurposeRewrite, reviewer.PurposeDefine), nil}
 }
 
 // leastCharge is the least any call of the group is charged on the pacer under rules: its
@@ -75,7 +92,7 @@ func testModelSpec(kind string) modelGroupSpec {
 func (s modelGroupSpec) leastCharge(rules []reviewer.RuleSet) (int, error) {
 	least, err := s.leastPrompt(rules)
 	if err != nil {
-		return 0, fmt.Errorf("%s calls' shortest system prompt: %w", s.whose, err)
+		return 0, fmt.Errorf("%s %s' shortest system prompt: %w", s.whose, s.calls, err)
 	}
 	return modelpace.Charge(least, s.replyBound), nil
 }
@@ -83,10 +100,12 @@ func (s modelGroupSpec) leastCharge(rules []reviewer.RuleSet) (int, error) {
 // The reply bounds of the groups, and the least their calls are charged under the default rule
 // sets, as the settings table's descriptions state them.
 var (
-	reviewerReplyBound  = strconv.Itoa(reviewerModelSpec.replyBound)
-	recordsReplyBound   = strconv.Itoa(wordRecordsModelSpec.replyBound)
-	reviewerLeastCharge = leastChargeText(reviewerModelSpec)
-	recordsLeastCharge  = leastChargeText(wordRecordsModelSpec)
+	reviewerReplyBound       = strconv.Itoa(reviewerModelSpec.replyBound)
+	recordsReplyBound        = strconv.Itoa(wordRecordsModelSpec.replyBound)
+	reviewerLeastCharge      = leastChargeText(reviewerModelSpec)
+	rewriteDefineLeastCharge = leastChargeText(rewriteDefineModelSpec)
+	recordsLeastCharge       = leastChargeText(wordRecordsModelSpec)
+	testModelsLeastCharge    = leastChargeText(testModelSpec(modelKindAzure))
 )
 
 // leastChargeText is the least the calls of spec are charged under api.DefaultReviewerRules.
@@ -194,21 +213,6 @@ type modelGroup struct {
 	Effort string
 }
 
-// specGroup is one model group of a writingSettings with its spec.
-type specGroup struct {
-	spec  modelGroupSpec
-	group *modelGroup
-}
-
-// modelGroups is each model group of cfg with its spec, each named rather than placed.
-func (cfg *writingSettings) modelGroups() []specGroup {
-	return []specGroup{
-		{reviewerModelSpec, &cfg.ReviewerModel},
-		{rewriteDefineModelSpec, &cfg.RewriteDefineModel},
-		{wordRecordsModelSpec, &cfg.WordRecordsModel},
-	}
-}
-
 // standInToken is the credential every call to the stand-in model presents (DISPATCH_TEST_MODEL_URL),
 // which reads none.
 const standInToken = "stand-in"
@@ -307,8 +311,8 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 	if cfg.TestModels, err = resolveTestModels(env, testHooksEnabled, cfg.TestModelURL); err != nil {
 		return writingSettings{}, err
 	}
-	for _, named := range cfg.modelGroups() {
-		if *named.group, err = resolveModelGroup(env, named.spec.prefix, named.spec.whose, cfg.TestModelURL); err != nil {
+	for _, spec := range modelGroupSpecs {
+		if *spec.group(&cfg), err = resolveModelGroup(env, spec.prefix, spec.whose, cfg.TestModelURL); err != nil {
 			return writingSettings{}, err
 		}
 	}
@@ -369,15 +373,16 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 }
 
 // refuseQuotaNoCallFits refuses a minute's quota that could serve no call of a set model group or
-// of a test model: one at or under the least any of the group's calls is charged, its reply bound
-// and the estimated tokens of its shortest system prompt under DISPATCH_REVIEWER_RULES
-// (modelGroupSpec.leastCharge, modelpace.Charge, the charge the pacer takes). The pacer charges a
-// call its prompt, the system prompt and the user message together, and its whole reply bound
-// before the call is sent, and refuses for good a call that costs more than a minute's whole quota;
-// every call's user message holds some of the text. Under such a quota every call would fail with
-// nothing at boot saying why, and each reviewed text would post as written. Three settings can be
-// that quota, and each is weighed as the pacer reads it, from the shares main joins the pacer with
-// (modelGroup.share, answererConfig.share):
+// of a test model: one at or under the least any of the calls the group sends is charged, its
+// reply bound and the estimated tokens of the shortest system prompt of those calls under
+// DISPATCH_REVIEWER_RULES (modelGroupSpec.leastCharge, modelpace.Charge, the charge the pacer
+// takes): the reviewer's group's reviews, Rewrite and Define's rewrites and definitions, and the
+// records job's calls. The pacer charges a call its prompt, the system prompt and the user message
+// together, and its whole reply bound before the call is sent, and refuses for good a call that
+// costs more than a minute's whole quota; every call's user message holds some of the text. Under
+// such a quota every call would fail with nothing at boot saying why, and each reviewed text would
+// post as written. Three settings can be that quota, and each is weighed as the pacer reads it,
+// from the shares main joins the pacer with (modelGroup.share, answererConfig.share):
 //
 //   - the group's own _TOKENS_PER_MINUTE ceiling;
 //   - the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for the group's deployment, which is then
@@ -386,8 +391,9 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 //     answerer's as the pacer keys it (pacedDeployment). An answerer of another kind, on another
 //     endpoint host or of another deployment is another limiter, and is not weighed.
 //
-// A test model serves the reviewer's calls and Rewrite and Define's, so it is held to theirs. A
-// quota for a deployment that no group and no test model names is not weighed.
+// A test model serves the reviewer's reviews and Rewrite and Define's rewrites and definitions, so
+// it is held to the shortest of them. A quota for a deployment that no group and no test model
+// names is not weighed.
 func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
 	const why = "each call is charged its prompt's estimated tokens and its whole reply bound before it is sent, so a minute's quota no larger could serve no call"
 	// stated is what the answerer asks of its deployment. A share of no tokens states no quota,
@@ -411,7 +417,7 @@ func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
 		if err != nil {
 			return err
 		}
-		charged := fmt.Sprintf("%d, the least %s calls are charged (a reply bound of %d tokens and the shortest system prompt)", least, spec.whose, spec.replyBound)
+		charged := fmt.Sprintf("%d, the least %s %s are charged (a reply bound of %d tokens and the shortest system prompt of those calls)", least, spec.whose, spec.calls, spec.replyBound)
 		if asked.TokensPerMinute <= least {
 			return fmt.Errorf("%s=%d is not more than %s: %s", ceiling, asked.TokensPerMinute, charged, why)
 		}
@@ -428,8 +434,8 @@ func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
 		}
 		return nil
 	}
-	for _, named := range cfg.modelGroups() {
-		if err := refuse(named.spec, *named.group, named.spec.prefix+"TOKENS_PER_MINUTE", named.spec.prefix+"DEPLOYMENT"); err != nil {
+	for _, spec := range modelGroupSpecs {
+		if err := refuse(spec, *spec.group(&cfg), spec.prefix+"TOKENS_PER_MINUTE", spec.prefix+"DEPLOYMENT"); err != nil {
 			return err
 		}
 	}
@@ -452,7 +458,7 @@ const answererQuotaSetting = azureChatSettingPrefix + "TOKENS_PER_MINUTE"
 // missing or unknown is counted too, so resolveModelGroup's refusal of that kind is the one an
 // operator reads, not a refusal of the sign-in beside it.
 func modelGroupsReadSignIn(env settingValues) bool {
-	for _, spec := range []modelGroupSpec{reviewerModelSpec, rewriteDefineModelSpec, wordRecordsModelSpec} {
+	for _, spec := range modelGroupSpecs {
 		if len(settingsSet(env, spec.prefix)) > 0 && strings.TrimSpace(env.get(spec.prefix+"KIND")) != modelKindAnthropic {
 			return true
 		}
@@ -733,25 +739,21 @@ func choiceSetting(env settingValues, name string, choices []string, fallback st
 	return "", fmt.Errorf("%s=%q (expected %s or %s)", name, value, strings.Join(choices[:len(choices)-1], ", "), choices[len(choices)-1])
 }
 
-// listSetting reads a comma list of names from known, each once in the order given; unset or
+// listSetting reads a comma list of rule sets from known, each once in the order given; unset or
 // empty, it is fallback.
-func listSetting[T ~string](env settingValues, name string, known, fallback []T) ([]T, error) {
+func listSetting(env settingValues, name string, known, fallback []reviewer.RuleSet) ([]reviewer.RuleSet, error) {
 	raw := strings.TrimSpace(env.get(name))
 	if raw == "" {
 		return slices.Clone(fallback), nil
 	}
-	list := []T{}
+	list := []reviewer.RuleSet{}
 	for _, entry := range strings.Split(raw, ",") {
-		item := T(strings.TrimSpace(entry))
+		item := reviewer.RuleSet(strings.TrimSpace(entry))
 		if item == "" || slices.Contains(list, item) {
 			continue
 		}
 		if !slices.Contains(known, item) {
-			names := make([]string, len(known))
-			for i, set := range known {
-				names[i] = string(set)
-			}
-			return nil, fmt.Errorf("%s names %q, which is not one of %s", name, item, strings.Join(names, ", "))
+			return nil, fmt.Errorf("%s names %q, which is not one of %s", name, item, strings.Join(ruleSetNames(known...), ", "))
 		}
 		list = append(list, item)
 	}

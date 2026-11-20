@@ -164,13 +164,14 @@ func readerFields(text Text) string {
 }
 
 // keepNoRecordTags weighs a rewrite's fields against the text's: the rewrite holds no tag of the
-// record's markup, opening or closing, that the text does not hold. A text that holds such a tag
-// as its own words, an HTML title for one, keeps it in its rewrite.
+// record's markup, opening or closing, that the text does not hold, a tag found as the message's
+// escape finds one (messageTags) and named in any case. A text that holds such a tag as its own
+// words, an HTML title for one, keeps it in its rewrite.
 func keepNoRecordTags(original, rewrite Text) *NotApplied {
-	held := recordTag.FindAllStringSubmatch(readerFields(original), -1)
-	for _, tag := range recordTag.FindAllStringSubmatch(readerFields(rewrite), -1) {
-		if !slices.ContainsFunc(held, func(own []string) bool { return own[1] == tag[1] }) {
-			return &NotApplied{KeepNoRecordTags, fmt.Sprintf("the rewrite holds %s, a tag of the record, which the text does not hold", strconv.Quote(tag[1]+">"))}
+	held := messageTags.Found(readerFields(original))
+	for _, tag := range messageTags.Found(readerFields(rewrite)) {
+		if !slices.ContainsFunc(held, func(own string) bool { return strings.EqualFold(own, tag) }) {
+			return &NotApplied{KeepNoRecordTags, fmt.Sprintf("the rewrite holds %s, a tag of the record, which the text does not hold", strconv.Quote(tag+">"))}
 		}
 	}
 	return nil
@@ -487,9 +488,6 @@ var (
 	// the text as it is.
 	linkTarget = regexp.MustCompile(`\]\(\s*<?([^)\s>]+)`)
 	bareLink   = regexp.MustCompile(`(?:https?|dispatch)://[^\s<>()\[\]"'` + "`" + `]+`)
-	// recordTag is a tag of recordTags, opening or closing, as a call's user message writes it:
-	// its name followed by its attributes or its ">". Its group is the tag up to its name.
-	recordTag = regexp.MustCompile(`(</?(?:` + strings.Join(recordTags, "|") + `))[\s>]`)
 )
 
 // links is each link of text once: each Markdown link's address and each address written bare,

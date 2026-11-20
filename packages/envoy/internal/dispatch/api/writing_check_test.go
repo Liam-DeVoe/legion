@@ -212,7 +212,7 @@ const (
 
 // writingCheckOn is the check as cmd/dispatch runs it: on, with the bundle's structure rules.
 func writingCheckOn() *WritingCheck {
-	return NewWritingCheck(WritingCheckConfig{Enabled: true})
+	return NewWritingCheck()
 }
 
 type writingCheckRig struct {
@@ -369,14 +369,13 @@ func (rig *writingCheckRig) asTokenFor(session, method, target string, body map[
 type writingCheckEventRow struct {
 	Route, Method, ActorKind, ActorID, ActSession, TokenID, Outcome, Detail, Reader string
 	Rules, Fields                                                                   []string
-	Candidates                                                                      int
 }
 
 func (rig *writingCheckRig) events() []writingCheckEventRow {
 	rig.t.Helper()
 	rows, err := rig.database.Pool.Query(context.Background(), `
 		select route, method, actor_kind, actor_id, coalesce(act_session, ''), coalesce(token_id, ''), outcome,
-			coalesce(detail, ''), coalesce(reader, ''), rules, fields, candidates
+			coalesce(detail, ''), coalesce(reader, ''), rules, fields
 		from writing_check_events order by id`)
 	if err != nil {
 		rig.t.Fatalf("read writing check events: %v", err)
@@ -386,7 +385,7 @@ func (rig *writingCheckRig) events() []writingCheckEventRow {
 	for rows.Next() {
 		var row writingCheckEventRow
 		if err := rows.Scan(&row.Route, &row.Method, &row.ActorKind, &row.ActorID, &row.ActSession, &row.TokenID,
-			&row.Outcome, &row.Detail, &row.Reader, &row.Rules, &row.Fields, &row.Candidates); err != nil {
+			&row.Outcome, &row.Detail, &row.Reader, &row.Rules, &row.Fields); err != nil {
 			rig.t.Fatalf("scan a writing check event: %v", err)
 		}
 		events = append(events, row)
@@ -766,7 +765,7 @@ func TestTheWritingCheckRecordsAGeneratedReplyExemptGenerated(t *testing.T) {
 		rig.clearEvents()
 		rig.asSessionGenerated(http.MethodPost, target, map[string]any{"body": badProse, "attempt": 1})
 		if event := rig.lastEvent("a generated reply to " + target); event.Outcome != writingCheckGenerated ||
-			event.Reader != "alice" || len(event.Rules) != 0 || event.Candidates != 0 {
+			event.Reader != "alice" || len(event.Rules) != 0 {
 			t.Errorf("a generated reply to %s: event = %+v, want %s with reader alice and nothing read", target, event, writingCheckGenerated)
 		}
 		rig.clearEvents()
@@ -955,7 +954,7 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 			t.Errorf("state names no measured reason for %s: %+v", measured.ID, got.RulesLeftOut)
 		}
 	}
-	if off := NewWritingCheck(WritingCheckConfig{}).state(); off.Enabled || off.Detector.On || off.Detector.Reason != "the check is off" {
+	if off := (*WritingCheck)(nil).state(); off.Enabled || off.Detector.On || off.Detector.Reason != "the check is off" {
 		t.Errorf("the state of a check that is off = %+v", off)
 	}
 }

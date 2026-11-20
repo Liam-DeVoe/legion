@@ -27,7 +27,8 @@ const (
 	callTries = 3
 )
 
-// The purposes of a model call, as Call.Purpose names them.
+// The purposes of a model call, as Call.Purpose names them. A review's, a rewrite's and a
+// definition's are each the name of the call's system prompt (prompts/<purpose>.md).
 const (
 	PurposeReview   = "review"
 	PurposeDetector = "detector"

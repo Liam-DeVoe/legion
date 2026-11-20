@@ -143,7 +143,7 @@ func newRewriteRig(t *testing.T, capabilities []string, rules ...modeltest.Rule)
 	stand := modeltest.New(t, rules...)
 	listenerURL, listener := newRewriteListener(t, capabilities...)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), SideQuestionWait: 15 * time.Second}),
+		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), Rules: DefaultReviewerRules, SideQuestionWait: 15 * time.Second}),
 		envoyURL:      listenerURL, envoyTimeout: 2 * time.Second,
 	})
 	rig := &rewriteRig{t: t, handler: handler, database: database, served: served, stand: stand, listener: listener}

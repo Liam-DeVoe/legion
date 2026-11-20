@@ -10,16 +10,10 @@ const rewritesAndDefinitionsVersion = 20261119050006
 
 // 20261119050006 indexes the two columns an ask's delete and a document's removal cascade to the
 // definitions by, ask_id and artifact_id, for the rows that name one: the cascade's lookup of the
-// definitions to delete reads the index, not the whole table, and the census refuses nothing.
+// definitions to delete reads the index, not the whole table.
 func TestMigrationIndexesTheDefinitionsCascadingColumns(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, rewritesAndDefinitionsVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", rewritesAndDefinitionsVersion-1, err)
-	}
-	if got := censusCount(t, store, rewritesAndDefinitionsVersion); got != 0 {
-		t.Fatalf("census = %d, want 0", got)
-	}
 	if err := store.migrate(ctx, migrationsThrough(t, rewritesAndDefinitionsVersion)); err != nil {
 		t.Fatalf("migrate through %d: %v", rewritesAndDefinitionsVersion, err)
 	}

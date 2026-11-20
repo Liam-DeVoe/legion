@@ -1130,7 +1130,7 @@ func (r *changeRun) checkStep(ctx context.Context, t *textRun) error {
 			return err
 		}
 		started := time.Now()
-		result = writingcheck.New(writingcheck.Config{Enabled: true, Rules: writingcheck.EnabledRules, Detector: true, Reader: detector}).Check(ctx, checkFields(t))
+		result = writingcheck.New(writingcheck.Config{Rules: writingcheck.EnabledRules, Detector: true, Reader: detector}).Check(ctx, checkFields(t))
 		release(observed.Usage)
 		seconds := time.Since(started).Seconds()
 		t.out.WaitSeconds += seconds

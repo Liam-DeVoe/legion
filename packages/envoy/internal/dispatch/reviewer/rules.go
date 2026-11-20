@@ -143,7 +143,7 @@ func systemPrompt(prompt string, rules []RuleSet, kind Kind, answer, define bool
 	data := promptData{
 		Kind: kind.spoken(), On: map[string]bool{},
 		Ask: kind.asks(), Block: kind == KindDecisionBlock, Comment: kind == KindComment, Issue: kind == KindIssue,
-		Answer: answer, Define: define, Review: prompt == "review",
+		Answer: answer, Define: define, Review: prompt == PurposeReview,
 		Noslop: noslopText, Phrases: phrasesText,
 	}
 	for _, set := range on {
@@ -172,21 +172,23 @@ func prepare(ctx context.Context, m Model, prompt string, rules []RuleSet, recor
 	return p, nil
 }
 
-// LeastSystemPromptRunes is how many characters the shortest system prompt has that a call by
-// rules sends: a review of a text some rule set of rules applies to, a rewrite or a definition, of
-// any kind of text and with no answer of the writer's. Every such call is charged at least
+// LeastSystemPromptRunes is how many characters the shortest system prompt has that a call of one
+// of purposes (PurposeReview, PurposeRewrite, PurposeDefine, each the name of its prompt) sends by
+// rules, for any kind of text (Kinds) and with no answer of the writer's: a review of a text some
+// rule set of rules applies to, a rewrite or a definition. It is 0 where purposes make no call by
+// rules: a review by rule sets that apply to no text. Every such call is charged at least
 // modelpace.Charge of it and the call's reply bound, so cmd/dispatch refuses a model group's
-// minute's quota that is not more than that.
-func LeastSystemPromptRunes(rules []RuleSet) (int, error) {
+// minute's quota that is not more than that charge of the calls the group makes.
+func LeastSystemPromptRunes(rules []RuleSet, purposes ...string) (int, error) {
 	least := -1
-	for _, kind := range []Kind{KindAsk, KindIssue, KindComment, KindMessage, KindDocument, KindDecisionBlock} {
-		for _, prompt := range []string{"review", "rewrite", "define"} {
-			data, on := systemPrompt(prompt, rules, kind, false, prompt == "define")
-			if prompt == "review" && len(on) == 0 {
+	for _, kind := range Kinds {
+		for _, purpose := range purposes {
+			data, on := systemPrompt(purpose, rules, kind, false, purpose == PurposeDefine)
+			if purpose == PurposeReview && len(on) == 0 {
 				// Review makes no call for a text no rule set applies to.
 				continue
 			}
-			system, err := render(prompt, data)
+			system, err := render(purpose, data)
 			if err != nil {
 				return 0, err
 			}
@@ -195,14 +197,14 @@ func LeastSystemPromptRunes(rules []RuleSet) (int, error) {
 			}
 		}
 	}
-	return least, nil
+	return max(least, 0), nil
 }
 
 // runChecks runs writingcheck over text: its structure rules where structure is on, and its
 // detector where detector is on, whose reader calls m's model through m's pacer. It answers each
 // part's findings and the detector's call, if it made one.
 func runChecks(ctx context.Context, m Model, text Text, structure, detector bool) (structureFindings, detectorFindings []writingcheck.Finding, calls []Call) {
-	cfg := writingcheck.Config{Enabled: true}
+	var cfg writingcheck.Config
 	if structure {
 		cfg.Rules = writingcheck.EnabledRules
 	}

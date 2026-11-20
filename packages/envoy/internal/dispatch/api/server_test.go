@@ -301,7 +301,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	}
 	writingCheck := options.writingCheck
 	if writingCheck == nil && !options.writingCheckOff {
-		writingCheck = NewWritingCheck(WritingCheckConfig{Enabled: true})
+		writingCheck = NewWritingCheck()
 	}
 	agentPublisher := options.agentPublisher
 	switch {

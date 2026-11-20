@@ -120,30 +120,20 @@ func (s *server) recordPersonTyped(r *http.Request, actor model.Actor, input any
 	s.keepWritingCheck(r, event)
 }
 
-// WritingCheckConfig is the writing check as cmd/dispatch configured it: on, with the bundle's
-// structure rules (writingcheck.EnabledRules). The phrase detector does not run in the check: it
-// runs as the reviewer's detector rule set (Decision 11 of INFRA-3231's plan).
-type WritingCheckConfig struct {
-	// Enabled turns the check on.
-	Enabled bool
-}
-
-// WritingCheck is the writing check one server runs: the checker and what the state route
-// answers about it. A nil *WritingCheck is the check turned off.
+// WritingCheck is the writing check one server runs, over the bundle's structure rules
+// (writingcheck.EnabledRules): the checker and what the state route answers about it. A nil
+// *WritingCheck is the check turned off. The phrase detector does not run in the check: it runs as
+// the reviewer's detector rule set (Decision 11 of INFRA-3231's plan).
 type WritingCheck struct {
-	config  WritingCheckConfig
 	checker *writingcheck.Checker
 }
 
-// NewWritingCheck builds the check cfg describes, over the bundle's structure rules.
-func NewWritingCheck(cfg WritingCheckConfig) *WritingCheck {
-	return &WritingCheck{config: cfg, checker: writingcheck.New(writingcheck.Config{
-		Enabled: cfg.Enabled,
-		Rules:   writingcheck.EnabledRules,
-	})}
+// NewWritingCheck builds the check, on, over the bundle's structure rules.
+func NewWritingCheck() *WritingCheck {
+	return &WritingCheck{checker: writingcheck.New(writingcheck.Config{Rules: writingcheck.EnabledRules})}
 }
 
-func (c *WritingCheck) on() bool { return c != nil && c.config.Enabled }
+func (c *WritingCheck) on() bool { return c != nil }
 
 // writingCheckReads applies the actor rule: the check reads a write when an agent session that is
 // not a project's Legion daemon makes it, or when a person's credential makes it for such a
@@ -445,12 +435,12 @@ func (s *server) getWritingCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // writingCheckCountsDays is the counts route's range when its query names none, the last 14 days
-// with today, and writingCheckCountsMostDays the longest range it counts. The sweep keeps every
-// row the counts' items read (store.SweepWritingCheckEvents), so a range back past
-// store.WritingCheckRetention counts its items whole.
+// with today, and writingCheckCountsMostDays the longest range it counts: the days the sweep keeps
+// a row the counts read (store.WritingCheckCountedRetention), so a range that ends today counts
+// its rows whole.
 const (
 	writingCheckCountsDays     = 14
-	writingCheckCountsMostDays = 366
+	writingCheckCountsMostDays = int(store.WritingCheckCountedRetention / (24 * time.Hour))
 )
 
 // getWritingCheckCounts is GET /api/v1/writing-check/counts: R8's counts of the UTC days ?first=
@@ -487,7 +477,7 @@ func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 	case first.After(last):
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "first must be no later than last")
 		return
-	case last.Sub(first) >= writingCheckCountsMostDays*24*time.Hour:
+	case last.Sub(first) >= store.WritingCheckCountedRetention:
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("the range from first to last holds at most %d days", writingCheckCountsMostDays))
 		return
 	}
@@ -507,12 +497,13 @@ func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 // writingCheckSweepInterval is how often each process sweeps writing_check_events.
 const writingCheckSweepInterval = 24 * time.Hour
 
-// RunWritingCheckEventSweep deletes the writing_check_events rows older than
-// store.WritingCheckRetention that R8's counts do not read (store.SweepWritingCheckEvents) once a
-// day, the first pass at start, on the store's own pool. It takes no lease: the pass is one
-// idempotent delete by age, so every process runs it and a second process's pass the same day
-// deletes what the first left, which is nothing, and the sweep holds no connection of the lease
-// pool. It stops when ctx is done.
+// RunWritingCheckEventSweep deletes the writing_check_events rows past their retention
+// (store.SweepWritingCheckEvents): 366 days for a row R8's counts read
+// (store.WritingCheckCountedRetention), and 90 for every other row (store.WritingCheckRetention),
+// once a day, the first pass at start, on the store's own pool. It takes no lease: the pass is
+// two idempotent deletes by age, so every process runs it and a second process's pass the same
+// day deletes what the first left, which is nothing, and the sweep holds no connection of the
+// lease pool. It stops when ctx is done.
 func RunWritingCheckEventSweep(ctx context.Context, database *store.Store) {
 	ticker := time.NewTicker(writingCheckSweepInterval)
 	defer ticker.Stop()

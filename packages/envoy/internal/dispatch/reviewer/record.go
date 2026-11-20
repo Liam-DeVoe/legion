@@ -30,6 +30,9 @@ const (
 	KindDecisionBlock Kind = "decision_block"
 )
 
+// Kinds is every kind of text, in the order above.
+var Kinds = []Kind{KindAsk, KindIssue, KindComment, KindMessage, KindDocument, KindDecisionBlock}
+
 // asks reports whether a text of the kind is a question with options: an ask or a decision block.
 func (k Kind) asks() bool { return k == KindAsk || k == KindDecisionBlock }
 

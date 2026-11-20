@@ -59,7 +59,7 @@ type reviewReply struct {
 // dropped (Reviewed.Dropped). A model call that gives no usable answer is a *ModelError, and the
 // Reviewed then still carries the calls made.
 func Review(ctx context.Context, m Model, rules []RuleSet, record Record) (Reviewed, error) {
-	p, err := prepare(ctx, m, "review", rules, record, extra{})
+	p, err := prepare(ctx, m, PurposeReview, rules, record, extra{})
 	if err != nil {
 		return Reviewed{}, err
 	}

@@ -3,23 +3,66 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
-// WritingCheckRetention is how long a writing_check_events row R8's counts do not read is kept.
-// The daily sweep (SweepWritingCheckEvents) deletes every such row older than this.
-const WritingCheckRetention = 90 * 24 * time.Hour
+// The retentions of writing_check_events, past which the daily sweep (SweepWritingCheckEvents)
+// deletes a row: WritingCheckCountedRetention for a row R8's counts read (countedRow), the 366 days
+// the counts route reads at most, so a range that ends today counts its rows whole, and
+// WritingCheckRetention for every other row.
+const (
+	WritingCheckRetention        = 90 * 24 * time.Hour
+	WritingCheckCountedRetention = 366 * 24 * time.Hour
+)
 
-// countedOutcomes are the outcomes whose rows R8's counts read for their rows of each day,
-// project and person (countWritingCheckRows). The sweep keeps these rows whatever their age, so
-// the counts of a day past WritingCheckRetention are whole.
-var countedOutcomes = []string{
-	"rewrite_requested", "held", "rewrite_posted", "passed", "posted_unreviewed", "findings", "posted_as_written", "reviewed_after",
+// The outcomes of the rows R8's counts read (countWritingCheckRows), the one list the counts'
+// query and the sweep's are both written from: rowOutcomes, counted one row each, rewrite_requested
+// as RewriteUses and reviewerOutcomes in the reviewer's columns of WritingCheckRow, in their
+// order; and the rows of a text posted over a finding, counted once a write as PostedOverFinding
+// (overFindingRow): overFindingOutcomes, and reviewed_after where it names a rule, since a review
+// after the post that found nothing posts over none.
+const (
+	outcomeRewriteRequested = "rewrite_requested"
+	outcomeReviewedAfter    = "reviewed_after"
+)
+
+var (
+	reviewerOutcomes    = []string{"held", "rewrite_posted", "passed", "posted_unreviewed"}
+	rowOutcomes         = append([]string{outcomeRewriteRequested}, reviewerOutcomes...)
+	overFindingOutcomes = []string{"findings", "posted_as_written"}
+)
+
+// sqlStrings is values as a comma list of SQL string literals.
+func sqlStrings(values ...string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	}
+	return strings.Join(quoted, ", ")
 }
 
+// countOf is the SQL count of a group's rows of each of outcomes, one column each.
+func countOf(outcomes ...string) string {
+	counts := make([]string, len(outcomes))
+	for i, outcome := range outcomes {
+		counts[i] = "count(*) filter (where outcome = " + sqlStrings(outcome) + ")"
+	}
+	return strings.Join(counts, ", ")
+}
+
+// overFindingRow is the SQL predicate of a row of a text posted over a finding, and countedRow
+// that of a row R8's counts read: each outcome a literal, so the partial index of the rows they do
+// not read (writing_check_events_uncounted_idx, migration 20261119050001, whose predicate is
+// countedRow negated as written here) serves the sweep's delete of them on every plan.
+var (
+	overFindingRow = fmt.Sprintf(`(outcome in (%s) or (outcome = %s and cardinality(rules) > 0))`,
+		sqlStrings(overFindingOutcomes...), sqlStrings(outcomeReviewedAfter))
+	countedRow = fmt.Sprintf(`(outcome in (%s) or %s)`, sqlStrings(rowOutcomes...), overFindingRow)
+)
+
 // WritingCheckEvent is one row of writing_check_events: what the writing check, or the reviewer,
-// decided for one write. Every string the write did not carry is "", stored as null; ReaderMS is
-// nil where the model reader was not called.
+// decided for one write. Every string the write did not carry is "", stored as null.
 type WritingCheckEvent struct {
 	Route      string
 	Method     string
@@ -30,8 +73,6 @@ type WritingCheckEvent struct {
 	Outcome    string
 	Rules      []string
 	Fields     []string
-	Candidates int
-	ReaderMS   *int
 	Detail     string
 	// Reader is the login of the person who reads the write's text, as the server decided it from
 	// the record; "" where no person reads it. A Rewrite request (rewrite_requested) names the
@@ -69,10 +110,10 @@ func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckE
 	if _, err := tx.Exec(ctx, `
 		insert into writing_check_events (
 			route, method, actor_kind, actor_id, act_session, token_id, outcome,
-			rules, fields, candidates, reader_ms, detail, reader, project, write_id
-		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, $10, $11, nullif($12, ''), nullif($13, ''), nullif($14, ''), nullif($15, ''))
+			rules, fields, detail, reader, project, write_id
+		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, nullif($10, ''), nullif($11, ''), nullif($12, ''), nullif($13, ''))
 	`, event.Route, event.Method, event.ActorKind, event.ActorID, event.ActSession, event.TokenID, event.Outcome,
-		rules, fields, event.Candidates, event.ReaderMS, event.Detail, event.Reader, event.Project, event.WriteID); err != nil {
+		rules, fields, event.Detail, event.Reader, event.Project, event.WriteID); err != nil {
 		return fmt.Errorf("record writing check event: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -81,16 +122,31 @@ func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckE
 	return nil
 }
 
-// SweepWritingCheckEvents deletes every writing_check_events row older than
-// WritingCheckRetention but those of the outcomes R8's counts read (countedOutcomes), on the
-// created_at index, and answers how many it deleted.
+// The sweep's two deletes (SweepWritingCheckEvents), each of which reads only the rows it
+// deletes: every row past WritingCheckCountedRetention, on the created_at index, and every row the
+// counts do not read (countedRow) past WritingCheckRetention, on the partial index of those rows,
+// writing_check_events_uncounted_idx. $1 is the retention as an interval.
+var (
+	sweepPastCountedRetention = `delete from writing_check_events where created_at < now() - $1::interval`
+	sweepUncountedRows        = `delete from writing_check_events where created_at < now() - $1::interval and not ` + countedRow
+)
+
+// SweepWritingCheckEvents deletes every writing_check_events row past its retention:
+// WritingCheckCountedRetention for a row R8's counts read, WritingCheckRetention for the rest, and
+// answers how many it deleted.
 func (s *Store) SweepWritingCheckEvents(ctx context.Context) (int64, error) {
-	tag, err := s.Pool.Exec(ctx, `delete from writing_check_events where created_at < now() - $1::interval and outcome <> all($2)`,
-		fmt.Sprintf("%d seconds", int64(WritingCheckRetention/time.Second)), countedOutcomes)
-	if err != nil {
-		return 0, fmt.Errorf("sweep writing check events: %w", err)
+	var deleted int64
+	for _, sweep := range []struct {
+		sql       string
+		retention time.Duration
+	}{{sweepPastCountedRetention, WritingCheckCountedRetention}, {sweepUncountedRows, WritingCheckRetention}} {
+		tag, err := s.Pool.Exec(ctx, sweep.sql, fmt.Sprintf("%d seconds", int64(sweep.retention/time.Second)))
+		if err != nil {
+			return deleted, fmt.Errorf("sweep writing check events: %w", err)
+		}
+		deleted += tag.RowsAffected()
 	}
-	return tag.RowsAffected(), nil
+	return deleted, nil
 }
 
 // WritingCheckCounts is R8's counts of the UTC days First to Last, both YYYY-MM-DD: Days, each day
@@ -151,10 +207,14 @@ type WritingCheckRow struct {
 // own act: an actor of kind user with no session acting for them, as a record's person is. A text
 // posted over a finding is counted once however many rows record a finding of it - the writing
 // check's findings and the reviewer's own, which name one write (WritingCheckEvent.WriteID) - on
-// the day, project and person of the first of its rows that names a project. The outcomes it reads
-// of writing_check_events are countedOutcomes. It orders nothing: CountWritingCheck pages it in
-// day, project and person order.
-const countWritingCheckRows = `
+// the day, project and person of the first of its rows that names a project. That row is picked
+// among all the write's rows, inside the range or not, and the text is counted where the row falls
+// in the range, so a text whose rows lie on either side of a midnight is counted on one day
+// whichever range is asked: a row that names no write is its own text, and the rows of a write
+// that has a row in the range are read by write_id (writing_check_events_write_id_idx). The
+// outcomes it reads of writing_check_events are rowOutcomes and overFindingRow's. It orders
+// nothing: CountWritingCheck pages it in day, project and person order.
+var countWritingCheckRows = `
 select day::text, project, person,
 	sum(word_questions)::int, sum(texts)::int, sum(texts_unread)::int, sum(asks_answered)::int,
 	sum(asks_replied)::int, sum(rewrite_uses)::int, sum(define_uses)::int, sum(held)::int,
@@ -191,28 +251,25 @@ from (
 	group by 1, 2, 3
 	union all
 	select (created_at at time zone 'UTC')::date, coalesce(project, ''), coalesce(reader, ''),
-		0, 0, 0, 0, 0,
-		count(*) filter (where outcome = 'rewrite_requested'),
-		0,
-		count(*) filter (where outcome = 'held'),
-		count(*) filter (where outcome = 'rewrite_posted'),
-		count(*) filter (where outcome = 'passed'),
-		count(*) filter (where outcome = 'posted_unreviewed'),
-		0
+		0, 0, 0, 0, 0, ` + countOf(outcomeRewriteRequested) + `, 0, ` + countOf(reviewerOutcomes...) + `, 0
 	from writing_check_events
-	where created_at >= $3 and created_at < $4
-		and outcome in ('rewrite_requested', 'held', 'rewrite_posted', 'passed', 'posted_unreviewed')
+	where created_at >= $3 and created_at < $4 and outcome in (` + sqlStrings(rowOutcomes...) + `)
 	group by 1, 2, 3
 	union all
-	select day, project, person, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, count(*)
+	select (created_at at time zone 'UTC')::date, project, person, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, count(*)
 	from (
-		select distinct on (coalesce(write_id, id::text))
-			(created_at at time zone 'UTC')::date as day, coalesce(project, '') as project, coalesce(reader, '') as person
+		select created_at, coalesce(project, '') as project, coalesce(reader, '') as person
 		from writing_check_events
-		where created_at >= $3 and created_at < $4
-			and (outcome in ('findings', 'posted_as_written') or (outcome = 'reviewed_after' and cardinality(rules) > 0))
-		order by coalesce(write_id, id::text), project is null, created_at, id
+		where created_at >= $3 and created_at < $4 and write_id is null and ` + overFindingRow + `
+		union all
+		(select distinct on (write_id) created_at, coalesce(project, ''), coalesce(reader, '')
+		from writing_check_events
+		where write_id is not null and ` + overFindingRow + ` and write_id in (
+			select write_id from writing_check_events
+			where created_at >= $3 and created_at < $4 and write_id is not null and ` + overFindingRow + `)
+		order by write_id, project is null, created_at, id)
 	) over_finding
+	where created_at >= $3 and created_at < $4
 	group by 1, 2, 3
 ) counted
 group by 1, 2, 3`

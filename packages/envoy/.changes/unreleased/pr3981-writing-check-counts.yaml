@@ -9,6 +9,6 @@ body: |-
   uses, the asks they answered and how many of those a person replied to before the answer, and
   the texts to them that the reviewer held, rewrote, passed or posted unreviewed, or that posted
   over a finding, each such text once though the writing check and the reviewer both record a
-  finding of it. The sweep keeps the rows these counts read past the 90 days it keeps every other
-  row, so a day older than that counts its rows whole, and its `days` entry counts only the
-  outcomes those rows read.
+  finding of it, on one day whichever range is asked. The sweep keeps the rows these counts read
+  for 366 days and every other row for 90, so a range that ends today counts its rows whole, and
+  the `days` entry of a day older than 90 days counts only the outcomes those rows read.

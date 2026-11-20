@@ -553,7 +553,7 @@ func main() {
 	}
 	// The writing check (INFRA-3231) records what its structure rules find in each agent's
 	// write, on every server, and lets every write through; its detector stays off.
-	writingCheck := api.NewWritingCheck(api.WritingCheckConfig{Enabled: true})
+	writingCheck := api.NewWritingCheck()
 	// The reviewer (INFRA-3231's R5) is nil where its model group is unset, which newReviewer
 	// logs; a group set builds it whatever DISPATCH_REVIEWER_<KIND> say, for the draft route.
 	textReviewer, err := newReviewer(boot.Writing, pacer)
@@ -1138,10 +1138,10 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
-	// The writing check's decisions past their 90 days, once a day in every process, the first
-	// pass at start, with no lease: the delete by age is the same whichever process runs it. It
-	// runs whether the check is on or off, so rows a deployment wrote before it turned the check
-	// off still age out.
+	// The writing check's decisions past their retention, once a day in every process, the first
+	// pass at start, with no lease: a row R8's counts read once it is older than 366 days, and any
+	// other once it is older than 90 (store.SweepWritingCheckEvents). The deletes by age are the
+	// same whichever process runs them.
 	go api.RunWritingCheckEventSweep(ctx, database)
 	// INFRA-3231's R8: the records job reads the texts people write from the event log after
 	// each write has committed, up to the safe horizon of the API server's one events.Horizon, as

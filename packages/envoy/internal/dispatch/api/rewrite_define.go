@@ -38,13 +38,10 @@ type RewriteDefine struct {
 	config RewriteDefineConfig
 }
 
-// NewRewriteDefine is Rewrite and Define as cfg describes them, its zero fields given their
-// defaults.
+// NewRewriteDefine is Rewrite and Define as cfg describes them, every field but SideQuestionWait
+// set by its caller; a zero SideQuestionWait is defaultSideQuestionWait.
 func NewRewriteDefine(cfg RewriteDefineConfig) *RewriteDefine {
 	cfg.SideQuestionWait = cmp.Or(cfg.SideQuestionWait, defaultSideQuestionWait)
-	if cfg.Rules == nil {
-		cfg.Rules = DefaultReviewerRules
-	}
 	return &RewriteDefine{config: cfg}
 }
 

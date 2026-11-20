@@ -37,11 +37,6 @@ var MeasuredOff = []RuleMeasurement{
 // DetectorRule is the rule id of the detector's findings.
 const DetectorRule = "vacuous-verb-phrase"
 
-// DetectorEnabled is whether the bundle runs the detector. The detector ships on only once its
-// final test bounds 1 - precision at 5% or below; until then it is off in the code, and no
-// setting turns it on.
-const DetectorEnabled = false
-
 // ReaderNoEffort is whether the reader sends no reasoning_effort at all: a Foundry chat
 // deployment refuses the value `none` (measured on grok-4.7), so the reader sends none.
 const ReaderNoEffort = true

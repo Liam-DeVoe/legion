@@ -139,12 +139,12 @@ func runReading(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return fail(err)
 	}
 	if len(writes) > 0 {
-		rules := writingcheck.New(writingcheck.Config{Enabled: true, Rules: writingcheck.EnabledRules})
+		rules := writingcheck.New(writingcheck.Config{Rules: writingcheck.EnabledRules})
 		results := make([]readingResult, len(writes))
 		done := make([]bool, len(writes))
 		eachWrite(ctx, len(writes), rf.concurrency,
 			func() *writingcheck.Checker {
-				return writingcheck.New(writingcheck.Config{Enabled: true, Detector: true, Reader: rf.newReader(model)})
+				return writingcheck.New(writingcheck.Config{Detector: true, Reader: rf.newReader(model)})
 			},
 			func(detector *writingcheck.Checker, i int) {
 				results[i] = readWrite(ctx, rules, detector, writes[i], cases[i])

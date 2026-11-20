@@ -14,13 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/modelpace"
 )
 
-// charsPerToken is how many characters of a request are counted as one token. It is
-// embed.EstimateTokens' own rule, cited rather than imported: that package links the AWS SDK and
-// this one stays thin enough for the daemon to speak the same stream. Four characters a token is
-// a rough estimate for English prose, which is what pacing a shared quota needs and all it needs;
-// it is never exact, and dense text costs more.
-const charsPerToken = 4
-
 // answerRules is the system message every run sends: the rules an answer keeps, stated once
 // because they never change between runs. It names the bounds and the tool from contracts, so the
 // rules the model is given and the bounds the server enforces cannot drift apart.
@@ -342,7 +335,9 @@ func readFaultCode(ctx context.Context, err error) string {
 // pacedClient charges the answerer's share of the deployment's quota (modelpace) for a call
 // before it makes it, so this process never spends more of that quota a minute than the
 // deployment has, whichever of its parts call the deployment: the call's estimated tokens wait on
-// the deployment's one limiter and on the answerer's own ceiling.
+// the deployment's one limiter and on the answerer's own ceiling. A call is charged as every
+// caller's is (modelpace.Caller.WaitFor): the characters its request sends at
+// modelpace.CharsPerToken, and no reply bound, since the answerer's request names none.
 //
 // The swap to agentloop (dispatch://INFRA-1311) moves the reservation rather than keeping this
 // wrapper: agentloop builds its own transport from an Endpoint whose Token closure it calls on
@@ -360,16 +355,15 @@ var _ Client = (*pacedClient)(nil)
 // which wraps context.DeadlineExceeded: the run reaching its deadline), because waiting it out
 // would spend the whole window to make no call at all.
 func (p *pacedClient) Chat(ctx context.Context, request ChatRequest, onText func(string) error) ([]ToolCall, error) {
-	if err := p.pace.Wait(ctx, estimateTokens(request)); err != nil {
+	if err := p.pace.WaitFor(ctx, requestRunes(request), 0); err != nil {
 		return nil, err
 	}
 	return p.inner.Chat(ctx, request, onText)
 }
 
-// estimateTokens is what one call is charged against the quota before it is made: the characters
-// it sends, at charsPerToken. It counts the request alone, which is what a call can be charged
-// for before its reply exists.
-func estimateTokens(request ChatRequest) int {
+// requestRunes is how many characters one call sends: its messages, its tool calls and its tools.
+// It counts the request alone, which is what a call can be charged for before its reply exists.
+func requestRunes(request ChatRequest) int {
 	chars := 0
 	for _, message := range request.Messages {
 		chars += utf8.RuneCountInString(message.Content)
@@ -380,5 +374,5 @@ func estimateTokens(request ChatRequest) int {
 	for _, tool := range request.Tools {
 		chars += utf8.RuneCountInString(tool.Name) + utf8.RuneCountInString(tool.Description)
 	}
-	return chars / charsPerToken
+	return chars
 }

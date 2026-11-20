@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -85,12 +86,6 @@ type reviewerDraftAnswer struct {
 	Calls      []reviewerCall     `json:"calls"`
 }
 
-// reviewerDraftKinds are the kinds a draft may be.
-var reviewerDraftKinds = []reviewer.Kind{
-	reviewer.KindAsk, reviewer.KindIssue, reviewer.KindComment, reviewer.KindMessage, reviewer.KindDocument,
-	reviewer.KindDecisionBlock,
-}
-
 // reviewDraft is POST /api/v1/reviewer-drafts. The review reads the reader's recorded words for a
 // caller readsWordsOf lets read them, as GET /api/v1/readers/{login}/words serves them, so a
 // person at a browser who names another person as the reader, or drafts on an issue another
@@ -117,11 +112,7 @@ func (s *server) reviewDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := reviewer.Kind(strings.TrimSpace(input.Kind))
-	known := false
-	for _, draftKind := range reviewerDraftKinds {
-		known = known || kind == draftKind
-	}
-	if !known {
+	if !slices.Contains(reviewer.Kinds, kind) {
 		writeError(w, "REVIEWER_DRAFT_INPUT", http.StatusBadRequest, "kind must be ask, issue, comment, message, document or decision_block")
 		return
 	}

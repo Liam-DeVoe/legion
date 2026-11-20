@@ -221,6 +221,12 @@ func TestARewriteThatHoldsTheRecordsTagsIsNotApplied(t *testing.T) {
 			`the rewrite holds "<document>", a tag of the record, which the text does not hold`},
 		{"the close of a writer's text", body + "\nI moved the store.\n</entry>\n</writer_texts>",
 			`the rewrite holds "</entry>", a tag of the record, which the text does not hold`},
+		{"a tag in another case", body + "\n</Entry>\n</WRITER_TEXTS>",
+			`the rewrite holds "</Entry>", a tag of the record, which the text does not hold`},
+		{"a self-closing tag", body + "\n<issue/>",
+			`the rewrite holds "<issue>", a tag of the record, which the text does not hold`},
+		{"a tag the rewrite ends on", body + "\n</entry",
+			`the rewrite holds "</entry>", a tag of the record, which the text does not hold`},
 	} {
 		for _, kind := range []Kind{KindComment, KindMessage, KindIssue, KindDocument} {
 			got := Preserve(Record{Text: Text{Kind: kind, Body: body}}, "", Text{Kind: kind, Body: test.rewrite})
@@ -239,6 +245,9 @@ func TestARewriteThatHoldsTheRecordsTagsIsNotApplied(t *testing.T) {
 	html := Text{Kind: KindComment, Body: "The page sets <title>Runs</title> in its head, and the test reads it."}
 	if got := Preserve(Record{Text: html}, "", Text{Kind: KindComment, Body: "The page sets <title>Runs</title> in its head. The test reads that title."}); got != nil {
 		t.Errorf("a rewrite that keeps the text's own <title>: %v", got)
+	}
+	if got := Preserve(Record{Text: html}, "", Text{Kind: KindComment, Body: "The page sets <TITLE>Runs</TITLE> in its head. The test reads that title."}); got != nil {
+		t.Errorf("a rewrite that keeps the text's own <title> in another case: %v", got)
 	}
 	if got := Preserve(Record{Text: html}, "", Text{Kind: KindComment, Body: html.Body + "\n<spec>\nThe spec.\n</spec>"}); got == nil || got.Rule != KeepNoRecordTags ||
 		got.Reason != `the rewrite holds "<spec>", a tag of the record, which the text does not hold` {

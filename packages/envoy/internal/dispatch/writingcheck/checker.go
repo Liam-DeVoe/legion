@@ -19,8 +19,6 @@ import (
 
 // The outcomes of a check besides the reader's own fault outcomes (reader.Outcome*).
 const (
-	// OutcomeOff is a check that is turned off and read nothing.
-	OutcomeOff = "off"
 	// OutcomeRefused is a check with at least one finding.
 	OutcomeRefused = "refused"
 	// OutcomeClean is a check with no finding and no fault.
@@ -48,14 +46,9 @@ type Reader interface {
 
 // Config is what a Checker checks.
 type Config struct {
-	// Enabled turns the check on; a check turned off reads nothing.
-	Enabled bool
 	// Rules is the ids of the structure rules to apply, the bundle's EnabledRules; an id
 	// package rules does not carry applies nothing.
 	Rules []string
-	// RulesOff is rule ids not to apply although Rules names them. DetectorRule here turns
-	// the detector off.
-	RulesOff []string
 	// Detector turns the detector on.
 	Detector bool
 	// Reader is the model reader; nil (a nil *reader.Reader included) is no model.
@@ -74,7 +67,6 @@ type Result struct {
 
 // Checker checks the fields of a write. It is safe for concurrent use.
 type Checker struct {
-	enabled  bool
 	rules    []rules.Rule
 	detector bool
 	reader   Reader
@@ -83,15 +75,14 @@ type Checker struct {
 // New is a Checker over cfg.
 func New(cfg Config) *Checker {
 	c := &Checker{
-		enabled:  cfg.Enabled,
-		detector: cfg.Detector && !slices.Contains(cfg.RulesOff, DetectorRule),
+		detector: cfg.Detector,
 		reader:   cfg.Reader,
 	}
 	if r, ok := cfg.Reader.(*reader.Reader); ok && r == nil {
 		c.reader = nil
 	}
 	for _, rule := range rules.All() {
-		if slices.Contains(cfg.Rules, rule.ID) && !slices.Contains(cfg.RulesOff, rule.ID) {
+		if slices.Contains(cfg.Rules, rule.ID) {
 			c.rules = append(c.rules, rule)
 		}
 	}
@@ -100,9 +91,6 @@ func New(cfg Config) *Checker {
 
 // Check reads every field's prose and answers what it found.
 func (c *Checker) Check(ctx context.Context, fields []Field) Result {
-	if !c.enabled {
-		return Result{Outcome: OutcomeOff}
-	}
 	var (
 		result    Result
 		sentences []prose.Sentence

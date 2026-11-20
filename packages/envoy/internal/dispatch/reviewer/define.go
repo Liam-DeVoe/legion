@@ -44,7 +44,7 @@ func Define(ctx context.Context, m Model, rules []RuleSet, record Record, words 
 	if len(selected) == 0 {
 		return Defined{}, ErrNoWords
 	}
-	p, err := prepare(ctx, m, "define", rules, record, extra{question: answer.Question, answer: answer.Text, words: selected})
+	p, err := prepare(ctx, m, PurposeDefine, rules, record, extra{question: answer.Question, answer: answer.Text, words: selected})
 	if err != nil {
 		return Defined{}, err
 	}
