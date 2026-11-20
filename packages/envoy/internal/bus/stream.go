@@ -156,12 +156,17 @@ func DeliverSubject(sessionID string) string {
 // (crypto/rand.Text). Every request a session answers carries one - the relay's frames
 // (cmd/listener's sessionRelays), the listener's connection probe and Dispatch's agent stream
 // replay (internal/dispatch/agentstream) - and a session's own grant, the one the NATS auth
-// service gives it, admits replies under its id alone (SessionReplies). So a session on that grant
-// can neither answer a request made of another session nor guess the subject of one: its grant
-// reads no other session's relay or control subject, and the random part is not derived from
-// anything it can see. A holder of the shared session user or of a host user reads every
-// session's relay subject and may publish to every _INBOX. subject, so none of this holds against
-// it. sessionID is one subject token, as every session with a consumer's is (SessionConsumerName).
+// service gives it (natsgrant.Session), admits replies under its id alone (SessionReplies). So a
+// session on that grant can neither answer a request made of another session nor guess the
+// subject of one: its grant reads no other session's relay or control subject, and the random
+// part is not derived from anything it can see. The relay also moves a frame only on a reply
+// whose subject names the session the frame was sent to (sessionRelays.onReply), so a session that
+// learned another's token cannot answer for it under its own reply prefix; the relay logs the
+// first such reply at WARN, then at most one a minute. A holder of the shared session user or of a
+// host user reads every session's relay subject and may publish to every _INBOX. subject, so the
+// grant does not hold against it, and the relay reads the session a reply subject names, not who
+// published the reply. sessionID is one subject token, as every session with a consumer's is
+// (SessionConsumerName).
 func SessionReplySubject(inbox, sessionID string) string {
 	return inbox + "." + sessionID + "." + rand.Text()
 }

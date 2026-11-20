@@ -177,7 +177,7 @@ until the grant reaches it ([Permission sets](../README.md#permission-sets)).
 
 The listener's send route asks whether a session's plugin still holds a NATS connection with one
 core request on the session's relay subject, `notifications.envoy.deliver.<session id>`, answered
-on the request's own reply inbox.
+on a reply subject of the request's own that names the session (`bus.SessionReplySubject`).
 It needs no rule of its own; [Permission sets](../README.md#permission-sets) names the entries
 that carry it.
 

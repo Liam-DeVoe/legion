@@ -252,9 +252,9 @@ func session(sessionID, replies string) Permissions {
 // renders for the sessions that share it. A session subscribes to no notification topic that
 // carries a message: it receives what its consumer delivers, on the relay subject, and nothing
 // else. The listener's connection probe (cmd/listener) asks on that same relay subject and is
-// answered on a reply inbox, which this set's _INBOX.> publish admits, so it needs no rule of its
-// own; the README names the entries that carry it (packages/envoy/infra/README.md, "Permission
-// sets").
+// answered on a reply subject under _INBOX. that names the session (bus.SessionReplySubject),
+// which this set's _INBOX.> publish admits, so it needs no rule of its own; the README names the
+// entries that carry it (packages/envoy/infra/README.md, "Permission sets").
 //
 // A Legion controller session needs nothing added for its project's notice lane
 // (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic): it registers
