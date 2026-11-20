@@ -2383,6 +2383,8 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/check-image-trigger-paths.test.sh", [
         (f"{SCRIPTS}/check-image-trigger-paths.sh", "the script under test"),
         (f"{SCRIPTS}/workflow_paths.py", "check-image-trigger-paths.test.sh:34 symlinks in the path model the script imports"),
+        (f"{SCRIPTS}/dockerfile_reader.py", "check-image-trigger-paths.test.sh:35 symlinks in the Dockerfile reader the "
+                                            "script imports"),
     ]),
     harness("check_ci_images_test", "Test the CI image check", f"{SCRIPTS}/check-ci-images.test.sh", [
         (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
@@ -2552,6 +2554,9 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_network_installs.py", "rule 22, which the fixtures link in beside it"),
         (f"{SCRIPTS}/shell_commands.py", "the shell reader rule 22 imports, linked in beside it"),
+        (f"{SCRIPTS}/dockerfile_reader.py", "the Dockerfile reader rule 22 imports, linked in beside it"),
+        (f"{SCRIPTS}/script_paths.py", "the resolver of a script's path rule 22 imports, linked in beside it"),
+        (f"{SCRIPTS}/network_commands.py", "the reader of what a command fetches rule 22 imports, linked in beside it"),
         (f"{SCRIPTS}/network-install.sh", "rule 22 reads its bounds with `--bounds`, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
@@ -3766,6 +3771,12 @@ GATES = [
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/ci_network_installs.py", "check-ci-filters.sh's rule 22, which ci_filter_coverage.main() runs"),
         (".github/scripts/shell_commands.py", "ci_network_installs.py's rule 22 finds each command a step runs with it"),
+        (".github/scripts/dockerfile_reader.py", "ci_network_installs.py's rule 22 reads each Dockerfile a job builds "
+                                                 "with it"),
+        (".github/scripts/script_paths.py", "ci_network_installs.py's rule 22 resolves the repository path a command "
+                                            "word names with it"),
+        (".github/scripts/network_commands.py", "ci_network_installs.py's rule 22 reads what each command fetches "
+                                                "with it"),
         (".github/scripts/network-install.sh", "ci_network_installs.py's rule 22 runs it with `--bounds` to hold "
                                                "each job's limits to the worst case of the installs it runs through it"),
         (".github/actions/**", "ci_network_installs.py's rule 22 reads every local action a job of ci.yaml or of a "

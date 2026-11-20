@@ -39,11 +39,11 @@
 # module, a ci.yaml whose `changes` job gates one job, a .github/ci-filters.yaml holding the
 # filters it gates them by, a root package.json with one workspace, and
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
-# (ci_filter_coverage.py), the rules of ci.yaml it runs
-# (ci_workflow_rules.py), the shell reader one of those rules imports (shell_commands.py), the
-# network-install.sh whose bounds rule 22 reads and the path model they import (workflow_paths.py)
-# into it, so the code under test is the code CI runs. It needs go and a
-# python3 with PyYAML.
+# (ci_filter_coverage.py), the rules of ci.yaml it runs (ci_workflow_rules.py, and rule 22's
+# ci_network_installs.py with the readers it imports: shell_commands.py, dockerfile_reader.py,
+# script_paths.py and network_commands.py), the network-install.sh whose bounds rule 22 reads and
+# the path model they import (workflow_paths.py) into it, so the code under test is the code CI
+# runs. It needs go and a python3 with PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
 # CI runs it in ci.yaml's test job.
@@ -79,7 +79,8 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py ci_network_installs.py shell_commands.py network-install.sh workflow_paths.py go_build_tags.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py ci_network_installs.py shell_commands.py \
+    dockerfile_reader.py network_commands.py script_paths.py network-install.sh workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"

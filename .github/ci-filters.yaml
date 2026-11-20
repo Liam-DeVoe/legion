@@ -690,6 +690,7 @@ check_image_trigger_paths_test: &check_image_trigger_paths_test
   - '.github/scripts/check-image-trigger-paths.test.sh'
   - '.github/scripts/check-image-trigger-paths.sh'
   - '.github/scripts/workflow_paths.py'
+  - '.github/scripts/dockerfile_reader.py'
 check_ci_images_test: &check_ci_images_test
   - *ci_router
   - *ci_filters_data
@@ -951,6 +952,9 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/ci_workflow_rules.py'
   - '.github/scripts/ci_network_installs.py'
   - '.github/scripts/shell_commands.py'
+  - '.github/scripts/dockerfile_reader.py'
+  - '.github/scripts/script_paths.py'
+  - '.github/scripts/network_commands.py'
   - '.github/scripts/network-install.sh'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
@@ -2458,6 +2462,9 @@ ci_filters:
   - '.github/scripts/ci_network_installs.py'
   - '.github/docker/browser.Dockerfile'
   - '.github/scripts/shell_commands.py'
+  - '.github/scripts/dockerfile_reader.py'
+  - '.github/scripts/script_paths.py'
+  - '.github/scripts/network_commands.py'
   - '.github/scripts/network-install.sh'
   - '**/*.sh'
   - '.github/scripts/workflow_paths.py'
