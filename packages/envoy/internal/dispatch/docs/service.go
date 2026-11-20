@@ -203,6 +203,11 @@ type Service struct {
 	// afterSettleLock runs after settleRoom has taken the document's advisory lock and before
 	// it touches the room. Nil outside tests; tests use it to fail the room in that window.
 	afterSettleLock func(room string)
+	// afterSettlementCommit runs once a settlement's transaction has committed and released the
+	// room's lock it held across the commit (commitSettlement), and before the settlement finishes.
+	// Nil outside tests; a test reads the room there, the first moment another reader can find
+	// what the settlement committed.
+	afterSettlementCommit func(room string)
 	// beforeAwarenessWatch is given a room's awareness before the relay registers its own
 	// observer on it (awarenessRelay.watchRoomAwareness). Nil outside tests; tests use it to put
 	// an observer of their own ahead of the relay's, since ygo fires a room's update observers in

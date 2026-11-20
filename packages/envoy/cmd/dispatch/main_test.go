@@ -172,6 +172,7 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		"DISPATCH_SIGNIN_CLIENT_ID":     "dispatch-client",
 		"DISPATCH_SIGNIN_CLIENT_SECRET": "client-secret",
 		"DISPATCH_SIGNIN_GROUP":         "dispatch-members",
+		"DISPATCH_OUTSIDE_ORIGIN":       "https://outside.example",
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{name: value}))); err == nil ||
 			!strings.Contains(err.Error(), name+" must be unset under DISPATCH_IDENTITY=iap") {
@@ -708,7 +709,7 @@ func TestProcessServesMetricsToACredential(t *testing.T) {
 	failures := registry.NewCounter("envoy_dispatch_outbox_publish_failures_total", "Destinations of an outbox publish attempt that did not reach NATS")
 	failures.Inc([2]string{"reason", "denied"})
 	boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_TOKEN": "agent-token"})
-	router := routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t), Metrics: registry.Handler()})
+	router := routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t), Metrics: registry})
 	process := routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil))
 	scrape := func(credential string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -935,8 +936,10 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 // /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read
 // this process does not run, whatever the record holds of it; unknown before the copy of the
 // record has loaded; no_attempt for a read the record holds no attempt of; and succeeded or failed
-// from the attempt it holds, with that attempt's time in UTC, and the cause of a failed one. `at`
-// and `cause` are present and null wherever the state carries neither, and the four keys come in
+// from the attempt it holds, with that attempt's time in UTC, and a failed one's cause by its class
+// alone: the status GitHub answered ("status 503"), or "no status" for a failure that carries
+// none, since the cause's text can name a repository (gitHubReadCauseClass). `at` and `cause` are
+// present and null wherever the state carries neither, and the four keys come in
 // githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
 // does not answer leaves the entries as the copy has them beside its 503.
 func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
@@ -969,7 +972,7 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 	fromTheCopy := map[string]map[string]any{
 		"webhook_redelivery":  entry("no_attempt", nil, nil),
 		"architecture_import": entry("succeeded", &succeededAt, nil),
-		"delivery_reconcile":  entry("failed", &failedAt, &cause),
+		"delivery_reconcile":  entry("failed", &failedAt, new("status 503")),
 		"ci_reconcile":        entry("off", nil, nil),
 	}
 
@@ -992,6 +995,15 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 		"architecture_import": entry("unknown", nil, nil),
 		"delivery_reconcile":  entry("unknown", nil, nil),
 		"ci_reconcile":        entry("off", nil, nil),
+	})
+
+	// A failure that carries no status GitHub answered is the class "no status".
+	unanswered := &gitHubReads{recordCopy: loadedGitHubReadCopy(t, []githubreads.Recorded{
+		{Read: githubreads.DeliveryReconcile, At: failedAt, Cause: `GET https://api.github.com/repos/acme/deploy/pulls: dial tcp: lookup api.github.com: no such host`},
+	}), runs: reads.runs}
+	_, health = probeGitHubReads(t, database, unanswered)
+	requireGitHubReads(t, "with a failure that carries no status", health.GitHub, map[string]map[string]any{
+		"delivery_reconcile": entry("failed", &failedAt, new("no status")),
 	})
 }
 
@@ -1621,6 +1633,31 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 	}
 	if last := strings.TrimSpace(out.String()); !strings.HasSuffix(last, "census: REFUSED (1 reason)") {
 		t.Errorf("stdout does not end with the verdict:\n%s", out.String())
+	}
+}
+
+// `envoy-dispatch versions` exits 2 when it cannot be taken, 0 over a database this image
+// migrated, and 1 when a recorded version names another file, which it prints. The control is the
+// migrated database itself, read before the row is changed.
+func TestVersionsSubcommandExitCodes(t *testing.T) {
+	ctx := context.Background()
+	var out, errOut bytes.Buffer
+	if code := versions(ctx, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
+		t.Errorf("no URL: exit %d, stderr %q", code, errOut.String())
+	}
+	database := storetest.Open(t)
+	url := database.Pool.Config().ConnString()
+	out.Reset()
+	errOut.Reset()
+	if code := versions(ctx, url, &out, &errOut); code != 0 || !strings.HasSuffix(strings.TrimSpace(out.String()), "versions: ok") {
+		t.Fatalf("control, a migrated database: exit %d, stderr %q, stdout:\n%s", code, errOut.String(), out.String())
+	}
+	if _, err := database.Pool.Exec(ctx, "update schema_migrations set name = '0001_another_branch.up.sql' where version = 1"); err != nil {
+		t.Fatalf("record another file under version 1: %v", err)
+	}
+	out.Reset()
+	if code := versions(ctx, url, &out, &errOut); code != 1 || !strings.Contains(out.String(), "versions: REFUSED version 1 is recorded as 0001_another_branch.up.sql") {
+		t.Errorf("another file under version 1: exit %d, stdout:\n%s", code, out.String())
 	}
 }
 

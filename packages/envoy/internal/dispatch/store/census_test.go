@@ -1310,7 +1310,7 @@ func TestTheBrokerRevocationsGuardMigrationAppliesOverAnEarlierHeadsShape(t *tes
 	if index < 0 {
 		t.Fatal("no migration 20261118152422")
 	}
-	if err := store.applyMigration(ctx, migrations[index]); err != nil {
+	if err := store.applyMigration(ctx, migrations, migrations[index]); err != nil {
 		t.Fatalf("20261118152422 over the earlier head's shape: %v", err)
 	}
 	var columns, triggers int
