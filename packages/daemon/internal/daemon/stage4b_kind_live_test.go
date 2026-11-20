@@ -339,6 +339,12 @@ func (r *stage4bLive) childRelease() {
 	if now, err := r.pod(r.rootPod); err != nil || now.Metadata.UID != root.Metadata.UID {
 		t.Errorf("the root's pod %s changed from uid %s across %s's release: %+v %v", r.rootPod, root.Metadata.UID, r.child1, now.Metadata, err)
 	}
+	// The daemon logs the deletion once the API server has answered it, so the line can land a
+	// moment after the Sandbox, the pod and the disk read gone (CI run 44656539661: 02:17:01.77,
+	// after the read above returned).
+	r.await("the daemon to log its deletion of "+r.child1+"'s Sandbox", time.Minute, func() bool {
+		return len(r.logged(stage4bDeleted, map[string]string{"issue": r.child1})) > 0
+	})
 	if n := len(r.logged(stage4bDeleted, map[string]string{"issue": r.child1})); n != 1 {
 		t.Errorf("the daemon logged %q for %s %d times, want once", stage4bDeleted, r.child1, n)
 	}
