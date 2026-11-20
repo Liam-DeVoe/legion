@@ -426,6 +426,44 @@ test("at 390 px a note's table of sixteen columns scrolls inside its row, and th
   });
 });
 
+// R1: a row's fold control takes none of the 44 px touch floor wherever the floor applies. The
+// floor and the rows' exemption from it switch at `xl` in rem (`styles.css`), so a reader whose
+// default font is 20 px has the floor up to 1599 px; an exemption left in pixels stops at 1279 px
+// and gives every row's bullet a 44 px box between the two. A button the row adds to the page is
+// the control: it takes the floor at the same width, so the row reads the floor as applying.
+// SLOW(>=2s): a seeded issue of every kind of node, loaded once at a 20 px default font.
+test("at a 20 px default font just under xl, a row's fold control takes none of the 44 px floor every other button takes", async ({
+  browser,
+}) => {
+  await phase(browser, seedRows, async (page, seeded) => {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Page.setFontSizes", { fontSizes: { fixed: 13, standard: 20 } });
+    await page.setViewportSize({ height: DESKTOP.height, width: 80 * 20 - 1 });
+    await openIssue(page, seeded.key);
+    await expect
+      .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize), {
+        message: "the root's font size",
+      })
+      .toBe("20px");
+    const floor = await page.evaluate(() => {
+      const probe = document.createElement("button");
+      document.body.append(probe);
+      const minHeight = getComputedStyle(probe).minHeight;
+      probe.remove();
+      return minHeight;
+    });
+    expect(floor, "a button takes the 44 px floor at 1599 px with a 20 px default font").toBe(
+      "44px"
+    );
+    const bullet = nodeRows(page).locator("button[data-node-bullet]").first();
+    await expect(bullet, "no row draws its bullet as its fold control").toBeVisible();
+    await expect(bullet, "a row's fold control takes the 44 px floor").toHaveCSS(
+      "min-height",
+      "0px"
+    );
+  });
+});
+
 // c-cut: ruling 1 on R2 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
 // ten presses and focus moves, each waited on until the row redraws.

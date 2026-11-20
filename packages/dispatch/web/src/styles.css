@@ -495,9 +495,11 @@ html:has([data-issue-page]) {
   }
 }
 
-/* Below 1280 px a row of the new issue page takes none of the 44 px floor above on its fold
-   control and its inline controls (part G, R1; the floor itself stays as
-   it is on every other page and control). A node's bullet is its fold control, the prototype's
+/* Below `xl`, where the 44 px floor above applies and in its query and unit, a row of the new
+   issue page takes none of that floor on its fold control and its inline controls (part G, R1;
+   the floor itself stays as it is on every other page and control). The two queries are one,
+   or at a default font other than 16 px a width between them gives the rows the floor. A
+   node's bullet is its fold control, the prototype's
    18 by 24 px `.bul`, and 24 by 24 px at 760 px and below (`NODE_ROW_LAYOUT.foldControl`):
    nothing else in its row is a target beside it, so a 24 px circle on it meets no other target
    (WCAG 2.2's 2.5.8), and a 44 px box would push every row's words off their one left edge. A
@@ -512,7 +514,7 @@ html:has([data-issue-page]) {
    the page added recalculated the style of every button and link of the page. A
    link's `[href]` keeps it above the floor's `a:not(.prose a):not(.dispatch-inline-link)`,
    which a link outside a `.prose` text matches, as the scope did. */
-@media (max-width: 1279px) {
+@media (width < 80rem) {
   [data-node-row] button:is([data-node-bullet], .dispatch-inline-link),
   [data-node-words] a[data-row-reference][href] {
     min-width: 0;
