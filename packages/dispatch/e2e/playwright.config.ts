@@ -76,9 +76,10 @@ const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
 // `stub` project at the end of this file runs them and nothing else runs them: this config's own
 // `testIgnore` holds the pattern, and so does every project that names a `testIgnore` of its own,
 // since a project's overrides this one's. A moved row lives in such a file rather than carrying an
-// annotation, because a real-stack spec takes its `test` from e2e/test.ts, which resets the
-// database before every row and signs the default context in: a stubbed row left among them would
-// pay that fixture for nothing (packages/dispatch/README.md, "The stubbed layer").
+// annotation, because a real-stack spec takes its `test` from e2e/test.ts, which empties the
+// database once per worker, resets the fakes before every row and signs the default context in: a
+// stubbed row left among them would pay that fixture for nothing (packages/dispatch/README.md,
+// "The stubbed layer").
 const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
@@ -705,8 +706,9 @@ export default defineConfig({
   // project names `testIgnore: []`, which is what lets those rows reach it.
   testIgnore: harnessProcessCount === 1 ? [multiprocessSpecs, stubSpecs] : [stubSpecs],
   outputDir: "test-results",
-  // Every row is independent: it empties its stack's database and fake listeners itself
-  // (e2e/seed.ts), and a worker never runs two rows at once, so rows of one file may run in
+  // Every row is independent: it makes its data under keys of its own on its stack's database,
+  // which its worker emptied before its first row, and the stack's fake listeners are reset before
+  // it (e2e/test.ts); a worker never runs two rows at once, so rows of one file may run in
   // different stacks. A file whose rows must run in order says so itself, with
   // `test.describe.configure({ mode: "serial" })` and the reason.
   fullyParallel: true,

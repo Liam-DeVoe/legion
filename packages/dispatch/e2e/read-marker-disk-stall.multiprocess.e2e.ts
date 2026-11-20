@@ -14,13 +14,15 @@ import { emptyDatabase, expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The reset every row starts with (e2e/seed.ts) empties `user_document_reads`, and waits at most
- * 5 s for the table. A page that opens a document marks it read (PUT /api/v1/me/documents/{id}/
- * read), and a row that ends right after closes that page while the write is in flight. When the
- * database's disk stops answering at that moment, the write's commit waits for it: Postgres
- * flushes a commit record with its interrupts held, so the cancel the server sends when the page
- * goes (pgx's CancelRequest) does not end it, and the backend holds its lock on the table for as
- * long as the disk is silent. Merge-group run 44456291758 failed so, its next row's reset naming
+ * The reset that empties the database (e2e/seed.ts) - once per worker, before its first row, and
+ * where a row empties it itself (`emptyDatabase`, e2e/test.ts) - empties `user_document_reads`,
+ * and waits at most 5 s for the table. A page that opens a document marks it read (PUT
+ * /api/v1/me/documents/{id}/read), and a row that ends right after closes that page while the
+ * write is in flight. When the database's disk stops answering at that moment, the write's commit
+ * waits for it: Postgres flushes a commit record with its interrupts held, so the cancel the
+ * server sends when the page goes (pgx's CancelRequest) does not end it, and the backend holds
+ * its lock on the table for as long as the disk is silent. Merge-group run 44456291758 failed so,
+ * when the database was still emptied before every row: its next row's reset named
  * `insert into user_document_reads ... (RowExclusiveLock, active)`.
  *
  * This row stalls the disk as the page sends that write, and keeps it stalled until the row ends:
@@ -174,8 +176,9 @@ test("a read marker whose page closed while the database's disk did not answer h
     // Then the row ends and its page goes, as every row's does.
     await context.close();
 
-    // The next row's reset, with the disk still silent. A reset that needs the disk waits on it
-    // until the row's timeout; only the cleanup ends the stall. It is counted as the worker's
+    // A reset of the database, with the disk still silent: the one the next worker on this stack
+    // starts with, or one a row makes itself. A reset that needs the disk waits on it until the
+    // row's timeout; only the cleanup ends the stall. It is counted as the worker's
     // (`emptyDatabase`), so the datasets the worker keeps are written again into the database
     // the next row reads: the delivery settings `two-builds.multiprocess.e2e.ts` reads after it.
     await emptyDatabase();

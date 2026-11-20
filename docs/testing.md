@@ -198,7 +198,8 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
   no database and no sign-in.
 
 - **Browser against the real stack**: `bun run e2e`, with the real Go server and Postgres, one stack for each Playwright worker.
-  A spec takes its `test` from `e2e/test.ts`, whose automatic fixture resets the worker's database and signs the default context in before each row.
+  A spec takes its `test` from `e2e/test.ts`, whose fixtures empty the worker's database once, before the worker's first row, and before each row reset the fake services, whose state no key separates, and sign the default context in.
+  A real-stack row makes its data under names of its own (`rowKey`, `rowPerson`, `rowSessionId` and `rowNumber` in `e2e/test.ts`), so it needs no emptied database: it seeds beside what the rows before it wrote, under names none of them used.
   A real-stack row makes its projects under `rowKey(...)` (`e2e/test.ts`), a key no other row makes, and `createProject` (`e2e/api.ts`) takes only the `RowKey` type that `rowKey` answers, so a row that writes a literal key fails the typecheck.
   A helper that makes a project under a key its caller passes takes a `RowKey` too, and a key built from the row's own, as `XCORE` is `CORE` behind an `X`, is `rowKeyBehind("X", core)`.
   A caller whose key is fixed on purpose writes it as `fixedKey(key, why)`, and `why` names the reason a fixed key is right there: the recording a stubbed row replays, the review corpus seeded once into each database a worker holds, the docs' pictures, the local instance, or a project another service names (`e2e/read-token-live.ts`).

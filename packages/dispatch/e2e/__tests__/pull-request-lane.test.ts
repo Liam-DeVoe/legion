@@ -20,8 +20,8 @@
  *  the margin left for them.
  *
  *  Why at most 150 outside the stubbed projects: a real-stack row pays a Go server, a Postgres,
- *  three fakes, a sign-in and a database reset, and R1 holds the lane to 150 of them. The rest
- *  of the lane is the stubbed layer, which pays none of that.
+ *  three fakes, a reset of the fakes and a sign-in, and R1 holds the lane to 150 of them. The
+ *  rest of the lane is the stubbed layer, which pays none of that.
  *
  *  A row with no `@pr` tag is not lost: it runs on the full lane, which `ci.yaml` runs for every
  *  merge group and `.github/workflows/dispatch-browser-nightly.yaml` runs daily, so `main` is
@@ -80,7 +80,7 @@ test(
       realStack.length,
       `${realStack.length} rows of the pull-request lane drive the real stack, and the budget ` +
         `is ${realStackBudget}: a real-stack row pays a Go server, a Postgres, three fakes, a ` +
-        "sign-in and a database reset. Move the row to the stubbed layer " +
+        "reset of the fakes and a sign-in. Move the row to the stubbed layer " +
         '(packages/dispatch/README.md, "The stubbed layer") or take its `@pr` tag off.'
     ).toBeLessThanOrEqual(realStackBudget);
   },

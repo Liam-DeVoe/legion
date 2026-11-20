@@ -212,8 +212,8 @@ async function pageWritable(
   );
 }
 
-// The database reset is the `test` this file imports (e2e/test.ts); the round-robin proxy's log
-// is not in the database, so it is cleared here.
+// The database's reset, once per worker, and the fakes' before every row are the `test` this file
+// imports (e2e/test.ts); the round-robin proxy's log is neither, so it is cleared here.
 test.beforeEach(async () => {
   expect((await fetch(new URL("/_proxy/reset", baseUrl), { method: "POST" })).status).toBe(204);
 });

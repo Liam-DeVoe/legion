@@ -41,7 +41,7 @@ import { asUser } from "./users";
  *  second time (`PRIORITY_EXISTS`), is the row's own too. */
 const test = base.extend<{ ownPriorities: undefined }>({
   ownPriorities: [
-    async ({ freshDatabase: _resetFirst }, use) => {
+    async ({ freshFakes: _resetFirst }, use) => {
       const held = await sql(`SELECT json_build_object(
         'nodes', coalesce((SELECT json_agg(kind || ':' || id) FROM priority_nodes), '[]'),
         'seq', coalesce((SELECT max(seq) FROM priority_tuples), 0))`);

@@ -152,10 +152,13 @@ const sessionCookies = new Map<string, CachedSession>();
 /** The session cookie the server issues `login` at its dev sign-in route, minted once per
  *  spelling of a login and process asked, and kept until something revokes it: the generation
  *  the cookie names lives in `user_sessions`, which `resetDatabase` empties and refills for
- *  `resetLogins` alone (it calls `forgetSessions`), and a browser context's Sign out as the same
- *  login advances it. With `target` set the sign-in is pinned to that process, so every request
- *  a pinned call makes, its sign-in included, is served by the process it names. A sign-in that
- *  fails, by its answer or by the request itself, is not kept, so the next call asks again. */
+ *  `resetLogins` alone (it calls `forgetSessions`) - once per worker, before its first row, and
+ *  where a row empties the database itself (`emptyDatabase`, e2e/test.ts) - and a browser
+ *  context's Sign out as the same login advances it, so a row signs out only a person of its own
+ *  (`rowPerson`, e2e/test.ts). With `target` set the sign-in is pinned to that process, so every
+ *  request a pinned call makes, its sign-in included, is served by the process it names. A
+ *  sign-in that fails, by its answer or by the request itself, is not kept, so the next call asks
+ *  again. */
 export function sessionCookie(login: string, target?: DispatchProcess): Promise<Cookie> {
   const key = `${target ?? ""} ${login}`;
   const cached = sessionCookies.get(key);
@@ -201,7 +204,8 @@ const reusedSignIns = new Set<string>();
  *  cookie outlives it. Only the first sign-in of that login since the reset reuses: a row that
  *  signs the same login in twice has almost always signed it out in between, which advances the
  *  login's generation, and the cached cookie, which names the generation before it, would then be
- *  refused. */
+ *  refused. The suite resets the database once per worker (e2e/test.ts), so that first sign-in
+ *  is the worker's, and every later one mints until a row empties the database itself. */
 export function reusableSessionCookie(login: string): Promise<Cookie> | undefined {
   if (!resetLogins.includes(login) || reusedSignIns.has(login)) {
     return undefined;
@@ -211,15 +215,18 @@ export function reusableSessionCookie(login: string): Promise<Cookie> | undefine
 }
 
 /** Forgets the cached session cookies the reset leaves unusable, and the sign-ins it undoes;
- *  `resetDatabase` calls it after emptying the tables.
+ *  `resetDatabase` calls it after emptying the tables, which the suite does once per worker,
+ *  before its first row, and where a row empties the database itself (`emptyDatabase`,
+ *  e2e/test.ts).
  *
  *  The cookies of `resetLogins`, alice and bob, are kept: the reset re-inserts their people rows
  *  and their `user_sessions` rows at generation 0 (e2e/seed.ts), the generation a cookie minted
- *  after the previous reset names, so those two cookies authenticate again and the next row pays
- *  no sign-in for them. Every other login's cookie is forgotten, since the reset re-creates no
- *  other person, and so is a kept login's cookie minted at a later generation, which a sign-out
- *  in the row just ended leaves behind. A kept cookie carries no state of its row into the next
- *  one: it names a login and a generation, both of which the emptied database holds again. */
+ *  after the previous reset names, so those two cookies authenticate again and the rows after
+ *  the reset pay no sign-in for them. Every other login's cookie is forgotten, since the reset
+ *  re-creates no other person, and so is a kept login's cookie minted at a later generation,
+ *  which a sign-out before the reset leaves behind. A kept cookie carries no state from before
+ *  the reset into the rows after it: it names a login and a generation, both of which the emptied
+ *  database holds again. */
 export function forgetSessions(): void {
   for (const [key, session] of sessionCookies) {
     if (!resetLogins.includes(session.login) || !session.atGenerationZero) {
@@ -365,9 +372,9 @@ function del<P extends PathsOf<"delete">>(
 
 /** A project key `createProject` takes: the running row's own, `rowKey(...)` (e2e/test.ts), or a
  *  key fixed on purpose, `fixedKey(...)`, which names why. A real-stack row that wrote a literal
- *  key would make a project another row of its worker makes too, once no reset empties the
- *  database between them, so the brand turns that row into a type error on its own pull request
- *  rather than a collision in a later run. */
+ *  key would make a project another row of its worker makes too, since no reset empties the
+ *  database between them (e2e/test.ts), so the brand turns that row into a type error on its own
+ *  pull request rather than a collision in a later run. */
 export type RowKey = string & { readonly rowKey: unique symbol };
 
 /** `key` as a key `createProject` takes, for a caller that makes its project under a fixed key on
